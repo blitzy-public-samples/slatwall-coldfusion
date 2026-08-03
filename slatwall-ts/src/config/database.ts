@@ -190,10 +190,27 @@ import type { StatementPool } from '../adapters/mysql/QueryRunner';
  *     "engineering rationale only — never restated as a performance commitment (IR-12)". A shape
  *     is not a number. A number is not licensed by an observation about shape.
  *   - The typed configuration this module consumes makes the rule structural rather than merely
- *     intended: every figure the pool is built with below is read from src/config/env.ts, which
- *     requires the operator to state it and defaults none of it. There is consequently no literal
- *     capacity or timing figure in this file at all, and inventing one to stand in for an absent
- *     variable would violate S9 in a second way.
+ *     intended: every figure the pool is built with below is read from src/config/env.ts, and NONE of
+ *     it is a literal chosen here. There is consequently no literal capacity or timing figure in this
+ *     file at all, and inventing one to stand in for an absent variable would violate S9 in a second
+ *     way.
+ *
+ *     ⚠️ WHICH IS NOT THE SAME AS "THE OPERATOR MUST STATE ALL OF IT", AND THE DISTINCTION IS THE
+ *     CONTRACT. Of the NINE connection facts, FIVE are REQUIRED with no default of any kind —
+ *     `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` — and their absence is fatal at load.
+ *     The remaining FOUR are OPTIONAL, and each has a declared behaviour when absent rather than a
+ *     figure invented for it:
+ *       `DB_CONNECTION_LIMIT`    absent -> the option is OMITTED from the pool entirely, so the
+ *       `DB_CONNECT_TIMEOUT_MS`  driver's own documented default governs and this file states nothing
+ *       `DB_QUEUE_LIMIT`         absent -> the lowest permitted bound, because the driver reads an
+ *                                unset queue limit as UNLIMITED and accepting that silently is
+ *                                exactly what DECISION C forbids
+ *       `DB_TLS_MODE`            absent -> the verified transport mode, which only a loopback
+ *                                `DB_HOST` may lower (DECISION I)
+ *     Omitting an option so the driver decides, and choosing the one value that avoids selecting the
+ *     driver's unbounded arrangement by accident, are both different acts from inventing a capacity
+ *     figure. An earlier revision of this note said the operator states all of it, which would have a
+ *     deployment believe it must invent four numbers before the service would start.
  *   - AAP 0.4.1.3 dictates the shape of the change whenever such a knob IS genuinely required:
  *     "it arrives through src/config/env.ts as an operator-supplied value with no default invented
  *     in source, and the environment template declares it. It does not arrive as a literal here."
@@ -216,11 +233,14 @@ import type { StatementPool } from '../adapters/mysql/QueryRunner';
  * and the one thing AAP 0.8.2 Guideline 6 exists to prevent.
  *
  * S9 is satisfied in the strongest available form rather than bent: this file states no figure, and
- * neither does src/config/env.ts. The operator states all four, the validator enforces only
- * arithmetic floors and the driver's own documented sentinel, and no ceiling is imposed anywhere
- * because a ceiling would be a capacity figure with no source. The distinction that makes this
- * sound is that a REQUIRED, OPERATOR-SUPPLIED value invents nothing, whereas an unset option
- * silently accepts whatever the driver chose.
+ * neither does src/config/env.ts. All four are OPTIONAL rather than required — an operator who states
+ * none of them still starts the service — the validator enforces only arithmetic floors and the
+ * driver's own documented sentinel, and no ceiling is imposed anywhere because a ceiling would be a
+ * capacity figure with no source. The distinction that makes this sound is that an OPERATOR-SUPPLIED
+ * value invents nothing, and that an omitted one is handled by a declared rule rather than by a number
+ * chosen here: three of the four are passed through or left out untouched, and only the queue bound
+ * takes a value on omission, because there the driver's unset behaviour is UNLIMITED and accepting
+ * that silently would be the decision made without a decision.
  *
  * Everything else remains exactly as this decision originally set out. No idle timeout, maximum
  * idle count, keep-alive interval, statement bound, reset-on-release setting or connection-lifetime
@@ -1016,8 +1036,11 @@ function verifiedTransportOptions(): SslOptions {
 /**
  * The options the pool is built with, assembled from validated configuration alone.
  *
- * Every value here comes from src/config/env.ts, which requires the operator to supply it and
- * defaults none of it; there is no literal capacity or timing figure in this file (DECISION C).
+ * Every value here comes from src/config/env.ts and none is a literal chosen in this file; there is no
+ * capacity or timing figure of this file's own anywhere (DECISION C). Five of the nine are required of
+ * the operator and four are optional with declared absent-behaviour — DECISION C tabulates which is
+ * which, and the connection-limit and connect-timeout options are OMITTED here rather than defaulted
+ * when their variables are absent.
  *
  * `waitForConnections` is stated explicitly even though it matches the driver's default, because
  * the queue bound below is only meaningful while it is true — with it false there is no queue for a
@@ -1225,10 +1248,11 @@ function asTransactionalConnection(connection: PoolConnection): TransactionalCon
  * Consumed by constructor injection only: src/config/container.ts passes this value to the MySQL
  * adapters, and nothing below the config layer imports this module (standard S3, standard S4).
  *
- * Only the nine connection facts src/config/env.ts validated are passed to the driver, and each one
- * is operator-supplied — this file states no capacity, timing or transport figure of its own
- * (DECISION C, DECISION I). Everything the driver leaves at its documented behaviour is left there
- * deliberately; read DECISION C before configuring anything further.
+ * Only the nine connection facts src/config/env.ts validated are passed to the driver — five required
+ * of the operator and four optional with declared absent-behaviour — and this file states no capacity,
+ * timing or transport figure of its own (DECISION C, DECISION I). Everything the driver leaves at its
+ * documented behaviour is left there deliberately; read DECISION C before configuring anything
+ * further.
  *
  * The value is a narrowing wrapper rather than the driver's pool itself, so that the withheld members
  * stay unreachable — on the pool and on every connection drawn from it alike — and so that a bound

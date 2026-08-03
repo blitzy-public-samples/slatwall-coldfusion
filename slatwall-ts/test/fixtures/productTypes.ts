@@ -61,14 +61,28 @@
  * excluded here entirely — not as constants, not as a "reserved" list, and not reproduced in any
  * comment. This module exposes exactly the three seeded discriminators.
  *
- * TRANSLATION DECISION — CFML `==` IS CASE-INSENSITIVE, TYPESCRIPT `===` IS NOT
- * ----------------------------------------------------------------------------
- * The legacy discriminator comparison at model/service/SkuService.cfc:L61 uses CFML `==`, which
- * compares strings case-insensitively and would also have matched `"Merchandise"` or `"MERCHANDISE"`.
- * A TypeScript `===` comparison will not. Keeping the exact-case literals from the seed data is the
- * correct translation, since the seeded rows are the only values the comparison can legitimately see,
- * but the narrowing is a real behavioural divergence and is flagged so any consumer comparing
- * `systemCode` values knows the ported check is strictly stricter than the original.
+ * WHAT THESE LITERALS ARE FOR — AND THE COMPARISON RULE THEY ARE *NOT*
+ * -------------------------------------------------------------------
+ * These are the CANONICAL SPELLINGS of the seeded rows, transcribed so a test can name a
+ * discriminator without reaching into production code. They are not a comparison rule, and this
+ * module deliberately states none.
+ *
+ * An earlier revision of this block claimed a behavioural divergence here: that CFML `==` at
+ * model/service/SkuService.cfc:L61 is case-insensitive while a ported `===` is not, so the port was
+ * "strictly stricter than the original". THAT CLAIM IS WITHDRAWN, because the port does not compare
+ * with `===`. src/domain/BaseProductType.ts carries a recogniser, `resolveBaseProductType`, which
+ * case-folds both operands before matching and answers the canonical spelling — so a `SwProductType`
+ * row holding `Merchandise` or `MERCHANDISE` reaches the merchandise branch exactly as it did in the
+ * legacy system, and there is no divergence left to flag. That file also records why a narrowing
+ * would have been a defect rather than a tightening: `systemCode` is an ordinary `varchar` with no
+ * check constraint, model/validation/ProductType.json declares no format rule for it, and
+ * model/entity/ProductType.cfc:L110 returns whatever text the row holds, including a value inherited
+ * from a hierarchy root.
+ *
+ * The consequence for a reader of THIS file is narrow and worth stating plainly: compare a
+ * `systemCode` read from a row by passing it through `resolveBaseProductType` first, and use `===`
+ * against a literal below only on a value that recogniser has already returned. Nothing about the
+ * literals themselves changes — they stay exactly as the seed data spells them.
  *
  * MODULE SCOPE IS SAFE HERE SPECIFICALLY (M7)
  * ------------------------------------------

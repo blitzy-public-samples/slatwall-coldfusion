@@ -367,21 +367,21 @@ export const optionCodeRequiredConstraint = Object.freeze({
  * "THE SEVEN" in `../Validator` for the pinned polarity, for why the self-exclusion term is a no-op on
  * insert, and for all seven locators.
  *
- * ⭐ SEC-HARDENING (D18-CLASS) — HOW STRONG THIS RULE ACTUALLY IS UNDER CONCURRENCY. Review finding F6
- * (CWE-367) named this rule and its OptionGroup twin precisely because they are the two with no column
- * behind them. The check is a read followed by a write, so two concurrent saves could both be told `RED`
- * was free. What changed: `../../adapters/mysql/UniquePropertyChecker.ts` now takes a LOCKING read when
- * it has been re-bound to a transaction boundary, so a check and the write that follows it inside that
- * boundary are serialized against a concurrent boundary asking the same question. That orders
- * transactions and changes no verdict — the same statement, the same rows, the same answer — which is
- * what puts it on the D18 footing (AAP §0.6.7.7) rather than in reach of AAP §0.8.2 Guideline 4.
+ * ⛔ TODO(parity) — HOW WEAK THIS RULE IS UNDER CONCURRENCY, AND NOTHING STRENGTHENS IT (CWE-367). This
+ * rule and its OptionGroup twin are the two with no `unique="true"` column behind them. The check is a
+ * read followed by a write, so two concurrent saves can both be told `RED` was free, and unlike the five
+ * code and title properties that DO carry a column there is no database constraint to refuse the second
+ * write. Both writes land.
  *
- * ⚠️ WHAT IS STILL OPEN, AND WHY IT CANNOT BE CLOSED FROM HERE. A save issued OUTSIDE any boundary is
- * serialized by nothing, and unlike the five code and title properties that DO carry `unique="true"`
- * there is no database constraint to refuse the second write. The obvious repair — adding the missing
- * unique index on `SwOption.optionCode` — is forbidden rather than forgotten: AAP §0.2.2.5 places schema
- * migration outside this refactoring, so the `Sw*` tables are read and written as they are. Flagged, not
- * claimed closed (AAP §0.7.3 S8); the same residue is recorded on `../../ports/UniquePropertyPort.ts`.
+ * ⛔ A REVISION TOOK A LOCKING READ IN `../../adapters/mysql/UniquePropertyChecker.ts` — `FOR UPDATE`, on
+ * a boundary-scoped instance only — and licensed it on the D18 footing on the ground that it orders
+ * transactions and changes no verdict. THAT IS WITHDRAWN. AAP §0.6.7.7 authorises exactly ONE departure
+ * from behavioural preservation in this port, D18, so that a reviewer diffing behaviour has a fixed number
+ * of entries to check; statement text is observable and AAP §0.8.2 Guideline 4 admits no proportionality
+ * test. The obvious repair — adding the missing unique index on `SwOption.optionCode` — is forbidden
+ * rather than forgotten: AAP §0.2.2.5 places schema migration outside this refactoring, so the `Sw*`
+ * tables are read and written as they are. Flagged, not claimed closed (AAP §0.7.3 S8); the same residue
+ * is recorded on `../../ports/UniquePropertyPort.ts`.
  *
  * AN ABSENT VALUE PASSES, INDIRECTLY. `validate_unique`
  * (`org/Hibachi/HibachiValidationService.cfc:L467-L470`) contains NO absence guard: it delegates straight
@@ -614,7 +614,7 @@ export const optionGroupRequiredConstraint = Object.freeze({
  * blocking guards, and `model/entity/Product.cfc:L73` `skus` `cascade="all-delete-orphan" inverse="true"`.
  * This is a plain note: no new execution-model number is opened for it — AAP §0.6.6 allocates M1
  * through M8 — and no defect register entry is invented here. ⚠️ F27: the tail of this sentence read
- * "the register being closed at D1 through D22", which was untrue on both counts; the live bound is
+ * "the register being closed at D1 through the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132]", which was untrue on both counts; the live bound is
  * stated only at `src/ports/repositories/SkuRepository.ts`.
  *
  * Emits `validate.delete.Option.skus.maxCollection`.
@@ -824,8 +824,8 @@ export const optionValidationRuleSet = Object.freeze({
  *
  * NO PARITY ANNOTATION APPEARS IN THIS FILE, and that is a finding rather than an omission: no
  * entry in the defect register crosses `model/validation/Option.json`'s boundary, and no D-number is
- * invented here. ⚠️ F27: this previously asserted "The register is CLOSED at D1 through D22", and
- * D1–D22 was never the AAP's range: §0.6.7 is frozen at D1–D21, and the port-minted entries beyond it
+ * invented here. ⚠️ F27: this previously asserted "The register is CLOSED at D1 through the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132]", and
+ * D1–the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] was never the AAP's range: §0.6.7 is frozen at D1–D21, and the port-minted entries beyond it
  * are enumerated only at `src/ports/repositories/SkuRepository.ts`. The plan's one declared
  * exception to preserve-and-annotate is D18, which belongs to `src/adapters/mysql`, and this file
  * claims none.

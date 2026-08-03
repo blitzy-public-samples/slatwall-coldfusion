@@ -82,7 +82,7 @@ import type { ProductTypeTreeRow } from '../../ports/repositories/ProductTypeRep
 import type { SkuSearchRow } from '../../ports/repositories/SkuRepository';
 
 /* ===============================================================================================
- * TODO(parity) D22 — THE LOGICAL VERSUS PHYSICAL NAME VOCABULARY
+ * TODO(parity) the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] — THE LOGICAL VERSUS PHYSICAL NAME VOCABULARY
  * ===============================================================================================
  * Byte-verified at each entity file's `:L49`. Recorded here because this is the natural place for a
  * reader of the adapter folder to find the shared vocabulary the repositories depend on, and because
@@ -112,9 +112,9 @@ import type { SkuSearchRow } from '../../ports/repositories/SkuRepository';
  * One in-scope statement is worth knowing about because this file maps its output: the product-type
  * tree query at [model/dao/ProductTypeDAO.cfc:L54-L62] is native statement text that nonetheless
  * names the logical entities. Deciding what to emit for it belongs to `MySqlProductTypeRepository.ts`
- * and not here; the finding takes no new register number, because it is already covered by D22 above.
+ * and not here; the finding takes no new register number, because it is already covered by the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] above.
  *
- * THE REGISTER BOUNDS ARE NOT STATED HERE. This file cites D22 above and mints nothing, and `src/ports/repositories/SkuRepository.ts`
+ * THE REGISTER BOUNDS ARE NOT STATED HERE. This file cites the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] above and mints nothing, and `src/ports/repositories/SkuRepository.ts`
  * is the single place that enumerates AAP §0.6.7's frozen D1-D21, AAP §0.6.6's frozen M1-M8 and every
  * entry the port minted beyond them. This note used to declare itself "THE AUTHORITATIVE REGISTER
  * BOUNDS" at a figure that had already moved on, which is precisely why a second copy is no longer
@@ -1076,7 +1076,7 @@ function assignAuditColumns(entity: AuditableEntity, row: MySqlRow): void {
  *
  *   ⛔ A REFERENCE IS NOT A LOADED ENTITY AND MUST NOT BE TREATED AS ONE. Rule 3's guarantee still
  *   holds for every field a reference does not carry: it is genuinely absent. A consumer that needs a
- *   LOADED association resolves it — `createCatalogAggregateLoaders` in `./catalogAggregates` does
+ *   LOADED association resolves it — `createCatalogAggregateLoaders` in `./QueryRunner` does
  *   exactly that, batching one statement per related entity and raising a `DataIntegrityError` when a
  *   reference cannot be resolved, so no reference reaches the serializer.
  *
@@ -1319,6 +1319,165 @@ export function forgetHydratedParentProductTypeID(productType: object): void {
   hydratedParentProductTypeIds.delete(productType);
 }
 
+/* ================================================================================================
+ * RULE 3c — A HYDRATED SKU'S PRESERVED SUBSCRIPTION-TERM KEY AND ITS OWNED-LINK LOAD STATE
+ * ================================================================================================
+ * ⭐ THE DEFECT THIS CLOSES (finding F7). {@link mapSkuRow} produces a SKU carrying no
+ * `subscriptionTerm` association and four EMPTY owned link collections, and
+ * `MySqlSkuRepository.persistSku` then writes `subscriptionTerm?.subscriptionTermID ?? null` and
+ * DELETE-replaces all four link tables whenever the SKU row pre-existed. Put together, ANY save of a
+ * database-loaded SKU nulled its subscription term and deleted every one of its `SwSkuOption`,
+ * `SwSkuAccessContent`, `SwSkuSubsBenefit` and `SwSkuRenewalSubsBenefit` rows. Three in-scope service
+ * members reach that write on an existing SKU — `processProductAddOptionGroup`,
+ * `processProductAddOption` (both through `processProductUpdateDefaultImageFileNames`) and
+ * `processProductUpdateSkus` — so an ordinary catalog edit destroyed relationships it never mentioned,
+ * and answered successfully.
+ *
+ * ⭐ WHAT THE LEGACY DID INSTEAD, WHICH IS THE BEHAVIOUR BEING RESTORED. Hibernate hydrated a SKU with
+ * LAZY collections and a LAZY many-to-one. A collection the request never touched was never loaded, and
+ * the flush therefore emitted NO statement for its link table — the rows simply stayed. A many-to-one
+ * that was never dereferenced kept its foreign key, because the column value came from the row, not from
+ * a resolved object. So "untouched means unchanged" was free, and reproducing it in a port with no
+ * session means saying it explicitly. That is what these two mechanisms do.
+ *
+ * ⚠️ WHY BOTH LIVE BESIDE THE ENTITY RATHER THAN INSIDE IT, exactly as RULE 3b's parent key does. A
+ * `subscriptionTermLoaded` flag or a `loadedCollections` set on `Sku` would be a field the legacy entity
+ * does not declare, visible to `populate()`, to validation and to every read path — and
+ * `src/domain/sku/Sku.ts` is a port of `model/entity/Sku.cfc`, whose surface is fixed. Provenance is a
+ * fact about a HYDRATION, not a property of a SKU, so it is recorded where hydration happens.
+ *
+ * ⚠️ WEAK AND OBJECT-KEYED, WHICH IS WHAT MAKES BOTH LEGAL UNDER S8/M7 — the same argument RULE 3b
+ * makes at length. Neither table is a cache: no entry is reachable without already holding the exact
+ * instance it describes, a later invocation on a warm container constructs different instances and can
+ * therefore reach nothing, and each entry dies with its entity.
+ *
+ * ⚠️ AND ABSENCE MEANS AUTHORITATIVE, NOT UNKNOWN. A SKU this module never mapped — every SKU the
+ * combination engine mints in `src/services/SkuService.ts`, and every hand-built one in a test — has no
+ * entry in either table, and its collections and associations are taken at face value. That is required
+ * rather than convenient: `createSkus` builds a SKU whose empty collections ARE the intended state, and
+ * a design that treated "no provenance" as "unknown" would refuse to write it.
+ * ============================================================================================== */
+
+/**
+ * The four collections `model/entity/Sku.cfc` declares as OWNED many-to-many link tables, named by the
+ * entity's own property names at `:L76` through `:L79`.
+ *
+ * Owned is the operative word: these are the four whose link rows `MySqlSkuRepository.persistSku`
+ * writes, so they are exactly the four whose load state that member has to consult. The six INVERSE
+ * collections at `:L81-L86` are owned by their far side and are never written from a SKU, so they carry
+ * no load state and appear nowhere in this table.
+ */
+export const SKU_OWNED_LINK_COLLECTIONS = Object.freeze([
+  'options',
+  'accessContents',
+  'subscriptionBenefits',
+  'renewalSubscriptionBenefits',
+] as const);
+
+/** One of the four owned link collection names of {@link SKU_OWNED_LINK_COLLECTIONS}. */
+export type SkuOwnedLinkCollection = (typeof SKU_OWNED_LINK_COLLECTIONS)[number];
+
+/**
+ * For each SKU hydrated from a row, the subset of its owned link collections that has since been LOADED.
+ *
+ * A SKU present in this table with an empty set is one hydrated from a row whose link tables were not
+ * read — the state {@link mapSkuRow} leaves it in. A SKU ABSENT from the table was never hydrated here at
+ * all, which is the authoritative case the section header describes.
+ */
+const hydratedSkuLoadedOwnedLinks = new WeakMap<object, Set<SkuOwnedLinkCollection>>();
+
+/** For each SKU hydrated from a row, the `subscriptionTermID` that row carried. */
+const hydratedSkuSubscriptionTermIds = new WeakMap<object, string>();
+
+/**
+ * Records that a SKU came from a row, with none of its owned link collections loaded yet.
+ *
+ * Called by {@link mapSkuRow} only, and unconditionally — including for a row whose link tables happen
+ * to hold nothing, because "no rows" and "not read" are different facts and only the reader knows which
+ * one it established.
+ *
+ * @param sku - the instance just hydrated from the row.
+ */
+function recordHydratedSkuOwnedLinks(sku: object): void {
+  hydratedSkuLoadedOwnedLinks.set(sku, new Set<SkuOwnedLinkCollection>());
+}
+
+/**
+ * Declares that one owned link collection of a hydrated SKU now holds what the database holds.
+ *
+ * Called by every loader that reads a SKU's link table — `attachSkuOptions` and
+ * `attachFetchedSkuAssociations` in `./SmartListQueryBuilder`, and the product aggregate loader through
+ * them. After this call the collection is authoritative and `persistSku` replaces its rows exactly as it
+ * always did, which is what keeps removal working: emptying a LOADED collection and saving clears it.
+ *
+ * ⚠️ A NO-OP FOR A SKU WITH NO PROVENANCE, deliberately. Such a SKU is already authoritative, so there
+ * is no state to promote and nothing to record; making it an error would force every constructor of a
+ * transient SKU to know about this table.
+ *
+ * @param sku - a SKU, hydrated or not.
+ * @param collection - the collection whose rows were just read.
+ */
+export function markSkuOwnedLinkLoaded(sku: object, collection: SkuOwnedLinkCollection): void {
+  hydratedSkuLoadedOwnedLinks.get(sku)?.add(collection);
+}
+
+/**
+ * Whether a SKU's owned link collection may be taken as the complete intended contents.
+ *
+ * THE PERSISTENCE DECISION, AND THE ONLY QUESTION `persistSku` ASKS. `true` means the collection is
+ * either on an entity this module never hydrated, or on one whose rows for that collection were read —
+ * in both cases what the entity holds is what the database should hold. `false` means the rows were
+ * never read, so the in-memory collection describes nothing and must not be written over them.
+ *
+ * @param sku - a SKU, hydrated or not.
+ * @param collection - the collection being written.
+ * @returns `true` when the collection may be replaced; `false` when its stored rows must be preserved.
+ */
+export function isSkuOwnedLinkAuthoritative(
+  sku: object,
+  collection: SkuOwnedLinkCollection,
+): boolean {
+  const loaded = hydratedSkuLoadedOwnedLinks.get(sku);
+  return loaded === undefined || loaded.has(collection);
+}
+
+/**
+ * The `subscriptionTermID` this SKU was hydrated with, if it was hydrated from a row at all.
+ *
+ * THE WRITE PATH'S FALLBACK, AND ONLY EVER A FALLBACK — the same shape as
+ * {@link readHydratedParentProductTypeID}. `persistSku` resolves the column as
+ * `sku.subscriptionTerm?.subscriptionTermID ?? readHydratedSkuSubscriptionTermID(sku) ?? null`, so a
+ * resolved association always wins and this value is consulted only where the previous code wrote `NULL`
+ * over a term it had simply never loaded.
+ *
+ * The association is left ABSENT rather than filled with an identifier-only reference because
+ * `SubscriptionTerm` is out of scope (AAP §0.2.2.1) and has no domain module to construct: the port
+ * models the slot as an out-of-scope reference, and inventing one here would put an object with no
+ * behaviour where a read path expects a term.
+ *
+ * @param sku - any SKU. One never mapped here yields `undefined`, and `NULL` is then the correct column
+ *   value because the entity genuinely carries no term.
+ * @returns the preserved identifier, or `undefined` when none was recorded or it has been forgotten.
+ */
+export function readHydratedSkuSubscriptionTermID(sku: object): string | undefined {
+  return hydratedSkuSubscriptionTermIds.get(sku);
+}
+
+/**
+ * Discards the preserved `subscriptionTermID`, so a subsequent write stores `NULL` and the detach is
+ * durable.
+ *
+ * THE DECLARED WAY TO DETACH A HYDRATED SKU'S TERM, for the same reason
+ * {@link forgetHydratedParentProductTypeID} exists: after a detach the association slot is ABSENT, which
+ * is indistinguishable from one that was never resolved, and the write fallback reads absence as "never
+ * resolved". A caller that means `NULL` says so here. A no-op when nothing was recorded.
+ *
+ * @param sku - the SKU whose preserved term key should be dropped.
+ */
+export function forgetHydratedSkuSubscriptionTermID(sku: object): void {
+  hydratedSkuSubscriptionTermIds.delete(sku);
+}
+
 /**
  * A `defaultSku` slot value that also reports the identifier the delegate interface hides.
  *
@@ -1357,7 +1516,7 @@ function refuseUnresolvedDefaultSku(skuID: string, member: string): never {
  * `Product.getPrice` falls back to the default SKU's price — so the Google feed's `g:price` would
  * advertise a free product with nothing failing anywhere. Raising converts that silent wrong answer
  * into a diagnosable one. The reference is replaced by the aggregate-loader resolution
- * `createCatalogAggregateLoaders` in `./catalogAggregates` performs, before any consumer reads it.
+ * `createCatalogAggregateLoaders` in `./QueryRunner` performs, before any consumer reads it.
  * (This sentence previously pointed at `ProductFeedRelationshipAssembler`, which was withdrawn; see
  * the rule 3a account above.)
  *
@@ -1388,7 +1547,7 @@ export function defaultSkuReference(skuID: string): IdentifiedProductDefaultSku 
  * `SettingResolverPort`, and the five image members are ASYNCHRONOUS on `Sku` and take an `ImagePathPort`,
  * while the delegate declares them synchronous and argument-free.
  *
- * ✅ `./catalogAggregates.ts` ALREADY OWNS THIS ADAPTATION AND DECLARES IT AS A DEPENDENCY, for exactly
+ * ✅ `./QueryRunner.ts` ALREADY OWNS THIS ADAPTATION AND DECLARES IT AS A DEPENDENCY, for exactly
  * that reason: `CatalogAggregateDependencies.bindDefaultSkuDelegate` is `(sku: Sku) => ProductDefaultSkuDelegate`,
  * and its own note says assembling one "needs the setting, pricing and image ports, none of which belong
  * to this layer, so it arrives as the function it is". That is the same judgement, made one layer up where
@@ -1537,11 +1696,22 @@ export function mapProductRow(row: MySqlRow): ManagedEntity<Product> {
  * column is absent or NULL. This is what `MySqlSkuRepository.persistSku` reads back when it writes the
  * `productID` column, and what the Google feed's assembler resolves into a loaded product.
  *
- * Not read: the `subscriptionTermID` foreign key at `:L64`, whose related component is out of scope by
- * AAP 0.2.2.1; the five collections at `:L67-L71`; and the four owned and six inverse many-to-many
- * collections at `:L74-L86` — including `options`, whose rows live in the `SwSkuOption` link table and
- * are resolved by `MySqlSkuRepository.ts`. The twenty-three non-persistent properties at `:L99-L121`
- * have no column.
+ * ALSO READ, AS A RULE 3c PRESERVED FOREIGN KEY: the `subscriptionTermID` foreign key at `:L64`. Its
+ * related component is out of scope (AAP §0.2.2.1), so the ASSOCIATION SLOT IS STILL LEFT ABSENT — no
+ * read path gains a term object — while the key itself is recorded beside the instance for the write
+ * path. Before that, `MySqlSkuRepository.persistSku` wrote `NULL` into this column on every save of a
+ * loaded SKU, silently detaching the term (finding F7).
+ *
+ * ALSO RECORDED, AS RULE 3c LOAD STATE: that NONE of the four OWNED link collections at `:L76-L79` has
+ * been read. They are left empty and live exactly as before, but `persistSku` can now tell "empty
+ * because nothing is linked" from "empty because nobody looked", and preserves the stored rows in the
+ * second case instead of deleting them.
+ *
+ * Not read: the five collections at `:L67-L71` and the six INVERSE many-to-many collections at
+ * `:L81-L86`, which are owned by their far side and are never written from a SKU. The four owned
+ * collections' CONTENTS are likewise not read here — `options` lives in the `SwSkuOption` link table and
+ * is resolved by `./SmartListQueryBuilder`'s loaders and by `MySqlSkuRepository.ts`. The twenty-three
+ * non-persistent properties at `:L99-L121` have no column.
  *
  * Note that the return type is also what `SkuRow` denotes: the SKU port declares `SkuRow` as an alias
  * of the entity precisely so that no second description of the physical row exists to drift from this
@@ -1549,8 +1719,9 @@ export function mapProductRow(row: MySqlRow): ManagedEntity<Product> {
  *
  * @param row - One `SwSku` row.
  * @returns A MANAGED SKU (RULE 5) carrying every persistent column the row supplied, its `product`
- *   field holding a RULE 3a reference where the row carried the foreign key, and its options
- *   collection empty and live.
+ *   field holding a RULE 3a reference where the row carried the foreign key, its four owned link
+ *   collections empty, live and marked NOT LOADED (RULE 3c), and its `subscriptionTermID` preserved
+ *   beside it where the row carried one.
  * @throws {DomainError} When a column holds a value whose runtime type does not match its field.
  * @throws {DataIntegrityError} When an exact-decimal column holds a value a JavaScript number
  *   cannot carry without loss, or the driver delivered it pre-converted (F16).
@@ -1586,6 +1757,19 @@ export function mapSkuRow(row: MySqlRow): ManagedEntity<Sku> {
   if (productID !== undefined) {
     sku.product = productReference(productID);
   }
+
+  /* RULE 3c — the subscription-term foreign key at [model/entity/Sku.cfc:L64]. Recorded BESIDE the
+   * instance, never attached: `SubscriptionTerm` is out of scope (AAP §0.2.2.1) and the slot stays absent,
+   * so every read path sees exactly what it saw before while the write path stops nulling the column. */
+  const subscriptionTermID = readOptionalString(row, 'subscriptionTermID');
+  if (subscriptionTermID !== undefined) {
+    hydratedSkuSubscriptionTermIds.set(sku, subscriptionTermID);
+  }
+
+  /* RULE 3c — and none of the four owned link collections has been read. Recorded UNCONDITIONALLY,
+   * including when the tables hold nothing, because "no rows" and "not read" are different facts and this
+   * mapper established neither. `persistSku` consults it before replacing any link table. */
+  recordHydratedSkuOwnedLinks(sku);
 
   return sku;
 }

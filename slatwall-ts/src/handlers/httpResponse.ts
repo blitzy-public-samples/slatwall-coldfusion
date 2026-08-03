@@ -226,8 +226,11 @@ import {
   type PublicErrorPresentation,
 } from '../errors/DomainError';
 import { ValidationError, type ValidationErrors } from '../errors/ValidationError';
-import type { RequestAuthorizationContext } from '../ports/AccountContextPort';
-import type { BoundedReadWindow } from '../ports/repositories/BoundedRead';
+import type {
+  RequestAuthorizationContext,
+  RequestAuthorizationResolver,
+} from '../ports/AccountContextPort';
+import type { BoundedReadWindow } from '../ports/SmartListQueryPort';
 import type { SmartListInput } from '../ports/SmartListQueryPort';
 
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
@@ -1486,9 +1489,18 @@ export function errorResponse(error: unknown): APIGatewayProxyResult {
     return messageResponse(statusForPublicErrorCode(presentation.code), presentation.message);
   }
 
-  /* BRANCH 5 — not raised by this port. The caught value is not inspected in any way, and it is not
-   * swallowed either: it goes to the log verbatim, which is the whole of the module's "redirected,
-   * not discarded" guarantee for a value nothing here can classify. */
+  /* BRANCH 5 — not raised by this port. The caught value is not inspected beyond the two allowlisted
+   * readers {@link describeSuppressedFailure} uses, and it is not swallowed either: a record is written
+   * naming the SITUATION, the failure's CLASS NAME, a fresh CORRELATION ID and — when the value carries
+   * one — its public error CODE.
+   *
+   * ⛔ THIS COMMENT SAID THE VALUE "goes to the log verbatim", AND A CODE REVIEW WAS RIGHT THAT IT DOES
+   * NOT. Nothing verbatim is written: no message text, no stack frame, no file path, no SQL, no table or
+   * member name and no configuration value. {@link describeSuppressedFailure} builds a fixed four-field
+   * record and runs every string through {@link sanitizeDiagnosticText} first. That is a DELIBERATELY
+   * narrower guarantee than "verbatim" and it is the correct one — a log line is not a private channel —
+   * but overstating it invited a reader to expect diagnostics that are not there, which is worse than the
+   * narrowness itself. The correlation ID is what connects this record to the client's 500. */
   logSuppressedFailure(UNRECOGNISED_FAILURE_LOG_PHRASE, error);
 
   /* `SERVICE_FAULT` is reserved for exactly this case — a value this port did not raise and cannot
@@ -2148,14 +2160,22 @@ export function readSmartListInput(
  * §7 — The action edge: how an invocation is turned into one call on one handler member.
  *
  * WHY THIS SECTION LIVES HERE. Six modules in this folder export a Lambda `handler`, and every one of
- * them has to do the same four things before it can call anything: begin the invocation, read the
- * action name out of the query string, refuse an action it does not serve, and turn a thrown failure
- * into a response. Written six times that is six chances for one of them to drift — to forget
- * `beginInvocation`, to answer 500 where its siblings answer 404, or to let a failure escape as an
+ * them has to do the same five things before it can call anything: begin the invocation, read the
+ * action name out of the query string, resolve it case-insensitively to a declared action, refuse an
+ * action it does not serve, and turn a thrown failure into a response. Written six times that is six
+ * chances for one of them to drift — to forget `beginInvocation`, to answer 500 where its siblings
+ * answer 404, to accept a spelling the other five reject, or to let a failure escape as an
  * unhandled rejection. Written once it is one contract, and this is the module every handler in the
  * folder already imports for exactly that reason: it owns the AWS event and result types, and it
  * already owns the request-reading half of the edge as well as the response-writing half
  * ({@link readJsonObjectBody}, {@link readSmartListInput}, {@link BOUNDED_READ_LIMIT_PARAMETER}).
+ *
+ * ⭐ THE THIRD STEP IS ALSO WHY IT LIVES HERE RATHER THAN IN `./router.ts`. The legacy lower-cased every
+ * action before validating it (`org/Hibachi/FW1/framework.cfc:L1957-L1961`), so the tolerance belonged to
+ * the whole address space and not to one entry point. Declaring it once in
+ * {@link createCanonicalActionLookup} gives all six surfaces the same matching rule by construction; a
+ * per-file implementation would let the aggregate router and a per-surface artifact disagree about
+ * whether `Product.SaveProduct` is an address.
  *
  * ⛔ IT DOES NOT OWN THE ROUTE TABLE. Each handler module declares which actions it serves, and
  * `./router.ts` composes those declarations into the aggregate surface. This section supplies the
@@ -2213,6 +2233,70 @@ export interface ActionDispatchContext<TRouteKey extends string> {
 }
 
 /**
+ * Builds the case-insensitive lookup for one route table: lower-cased name in, canonical key out.
+ *
+ * ⭐ THIS EXISTS BECAUSE THE LEGACY MATCHED ACTIONS CASE-INSENSITIVELY, ON ITS DEFAULT PATH. FW/1
+ * lower-cased the action before validating it, verbatim from
+ * `org/Hibachi/FW1/framework.cfc:L1957-L1961`:
+ *
+ *     if ( variables.framework.noLowerCase ) {
+ *         request.action = validateAction( request.context[variables.framework.action] );
+ *     } else {
+ *         request.action = validateAction( lCase(request.context[variables.framework.action]) );
+ *     }
+ *
+ * `noLowerCase` defaults to false (`framework.cfc:L1876-L1877`) and `config/configFramework.cfm` never
+ * sets it, so the `lCase` branch is the one Slatwall ran. `?slatAction=Google:Feed.Product` therefore
+ * reached the feed exactly as the lower-case spelling did. An earlier revision of `./router.ts` recorded
+ * the loss of that tolerance as a deliberate tightening; a review measured it against the locator above
+ * and recorded it as finding **F4**, because Refactor Discipline Guideline 2 preserves observable
+ * behaviour even where AAP §0.8.1 licenses the idiom to change. Idiom changed — a convention-driven
+ * split-and-invoke became a closed static table — and behaviour did not.
+ *
+ * ⛔ WHAT THIS IS NOT: A RE-ADMISSION OF DYNAMIC DISPATCH. The declared table stays exactly as closed as
+ * it was. This map is built ONCE, at dispatcher construction, and its only members are the keys the route
+ * table already declares — so an incoming action can still only reach a declared route, and the value used
+ * to index the table is always a canonical key that came FROM the table rather than from the request. No
+ * prefix guessing, no reflective invocation, no "closest match" heuristic: `onMissingMethod`'s prefix
+ * synthesis is what IR-1 retires, and nothing here brings it back. TR-3's requirement that resolution be
+ * an explicit, compile-checked declaration is unaffected: the declaration is still `CATALOG_ROUTES`, and
+ * this is a lookup over its own keys.
+ *
+ * ⚠️ A COLLISION IS A CONSTRUCTION-TIME FAILURE, NOT A SILENT PREFERENCE. Two canonical keys that differ
+ * only in case would make one of them unreachable through the lower-cased lookup, and choosing a winner
+ * quietly is the kind of drift a static table exists to prevent. There is no such pair today — every
+ * declared key is already lower-camel with a distinct lower-cased form — so this throws for a state the
+ * declarations cannot currently reach, and it throws at module load rather than on a request if one is
+ * ever introduced.
+ *
+ * @param routes the declared route table for one entry point
+ * @returns a frozen map from each key's lower-cased form to the key itself
+ * @throws Error naming both keys when two declared keys share a lower-cased form
+ */
+function createCanonicalActionLookup<TRouteKey extends string>(
+  routes: ActionRouteTable<TRouteKey>,
+): Readonly<Record<string, TRouteKey>> {
+  const lookup: Record<string, TRouteKey> = Object.create(null) as Record<string, TRouteKey>;
+
+  for (const canonical of Object.keys(routes) as TRouteKey[]) {
+    const normalized = canonical.toLowerCase();
+    const existing = lookup[normalized];
+
+    if (existing !== undefined) {
+      throw new Error(
+        `two declared actions share the lower-cased form "${normalized}": "${existing}" and ` +
+          `"${canonical}". Case-insensitive matching cannot reach both, so the route table must not ` +
+          'declare two keys that differ only in case.',
+      );
+    }
+
+    lookup[normalized] = canonical;
+  }
+
+  return Object.freeze(lookup);
+}
+
+/**
  * Builds the dispatcher a Lambda `handler` delegates to.
  *
  * The order of operations is the contract, and each step is here for a reason a caller can check:
@@ -2221,12 +2305,18 @@ export interface ActionDispatchContext<TRouteKey extends string> {
  *      observe it, and if resetting itself fails that failure is presented rather than escaping.
  *   2. The action is read from the query string. `queryStringParameters` is nullable on a proxy event
  *      and its members are optional, so the value is narrowed rather than asserted.
- *   3. An unrecognised or absent action answers **404**, not 400 and not 500. An action this entry
+ *   3. The action is LOWER-CASED and resolved to a canonical declared key, reproducing the legacy
+ *      `lCase(...)` of `org/Hibachi/FW1/framework.cfc:L1957-L1961` — see
+ *      {@link createCanonicalActionLookup} for the locator, the finding that restored it, and why it
+ *      re-admits no dynamic dispatch. Only the canonical key ever indexes the route table.
+ *   4. An unrecognised or absent action answers **404**, not 400 and not 500. An action this entry
  *      point does not serve is indistinguishable, from outside, from a resource that does not exist,
- *      and saying anything more would let a caller enumerate the surface.
- *   4. `Object.hasOwn` performs the recognition test, so an inherited member name such as
- *      `constructor` or `toString` can never resolve to a route.
- *   5. Every failure — from `beginInvocation`, from route lookup, or from the route itself — is
+ *      and saying anything more would let a caller enumerate the surface. A wrongly-cased action is no
+ *      longer in that category: it resolves, exactly as it did in the legacy.
+ *   5. `Object.hasOwn` performs the recognition test, so an inherited member name such as
+ *      `constructor` or `toString` can never resolve to a route. The lookup is additionally built with
+ *      a null prototype, so it has no inherited members to test against in the first place.
+ *   6. Every failure — from `beginInvocation`, from route lookup, or from the route itself — is
  *      converted by {@link errorResponse}, which is the single place that decides what a caller is
  *      told and what stays in the log. Nothing escapes as an unhandled rejection.
  *
@@ -2236,19 +2326,28 @@ export interface ActionDispatchContext<TRouteKey extends string> {
 export function createActionDispatcher<TRouteKey extends string>(
   context: ActionDispatchContext<TRouteKey>,
 ): ActionRoute {
-  const isRouteKey = (candidate: string): candidate is TRouteKey =>
-    Object.hasOwn(context.routes, candidate);
+  /* Built once, from the declared table, and never rebuilt per invocation: it is derived from a frozen
+   * declaration and holds no request state, so it is exactly the kind of immutable module-lifetime value
+   * mismatch M7 permits — the rule M7 sets is that nothing MEMOIZED PER REQUEST may outlive the request,
+   * and this memoizes nothing about a request at all. */
+  const canonicalActions = createCanonicalActionLookup(context.routes);
+
+  const resolveRouteKey = (candidate: string): TRouteKey | undefined => {
+    const normalized = candidate.toLowerCase();
+    return Object.hasOwn(canonicalActions, normalized) ? canonicalActions[normalized] : undefined;
+  };
 
   return async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
     try {
       context.beginInvocation();
 
       const action = event.queryStringParameters?.[SLAT_ACTION_PARAMETER];
-      if (action === undefined || !isRouteKey(action)) {
+      const routeKey = action === undefined ? undefined : resolveRouteKey(action);
+      if (routeKey === undefined) {
         return notFoundResponse();
       }
 
-      return await context.routes[action](event);
+      return await context.routes[routeKey](event);
     } catch (error: unknown) {
       return errorResponse(error);
     }
@@ -2298,7 +2397,7 @@ const FAIL_CLOSED_AUTHORIZATION: RequestAuthorizationContext = Object.freeze({
 });
 
 /**
- * The resolver every routed catalog member is gated on.
+ * The resolver every routed catalog member falls back to.
  *
  * It ignores its argument on purpose: a resolver that read the request would be reading a credential,
  * which §8 establishes is not introduced. Declared with no parameter at all rather than an
@@ -2310,3 +2409,126 @@ const FAIL_CLOSED_AUTHORIZATION: RequestAuthorizationContext = Object.freeze({
  */
 export const resolveFailClosedAuthorization = (): RequestAuthorizationContext =>
   FAIL_CLOSED_AUTHORIZATION;
+
+/**
+ * The narrowest request slice any surface's authorisation resolver receives.
+ *
+ * Every one of the four catalog surfaces declares its own authorisation event as
+ * `Pick<APIGatewayProxyEvent, 'headers'>`, so this ONE shape is what a deployment's resolver has to
+ * accept in order to serve all four. It is written as an indexed read of the platform type rather
+ * than as a hand-rolled `{ headers?: … }` literal, so a change to the platform typing cannot silently
+ * widen what a resolver is handed.
+ */
+export type CatalogAuthorizationRequest = Pick<APIGatewayProxyEvent, 'headers'>;
+
+/**
+ * The resolver shape a deployment registers — see {@link registerRequestAuthorizationResolver}.
+ *
+ * Contravariance is what makes one registered resolver serve every surface: a function accepting
+ * {@link CatalogAuthorizationRequest} is assignable to `RequestAuthorizationResolver<TRequest>` for
+ * every `TRequest` that carries `headers`, which is all four of them.
+ */
+export type CatalogAuthorizationResolver =
+  RequestAuthorizationResolver<CatalogAuthorizationRequest>;
+
+/* =====================================================================================================
+ * §8.1 — THE DEPLOYMENT SEAM, AND WHY THE SHIPPED ENTRY POINTS NEEDED ONE
+ * =====================================================================================================
+ * ⛔ THE DEFECT THIS CLOSES, STATED PLAINLY. Every `create…HandlerFromContainer` factory used to pass
+ * {@link resolveFailClosedAuthorization} as a HARD-WIRED argument, and neither `./router.ts` nor any
+ * per-surface entry point accepted a resolver. The seam therefore existed only on
+ * `createProductHandler` and its three siblings — functions a deployment cannot reach through a
+ * packaged artifact without rebuilding the graph itself — so every catalog action answered `401` from
+ * the shipped exports, permanently, while README claimed the seam was already available. A code review
+ * classified that as a CRITICAL callable-boundary defect, and this section is the remedy it directed:
+ * "a deployment-supplied, per-invocation `RequestAuthorizationResolver` to aggregate and per-surface
+ * composition, preserving only an explicit fail-closed fallback and never memoizing a principal".
+ *
+ * ⭐ WHAT IS HELD HERE IS A FUNCTION, NEVER A PRINCIPAL — WHICH IS WHY M7 IS NOT VIOLATED. AAP §0.6.6
+ * M7 forbids module-scope state that a warm container could carry from one invocation into the next,
+ * and `../ports/AccountContextPort.ts` names a captured principal as exactly that hazard. The cell
+ * below holds the deployment's WIRING — one resolver function, registered once during initialisation,
+ * in the same class of state as `./router.ts`'s route table or `../config/container.ts`'s memoized
+ * graph. The principal itself is still resolved by CALLING that function on every invocation, from
+ * that invocation's own request, and is never stored anywhere.
+ *
+ * ⛔ AND NOTHING HERE AUTHENTICATES ANYTHING. This module still parses no header, decodes no token,
+ * verifies no signature and consults no store; `integrationServices/AuthenticationInterface.cfc` and
+ * `BaseAuthentication.cfc` are excluded by AAP §0.2.2.3 and `org/Hibachi/HibachiAuthenticationService.cfc`
+ * is framework code this slice must never carry forward (AAP §0.8.3.2). The seam takes a resolver the
+ * DEPLOYMENT wrote — from its gateway authorizer, its own edge service, or whatever else it already
+ * trusts — and calls it. Deny-all remains the answer until it does.
+ *
+ * ⚠️ REGISTRATION IS DELIBERATELY NOT REVOCABLE AND NOT RE-POINTABLE. A second call raises rather than
+ * replacing the first: two modules each believing they own the gate is a configuration fault, and
+ * silently letting the last one win is how a deployment ends up enforcing a resolver it did not
+ * intend. Nothing in this subtree calls it, so a graph built by this port alone stays fail-closed.
+ * ================================================================================================== */
+
+/**
+ * The one module-scope wiring cell this module declares. Holds a resolver, never a context.
+ *
+ * A `const` object with one mutable field rather than a mutable binding, so nothing can re-point the
+ * binding itself, matching the treatment `../config/container.ts` gives its memoized graph.
+ */
+const deploymentAuthorization: { resolve: CatalogAuthorizationResolver | undefined } = {
+  resolve: undefined,
+};
+
+/** The message a second registration reports, declared once so the test and the throw agree. */
+const AUTHORIZATION_RESOLVER_ALREADY_REGISTERED =
+  'A request authorisation resolver is already registered. Register exactly one, during ' +
+  'initialisation, so a single declaration owns the catalog gate.';
+
+/**
+ * Registers the deployment's per-invocation authorisation resolver for every shipped entry point.
+ *
+ * A deployment calls this ONCE, from its own initialisation path — typically a thin entry module that
+ * requires the packaged artifact and re-exports its `handler` — before the first invocation is served.
+ * Every entry point in this folder reads the registered resolver through
+ * {@link resolveRequestAuthorization} on each invocation, so a resolver registered after the graph was
+ * built is still honoured and no principal is ever captured at build time.
+ *
+ * @param resolver the deployment's resolver; it must answer for the invocation it is handed and must
+ *   NOT be a memoized context. Returning {@link resolveFailClosedAuthorization}'s deny-all context for
+ *   a request it cannot place is the correct fail-closed answer.
+ * @throws {DomainError} when a resolver is already registered — see §8.1.
+ */
+export function registerRequestAuthorizationResolver(resolver: CatalogAuthorizationResolver): void {
+  if (deploymentAuthorization.resolve !== undefined) {
+    throw new DomainError(AUTHORIZATION_RESOLVER_ALREADY_REGISTERED);
+  }
+
+  deploymentAuthorization.resolve = resolver;
+}
+
+/**
+ * Discards the registered resolver.
+ *
+ * ⚠️ IT EXISTS FOR THE SUITE, AND ITS SHAPE IS WHAT KEEPS THAT HONEST. A registration that could not
+ * be undone would make the seam untestable in a single module registry, so `test/handlers/**` clears
+ * it between cases. It resets to ABSENT — the fail-closed state — and can therefore never be used to
+ * install a principal or to relax a gate; the only thing it can do is take a gate away.
+ */
+export function clearRequestAuthorizationResolver(): void {
+  deploymentAuthorization.resolve = undefined;
+}
+
+/**
+ * The resolver every shipped entry point gates on, evaluated once per invocation.
+ *
+ * ⭐ THE INDIRECTION IS THE POINT. Reading the cell HERE — inside the call, not when the handler was
+ * composed — is what lets a deployment register during initialisation while the graph is built at
+ * module load, and what guarantees that no context outlives the invocation that produced it.
+ *
+ * @param request the invocation's own request slice, forwarded to the registered resolver unchanged
+ * @returns the deployment's context for this invocation, or the constant deny-all context when no
+ *   resolver is registered
+ */
+export function resolveRequestAuthorization(
+  request: CatalogAuthorizationRequest,
+): RequestAuthorizationContext {
+  const resolve = deploymentAuthorization.resolve;
+
+  return resolve === undefined ? FAIL_CLOSED_AUTHORIZATION : resolve(request);
+}

@@ -136,7 +136,7 @@
  * caller-supplied table name checked against three literals — never in file content. Parameterising
  * here is ordinary standing compliance, not a declared exception, and must not be labelled as one.
  *
- * TODO(parity) D22 — `org/Hibachi/HibachiDAO.cfc:L140` INTERPOLATES THE **LOGICAL** ENTITY NAME, AND
+ * TODO(parity) the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] — `org/Hibachi/HibachiDAO.cfc:L140` INTERPOLATES THE **LOGICAL** ENTITY NAME, AND
  * THAT IS CORRECT AS WRITTEN. The statement is expressed over the mapped object graph, where a
  * `Slatwall`-prefixed name is the legitimate vocabulary; the prefixing itself happens at five sites
  * in that same file, `getSmartList` at `:L104-L106` among them. `getEntityName()`
@@ -144,7 +144,7 @@
  * `SwProduct` is what arrives at this boundary. A native statement can only carry the physical name,
  * so the translation is a whitelist LOOKUP — never a prefix concatenation, which applied to a
  * physical name would fabricate a table that does not exist. `assertTableName` in ./QueryRunner
- * performs the normalisation and holds the whole name-mapping table; D22's register home is
+ * performs the normalisation and holds the whole name-mapping table; the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132]'s register home is
  * ../../ports/repositories/SkuRepository, and this file neither owns the entry nor restates it. It
  * states the consequence and no more: never "fix" HQL entity names to `Sw*`, and never assume a
  * logical name works in native SQL.
@@ -205,10 +205,10 @@
  *     figure anywhere (IR-12).
  *
  * THIS FILE MINTS NO DEFECT AND NO MISMATCH IDENTIFIER, and no global closure claim is made here:
- * the register is stated canonically, and only once, in the header of
- * `src/ports/repositories/SkuRepository.ts` (AAP 0.6.7's frozen source range D1-D21, plus the
- * source extension D22 and the three contract corrections D23, D24 and D25, with no D26 or beyond;
- * and AAP 0.6.6's M1-M8 plus M9, with no M10 or beyond). It CITES D22, D18, M6, M7 and M8, and
+ * the two registers are stated canonically, and only once, in the header of
+ * `src/ports/repositories/SkuRepository.ts`, and BOTH ARE FROZEN AT THE AAP's OWN BOUNDS — AAP
+ * 0.6.7's D1-D21 and AAP 0.6.6's M1-M8. Nothing in this port mints an identifier beyond either
+ * range; a further source observation is recorded by its `path:Lnnn` locator instead. It CITES the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132], D18, M6, M7 and M8, and
  * records every other finding by `path:Lnnn` locator alone.
  * ================================================================================================
  * */
@@ -271,88 +271,49 @@ const URL_TITLE_TABLES: ReadonlySet<PhysicalTableName> = new Set<PhysicalTableNa
 ]);
 
 /* ================================================================================================
- * ⭐ SEC-HARDENING (D18-CLASS) — THE LOCKING READ THAT CLOSES REVIEW FINDING F6 (CWE-367)
+ * ⛔ THE LOCKING READ IS WITHDRAWN — THE CHECK-THEN-WRITE RACE IS CARRIED AND FLAGGED
  * ================================================================================================
- * THE DEFECT, STATED PLAINLY. Both probes below are the READ half of a check-then-write. A caller
- * reads "no other row holds this value", then writes. Two callers interleaving between the read and
- * the write both read "free" and both write, and the port reports both saves as valid. That is the
- * legacy exposure too, and for five of the seven in-scope uniqueness rules the legacy still lost
- * nothing, because a `unique="true"` column stood behind the check and the second write was refused
- * by the database. For the OTHER TWO — `model/validation/Option.json:L3` (`optionCode`) and
- * `model/validation/OptionGroup.json:L4` (`optionGroupCode`), neither of which has a `unique="true"`
- * column behind it — nothing refused the second write anywhere, in the legacy or in this port.
+ * A revision of this file appended `FOR UPDATE` to both probes below whenever the instance was
+ * boundary-scoped, behind a `lockingReads` construction option and a `LOCKING_READ_SUFFIX` constant, and
+ * declared it "D18-CLASS". All of it is gone: the option, the constant, the private flag and the
+ * `applyLockingRead` helper. Both probes now emit exactly the statement
+ * `org/Hibachi/HibachiDAO.cfc:L140` and `model/dao/DataDAO.cfc:L122-L124` compose.
  *
- * WHY A LOCKING READ AND NOT A UNIQUE INDEX. Adding the two missing constraints is the obvious repair
- * and it is FORBIDDEN: AAP §0.2.2.5 places schema migration outside this refactoring entirely — "the
- * `Sw*` tables are read and written as they are" — so no DDL may be authored. Review finding F6 names
- * the alternative in its own guidance, "database unique indexes/constraints OR EQUIVALENT LOCKING",
- * and locking is the half that is available without touching the schema.
+ * ⛔ WHY, GIVEN THAT THE ARGUMENT FOR IT WAS A GOOD ONE. It was licensed on the ground that `FOR UPDATE`
+ * returns the same rows and only changes the ORDER in which two concurrent transactions proceed, so
+ * nothing single-threaded can observe it. That is true, and it is still not enough: AAP §0.6.7.7 declares
+ * exactly ONE departure from behavioural preservation in this port — D18, the importer's parameterised
+ * SQL — and it declares it so that a reviewer diffing behaviour has exactly one entry to check. The
+ * statement text of a ported read is observable, a lock-wait is observable under concurrency, and
+ * AAP §0.8.2 Guideline 4 admits no proportionality test. AAP §0.6.7 mandates preserve-and-annotate.
  *
- * ⭐ WHY THIS IS D18-CLASS AND NOT AN INVENTED ENHANCEMENT. Two independent arguments, either of which
- * would carry it:
+ * ⚠️ SO THE DEFECT IS FLAGGED. Both probes are the READ half of a check-then-write (CWE-367). A caller
+ * reads "no other row holds this value", then writes. Two callers interleaving between the read and the
+ * write both read "free" and both write, and this port reports both saves as valid. That is the legacy
+ * exposure too, and its severity divides by rule:
  *
- *   1. IT CHANGES NO OUTCOME FOR ANY INPUT THE LEGACY ACCEPTED. `FOR UPDATE` returns exactly the rows
- *      the same statement returns without it — the projection, the predicate, the row limit and the
- *      verdict are identical. Its only effect is on the ORDER in which two concurrent transactions
- *      proceed: one waits for the other to settle instead of reading past it. Nothing single-threaded
- *      can observe the difference, which is the precise licensing property D18 (AAP §0.6.7.7)
- *      establishes — a divergence that removes a flaw class without changing an outcome.
+ *   • FIVE of the seven in-scope uniqueness rules have a `unique="true"` column standing behind them, so
+ *     the database refuses the second write. `../mysql/QueryRunner.ts` translates MySQL error 1062 into
+ *     `UniqueConstraintViolationError`, so a lost race is REPORTED rather than surfacing as a driver
+ *     error — that translation is unrelated to this withdrawal and stands.
+ *   • THE OTHER TWO — `model/validation/Option.json:L3` (`optionCode`) and
+ *     `model/validation/OptionGroup.json:L4` (`optionGroupCode`) — have NO such column, so nothing
+ *     refuses the second write anywhere, in the legacy or here.
  *
- *   2. THE LEGACY FRAMEWORK TAKES THE SAME KIND OF LOCK ON THE SAME KIND OF PATH. The immediate
- *      sibling of the ported member — `updateRecordSortOrder` at `org/Hibachi/HibachiDAO.cfc:L170`,
- *      three functions below `isUniqueProperty` in the same file — wraps its own read-then-write in
- *      `<cflock name="updateSortOrder#arguments.tableName#">` at `:L182` around a `<cftransaction>` at
- *      `:L183`. Serializing a read-then-write is therefore an idiom this codebase already uses, and
- *      reproducing it is closer to the original than omitting it. No timeout value is carried across
- *      from that site: the legacy number belongs to a CFML application-scope lock with no MySQL
- *      counterpart, and inventing one here would violate AAP §0.7.3 S9. The database's own configured
- *      lock-wait behaviour applies, unnamed and unmodified.
+ * ⭐ WHERE IT CAN LEGITIMATELY BE CLOSED. Adding the two missing unique indexes is the obvious repair and
+ * AAP §0.2.2.5 places schema migration outside this refactoring entirely — "the `Sw*` tables are read and
+ * written as they are" — so no DDL may be authored here. Closing it is therefore a schema-level decision
+ * the operator makes, and the residue is recorded at all three sites that describe the guarantee:
+ * `src/ports/UniquePropertyPort.ts`, `src/validation/rules/option.rules.ts` and
+ * `src/validation/rules/optionGroup.rules.ts`.
  *
- * ⚠️ IT IS OPT-IN, AND THE DEFAULT INSTANCE IS UNCHANGED. A `FOR UPDATE` outside a transaction is
- * acquired and released immediately, so on the pool-bound path it would buy no protection while still
- * altering the statement text of a ported read. The pool-bound instance the constructor produces is
- * therefore left at exact legacy parity, and {@link UniquePropertyChecker.withExecutor} — which exists
- * for no purpose other than adopting a boundary's executor — produces the locking variant. Serializing
- * a check against a write is only meaningful when the write is inside the boundary that did the check,
- * which is exactly the condition `withExecutor` marks.
- *
- * ⚠️ WHAT REMAINS OPEN, FLAGGED RATHER THAN CLAIMED CLOSED (AAP §0.7.3 S8). A write issued OUTSIDE any
- * boundary is not serialized against anything, and for `optionCode` and `optionGroupCode` no schema
- * constraint exists to catch it. That residue is a consequence of AAP §0.2.2.5 and is recorded at all
- * three sites that describe the guarantee: `src/ports/UniquePropertyPort.ts`,
- * `src/validation/rules/option.rules.ts` and `src/validation/rules/optionGroup.rules.ts`.
+ * ⚠️ WHAT IS *NOT* WITHDRAWN, SO THE TWO ARE NOT CONFUSED. {@link UniquePropertyChecker.withExecutor}
+ * still re-binds this checker to a boundary's executor, and that is M6 rather than hardening: it is what
+ * makes a uniqueness check performed mid-save observe the siblings that save has already written, which
+ * the legacy ORM session did through its own flush. Without it a SKU batch would be judged against a
+ * table that does not yet contain its own siblings — a silently different answer. It simply no longer
+ * also locks.
  * ============================================================================================== */
-
-/**
- * The clause appended to a uniqueness probe when the instance is boundary-scoped.
- *
- * A single module constant rather than the literal written into two statement builders, because the
- * two probes must agree exactly and a second spelling is a second chance to disagree. MySQL requires
- * it AFTER the row limit, which is why it is appended last at both sites and why the leading space is
- * part of the constant.
- */
-const LOCKING_READ_SUFFIX = ' FOR UPDATE';
-
-/**
- * Construction options for {@link UniquePropertyChecker}.
- *
- * One member, and it exists so the locking behaviour is a DECLARED property of an instance rather
- * than something inferred from the executor's shape. Inference is not available even in principle:
- * `QueryRunner` and a boundary's `TransactionalSqlExecutor` are structurally identical — both carry
- * `execute` and `executeMutation` — so no run-time test can tell a pooled executor from a
- * transaction-scoped one. The caller knows; the callee cannot.
- */
-export interface UniquePropertyCheckerOptions {
-  /**
-   * Whether uniqueness probes take a locking read.
-   *
-   * Omitted or false means the ported statement is emitted byte-for-byte as
-   * `org/Hibachi/HibachiDAO.cfc:L140` composes it. True appends {@link LOCKING_READ_SUFFIX}, which is
-   * only useful — and only safe to rely on — when the executor is scoped to a transaction that will
-   * also perform the write. See the SEC-HARDENING block above.
-   */
-  readonly lockingReads?: boolean;
-}
 
 /**
  * The MySQL implementation of application-side uniqueness checking.
@@ -410,39 +371,15 @@ export class UniquePropertyChecker implements UniquePropertyPort {
   private readonly executor: SqlExecutor;
 
   /**
-   * Whether this instance's probes take a locking read — see the SEC-HARDENING block above.
-   *
-   * `private readonly` for the same reason the executor is: it is decided when the instance is built
-   * and no later act changes it, so two instances differing in this respect are two objects rather
-   * than one object in two states. That is what lets a pool-bound checker and a boundary-scoped one
-   * coexist on a warm container without either being able to affect the other (M7).
-   */
-  private readonly lockingReads: boolean;
-
-  /**
    * @param executor - the parameterized-execution boundary every statement runs through, supplied by
    *   the composition root. This class never builds one, never reads a credential and never resolves
    *   a connection target.
-   * @param options - optional construction settings. Omitting them yields the exact legacy statement,
-   *   which is why every existing call site that passes only an executor is unaffected.
+   *
+   * ⛔ THERE IS NO SECOND PARAMETER. A `UniquePropertyCheckerOptions` carrying a `lockingReads` flag
+   * occupied that position for one revision; see THE LOCKING READ IS WITHDRAWN above.
    */
-  public constructor(executor: SqlExecutor, options?: UniquePropertyCheckerOptions) {
+  public constructor(executor: SqlExecutor) {
     this.executor = executor;
-    this.lockingReads = options?.lockingReads ?? false;
-  }
-
-  /**
-   * Appends the locking clause when, and only when, this instance is the boundary-scoped variant.
-   *
-   * Private and trivial, but factored out so that the decision is made in ONE place for BOTH probes.
-   * The two statements below differ in projection, predicate and bound values; they must not also be
-   * able to differ in whether they lock.
-   *
-   * @param sql - the ported statement text, already complete including its row limit.
-   * @returns the statement text, with the locking clause appended only for a locking instance.
-   */
-  private applyLockingRead(sql: string): string {
-    return this.lockingReads ? `${sql}${LOCKING_READ_SUFFIX}` : sql;
   }
 
   /**
@@ -484,24 +421,14 @@ export class UniquePropertyChecker implements UniquePropertyPort {
    * a silently different answer from the legacy, where the ORM session made the pending rows visible.
    * Bound to `scope.executor` it sees them. That is the whole of M6.
    *
-   * ⭐ SEC-HARDENING (D18-CLASS) — THE RETURNED INSTANCE ALSO TAKES A LOCKING READ, WHICH IS WHAT
-   * CLOSES REVIEW FINDING F6 (CWE-367). Adopting the boundary's connection made the check see the
-   * boundary's own pending rows (M6); it did NOT stop a CONCURRENT boundary reading past this one
-   * between its check and its write. Both probes are read-then-write halves, so both are serialized
-   * here by appending `FOR UPDATE` — see the block above {@link UniquePropertyCheckerOptions} for the
-   * adjudication in full, including why the schema-level repair is forbidden by AAP §0.2.2.5 and why
-   * the legacy framework's own `<cflock>` at `org/Hibachi/HibachiDAO.cfc:L182` makes this a
-   * reproduction rather than an invention.
-   *
-   * ⚠️ WHICH MAKES THE CHOICE OF THIS MEMBER — RATHER THAN THE CONSTRUCTOR — LOAD-BEARING. Locking is
-   * attached HERE because this member's entire reason for existing is that its argument is a
-   * boundary's `scope.executor`, and a locking read is only meaningful inside a boundary. A caller
-   * that genuinely needs a boundary-scoped checker WITHOUT locking can still build one directly, by
-   * passing the executor to the constructor and omitting the option; nothing in the port forces the
-   * pairing, and no caller in this subtree needs to break it.
+   * ⛔ AND THE RETURNED INSTANCE DOES *NOT* ALSO TAKE A LOCKING READ. It did for one revision, and that
+   * is withdrawn — see THE LOCKING READ IS WITHDRAWN above. Adopting the boundary's connection makes the
+   * check see the boundary's own pending rows (M6), which is this member's whole purpose; it does NOT
+   * stop a CONCURRENT boundary reading past this one between its check and its write, and that residual
+   * CWE-367 race is carried and flagged rather than closed.
    */
   public withExecutor(executor: SqlExecutor): UniquePropertyChecker {
-    return new UniquePropertyChecker(executor, { lockingReads: true });
+    return new UniquePropertyChecker(executor);
   }
 
   /**
@@ -590,7 +517,7 @@ export class UniquePropertyChecker implements UniquePropertyPort {
 
     /*
      * The three identifiers of `:L140`, each resolved against the closed schema whitelist before any
-     * statement text exists. `assertTableName` is also where D22 is discharged: it accepts the
+     * statement text exists. `assertTableName` is also where the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] is discharged: it accepts the
      * logical name this entity reports and emits the physical name a native statement requires.
      */
     const table = assertTableName(entityName);
@@ -613,15 +540,9 @@ export class UniquePropertyChecker implements UniquePropertyPort {
      * The `1` is a projection literal authored here, not caller data, so it is not a value position
      * S2 would require a placeholder for — the two placeholders below remain the only ones.
      */
-    /*
-     * ⭐ SEC-HARDENING (D18-CLASS) — F6. A boundary-scoped instance appends `FOR UPDATE` here, which
-     * makes this read serialize against a concurrent boundary's read-then-write instead of racing it.
-     * The pool-bound instance appends nothing and emits the statement above verbatim. Applied AFTER
-     * the row limit because MySQL requires that order.
-     */
-    const sql = this.applyLockingRead(
-      `SELECT 1 FROM ${table} e WHERE e.${column} = ? AND e.${idColumn} != ? LIMIT 1`,
-    );
+    /* ⛔ NOTHING IS APPENDED. A boundary-scoped instance appended `FOR UPDATE` here for one revision; see
+     * THE LOCKING READ IS WITHDRAWN above for why, and for the CWE-367 race that is carried. */
+    const sql = `SELECT 1 FROM ${table} e WHERE e.${column} = ? AND e.${idColumn} != ? LIMIT 1`;
 
     /*
      * TR-4 — the bound list is assembled in the legacy sequence: the compared VALUE first, the
@@ -671,7 +592,7 @@ export class UniquePropertyChecker implements UniquePropertyPort {
    * or is being renamed, so there is no row to exclude. `model/dao/DataDAO.cfc:L122-L124` is a plain
    * existence check with a single bound value, and so is this. The statement also carries no alias,
    * because the legacy statement carries none — and, being a native statement rather than one over the
-   * mapped object graph, it already speaks in physical table names, so D22 does not arise on this path
+   * mapped object graph, it already speaks in physical table names, so the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] does not arise on this path
    * the way it does on the other. What both probes DO share is their projection: each selects a
    * constant and stops at the first match, for the reason recorded at the statement itself.
    *
@@ -739,11 +660,9 @@ export class UniquePropertyChecker implements UniquePropertyPort {
      * resolved and asserted above, because the WHERE clause names it and a table that reached the
      * whitelist without declaring it must still fail loudly.
      */
-    /*
-     * ⭐ SEC-HARDENING (D18-CLASS) — F6, the same clause for the same reason as the sibling probe. This
-     * one matters for `Brand.urlTitle`, which `src/util/urlTitle.ts` probes in a loop before a save.
-     */
-    const sql = this.applyLockingRead(`SELECT 1 FROM ${table} WHERE ${column} = ? LIMIT 1`);
+    /* ⛔ NOTHING IS APPENDED HERE EITHER, for the same reason as the sibling probe. This one matters most
+     * for `Brand.urlTitle`, which `src/util/urlTitle.ts` probes in an unbounded loop before a save. */
+    const sql = `SELECT 1 FROM ${table} WHERE ${column} = ? LIMIT 1`;
 
     const rows: MySqlRow[] = await this.executor.execute(sql, [value]);
 

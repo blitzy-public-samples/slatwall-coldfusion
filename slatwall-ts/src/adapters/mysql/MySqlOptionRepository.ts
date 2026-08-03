@@ -126,15 +126,12 @@
  * ============================================================================================== */
 
 import { DataIntegrityError, DomainError } from '../../errors/DomainError';
-import {
-  assertColumnName,
-  assertTableName,
-  prepareBoundedRead,
-  settleBoundedRead,
-} from './QueryRunner';
+import { assertColumnName, assertTableName } from './QueryRunner';
 import { mapRows, mapUnusedOptionGroupRow, mapUnusedOptionRow } from './rowMappers';
 
-import type { BoundedReadResult, BoundedReadWindow } from '../../ports/repositories/BoundedRead';
+/* No bounded-read helper import and no `../../ports/repositories/BoundedRead` import remain: the two
+ * windowed members this adapter implemented have been withdrawn, and the port no longer declares
+ * them. */
 import type { SqlExecutor } from './QueryRunner';
 import type { MySqlRow } from './rowMappers';
 import type {
@@ -679,46 +676,26 @@ export class MySqlOptionRepository implements OptionRepository {
     return mapRows(rows, toUnusedOptionRow);
   }
 
-  /**
-   * The windowed form of {@link MySqlOptionRepository.findUnusedOptions}.
+  /*
+   * ⛔ THE WINDOWED FORM OF `findUnusedOptions` STOOD HERE, AND ITS SIBLING BELOW STOOD AT THE FOOT OF
+   * THE CLASS. Both have been withdrawn. Each validated a caller's window, reused the same list
+   * splitting, placeholder list and statement as its unbounded partner, and appended
+   * `LIMIT ? OFFSET ?` after the legacy `ORDER BY` with both numbers bound rather than interpolated.
    *
-   * NOTHING ABOUT THE MATCH SET IS RE-DECIDED HERE. The list splitting, the placeholder list, the
-   * statement and the bind order all come from the same three collaborators the unbounded member uses,
-   * called in the same sequence, so the pair cannot drift into filtering differently.
+   * ⭐ THE GROUND IS NO PRODUCTION CALLER, AND A METHOD IS THE ONE SHAPE OF DEAD CODE A BUNDLER CANNOT
+   * REMOVE. `../../config/**` instantiates this class in every artifact that reads options, so two
+   * unreachable methods travelled in those bundles. `../../ports/repositories/OptionRepository.ts`
+   * records the port-side withdrawal and the chain behind it: the two service members that would have
+   * called these were themselves withdrawn to keep `OptionService` at the seven members AAP §0.4.1.8
+   * fixes, which left both implementations reachable only from their own tests.
    *
-   * ⚠️ THE BIND ORDER TRAP IS STILL LIVE, AND THE WINDOW SITS AFTER IT. The group identifiers bind
-   * FIRST and the product identifier LAST — statement order, the reverse of the argument order, per the
-   * TODO(parity) on the unbounded member — and the two window values bind after both, in positions the
-   * legacy statement never used. The window therefore cannot disturb the legacy sequence (TR-4).
-   *
-   * THE WINDOW IS APPENDED AFTER THE `ORDER BY`, which is where a `LIMIT` must go and also where it is
-   * meaningful: `model/dao/OptionDAO.cfc:L90-L92` orders by group name then option name, so the window
-   * selects a deterministic slice rather than an arbitrary one.
-   *
-   * @param window - the caller's ceiling and zero-based offset; validated, never defaulted.
-   * @param productID - as on the unbounded member.
-   * @param existingOptionGroupIDList - as on the unbounded member, empty string included.
-   * @returns the window's rows in the legacy order, and whether a further row lies past it.
-   * @throws {DomainError} for an unusable window, or a projected column that does not hold text.
-   * @throws {DataIntegrityError} when the projection and the row reader have drifted apart.
+   * ⚠️ WHAT SURVIVES UNCHANGED IS EVERYTHING THAT DECIDES A ROW. `splitOptionGroupIdList`,
+   * `toPlaceholderList`, `composeUnusedOptionsStatement` and `composeUnusedOptionGroupsStatement` are
+   * all still here and still called by the two unbounded members, because the windowed pair never held
+   * a copy of any of them. So the `IN` / `NOT IN` polarity, the empty-list placeholder, the two sort
+   * terms here against one in the sibling, and the statement-order binding — group identifiers first,
+   * product identifier last — are exactly as they were. No `LIMIT` remains anywhere in this adapter.
    */
-  public async findUnusedOptionsBounded(
-    window: BoundedReadWindow,
-    productID: string,
-    existingOptionGroupIDList: string,
-  ): Promise<BoundedReadResult<UnusedOptionRow>> {
-    const bound = prepareBoundedRead(window, 'MySqlOptionRepository.findUnusedOptionsBounded');
-    const optionGroupIds = splitOptionGroupIdList(existingOptionGroupIDList);
-    const sql = composeUnusedOptionsStatement(toPlaceholderList(optionGroupIds));
-
-    const rows = await this.executor.execute(
-      `${sql}
-  LIMIT ${BIND_PLACEHOLDER} OFFSET ${BIND_PLACEHOLDER}`,
-      [...optionGroupIds, productID, ...bound.boundValues],
-    );
-
-    return settleBoundedRead(mapRows(rows, toUnusedOptionRow), bound.limit);
-  }
 
   /**
    * Lists the option groups not yet present on a product, as drop-down rows.
@@ -767,39 +744,10 @@ export class MySqlOptionRepository implements OptionRepository {
     return mapRows(rows, mapUnusedOptionGroupRow);
   }
 
-  /**
-   * The windowed form of {@link MySqlOptionRepository.findUnusedOptionGroups}.
-   *
-   * ⚠️ THE `NOT IN` POLARITY IS THE WHOLE REASON A WINDOW IS USEFUL HERE. The unbounded member returns
-   * EVERY option group for a product that has none yet — the mirror image of its sibling, per the
-   * TODO(parity) above — so this is the member whose result is largest exactly when a caller has least
-   * information. The polarity is untouched: the statement, the placeholder list and the bind order all
-   * come from the same collaborators the unbounded member calls.
-   *
-   * The empty-list input still produces one placeholder bound to the empty string, still matches every
-   * real identifier, and is still neither guarded nor special-cased. The window is appended after
-   * `model/dao/OptionDAO.cfc:L115-L117`'s single sort term, so the slice is deterministic.
-   *
-   * @param window - the caller's ceiling and zero-based offset; validated, never defaulted.
-   * @param existingOptionGroupIDList - as on the unbounded member, empty string included.
-   * @returns the window's rows in name order, and whether a further row lies past it.
-   * @throws {DomainError} for an unusable window, or a projected column that does not hold text.
-   * @throws {DataIntegrityError} when the projection and the row reader have drifted apart.
+  /*
+   * ⛔ `findUnusedOptionGroupsBounded(window, existingOptionGroupIDList)` STOOD HERE AND HAS BEEN
+   * WITHDRAWN. The reasoning is recorded once, where its sibling stood, and is not restated. The
+   * unbounded member above is untouched — `NOT IN`, one sort term, and every option group returned for
+   * a product that has none yet.
    */
-  public async findUnusedOptionGroupsBounded(
-    window: BoundedReadWindow,
-    existingOptionGroupIDList: string,
-  ): Promise<BoundedReadResult<UnusedOptionGroupRow>> {
-    const bound = prepareBoundedRead(window, 'MySqlOptionRepository.findUnusedOptionGroupsBounded');
-    const optionGroupIds = splitOptionGroupIdList(existingOptionGroupIDList);
-    const sql = composeUnusedOptionGroupsStatement(toPlaceholderList(optionGroupIds));
-
-    const rows = await this.executor.execute(
-      `${sql}
-  LIMIT ${BIND_PLACEHOLDER} OFFSET ${BIND_PLACEHOLDER}`,
-      [...optionGroupIds, ...bound.boundValues],
-    );
-
-    return settleBoundedRead(mapRows(rows, mapUnusedOptionGroupRow), bound.limit);
-  }
 }

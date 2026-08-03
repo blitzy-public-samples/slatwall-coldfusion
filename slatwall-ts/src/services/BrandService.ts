@@ -194,8 +194,6 @@ import type {
 } from '../ports/repositories/BrandRepository';
 import { createUniqueURLTitle } from '../util/urlTitle';
 import type { UniqueValueProbe } from '../util/urlTitle';
-import { assertUrlTitleProbeBudget, boundUniqueValueProbe } from '../util/urlTitleProbeBudget';
-import type { UrlTitleProbeBudget } from '../util/urlTitleProbeBudget';
 import type { ValidationContext } from '../validation/Validator';
 import type { BrandValidationSubject } from '../validation/rules/brand.rules';
 import type { BaseService, BaseServiceEntity } from './BaseService';
@@ -568,31 +566,21 @@ export class BrandService {
    * resolve to the LOCAL overrides at `model/service/HibachiService.cfc:L86` and `:L68` (IR-8). It
    * is INJECTED, never extended (R3), and it owns the populate/validate/persist sequence and the
    * rule sets ported from `model/validation/Brand.json`; this service reproduces none of that.
-   * @param urlTitleProbeBudget - OPTIONAL, and there is no default (review finding F5, SEC-14). Supply
-   * it only if this deployment has measured how many uniqueness probes one URL-title derivation may
-   * issue; omit it and the derivation probes without a ceiling, exactly as
-   * `model/service/DataService.cfc:L64` does. It is LAST so the two established parameters keep their
-   * positions, and it is validated at construction rather than at first use. See
-   * `../util/urlTitleProbeBudget.ts` for why an optional collaborator is not the fabricated ceiling
-   * that was once withdrawn from `../util/urlTitle.ts`.
+   *
+   * ⛔ AND THERE IS NO THIRD PARAMETER. An optional `urlTitleProbeBudget` occupied that position for one
+   * revision — a ceiling on how many uniqueness probes one URL-title derivation could issue, validated
+   * here at construction — and it is WITHDRAWN. An optional ceiling obliges nobody to invent a figure,
+   * but it still adds a capability the source does not describe (AAP §0.7.3 S9, IR-12) and still refuses
+   * derivations the legacy completed, and AAP §0.6.7.7 declares exactly ONE behavioural departure in this
+   * port. So this constructor takes exactly these two, both required, and the derivation below probes
+   * without a ceiling exactly as `model/service/DataService.cfc:L64` does. The carried exposure is stated
+   * where the derivation is: an adversary who can hold titles can make one save probe indefinitely
+   * (CWE-400), unrepaired, as the legacy leaves it.
    */
   public constructor(
     private readonly brandRepository: BrandRepository,
     private readonly baseService: BrandBaseService,
-    private readonly urlTitleProbeBudget?: UrlTitleProbeBudget,
-  ) {
-    /*
-     * ⭐ SEC-HARDENING (D18-CLASS) — SEC-14, review finding F5 (CWE-400). Fail fast on a mis-wired
-     * ceiling rather than on the first save, for the reasons `../util/urlTitleProbeBudget.ts` gives —
-     * chiefly that a `NaN` figure would admit every derivation while appearing configured. An ABSENT
-     * budget is the documented default and is deliberately not checked: it is how a deployment asks for
-     * `model/service/DataService.cfc:L64`'s unbounded probing, which is what the two-argument
-     * construction throughout this port's tests and examples continues to get.
-     */
-    if (urlTitleProbeBudget !== undefined) {
-      assertUrlTitleProbeBudget(urlTitleProbeBudget);
-    }
-  }
+  ) {}
 
   /**
    * Assigns a unique URL title when none was supplied, then delegates the save.
@@ -825,45 +813,29 @@ export class BrandService {
    * transformation belongs to `createUniqueURLTitle`.
    * @returns A URL title free on `SwBrand`, suffixed `-2`, `-3`, … on successive collisions.
    *
-   * THE UTILITY STILL TAKES THREE ARGUMENTS, AND THERE IS STILL DELIBERATELY NO FOURTH — BUT THE
-   * LOOP IS NO LONGER NECESSARILY UNBOUNDED, AND THE DIFFERENCE IS WHERE THE BOUND LIVES. The attempt
+   * THE UTILITY TAKES THREE ARGUMENTS AND THERE IS NO FOURTH, AND THE LOOP IS UNBOUNDED. The attempt
    * budget an earlier checkpoint passed through here as a fourth argument stays removed, and
-   * `../util/urlTitle` records why: a REQUIRED ceiling relocates a fabricated number rather than
-   * avoiding it. Review finding F5 (CWE-400) reinstated the bound in the one place that objection does
-   * not reach — wrapped around the PROBE, optional, with no default — so `createUniqueURLTitle` keeps
-   * its three parameters and its unbounded `while (!unique)` untouched. See
-   * `../util/urlTitleProbeBudget.ts`.
+   * `../util/urlTitle` records the three authorities behind that removal, the decisive one being that a
+   * REQUIRED ceiling relocates a fabricated number instead of avoiding it. ⛔ A LATER REVISION REINSTATED
+   * THE BOUND AROUND THE PROBE — optional, no default, wired through a third constructor parameter — AND
+   * THAT IS WITHDRAWN TOO: an optional ceiling obliges nobody to invent a figure, but it still adds a
+   * capability the source does not describe (AAP §0.7.3 S9, IR-12) and still refuses derivations the
+   * legacy completed, and AAP §0.6.7.7 declares exactly one departure in this port. So the probe is handed
+   * over UNWRAPPED and the derivation probes exactly as `:L64` does.
    *
-   * Whatever the probe rejects with propagates unchanged — this member still adds no failure of its
-   * own, matching the legacy member's `returntype="string"`. When a budget IS wired, the refusal is
-   * the probe's, arriving through that same declared channel.
+   * ⚠️ THE CARRIED EXPOSURE, STATED RATHER THAN CLOSED (CWE-400). An adversary able to hold `SwBrand`
+   * URL titles can make one save issue probes indefinitely, because `while (!unique)` has no ceiling.
+   * That is the legacy's behaviour at `model/service/DataService.cfc:L64` and it is preserved unrepaired
+   * (AAP §0.8.2 g4). Bounding it belongs to a separately authorised hardening scope, not to this
+   * extraction.
+   *
+   * Whatever the probe rejects with propagates unchanged — this member adds no failure of its own,
+   * matching the legacy member's `returntype="string"`.
    */
   private createUniqueBrandUrlTitle(titleString: string): Promise<string> {
     const probe: UniqueValueProbe = (_tableName, candidateUrlTitle) =>
       this.brandRepository.isUrlTitleAvailable(candidateUrlTitle);
 
-    /*
-     * ⭐ SEC-HARDENING (D18-CLASS) — SEC-14, review finding F5 (CWE-400). THE BOUND IS APPLIED TO THE
-     * PROBE, NOT TO THE ALGORITHM, WHICH IS WHY `../util/urlTitle.ts` IS UNCHANGED.
-     *
-     * The wrapper is created HERE, on every derivation, because it owns a probe counter and a counter
-     * shared between derivations would leak across invocations on a warm container and refuse a later
-     * legitimate save (mismatch M7). That is the same reason the probe itself is already documented as
-     * "created fresh on every derivation and never memoised" — the budget inherits that lifetime
-     * exactly.
-     *
-     * With no budget wired this is the identity: the unwrapped probe is passed, the loop at
-     * `model/service/DataService.cfc:L64` runs without a ceiling, and this member still adds no failure
-     * of its own. With one wired, the refusal arrives through the utility's own declared channel —
-     * "whatever the probe rejects with propagates unchanged" — so no signature, arity or return type
-     * changes anywhere (TR-1).
-     */
-    return createUniqueURLTitle(
-      titleString,
-      BRAND_TABLE_NAME,
-      this.urlTitleProbeBudget === undefined
-        ? probe
-        : boundUniqueValueProbe(probe, this.urlTitleProbeBudget),
-    );
+    return createUniqueURLTitle(titleString, BRAND_TABLE_NAME, probe);
   }
 }

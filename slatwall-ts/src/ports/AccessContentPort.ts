@@ -86,8 +86,7 @@
  * the migration requires. None of them is assigned a defect or mismatch number, and inventing an entry
  * would misrepresent the artifact trail: the register is stated canonically, and only once, in the
  * header of `src/ports/repositories/SkuRepository.ts` (AAP 0.6.7's frozen source range D1-D21, plus
- * the source extension D22 and the three contract corrections D23, D24 and D25, with no D26 or
- * beyond; and AAP 0.6.6's M1-M8 plus M9, with no M10 or beyond).
+ * BOTH FROZEN AT THE AAP's OWN BOUNDS — AAP 0.6.7's D1-D21 and AAP 0.6.6's M1-M8. Nothing in this port mints an identifier beyond either range; a further source observation is recorded by its `path:Lnnn` locator instead).
  *
  * --------------------------------------------------------------------------------------------
  * TODO(parity) AC-1 — THREE DISTINCT SKU-CODE STRATEGIES LIVE INSIDE ONE METHOD

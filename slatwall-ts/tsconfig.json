@@ -35,26 +35,33 @@
      *     security patches, functions on the runtime lose technical-support eligibility, and the
      *     runtime is removed from the console's creation list, though it stays selectable through
      *     the CLI, CloudFormation, SAM and CDK, and already-deployed functions remain invocable.
-     *   - Published AWS timelines CONFLICT on the subsequent hard gates, and THREE distinct sets
-     *     have been published. Every one is recorded, because picking a single set would assert a
-     *     certainty the sources do not support:
-     *       (i)   block create 2026-06-01, block update 2026-07-01 — the earliest AWS bulletin;
-     *       (ii)  block create 2026-08-31, block update 2026-09-30 — the "30 days / 60 days after
-     *             deprecation" cadence of the standard runtime-deprecation policy;
-     *       (iii) block create 2027-02-01, block update 2027-03-03 — the AWS runtimes table as
-     *             read on 2026-07-31.
-     *     THE CONFLICT HAS A KNOWN MECHANISM, WHICH IS WHY IT IS NOT A DOCUMENTATION DEFECT TO BE
-     *     RESOLVED HERE. AWS states that for some runtimes it is delaying the block-function-create
+     *   - THE CURRENT CONTROL-PLANE GATES, from the AWS runtimes table as read on 2026-08-03, are
+     *     a single schedule and are recorded here as one:
+     *       block function create  2027-02-01
+     *       block function update  2027-03-03
+     *     Both are still ahead. An `npm run build` NOTICE points here rather than restating them, so
+     *     there is exactly one copy of these dates in the subtree.
+     *   - TWO EARLIER SCHEDULES ARE OBSOLETE, AND ARE RETAINED ONLY AS SUPERSEDED HISTORY. An
+     *     earlier revision of this comment presented three sets as live, unsettled alternatives.
+     *     That framing has not survived contact with the calendar: both of the earlier pairs have
+     *     now elapsed WITHOUT taking effect, so they are not competing readings of a present fact —
+     *     they are previous revisions of a forecast that moved.
+     *       superseded  block create 2026-06-01, block update 2026-07-01 — the earliest AWS bulletin;
+     *       superseded  block create 2026-08-31, block update 2026-09-30 — the "30 days / 60 days
+     *                   after deprecation" cadence of the standard runtime-deprecation policy.
+     *     THE MECHANISM BEHIND THE REVISIONS IS KNOWN, WHICH IS WHY THE OLD PAIRS ARE MARKED RATHER
+     *     THAN DELETED. AWS states that for some runtimes it is delaying the block-function-create
      *     and block-function-update dates beyond the usual 30 and 60 days in response to customer
      *     feedback, that it will not begin blocking before the dates in its own tables, and that
-     *     those forecast dates are subject to change. The three sets are therefore successive
-     *     revisions of a moving forecast rather than contradictory readings of a fixed fact, and
-     *     they move LATER, never earlier. The only authority is the AWS runtimes table at the
-     *     moment of reading; this comment is a dated snapshot of it and nothing more.
-     *   - INVOCATION IS NEVER BLOCKED, on any of the three timelines. Every gate above is a
-     *     control-plane gate on creating or updating a function. That is the reason a stale date
-     *     here is a planning defect and not a correctness or availability defect for code already
-     *     deployed — and the reason correcting it changes no compiler option below.
+     *     those forecast dates are subject to change. The revisions therefore move LATER, never
+     *     earlier — which is what makes an out-of-date entry here a conservative error rather than a
+     *     dangerous one. The only authority is the AWS runtimes table AT THE MOMENT OF READING;
+     *     this comment is a dated snapshot of it and nothing more, and the date above is part of the
+     *     claim rather than decoration.
+     *   - INVOCATION IS NEVER BLOCKED, on this schedule or on either superseded one. Every gate
+     *     above is a control-plane gate on creating or updating a function. That is the reason a
+     *     stale date here is a planning defect and not a correctness or availability defect for code
+     *     already deployed — and the reason correcting it changes no compiler option below.
      *
      * WHY NOTHING HERE CHANGES. Node 20.x / `nodejs20.x` is the runtime the frozen plan specifies,
      * and AAP 0.5.5 resolves the conflict explicitly — "The pin stands." — while AAP 0.5.3.2

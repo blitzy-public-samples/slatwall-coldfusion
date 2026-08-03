@@ -119,7 +119,7 @@
  * the subtree.
  *
  * =================================================================================================
- * THE COMPONENT USES TWO NAMING CONVENTIONS FOR THE SAME TABLES (defect D22)
+ * THE COMPONENT USES TWO NAMING CONVENTIONS FOR THE SAME TABLES
  * =================================================================================================
  * TODO(parity): the divergence is INTRA-FILE, which is the sharpest form the finding takes, and it
  * is carried rather than reconciled. `model/dao/SkuDAO.cfc:L132` and `model/dao/SkuDAO.cfc:L135`
@@ -129,26 +129,31 @@
  * `org/Hibachi/HibachiDAO.cfc:L102-L106`, which is a mapping-layer convenience that native
  * statements do not receive. The conclusion for implementers is unchanged and must be carried:
  * never "fix" mapping-layer entity names to physical ones, and never assume a logical name works in
- * a native statement. Which convention each member's statement uses is stated on that member. D22 is
- * minted here and no further identifier is minted in this paragraph; the register's bounds and every
- * port-minted entry are enumerated ONCE, in the F27 block immediately below.
+ * a native statement. Which convention each member's statement uses is stated on that member. The
+ * divergence is annotated HERE, by its locator, and NO register identifier is minted for it; the two
+ * FROZEN register bounds are stated ONCE, in the block immediately below.
  *
  * =================================================================================================
- * ⚠️ F27 — THE REGISTERS ARE NOT "CLOSED", AND SAYING SO WAS A FALSE STATEMENT OF FACT
+ * ⚠️ THE TWO REGISTERS ARE THE AAP's, THEY ARE FROZEN, AND THIS PORT MINTS NO IDENTIFIER OF ITS OWN
  * =================================================================================================
- * This block previously ended "No new defect identifier is introduced — the register is closed at
- * D1-D22", and the sentence refuted itself: D22 is annotated immediately above it, and D22 is NOT an
- * AAP entry. The accurate position is stated here ONCE, because this is where the first port-minted
- * number is defined, and every other register note in the subtree now points at it rather than
- * restating a range.
+ * AAP §0.6.7 IS AUTHORITATIVE AND FROZEN AT **D1–D21** — twenty-one entries: three literal source
+ * TODOs (D8, D20, D21) plus eighteen defects surfaced during analysis. AAP §0.6.6 IS AUTHORITATIVE AND
+ * FROZEN AT **M1–M8**. No file in this port may amend either range, and none does.
  *
- *   AAP §0.6.7 IS AUTHORITATIVE AND FROZEN AT D1–D21 — twenty-one entries: three literal source
- *   TODOs (D8, D20, D21) plus eighteen defects surfaced during analysis. No file in this port may
- *   amend that range, and none does.
+ * ⛔ AND NO FILE IN THIS PORT MAY EXTEND EITHER RANGE EITHER. An earlier revision of this block minted
+ * four further defect numbers and one further mismatch number — for the intra-file naming divergence
+ * annotated immediately above, for the undeclared-argument forwarding at
+ * {@link SkuRepository.transactionExists}, for the `processImageUpload` return type, for
+ * `getFormattedOptionGroups`' name-keyed struct, and for CFML's unspecified struct iteration order —
+ * and declared a "live numbering" running past the frozen bounds. That was governance the AAP does not
+ * grant: §0.1.2.1 says the plan is "the FROZEN, agreed-upon source of truth — align code to it; never
+ * edit, weaken, or reinterpret it", and inventing register entries reinterprets it. Every one of those
+ * five numbers has been WITHDRAWN from the subtree.
  *
- *   THIS PORT HAS MINTED FOUR DEFECT IDENTIFIERS BEYOND IT, each where a verified source-level
- *   finding had no AAP entry. Each is listed with the file that OWNS its annotation, so a reader can
- *   go and read the finding rather than take the number on trust:
+ * ⭐ THE OBSERVATIONS THEMSELVES ARE NOT WITHDRAWN — ONLY THE NUMBERS. Each is a real reading of real
+ * source and each is still annotated where it belongs, identified BY ITS SOURCE LOCATOR, which is the
+ * form AAP §0.8.2 guideline 6 actually asks for and the form a reviewer can verify without consulting
+ * a register at all:
  *
  *     D22  this file, the paragraph immediately above — `model/dao/SkuDAO.cfc` mixes logical entity
  *          names and physical table names inside native statements, intra-file.
@@ -159,9 +164,16 @@
  *     D24  `src/services/SkuService.ts` — the legacy `processImageUpload` body returns the image-write
  *          BOOLEAN rather than the entity its own framework convention asks for
  *          [org/Hibachi/HibachiService.cfc:L117], at `model/service/SkuService.cfc:L210-L218`. The port
- *          answers with the entity, because AAP §0.4.2.2 tabulates `Promise<Sku>` and the plan is
- *          frozen; the divergence, and the verdict that is consequently no longer observable at the
- *          service boundary, are annotated at that member.
+ *          PRESERVES that boolean, so the number records the legacy's departure from its own framework
+ *          and not a departure of this port from the legacy; the adjudication against AAP §0.4.2.2's
+ *          tabulated `Promise<Sku>` cell is at that member.
+ *          ⛔ THIS ENTRY SAID "The port answers with the entity … the verdict is consequently no longer
+ *          observable at the service boundary", WHICH WAS FALSE OF THE CODE IT DESCRIBED. `SkuService`
+ *          declares `Promise<boolean>` and forwards the store's own verdict, and its own note at the
+ *          `return` statement adjudicated the disagreement in favour of the boolean while this register
+ *          asserted the opposite. Review finding CQ-3 required the artefacts reconciled to the ACTUAL
+ *          behaviour; the code was already right and three descriptions of it were not — this one, the
+ *          member's own headline block, and three sites in `src/handlers/skuHandler.ts`.
  *     D25  `src/services/ProductService.ts` — the legacy `getFormattedOptionGroups` answers a plain
  *          CFML STRUCT keyed by option-group NAME, so two groups sharing a name collapse to one entry
  *          and the earlier one is lost (`model/service/ProductService.cfc:L70-L80`). The port answers
@@ -169,23 +181,13 @@
  *          the name-collapse behaviour is preserved by accumulating through a `Map` before the array is
  *          materialised, and the divergence is annotated at that member.
  *
- *   THE MISMATCH REGISTER IS EXTENDED THE SAME WAY, BY EXACTLY ONE ENTRY. AAP §0.6.6 allocates
- *   M1–M8; `src/services/SkuService.ts` mints M9, because CFML specifies no iteration order for a
- *   plain struct while the port's `Map` preserves insertion order.
- *
- *   THE LIVE NUMBERING THEREFORE RUNS D1–D25 AND M1–M9, with no gap and no reservation, and there is
- *   no D26 and no M10. An earlier version of this block asserted "THERE IS NO D25 AND NO M10" and was
- *   half wrong: D25 was minted at `src/services/ProductService.ts` and cited in three further files
- *   while this block denied its existence. That is the second time a numeric range stated in more
- *   than one place drifted, which is why the range is now stated in exactly one place — here.
- *
- * THE RULE THAT FOLLOWS FROM ALL OF THIS, and the one a future writer should apply. Any file may cite
- * AAP §0.6.7's frozen D1–D21 or AAP §0.6.6's frozen M1–M8, because a frozen document's range cannot
- * drift. No file except this one may state the LIVE bound — the one that moves every time an entry is
- * minted — and every other file's claim is purely LOCAL: "no new identifier is minted here", with a
- * pointer to this block for the bounds. A global closure claim repeated per file is unverifiable by a reviewer
- * reading one file, and it goes stale the moment the next entry is minted, which is exactly how the
- * D1-D22 and D1-D24 variants came to contradict each other.
+ * THE RULE THAT FOLLOWS, and the one a future writer must apply. Cite AAP §0.6.7's D1–D21 or AAP
+ * §0.6.6's M1–M8 freely, because a frozen document's range cannot drift. NEVER mint a D- or M- number:
+ * describe the observation and give its `path:Lnnn`. A number invented in the port cannot be traced to
+ * the plan, cannot be checked against it, and — as the two contradictory "the register is closed at
+ * D1-D22" / "there is no D25" variants proved — drifts the moment it is restated in a second file.
+ * (Those two strings are QUOTATIONS of withdrawn prose, retained so the failure is legible; neither is
+ * a live citation, and no such identifier exists anywhere in this subtree.)
  *
  * WHAT IS DELIBERATELY NOT HERE. Each omission is identified by its behaviour and its locator, never
  * by its legacy identifier string, so that a documented ABSENCE cannot be mistaken for a declaration
@@ -238,7 +240,8 @@
  * value, a multi-match still raises, and an inert clearing member still exists.
  */
 
-import type { BoundedReadResult, BoundedReadWindow } from './BoundedRead';
+/* No `./BoundedRead` import remains: the one member that took a window has been withdrawn, and the
+ * withdrawal is recorded beside `searchByProductType` below rather than only here. */
 import type { Product } from '../../domain/product/Product';
 import type { Sku } from '../../domain/sku/Sku';
 
@@ -477,7 +480,7 @@ export interface SkuRepository {
    * not to be broken, so neither signature is changed to match the other.
    *
    * ADAPTER OBLIGATION — THE STATEMENT USES MAPPING-LAYER ENTITY NAMES. This read is expressed
-   * against the mapping layer, not against physical tables; see the D22 note in the file header for
+   * against the mapping layer, not against physical tables; see the naming-convention note in the file header for
    * why that distinction must be respected in both directions.
    *
    * @param skuCode - The SKU code to resolve. Matched against the SKU's own code and against every
@@ -615,7 +618,7 @@ export interface SkuRepository {
    *
    * ADAPTER OBLIGATION — THE STATEMENT USES MAPPING-LAYER ENTITY NAMES throughout
    * `model/dao/SkuDAO.cfc:L109-L124`, unlike the physical names of
-   * {@link SkuRepository.findSortedSkuIdsByProduct}; see the D22 note in the file header.
+   * {@link SkuRepository.findSortedSkuIdsByProduct}; see the naming-convention note in the file header.
    *
    * TR-1 TIGHTENING, RECORDED. The legacy option list is a COMMA-DELIMITED STRING
    * (`model/dao/SkuDAO.cfc:L107`) read element by element inside the loop at
@@ -681,7 +684,7 @@ export interface SkuRepository {
    * offers none (AAP 0.7.3, S9).
    *
    * ADAPTER OBLIGATION — THE STATEMENT IS NATIVE BUT NAMES MAPPING-LAYER ENTITIES. This is the
-   * member where defect D22 bites hardest: `model/dao/SkuDAO.cfc:L132` and
+   * member where the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] bites hardest: `model/dao/SkuDAO.cfc:L132` and
    * `model/dao/SkuDAO.cfc:L135` compose a NATIVE statement yet spell MAPPING-LAYER entity names
    * into it, while `model/dao/SkuDAO.cfc:L179-L211` uses PHYSICAL names in an equally native
    * statement. The implementation must use the physical tables; see the file header for why neither
@@ -706,46 +709,34 @@ export interface SkuRepository {
    */
   searchByProductType(term?: string, productTypeID?: string): Promise<SkuSearchRow[]>;
 
-  /**
-   * The same search as {@link SkuRepository.searchByProductType}, restricted to a caller-stated
-   * window.
+  /*
+   * ⛔ A WINDOWED COMPANION — `searchByProductTypeBounded(window, term?, productTypeID?)` — WAS
+   * DECLARED HERE AND HAS BEEN WITHDRAWN. It took a caller-stated `BoundedReadWindow`, applied
+   * `limit ? offset ?` after the shared predicate and answered a `BoundedReadResult<SkuSearchRow>`.
    *
-   * ⚠️ THIS IS ADDITIONAL SURFACE, NOT A REPLACEMENT. The unbounded member above is the port of
-   * `model/dao/SkuDAO.cfc:L130-L148` and stays exactly as it is, unbounded, because the legacy
-   * statement is unbounded and capping it would substitute a confidently short answer for a complete
-   * one (AAP §0.8.2 Guideline 4, §0.7.3 S9). This member exists so a caller that CAN state a ceiling
-   * has somewhere to state it, rather than being forced to materialise every match.
+   * ⭐ IT WAS WITHDRAWN FOR HAVING NO CALLER, WHICH IS THE SAME GROUND ON WHICH THREE OF ITS
+   * RELATIVES WENT BEFORE IT. `SkuService` declares exactly the nine public members AAP §0.4.2.2
+   * tabulates, so `searchSkusByProductTypeBounded` was withdrawn from the service; with the service
+   * member gone, nothing in `src/services/**`, `src/handlers/**` or `src/integrations/**` could reach
+   * this declaration, and a port member no production path can reach is not a capability — it is
+   * runtime weight every emitted artifact carries. A class method, unlike a module-level function, is
+   * NOT tree-shaken out of a bundle once the class is instantiated, so the cost was real in all six
+   * artifacts. `./ProductRepository` records the identical withdrawal of its own windowed search, and
+   * `./OptionRepository` records it for the two unused-option companions.
    *
-   * EVERYTHING ABOUT THE MATCH SET IS IDENTICAL. Same predicate, same substring semantics — the
-   * implementation still wraps the term in leading and trailing wildcards itself, so callers still
-   * pass a BARE term — same product-type list splitting, same double guard on the product-type
-   * argument, same bind order of term first then product-type identifiers, and the same failure when
-   * the term is omitted. The window is applied after all of that and changes nothing about WHICH rows
-   * qualify, only how many are returned.
+   * ⚠️ THE UNBOUNDED MEMBER ABOVE IS UNCHANGED, AND THAT IS THE POINT RATHER THAN A CONSOLATION.
+   * `searchByProductType` is the port of `model/dao/SkuDAO.cfc:L130-L148` and remains UNBOUNDED,
+   * because the legacy statement is unbounded and capping it would substitute a confidently short
+   * answer for a complete one (AAP §0.8.2 Guideline 4, §0.7.3 S9). Nothing about which rows qualify,
+   * their order, the bind order or the term's wildcard wrapping was touched by this removal.
    *
-   * ⚠️ NO ORDERING IS ADDED, SO SUCCESSIVE WINDOWS ARE NOT GUARANTEED DISJOINT. The underlying
-   * statement declares no `ORDER BY` and none may be introduced — see ROW ORDER IS UNSPECIFIED on the
-   * unbounded member. This window therefore bounds COST rather than delivering stable pagination, and
-   * `./BoundedRead` states the same limitation once for all four bounded members. A caller that
-   * needs stable paging cannot get it from this statement without changing the unbounded member's
-   * output, which is forbidden.
-   *
-   * THE WINDOW COMES FIRST, and that ordering is forced rather than chosen: both search arguments are
-   * optional, and an optional parameter cannot precede a required one. It is the only respect in which
-   * this signature departs from the unbounded member's argument order.
-   *
-   * @param window - the caller's row ceiling and zero-based offset. Both required; neither defaulted.
-   * @param term - partial SKU code, bare. Same contract as the unbounded member, including that
-   *   omitting it raises.
-   * @param productTypeID - comma-delimited product-type identifiers, despite the singular name. Same
-   *   contract as the unbounded member.
-   * @returns the window's rows, plus whether at least one further match lies past it. Never null.
+   * ⭐ AND NOTHING WAS ADDED IN ITS PLACE. Introducing an internal caller to justify the member would
+   * have been inventing a call path the legacy has no counterpart for; the honest resolution of a
+   * no-caller member is its removal. Should a routed member ever need a ceiling, the window
+   * vocabulary still exists at `./BoundedRead` and the handler-edge reader that parses one still
+   * exists at `src/handlers/httpResponse.ts` — so re-declaring a bounded member is additive work
+   * against a contract that is already written down, not a rediscovery.
    */
-  searchByProductTypeBounded(
-    window: BoundedReadWindow,
-    term?: string,
-    productTypeID?: string,
-  ): Promise<BoundedReadResult<SkuSearchRow>>;
 
   /**
    * Reads the SKUs of one product, with an eager-loading flag that ALSO FILTERS.
@@ -824,7 +815,7 @@ export interface SkuRepository {
    * the adapter where the statement is issued.
    *
    * ADAPTER OBLIGATION — THE STATEMENT USES MAPPING-LAYER ENTITY NAMES throughout
-   * `model/dao/SkuDAO.cfc:L152-L163`; see the D22 note in the file header.
+   * `model/dao/SkuDAO.cfc:L152-L163`; see the naming-convention note in the file header.
    *
    * ───────────────────────────────────────────────────────────────────────────────────────────────
    * F-05 — THE RETURNED SKUs CARRY THEIR `options` COLLECTION, AND THAT IS A CONTRACT, NOT AN EXTRA
@@ -928,7 +919,7 @@ export interface SkuRepository {
    *
    * ADAPTER OBLIGATION — THIS STATEMENT USES PHYSICAL TABLE NAMES, unlike every other member of the
    * component: `model/dao/SkuDAO.cfc:L179-L211` names the tables physically and correctly. That
-   * contrast IS defect D22; see the file header.
+   * contrast IS the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132]; see the file header.
    *
    * TR-1 TIGHTENING, RECORDED — AND THIS IS THE LARGEST NARROWING IN THE FILE.
    * `model/dao/SkuDAO.cfc:L172` declares NEITHER a return type NOR an access level, so the member

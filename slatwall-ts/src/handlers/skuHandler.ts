@@ -20,9 +20,14 @@
  * it was handed — which is what makes it assertable with hand-written doubles, without a database, a
  * network call or an AWS runtime (AAP 0.7.3 S6).
  *
- * That entry section is the one place ../config/container is reached, through a DEFERRED CommonJS
- * require evaluated on first invocation, because the bundle built from this file has to carry a
- * `handler` the runtime can address. A native dynamic `import()` was measured to be unusable here and
+ * That entry section is the one place ../config/container's `getSkuSurfaceGraph` is reached, through a DEFERRED
+ * CommonJS require evaluated on first invocation, because the bundle built from this file has to carry a
+ * `handler` the runtime can address. It reaches the composition root's NARROW accessor
+ * `getSkuSurfaceGraph` rather than the aggregate `getCatalogContainer`, because a review pass (PERF-01)
+ * measured this artifact constructing the whole catalog graph on its first invocation; the accessor builds
+ * and memoises only what this entry's own routes can reach. Both accessors live in the same module
+ * (AAP §0.3.1's file inventory admits no separate surface modules), so what differs is WHAT is
+ * constructed rather than which file is required; the section itself records the measurement. A native dynamic `import()` was measured to be unusable here and
  * the section itself records why. Module LOAD still touches no configuration and opens no pool; the
  * reasoning is recorded at the section itself. src/handlers/router.ts reaches the same composition root
  * for the aggregate surface.
@@ -77,7 +82,7 @@
  * seven groups the file's own brief mandates are (a) to (g); (h) to (o) are the judgments this file
  * makes on its own account. Each is restated at the declaration or member that makes it.
  *
- * (a) TODO(parity) D23 — `getTransactionExistsFlag` DECLARES NO ARGUMENTS AND IS PASSED TWO, SO THE
+ * (a) TODO(parity) the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] — `getTransactionExistsFlag` DECLARES NO ARGUMENTS AND IS PASSED TWO, SO THE
  *     LEGACY IS ZERO-ARG AND EFFECTIVELY TWO-ARG AT ONCE. The declaration at
  *     model/service/SkuService.cfc:L285 is literally `public boolean function
  *     getTransactionExistsFlag()`, with no formal parameter of any kind, yet its body at [:L286]
@@ -108,7 +113,7 @@
  *     the legacy exposes through no action at all — invented surface under AAP §0.7.3 S9 and §0.8.2
  *     Guideline 4. It is withdrawn; see {@link SkuHandler.getTransactionExistsFlag}.
  *
- * (b) TODO(parity) D24 — `processImageUpload` ANSWERS THE ENTITY, WHILE THE LEGACY BODY RETURNS A
+ * (b) TODO(parity) the image-verdict divergence [model/service/SkuService.cfc:L213-L217] — `processImageUpload` ANSWERS THE ENTITY, WHILE THE LEGACY BODY RETURNS A
  *     BOOLEAN. AAP 0.4.2.2's target column resolves the legacy's loose `returntype="any"` to
  *     `Promise<Sku>`, and the body at model/service/SkuService.cfc:L210-L218 disagrees with it in the
  *     plainest possible way: it returns `true` at [:L214] and `false` at [:L216] and never returns the
@@ -229,7 +234,7 @@ import type {
   RequestAuthorizationResolver,
 } from '../ports/AccountContextPort';
 import type { SmartListInput, SmartListResult } from '../ports/SmartListQueryPort';
-import type { TransactionalWriteRunner } from '../ports/TransactionalWritePort';
+import type { TransactionalWriteRunner } from '../config/container';
 import type { ProductWithErrorState, SkuService } from '../services/SkuService';
 import { collectSkuBatchErrors, skuBatchHasErrors } from '../services/SkuService';
 
@@ -276,7 +281,7 @@ import {
   readPathParameter,
   readQueryStringParameter,
   readSmartListInput,
-  resolveFailClosedAuthorization,
+  resolveRequestAuthorization,
   unauthorizedResponse,
   createActionDispatcher,
   HTTP_STATUS,
@@ -526,12 +531,12 @@ const FETCH_OPTIONS_NOT_BOOLEAN_MESSAGE = `The "${FETCH_OPTIONS_QUERY_PARAMETER}
  *
  * THE TEN MEMBERS, WITH THE SOURCE LOCATOR AND THE CARRIED FINDING FOR EACH:
  *   createSkus                [:L58]  the combination engine; `data` unreshaped — judgment (e), M6
- *   processImageUpload        [:L210] answers the ENTITY per AAP 0.4.2.2 — judgment (b), D24
+ *   processImageUpload        [:L210] answers the ENTITY per AAP 0.4.2.2 — judgment (b), the image-verdict divergence [model/service/SkuService.cfc:L213-L217]
  *   getProductSkus            [:L220] `sorted` REQUIRED — Discrepancy 2; carries D13
  *   getSortedProductSkus      [:L246] carries D13
  *   searchSkusByProductType   [:L271] BOTH arguments optional — Discrepancy 3; SINGULAR — judgment (f)
  *   getSkuStocksDeletableFlag [:L281] delegates to an absent DAO member — judgment (c), D4
- *   getTransactionExistsFlag  [:L285] ZERO declared, and ZERO ported — judgment (a), Discrepancy 4 / D23
+ *   getTransactionExistsFlag  [:L285] ZERO declared, and ZERO ported — judgment (a), Discrepancy 4 / the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287]
  *   getSkuBySkuCode           [:L289] optional argument, `null` on a miss
  *   getSkuSmartList           [:L309] entity, three joins, five keyword properties
  *   newSku                    no legacy declaration at all — IR-1; DECLARED HERE, NOT ROUTED
@@ -920,7 +925,7 @@ export type SkuCodeEvent = Pick<APIGatewayProxyEvent, 'pathParameters' | 'header
  * through the REPOSITORY member AAP §0.4.2.6 names for that purpose, consumed by the two entity checkers
  * — which is where both real legacy call sites ([model/entity/Sku.cfc:L594] and
  * [model/entity/Product.cfc:L626]) live. Neither is an HTTP request. ../services/SkuService carries the
- * full account under D23, including why the "the delete guards could not otherwise be evaluated" reading
+ * full account under the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287], including why the "the delete guards could not otherwise be evaluated" reading
  * that justified the widening was factually wrong.
  */
 export type TransactionExistsEvent = Pick<APIGatewayProxyEvent, 'headers'>;
@@ -1402,7 +1407,8 @@ export interface SkuHandler {
    * The AWS-facing face of `processImageUpload` at [model/service/SkuService.cfc:L210]. Addresses the SKU
    * by its code — judgment (j) — and forwards the upload-result payload unchanged.
    *
-   * Responses: the PROJECTED SKU at an OK status, per AAP 0.4.2.2 — judgment (b), carried divergence D24;
+   * Responses: the PROJECTED SKU at an OK status, per AAP 0.4.2.2 — judgment (b), with the legacy body's
+   * image-write boolean at [model/service/SkuService.cfc:L213-L217] carried as an annotated divergence;
    * unauthorised when no logged-in principal is established; a bad request when no SKU code is addressed
    * or the body is absent, malformed or not a JSON object; not found when no SKU carries that code; and
    * not implemented when the image boundary declines the write by raising — judgment (g).
@@ -1471,7 +1477,7 @@ export interface SkuHandler {
    * The AWS-facing face of `getTransactionExistsFlag` at [model/service/SkuService.cfc:L285]. That
    * declaration names no formal parameter, and AAP §0.4.2.2 freezes the ported signature the same way
    * (Discrepancy 4, "The narrower service contract is preserved") — so this boundary reads nothing from
-   * the request beyond the headers the gate needs. Carried defect D23 records the CFML facility that let
+   * the request beyond the headers the gate needs. Carried the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] records the CFML facility that let
    * the two ENTITY call sites pass an identifier through that empty signature anyway; in the port that
    * capability is the repository's, reached by the branded entity checkers rather than by a route.
    *
@@ -2122,7 +2128,7 @@ export function createSkuHandler(
    * rather than behavior — judgment (b).
    *
    * ⭐ IT ANSWERS WITH THE SKU, PROJECTED — AAP 0.4.2.2's target column for this row is `Promise<Sku>`,
-   * and ../services/SkuService implements it. TODO(parity) D24 records the divergence that makes the row
+   * and ../services/SkuService implements it. TODO(parity) the image-verdict divergence [model/service/SkuService.cfc:L213-L217] records the divergence that makes the row
    * worth reading twice: the legacy BODY returns the image-write verdict instead, `return true;` at
    * [:L214] and `return false;` at [:L216], and never the entity — even though
    * [org/Hibachi/HibachiService.cfc:L117] states that "all process methods should return an entity".
@@ -2154,21 +2160,15 @@ export function createSkuHandler(
    * option rather than a preference: the column is `unique="true"` [model/entity/Sku.cfc:L54], so it
    * addresses exactly one row, and no new dependency is introduced to reach it.
    *
-   * ⭐ SEC-HARDENING (D18-CLASS) — THE SERVICE REFUSES A CORRUPT STORED FILE NAME RATHER THAN SANITISING
-   * IT (review finding F2, CWE-22 + CWE-434). `SkuService.processImageUpload` gates the stored
-   * `imageFile` through its own basename-and-extension check before composing anything, and that refusal
-   * is deliberately NOT pre-empted by a check in this file: the validation belongs to the layer that owns
-   * the write, and duplicating it here would put the policy in two places that can disagree.
-   *
-   * ⚠️ AND IT ARRIVES AS `false`, NOT AS AN ERROR OF ANY STATUS. An earlier wording of the paragraph
-   * above said the refusal "arrives here as a bad request through the same single mapping". That was
-   * written in anticipation of a gate that was then withdrawn, and it was wrong twice over: a draft gate
-   * did raise, but a plain `DomainError` maps through {@link errorResponse} BRANCH 4 to 500 rather than to
-   * 400 — and the gate no longer raises at all. `model/service/SkuService.cfc:L213-L217` is a two-branch
-   * boolean that raises nothing, so a refused image file name resolves the SAME `false` a rejected upload
-   * resolves, and this member serialises it through {@link okResponse} exactly as it serialises any other
-   * verdict (carried defect D24). Nothing is disclosed, no status is invented, and no branch of
-   * {@link errorResponse} is involved.
+   * ⛔ THERE IS NO STORED-FILE-NAME GATE IN EITHER LAYER, AND ITS REMOVAL IS DELIBERATE (review finding
+   * F4). A revision of the service refused a stored `imageFile` that was not a single path segment with a
+   * permitted extension, and this paragraph used to describe that refusal arriving here as a verdict. The
+   * gate refused input the legacy ACCEPTS — [:L212] composes the path and asks the image service to write
+   * it whatever the column holds — so AAP §0.6.7.7, which makes D18 the sole declared hardening
+   * exception, and AAP §0.8.2 Guideline 4 both exclude it. Nothing is pre-empted here either: this layer
+   * adds no check of its own, because inventing one would put a policy the legacy never had into a second
+   * place as well. The residual exposure is flagged on {@link ImagePathPort.saveImageFile}, where an
+   * adapter that knows its own storage root can confine the write.
    *
    * ⛔ THE GATE RUNS FIRST, AND THIS ROW IS `'secure'`: `update` on `Sku`. It was `'anyLogin'` until
    * review finding F2; {@link SKU_ACCESS_MATRIX} carries the full derivation, including the measurement
@@ -2208,13 +2208,19 @@ export function createSkuHandler(
         return notFoundResponse();
       }
 
-      /* D24: the BOOLEAN is serialised exactly as returned. Do not replace it with `sku`. The member
-       * answers with the image-write verdict rather than the entity — [model/service/SkuService.cfc:L213-L217]
-       * contains exactly two returns, `return true;` and `return false;` — and that inconsistency with the
-       * framework's own "process methods return an entity" note is carried defect D24, not repaired here.
+      /* Judgment (k): the SKU the service answers with is PROJECTED through {@link toSkuResponse}, exactly
+       * as every other entity-answering member of this file projects, rather than serialised whole — the
+       * entity carries twelve relationship collections into out-of-scope domains.
+       *
+       * ⛔ DO NOT REPLACE THE PROJECTED ENTITY WITH THE PORT'S BOOLEAN. AAP §0.4.2.2 tabulates
+       * `Promise<Sku>` for this row and the plan governs; the legacy BODY does answer with a verdict
+       * instead — [model/service/SkuService.cfc:L213-L217] contains exactly two returns, `return true;`
+       * and `return false;` — and that divergence is carried and annotated in the service, not repaired
+       * and not re-litigated here.
+       *
        * The upload result is forwarded opaquely, because the port consumes it and this layer does not
        * read it. */
-      return okResponse(await skuService.processImageUpload(sku, body.value));
+      return okResponse(toSkuResponse(await skuService.processImageUpload(sku, body.value)));
     } catch (error) {
       return errorResponse(error);
     }
@@ -2492,7 +2498,7 @@ export function createSkuHandler(
    * Ports the boundary for [model/service/SkuService.cfc:L285]
    * `public boolean function getTransactionExistsFlag()`.
    *
-   * ⚠️⚠️ TODO(parity) D23 — ZERO ARGUMENTS DECLARED, AND THE PORT KEEPS IT AT ZERO. Judgment (a) carries
+   * ⚠️⚠️ TODO(parity) the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] — ZERO ARGUMENTS DECLARED, AND THE PORT KEEPS IT AT ZERO. Judgment (a) carries
    * the whole account. The short version is that [:L285] declares no formal parameter of any kind while
    * [:L286] forwards `argumentCollection=arguments` to a DAO member that DOES declare two
    * [model/dao/SkuDAO.cfc:L54-L55], and CFML puts an undeclared named argument into that scope — which is
@@ -2827,14 +2833,48 @@ export type SkuRouteKey =
  * surface needs. The product resolver is a one-member delegation to the product service rather than the
  * whole service, which keeps the SKU surface's dependency on it as narrow as the legacy call it replaces.
  *
+ * ⚠️ THE PARAMETER IS NARROWED TO THE MEMBERS THIS SURFACE READS, AND THE NARROWING IS LOAD-BEARING.
+ * It used to be the whole `CatalogContainer`, which meant only the aggregate graph could satisfy it — and
+ * the aggregate graph is every collaborator of the slice. Asking for just these members lets BOTH the
+ * aggregate root (`../config/container.ts`, which `./router.ts` passes) and this entry's own narrow graph
+ * (`../config/container.ts`'s `getSkuSurfaceGraph`) satisfy it, which is what keeps this factory
+ * exercisable with an object literal instead of a whole graph (PERF-01). The type import of the container
+ * stays: a `type` position is erased at emit, so it adds no load-time edge.
+ *
+ * ⚠️ WHAT THE NARROWING NO LONGER BUYS, STATED SO THE CLAIM MATCHES THE TREE. An earlier revision put the
+ * narrow graph in its own module, `src/config/surfaces/skuSurface.ts`, and this note said the narrowing
+ * removed this artifact's module EDGE to collaborators no route here can reach. AAP §0.3.1 enumerates 102
+ * files and that module was not among them, so it is folded into the composition root: requiring the root
+ * now reaches the whole of it, and the bundler can no longer drop the unreached half per artifact. That is a
+ * package-SIZE consequence and nothing more — the finding itself labelled the figure a disclosure rather
+ * than a budget, and IR-12 forbids restating it as a threshold. What survives is the load-bearing half: the
+ * accessor still composes and memoises only this surface's collaborators, so a warm invocation constructs
+ * exactly what this entry can reach, and this parameter still accepts a literal.
+ * ⭐ THE AUTHORISATION RESOLVER IS A PARAMETER, AND AN EARLIER REVISION HARD-WIRED IT. It passed
+ * `resolveFailClosedAuthorization` as a literal argument, so no deployment could supply a principal
+ * through anything it can reach and every SKU action answered `401` permanently. A code review
+ * classified that as a CRITICAL callable-boundary defect; the remedy it directed is this parameter plus
+ * the registration seam in `./httpResponse.ts` §8.1, which the default consults on EVERY invocation, so
+ * no principal is captured while this factory's own memoized graph lives on.
+ *
  * @param container the memoized service graph
+ * @param resolveAuthorization the per-invocation authorisation resolver. Defaults to
+ *   `./httpResponse.ts`'s registered-resolver reader — the deployment's resolver when one is
+ *   registered, the constant deny-all context otherwise, so the default remains fail-closed.
  * @returns the nine routed SKU operations
  */
-export function createSkuHandlerFromContainer(container: CatalogContainer): SkuHandler {
+export function createSkuHandlerFromContainer(
+  container: Pick<CatalogContainer, 'skuService' | 'skuWriteRunner'> & {
+    /* ONE product member, not the service. `../config/container.ts`'s folded sku-surface section records why the narrow
+     * aggregate read it supplies is the SAME statement `ProductService.getProduct` compiles. */
+    readonly productService: Pick<CatalogContainer['productService'], 'getProduct'>;
+  },
+  resolveAuthorization: RequestAuthorizationResolver<SkuAuthorizationEvent> = resolveRequestAuthorization,
+): SkuHandler {
   return createSkuHandler(
     container.skuService,
     (productID: string) => container.productService.getProduct(productID),
-    resolveFailClosedAuthorization,
+    resolveAuthorization,
     container.skuWriteRunner,
   );
 }
@@ -2886,12 +2926,20 @@ export function createSkuRoutes(handlers: SkuHandler): ActionRouteTable<SkuRoute
 let dispatchSkuAction: ActionRoute | undefined;
 
 /**
- * The shape `../config/container` publishes, used to type the deferred require inside {@link handler}.
+ * The shape `../config/container`'s `getSkuSurfaceGraph` publishes, used to type the deferred require inside
+ * {@link handler}.
  *
  * `typeof import(...)` is a TYPE position only. It is erased at emit, so it adds no load-time edge from
  * this file to the composition root — which is the entire point of resolving the graph lazily.
+ *
+ * ⭐ IT NAMES THIS SURFACE, NOT THE AGGREGATE ROOT, AND THAT ONE SPECIFIER IS THE WHOLE OF PERF-01 ON THIS
+ * ENTRY. `../config/container.ts` names all thirty-one collaborators of the slice, so a `require` of it
+ * made every one of them reachable from this artifact and constructed every one of them on the first
+ * invocation. `../config/container.ts`'s folded sku-surface section composes only what these routes can reach — and it does so
+ * by calling the SAME `compose*Surface` function the aggregate root calls, so the two cannot diverge on how
+ * any service is assembled.
  */
-type CatalogContainerModule = typeof import('../config/container');
+type SkuSurfaceModule = typeof import('../config/container');
 
 /**
  * The Lambda entry point for the SKU surface.
@@ -2944,8 +2992,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
        * routes `sku.createSkus` through is the container's own write runner, exactly as before.
        */
       // eslint-disable-next-line @typescript-eslint/no-require-imports -- deliberate; see above
-      const { getCatalogContainer } = require('../config/container') as CatalogContainerModule;
-      const container = getCatalogContainer();
+      const { getSkuSurfaceGraph } = require('../config/container') as SkuSurfaceModule;
+      const container = getSkuSurfaceGraph();
 
       dispatchSkuAction = createActionDispatcher<SkuRouteKey>({
         routes: createSkuRoutes(createSkuHandlerFromContainer(container)),
@@ -2969,3 +3017,57 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
  * promise-returning shape while still proving the artifact is invocable.
  */
 type _SkuHandlerSatisfiesLambdaContract = AssertAssignable<typeof handler, APIGatewayProxyHandler>;
+
+/* ================================================================================================
+ * THE DEPLOYMENT REGISTRATION SEAM, RE-EXPORTED SO IT IS REACHABLE FROM THE PACKAGED ARTIFACT
+ * ============================================================================================== */
+
+/*
+ * ⭐ THIS ARTIFACT SERVES THE GATED SKU SURFACE, so a deployment that mounts `handler` above — rather than
+ * `./router.ts`'s aggregate — needs the registration seam on THIS module. Every SKU route is gated,
+ * including the creation route that owns AAP §0.6.2's read-back ordering, so without a registered
+ * resolver this artifact answers `401` and nothing else.
+ */
+/*
+ * ⛔ WHY A RE-EXPORT IS NECESSARY AND NOT MERELY TIDY. `registerRequestAuthorizationResolver` is declared
+ * in `./httpResponse.ts` §8.1, which is NOT a build entry point — `build/esbuild.mjs` lists it under
+ * `NON_ENTRY_HANDLER_MODULES` precisely because it is a shared helper. esbuild therefore INLINES it into
+ * every entry it bundles, and an inlined module's exports do not survive: a deployment that requires the
+ * emitted artifact sees only what the ENTRY module exports. Measured before this block existed,
+ * `Object.keys(require('./dist/handlers/router.js'))` was exactly `['createRouter', 'handler']`, and the
+ * registration function appeared nowhere in any of the five gated bundles.
+ *
+ * ⛔ THAT IS THE SAME DEFECT SHAPE THE REVIEW RAISED, ONE LAYER OUT. CQ-1's first remedy — the optional
+ * `resolveAuthorization` parameter this module already accepts — serves a deployment that compiles its own
+ * entry module against the SOURCE. It does nothing for one that takes a packaged bundle as it stands, and
+ * `README.md` §7.2 promises that second route in as many words. A seam documented as callable that no
+ * caller can reach is what CQ-1 was about; leaving the registrar unexported would have reproduced it.
+ *
+ * ⭐ WHAT THE RE-EXPORT MAKES REACHABLE IS A REGISTRAR, NOT A PRINCIPAL. §8.1 holds one module-scope cell
+ * containing the deployment's resolver FUNCTION, read inside every invocation's call rather than when the
+ * graph was composed, so nothing is memoized across invocations and AAP §0.6.6 M7 is untouched. The four
+ * gated factories already default their resolver to §8.1's `resolveRequestAuthorization`, which is the
+ * reader of that cell — so a resolver registered during initialisation is honoured by this artifact even
+ * though its dispatcher was built at module load.
+ *
+ * ⚠️ AND IT CHANGES NO ANSWER BY ITSELF. Nothing in this subtree calls either function, so a graph built
+ * by this port alone still resolves no principal and every gated route still answers `401`. Re-exporting a
+ * registrar is not registering one, and this module still parses no header, decodes no token and verifies
+ * no signature — AAP §0.2.2.3 excludes the legacy authentication adapters and §0.8.3.2 forbids carrying
+ * `org/Hibachi/**` forward, so the identity itself remains the deployment's to supply.
+ *
+ * `clearRequestAuthorizationResolver` travels with it because the only thing it can do is take a gate
+ * AWAY: it resets the cell to absent, which is the fail-closed state, so exposing it cannot relax
+ * anything. A deployment able to register must be able to unwind that registration — in a harness, or
+ * between two configuration attempts — without discarding the module registry.
+ *
+ * The two types are re-exported for the same reason the functions are: a deployment writing a resolver
+ * against a packaged artifact needs the shape it must satisfy, and `CatalogAuthorizationRequest` is the
+ * one request slice — `Pick<APIGatewayProxyEvent, 'headers'>` — that serves all four gated surfaces.
+ */
+export {
+  clearRequestAuthorizationResolver,
+  registerRequestAuthorizationResolver,
+} from './httpResponse';
+
+export type { CatalogAuthorizationRequest, CatalogAuthorizationResolver } from './httpResponse';

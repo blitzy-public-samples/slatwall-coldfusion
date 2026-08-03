@@ -357,19 +357,18 @@ export const brandNamePropertyValidation = Object.freeze({
  * document's contract as `brandWebsite` "typed as a URL" with no narrowing to web schemes.
  *
  * ⭐ TWO SYNTACTIC RULES DID COME BACK, AND DELIBERATELY NOT AS A POLICY MEMBER. `../Validator`'s single
- * predicate now also refuses any value carrying an ASCII control character (a parity CORRECTION — RFC
- * 3986 §2 admits no raw control character in a URI, so `isValid(…, "url")` was never accepting one as
- * valid) and any value whose AUTHORITY carries userinfo credentials (a narrow DECLARED departure —
- * CWE-601 deceptive authority, and RFC 3986 §3.2.1 deprecates the form). Neither rejects a protocol, so
- * all six still pass here. They are unconditional inside the predicate rather than selectable from this
- * declaration, which is both simpler and stricter than a policy union: there is no member a future
- * declaration could set to opt out. THE SIX-PROTOCOL URL CHECK IS STILL THE WHOLE CHECK in
- * `../Validator` carries the full record, including the residual non-web-scheme exposure that remains
- * flagged and the reason this slice's own output does not reach it.
+ * predicate does not layer anything on top of those six protocols either. A revision of it also refused
+ * any value carrying an ASCII control character (argued as a parity CORRECTION) and any value whose
+ * AUTHORITY carried userinfo credentials (argued as a narrow DECLARED departure); both are WITHDRAWN,
+ * because AAP §0.6.7.7 declares exactly one departure from behavioural preservation in this port — D18,
+ * the importer's parameterised SQL — and AAP §0.8.2 guideline 4 admits no proportionality test. THE
+ * SIX-PROTOCOL URL CHECK IS STILL THE WHOLE CHECK in `../Validator` carries the full record, including
+ * the three residual exposures that remain flagged rather than closed and the reason this slice's own
+ * output does not reach two of them.
  *
  * THE MESSAGE KEY IS UNAFFECTED BY ANY OF THESE STATES. It is composed from `constraintValue`, which is
  * `'url'`, so this rule emits `validate.save.Brand.brandWebsite.dataType.url` byte-for-byte before the
- * split, after its withdrawal, and after the two reinstated rules. Introducing a new `constraintValue`
+ * split and after every one of its withdrawals. Introducing a new `constraintValue`
  * such as `'webUrl'` would have changed that key and broken comparability with legacy output, and was
  * rejected for that reason at the time.
  *

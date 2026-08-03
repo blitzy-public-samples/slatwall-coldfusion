@@ -59,7 +59,7 @@
  * None of AAP §0.6.6's eight mismatches applies to this module, so no new identifier is minted, and
  * this file mints no defect identifier either — so findings recorded below that carry no register
  * number carry none deliberately. ⚠️ F27: this previously claimed the mismatch register "is closed at
- * M1-M8" and the defect register "likewise closed at D1-D22", and neither figure was even the AAP's
+ * M1-M8" and the defect register "likewise closed at D1-the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132]", and neither figure was even the AAP's
  * range. No live bound is restated here; `src/ports/repositories/SkuRepository.ts` is the one place
  * that states it.
  *

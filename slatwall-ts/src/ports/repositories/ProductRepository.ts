@@ -80,7 +80,7 @@
  *   - Any timeout, retry, batch-size, page-size or maximum-results number. AAP 0.7.3, S9 and
  *     IR-12 forbid inventing figures the source does not state.
  *   - Any new defect or mismatch identifier. ⚠️ F27: this bullet previously said "Both registers are
- *     closed — defects at D1-D22 and execution-model mismatches at M1-M8", and both numbers were
+ *     closed — defects at D1-the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] and execution-model mismatches at M1-M8", and both numbers were
  *     wrong. The claim this module can honestly make is the LOCAL one — THIS FILE mints no identifier
  *     — so findings recorded below that carry no register number carry none deliberately. No range is
  *     restated here: the bounds and every port-minted entry are enumerated once, in
@@ -150,70 +150,72 @@ export interface ProductSearchRow {
 }
 
 /* ================================================================================================
- * SEC-08, RE-ADJUDICATED — THE LOCATION STAYS A PLAIN `string`, AND REFUSING A HOSTILE ONE IS NOW
- * AN OBLIGATION OF EVERY IMPLEMENTATION
+ * SEC-08, WITHDRAWN — NOTHING HERE REFUSES A LOCATION, AND WHAT REMAINS IS A WIRING SHAPE
  * ================================================================================================
- * ⚠️ WHAT WAS HERE, AND WHAT HAS CHANGED. An earlier revision narrowed the location argument of
- * {@link ProductRepository.importFromFile} to an unforgeable branded `ProductImportSource`, produced only
- * by a `validateProductImportSource` gate run against an operator-supplied `ProductImportSourcePolicy`
- * of allowed schemes, allowed hosts, byte cap, timeout and redirect count — and it laid four
- * address-level obligations (resolve-then-vet, connect-to-the-vetted-address, re-validate every redirect
- * hop, enforce bounds while streaming) on any adapter. A later revision withdrew ALL of it. Review
- * finding F8 (CWE-918) re-opened that decision, and the outcome is neither of the two extremes: the
- * BRANDED TYPE stays withdrawn, and the REFUSAL is now required.
+ * ⛔ WHAT WAS HERE, AND WHAT IT IS NOW. This block went through four revisions. Revision 1 narrowed the
+ * location argument of {@link ProductRepository.importFromFile} to an unforgeable branded
+ * `ProductImportSource` produced only by a `validateProductImportSource` gate run against an
+ * operator-supplied policy of allowed schemes, allowed hosts, byte cap, timeout and redirect count, and
+ * laid four address-level obligations on any adapter. Revision 2 withdrew all of it. Revision 3 re-opened
+ * the decision and made a REFUSAL — non-HTTP schemes, URL credentials, and address literals in loopback,
+ * private, link-local, unique-local, unspecified and instance-metadata ranges — a MANDATORY obligation of
+ * every implementation, discharged by an `assertRetrievableImportSource` gate in the shipped adapter
+ * (that gate is deleted; the name survives here only to identify what was removed).
+ * REVISION 4, THIS ONE, WITHDRAWS THE OBLIGATION AND THE GATE. Neither the port nor any adapter in this
+ * subtree refuses a location on any ground whatsoever.
  *
- * ⛔ THE ONE GROUND THAT DOES NOT SURVIVE. The withdrawal argued that "D18 is a precedent for a
- * divergence that removes an entire class of flaw WITHOUT changing a single outcome the legacy produced
- * — parameterised SQL returns exactly the rows interpolated SQL returned. Refusing a fetch changes an
- * outcome, so the two are not analogous." THE PREMISE IS FALSIFIED BY D18'S OWN EXAMPLE: a product name
- * of `O'Brien` reaching `model/dao/ProductDAO.cfc:L183` yields a syntax error or an injection from the
- * interpolated statement and a correct row from the parameterised one. The outcome does change — on
- * exactly the inputs where the legacy's own behaviour was the flaw. D18's real shape is therefore: for
- * every input on which the legacy produced a well-defined, intended result, the port produces the same
- * result, and the divergence falls only where the legacy's behaviour was itself the defect.
+ * ⛔ WHY, GIVEN THAT REVISION 3'S ARGUMENT WAS THE STRONGEST OF THE FOUR. It reasoned from D18's real
+ * shape rather than from its slogan: for every input on which the legacy produced a well-defined,
+ * intended result the port produces the same result, and the divergence falls only where the legacy's own
+ * behaviour was the defect. It then observed that on THIS path the set of such inputs is EMPTY —
+ * `model/dao/ProductDAO.cfc:L87` retrieves through `getService("utilityTagService").cfhttp(...)` and NO
+ * `utilityTagService` bean is declared anywhere in the legacy repository, the single occurrence of that
+ * name in the whole tree being the call itself, while the `new http()` block at `:L89-L98` is commented
+ * out. A gate over an unreachable retrieval is therefore outcome-preserving by vacuity.
  *
- * ⭐⭐ AND ON THIS PATH THERE IS NO LEGACY OUTCOME TO CHANGE AT ALL. `model/dao/ProductDAO.cfc:L87`
- * retrieves through `getService("utilityTagService").cfhttp(...)`, and NO `utilityTagService` bean is
- * declared anywhere in the legacy repository — the single occurrence of that name in the whole tree is
- * the call itself — while the `new http()` block at `:L89-L98` is commented out. The set of inputs on
- * which this path produced a well-defined, intended result is EMPTY. That makes the gate
- * outcome-preserving by vacuity, which is the strongest form of the D18 test available, and it puts the
- * member in the same class as D4 and D5: a caller delegating to something that is not there. Recorded
- * by locator; no register identifier is minted.
+ * That reasoning is sound and it is not what decides the question. AAP §0.6.7.7 authorises exactly ONE
+ * departure from behavioural preservation in this port — D18, the importer's parameterised SQL — and it
+ * says so precisely because the register exists to give a reviewer diffing behaviour a FIXED number of
+ * entries to check. A second entry, however well argued, costs that guarantee; AAP §0.8.2 Guideline 4
+ * forbids enhancement beyond what the migration requires and admits no proportionality test; and
+ * AAP §0.6.7 mandates preserve-and-annotate rather than repair. So the refusal is withdrawn on the COUNT,
+ * and the argument for it is preserved here in full rather than deleted, because a future revision that
+ * wants to reinstate it should have to answer the count rather than re-derive the merits.
  *
- * ⚠️ AND THE ACCOUNT OF THE LEGACY ABOVE USED TO BE WRONG IN ONE DETAIL, WHICH IS CORRECTED HERE. It
- * described "a `new http()` fallback at `:L88-L90` for tab-delimited files", repeating an error in AAP
- * §0.6.6. `:L88` is a COMMENT recording why the script-based approach was abandoned, and `:L89-L98` is a
- * commented-out block. There is no live fallback. `src/adapters/mysql/MySqlProductRepository.ts` already
- * carried this correction, so for a time two files in one subtree contradicted each other; they now
+ * ⚠️ THE ACCOUNT OF THE LEGACY ABOVE CORRECTS ONE DETAIL, AND THE CORRECTION STANDS. AAP §0.6.6
+ * describes "a `new http()` fallback at `:L88-L90` for tab-delimited files". `:L88` is a COMMENT
+ * recording why the script-based approach was abandoned and `:L89-L98` is a commented-out block; there is
+ * no live fallback. `src/adapters/mysql/MySqlProductRepository.ts` states the same, so the two files
  * agree.
  *
- * ⭐ WHAT IS NOW REQUIRED OF AN IMPLEMENTATION, AND WHAT IS STILL FORBIDDEN. An implementation MUST
- * refuse a location whose scheme is anything but HTTP or HTTPS, one carrying credentials in the URL, and
- * one whose host is an address literal in a loopback, private, link-local, unique-local, unspecified or
- * instance-metadata range. None of those is invented configuration: the scheme pair is what `cfhttp` can
- * speak, credentials were separate attributes it could not read from a URL, and the ranges are literals
- * defined by RFCs 1122, 1918, 3927, 4193 and 4291. It MUST also resolve the host, refuse a result in
- * those ranges, connect to the address it vetted, and re-validate every redirect hop.
+ * ⭐ WHAT REMAINS, AND WHY IT IS A WIRING SHAPE RATHER THAN A HARDENING MEASURE. This module still
+ * declares {@link ProductImportSourcePolicy}, {@link ValidatedProductImportSource},
+ * {@link ProductImportSourceBounds} and {@link ProductImportRedirectHop}, and
+ * `ProductImportSourceReader` in the adapter still requires a policy member. NONE OF THEM DECIDES
+ * ANYTHING. They name no scheme, no host, no address range and no number; they state WHICH judgments an
+ * operator who supplies retrieval must make, and leave every one of them to that operator. A permissive
+ * policy — one that brands whatever it is given — reproduces `model/dao/ProductDAO.cfc:L87` exactly,
+ * which is the test that distinguishes a shape from a refusal. The brand is type-only and carries no
+ * runtime cost or runtime check, so no statement executed by this port differs because of it.
  *
- * ⛔ IT MUST STILL NOT INVENT A HOST ALLOW-LIST, A BYTE CAP, A TIMEOUT OR A REDIRECT COUNT. The source
- * names no host and states no figure, so every possible value of each is a fabrication that AAP §0.7.3
- * standard 9 and IR-12 forbid. The legacy's only budget is the 3600-second REQUEST timeout at
- * `model/service/ProductService.cfc:L65-L68`, carried as mismatch M1.
+ * ⛔ AND IT MUST STILL NOT INVENT A SCHEME LIST, A HOST ALLOW-LIST, A BYTE CAP, A TIMEOUT OR A REDIRECT
+ * COUNT. The source names no host and states no figure, so every possible value of each is a fabrication
+ * that AAP §0.7.3 standard 9 and IR-12 forbid. The legacy's only budget is the 3600-second REQUEST
+ * timeout at `model/service/ProductService.cfc:L65-L68`, carried as mismatch M1.
  *
  * ⭐ THE ARGUMENT STAYS A PLAIN `string`, WHICH IS WHY THIS BLOCK IS PROSE AND NOT A TYPE. AAP §0.4.2.6
  * ratifies `ProductRepository.importFromFile(fileURL, textQualifier)`; re-branding the argument would
  * change that ratified shape, force every caller to mint a branded value, and turn this type-only module
- * into one that emits code. The obligation is therefore stated as a contract, and the shipped
- * implementation discharges the decidable part of it at its single retrieval seam — see
- * `assertRetrievableImportSource` in `src/adapters/mysql/MySqlProductRepository.ts`.
+ * into one that emits code. That was revision 1's defect and it stays withdrawn.
  *
- * ⚠️ THE RESIDUAL RISK IS REAL AND STAYS ON THE REGISTER AS MISMATCH M4, WHICH IS THE TREATMENT AAP
- * §0.8.3.6 PRESCRIBES. A host given as a NAME that resolves into a refused range cannot be convicted
- * without a lookup, and no layer that may only import `domain`, `ports`, `util` and `errors` can perform
- * one. That part is the implementation's to close, under the resolve-then-vet obligation above, and AAP
- * §0.6.6 M4 ("Remote file fetch inside the request") remains its register entry. No new mismatch
- * identifier is minted.
+ * ⚠️ THE FULL CWE-918 SURFACE IS THEREFORE CARRIED, AND IT STAYS ON THE REGISTER AS MISMATCH M4 — the
+ * treatment AAP §0.8.3.6 prescribes for exactly this situation. A caller-supplied location would be
+ * dereferenced server-side with no scheme test, no credential test, no address test and no
+ * resolve-then-vet step anywhere on the path from `model/service/ProductService.cfc:L65`. Inside a VPC
+ * that shape reaches internal services, a loopback admin port or an instance-metadata endpoint, and the
+ * response would be parsed and written into the catalog. Closing it is the operator's decision and
+ * arrives with whatever retrieving reader they inject. AAP §0.6.6 M4 ("Remote file fetch inside the
+ * request") remains its register entry; no new mismatch identifier is minted.
  * ============================================================================================== */
 
 /**
@@ -300,16 +302,18 @@ export interface ProductImportRedirectHop {
 /**
  * The operator-supplied policy every import reader must satisfy before it retrieves anything.
  *
- * ⭐ THIS INTERFACE IS THE REQUIRED CONTRACT SEC-08 DESCRIBES, AND IT DELIBERATELY DECIDES NOTHING. It
- * states which judgments an implementation must make — whether a location may be fetched, whether each
- * redirect hop may be followed given the address it resolves to, and what the transfer bounds are —
- * while naming no scheme, host, address range or number itself. That division is what lets the
- * obligation be mandatory without violating AAP §0.7.3 standard 9.
+ * ⭐ THIS INTERFACE IS THE WIRING SHAPE THE SEC-08 BLOCK DESCRIBES, AND IT DELIBERATELY DECIDES NOTHING.
+ * It states which judgments an operator who supplies retrieval must make — whether a location may be
+ * fetched, whether each redirect hop may be followed given the address it resolves to, and what the
+ * transfer bounds are — while naming no scheme, host, address range or number itself. That division is
+ * what lets the SHAPE be mandatory while no refusal is: a permissive implementation reproduces
+ * `model/dao/ProductDAO.cfc:L87` exactly, and AAP §0.7.3 standard 9 is not touched because this module
+ * chooses no value.
  *
  * ⛔ NO IMPLEMENTATION IN THIS SUBTREE RETRIEVES ANYTHING, so none of these members is answered with a
- * real policy here. The shipped reader refuses, for the reason established under SEC-08: the legacy
- * import cannot fetch at all, so a working retrieval client would ADD a capability the ported system
- * does not have.
+ * real policy here. The shipped reader declines every one of them, for the reason established under
+ * SEC-08: the legacy import cannot fetch at all, so a working retrieval client would ADD a capability the
+ * ported system does not have.
  */
 export interface ProductImportSourcePolicy {
   /**
@@ -349,66 +353,51 @@ export interface ProductImportSourcePolicy {
   readBounds(): ProductImportSourceBounds;
 }
 
-/**
- * Optional invocation-scoped controls on one import.
+/* ================================================================================================
+ * ⛔ `ProductImportOptions` IS WITHDRAWN — THE IMPORT TAKES EXACTLY THE LEGACY'S TWO ARGUMENTS
+ * (review finding F4)
+ * ==============================================================================================
+ * An interface stood here declaring two optional invocation-scoped controls on one import: a
+ * caller-supplied `AbortSignal`, observed before the retrieval, after the retrieval and at each row
+ * boundary; and a `deferBackfills` flag suppressing the two whole-catalog back-fills so an out-of-band
+ * workflow could run them once per logical import through a separately declared port member.
  *
- * ⚠️ IT HAS NO LEGACY ORIGIN, AND NEITHER FIELD CHANGES WHAT IS IMPORTED, IN WHAT ORDER, OR WITH WHAT
- * STATEMENTS. `model/dao/ProductDAO.cfc:L73` declares exactly two arguments and the importer then runs
- * to completion or dies with its request. Omitting this object — which every caller written before it
- * existed does — reproduces that behaviour exactly. Each field below records the legacy fact that makes
- * it a workflow control rather than a behavioural switch.
+ * ⭐ BOTH WERE CAREFULLY BUILT, AND NEITHER IS PERMITTED. Their own documentation stated the fatal fact
+ * plainly: "IT HAS NO LEGACY ORIGIN". `model/dao/ProductDAO.cfc:L73` declares exactly two arguments —
+ * `required string fileURL` and `string textQualifier=""` — and the importer then runs to completion or
+ * dies with its request; `:L288` and `:L304` sit outside every boundary AND outside every branch, so both
+ * back-fills always run. AAP §0.6.7.7 declares D18, the importer's SQL parameterisation, "the single place
+ * where the port intentionally does not preserve legacy behavior exactly", AAP §0.8.2 Guideline 4 forbids
+ * enhancement "beyond what the migration requires", and AAP §0.7.3 S9 / IR-12 forbid inventing runtime
+ * controls the source does not state. A control that is optional and defaults to legacy behaviour is still
+ * a control the legacy has no way to express.
  *
- * ⚠️ AND NO DURATION LIVES HERE. There is no timeout field, no deadline field and no default of either,
- * because AAP §0.7.3 S9 forbids inventing one: the legacy's only budget is the 3600-second REQUEST
- * timeout `model/service/ProductService.cfc:L65-L68` asks the CFML engine for, recorded as mismatch M1
- * precisely because no single invocation of the target runtime can represent it.
- */
-export interface ProductImportOptions {
-  /**
-   * An invocation-scoped cancellation signal, observed at existing I/O and row boundaries only.
-   *
-   * ⚠️ IT IS NOT A TIMEOUT AND IT IS NOT DERIVED FROM ONE. The signal is whatever the caller already
-   * holds — a handler's own invocation-scoped controller, typically. Absent it, behaviour is unchanged.
-   *
-   * ⚠️ WHERE IT IS OBSERVED, AND WHY ONLY THERE. Before the retrieval, after the retrieval, and at each
-   * row boundary before that row's first statement — never inside a transaction, never between two
-   * statements of one row, never mid-statement. Aborting between rows produces exactly the M3
-   * partial-import shape a mid-file data failure already produces: rows before it committed, the
-   * aborting row's own transaction rolled back with nothing written, and no later row attempted.
-   * Aborting anywhere else would invent an outcome the legacy cannot produce.
-   *
-   * Cancellation surfaces as a thrown error naming the phase and, at a row boundary, the row number and
-   * the count of rows already committed. It is not swallowed and not reported as success, because the
-   * member's `void` return has no channel in which to report it.
-   */
-  readonly signal?: AbortSignal;
-
-  /**
-   * Suppress the two whole-catalog back-fills so the caller can run them once, later, via
-   * {@link ProductRepository.backfillImportDerivedColumns}.
-   *
-   * ⚠️ THE DEFAULT — omitted or `false` — IS THE LEGACY'S OWN BEHAVIOUR, UNCONDITIONALLY.
-   * `model/dao/ProductDAO.cfc:L288` and `:L304` sit outside every boundary AND outside every branch, so
-   * they run after an empty file and after the `.xls` no-op too. That is what happens when this is unset.
-   *
-   * ⚠️ IT IS A DEFERRAL, NOT A SUPPRESSION, AND NOT A NARROWING. Neither statement is changed, guarded on
-   * a record count, restricted to the identifiers an import touched, or given a `LIMIT`. A workflow that
-   * defers and never invokes the back-fill member leaves products without default SKUs and SKUs without
-   * image file names — state a legacy import never leaves behind. The obligation transfers to the caller;
-   * it does not disappear.
-   */
-  readonly deferBackfills?: boolean;
-}
+ * ⛔ AND THE PORT MEMBER THAT EXISTED TO SERVE THE DEFERRAL IS WITHDRAWN WITH IT. A sixth member,
+ * `backfillImportDerivedColumns()`, exposed the two untransacted statements at
+ * `model/dao/ProductDAO.cfc:L287-L325` as a separately invocable step. It added no behaviour, but its ONLY
+ * stated justification was the deferred-back-fill workflow, so with the flag gone it is surplus public
+ * surface rather than a ported member. The two statements are unchanged and still run — unconditionally,
+ * outside every transaction, in the legacy's order — at the end of
+ * {@link ProductRepository.importFromFile}, which is where `model/dao/ProductDAO.cfc` runs them.
+ *
+ * ⚠️ WHAT IS *NOT* CLAIMED BY THIS WITHDRAWAL. Mismatch M1 does not go away: AAP §0.6.6 records that the
+ * legacy's 3600-second request budget (`model/service/ProductService.cfc:L65-L68`) is unrepresentable in a
+ * single invocation of the target runtime, and it remains FLAGGED rather than resolved — which is exactly
+ * what AAP §0.8.3.6 asks for. The right place for an out-of-band model is the handler layer, where AAP
+ * §0.4.1.9 flags it, and it is not reached by widening this contract.
+ * ============================================================================================= */
 
 /**
- * The product-side repository boundary: SIX members, of which the three public members of
- * `model/dao/ProductDAO.cfc` are the ported core and three are additive. The count is stated up front
- * rather than only in the reconciliation below, because review finding F3 was caused by a leading
+ * The product-side repository boundary: FIVE members, of which the three public members of
+ * `model/dao/ProductDAO.cfc` are the ported core and two are additive. The count is stated up front
+ * rather than only in the reconciliation below, because an earlier review finding was caused by a leading
  * three-member claim being read as the whole surface.
  *
- * The count was SEVEN in an earlier revision. The seventh was a bounded product search that no service,
- * handler or integration ever reached; its deliberate removal is recorded in full under the ⛔ heading
- * below, so the drop from seven to six is a documented withdrawal rather than an omission.
+ * The count has fallen twice, and both drops are documented withdrawals rather than omissions. It was
+ * SEVEN: the seventh was a bounded product search that no service, handler or integration ever reached,
+ * recorded in full under the ⛔ heading below. It was then SIX: the sixth was
+ * `backfillImportDerivedColumns()`, withdrawn under review finding F4 with the deferred-back-fill control
+ * that was its only justification — recorded in the withdrawal block above `ProductRepository` itself.
  *
  * Method names follow the renames fixed by AAP 0.4.2.6. Argument names, argument order and
  * required-versus-optional status are preserved exactly as declared in the legacy source, per
@@ -424,20 +413,18 @@ export interface ProductImportOptions {
  * observed contract rather than an inconsistency to resolve; harmonising the types would
  * silently change behaviour at whichever call path was "corrected".
  *
- * ⚠️ AND THE MEMBER COUNT IS NOW SIX, NOT THREE, WITHOUT THAT CONTRADICTING THE SENTENCE ABOVE. Three
- * members are the legacy's three public DAO members. The other THREE are ADDITIVE and each is documented
+ * ⚠️ AND THE MEMBER COUNT IS FIVE, NOT THREE, WITHOUT THAT CONTRADICTING THE SENTENCE ABOVE. Three
+ * members are the legacy's three public DAO members. The other TWO are ADDITIVE and each is documented
  * at its own declaration:
  *
- *   `backfillImportDerivedColumns`   exposes the two untransacted statements `importFromFile` already
- *                                    runs at `model/dao/ProductDAO.cfc:L287-L325`, so the out-of-band M1
- *                                    workflow can run them once per logical import.
  *   `saveProduct`                    the write `ProductService` requires and no adapter supplied — the
  *                                    F03 account is on the declaration itself.
  *   `removeProduct`                  its delete-path mirror, reached through `EntityRemover`.
  *
- * None adds behaviour and none replaces a legacy member. The first re-expresses statements the legacy
- * already issued; the other two port writes the mapping layer emitted IMPLICITLY at flush time from the
- * property metadata at `model/entity/Product.cfc:L52-L99`, which AAP §0.4.1.7 gives to the adapter layer.
+ * Neither adds behaviour and neither replaces a legacy member: both port writes the mapping layer emitted
+ * IMPLICITLY at flush time from the property metadata at `model/entity/Product.cfc:L52-L99`, which AAP
+ * §0.4.1.7 gives to the adapter layer. (A THIRD additive member, `backfillImportDerivedColumns`, was
+ * listed here and is withdrawn under review finding F4 — see the block above.)
  *
  * ==================================================================================================
  * ⛔ A BOUNDED PRODUCT SEARCH IS DELIBERATELY ABSENT, AND IT USED TO BE DECLARED HERE
@@ -451,22 +438,21 @@ export interface ProductImportOptions {
  * declaration, that implementation, and the test double — and none in any service, handler or
  * integration.
  *
- * ⚠️ AND THAT IS NO LONGER A CONTRAST WITH ITS SIBLINGS, WHICH IS WORTH STATING PLAINLY RATHER THAN
- * LEAVING AS A CLAIM THAT HAS QUIETLY EXPIRED. This paragraph used to add that every OTHER bounded member
- * in the slice was reached from a routed service member — `SkuRepository.searchByProductTypeBounded` from
- * `SkuService.searchSkusByProductTypeBounded`, and the two `OptionRepository` bounded reads from
- * `OptionService`. That is now FALSE in both halves: the routed service members were themselves withdrawn
- * for exceeding the surfaces AAP §0.4.2.2 and §0.4.2.4 ratify, so `SkuRepository.searchByProductTypeBounded`
- * and both `OptionRepository` bounded reads are today reached from no service, handler or integration
- * either. They remain declared, implemented, doubled and gated in their own adapter suites.
+ * ⭐ AND THE ASYMMETRY THIS PARAGRAPH USED TO FLAG HAS SINCE BEEN RESOLVED THE SAME WAY, WHICH IS WORTH
+ * STATING PLAINLY RATHER THAN LEAVING AS A CLAIM THAT HAS QUIETLY EXPIRED. It once read that every OTHER
+ * bounded member in the slice was reached from a routed service member —
+ * `SkuRepository.searchByProductTypeBounded` from `SkuService.searchSkusByProductTypeBounded`, and the two
+ * `OptionRepository` bounded reads from `OptionService`; then that those service members had themselves
+ * been withdrawn, leaving three declared-but-callerless repository members standing beside this removed
+ * one. All three have now been withdrawn as well, at their own declaration and implementation sites, so
+ * NO BOUNDED REPOSITORY MEMBER SURVIVES ANYWHERE IN THIS FOLDER and this file's absence is the rule
+ * rather than the exception.
  *
- * ⭐ THE ASYMMETRY IS THEREFORE FLAGGED, NOT RESOLVED HERE, AND THE WITHDRAWAL DOES NOT REST ON IT. Three
- * bounded repository members are retained while a fourth was removed, and after the service-side
- * withdrawals the four are alike in having no caller. What still separates this one is the paragraph
- * below: a caller for it could not be added without declaring a SIXTEENTH `ProductService` member, whereas
- * the other three sit behind services whose ratified surfaces could legitimately regain a bounded member.
- * Callerlessness was the observation that prompted the removal; the ratified-surface argument is the ground
- * that carries it.
+ * ⚠️ THE GROUND FOR THIS ONE IS STILL THE STRONGER OF THE TWO, AND IT IS THE GROUND THAT CARRIES IT.
+ * Callerlessness was the observation that prompted every one of the four removals; what separates this
+ * one is the paragraph below — a caller for it could not be added without declaring a SIXTEENTH
+ * `ProductService` member, whereas the other three sat behind services whose ratified surfaces could
+ * legitimately regain a bounded member if a routed need for one ever appeared.
  *
  * AND IT COULD NOT ACQUIRE ONE WITHOUT BREAKING THE RATIFIED SURFACE. AAP §0.4.2.1 fixes
  * `ProductService` at FIFTEEN public members and none of them is a product search — the legacy
@@ -615,14 +601,14 @@ export interface ProductRepository {
    * at `model/dao/ProductDAO.cfc:L262` it reads a Mura CMS content table, which belongs to a
    * different application altogether and has no port in this plan.
    *
-   * ⛔ THE LOCATION IS A PLAIN `string`, BUT IT IS NOT A PLAIN *UNCHECKED* STRING, AND THE SEC-08 BLOCK
-   * ABOVE CARRIES THE WHOLE ACCOUNT. In short: the legacy checks nothing on this path, and because its
-   * retrieval collaborator does not exist there is no legacy outcome a refusal could change — so an
-   * implementation MUST refuse a non-HTTP(S) scheme, credentials embedded in the URL, and a host that is
-   * an address literal in a loopback, private, link-local, unique-local, unspecified or
-   * instance-metadata range; and it MUST resolve the host, vet the result, connect to the address it
-   * vetted, and re-validate every redirect. It must still NOT invent a host allow-list, a byte cap, a
-   * timeout or a redirect count. The part only a lookup can decide stays on the register as mismatch M4.
+   * ⛔ THE LOCATION IS A PLAIN, UNCHECKED `string`, AND THE SEC-08 BLOCK ABOVE CARRIES THE WHOLE ACCOUNT.
+   * In short: the legacy checks nothing on this path, and neither does this port — a revision required
+   * every implementation to refuse hostile schemes, URL credentials and address literals, and that
+   * obligation is WITHDRAWN because AAP §0.6.7.7 authorises exactly one behavioural departure here (D18)
+   * and AAP §0.8.2 Guideline 4 admits no proportionality test. An implementation that retrieves must carry
+   * a {@link ProductImportSourcePolicy}, and what that policy admits is the operator's decision, not this
+   * port's; it must still NOT invent a scheme list, a host allow-list, a byte cap, a timeout or a redirect
+   * count. The whole CWE-918 surface stays on the register as mismatch M4.
    *
    * ⚠️ AND THE ONE THING NOT TO DO: do not fetch inside the per-row transaction. Mismatch M4 records
    * that the legacy performs network retrieval inside the transaction-bearing request, compounding M1
@@ -633,59 +619,24 @@ export interface ProductRepository {
    *   caller supplied it. Occupies the first argument position of `model/dao/ProductDAO.cfc:L73`, where
    *   it is declared `required string fileURL`; the name, type, arity and argument order all match that
    *   declaration (TR-1). The file type is still derived from the extension inside the implementation,
-   *   at `model/dao/ProductDAO.cfc:L74`. ⚠️ "EXACTLY AS THE CALLER SUPPLIED IT" IS NOW LOAD-BEARING
-   *   RATHER THAN INCIDENTAL: no caller may trim, normalise, re-encode or otherwise rewrite this
-   *   argument, because the refusals the SEC-08 block requires are evaluated against the string that
-   *   arrives here, and a transformation applied upstream of them would be evaluated against nothing.
+   *   at `model/dao/ProductDAO.cfc:L74`. ⚠️ "EXACTLY AS THE CALLER SUPPLIED IT" IS LOAD-BEARING RATHER
+   *   THAN INCIDENTAL, AND STAYS SO AFTER THE SEC-08 WITHDRAWAL: `:L74` derives the delimiter from the RAW
+   *   string, so a trim, a lower-casing or a re-encode upstream could change which delimiter is chosen;
+   *   and whatever an operator's policy is evaluated against, it is evaluated against the string that
+   *   arrives here, so a transformation applied above it would be evaluated against nothing.
    * @param textQualifier - Optional text qualifier, defaulting to empty per
    *   `model/dao/ProductDAO.cfc:L73`.
-   * @param options - Optional invocation-scoped controls. Both are ADDITIONS with no legacy origin and
-   *   neither changes what is imported, in what order, or with what statements. `signal` lets the caller
-   *   cancel at an existing I/O or row boundary; `deferBackfills` lets the out-of-band M1 workflow run
-   *   the two whole-catalog back-fills once per logical import rather than once per invocation, via
-   *   {@link ProductRepository.backfillImportDerivedColumns}. Omitting the object reproduces the legacy
-   *   import exactly, which is what every pre-existing caller does. NO timeout, deadline or duration is
-   *   defined by this port (AAP §0.7.3 S9); the legacy's own 3600-second budget is a request timeout owned
-   *   by `model/service/ProductService.cfc:L65-L68` and recorded as mismatch M1.
+   * ⛔ AND THERE IS NO THIRD ARGUMENT. A `ProductImportOptions` object once occupied one, carrying a
+   *   cancellation signal and a back-fill deferral flag; review finding F4 withdrew both, because
+   *   `model/dao/ProductDAO.cfc:L73` declares exactly TWO arguments and AAP §0.6.7.7 admits one
+   *   behavioural exception, D18. The withdrawal block above `ProductRepository` carries the reasoning. NO
+   *   timeout, deadline or duration is defined by this port either (AAP §0.7.3 S9); the legacy's own
+   *   3600-second budget is a REQUEST timeout owned by `model/service/ProductService.cfc:L65-L68` and
+   *   carried, unresolved, as mismatch M1.
    * @returns Nothing. Resolution carries no report of what was imported; see the return-contract note
    *   above.
    */
-  importFromFile(
-    fileURL: string,
-    textQualifier?: string,
-    options?: ProductImportOptions,
-  ): Promise<void>;
-
-  /**
-   * Run the two whole-catalog back-fills the import ends with, as an explicitly invocable step.
-   *
-   * Legacy origin: `model/dao/ProductDAO.cfc:L287-L325`. `:L288-L302` sets the default SKU on every
-   * product that still lacks one, and `:L303-L325` derives each SKU's image file name from its product.
-   * Both sit past the closing braces of the per-row transaction (`:L284`) and the record loop (`:L285`),
-   * so BOTH RUN OUTSIDE EVERY TRANSACTION, in that order, and neither can be rolled back.
-   *
-   * ⚠️ THIS MEMBER ADDS NO BEHAVIOUR AND CHANGES NEITHER STATEMENT. Same two statements, same order, same
-   * untransacted execution, same whole-catalog reach. It is not guarded on a record count, not restricted
-   * to the identifiers any particular import touched, and carries no `LIMIT` — narrowing any of that would
-   * change which rows are updated, which AAP §0.8.2 Guideline 4 forbids and which the review conditions on
-   * a parity exception this port does not claim.
-   *
-   * ⭐ WHY IT IS EXPOSED SEPARATELY. {@link ProductRepository.importFromFile} still runs both by default,
-   * so the legacy end-to-end shape is unchanged for every existing caller. But AAP §0.6.6 M1 establishes
-   * that a 3600-second import cannot be represented in one invocation of the target runtime and must be
-   * carried by an out-of-band workflow. Such a workflow importing a catalog across several invocations
-   * would otherwise repeat two full-table passes for every chunk. Passing `deferBackfills` on the chunks
-   * and invoking this member once at the end performs exactly the same two statements, in the same order,
-   * over the same rows — once per logical import.
-   *
-   * ⚠️ AND IT IS AN OBLIGATION, NOT AN OPTION. A workflow that defers the back-fills and never invokes
-   * this member leaves products without default SKUs and SKUs without image file names — state a legacy
-   * import never leaves behind. Deferring transfers the obligation to the caller; it does not remove it.
-   *
-   * @returns Nothing, for the same reason the import returns nothing: the legacy statements report no
-   *   summary and `:L302` and `:L325` are executed for effect alone.
-   */
-  backfillImportDerivedColumns(): Promise<void>;
+  importFromFile(fileURL: string, textQualifier?: string): Promise<void>;
 
   /**
    * Type-ahead search over product names, optionally narrowed to a set of product types.
@@ -788,7 +739,7 @@ export interface ProductRepository {
    * product this port had just read NULLED all three foreign keys — silently, with no error and no
    * failing type — since the FK column IS where each of those links lives. A smart-list consumer had no
    * recovery either, because `SmartListQueryBuilder.execute` discards its rows once mapped.
-   * `src/adapters/mysql/catalogAggregates.ts` upgrades those references to fully loaded entities for the
+   * `src/adapters/mysql/QueryRunner.ts` upgrades those references to fully loaded entities for the
    * callers that need the graph; nothing here depends on that having happened.
    *
    * ⛔ AND `defaultSkuID` CANNOT BE WRITTEN ON THE INSERT OF A NEW PRODUCT'S FIRST SAVE. The two tables

@@ -194,10 +194,13 @@
  *
  * What is consequently absent, all deliberate:
  *   - No import from `../adapters/`, `../validation/` or `../util/`, and no import of another service.
- *     `../config/container` is reached from ONE place only — the LAMBDA ENTRY POINT section at the foot of
- *     this file, through a DEFERRED CommonJS require evaluated on first invocation, because the bundle
- *     built from this file has to carry a `handler` the runtime can address; a native dynamic `import()`
- *     was measured to be unusable there and that section records why. Its type is imported type-only and
+ *     `../config/container`'s `getOptionSurfaceGraph` is reached from ONE place only — the LAMBDA ENTRY POINT section at
+ *     the foot of this file, through a DEFERRED CommonJS require evaluated on first invocation, because the
+ *     bundle built from this file has to carry a `handler` the runtime can address; a native dynamic
+ *     `import()` was measured to be unusable there and that section records why. That section reaches the
+ *     option SURFACE rather than the aggregate `../config/container`, because a review pass (PERF-01)
+ *     measured this three-route artifact carrying the whole catalog graph, which the container names in
+ *     full. Its type is imported type-only and
  *     is erased. {@link createOptionHandler} still constructs no collaborator and resolves nothing by name,
  *     and module LOAD still touches no configuration and opens no pool (S3).
  *     ⚠️ THE ONE IMPORT FROM `../ports/` IS TYPE-ONLY AND IS THE HEXAGONAL DIRECTION, NOT AN EXCEPTION
@@ -287,7 +290,7 @@ import {
   readJsonObjectBody,
   readPathParameter,
   readQueryStringParameter,
-  resolveFailClosedAuthorization,
+  resolveRequestAuthorization,
   unauthorizedResponse,
 } from './httpResponse';
 
@@ -1224,13 +1227,44 @@ export type OptionRouteKey =
  * Builds the option handler from the composition root.
  *
  * The wiring lives here rather than in `./router.ts` because this file knows which collaborators the
- * option surface needs. Both dependencies are the ones {@link createOptionHandler} declares.
+ * option surface needs.
+ *
+ * ⭐ THE RESOLVER IS A PARAMETER, AND AN EARLIER REVISION HARD-WIRED IT. It passed
+ * `resolveFailClosedAuthorization` as a literal argument, so no deployment could supply a principal
+ * through anything it can reach and every option action answered `401` permanently. A code review
+ * classified that as a CRITICAL callable-boundary defect; the remedy it directed is this parameter plus
+ * the registration seam in `./httpResponse.ts` §8.1, which the default consults on EVERY invocation
+ * rather than capturing a context when this factory runs.
+ *
+ * ⚠️ THE PARAMETER IS NARROWED TO THE MEMBERS THIS SURFACE READS, AND THE NARROWING IS LOAD-BEARING.
+ * It used to be the whole `CatalogContainer`, which meant only the aggregate graph could satisfy it — and
+ * the aggregate graph is every collaborator of the slice. Asking for just these members lets BOTH the
+ * aggregate root (`../config/container.ts`, which `./router.ts` passes) and this entry's own narrow graph
+ * (`../config/container.ts`'s `getOptionSurfaceGraph`) satisfy it, which is what keeps this factory
+ * exercisable with an object literal instead of a whole graph (PERF-01). The type import of the container
+ * stays: a `type` position is erased at emit, so it adds no load-time edge.
+ *
+ * ⚠️ WHAT THE NARROWING NO LONGER BUYS, STATED SO THE CLAIM MATCHES THE TREE. An earlier revision put the
+ * narrow graph in its own module, `src/config/surfaces/optionSurface.ts`, and this note said the narrowing
+ * removed this artifact's module EDGE to collaborators no route here can reach. AAP §0.3.1 enumerates 102
+ * files and that module was not among them, so it is folded into the composition root: requiring the root
+ * now reaches the whole of it, and the bundler can no longer drop the unreached half per artifact. That is a
+ * package-SIZE consequence and nothing more — the finding itself labelled the figure a disclosure rather
+ * than a budget, and IR-12 forbids restating it as a threshold. What survives is the load-bearing half: the
+ * accessor still composes and memoises only this surface's collaborators, so a warm invocation constructs
+ * exactly what this entry can reach, and this parameter still accepts a literal.
  *
  * @param container the memoized service graph
+ * @param resolveAuthorization the per-invocation authorisation resolver. Defaults to
+ *   `./httpResponse.ts`'s registered-resolver reader — the deployment's resolver when one is
+ *   registered, the constant deny-all context otherwise, so the default remains fail-closed.
  * @returns the three routed option operations
  */
-export function createOptionHandlerFromContainer(container: CatalogContainer): OptionHandler {
-  return createOptionHandler(container.optionService, resolveFailClosedAuthorization);
+export function createOptionHandlerFromContainer(
+  container: Pick<CatalogContainer, 'optionService'>,
+  resolveAuthorization: RequestAuthorizationResolver<OptionAuthorizationEvent> = resolveRequestAuthorization,
+): OptionHandler {
+  return createOptionHandler(container.optionService, resolveAuthorization);
 }
 
 /**
@@ -1275,12 +1309,20 @@ export function createOptionRoutes(handlers: OptionHandler): ActionRouteTable<Op
 let dispatchOptionAction: ActionRoute | undefined;
 
 /**
- * The shape `../config/container` publishes, used to type the deferred require inside {@link handler}.
+ * The shape `../config/container`'s `getOptionSurfaceGraph` publishes, used to type the deferred require inside
+ * {@link handler}.
  *
  * `typeof import(...)` is a TYPE position only. It is erased at emit, so it adds no load-time edge from
  * this file to the composition root — which is the entire point of resolving the graph lazily.
+ *
+ * ⭐ IT NAMES THIS SURFACE, NOT THE AGGREGATE ROOT, AND THAT ONE SPECIFIER IS THE WHOLE OF PERF-01 ON THIS
+ * ENTRY. `../config/container.ts` names all thirty-one collaborators of the slice, so a `require` of it
+ * made every one of them reachable from this artifact and constructed every one of them on the first
+ * invocation. `../config/container.ts`'s folded option-surface section composes only what these routes can reach — and it does so
+ * by calling the SAME `compose*Surface` function the aggregate root calls, so the two cannot diverge on how
+ * any service is assembled.
  */
-type CatalogContainerModule = typeof import('../config/container');
+type OptionSurfaceModule = typeof import('../config/container');
 
 /**
  * The Lambda entry point for the option surface.
@@ -1331,9 +1373,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
        * start while this entry stays loadable and answers the classified configuration failure per
        * invocation.
        */
-      // eslint-disable-next-line @typescript-eslint/no-require-imports -- deliberate; see above
-      const { getCatalogContainer } = require('../config/container') as CatalogContainerModule;
-      const container = getCatalogContainer();
+      const { getOptionSurfaceGraph } =
+        // eslint-disable-next-line @typescript-eslint/no-require-imports -- deliberate; see above
+        require('../config/container') as OptionSurfaceModule;
+      const container = getOptionSurfaceGraph();
 
       dispatchOptionAction = createActionDispatcher<OptionRouteKey>({
         routes: createOptionRoutes(createOptionHandlerFromContainer(container)),
@@ -1361,3 +1404,56 @@ type _OptionHandlerSatisfiesLambdaContract = AssertHandlerAssignable<
   typeof handler,
   APIGatewayProxyHandler
 >;
+
+/* ================================================================================================
+ * THE DEPLOYMENT REGISTRATION SEAM, RE-EXPORTED SO IT IS REACHABLE FROM THE PACKAGED ARTIFACT
+ * ============================================================================================== */
+
+/*
+ * ⭐ THIS ARTIFACT SERVES THE GATED OPTION SURFACE, so a deployment that mounts `handler` above — rather
+ * than `./router.ts`'s aggregate — needs the registration seam on THIS module. Every option route is
+ * gated, so without a registered resolver this artifact answers `401` and nothing else.
+ */
+/*
+ * ⛔ WHY A RE-EXPORT IS NECESSARY AND NOT MERELY TIDY. `registerRequestAuthorizationResolver` is declared
+ * in `./httpResponse.ts` §8.1, which is NOT a build entry point — `build/esbuild.mjs` lists it under
+ * `NON_ENTRY_HANDLER_MODULES` precisely because it is a shared helper. esbuild therefore INLINES it into
+ * every entry it bundles, and an inlined module's exports do not survive: a deployment that requires the
+ * emitted artifact sees only what the ENTRY module exports. Measured before this block existed,
+ * `Object.keys(require('./dist/handlers/router.js'))` was exactly `['createRouter', 'handler']`, and the
+ * registration function appeared nowhere in any of the five gated bundles.
+ *
+ * ⛔ THAT IS THE SAME DEFECT SHAPE THE REVIEW RAISED, ONE LAYER OUT. CQ-1's first remedy — the optional
+ * `resolveAuthorization` parameter this module already accepts — serves a deployment that compiles its own
+ * entry module against the SOURCE. It does nothing for one that takes a packaged bundle as it stands, and
+ * `README.md` §7.2 promises that second route in as many words. A seam documented as callable that no
+ * caller can reach is what CQ-1 was about; leaving the registrar unexported would have reproduced it.
+ *
+ * ⭐ WHAT THE RE-EXPORT MAKES REACHABLE IS A REGISTRAR, NOT A PRINCIPAL. §8.1 holds one module-scope cell
+ * containing the deployment's resolver FUNCTION, read inside every invocation's call rather than when the
+ * graph was composed, so nothing is memoized across invocations and AAP §0.6.6 M7 is untouched. The four
+ * gated factories already default their resolver to §8.1's `resolveRequestAuthorization`, which is the
+ * reader of that cell — so a resolver registered during initialisation is honoured by this artifact even
+ * though its dispatcher was built at module load.
+ *
+ * ⚠️ AND IT CHANGES NO ANSWER BY ITSELF. Nothing in this subtree calls either function, so a graph built
+ * by this port alone still resolves no principal and every gated route still answers `401`. Re-exporting a
+ * registrar is not registering one, and this module still parses no header, decodes no token and verifies
+ * no signature — AAP §0.2.2.3 excludes the legacy authentication adapters and §0.8.3.2 forbids carrying
+ * `org/Hibachi/**` forward, so the identity itself remains the deployment's to supply.
+ *
+ * `clearRequestAuthorizationResolver` travels with it because the only thing it can do is take a gate
+ * AWAY: it resets the cell to absent, which is the fail-closed state, so exposing it cannot relax
+ * anything. A deployment able to register must be able to unwind that registration — in a harness, or
+ * between two configuration attempts — without discarding the module registry.
+ *
+ * The two types are re-exported for the same reason the functions are: a deployment writing a resolver
+ * against a packaged artifact needs the shape it must satisfy, and `CatalogAuthorizationRequest` is the
+ * one request slice — `Pick<APIGatewayProxyEvent, 'headers'>` — that serves all four gated surfaces.
+ */
+export {
+  clearRequestAuthorizationResolver,
+  registerRequestAuthorizationResolver,
+} from './httpResponse';
+
+export type { CatalogAuthorizationRequest, CatalogAuthorizationResolver } from './httpResponse';

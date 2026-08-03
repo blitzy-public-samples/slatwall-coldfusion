@@ -574,7 +574,7 @@ export interface ProductUnusedOptionFinder {
 /**
  * Reports whether any transaction exists — the capability `getTransactionExistsFlag` needs.
  *
- * ⚠️ D23 — `productID` IS ACCEPTED AND FORWARDED. EARLIER PROSE HERE ARGUED THE OPPOSITE AND WAS
+ * ⚠️ the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] — `productID` IS ACCEPTED AND FORWARDED. EARLIER PROSE HERE ARGUED THE OPPOSITE AND WAS
  * WRONG ABOUT CFML. [model/entity/Product.cfc:L626] passes the named argument
  * `productID=this.getProductID()`, and the service member it calls does declare no formal parameters
  * at `model/service/SkuService.cfc:L285`. The mistaken inference was that the argument is therefore
@@ -2773,7 +2773,7 @@ export class Product implements AuditableEntity, ManagedEntity {
    *     variables.transactionExistsFlag = the dynamic sku-service lookup, then
    *         .getTransactionExistsFlag( productID=this.getProductID() )
    *
-   * ⚠️⚠️ D23 — `productID` IS FORWARDED, WHICH MAKES THE LEGACY FLAG PRODUCT-SCOPED. [:L626] passes a
+   * ⚠️⚠️ the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] — `productID` IS FORWARDED, WHICH MAKES THE LEGACY FLAG PRODUCT-SCOPED. [:L626] passes a
    * NAMED `productID` argument, and the service member it calls declares no formal parameters —
    * [model/service/SkuService.cfc:L285] is `public boolean function getTransactionExistsFlag()`. It
    * would be easy to infer from that signature that the argument is dropped and the flag is
@@ -2800,10 +2800,9 @@ export class Product implements AuditableEntity, ManagedEntity {
    * reproducing it.
    *
    * That outcome is therefore preserved BY forwarding, not by withholding. No new defect identifier is
-   * minted here — this is D23, minted and accounted for at
+   * minted here — this is the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287], minted and accounted for at
    * `src/ports/repositories/SkuRepository.ts`, which also records that AAP §0.6.7 is frozen at D1–D21
-   * while the port has minted D22–D24 beyond it. No claim is made here about any register being globally
-   * closed; a single file cannot prove that.
+   * and AAP §0.6.6 at M1–M8, and that nothing in this port mints an identifier beyond either range.
    *
    * VALIDATION-SUPPORT MEMBER, and that is WHY it is retained under §0.2.2.6's positive list rather
    * than dropped as a service reach-through: `model/validation/Product.json:L12` declares a delete-time
@@ -2837,7 +2836,7 @@ export class Product implements AuditableEntity, ManagedEntity {
     if (memoizedFlag !== undefined) {
       return memoizedFlag;
     }
-    // D23: productID occupies the SECOND parameter. The first MUST stay `undefined` — a supplied
+    // PARITY (model/service/SkuService.cfc:L285-L287): productID occupies the SECOND parameter. The first MUST stay `undefined` — a supplied
     // skuID wins at SkuDAO.cfc:L58-L64 and would suppress the product-scoped branch at :L61.
     const resolvedFlag = await transactionChecker.getTransactionExistsFlag(
       undefined,
@@ -3032,7 +3031,7 @@ export class Product implements AuditableEntity, ManagedEntity {
    *                            SCOPE matters: this guard reads whatever that member reports, so a
    *                            product-scoped answer permits deleting an untransacted product while a
    *                            system-wide answer would block every product in any installation that
-   *                            has ever recorded a transaction. D23 — that member forwards
+   *                            has ever recorded a transaction. the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] — that member forwards
    *                            `this.productID`, matching [model/entity/Product.cfc:L626].
    *   `physicalCounts`         maximum collection size of ZERO.
    *                            S9 — `physicalCounts` IS DECLARED BY NO ENTITY IN THIS SLICE. All

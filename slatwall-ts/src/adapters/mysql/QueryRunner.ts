@@ -143,12 +143,26 @@ import {
   DomainError,
   UniqueConstraintViolationError,
 } from '../../errors/DomainError';
-import { toRows } from './rowMappers';
+import { SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE } from '../../domain/BaseProductType';
+import {
+  mapBrandRow,
+  mapOptionGroupRow,
+  mapOptionRow,
+  mapProductRow,
+  mapProductTypeRow,
+  mapSkuRow,
+  toRows,
+} from './rowMappers';
 
+import type { Option } from '../../domain/option/Option';
+import type { OptionGroup } from '../../domain/option/OptionGroup';
+import type { Product, ProductDefaultSkuDelegate } from '../../domain/product/Product';
+import type { Sku } from '../../domain/sku/Sku';
+import type { SmartListEntityName } from '../../ports/SmartListQueryPort';
 import type { MySqlRow } from './rowMappers';
 
 /* ================================================================================================
- * TODO(parity) D22 — THE LEGACY TREE SPEAKS TWO TABLE VOCABULARIES AT ONCE, AND BOTH ARE CORRECT
+ * TODO(parity) the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] — THE LEGACY TREE SPEAKS TWO TABLE VOCABULARIES AT ONCE, AND BOTH ARE CORRECT
  * ================================================================================================
  * This is the single most consequential design decision in this file, and getting it wrong produces
  * code that compiles, passes every test anybody happens to write, and then fails at run time the
@@ -227,11 +241,11 @@ import type { MySqlRow } from './rowMappers';
  * flagging it.
  *
  * THIS FILE MINTS NO NEW DEFECT OR MISMATCH IDENTIFIER, and no global closure claim is made here:
- * the register is stated canonically, and only once, in the header of
- * `src/ports/repositories/SkuRepository.ts` (AAP 0.6.7's frozen source range D1-D21, plus the
- * source extension D22 and the three contract corrections D23, D24 and D25, with no D26 or beyond;
- * and AAP 0.6.6's M1-M8 plus M9, with no M10 or beyond). It CITES D22, D8, M3, M5, M6 and M7 and
- * records every other finding by `path:Lnnn` locator alone. It does not OWN any of them: D22's
+ * the two registers are stated canonically, and only once, in the header of
+ * `src/ports/repositories/SkuRepository.ts`, and BOTH ARE FROZEN AT THE AAP's OWN BOUNDS — AAP
+ * 0.6.7's D1-D21 and AAP 0.6.6's M1-M8. Nothing in this port mints an identifier beyond either
+ * range; a further source observation is recorded by its `path:Lnnn` locator instead. It CITES the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132], D8, M3, M5, M6 and M7 and
+ * records every other finding by `path:Lnnn` locator alone. It does not OWN any of them: the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132]'s
  * home is that same SKU port, M3 and M5 belong to `UnitOfWork.ts`, and M7 binds every memoising
  * site rather than belonging to one.
  * ============================================================================================== */
@@ -266,7 +280,7 @@ import type { MySqlRow } from './rowMappers';
  * SKU link tables above satisfy and is declared. The other nine name `Content`, `Category`,
  * `PromotionReward` (twice), `PromotionQualifier` (twice), `PriceGroupRate`, `Vendor` and `Physical`,
  * every one of which AAP §0.2.2.1 excludes, and their link tables are NOT declared here. That is the
- * boundary holding rather than a gap: `MySqlProductPersistence.ts` clears them through an injected
+ * boundary holding rather than a gap: `MySqlProductRepository.ts` clears them through an injected
  * collaborator whose implementation belongs to whoever owns those families (TR-5), so no excluded
  * family's table identifier is ever composed inside this subtree.
  */
@@ -304,7 +318,7 @@ export type PhysicalTableName = (typeof PHYSICAL_TABLE_NAMES)[number];
  * The application key the framework prefixes onto an entity name to form its logical form.
  *
  * `org/Hibachi/HibachiDAO.cfc` compares against `getApplicationKey()` at `:L8`, `:L30`, `:L40`, `:L81`
- * and `:L104` and prepends it when absent; the six `entityname` values in the D22 table above are the
+ * and `:L104` and prepends it when absent; the six `entityname` values in the the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] table above are the
  * observed result, so the key is this literal. Held lower-cased because it is only ever compared
  * against a lower-cased candidate — this value is never emitted into a statement.
  */
@@ -498,7 +512,7 @@ const TABLE_COLUMNS: Readonly<Record<PhysicalTableName, ReadonlySet<string>>> = 
    * many-to-many of `model/entity/Product.cfc:L79-L90` whose far side is in scope: every other one
    * names `Content`, `Category`, `PromotionReward`, `PromotionQualifier`, `PriceGroupRate`, `Vendor`
    * or `Physical`, all excluded outright by AAP §0.2.2.1, and their tables are deliberately absent
-   * from this whitelist — `MySqlProductPersistence.ts` reaches them through a declared collaborator
+   * from this whitelist — `MySqlProductRepository.ts` reaches them through a declared collaborator
    * instead (TR-5) rather than naming an excluded family's table here.
    *
    * ⚠️ THE DECLARATION CARRIES NO `inverse="true"`, so a product OWNS the rows whose `productID` is
@@ -626,7 +640,7 @@ const TABLE_COLUMN_LOOKUP: Readonly<Record<PhysicalTableName, ReadonlyMap<string
  *   - a logical name, normalised — `'SlatwallProduct'` to `'SwProduct'`, which is what makes the
  *     literals at `model/dao/ProductDAO.cfc:L193` and `:L207` usable;
  *   - a bare name, normalised — `'product'` to `'SwProduct'`, mirroring the framework's own
- *     acceptance of an unprefixed name at the five sites listed in the D22 block above.
+ *     acceptance of an unprefixed name at the five sites listed in the the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] block above.
  *
  * REFUSES everything else, including a table that exists in the wider `Sw*` schema but outside this
  * slice, and including the external content-management table at `model/dao/ProductDAO.cfc:L261-L264`.
@@ -977,10 +991,19 @@ function toCount(projected: unknown): number {
 /* ================================================================================================
  * ⭐ SEC-HARDENING (D18-CLASS) — DUPLICATE-KEY TRANSLATION, SHARED BY BOTH DRIVER PATHS
  * ================================================================================================
- * Review finding F6 (CWE-367) asks for two things on the uniqueness path: serialize the check against
- * the write, and "handle duplicate-key errors". The first is done in `./UniquePropertyChecker` and the
- * second is done here, because a duplicate key is not a uniqueness-path concept — ANY write in the
- * subtree can hit one, and the report has to be the same wherever it happens.
+ * A duplicate key is not a uniqueness-path concept — ANY write in the subtree can hit one — so the report
+ * has to be the same wherever it happens, and that is why the translation lives in this shared module
+ * rather than beside any one probe.
+ *
+ * ⛔ THIS PARAGRAPH USED TO DESCRIBE A PAIR. An earlier revision closed a check-then-write race on the
+ * uniqueness path in two places: `./UniquePropertyChecker` serialized the check against the write with a
+ * `FOR UPDATE` when it was transaction-scoped, and this helper translated the collision. The first half is
+ * WITHDRAWN under the current review's finding F4, which holds that the single declared hardening
+ * exception — D18, the importer's SQL parameter binding (AAP §0.6.7.7) — does not extend by analogy to a
+ * locking read (AAP §0.1.2.1). This half SURVIVES on its own footing, which was never the locking one: it
+ * changes no outcome and adds no control, it only classifies a failure the driver already raised. The race
+ * itself is now carried on every path, exactly as the legacy carries it at
+ * org/Hibachi/HibachiDAO.cfc:L130-L146.
  *
  * ⭐ THERE ARE EXACTLY TWO ROUTES TO THE DRIVER IN THIS SUBTREE, AND BOTH USE THIS ONE HELPER.
  * `QueryRunner.runStatement` below is the pool-bound route; `createExecutor`'s local `runStatement` in
@@ -1139,43 +1162,25 @@ export function rethrowTranslatingDuplicateEntry(cause: unknown, parameterCount:
 }
 
 /* ================================================================================================
- * BOUNDED READS — THE SHARED MECHANICS OF THE EXPLICITLY BOUNDED REPOSITORY MEMBERS
+ * ROW-COUNT BINDING — THE ONE PLACE A PAGING FIGURE IS TURNED INTO A BOUND VALUE
  * ================================================================================================
- * `src/ports/repositories/BoundedRead.ts` declares the caller-facing vocabulary and states the two
- * contracts these helpers implement: nothing truncates silently, and no bound is ever defaulted. The
- * mechanics live here, in the module every repository in this folder already imports for its
- * identifier whitelists, so that the four bounded members share ONE implementation of the
- * one-extra-row probe rather than four chances to disagree about it.
+ * `toRowCountBinding` is the whole of this section, and its one caller is the smart list's paged read
+ * in `./SmartListQueryBuilder.ts` — the port of `org/Hibachi/HibachiSmartList.cfc`'s page view.
  *
- * Neither helper imports the port's types. They are declared structurally over `{ limit, offset }`,
- * which the port's window satisfies, so the adapter layer gains no dependency on a port type and the
- * port keeps no knowledge of how the bound is applied.
+ * ⛔ IT USED TO HAVE COMPANY: `PreparedBoundedRead`, `prepareBoundedRead` and `settleBoundedRead`
+ * implemented the one-extra-row probe shared by the explicitly bounded repository members — a window
+ * validator that raised rather than clamped, and a settler that discarded the probe row and reported
+ * `hasMore` as an observed fact. All three have been REMOVED, because the members they served have
+ * been: `../../ports/repositories/SkuRepository.ts` and `../../ports/repositories/OptionRepository.ts`
+ * each record the withdrawal of their windowed companions, which left these helpers with no caller in
+ * `src/**` at all. They are exclusive support for a surface that no longer exists, so they went with
+ * it rather than remaining as a mechanism nothing drives.
+ *
+ * ⭐ WHAT THAT REMOVAL DID NOT TOUCH. `toRowCountBinding` stays exactly as it was, because the smart
+ * list's paging is a different thing entirely: it is carried from legacy source
+ * [`org/Hibachi/HibachiSmartList.cfc`], reached from a routed member, and covered by its own suite. The
+ * driver constraint documented below is likewise unchanged, and it is the reason the function exists.
  * ============================================================================================== */
-
-/**
- * A validated bound, with the probe size the adapter actually asks the database for.
- *
- * Produced by {@link prepareBoundedRead} and consumed at the binding site. `probeLimit` exists so the
- * "is there more?" question is answered by the database rather than guessed: it is always
- * `limit + 1`.
- */
-export interface PreparedBoundedRead {
-  /** The caller's row ceiling, validated. The returned array never exceeds it. */
-  readonly limit: number;
-  /** The caller's zero-based offset, validated. */
-  readonly offset: number;
-  /** `limit + 1` — bound to the statement's `LIMIT` so one row past the window can be detected. */
-  readonly probeLimit: number;
-  /**
-   * The two values to append to the bound list, in `LIMIT ? OFFSET ?` order, already in the form the
-   * driver accepts for a row-count placeholder.
-   *
-   * Present so no caller has to remember {@link toRowCountBinding}: appending this pair is the only
-   * supported way to bind the window, and it makes binding `probeLimit` directly — which fails at run
-   * time and nowhere earlier — impossible to reach by accident.
-   */
-  readonly boundValues: readonly [string, string];
-}
 
 /**
  * Converts a validated row count into the form the driver accepts in a `LIMIT` or `OFFSET` position.
@@ -1222,92 +1227,6 @@ export function toRowCountBinding(value: number): string {
   }
 
   return String(value);
-}
-
-/**
- * Validates a caller-stated bound and derives the probe size from it.
- *
- * ⚠️ IT RAISES RATHER THAN CLAMPING, DELIBERATELY. A clamped bound answers a different question than
- * the one asked and reports nothing about the substitution, which is the same silent-truncation
- * failure the bounded members exist to avoid. A caller that passed a fractional, zero, negative or
- * non-finite bound has a fault in it, and the fault is surfaced.
- *
- * NO DEFAULT IS SUPPLIED FOR EITHER FIELD, and none may be added. Any default would be a number the
- * legacy source does not state, which AAP §0.7.3 S9 and IR-12 both rule out — the legacy has no
- * bounded read at all to take a number from.
- *
- * `Number.isSafeInteger` is the test rather than `Number.isInteger`, because a value beyond the safe
- * integer range cannot survive the round trip through the driver's parameter binding intact, and a
- * bound that silently becomes a different bound is exactly what must not happen.
- *
- * @param window - the caller's window. Typed structurally so no port type is imported here.
- * @param member - the member name, for the error context. Callers pass their own qualified name.
- * @returns the validated bound together with its probe size.
- * @throws {DomainError} when `limit` is not a positive safe integer, or `offset` is not a
- *   non-negative safe integer.
- */
-export function prepareBoundedRead(
-  window: { readonly limit: number; readonly offset: number },
-  member: string,
-): PreparedBoundedRead {
-  if (!Number.isSafeInteger(window.limit) || window.limit < 1) {
-    throw new DomainError(
-      'A bounded read needs a positive whole row limit, and the one supplied is not usable. It is ' +
-        'refused rather than adjusted, because a substituted bound would answer a different ' +
-        'question without saying so.',
-      { context: { member, limit: window.limit, offset: window.offset } },
-    );
-  }
-
-  if (!Number.isSafeInteger(window.offset) || window.offset < 0) {
-    throw new DomainError(
-      'A bounded read needs a whole, non-negative offset, and the one supplied is not usable. It is ' +
-        'refused rather than adjusted, for the same reason the limit is.',
-      { context: { member, limit: window.limit, offset: window.offset } },
-    );
-  }
-
-  const probeLimit = window.limit + 1;
-
-  return Object.freeze({
-    limit: window.limit,
-    offset: window.offset,
-    probeLimit,
-    boundValues: Object.freeze([
-      toRowCountBinding(probeLimit),
-      toRowCountBinding(window.offset),
-    ] as const),
-  });
-}
-
-/**
- * Splits a probe result into the window's rows and the verdict on what lies past it.
- *
- * The statement was bound with {@link PreparedBoundedRead.probeLimit}, so receiving more than `limit`
- * rows means at least one row exists past the window. The probe row is DISCARDED and never reaches the
- * caller, which is what keeps `rows.length <= limit` an invariant of every bounded member.
- *
- * ⚠️ `hasMore` IS OBSERVED, NOT INFERRED FROM A FULL WINDOW. A window that is exactly full is NOT
- * evidence of more rows: the match set may end precisely on the boundary. Reporting `hasMore` from
- * `rows.length === limit` would tell a caller to issue one guaranteed-empty follow-up read on every
- * exact-boundary result, and — worse — would report `true` for a complete answer. The extra row is
- * requested so the verdict is a fact.
- *
- * @typeParam Row - the mapped row type; this helper neither inspects nor transforms a row.
- * @param probed - the rows the probe statement returned, at most `limit + 1` of them.
- * @param limit - the caller's validated row ceiling.
- * @returns the window's rows and whether anything lies past them.
- */
-export function settleBoundedRead<Row>(
-  probed: readonly Row[],
-  limit: number,
-): { readonly rows: Row[]; readonly hasMore: boolean } {
-  const hasMore = probed.length > limit;
-
-  return {
-    rows: hasMore ? probed.slice(0, limit) : [...probed],
-    hasMore,
-  };
 }
 
 /* ================================================================================================
@@ -1509,7 +1428,7 @@ export interface StatementPool extends StatementRunner {
  *   DECLARED STRUCTURALLY, FIVE TIMES, each reading `extends SqlExecutor` plus one `executeMutation`:
  *   {@link SqlMutationExecutor} here; `TransactionalSqlExecutor` in `UnitOfWork.ts`;
  *   `BrandStatementExecutor` in `MySqlBrandRepository.ts`; `ProductPersistenceExecutor` in
- *   `MySqlProductPersistence.ts`; and `ProductTypeStatementExecutor` in
+ *   `MySqlProductRepository.ts`; and `ProductTypeStatementExecutor` in
  *   `MySqlProductTypeRepository.ts`, whose parameter is spelled `parameters` rather than `params` —
  *   which changes nothing, since compatibility here is structural and parameter names carry no weight.
  *
@@ -1864,6 +1783,1013 @@ export class QueryRunner implements ReadWriteSqlExecutor {
        * can never be mistaken for a driver failure and re-examined as one.
        */
       rethrowTranslatingDuplicateEntry(cause, params.length);
+    }
+  }
+}
+
+/* =====================================================================================================
+ * FOLDED IN FROM `src/adapters/mysql/catalogAggregates.ts` — AAP §0.4.1 INVENTORY ALIGNMENT (F1)
+ * =====================================================================================================
+ * WHY THIS SECTION IS HERE RATHER THAN IN ITS OWN FILE. AAP §0.4.1 freezes the subtree at 102 files and
+ * `QueryRunner.ts` was not one of them. It holds the association loaders that hydrate a selection's
+ * brands, product types, default SKUs and SKU options — real, covered behaviour — so it is folded into an
+ * approved adapter rather than deleted, and every declaration and doc paragraph below is unchanged.
+ *
+ * ⭐ WHY THIS HOST AND NOT `rowMappers.ts`, WHICH READS AS THE MORE OBVIOUS CHOICE. The section needs
+ * BOTH files: `assertColumnName`/`assertTableName` and `SqlExecutor`/`PhysicalTableName` from this one,
+ * and the six row mappers plus `MySqlRow` from `./rowMappers`. The existing edge runs THIS FILE ->
+ * `./rowMappers` (for `toRows`) and NOT the other way, so hosting the section in `rowMappers.ts` would
+ * have made `rowMappers` import `QueryRunner` for the two guards — a genuine RUNTIME import cycle
+ * between two adapter modules. Hosting it here creates none: the mapper imports it already needs are
+ * type-safe additions in the direction the dependency already points. That asymmetry is the whole reason
+ * for the choice, and it was measured rather than assumed.
+ *
+ * ⛔ WHAT THE FOLD ADDED TO THIS FILE'S IMPORTS, EXACTLY. Four names it did not have —
+ * `SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE`, the six row mappers, four domain entity types and
+ * `SmartListEntityName` — and nothing else. `DataIntegrityError`, `MySqlRow`, `assertColumnName`,
+ * `assertTableName`, `PhysicalTableName` and `SqlExecutor` were already here or are declared here, so
+ * those six import lines disappeared entirely. No import points at a service, a handler or an
+ * integration, so the layering is unchanged.
+ *
+ * ⚠️ THE FOLD CHANGES ONLY THE IMPORT PATH ITS CONSUMERS WRITE — `src/config/container.ts` and six test
+ * suites now name this file.
+ * ================================================================================================== */
+
+/**
+ * Resolves the many-to-one associations a hydrated Catalog record needs before business logic reads it.
+ *
+ * AAP authority: AAP 0.4.4 authorises `slatwall-ts/src/adapters/mysql/**` | CREATE. This module is the
+ * "aggregate loader" half of the Data Mapper pattern AAP 0.3.3 assigns to this layer; the scalar half
+ * is `src/adapters/mysql/rowMappers.ts` and stays exactly as it is.
+ *
+ * =================================================================================================
+ * WHY THIS FILE EXISTS — AND WHY THE FIX IS NOT "MAKE THE ROW MAPPERS RESOLVE ASSOCIATIONS"
+ * =================================================================================================
+ * `rowMappers.ts` RULE 3 is explicit and this module is written to obey it, not to work around it: a
+ * row mapper hydrates scalar columns only, and every many-to-one field is left genuinely ABSENT rather
+ * than filled with a stub. That rule states its own escape hatch, and this module is that hatch:
+ *
+ *   "A caller either resolves the association through the repository or gets a compile error. The
+ *    foreign-key value is not lost either — the repository holds the same row and reads the `*ID`
+ *    column itself when it needs to resolve the other side."
+ *
+ * That is precisely the mechanism here. Every loader below receives the RAW ROWS alongside the mapped
+ * entities, reads the foreign-key column the mapper deliberately skipped, and resolves the other side
+ * with its own parameterized statement. Nothing stubs, nothing guesses, and `rowMappers.ts` keeps its
+ * invariant intact.
+ *
+ * ⚠️ TWO FINDINGS SHARE ONE ROOT CAUSE, WHICH IS WHY THEY SHARE ONE FIX. Both reported symptoms are the
+ * same absent-association fault observed at two different roots:
+ *
+ *   INT-02 — `SmartListQueryBuilder` projects `<baseAlias>.*`, so a SKU smart list hydrates SKUs whose
+ *            `product` is absent. The Google feed's first act is `requireProduct(sku)`, so EVERY item
+ *            raised and the feed produced nothing.
+ *   DATA-02 — the same builder rooted at `SlatwallOption` hydrates options whose `optionGroup` is
+ *            absent. `OptionService.getOption` reads through that builder and
+ *            `SkuService.createSkus` immediately calls `requireOptionGroupID(option)`, so EVERY
+ *            merchandise SKU creation with options raised.
+ *
+ * Both are resolved by giving the builder a per-root loader rather than by patching either consumer:
+ * the consumers' guards are correct and stay as they are. A guard that fires on absent data is doing
+ * its job; the defect was that the data was absent.
+ *
+ * ⚠️ WHAT EACH ROOT LOADS IS DETERMINED BY WHAT ITS CONSUMERS ACTUALLY READ, not by loading everything
+ * reachable. Eager-versus-lazy is this layer's decision to make (RULE 3), and it is made narrowly:
+ *
+ *   SlatwallSku      -> `product`, and on that product `productType`, `brand`, `defaultSku`.
+ *                       `product.getPrice()` falls through to `defaultSku.getPrice()`, which is why the
+ *                       default SKU is required and not merely convenient.
+ *   SlatwallOption   -> `optionGroup`. Required, never optional [model/entity/Option.cfc:L59].
+ *   SlatwallProduct  -> `productType`, `brand`, `defaultSku` and `skus`.
+ *
+ * The remaining three roots — `SlatwallProductType`, `SlatwallBrand`, `SlatwallOptionGroup` — and
+ * `SlatwallAlternateSkuCode` declare NO loader. That is a decision, not an omission: `Brand` and
+ * `OptionGroup` declare no many-to-one at all, and `ProductType.parentProductType` is not how the
+ * hierarchy is read — `getBaseProductType` walks `productTypeIDPath` through an injected resolver, and
+ * the tree query has its own dedicated projection. Declaring an empty loader for them would suggest
+ * there was something to load.
+ *
+ * ⚠️ THE BRAND ASSOCIATION IS OPTIONAL AND STAYS OPTIONAL. `integrationServices/google/controllers/
+ * feed.cfc` joins to brand with a LEFT join and the view guards the read at `product.cfm:L32`, so a
+ * product with no brand is ordinary data rather than a fault. An absent `brandID`, or one naming a row
+ * that no longer exists, leaves the field absent and raises nothing. `productType` is the opposite: the
+ * view dereferences it unguarded, so its absence is left to surface at the consumer's own guard rather
+ * than being masked here.
+ *
+ * ⚠️ ONE STATEMENT PER TABLE PER BATCH, NOT ONE PER ROW. Identifiers are collected and de-duplicated
+ * across the whole batch before a single `IN (…)` statement is issued, so a page of fifty SKUs spanning
+ * three products issues one product statement rather than fifty. Placeholders are generated to match the
+ * identifier count and every value is bound (TR-4); no identifier is ever interpolated into the text.
+ *
+ * ⚠️ ORDER IS PRESERVED BECAUSE NOTHING IS REORDERED. Loaders mutate the entities they are given in
+ * place and never re-sort, filter, replace or copy the arrays, so the caller's query order — which the
+ * sorted-SKU odometer and the feed both depend on — survives untouched.
+ *
+ * ⛔ NOTHING HERE COMMITS, AND NOTHING HERE OPENS A CONNECTION. Every statement runs on the injected
+ * executor, which is the same one the caller is using, so a load inside a transaction observes that
+ * transaction's own uncommitted writes (M6). The boundary belongs to `src/adapters/mysql/UnitOfWork.ts`.
+ *
+ * No timeout, retry, batch-size cap, page size or cache lifetime appears below: the legacy declares
+ * none and AAP 0.7.3 S9 forbids inventing one.
+ */
+/* ================================================================================================
+ * THE TABLES AND COLUMNS THIS MODULE READS
+ *
+ * Every identifier goes through the same whitelist the rest of the adapter layer uses, so a typo is a
+ * build failure rather than a statement that reaches the driver.
+ * ============================================================================================== */
+
+const PRODUCT_TABLE: PhysicalTableName = assertTableName('SwProduct');
+const SKU_TABLE: PhysicalTableName = assertTableName('SwSku');
+const PRODUCT_TYPE_TABLE: PhysicalTableName = assertTableName('SwProductType');
+const BRAND_TABLE: PhysicalTableName = assertTableName('SwBrand');
+const OPTION_GROUP_TABLE: PhysicalTableName = assertTableName('SwOptionGroup');
+const SKU_OPTION_TABLE: PhysicalTableName = assertTableName('SwSkuOption');
+const OPTION_TABLE: PhysicalTableName = assertTableName('SwOption');
+const SKU_ACCESS_CONTENT_TABLE: PhysicalTableName = assertTableName('SwSkuAccessContent');
+const SKU_SUBSCRIPTION_BENEFIT_TABLE: PhysicalTableName = assertTableName('SwSkuSubsBenefit');
+
+/** The identifier and foreign-key columns each loader reads or filters on. */
+const COLUMN = Object.freeze({
+  productID: assertColumnName(PRODUCT_TABLE, 'productID'),
+  productBrandID: assertColumnName(PRODUCT_TABLE, 'brandID'),
+  productProductTypeID: assertColumnName(PRODUCT_TABLE, 'productTypeID'),
+  productDefaultSkuID: assertColumnName(PRODUCT_TABLE, 'defaultSkuID'),
+  skuID: assertColumnName(SKU_TABLE, 'skuID'),
+  skuProductID: assertColumnName(SKU_TABLE, 'productID'),
+  productTypeID: assertColumnName(PRODUCT_TYPE_TABLE, 'productTypeID'),
+  brandID: assertColumnName(BRAND_TABLE, 'brandID'),
+  optionGroupID: assertColumnName(OPTION_GROUP_TABLE, 'optionGroupID'),
+  optionID: assertColumnName(OPTION_TABLE, 'optionID'),
+  optionOptionGroupID: assertColumnName(OPTION_TABLE, 'optionGroupID'),
+  skuOptionSkuID: assertColumnName(SKU_OPTION_TABLE, 'skuID'),
+  skuOptionOptionID: assertColumnName(SKU_OPTION_TABLE, 'optionID'),
+  accessContentSkuID: assertColumnName(SKU_ACCESS_CONTENT_TABLE, 'skuID'),
+  accessContentContentID: assertColumnName(SKU_ACCESS_CONTENT_TABLE, 'contentID'),
+  subscriptionBenefitSkuID: assertColumnName(SKU_SUBSCRIPTION_BENEFIT_TABLE, 'skuID'),
+  subscriptionBenefitID: assertColumnName(SKU_SUBSCRIPTION_BENEFIT_TABLE, 'subscriptionBenefitID'),
+});
+
+/**
+ * Builds an explicit, TABLE-QUALIFIED projection for one table.
+ *
+ * Explicit rather than `*` for the reason `MySqlSkuRepository` states about its own projection: it keeps
+ * the statement stable if the physical table ever carries a column the entity does not declare. Column
+ * order is immaterial — every mapper reads by name.
+ *
+ * ⭐ QUALIFICATION IS THE DEFAULT, AND IT IS THE FIX FOR A DEFECT THAT COULD ONLY BE SEEN ON A REAL
+ * SERVER. This function used to return BARE column names. That is safe in the three single-table
+ * statements below and FATAL in the one join: {@link attachSkuOptions} reads
+ * `SwSkuOption link INNER JOIN SwOption`, and `optionID` is a column of BOTH tables, so MySQL refused
+ * the whole statement with `ER_NON_UNIQ_ERROR (1052): Column 'optionID' in field list is ambiguous`.
+ * `SwSkuOption.optionID` is the port's own schema contract — `MySqlSkuRepository.persistSku` writes
+ * `INSERT INTO SwSkuOption (skuID, optionID)` and `findSkusBySelectedOptions` reads `so.optionID`
+ * (AAP §0.3.3.1) — so the collision is structural rather than incidental, and every SKU-option fetch
+ * through `SkuRepository.findByProduct` with `fetchOptions` raised failed on every invocation.
+ *
+ * ⚠️ FIXING THE ONE CALLER WOULD HAVE LEFT THE TRAP IN PLACE. A projection builder that takes a table
+ * name and then discards it is an invitation: every `*_PROJECTION` constant below reads as safe, and the
+ * next joined statement that reuses one reproduces the same failure with no warning. Qualifying HERE
+ * makes every projection in this module safe in a join by construction, which is the difference between
+ * fixing the instance and closing the class.
+ *
+ * ⚠️ THE QUALIFIER IS THE VALIDATED PHYSICAL TABLE NAME, NEVER A CALLER-SUPPLIED ALIAS. `table` has
+ * already been through {@link assertTableName} — the parameter type admits nothing else — so the emitted
+ * identifier is drawn from the same whitelist as the columns (AAP §0.7.3: "identifiers built only from
+ * validated whitelists"). No alias parameter is accepted, because an alias is a free string and would
+ * reopen the identifier surface the whitelist exists to close. Statements that need an ALIASED
+ * projection build one from the whitelist themselves, as `MySqlSkuRepository.hydrateSkuOptions` does.
+ *
+ * ⚠️ AND IT COSTS NOTHING AT EITHER END. Every single-table statement in this module names its table in
+ * `FROM` WITHOUT an alias, so `SwProduct.productID` resolves exactly as `productID` did; and the driver
+ * returns result keys UNQUALIFIED (`productID`, not `SwProduct.productID`), so every row mapper reads
+ * the same field names it always read and none of them changes.
+ */
+function projectionFor(table: PhysicalTableName, columns: readonly string[]): string {
+  return columns.map((column) => `${table}.${assertColumnName(table, column)}`).join(', ');
+}
+
+const PRODUCT_PROJECTION = projectionFor(PRODUCT_TABLE, [
+  'productID',
+  'activeFlag',
+  'urlTitle',
+  'productName',
+  'productCode',
+  'productDescription',
+  'publishedFlag',
+  'sortOrder',
+  'calculatedSalePrice',
+  'calculatedQATS',
+  'calculatedAllowBackorderFlag',
+  'calculatedTitle',
+  'brandID',
+  'productTypeID',
+  'defaultSkuID',
+  'remoteID',
+  'createdDateTime',
+  'createdByAccountID',
+  'modifiedDateTime',
+  'modifiedByAccountID',
+]);
+
+const SKU_PROJECTION = projectionFor(SKU_TABLE, [
+  'skuID',
+  'activeFlag',
+  'skuCode',
+  'listPrice',
+  'price',
+  'renewalPrice',
+  'imageFile',
+  'userDefinedPriceFlag',
+  'calculatedQATS',
+  'productID',
+  'subscriptionTermID',
+  'remoteID',
+  'createdDateTime',
+  'createdByAccountID',
+  'modifiedDateTime',
+  'modifiedByAccountID',
+]);
+
+const PRODUCT_TYPE_PROJECTION = projectionFor(PRODUCT_TYPE_TABLE, [
+  'productTypeID',
+  'productTypeIDPath',
+  'activeFlag',
+  'publishedFlag',
+  'urlTitle',
+  'productTypeName',
+  'productTypeDescription',
+  'systemCode',
+  'parentProductTypeID',
+  'remoteID',
+  'createdDateTime',
+  'createdByAccountID',
+  'modifiedDateTime',
+  'modifiedByAccountID',
+]);
+
+const BRAND_PROJECTION = projectionFor(BRAND_TABLE, [
+  'brandID',
+  'activeFlag',
+  'publishedFlag',
+  'urlTitle',
+  'brandName',
+  'brandWebsite',
+  'remoteID',
+  'createdDateTime',
+  'createdByAccountID',
+  'modifiedDateTime',
+  'modifiedByAccountID',
+]);
+
+const OPTION_GROUP_PROJECTION = projectionFor(OPTION_GROUP_TABLE, [
+  'optionGroupID',
+  'optionGroupName',
+  'optionGroupCode',
+  'optionGroupImage',
+  'optionGroupDescription',
+  'imageGroupFlag',
+  'sortOrder',
+  'remoteID',
+  'createdDateTime',
+  'createdByAccountID',
+  'modifiedDateTime',
+  'modifiedByAccountID',
+]);
+
+const OPTION_PROJECTION = projectionFor(OPTION_TABLE, [
+  'optionID',
+  'optionCode',
+  'optionName',
+  'optionDescription',
+  'sortOrder',
+  'optionGroupID',
+  'defaultImageID',
+  'remoteID',
+  'createdDateTime',
+  'createdByAccountID',
+  'modifiedDateTime',
+  'modifiedByAccountID',
+]);
+
+/* ================================================================================================
+ * THE ONE COLLABORATOR THESE LOADERS CANNOT SUPPLY THEMSELVES
+ * ============================================================================================== */
+
+/**
+ * What a caller must provide before the product and SKU roots can be resolved.
+ *
+ * ⛔ THE BINDER IS REQUIRED, NOT OPTIONAL, AND THAT IS DELIBERATE. `src/domain/sku/Sku.ts` records in
+ * its own mismatch register that `Sku` IS INTENTIONALLY NOT ASSIGNABLE to
+ * {@link ProductDefaultSkuDelegate}: the delegate wants nine synchronous, argument-free readers, while
+ * the entity's image and currency equivalents are asynchronous and port-parameterised. The register also
+ * names the resolution — "a thin binding adapter in the composition root closes over the ports and
+ * satisfies the delegate" — and {@link SkuDefaultSkuDelegateBinder} on `SkuService` is the same
+ * collaborator, injected the same way, for the same reason.
+ *
+ * ⛔ SO THIS MODULE DOES NOT CAST, DOES NOT INVENT `getImageDirectory` ON `Sku`, AND DOES NOT MAKE THE
+ * BINDER OPTIONAL. A cast would be unsound and S1 forbids it; inventing the member would contradict
+ * `model/entity/Sku.cfc`, which declares no such member, and S9 forbids it; and an optional binder would
+ * mean `product.defaultSku` was silently left unresolved, which is exactly the class of half-load this
+ * module exists to eliminate. `Product.getPrice()` falls through to `defaultSku.getPrice()`, so an
+ * unresolved default SKU makes the Google feed emit an empty `<g:price>` for every item — a quiet wrong
+ * answer rather than a failure.
+ *
+ * ⚠️ MAKING IT REQUIRED PUTS THE COMPILER IN CHARGE OF THE WIRING. Every site that constructs a
+ * {@link SmartListQueryBuilder} must now supply these loaders, and therefore a binder, or the build
+ * fails. That is a stronger guarantee than any comment, and it costs nothing today because no
+ * construction site exists yet.
+ */
+export interface CatalogAggregateDependencies {
+  /**
+   * Adapts a hydrated SKU to the shape `Product.defaultSku` accepts.
+   *
+   * Assembling it needs the setting, pricing and image ports, none of which belong to this layer, so it
+   * arrives as the function it is.
+   */
+  readonly bindDefaultSkuDelegate: (sku: Sku) => ProductDefaultSkuDelegate;
+}
+
+/* ================================================================================================
+ * THE REQUEST SHAPE
+ * ============================================================================================== */
+
+/**
+ * One batch of hydrated records whose associations are to be resolved.
+ *
+ * ⚠️ `rows` AND `entities` MUST BE INDEX-ALIGNED, because that alignment is the only thing connecting a
+ * mapped entity to the foreign-key column its mapper skipped. The caller produced both from one result
+ * set, so the alignment holds by construction; a loader that re-sorted either would break it silently,
+ * which is why no loader here does.
+ */
+export interface AggregateLoadRequest {
+  /**
+   * The executor the caller is already using.
+   *
+   * Reusing it rather than reaching for a pool is what keeps M6 intact: inside a transaction, a load
+   * observes that transaction's own uncommitted writes.
+   */
+  readonly executor: SqlExecutor;
+  /** The raw rows, carrying the foreign-key columns the mappers deliberately skipped. */
+  readonly rows: readonly MySqlRow[];
+  /** The mapped entities, index-aligned with `rows` and mutated in place. */
+  readonly entities: readonly unknown[];
+}
+
+/** Resolves the associations one root entity's consumers require. */
+export type CatalogAggregateLoader = (request: AggregateLoadRequest) => Promise<void>;
+
+/* ================================================================================================
+ * READING FOREIGN KEYS OFF A RAW ROW
+ * ============================================================================================== */
+
+/**
+ * Reads one foreign-key column as a non-empty string, or `undefined` when the association is absent.
+ *
+ * ⚠️ AN EMPTY STRING IS TREATED AS ABSENCE, NOT AS AN IDENTIFIER. `unsavedvalue=""` means the legacy
+ * spells "no value yet" as the empty string as well as NULL (IR-6), so both must collapse to the same
+ * answer or a `WHERE id = ''` statement would be issued for a row that simply has no association.
+ *
+ * @param row - one raw result row.
+ * @param column - the whitelisted column name to read.
+ * @returns the identifier, or `undefined` when the column is absent, NULL or empty.
+ * @throws {DataIntegrityError} when the column holds something that is not a string. A foreign key that
+ *   is not text is a schema disagreement, and guessing at a coercion would hide it.
+ */
+function readForeignKey(row: MySqlRow, column: string): string | undefined {
+  const value = row[column];
+
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  if (typeof value !== 'string') {
+    throw new DataIntegrityError(
+      'A Catalog foreign-key column holds a value that is not text, so the association it names ' +
+        'could not be resolved. Every identifier in this schema is a 32-character string ' +
+        '[model/entity/Sku.cfc:L52].',
+      { context: { column, receivedType: typeof value } },
+    );
+  }
+
+  return value;
+}
+
+/** Every distinct identifier the given column holds across the batch, in first-seen order. */
+function collectIdentifiers(rows: readonly MySqlRow[], column: string): readonly string[] {
+  const seen = new Set<string>();
+
+  for (const row of rows) {
+    const identifier = readForeignKey(row, column);
+    if (identifier !== undefined) {
+      seen.add(identifier);
+    }
+  }
+
+  return [...seen];
+}
+
+/**
+ * Loads rows from one table by identifier and indexes the mapped results.
+ *
+ * Issues NO statement for an empty identifier list — an `IN ()` clause is not legal SQL, and there is
+ * nothing to ask for.
+ *
+ * @param request - the batch being resolved, for its executor.
+ * @param table - the whitelisted table to read.
+ * @param projection - that table's explicit column list.
+ * @param idColumn - the whitelisted identifier column to filter on.
+ * @param identifiers - the distinct identifiers wanted.
+ * @param mapper - the scalar row mapper for this table.
+ * @returns the mapped entities keyed by identifier, alongside the raw row for each.
+ */
+async function loadByIdentifiers<TEntity>(
+  request: AggregateLoadRequest,
+  table: PhysicalTableName,
+  projection: string,
+  idColumn: string,
+  identifiers: readonly string[],
+  mapper: (row: MySqlRow) => TEntity,
+): Promise<Map<string, { readonly entity: TEntity; readonly row: MySqlRow }>> {
+  const indexed = new Map<string, { readonly entity: TEntity; readonly row: MySqlRow }>();
+
+  if (identifiers.length === 0) {
+    return indexed;
+  }
+
+  const placeholders = identifiers.map(() => '?').join(', ');
+  const rows = await request.executor.execute(
+    `SELECT ${projection} FROM ${table} WHERE ${idColumn} IN (${placeholders})`,
+    [...identifiers],
+  );
+
+  for (const row of rows) {
+    const identifier = readForeignKey(row, idColumn);
+    if (identifier !== undefined) {
+      indexed.set(identifier, { entity: mapper(row), row });
+    }
+  }
+
+  return indexed;
+}
+
+/* ================================================================================================
+ * THE PRODUCT AGGREGATE, SHARED BY TWO ROOTS
+ * ============================================================================================== */
+
+/**
+ * Resolves `productType`, `brand` and `defaultSku` on a batch of products.
+ *
+ * Shared by the product root and the SKU root rather than written twice, because "what a usable product
+ * carries" is one answer and two copies of it would drift.
+ *
+ * ⚠️ ASSIGNED AS PLAIN FIELDS, NEVER THROUGH A SETTER — `rowMappers.ts` RULE 1. It also matters
+ * specifically here: `Sku.setProduct` would append the SKU to `product.skus` as a side effect, so using
+ * it to attach a default SKU would fabricate a collection membership the database never stated. Direct
+ * assignment resolves the association and nothing else.
+ *
+ * @param request - the batch being resolved, for its executor.
+ * @param dependencies - supplies the default-SKU delegate binder.
+ * @param productRows - the raw product rows, carrying the three foreign keys.
+ * @param products - the mapped products, index-aligned with `productRows`.
+ */
+async function attachProductAssociations(
+  request: AggregateLoadRequest,
+  dependencies: CatalogAggregateDependencies,
+  productRows: readonly MySqlRow[],
+  products: readonly Product[],
+): Promise<void> {
+  const productTypes = await loadByIdentifiers(
+    request,
+    PRODUCT_TYPE_TABLE,
+    PRODUCT_TYPE_PROJECTION,
+    COLUMN.productTypeID,
+    collectIdentifiers(productRows, COLUMN.productProductTypeID),
+    mapProductTypeRow,
+  );
+
+  const brands = await loadByIdentifiers(
+    request,
+    BRAND_TABLE,
+    BRAND_PROJECTION,
+    COLUMN.brandID,
+    collectIdentifiers(productRows, COLUMN.productBrandID),
+    mapBrandRow,
+  );
+
+  const defaultSkus = await loadByIdentifiers(
+    request,
+    SKU_TABLE,
+    SKU_PROJECTION,
+    COLUMN.skuID,
+    collectIdentifiers(productRows, COLUMN.productDefaultSkuID),
+    mapSkuRow,
+  );
+
+  products.forEach((product, index) => {
+    const row = productRows[index];
+    if (row === undefined) {
+      return;
+    }
+
+    const productTypeID = readForeignKey(row, COLUMN.productProductTypeID);
+    const resolvedProductType =
+      productTypeID === undefined ? undefined : productTypes.get(productTypeID);
+    if (resolvedProductType !== undefined) {
+      product.productType = resolvedProductType.entity;
+    }
+
+    /* Optional by design — see the LEFT-join note in this module's header. */
+    const brandID = readForeignKey(row, COLUMN.productBrandID);
+    const resolvedBrand = brandID === undefined ? undefined : brands.get(brandID);
+    if (resolvedBrand !== undefined) {
+      product.brand = resolvedBrand.entity;
+    }
+
+    /* Bound through the injected adapter, never assigned directly — the entity does not satisfy the
+     * delegate and deliberately never will. See {@link CatalogAggregateDependencies}. */
+    const defaultSkuID = readForeignKey(row, COLUMN.productDefaultSkuID);
+    const resolvedDefaultSku =
+      defaultSkuID === undefined ? undefined : defaultSkus.get(defaultSkuID);
+    if (resolvedDefaultSku !== undefined) {
+      product.defaultSku = dependencies.bindDefaultSkuDelegate(resolvedDefaultSku.entity);
+    }
+  });
+}
+
+/* ================================================================================================
+ * THE LOADERS
+ * ============================================================================================== */
+
+/**
+ * `SlatwallSku` — attaches each SKU's product, fully associated. Resolves INT-02.
+ *
+ * The Google feed reads `sku.product`, then that product's `productType` (unguarded), `brand` (guarded)
+ * and — through `product.getPrice()`'s fall-through — its `defaultSku`. All four are therefore resolved
+ * here, in two waves: the products first, then their own associations.
+ *
+ * ⚠️ ONE PRODUCT INSTANCE PER PRODUCT, SHARED BY EVERY SKU THAT NAMES IT. Sibling SKUs of one product
+ * observe the same object, which is what the mapping layer's identity semantics give them and what lets
+ * a consumer compare products by reference.
+ */
+const createSkuAggregateLoader =
+  (dependencies: CatalogAggregateDependencies): CatalogAggregateLoader =>
+  async (request) => {
+    const productIdentifiers = collectIdentifiers(request.rows, COLUMN.skuProductID);
+
+    const products = await loadByIdentifiers(
+      request,
+      PRODUCT_TABLE,
+      PRODUCT_PROJECTION,
+      COLUMN.productID,
+      productIdentifiers,
+      mapProductRow,
+    );
+
+    const loaded = [...products.values()];
+    await attachProductAssociations(
+      request,
+      dependencies,
+      loaded.map((entry) => entry.row),
+      loaded.map((entry) => entry.entity),
+    );
+
+    request.entities.forEach((entity, index) => {
+      const row = request.rows[index];
+      if (row === undefined) {
+        return;
+      }
+
+      const productID = readForeignKey(row, COLUMN.skuProductID);
+      const resolved = productID === undefined ? undefined : products.get(productID);
+      if (resolved !== undefined) {
+        (entity as Sku).product = resolved.entity;
+      }
+    });
+  };
+
+/**
+ * `SlatwallOption` — attaches each option's option group. Resolves DATA-02.
+ *
+ * `model/entity/Option.cfc:L59` declares the relationship REQUIRED, and `SkuService.createSkus` reads it
+ * for every selected option through `requireOptionGroupID`, so without this every merchandise SKU
+ * creation carrying options raised.
+ *
+ * ⚠️ A MISSING GROUP IS LEFT ABSENT RATHER THAN RAISED HERE. The consumer's own guard already reports it
+ * with the option identifier and the legacy locator, which is a better error than anything this loader
+ * could produce, and raising here would also break the read paths that never touch the group.
+ */
+const loadOptionAggregates: CatalogAggregateLoader = async (request) => {
+  const optionGroups = await loadByIdentifiers(
+    request,
+    OPTION_GROUP_TABLE,
+    OPTION_GROUP_PROJECTION,
+    COLUMN.optionGroupID,
+    collectIdentifiers(request.rows, COLUMN.optionOptionGroupID),
+    mapOptionGroupRow,
+  );
+
+  request.entities.forEach((entity, index) => {
+    const row = request.rows[index];
+    if (row === undefined) {
+      return;
+    }
+
+    const optionGroupID = readForeignKey(row, COLUMN.optionOptionGroupID);
+    const resolved = optionGroupID === undefined ? undefined : optionGroups.get(optionGroupID);
+    if (resolved !== undefined) {
+      (entity as Option).optionGroup = resolved.entity;
+    }
+  });
+};
+
+/**
+ * `SlatwallProduct` — attaches `productType`, `brand`, `defaultSku` and `skus`.
+ *
+ * The first three come from the shared product aggregate. The SKU collection is loaded here because
+ * `ProductService.getProduct` reads through this builder and its callers expect a usable product
+ * aggregate.
+ *
+ * ⚠️ THE SKU COLLECTION IS FILLED BY PUSHING ONTO THE LIVE ARRAY, never by replacing it —
+ * `rowMappers.ts` RULE 4 keeps entity collections live, and several domain members mutate the array they
+ * are handed in place. Each SKU's own `product` back-reference is assigned directly for the same reason
+ * `attachProductAssociations` does: `setProduct` would append a second time.
+ *
+ * ⚠️ EACH PRODUCT ENTITY RECEIVES ITS OWN SKU INSTANCES, mapped from the shared rows rather than shared
+ * as objects. The reason is an object-identity one and is argued at the bucketing step below.
+ */
+const createProductAggregateLoader =
+  (dependencies: CatalogAggregateDependencies): CatalogAggregateLoader =>
+  async (request) => {
+    const products = request.entities as readonly Product[];
+
+    await attachProductAssociations(request, dependencies, request.rows, products);
+
+    const productIdentifiers = collectIdentifiers(request.rows, COLUMN.productID);
+    if (productIdentifiers.length === 0) {
+      return;
+    }
+
+    const placeholders = productIdentifiers.map(() => '?').join(', ');
+    const skuRows = await request.executor.execute(
+      `SELECT ${SKU_PROJECTION} FROM ${SKU_TABLE} WHERE ${COLUMN.skuProductID} IN (${placeholders})`,
+      [...productIdentifiers],
+    );
+
+    /*
+     * ⭐ THE ROWS ARE BUCKETED, AND EACH PRODUCT ENTITY THEN MAPS ITS OWN SKU INSTANCES FROM THEM.
+     *
+     * Bucketing already-mapped SKUs would be one line shorter and is WRONG. `records` and `pageRecords`
+     * are materialised from two separate result sets, so they hold DISTINCT Product objects for the same
+     * row, and both are handed to this loader in ONE call — see the hook in
+     * `SmartListQueryBuilder.execute`. A SKU can back-reference exactly ONE product, so pushing a single
+     * SKU instance onto both collections leaves every SKU reachable through `records[0].getSkus()`
+     * naming `pageRecords[0]` as its product: two objects for one row, with a mutation through either
+     * path invisible on the other. One SKU instance per owning product entity keeps each graph
+     * internally consistent, which is the identity Hibernate's session gave the legacy for free and
+     * which this port has to arrange for itself.
+     *
+     * ⚠️ THIS IS NOT THE SAME QUESTION AS THE MANY-TO-ONE SHARING ABOVE. `productType`, `brand` and each
+     * SKU's own `product` are TARGETS of an association, so one instance per row shared by every owner
+     * is both correct and desirable (`createSkuAggregateLoader` states that explicitly). It is only the
+     * OWNED side of a one-to-many — a child carrying a back-reference to exactly one parent — that
+     * cannot be shared.
+     */
+    const skuRowsByProduct = new Map<string, MySqlRow[]>();
+    for (const skuRow of skuRows) {
+      const owningProductID = readForeignKey(skuRow, COLUMN.skuProductID);
+      if (owningProductID === undefined) {
+        continue;
+      }
+
+      let bucket = skuRowsByProduct.get(owningProductID);
+      if (bucket === undefined) {
+        bucket = [];
+        skuRowsByProduct.set(owningProductID, bucket);
+      }
+      bucket.push(skuRow);
+    }
+
+    products.forEach((product, index) => {
+      const row = request.rows[index];
+      if (row === undefined) {
+        return;
+      }
+
+      const productID = readForeignKey(row, COLUMN.productID);
+      const bucket = productID === undefined ? undefined : skuRowsByProduct.get(productID);
+      if (bucket === undefined) {
+        return;
+      }
+
+      for (const skuRow of bucket) {
+        const sku = mapSkuRow(skuRow);
+        sku.product = product;
+        product.skus.push(sku);
+      }
+    });
+  };
+
+/**
+ * Builds every root's loader, or `undefined` where the root has nothing to resolve.
+ *
+ * ⚠️ `undefined` IS A DECISION, NOT A GAP, at each of the four roots that carry it — see the header. The
+ * map is exhaustive over {@link SmartListEntityName}, so a new root cannot be added to the port without
+ * this file being made to state which of the two it is.
+ */
+export function createCatalogAggregateLoaders(
+  dependencies: CatalogAggregateDependencies,
+): Readonly<Record<SmartListEntityName, CatalogAggregateLoader | undefined>> {
+  return Object.freeze({
+    SlatwallSku: createSkuAggregateLoader(dependencies),
+    SlatwallOption: loadOptionAggregates,
+    SlatwallProduct: createProductAggregateLoader(dependencies),
+    /* `getBaseProductType` walks `productTypeIDPath` through an injected resolver and the tree query has
+     * its own projection, so `parentProductType` is not read as an association by anything in the slice. */
+    SlatwallProductType: undefined,
+    /* Declares no many-to-one at all [model/entity/Brand.cfc]. */
+    SlatwallBrand: undefined,
+    /* Declares no many-to-one at all; its `options` collection is the inverse side. */
+    SlatwallOptionGroup: undefined,
+    /* No domain module and no association the slice reads. */
+    SlatwallAlternateSkuCode: undefined,
+  });
+}
+
+/* ================================================================================================
+ * THE SKU OPTION COLLECTION — REQUESTED EXPLICITLY, NOT BY ROOT
+ * ============================================================================================== */
+
+/**
+ * Attaches each SKU's `options` collection, with its option groups resolved.
+ *
+ * Separate from {@link createCatalogAggregateLoaders} because it is requested per call rather than implied by
+ * a root: `SkuRepository.findByProduct` takes an explicit `fetchOptions` argument, and the members that
+ * read a SKU's options — `getOptionsDisplay`, `getOptionByOptionGroupCode`, `getSkuDefinition` — are only
+ * reached on that path. Loading options for every SKU smart list would resolve a collection the feed
+ * never reads.
+ *
+ * ⚠️ THE OPTION GROUPS COME WITH THEM, because the option members that matter here read through the
+ * group. `Sku.generateImageFileName` reads `option.getOptionGroup().getImageGroupFlag()`
+ * [model/entity/Sku.cfc:L134] and `getOptionsByOptionGroupCodeStruct` keys on the group's code, so an
+ * option attached without its group would satisfy the type and then fail — or, worse, answer from a
+ * class default. That is exactly the silent-failure class `rowMappers.ts` RULE 3 exists to prevent.
+ *
+ * ⚠️ ORDERED BY THE LINK TABLE'S NATURAL READ, WITH NO ORDER CLAUSE INVENTED. `model/entity/Sku.cfc:L76`
+ * declares no ordering for the option collection — unlike `OptionGroup.getOptions()`, which orders by
+ * sort order at `model/entity/OptionGroup.cfc:L73` — so none is imposed here (AAP 0.7.3 S9).
+ *
+ * @param executor - the caller's executor, so the read shares its transaction (M6).
+ * @param skus - the SKUs whose options are wanted; mutated in place.
+ */
+export async function attachSkuOptions(executor: SqlExecutor, skus: readonly Sku[]): Promise<void> {
+  const skuIdentifiers = distinctSkuIdentifiers(skus);
+
+  if (skuIdentifiers.length === 0) {
+    return;
+  }
+
+  const placeholders = skuIdentifiers.map(() => '?').join(', ');
+  /*
+   * ⚠️ THE ONLY JOIN IN THIS MODULE, AND THEREFORE THE ONLY STATEMENT WHERE AN UNQUALIFIED PROJECTION
+   * IS FATAL. Both tables declare `optionID` — the link table because that IS the association, the
+   * option table because that is its primary key — so a bare `optionID` in the field list is ambiguous
+   * and MySQL refuses the statement outright with `ER_NON_UNIQ_ERROR (1052)` rather than guessing. That
+   * is what happened while {@link projectionFor} emitted bare names: this statement could not run at
+   * all, so `SkuRepository.findByProduct` with `fetchOptions` raised — the port of
+   * `model/dao/SkuDAO.cfc:L157`'s `INNER JOIN FETCH sku.options` — failed on every invocation.
+   *
+   * Every projected identifier below is now qualified: `link.` for the link table's own column, and the
+   * whitelisted table name for the option's columns, which {@link projectionFor} supplies. The two sides
+   * of the `ON` clause were already qualified and are unchanged, as are the bound parameters and their
+   * order (TR-4).
+   */
+  const rows = await executor.execute(
+    `SELECT link.${COLUMN.skuOptionSkuID}, ${OPTION_PROJECTION} ` +
+      `FROM ${SKU_OPTION_TABLE} link ` +
+      `INNER JOIN ${OPTION_TABLE} ON ${OPTION_TABLE}.${COLUMN.optionID} = ` +
+      `link.${COLUMN.skuOptionOptionID} ` +
+      `WHERE link.${COLUMN.skuOptionSkuID} IN (${placeholders})`,
+    [...skuIdentifiers],
+  );
+
+  const optionGroups = await loadByIdentifiers(
+    { executor, rows, entities: [] },
+    OPTION_GROUP_TABLE,
+    OPTION_GROUP_PROJECTION,
+    COLUMN.optionGroupID,
+    collectIdentifiers(rows, COLUMN.optionOptionGroupID),
+    mapOptionGroupRow,
+  );
+
+  const optionsBySku = new Map<string, Option[]>();
+  for (const row of rows) {
+    const owningSkuID = readForeignKey(row, COLUMN.skuOptionSkuID);
+    if (owningSkuID === undefined) {
+      continue;
+    }
+
+    const option = mapOptionRowWithGroup(row, optionGroups);
+
+    let bucket = optionsBySku.get(owningSkuID);
+    if (bucket === undefined) {
+      bucket = [];
+      optionsBySku.set(owningSkuID, bucket);
+    }
+    bucket.push(option);
+  }
+
+  for (const sku of skus) {
+    const bucket = optionsBySku.get(sku.skuID);
+    if (bucket === undefined) {
+      continue;
+    }
+
+    /* Pushed onto the live array (RULE 4), and NOT through `Sku.addOption`: that member dedupes by
+     * reference, which is right for graph construction and wrong for hydration, where each row is a
+     * distinct instance and the link table has already decided what the collection contains. */
+    for (const option of bucket) {
+      sku.options.push(option);
+    }
+  }
+}
+
+/**
+ * Maps one joined option row and resolves its group from the pre-loaded index.
+ *
+ * ⚠️ THE JOINED ROW CARRIES THE LINK TABLE'S `skuID` ALONGSIDE THE OPTION'S OWN COLUMNS, and that does
+ * not violate `rowMappers.ts` RULE 2 ("one mapper reads one table's columns"): `mapOptionRow` reads by
+ * name and the only added column belongs to no option field, so it is simply never read.
+ *
+ * @param row - a row carrying the option's own columns plus the link table's SKU identifier.
+ * @param optionGroups - the groups already loaded for this batch.
+ * @returns the mapped option, with its group attached when the group was found.
+ */
+function mapOptionRowWithGroup(
+  row: MySqlRow,
+  optionGroups: ReadonlyMap<string, { readonly entity: OptionGroup }>,
+): Option {
+  const option = mapOptionRow(row);
+
+  const optionGroupID = readForeignKey(row, COLUMN.optionOptionGroupID);
+  const resolved = optionGroupID === undefined ? undefined : optionGroups.get(optionGroupID);
+  if (resolved !== undefined) {
+    option.optionGroup = resolved.entity;
+  }
+
+  return option;
+}
+
+/* ================================================================================================
+ * THE THREE `INNER JOIN FETCH` BRANCHES OF `getProductSkus`
+ * ============================================================================================== */
+
+/**
+ * Groups one link table's far identifiers by the SKU that owns them.
+ *
+ * @param executor - the caller's executor, so the read shares its transaction (M6).
+ * @param table - the whitelisted link table.
+ * @param skuColumn - its owning SKU column.
+ * @param farColumn - its far identifier column.
+ * @param skuIdentifiers - the SKUs wanted.
+ * @returns far identifiers keyed by SKU identifier, in row order.
+ */
+async function groupLinkIdentifiers(
+  executor: SqlExecutor,
+  table: PhysicalTableName,
+  skuColumn: string,
+  farColumn: string,
+  skuIdentifiers: readonly string[],
+): Promise<ReadonlyMap<string, readonly string[]>> {
+  const grouped = new Map<string, string[]>();
+
+  if (skuIdentifiers.length === 0) {
+    return grouped;
+  }
+
+  const placeholders = skuIdentifiers.map(() => '?').join(', ');
+  const rows = await executor.execute(
+    `SELECT ${skuColumn}, ${farColumn} FROM ${table} WHERE ${skuColumn} IN (${placeholders})`,
+    [...skuIdentifiers],
+  );
+
+  for (const row of rows) {
+    const owningSkuID = readForeignKey(row, skuColumn);
+    const farIdentifier = readForeignKey(row, farColumn);
+    if (owningSkuID === undefined || farIdentifier === undefined) {
+      continue;
+    }
+
+    let bucket = grouped.get(owningSkuID);
+    if (bucket === undefined) {
+      bucket = [];
+      grouped.set(owningSkuID, bucket);
+    }
+    bucket.push(farIdentifier);
+  }
+
+  return grouped;
+}
+
+/** The distinct, saved identifiers of a SKU batch, in first-seen order. */
+function distinctSkuIdentifiers(skus: readonly Sku[]): readonly string[] {
+  return [...new Set(skus.map((sku) => sku.skuID).filter((skuID) => skuID !== ''))];
+}
+
+/**
+ * Performs the eager fetch `getProductSkus` requests, for whichever collection its base product type
+ * selects.
+ *
+ * ⚠️ THIS IS THE `FETCH` HALF OF `INNER JOIN FETCH`, AND IT WAS THE MISSING HALF.
+ * `model/dao/SkuDAO.cfc:L152-L162` writes three branches, and every one of them is `INNER JOIN FETCH`
+ * rather than a plain `INNER JOIN` — except the subscription term at `:L159`, which is deliberately NOT a
+ * fetch. Hibernate's `FETCH` keyword does two distinct things at once:
+ *
+ *   1. it RESTRICTS the result set, because the join is inner — a SKU with none of the association is
+ *      excluded, and one with three of it comes back three times; and
+ *   2. it POPULATES the association on the returned entities, in the same round trip.
+ *
+ * `MySqlSkuRepository.findByProduct` already reproduced (1) faithfully, duplicates included. It did not
+ * reproduce (2), so a caller that asked for the fetch received SKUs whose collection was still empty —
+ * and, because the count of rows was right, nothing looked wrong. Every member that reads a fetched
+ * collection then answered from an empty array rather than raising: `getOptionsDisplay` produced the
+ * empty string, `getSkuDefinition` produced nothing, and `getOptionsIDList` produced no identifiers.
+ * That is a wrong answer with no error attached, which is the failure class this module exists to close.
+ *
+ * ⚠️ ONE BRANCH PER BASE PRODUCT TYPE, MATCHING THE LEGACY CHAIN EXACTLY, INCLUDING ITS SILENCE. An
+ * unrecognised base product type fetches nothing, because `model/dao/SkuDAO.cfc:L154-L161` has no final
+ * alternative and simply leaves the statement alone. It does not raise there and does not raise here.
+ *
+ * ⚠️ THE TWO REFERENCE COLLECTIONS CARRY IDENTIFIERS, NOT ENTITIES, AND THAT IS THE PORT'S OWN SHAPE
+ * RATHER THAN A SHORTCUT. `Content` and `SubscriptionBenefit` are out of scope (AAP 0.2.2.1), so
+ * `src/domain/sku/Sku.ts` models both collections as identifier references — `AccessContentReference` is
+ * `{ contentID }` and `SubscriptionBenefitReference` is `{ subscriptionBenefitID }`. Populating them
+ * needs only the link table this adapter already owns the write side of, so no excluded entity is
+ * hydrated, queried or constructed.
+ *
+ * ⚠️ A DUPLICATED SKU RECEIVES THE WHOLE COLLECTION, ONCE PER DUPLICATE. The fan-out of (1) means one
+ * SKU may appear several times, and each appearance is a distinct mapped object in this port where
+ * Hibernate's identity map would have returned one shared instance. Giving each duplicate the complete
+ * collection is the closest available match; the divergence in instance identity is the one
+ * `MySqlSkuRepository.findByProduct` already records.
+ *
+ * ⛔ THE COLLECTIONS ARE APPENDED TO, NEVER REPLACED (RULE 4), and never through the entity's `add*`
+ * members: those dedupe by reference, which is correct while a graph is being built and wrong during
+ * hydration, where the link table has already decided what the collection contains.
+ *
+ * @param executor - the caller's executor, so the fetch shares its transaction (M6).
+ * @param skus - the SKUs just hydrated; mutated in place.
+ * @param baseProductType - the product's resolved base product type, or `undefined` when unresolved.
+ */
+export async function attachFetchedSkuAssociations(
+  executor: SqlExecutor,
+  skus: readonly Sku[],
+  baseProductType: string | undefined,
+): Promise<void> {
+  if (skus.length === 0 || baseProductType === undefined) {
+    return;
+  }
+
+  if (baseProductType === SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE.merchandise.systemCode) {
+    /* `model/dao/SkuDAO.cfc:L157` — `INNER JOIN FETCH sku.options`. */
+    await attachSkuOptions(executor, skus);
+    return;
+  }
+
+  if (baseProductType === SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE.contentAccess.systemCode) {
+    /* `model/dao/SkuDAO.cfc:L155` — `INNER JOIN FETCH sku.accessContents`. */
+    const grouped = await groupLinkIdentifiers(
+      executor,
+      SKU_ACCESS_CONTENT_TABLE,
+      COLUMN.accessContentSkuID,
+      COLUMN.accessContentContentID,
+      distinctSkuIdentifiers(skus),
+    );
+
+    for (const sku of skus) {
+      for (const contentID of grouped.get(sku.skuID) ?? []) {
+        sku.accessContents.push({ contentID });
+      }
+    }
+    return;
+  }
+
+  if (baseProductType === SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE.subscription.systemCode) {
+    /* `model/dao/SkuDAO.cfc:L160` — `INNER JOIN FETCH sku.subscriptionBenefits`. The term join at
+     * `:L159` is a plain `INNER JOIN` with NO `FETCH`, so `subscriptionTerm` is deliberately left
+     * unresolved here; reproducing the restriction without the fetch is exactly what the legacy does. */
+    const grouped = await groupLinkIdentifiers(
+      executor,
+      SKU_SUBSCRIPTION_BENEFIT_TABLE,
+      COLUMN.subscriptionBenefitSkuID,
+      COLUMN.subscriptionBenefitID,
+      distinctSkuIdentifiers(skus),
+    );
+
+    for (const sku of skus) {
+      for (const subscriptionBenefitID of grouped.get(sku.skuID) ?? []) {
+        sku.subscriptionBenefits.push({ subscriptionBenefitID });
+      }
     }
   }
 }

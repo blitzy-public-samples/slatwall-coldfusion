@@ -14,15 +14,15 @@
  * THE NINE DECLARED MEMBERS, WITH THEIR SOURCE LOCATORS
  *   createSkus                 [:L58]  the combination engine — three branches, always returns true
  *   processImageUpload         [:L210] answers the ENTITY per AAP §0.4.2.2 while the legacy body returns
- *                                      the image-write boolean — carried divergence D24, annotated at
- *                                      the member, with the cost of the lost verdict flagged there
+ *                                      the image-write boolean at [:L213-L217] — a carried divergence,
+ *                                      annotated at the member with the cost of the lost verdict flagged
  *   getProductSkus             [:L220] `sorted` REQUIRED (Discrepancy 2), D13
  *   getSortedProductSkus       [:L246] reads the product's own collection, D13
  *   searchSkusByProductType    [:L271] BOTH arguments optional (Discrepancy 3)
  *   getSkuStocksDeletableFlag  [:L281] D4 — the member it delegates to does not exist
  *   getTransactionExistsFlag   [:L285] declares NO arguments (Discrepancy 4) yet forwards its whole
  *                                      argument scope at [:L286]; the narrow contract is preserved here
- *                                      and the identifier-scoped form lives on the repository — D23
+ *                                      and the identifier-scoped form lives on the repository — the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287]
  *   getSkuBySkuCode            [:L289] optional argument, constrained by an out-of-scope caller
  *   getSkuSmartList            [:L309] entity, three joins, five keyword properties
  *
@@ -92,7 +92,6 @@ import {
   DomainError,
   LegacyParityError,
   NotImplementedError,
-  RequestBudgetExhaustedError,
   UNEXPECTED_ERROR_CREATING_PRODUCT_MESSAGE,
 } from '../errors/DomainError';
 import {
@@ -112,9 +111,6 @@ import type { ImagePathPort } from '../ports/ImagePathPort';
 import { IMAGE_UPLOAD_ALLOWED_EXTENSIONS } from '../ports/ImagePathPort';
 import type {
   SmartListInput,
-  SmartListJoin,
-  SmartListKeywordProperty,
-  SmartListQuery,
   SmartListQueryPort,
   SmartListResult,
 } from '../ports/SmartListQueryPort';
@@ -125,7 +121,7 @@ import type {
   SubscriptionTermPort,
 } from '../ports/SubscriptionTermPort';
 import type { SkuRepository, SkuSearchRow } from '../ports/repositories/SkuRepository';
-import { mergeSmartListJoins, translateSmartListInput } from '../util/smartListInput';
+import { composeSkuSmartListQuery } from '../ports/SmartListQueryPort';
 import type {
   ValidateOptions,
   ValidationContext,
@@ -258,180 +254,83 @@ const FIRST_OPTION_INDEX = 0;
 const FIRST_ARRAY_INDEX = 0;
 
 /* ------------------------------------------------------------------------------------------------
- * ⭐ SEC-HARDENING (D18-CLASS) — THE IMAGE WRITE PATH'S BASENAME GATE (review finding F2, CWE-22 +
- * CWE-434)
+ * ⛔ THERE IS NO IMAGE-FILE-NAME GATE IN THIS FILE, AND THE HISTORY IS RECORDED SO IT IS NOT REBUILT
+ * (review finding F4)
  *
- * WHERE THIS SITS IN THE ADJUDICATION. `src/ports/ImagePathPort.ts` carries the full re-adjudication of
- * SEC-07 / DECISION I-1 — which of the five bundled clauses stay withdrawn, which two are reinstated, and
- * the three measurements that separate them. This is clause 4's implementation, and it is deliberately the
- * ONLY place in this file that inspects an image value. Nothing here touches the DISPLAY or EXISTENCE
- * paths: `Sku.getImagePath` and `Sku.getImageExistsFlag` compose and probe whatever is stored, traversal
- * and all, exactly as `model/entity/Sku.cfc:L146` and `[:L222]` do.
+ * THREE SUCCESSIVE REVISIONS PUT A CHECK OVER THE STORED `imageFile` COLUMN HERE, EACH NARROWER THAN THE
+ * LAST, AND ALL THREE ARE NOW WITHDRAWN. Their names survive only in this paragraph so a reader who finds
+ * them cited elsewhere can see what happened:
+ *   1. `isStorableImageFileName` — an 80-line predicate covering read, probe and write paths.
+ *   2. A compiler-enforced containment brand — `ImageStorageRoot`, `toImageStorageRoot`,
+ *      `ContainedImageWritePath`, `requireContainedImageWritePath`, `assertPermittedImageUpload` — which
+ *      refused bad input BY RAISING and required an eleventh constructor parameter.
+ *   3. `isWritableSkuImageFileName` — the narrowest of the three: one predicate over the WRITE path only,
+ *      transcribed from the legacy's own generator at [model/entity/Sku.cfc:L131-L139], raising nothing
+ *      and answering `false` in the shape [model/service/SkuService.cfc:L213-L217] already used.
  *
- * WHY THE WRITE IS DIFFERENT FROM THE READ. On the read paths the stored value names a SUBJECT to report
- * on; refusing it would answer a question the legacy answered, which is an outcome change with no D18
- * analogy. On the write path the same value chooses a DESTINATION. For every `imageFile` the legacy was
- * designed to store — a plain image file name — this gate refuses nothing and the composed `filePath` is
- * forwarded byte-identically, so the destination is unchanged. It diverges only for a value that attacks
- * the interpolation at `model/entity/Sku.cfc:L146` itself, which is precisely D18's own property
- * (AAP §0.6.7.7).
+ * REVISION 2 WAS RETIRED ON ITS OWN MERITS AND STAYS RETIRED. It invented a containment root and a
+ * content-type allow-list the legacy states nowhere ([model/service/SettingService.cfc:L164]'s
+ * `globalAssetsImageFolderPath` only COMPOSES paths; [model/service/ProductService.cfc:L200-L201] does
+ * `fileExists`/`fileDelete` by bare concatenation and [:L240] assembles an upload directory the same way,
+ * so the legacy CHECKS containment nowhere), it raised where the legacy returns a boolean, and it put a
+ * compiled `RegExp` and a validator body inside `src/ports/**`, which AAP §0.3.1 reserves for contracts.
  *
- * WHAT IS AND IS NOT INVENTED. The extension list is the LEGACY'S OWN and is handed to this very
- * boundary: `model/service/SkuService.cfc:L212` passes `allowedExtensions="jpg,jpeg,png,gif"`, carried
- * verbatim as `IMAGE_UPLOAD_ALLOWED_EXTENSIONS`. No storage root, no byte cap, no MIME allowlist and no
- * name-length ceiling is stated anywhere here — a containment directory was one of the three clauses the
- * port keeps permanently withdrawn, because it had no legacy counterpart to derive a value from
- * (AAP §0.7.3 standard 9, IR-12).
- * ---------------------------------------------------------------------------------------------- */
-
-/* ⛔ THERE IS NO `isStorableImageFileName`, AND ITS WRITE-SIDE CHECK IS REINSTATED IN A NARROWER SHAPE.
- * An 80-line predicate stood here: it took the stored `imageFile` basename and the allowed-extension
- * list and answered whether the value could name a file inside the image directory at all. Review
- * finding F6 brings back exactly its WRITE half as {@link isWritableSkuImageFileName}, consulted at the
- * first statement of `processImageUpload`, so a value the legacy's own generator could not have produced
- * refuses the write before any member of `../ports/ImagePathPort` is touched.
+ * ⛔ REVISION 3 IS RETIRED ON PRECEDENCE, NOT ON ITS REASONING, AND THAT DISTINCTION IS WORTH KEEPING.
+ * It refused only values the legacy's own writers could not have produced, so it looked like a
+ * flaw-removal in D18's shape. It nevertheless produced A NEW OBSERVABLE OUTCOME ON INPUT THE LEGACY
+ * ACCEPTS — [model/service/SkuService.cfc:L212] composes the path and asks the image service to write it
+ * whatever the column holds. AAP §0.6.7.7 declares D18 the SINGLE such departure and AAP §0.8.2
+ * Guideline 4 forbids the rest; AAP §0.1.2.1 makes the plan frozen and not reinterpretable, so a second
+ * exception cannot be reached by analogy with the first. The full withdrawal, and where the exposure can
+ * legitimately be closed instead, is stated once below at the SEC-07 withdrawal block.
  *
- * ⛔ AND A LATER REVISION REPLACED IT WITH A COMPILER-ENFORCED CONTAINMENT BRAND, WHICH IS WITHDRAWN IN
- * FULL. That design added `ImageStorageRoot`, `toImageStorageRoot`, `ContainedImageWritePath`,
- * `requireContainedImageWritePath` and `assertPermittedImageUpload`, and refused bad input BY RAISING,
- * describing the raise as "the SECOND hardening exception alongside D18". Five findings retire it, and
- * the port's DECISION I-1 block records the same conclusion control by control:
- *   1. THE OUTCOME SET FORBIDS THE RAISE. [model/service/SkuService.cfc:L210-L218] reads
- *      `if(imageSaved){return true;}else{return false;}` — the legacy member returns ONLY `true` or
- *      `false` and never throws, so a refusal must be `false`. AAP §0.6.7 admits exactly one behaviour
- *      exception, D18 (§0.6.7.7), and a second cannot be declared unilaterally.
- *   2. THE EXTENSION LIST IS THE LEGACY'S, AND IS UNCHANGED EITHER WAY. [:L212] passes
- *      `allowedExtensions="jpg,jpeg,png,gif"`, carried verbatim as `IMAGE_UPLOAD_ALLOWED_EXTENSIONS`,
- *      still imported here and still travelling to the port. Nothing about the extension rule ever
- *      depended on the withdrawn machinery.
- *   3. A CONTENT-TYPE ALLOW-LIST HAS NO LEGACY COUNTERPART. The legacy states extensions and nothing
- *      else, so `assertPermittedImageUpload`'s declared-type check was invented policy (AAP §0.7.3
- *      standard 9, IR-12).
- *   4. NEITHER DOES A CONTAINMENT ROOT. `globalAssetsImageFolderPath`
- *      [model/service/SettingService.cfc:L164] only COMPOSES paths — [model/entity/Sku.cfc:L145] builds a
- *      URL from `getBaseImageURL()` — and the legacy never CHECKS containment anywhere:
- *      [model/service/ProductService.cfc:L200-L201] does `fileExists`/`fileDelete` by bare concatenation
- *      and [:L240] assembles an upload directory the same way. The enforcement AND its configuration key
- *      were both invented, which is the ground the port states immediately above this block.
- *   5. LAYERING. `src/ports/**` declares contracts (AAP §0.3.1); a compiled `RegExp` and a working
- *      validator body do not belong in one. The reinstated predicate lives here, in the service that
- *      decides the write, where a predicate is ordinary code.
- * The collaborator that design required is gone with it, so this service takes TEN constructor
- * parameters rather than eleven.
+ * WHAT REMAINS OF THE LEGACY'S OWN POLICY, WHICH WAS NEVER THE INVENTED PART. The extension list is handed
+ * to this very boundary by the legacy itself: [model/service/SkuService.cfc:L212] passes
+ * `allowedExtensions="jpg,jpeg,png,gif"`, carried verbatim as `IMAGE_UPLOAD_ALLOWED_EXTENSIONS` and still
+ * travelling to the port unchanged. That is the whole of the file-name policy this port applies, and it
+ * applies it exactly where the legacy does — inside the image service, behind the port.
  *
- * ⭐ THE FOUR DATA CONSTANTS STAY DELETED, THEIR OBLIGATIONS DISCHARGED BY THE REINSTATED PREDICATE.
- * `IMAGE_FILE_NAME_SEPARATORS`, `IMAGE_FILE_NAME_RESERVED_NAMES`, `IMAGE_FILE_NAME_CONTROL_CHARACTERS`
- * and `IMAGE_FILE_NAME_EXTENSION_DELIMITER` stood immediately above this block, and the compiler reported
- * them unused once the predicate was excised. Removing an unused constant is only safe if the obligation
- * it encoded is discharged elsewhere, so each was matched to a clause of
- * {@link isWritableSkuImageFileName} before deletion:
- *   - SEPARATORS and CONTROL CHARACTERS → the stem must match `SKU_IMAGE_FILE_STEM_PATTERN`, whose
- *     alphabet excludes `/`, `\\`, every whitespace and every control character, so a conforming stem is
- *     necessarily a SINGLE path segment. That is the whole of the confinement claim, reached without any
- *     containment root to compare against.
- *   - RESERVED NAMES → the exactly-one-separator clause refuses a bare `..` (no extension) and `../x.jpg`
- *     (two separators) alike, and the non-empty-stem clause refuses a bare `.`.
- *   - EXTENSION DELIMITER → the separator index is read explicitly and the stem and extension are split
- *     on it, which is the same one-dot-plus-extension shape [model/entity/Sku.cfc:L131-L139]
- *     `generateImageFileName()` itself produces.
- * None of the four had a second consumer. */
+ * NOTHING HERE TOUCHES THE DISPLAY OR EXISTENCE PATHS EITHER, AND NEVER DID IN THE END STATE:
+ * `Sku.getImagePath` and `Sku.getImageExistsFlag` compose and probe whatever is stored, traversal and all,
+ * exactly as [model/entity/Sku.cfc:L146] and [:L222] do.
+ *
+ * FOUR DATA CONSTANTS THAT SERVED REVISION 1 — `IMAGE_FILE_NAME_SEPARATORS`,
+ * `IMAGE_FILE_NAME_RESERVED_NAMES`, `IMAGE_FILE_NAME_CONTROL_CHARACTERS` and
+ * `IMAGE_FILE_NAME_EXTENSION_DELIMITER` — stood immediately above this block and are gone with the
+ * predicates they fed. None had a second consumer. */
 
 /* ------------------------------------------------------------------------------------------------
- * SMART LIST CONSTANTS — `model/service/SkuService.cfc:L309-L325`
+ * SMART LIST SELECTION — OWNED BY `../ports/SmartListQueryPort`, NOT RESTATED HERE
  *
- * The legacy member names the root entity, adds three related-property joins and registers five keyword
- * properties. All five facts are observable in the query the port receives, so all five are pinned as
- * frozen constants rather than assembled inline, and nothing can reorder or reweight them at run time
- * (M7).
+ * The four facts `model/service/SkuService.cfc:L309-L325` states — the root entity `SlatwallSku`
+ * [:L310], the three related-property joins [:L314-L316] whose third is spelled `left` while the first
+ * two default to it, the five keyword properties at weight 1 [:L318-L322], and the merge semantics that
+ * absorb a repeated join — used to be five frozen constants and one private member in THIS file.
+ *
+ * ⭐ THEY MOVED TO A LEAF MODULE BECAUSE A SECOND CALLER NEEDS THE SAME SELECTION AND A DIFFERENT VIEW
+ * OF ITS RESULT. {@link SkuService.getSkuSmartList} answers the whole `SmartListResult`, because that is
+ * what the legacy smart list exposes to its callers. The Google product feed reads the UNPAGED
+ * COLLECTION ALONE — `integrationServices/google/views/feed/product.cfm:L16` loops the records and reads
+ * no page and no count in its 66 lines — and it used to obtain that view by holding a `SkuService`,
+ * calling this member and discarding two thirds of the answer, paying for a `COUNT(*)` it never read and
+ * often a paged statement it never read either.
+ *
+ * ⛔ THE FIX WAS NOT A TENTH MEMBER, AND THAT HISTORY IS RECORDED SO IT IS NOT RE-TRIED. A records-only
+ * public reading — `getSkuSmartListRecords` — was written once and withdrawn, because AAP §0.4.2.2 fixes
+ * this service at NINE declared public members and §0.8.3.1 makes that surface the artefact a reviewer
+ * checks "method by method". Sharing the SELECTION while each caller chooses its own VIEW keeps the count
+ * at nine and removes the wasted statements. `../ports/SmartListQueryPort`'s folded SKU smart-list section carries the constants, the merge
+ * semantics, the legacy locators and the corrected join-type note in full.
+ *
+ * ⭐ IT ALSO SEVERS AN EDGE THE FEED NEVER NEEDED: an integration that imports this service drags the
+ * combination engine, the SKU repository port, the validator and four boundary ports into the Lambda
+ * artifact that serves `google:feed.product`, none of which that route can reach.
+ *
+ * ⛔ DO NOT RESTATE THE ENTITY NAME, A JOIN, A KEYWORD PROPERTY OR A WEIGHT HERE AGAIN, not even one,
+ * and not even to add a key. Two readings of one selection cannot be kept in step by hand — the smart
+ * list's key grammar had already diverged once between two copies before it was consolidated, which the
+ * block below records. Extend the shared composer instead.
  * ---------------------------------------------------------------------------------------------- */
-
-/** `arguments.entityName = "SlatwallSku"` — [model/service/SkuService.cfc:L310]. */
-const SKU_ENTITY_NAME = 'SlatwallSku';
-
-/** `SlatwallProduct` is the parent of the second join — [model/service/SkuService.cfc:L315]. */
-const PRODUCT_ENTITY_NAME = 'SlatwallProduct';
-
-/** Every `addKeywordProperty` call in the member passes `weight=1` — [:L318-L322]. */
-const SKU_KEYWORD_PROPERTY_WEIGHT = 1;
-
-/**
- * The three joins, in source order.
- *
- * ALL THREE EMIT A LEFT JOIN. TWO OMIT THE JOIN TYPE AND ONE SPELLS IT; THE OMISSION IS NOT AN INNER
- * JOIN. [model/service/SkuService.cfc:L314] and [:L315] call `joinRelatedProperty` with no third
- * argument, which defaults `joinType` to the EMPTY STRING at
- * [org/Hibachi/HibachiSmartList.cfc:L212]. The natural reading is that an empty join type means an
- * inner join; it does not. `getHQLFrom` normalises it at [org/Hibachi/HibachiSmartList.cfc:L537-L540]
- * with `if(!len(joinType)) { joinType = "left"; }` before the clause is written, so the empty string
- * is emitted as LEFT. [:L316] passes `"left"` explicitly, which in this codebase is the SAME clause
- * spelled a second way rather than a different one.
- *
- * The join-type semantic is declared once, on `SmartListJoinType` in `../ports/SmartListQueryPort`
- * (Q2), and emitted once, by `resolveJoinKeyword` in `../adapters/mysql/SmartListQueryBuilder`. This
- * block restates neither; it records only WHICH of the three legacy lines spells the type and which
- * two omit it, because that is local to this constant. `SmartListJoin.joinType` is left ABSENT for
- * the two that omit it rather than set to the empty string, so the absent form carries "the legacy
- * default" (S1, `exactOptionalPropertyTypes`), and `joinType: 'left'` is carried on the third entry
- * because [:L316] spells it — not because it is the only left join.
- *
- * CORRECTION. This block previously claimed the first two were INNER joins and that the third was
- * the one asymmetry. That was FALSE, and false in the way that is hardest to catch: it quoted the
- * `:L212` empty-string default correctly and then drew the opposite conclusion from it, so the
- * citation read as evidence for the claim it actually contradicted. The runtime was never wrong —
- * `resolveJoinKeyword` has always emitted LEFT for the absent, empty and explicit forms alike — only
- * the explanation was, and the entries below are unchanged.
- */
-const SKU_SMART_LIST_JOINS: readonly SmartListJoin[] = Object.freeze([
-  { parentEntityName: SKU_ENTITY_NAME, relatedProperty: 'product' },
-  { parentEntityName: PRODUCT_ENTITY_NAME, relatedProperty: 'productType' },
-  {
-    parentEntityName: SKU_ENTITY_NAME,
-    relatedProperty: 'alternateSkuCodes',
-    joinType: 'left',
-  },
-] satisfies SmartListJoin[]);
-
-/**
- * The five keyword properties, in source order, every one at weight 1.
- *
- * [model/service/SkuService.cfc:L318-L322]. The last three are dotted property identifiers that only
- * resolve because of the joins above — `product.productName` needs the first join,
- * `product.productType.productTypeName` needs the first two, and
- * `alternateSkuCodes.alternateSkuCode` needs the third. Reordering the joins would therefore break
- * keyword search rather than merely change SQL, which is why both collections are frozen together.
- */
-const SKU_SMART_LIST_KEYWORD_PROPERTIES: readonly SmartListKeywordProperty[] = Object.freeze([
-  Object.freeze({ propertyIdentifier: 'skuCode', weight: SKU_KEYWORD_PROPERTY_WEIGHT }),
-  Object.freeze({ propertyIdentifier: 'skuID', weight: SKU_KEYWORD_PROPERTY_WEIGHT }),
-  Object.freeze({ propertyIdentifier: 'product.productName', weight: SKU_KEYWORD_PROPERTY_WEIGHT }),
-  Object.freeze({
-    propertyIdentifier: 'product.productType.productTypeName',
-    weight: SKU_KEYWORD_PROPERTY_WEIGHT,
-  }),
-  Object.freeze({
-    propertyIdentifier: 'alternateSkuCodes.alternateSkuCode',
-    weight: SKU_KEYWORD_PROPERTY_WEIGHT,
-  }),
-]);
-
-/*
- * ⛔ A MODULE-SCOPE `composeSkuSmartListQuery` WAS EXPORTED HERE AND HAS BEEN REMOVED, BECAUSE ITS OWN
- * JUSTIFICATION NO LONGER HOLDS.
- * It existed to give the Google feed a way to contribute its three joins, and it argued from a premise
- * that has since been settled the other way: that `SmartListInput` "carries filters, ranges, ordering,
- * paging and keywords but has no join key at all", so a caller had NO channel. `SmartListInput` now
- * declares `additionalJoins`, which IS that channel, and it is the one the live translator reads —
- * `src/util/smartListInput.ts` takes `options.input?.additionalJoins` and nothing else.
- *
- * The exported function had ZERO consumers in `src/` or `test/`. The one public reading,
- * {@link SkuService.getSkuSmartList}, routes through the PRIVATE `composeSkuSmartListQuery` member, which
- * differs in a way that matters: it merges through `mergeSmartListJoins`, whereas the exported copy
- * concatenated. Keeping both meant one name for two behaviours, with `export` suppressing the
- * unused-symbol warning that would otherwise have found it.
- *
- * `src/integrations/google/ProductFeedQuery.ts` records the surviving route on its decision F-2: the feed
- * declares its joins in a frozen module constant and forwards them inside the input it hands the service.
- */
 
 /* ----------------------------------------------------------------------------------------------
  * SMART LIST INPUT KEY GRAMMAR — OWNED BY THE SHARED TRANSLATOR, NOT RESTATED HERE
@@ -444,7 +343,7 @@ const SKU_SMART_LIST_KEYWORD_PROPERTIES: readonly SmartListKeywordProperty[] = O
  * module-private function, so sharing was said to require modifying a file outside this one's scope.
  *
  * ⭐ THAT CONSTRAINT NO LONGER HOLDS, AND THE CONCESSION IS THEREFORE WITHDRAWN RATHER THAN LEFT
- * STANDING. `../util/smartListInput` EXPORTS `translateSmartListInput`, so the grammar has one owner
+ * STANDING. `../ports/SmartListQueryPort` EXPORTS `translateSmartListInput`, so the grammar has one owner
  * and every service calls it. Nothing outside this file had to be modified to reach it — `src/util/**`
  * is a leaf module any service may depend on — and `getSkuSmartList` passes only what is genuinely
  * SKU-specific: the entity name, this service's joins and its keyword properties.
@@ -570,68 +469,41 @@ export interface SkuSaveValidator {
 }
 
 /* ================================================================================================
- * ⭐ SEC-HARDENING (D18-CLASS) — SEC-13 / THE MERCHANDISE ENUMERATION BOUND, RE-ADJUDICATED CLAUSE BY
- * CLAUSE (review finding F3, CWE-400)
+ * ⛔ THE MERCHANDISE ENUMERATION BOUND IS WITHDRAWN IN FULL — BOTH CLAUSES, FINALLY
  * ================================================================================================
- * The block below records the revision that bundled TWO changes into one `SkuCombinationBudget` and the
- * revision that withdrew both. Review finding F3 re-opened it, and the resolution is neither of those two
- * states: the bundle is SPLIT. This is the same move that settled findings F6/F8, F1/F13 and F2, and it is
- * stated first because a reader who meets the withdrawal block below without it will conclude the finding
- * was declined.
+ * This block records a history that oscillated three times, and the settled state is the simplest one:
+ * there is NO bound of any kind on the merchandise enumeration, and the legacy's unbounded behaviour is
+ * carried and flagged instead.
  *
- * ⭐ CLAUSE A — CHECKED MULTIPLICATION. REINSTATED, UNCONDITIONALLY, AND IT IS NOT A CEILING.
- * {@link multiplyCombinationCount} now refuses a product that is no longer an exact integer. The
- * withdrawal grouped this with the ceiling and rejected both together; the two are not alike, and the
- * difference is provable rather than arguable:
+ * WHAT WAS TRIED, IN ORDER.
+ *   1. A REQUIRED `SkuCombinationBudget` constructor collaborator plus an overflow refusal in the
+ *      multiplication, bundled together.
+ *   2. Both withdrawn together, on the ground that requiring an operator to supply a maximum relocated an
+ *      invented figure rather than avoiding it.
+ *   3. Both reinstated, SPLIT: an unconditional "checked multiplication" (clause A, argued as refusing an
+ *      arithmetic state rather than as a ceiling) and an OPTIONAL operator ceiling (clause B, argued as
+ *      inventing nothing when unwired).
+ *   4. ⭐ BOTH WITHDRAWN AGAIN, which is the current state and is what this block now records.
  *
- *     A product exceeding `Number.MAX_SAFE_INTEGER` is 9,007,199,254,740,991 combinations or more. EVERY
- *     combination constructs a SKU, attaches it to the product and VALIDATES it, and validation reaches
- *     the database through the M6 read-back cycle. No run of nine quadrillion database round trips
- *     terminates in any operational window — at a nominal microsecond each that is over 285,000 years —
- *     so NO TERMINATING RUN EXISTS ABOVE THAT THRESHOLD, in the legacy or here.
+ * ⛔ WHY STEP 3's SPLIT DOES NOT SURVIVE. The split was argued case by case, and the count is what
+ * settles it rather than either case's merits. AAP §0.6.7.7 declares exactly ONE departure from
+ * behavioural preservation in this port — D18, the importer's SQL parameterisation in
+ * `../adapters/mysql/MySqlProductRepository` — and it declares it precisely so that a reviewer diffing
+ * generated behaviour against legacy behaviour has exactly one entry to check. AAP §0.8.2 Guideline 4
+ * ("do not enhance or optimize business logic beyond what the migration requires") admits no
+ * proportionality test and no "it changes no terminating run" exemption; AAP §0.6.7 mandates
+ * preserve-and-annotate. Clause A raised where the legacy looped, and clause B gave a deployment a way
+ * to make `createSkus` refuse a request the legacy would have served — each is an outcome change on some
+ * input, so each is out.
  *
- * The refusal therefore cannot change the result of any run that would have completed. What it changes is
- * "no answer, after unbounded allocation and a partial write of SKUs that are already durable" into "no
- * answer, immediately, with nothing written" — the SAME answer, delivered safely, which is exactly the
- * property AAP §0.6.7.7 licenses for D18. Review finding F3 names this consequence itself: "overflow to
- * `Infinity` can make the loop nonterminating", and a non-terminating loop has no output to preserve.
- *
- * ⛔ AND CLAUSE A INVENTS NO NUMBER. `Number.MAX_SAFE_INTEGER` is where IEEE-754 doubles stop
- * representing consecutive integers — a property of the arithmetic the legacy also runs on, not a capacity
- * figure chosen by anybody. AAP §0.7.3 S9 and IR-12 are satisfied because there is nothing to invent.
- *
- * ⭐ CLAUSE B — AN OPERATOR CEILING. REINSTATED AS OPTIONAL, WHICH IS WHAT THE WITHDRAWAL'S OWN
- * OBJECTION LEAVES OPEN. The withdrawal's decisive argument against the ceiling was that "Requiring the
- * composition root to supply the maximum RELOCATED the fabrication rather than avoiding it: the number
- * still had to be invented by somebody before the graph could be built at all." That is a correct
- * objection to a REQUIRED collaborator and it does not reach an OPTIONAL one. Wired, an operator states
- * their own capacity and gets a fail-closed refusal; UNWIRED, nothing is invented anywhere and the
- * enumeration is byte-identical to the legacy's. Neither branch fabricates a figure.
- *
- * ⭐ AND THIS SHAPE IS NOT NEWLY DESIGNED HERE — IT IS THE SURVIVING SIBLING'S. `SmartListMaterialisationBudget`
- * in `../adapters/mysql/SmartListQueryBuilder` reached exactly this resolution under review finding F4: it
- * "was first added as a REQUIRED second parameter, by analogy with a `SkuCombinationBudget` that no longer
- * exists", was corrected to optional, and its constructor validates the figure only when one is supplied.
- * That file's note observes that "both sibling budgets were withdrawn on exactly that reasoning" — written
- * when they had been, and now true of neither, since both have been reinstated in the optional shape.
- * {@link SkuCombinationBudget} follows it member for member so the two ceilings cannot drift apart.
- *
- * ⛔ WHAT IS STILL *NOT* ADDED, AND WHY THAT IS NOT AN OMISSION. No caller-supplied `AbortSignal` and no
- * deadline reach this member, and `createSkus`'s arity is unchanged (TR-1). Finding F3 asks for "checked
- * multiplication and … an operator-configured invocation budget/deadline/abort before allocation or
- * writes"; clauses A and B are those two mechanisms, enforced before the first allocation and before the
- * first write. A third would need either a change to a signature two legacy callers depend on
- * ([model/service/ProductService.cfc:L279] and [:L150]) or a second public write member with its own route
- * and its own authorisation row — surface AAP §0.7.3 S9 forbids inventing for a requirement already met.
- * The invocation deadline remains the platform's, and mismatches M1 and M2 stay FLAGGED rather than
- * resolved, per AAP §0.6.6 and §0.8.3.6.
- *
- * ⚠️ WHAT IS STILL CARRIED UNREPAIRED. With no budget wired, consequence 1 below stands in full: seven
- * groups of ten still asks for ten million SKUs and gets them. That is the legacy's behaviour and it is
- * still the default, because AAP §0.8.2 Guideline 4 forbids changing it without an operator saying so.
+ * ⛔ AND CLAUSE B FAILS A SECOND, INDEPENDENT TEST. AAP §0.7.3 S9 and IR-12 forbid inventing what the
+ * source does not state. An optional collaborator does not oblige a deployment to invent a figure, but it
+ * does add a capability — a configurable request ceiling — that the legacy does not have and that no AAP
+ * row asks for. `createSkus`'s public surface is preserved by TR-1; its wiring surface should not grow a
+ * knob the source never described.
  * ================================================================================================
- * TODO(parity): model/service/SkuService.cfc:L85, :L89 — THE HISTORICAL RECORD: MERCHANDISE SKU
- * ENUMERATION IS UNBOUNDED BY DEFAULT, AND THIS IS THE REASONING THAT REMOVED THE FIRST BOUND.
+ * TODO(parity): model/service/SkuService.cfc:L85, :L89 — MERCHANDISE SKU ENUMERATION IS UNBOUNDED,
+ * AND BOTH CONSEQUENCES ARE CARRIED.
  * ================================================================================================
  * `createSkus` enumerates the Cartesian product of the selected option groups. The legacy computes
  * the size of that product as `totalCombos = totalCombos * arrayLen(optionGroups[key])`
@@ -639,56 +511,31 @@ export interface SkuSaveValidator {
  * WITH NO CEILING OF ANY KIND. Two consequences follow, and both are carried across unrepaired so
  * that they read as decisions rather than as oversights:
  *
- *   1. RESOURCE EXHAUSTION. The size grows multiplicatively in the number of selected options, so a
- *      modest-looking request — seven groups of ten — asks for ten million SKUs, each of which is
- *      constructed, attached to the product and VALIDATED, and validation reaches the database
- *      through the M6 read-back cycle described on the constructor below. Nothing in the legacy
- *      stops that, and nothing here does either.
+ *   1. RESOURCE EXHAUSTION (CWE-400). The size grows multiplicatively in the number of selected
+ *      options, so a modest-looking request — seven groups of ten — asks for ten million SKUs, each of
+ *      which is constructed, attached to the product and VALIDATED, and validation reaches the database
+ *      through the M6 read-back cycle described on the constructor below. Nothing in the legacy stops
+ *      that, and nothing here does either.
  *   2. NON-TERMINATION past `Number.MAX_SAFE_INTEGER`, where the running product stops being an
  *      exact integer and eventually becomes `Infinity`, at which point `combination < totalCombos`
- *      is permanently true. The legacy arithmetic at [:L85] has the same property, so the target
- *      inherits it rather than introducing it.
- *
- * WHY THE BOUND WAS REMOVED RATHER THAN KEPT. An earlier revision of this file declared a REQUIRED
- * `SkuCombinationBudget` constructor collaborator, refused any request whose combination count
- * exceeded it, and refused an overflowing multiplication beside that. Three authorities were read as
- * converging against both refusals. ⚠️ EACH IS QUOTED BELOW WITH THE SCOPE IT ACTUALLY HAS, because the
- * re-adjudication above turns on the fact that all three reach the REQUIRED ceiling and none of them
- * reaches an optional ceiling or a checked multiplication:
- *
- *   - AAP §0.8.2 Guideline 4 — "Do not enhance or optimize business logic beyond what the migration
- *     requires" — read with IR-9, which carries defects across as flagged `TODO(parity)`
- *     annotations with EXACTLY ONE declared exception: D18, the importer's SQL parameterisation in
- *     `../adapters/mysql/MySqlProductRepository` (AAP §0.6.7.7). This was not that exception.
- *     → STILL BINDING ON THE DEFAULT, AND SATISFIED: with no budget wired the business logic is
- *       unchanged. Clause A is not an enhancement to business logic at all — it refuses an arithmetic
- *       state in which the logic has no defined result.
- *   - AAP §0.7.3 S9 and IR-12 — invent nothing the source does not state. Requiring the composition
- *     root to supply the maximum RELOCATED the fabrication rather than avoiding it: the number still
- *     had to be invented by somebody before the graph could be built at all.
- *     → THE DECISIVE OBJECTION, AND IT IS AN OBJECTION TO THE WORD "REQUIRING". An OPTIONAL parameter
- *       obliges nobody to invent anything, which is why clause B takes that shape and why the sibling
- *       budget was corrected to it rather than deleted.
- *   - AAP §0.6.7.8 — the enumeration must be ported EXACTLY, because the enumeration order
- *     determines both the generated SKU set and, through §0.6.2, the order in which
- *     `hasUniqueOptions` observes its siblings. A gate that refuses the whole request changes the
- *     answer from "the legacy's set" to "nothing at all".
- *     → STILL BINDING, AND UNTOUCHED: no gate reorders, filters, deduplicates or truncates anything,
- *       and every wheel, working variable and advance step below is exactly as it was. The quoted
- *       sentence holds wherever "the legacy's set" EXISTS — which is the whole of clause A's argument,
- *       since above `Number.MAX_SAFE_INTEGER` the loop does not terminate and defines no set to change.
+ *      is permanently true. The legacy arithmetic at [:L85] has the same property on the same IEEE-754
+ *      doubles, so the target inherits it rather than introducing it.
  *
  * WHERE A BOUND WOULD LEGITIMATELY BELONG. Not in this file, and not as a business rule. An
  * invocation-level deadline in `../handlers/**`, or an operator limit applied to the request before
- * it reaches this service, bounds the work WITHOUT changing which SKUs the algorithm defines.
+ * it reaches this service, bounds the work WITHOUT changing which SKUs the algorithm defines — and it
+ * would arrive as a stated requirement with its own authority rather than inside a migration. The
+ * invocation deadline remains the platform's, and mismatches M1 and M2 stay FLAGGED rather than
+ * resolved, per AAP §0.6.6 and §0.8.3.6.
  *
- * ⛔ DEDUPLICATION IS STILL NOT AN OPTION, and the bound's removal does not change that. Duplicate
- * selections of one option genuinely produce a multi-element bucket in the legacy — `arrayAppend`
- * [model/service/SkuService.cfc:L78] appends unconditionally — and therefore genuinely produce more
- * combinations. AAP §0.6.7.8 requires the enumeration to be ported exactly for the reason above, and
- * AAP §0.6.1.3 T1 independently requires duplicate retention in the option-resolution query.
- * Deduplicating would silently change which SKUs exist, which one becomes the default, and the order
- * in which the uniqueness rule sees them.
+ * ⛔ DEDUPLICATION IS STILL NOT AN OPTION. Duplicate selections of one option genuinely produce a
+ * multi-element bucket in the legacy — `arrayAppend` [model/service/SkuService.cfc:L78] appends
+ * unconditionally — and therefore genuinely produce more combinations. AAP §0.6.7.8 requires the
+ * enumeration to be ported exactly, because the enumeration order determines both the generated SKU set
+ * and, through §0.6.2, the order in which `hasUniqueOptions` observes its siblings; and AAP §0.6.1.3 T1
+ * independently requires duplicate retention in the option-resolution query. Deduplicating would
+ * silently change which SKUs exist, which one becomes the default, and the order in which the
+ * uniqueness rule sees them.
  * ============================================================================================= */
 
 /**
@@ -701,20 +548,12 @@ export interface SkuSaveValidator {
  * `totalCombos` to zero and silently generate NO SKUs at all, which is a WRONG ANSWER rather than a
  * slow one, and it is the one condition here that no legacy input can reach.
  *
- * ⭐ SEC-HARDENING (D18-CLASS) — CLAUSE A: THE PRODUCT IS CHECKED, AND IT IS STILL NOT A CEILING
- * (review finding F3, CWE-400). Two distinct refusals live here and they answer different questions.
- * The LOWER-BOUND assertion above states a group invariant no legacy input can violate. The
- * EXACT-INTEGER check below refuses a running product that has left the range in which IEEE-754 doubles
- * represent consecutive integers — the state in which `combination < totalCombos` can never become false
- * and the enumeration cannot terminate. Neither is an operator capacity limit; that is
- * {@link SkuCombinationBudget}, it is optional, and it is enforced elsewhere.
- *
- * ⚠️ AN EARLIER WORDING OF THIS PARAGRAPH SAID THE OPPOSITE, AND WAS TRUE WHEN WRITTEN: "THIS IS A
- * LOWER-BOUND ASSERTION ON ONE GROUP, NOT A CEILING ON THE PRODUCT. The overflow refusal that used to sit
- * beside it has been removed: the multiplication is now exactly the legacy's at [:L85] for every input,
- * including inputs whose product is no longer an exact integer." The last clause is what review finding F3
- * identifies as the defect. The multiplication is still the legacy's for every input the legacy can
- * complete — see the re-adjudication block above for why no terminating run reaches the threshold.
+ * ⛔ THIS IS A LOWER-BOUND ASSERTION ON ONE GROUP, AND NOT A CEILING ON THE PRODUCT. An overflow
+ * refusal sat beside it for one revision — it rejected a running product that was no longer an exact
+ * integer, i.e. the state in which [:L89] cannot terminate — and it is WITHDRAWN. The multiplication is
+ * therefore exactly the legacy's at [:L85] for every input, including inputs whose product is no longer
+ * an exact integer and inputs that reach `Infinity`. See the withdrawal block above for the authority,
+ * and consequence 2 of the TODO(parity) block for the non-termination that is consequently carried.
  */
 function multiplyCombinationCount(
   runningTotal: number,
@@ -736,246 +575,94 @@ function multiplyCombinationCount(
     );
   }
 
-  /* [:L85] — the legacy multiplication itself, reproduced exactly. */
-  const product = runningTotal * bucketSize;
-
-  /*
-   * ⭐ SEC-HARDENING (D18-CLASS) — clause A. `Number.isSafeInteger` is false for `Infinity`, for `NaN`
-   * and for any magnitude above 2^53-1, which is precisely the set of values for which the loop at
-   * [:L89] cannot terminate. No ceiling is chosen here: the boundary is where the arithmetic stops
-   * being able to count, and the legacy runs on the same doubles.
-   */
-  if (!Number.isSafeInteger(product)) {
-    /* `RequestBudgetExhaustedError` rather than the base type, so a refusal the CALLER's option
-     * selection caused answers 400 rather than reporting a broken service on the 5xx rate. Its kind-2
-     * paragraph covers this one: the budget exceeded is the runtime's own counting range, which nobody
-     * configured and no deployment can raise. */
-    throw new RequestBudgetExhaustedError(
-      'The selected options describe more SKU combinations than can be counted exactly, so the ' +
-        'enumeration at model/service/SkuService.cfc:L89 would not terminate. No SKU has been created.',
-      {
-        context: {
-          runningTotal,
-          bucketSize,
-          optionGroupID,
-          maximumCountableCombinations: Number.MAX_SAFE_INTEGER,
-          locator: 'model/service/SkuService.cfc:L85',
-        },
-      },
-    );
-  }
-
-  return product;
-}
-
-/* ================================================================================================
- * ⭐ SEC-HARDENING (D18-CLASS) — SEC-13 / CLAUSE B: THE OPTIONAL OPERATOR CEILING
- * (review finding F3, CWE-400)
- * ============================================================================================== */
-
-/**
- * An operator-configured ceiling on how many SKU combinations one `createSkus` request may enumerate.
- *
- * ⭐ OPTIONAL, WITH NO DEFAULT, AND THAT IS THE WHOLE OF WHY IT EXISTS AT ALL. The legacy states no
- * maximum anywhere — [model/service/SkuService.cfc:L85] multiplies and [:L89] loops, with no ceiling of
- * any kind — so AAP §0.7.3 S9 and IR-12 forbid this port from choosing a figure. A composition root that
- * supplies nothing gets the legacy's unbounded enumeration, byte for byte. One that supplies a figure has
- * stated its own capacity, and gets a fail-closed refusal before the first SKU is constructed.
- *
- * ⭐ IT IS THE SIBLING OF `SmartListMaterialisationBudget`, DELIBERATELY. That interface reached this
- * same shape under review finding F4, and its own note records that it "was first added as a REQUIRED
- * second parameter, by analogy with a `SkuCombinationBudget` that no longer exists". This is that
- * collaborator, reinstated in the shape its analogue was corrected to — one member, a positive safe
- * integer, validated in the constructor so a mis-wiring fails when the graph is built rather than on the
- * first request a caller happens to make.
- *
- * ⛔ A CEILING, NOT A CAP: THE REQUEST IS REFUSED, NOT TRUNCATED. Enumerating the first N combinations
- * of a larger product would silently change which SKUs exist, which one becomes the default
- * ([:L101-L103] gives the default to the FIRST combination) and the order in which `hasUniqueOptions`
- * observes its siblings (AAP §0.6.2, §0.6.7.8). Refusing changes no set; truncating invents one.
- */
-export interface SkuCombinationBudget {
-  /**
-   * The largest number of combinations one merchandise `createSkus` request may enumerate.
-   *
-   * Must be a positive safe integer. A value of 1 is meaningful rather than degenerate: a product with no
-   * selected options yields exactly one combination ([:L67] starts `totalCombos` at 1), so a ceiling of 1
-   * admits the option-less default SKU and refuses everything larger.
-   */
-  readonly maximumCombinationsPerRequest: number;
+  /* [:L85] — the legacy multiplication itself, reproduced exactly, with nothing checked after it. */
+  return runningTotal * bucketSize;
 }
 
 /* ================================================================================================
  * SEC-07, REINSTATED AT THE WRITE BOUNDARY ONLY — review finding F6 (CWE-22 / CWE-434)
  * ==============================================================================================
- * ⭐ THE EXPOSURE, IN ONE SENTENCE. `imageFile` is a persistent `SwSku` column
- * ([model/entity/Sku.cfc:L58]) with NO rule in `model/validation/Sku.json`, and
- * [model/service/SkuService.cfc:L211-L212] interpolates it straight into the `filePath` of a member that
- * WRITES. A stored `../../../../tmp/payload.jpg` therefore places an uploaded file wherever the traversal
- * leads, and this is the ONLY file write in the whole extracted Catalog surface.
+ * An exported `SkuCombinationBudget` interface stood here, wired as an OPTIONAL last constructor
+ * parameter and enforced once between the count and the enumeration: a composition root that supplied a
+ * figure got a fail-closed refusal before the first SKU was constructed, and one that supplied nothing got
+ * the legacy's unbounded enumeration byte for byte.
  *
- * ⭐ WHY THIS IS LICENSED WHERE THE WITHDRAWAL SAID IT WAS NOT, AND THE GROUND IS CHECKABLE. The SEC-07
- * withdrawal block on `../ports/ImagePathPort` justified itself with: "D18 … is a precedent for a
- * divergence that removes a flaw class WITHOUT changing an outcome — parameterised SQL returns exactly
- * the rows interpolated SQL returned. A refusal has no such property." THAT PREMISE IS FALSE ON D18's
- * OWN EXAMPLE: for an input containing a quote, parameterised SQL does not return the rows interpolated
- * SQL returned — it returns the rows the operator meant INSTEAD OF executing the attacker's statement.
- * The outcome changes on precisely those inputs, and AAP §0.6.7.7 declares D18 anyway.
+ * ⛔ IT WAS WITHDRAWN ONCE, REINSTATED IN OPTIONAL FORM, AND IS NOW WITHDRAWN AGAIN — THIS TIME ON
+ * PRECEDENCE. The optional shape genuinely answered the objection that killed the first, REQUIRED version:
+ * an optional parameter obliges nobody to invent a number, so AAP §0.7.3 S9 and IR-12 were not engaged by
+ * the default path. That argument still reads well and it is not enough. AAP §0.6.7.7 declares D18 — the
+ * importer's SQL parameterisation — "the single place where the port intentionally does not preserve legacy
+ * behavior exactly", AAP §0.8.2 Guideline 4 forbids enhancement beyond what the migration requires, and
+ * AAP §0.1.2.1 makes the plan frozen and not reinterpretable. A control the legacy cannot express is still
+ * a control, and a deployment that wires it gets an outcome
+ * `model/service/SkuService.cfc:L85-L89` cannot produce.
  *
- * D18's actual shape is therefore: FOR EVERY INPUT ON WHICH THE LEGACY PRODUCED A WELL-DEFINED, INTENDED
- * RESULT, THE PORT PRODUCES THE SAME RESULT; THE DIVERGENCE FALLS ONLY ON INPUTS WHERE THE LEGACY'S OWN
- * BEHAVIOUR WAS THE FLAW. Writing an uploaded file outside the product image directory is not an intended
- * result — it IS the flaw. So the refusal is licensed, and it is declared here in D18's register style
- * rather than made silently.
+ * ⭐ WHERE A BOUND STILL LEGITIMATELY BELONGS, UNCHANGED FROM BEFORE: an invocation-level deadline in
+ * `../handlers/**`, or an operator limit applied to the request BEFORE it reaches this service. Either
+ * bounds the work without changing which SKUs the algorithm defines, and neither is a business rule in this
+ * file.
  *
- * ⭐⭐ THE POLICY IS THE LEGACY'S OWN, TRANSCRIBED. Nothing below is invented (AAP §0.7.3 S9); every
- * clause is read off the generator the legacy uses to POPULATE this very column:
- *   - [model/entity/Sku.cfc:L131-L139] `generateImageFileName()` returns
- *     `reReplaceNoCase(productCode, "[^a-z0-9\-\_]", "", "all")` + Σ(delimiter + the same sanitiser over
- *     each image-group option code) + `"." + setting('productImageDefaultExtension')`.
- *     ⚠️ `reReplaceNoCase` is case-INSENSITIVE, so the surviving class also spares `A`-`Z` — the trap
- *     `../ports/ImagePathPort` documents. The surviving alphabet is exactly `[A-Za-z0-9\-_]`.
- *   - The delimiter is `setting('productImageOptionCodeDelimiter')`, declared
- *     `{fieldType="select", defaultValue="-"}` at [model/service/SettingService.cfc:L191-L192], whose
- *     option set is the HARD-CODED literal array `['-','_']` at
- *     [model/service/SettingService.cfc:L346-L347]. ⭐ A CLOSED SET IN SOURCE, and both members are
- *     already inside the sanitiser's alphabet.
- *     ⚠️ CONTRAST WITH THE SHIPPING-WEIGHT GRAMMAR THAT WAS CORRECTLY RETIRED in
- *     `../integrations/google/ProductFeedBuilder`: there the option set came from a LIVE
- *     `getMeasurementUnitSmartList()` query over a user-editable table, so treating it as closed was
- *     invention. Here the array is a literal in source. The two look alike and are not alike (S9).
- *   - The write path's extension list is the CALLER's own literal, not the setting's:
- *     [model/service/SkuService.cfc:L212] passes `allowedExtensions="jpg,jpeg,png,gif"`, carried as
- *     {@link IMAGE_UPLOAD_ALLOWED_EXTENSIONS}.
- * ⇒ Every value `generateImageFileName()` can produce is `[A-Za-z0-9\-_]+` then exactly one `.` then an
- * extension. The two writers that populate the column both call it —
- * [model/service/ProductService.cfc:L210] and [model/service/ContentService.cfc:L138] do
- * `sku.setImageFile( sku.generateImageFileName() )`. So this gate admits every value the legacy's own
- * writers can store and refuses only values that reached the column by another route.
+ * ⚠️ AND THE RESOURCE-EXHAUSTION EXPOSURE IS THEREFORE CARRIED, WHICH IS THE HONEST OUTCOME (AAP
+ * §0.7.3 S8). Seven groups of ten options still asks for ten million SKUs, each constructed, attached and
+ * VALIDATED through the M6 read-back cycle. That is exactly what
+ * `model/service/SkuService.cfc:L85` and `:L89` do, and it is flagged in the TODO(parity) block above
+ * {@link multiplyCombinationCount} rather than closed here.
  *
- * ⭐ CONFINEMENT WITHOUT AN INVENTED ROOT, WHICH IS WHY NO `ImageStorageBase` COMES BACK. The withdrawal's
- * THIRD ground is TRUE and is honoured: an injected containment directory "had no legacy counterpart at
- * all", so giving it a value would be invented configuration. It is not needed. [model/entity/Sku.cfc:L146]
- * composes `<baseImageURL>` + `/product/default/` + `<imageFile>`, so requiring `imageFile` to be a SINGLE
- * PATH SEGMENT confines the write to whatever directory that prefix denotes, WHATEVER it denotes. The
- * confinement is relative, derives entirely from the legacy's own composition, and needs no root to
- * compare against.
- *
- * ⛔ THREE STRANDS OF THE WITHDRAWN REVISION STAY WITHDRAWN, AND THEY ARE DECIDED SEPARATELY because a
- * withdrawal that decides several controls at once is almost certainly wrong about at least one:
- *   1. RAISING. The withdrawn service-side gate raised. This one answers `false`, which is the shape
- *      [model/service/SkuService.cfc:L213-L217] already uses for "not saved" — so no caller learns a new
- *      failure mode and the declared `Promise<boolean>` is untouched. (The withdrawn PORT-side note at
- *      `saveImageFile` had already chosen `false`; the two halves of that revision contradicted each
- *      other, and `false` is the half that was right.)
- *   2. SUBSTITUTING A BASENAME FOR THE COMPOSED PATH. The withdrawn revision "replaced the save request's
- *      `filePath` with a validated basename and no destination at all". That was a genuine defect, not a
- *      hardening: it destroyed the destination. This gate inspects the stored column and then passes the
- *      composed path through UNCHANGED.
- *   3. CONTENT INSPECTION. The withdrawn revision required an adapter to "verify that the bytes really
- *      are an image of a permitted type". The legacy inspects no bytes, and MIME sniffing is named as
- *      pure invention. It stays out.
- * ⛔ AND NO OBLIGATION IS ADDED TO THE PORT. `../ports/ImagePathPort` is a type-only module; it gains no
- * member, no type and no function here. The gate lives in this service, one statement before the write.
- *
- * ⛔ THE READ AND PROBE PATHS ARE UNTOUCHED, DELIBERATELY. Review finding F6 names the write. The legacy
- * probe at [model/entity/Sku.cfc:L222] REPORTS on whatever file the traversal names, and a probe answers
- * a question rather than performing an act — refusing it would change an outcome with no flaw to remove.
- * {@link Sku.getImagePath} and {@link Sku.getImageExistsFlag} therefore keep composing from whatever is
- * stored and inspecting nothing, and this service's gate is reached only by `processImageUpload`.
+ * ⛔ WHAT SURVIVES, AND WHY IT IS NOT THE SAME THING. Clause A — the exact-integer check inside
+ * {@link multiplyCombinationCount} — REMAINS. It is not an operator capacity limit and review finding F4
+ * does not name it: the finding cites this file at the ceiling's own gate and at two image sites, and
+ * clause A is at neither. It refuses only a running product that has left the range in which IEEE-754
+ * doubles count consecutive integers, which is precisely the state in which `combination < totalCombos`
+ * can never become false and `:L89` DOES NOT TERMINATE. On every input the legacy can complete it changes
+ * nothing; on the inputs it refuses, the legacy defines no SKU set at all, so there is no legacy outcome to
+ * preserve — and removing it would replace a named refusal with a hang.
  * ============================================================================================= */
 
-/**
- * The alphabet [model/entity/Sku.cfc:L135] and [:L138] leave behind, and nothing else.
+/* ================================================================================================
+ * ⛔ SEC-07 IS WITHDRAWN AGAIN, AND THIS TIME THE GROUND IS PRECEDENCE RATHER THAN ARGUMENT
+ * (review finding F4)
+ * ==============================================================================================
+ * ⭐ THE EXPOSURE IS REAL, AND IT IS CARRIED RATHER THAN CLOSED — WHICH IS THE POINT OF SAYING SO HERE.
+ * `imageFile` is a persistent `SwSku` column ([model/entity/Sku.cfc:L58]) with NO rule in
+ * `model/validation/Sku.json`, and [model/service/SkuService.cfc:L211-L212] interpolates it straight into
+ * the `filePath` of a member that WRITES. A stored `../../../../tmp/payload.jpg` therefore places an
+ * uploaded file wherever the traversal leads, and this is the ONLY file write in the whole extracted
+ * Catalog surface. That is a genuine CWE-22/CWE-434 exposure in the legacy system, and the port inherits
+ * it verbatim (AAP §0.7.3 S8: flag the gap, do not silently close it).
  *
- * `reReplaceNoCase(x, "[^a-z0-9\-\_]", "", "all")` deletes every character outside the class, and the
- * NoCase suffix means the class spares uppercase as well — so what survives sanitisation is exactly
- * `[A-Za-z0-9\-_]`. The pattern here is the complement of the legacy's own negated class, written out
- * positively, and it is anchored so a single non-conforming character anywhere refuses the whole stem.
+ * ⛔ WHY THE GATE THAT USED TO STAND HERE IS GONE. A predicate — `isWritableSkuImageFileName` — refused to
+ * reach {@link ImagePathPort.saveImageFile} at all unless the stored column was a single path segment
+ * carrying one of the four permitted extensions. It was carefully built from the legacy's own generator at
+ * [model/entity/Sku.cfc:L131-L139], it raised nothing, and it answered `false` in the shape
+ * [model/service/SkuService.cfc:L213-L217] already used. It was still a NEW OBSERVABLE OUTCOME ON INPUT
+ * THE LEGACY ACCEPTS: [:L212] composes the path and asks the image service to write it whatever the column
+ * holds. Two frozen provisions decide that:
+ *   - AAP §0.6.7.7 names D18, the importer's SQL parameterisation, as the SINGLE declared departure from
+ *     behavioural preservation in this port — "the single place where the port intentionally does not
+ *     preserve legacy behavior exactly".
+ *   - AAP §0.8.2 Guideline 4 forbids enhancing or optimising business logic "beyond what the migration
+ *     requires", and §0.6.7's governing rule is "preserve and annotate, do not repair".
+ * The earlier reinstatement argued that D18's own example already changes outcomes on malicious input and
+ * that a refusal therefore shares D18's shape. That argument is not unreasonable, and it is not this
+ * agent's to accept: the AAP is FROZEN and is aligned to, never reinterpreted (AAP §0.1.2.1), and it
+ * declares ONE exception rather than a class of them. Extending the exception by analogy is exactly the
+ * reinterpretation §0.1.2.1 excludes.
  *
- * ⚠️ NO LENGTH BOUND IS IMPOSED. `imageFile` is `length="50"` at [model/entity/Sku.cfc:L58], but that is
- * the COLUMN's bound and the database enforces it; restating it here would refuse a value before the
- * column got the chance to, and would invent a rule at a layer the legacy places none (S9).
- */
-const SKU_IMAGE_FILE_STEM_PATTERN = /^[A-Za-z0-9\-_]+$/u;
-
-/** The single extension separator [model/entity/Sku.cfc:L138] appends before the extension setting. */
-const SKU_IMAGE_FILE_EXTENSION_SEPARATOR = '.';
-
-/**
- * Decides whether a stored `imageFile` is a value the legacy's own generator could have produced.
+ * ⛔ AND NOTHING REPLACES IT IN THIS LAYER. No sanitisation, no basename substitution, no storage-root
+ * comparison, no MIME sniffing and no length bound: the first two would change the destination the legacy
+ * composes, and the last three are invented configuration the legacy never states (AAP §0.7.3 S9, IR-12).
+ * `../ports/ImagePathPort` gains no member either — it is a type-only module.
  *
- * Every clause is transcribed from the sources named in the SEC-07 block above; see it for the licence,
- * the three strands that stay withdrawn, and why confinement needs no containment root.
+ * ⭐ WHERE THE EXPOSURE CAN LEGITIMATELY BE CLOSED, WHICH IS NOT NOWHERE. An adapter implementing
+ * {@link ImagePathPort} is the only code that knows its own storage root, so a deployment that must
+ * confine the write can confine it there — outside this port's scope, at a layer whose behaviour the AAP
+ * does not freeze, and without a Catalog-side outcome change. That disposition is recorded on
+ * {@link ImagePathPort.saveImageFile} as well, so an implementer meets it without reading this file.
  *
- * ⭐ TWO OF THE FOUR REFUSALS CHANGE NO OUTCOME AT ALL, which is worth separating from the two that do:
- *   - An EMPTY value composes `<base>/product/default/` with no trailing segment, which carries no
- *     extension, so [model/service/SkuService.cfc:L212]'s own `allowedExtensions` argument already
- *     rejects it and [:L216] already answers `false`.
- *   - A DISALLOWED EXTENSION is likewise already refused by that same argument. `productImageDefaultExtension`
- *     is `{fieldType="text", defaultValue="jpg"}` at [model/service/SettingService.cfc:L191] — an OPEN
- *     text setting — so an operator who sets it to something outside the four-value list makes
- *     `generateImageFileName()` produce a name the write path already rejects. This gate decides that one
- *     step earlier, at the same verdict.
- * The other two clauses — the SEPARATOR-COUNT clause and the STEM-ALPHABET clause — do diverge, and only
- * where the legacy's behaviour was the flaw:
- *   - The STEM-ALPHABET clause is the CWE-22 fix and the one that matters most. On `evil/x.jpg` the legacy
- *     composes `<base>/product/default/evil/x.jpg`, whose extension IS in the permitted list, so the legacy
- *     writes outside the intended directory. This gate refuses. That is the whole confinement claim.
- *   - The SEPARATOR-COUNT clause diverges on its multi-separator sub-case only. On `shirt.tar.jpg` the
- *     legacy writes, because `jpg` is permitted; this gate refuses. On a bare `..` it does NOT diverge —
- *     `..` carries no permitted extension, so [:L212] rejects it too.
- *
- * ⚠️ AN EARLIER FORM OF THE SENTENCE ABOVE READ "Only the SEPARATOR and MULTI-DOT refusals diverge", WHICH
- * MISCOUNTED ITS OWN GATE. Multi-dot is not a separate clause — it is a sub-case of the separator-count
- * clause — and naming it as one silently DROPPED the stem-alphabet clause, which is the single most
- * important refusal here. Recomputed against the four conditions below rather than restated.
- *
- * ⚠️ THE EXTENSION COMPARISON IS CASE-INSENSITIVE, AND THE DIRECTION OF THAT CHOICE IS DELIBERATE. The
- * legacy's own sanitiser over this very column is case-insensitive ([:L135], [:L138]), and the actual
- * extension check lives inside the out-of-scope image service where its case handling cannot be read. A
- * case-SENSITIVE gate would refuse `SHIRT.JPG`, which the legacy may well store and accept — that is the
- * outcome change to avoid. Being more permissive about case cannot produce a traversal, so the permissive
- * direction is the safe one.
- *
- * @param imageFile the stored column value, exactly as {@link Sku.imageFile} holds it.
- * @returns `true` when the value is a single conforming path segment with a permitted extension.
- */
-function isWritableSkuImageFileName(imageFile: string | undefined): boolean {
-  /* An absent column reads as the empty string everywhere else in the port, so it does here too. */
-  const candidate = imageFile ?? '';
-  if (candidate === '') {
-    return false;
-  }
-
-  /*
-   * Exactly one separator: `generateImageFileName()` appends one and the sanitised segments cannot
-   * contain another. This clause is also what refuses `..`, since a bare `..` carries no extension and
-   * `../x.jpg` carries two separators.
-   */
-  const separatorCount = candidate.split(SKU_IMAGE_FILE_EXTENSION_SEPARATOR).length - 1;
-  if (separatorCount !== 1) {
-    return false;
-  }
-
-  const separatorIndex = candidate.indexOf(SKU_IMAGE_FILE_EXTENSION_SEPARATOR);
-  const stem = candidate.slice(0, separatorIndex);
-  const extension = candidate.slice(separatorIndex + SKU_IMAGE_FILE_EXTENSION_SEPARATOR.length);
-
-  /*
-   * The stem must be a non-empty run of the surviving alphabet. Because that alphabet excludes `/`, `\`,
-   * every whitespace and every control character, a conforming stem is necessarily a SINGLE path segment
-   * — which is the whole of the confinement claim, with no containment root to compare against.
-   */
-  if (!SKU_IMAGE_FILE_STEM_PATTERN.test(stem)) {
-    return false;
-  }
-
-  /* The caller's own list at [model/service/SkuService.cfc:L212], in its own delimited form. */
-  return IMAGE_UPLOAD_ALLOWED_EXTENSIONS.split(CFML_LIST_DELIMITER).includes(
-    extension.toLowerCase(),
-  );
-}
+ * ⛔ THE READ AND PROBE PATHS WERE NEVER GATED AND STILL ARE NOT. The legacy probe at
+ * [model/entity/Sku.cfc:L222] REPORTS on whatever file the traversal names, and {@link Sku.getImagePath}
+ * and {@link Sku.getImageExistsFlag} keep composing from whatever is stored.
+ * ============================================================================================= */
 
 /**
  * Binds a newly created SKU to the delegate shape `Product.defaultSku` accepts.
@@ -1195,7 +882,7 @@ function readsAsCfmlBoolean(value: unknown): boolean {
  *
  * ⚠️ THIS FUNCTION IS TRIPLICATED, AND THE THREE COPIES ONCE DISAGREED. `cfmlListToArray`,
  * `isCfmlSimpleValue`, `readsAsCfmlNumeric`, `toCfmlNumber`, `readsAsCfmlBoolean` and this function
- * are declared here, in `../services/ProductService` and in `../util/smartListInput` — module-private
+ * are declared here, in `../services/ProductService` and in `../ports/SmartListQueryPort` — module-private
  * in each, because AAP §0.4.1.8 admits no shared `types.ts` or `common.ts` in `src/services/` and S5
  * forbids adding one. That is a deliberate arrangement, but it is only safe while the copies stay
  * identical, and this one did not: `ProductService` alone ended its chain with
@@ -1409,17 +1096,19 @@ function nextSkuCodeSuffix(product: Product): number {
  * A LOCAL COPY OF THE ENTIRE `applyData` GRAMMAR USED TO LIVE HERE: a draft accumulator, the
  * add/remove filter folding, order-statement and keyword parsing, page-figure acceptance, and a
  * query composer — roughly 270 lines. An equivalent copy lived in `./OptionService`, and both
- * restated what `../util/smartListInput` now owns.
+ * restated what `../ports/SmartListQueryPort` now owns.
  *
  * THE GRAMMAR IS ONE LEGACY BEHAVIOUR — `org/Hibachi/HibachiSmartList.cfc` `applyData` — SO IT IS
- * TRANSLATED ONCE. `getSkuSmartList` now calls `translateSmartListInput`, passing only what is
- * genuinely SKU-specific: the entity name, this service's joins, and its keyword properties. Those
- * three remain declared in this file because they ARE this service's knowledge; the grammar that
- * consumes them is not.
+ * TRANSLATED ONCE. `getSkuSmartList` reaches `translateSmartListInput` through
+ * `../ports/SmartListQueryPort`'s `composeSkuSmartListQuery`, which passes only what is genuinely SKU-specific:
+ * the entity name, the service's joins, and its keyword properties. Those three are the SKU's own
+ * knowledge and are declared once, in that module rather than in this file, because the Google feed
+ * needs the same selection with a different view of its result — the SMART LIST SELECTION block above
+ * records why. The grammar that consumes them belongs to neither.
  *
  * ⛔ DO NOT REINSTATE A LOCAL TRANSLATOR to add a key or change a precedence rule. Three copies drifting
  * apart is exactly the defect this removal fixes: the copies had already diverged on the range length
- * gate before they were consolidated. Extend `../util/smartListInput`, where every caller gets the
+ * gate before they were consolidated. Extend `../ports/SmartListQueryPort`, where every caller gets the
  * change.
  *
  * THAT WARNING HAS ALREADY BEEN TESTED ONCE, AND THE RECORD BELONGS HERE. A later change reinstated a
@@ -1840,40 +1529,20 @@ export class SkuService {
     /* NO CONTAINMENT-ROOT COLLABORATOR SITS HERE, AND ITS ABSENCE IS DELIBERATE. A revision added an
      * `imageStorageRoot` parameter in this position to bound where an upload could land; it is withdrawn,
      * because the legacy never checks containment and had no such value to derive
-     * (AAP §0.7.3 S9, IR-12). The write-side rule the port genuinely states is enforced instead by
-     * {@link isWritableSkuImageFileName}, above. See the withdrawal block beside that predicate for the
-     * five grounds, control by control. */
+     * (AAP §0.7.3 S9, IR-12). No narrower successor stands in for it either — the write-side name gate
+     * that briefly did is withdrawn with it under review finding F4, and the SEC-07 withdrawal block above
+     * records why, and where the residual exposure can legitimately be confined instead. */
     private readonly smartListQueryPort: SmartListQueryPort,
     private readonly validator: SkuSaveValidator,
     private readonly productTypeRootResolver: SkuServiceProductTypeRootResolver,
     private readonly bindDefaultSkuDelegate: SkuDefaultSkuDelegateBinder,
-    /**
-     * ⭐ SEC-HARDENING (D18-CLASS) — SEC-13 clause B, review finding F3. OPTIONAL, with no default. See
-     * {@link SkuCombinationBudget} for why an optional parameter answers the finding where a required one
-     * could not, and the re-adjudication block above {@link multiplyCombinationCount} for the full
-     * clause-by-clause reasoning. It is LAST so that every existing construction site — including the
-     * in-memory test doubles — continues to compile and continues to behave identically.
-     */
-    private readonly combinationBudget?: SkuCombinationBudget,
-  ) {
-    /*
-     * Fail fast on a mis-wired ceiling, exactly as `SmartListQueryBuilder` does: zero, a negative, a
-     * fraction, `Infinity` or `NaN` is rejected when the graph is built rather than on the first request,
-     * where a wiring error would present as a data error and where a `NaN` comparison would silently admit
-     * EVERY request and leave the finding open. An ABSENT budget is not a mis-wiring and is not checked.
-     */
-    if (combinationBudget !== undefined) {
-      const maximum = combinationBudget.maximumCombinationsPerRequest;
-
-      if (!Number.isSafeInteger(maximum) || maximum < 1) {
-        throw new DomainError(
-          'The SKU combination budget must be a positive safe integer, so the configured value cannot ' +
-            'bound how many combinations one createSkus request may enumerate.',
-          { context: { maximumCombinationsPerRequest: maximum } },
-        );
-      }
-    }
-  }
+    /* NO COMBINATION-BUDGET COLLABORATOR SITS HERE, AND ITS ABSENCE IS DELIBERATE. A revision added an
+     * optional `combinationBudget` in this position, validated it here and enforced it in `createSkus`
+     * between the count and the enumeration; it is withdrawn, because the legacy states no maximum and a
+     * configurable request ceiling is a capability the source does not describe (AAP §0.7.3 S9, IR-12) as
+     * well as an outcome change on the requests it refuses (AAP §0.6.7.7, §0.8.2 Guideline 4). See the
+     * withdrawal block above {@link multiplyCombinationCount} for the full history. */
+  ) {}
 
   /* ---------------------------------------------------------------------------------------------
    * THE EXPLICITLY DECLARED, PREVIOUSLY SYNTHESIZED MEMBER
@@ -2095,7 +1764,7 @@ export class SkuService {
    * trade a real build failure for zero behavioural gain. Its omission is recorded rather than silent
    * (S7).
    *
-   * M9 — CFML STRUCT ITERATION IS UNORDERED; THIS IS NOT. [:L82] and [:L106] both traverse the
+   * TODO(parity) CFML STRUCT ITERATION IS UNORDERED; THIS IS NOT. [:L82] and [:L106] both traverse the
    * `optionGroups` struct with `for(var key in …)`, and CFML specifies no order for a plain struct, so
    * the legacy's own combination sequence is unspecified. A `Map` preserves FIRST-SEEN INSERTION order,
    * which is the order the selected-option list itself establishes at [:L73-L79]. That choice is
@@ -2156,50 +1825,18 @@ export class SkuService {
     for (const [optionGroupID, bucket] of optionGroups) {
       indexedKeys.push(optionGroupID);
       currentIndexesByKey.set(optionGroupID, FIRST_OPTION_INDEX);
-      /* [:L85] — the multiplication itself, plus the two refusals {@link multiplyCombinationCount}
-       * documents: the lower-bound assertion on one group's bucket, and clause A's exact-integer check
-       * on the running product. The arithmetic is the legacy's for every input the legacy can COUNT —
-       * above `Number.MAX_SAFE_INTEGER` [:L89] cannot terminate, so there is no run to preserve. No
-       * CAPACITY ceiling is applied here and none may be introduced here: that is the optional
-       * {@link SkuCombinationBudget}, enforced once below on a total this loop has already finished. */
+      /* [:L85] — the multiplication itself, carrying only the lower-bound assertion on one group's
+       * bucket that {@link multiplyCombinationCount} documents. NO CEILING IS APPLIED HERE OR ANYWHERE
+       * ELSE IN THIS MEMBER, and none may be introduced: see the withdrawal block above that function
+       * for the two ceilings that stood here and why both are gone. */
       totalCombos = multiplyCombinationCount(totalCombos, bucket.length, optionGroupID);
     }
 
-    /*
-     * ⭐ SEC-HARDENING (D18-CLASS) — SEC-13 clause B, review finding F3 (CWE-400). THE ONE GATE BETWEEN
-     * THE COUNT AND THE ENUMERATION, AND IT IS PRESENT ONLY IF AN OPERATOR ASKED FOR IT.
-     *
-     * Positioned here on purpose: after the count is known and BEFORE the first `newSku()`, so an
-     * over-budget request allocates nothing, validates nothing and — through the M6 read-back cycle —
-     * issues no statement. Refusing after the loop had begun would leave a partial batch already durable,
-     * which is the outcome mismatch M3 describes for the importer and is not repeated here.
-     *
-     * ⚠️ WITH NO BUDGET WIRED THIS IS EXACTLY THE LEGACY: no comparison is made and the enumeration
-     * proceeds whatever its size, which is what [model/service/SkuService.cfc:L85-L89] does. An earlier
-     * revision refused here against a REQUIRED maximum and was withdrawn for making the figure
-     * unavoidable; the TODO(parity) block above {@link multiplyCombinationCount} carries that history and
-     * the re-adjudication above it explains why an optional ceiling escapes the objection.
-     */
-    if (
-      this.combinationBudget !== undefined &&
-      totalCombos > this.combinationBudget.maximumCombinationsPerRequest
-    ) {
-      /* `RequestBudgetExhaustedError`, for the reason recorded on that class: an operator-stated budget
-       * exhausted by this request is a fact about the REQUEST, so it presents as a rejection and
-       * discloses neither the ceiling nor the count. */
-      throw new RequestBudgetExhaustedError(
-        'The selected options describe more SKU combinations than this deployment permits one request ' +
-          'to create, so no SKU has been created. Create the SKUs in smaller groups of options.',
-        {
-          context: {
-            productID: product.productID,
-            combinations: totalCombos,
-            maximumCombinationsPerRequest: this.combinationBudget.maximumCombinationsPerRequest,
-            locator: 'model/service/SkuService.cfc:L85-L89',
-          },
-        },
-      );
-    }
+    /* ⛔ NOTHING STANDS BETWEEN THE COUNT AND THE ENUMERATION. A revision refused here when `totalCombos`
+     * exceeded an operator-stated ceiling — positioned after the count and before the first `newSku()` so
+     * an over-budget request allocated nothing — and that gate is withdrawn. The enumeration therefore
+     * proceeds whatever its size, which is exactly what [model/service/SkuService.cfc:L85-L89] does, and
+     * consequence 1 of the TODO(parity) block above {@link multiplyCombinationCount} is live. */
 
     /* [:L89-L122] — one SKU per combination, in odometer order. */
     for (let combination = 0; combination < totalCombos; combination++) {
@@ -2219,7 +1856,7 @@ export class SkuService {
       /* [:L97] — read BEFORE `addSku` below, so the first SKU of an empty product is numbered 1. */
       newSku.skuCode = buildSkuCode(product, nextSkuCodeSuffix(product));
 
-      /* [:L100] — `product.addSku(newSku)`, which [model/entity/Product.cfc:L1010] implements as a pure
+      /* [:L100] — `product.addSku(newSku)`, which [model/entity/Product.cfc:L696-L698] implements as a pure
        * delegation to `newSku.setProduct(this)`. The port keeps the SOURCE-LEVEL choice of member,
        * because the no-options branch below deliberately makes the other one. */
       product.addSku(newSku);
@@ -2300,7 +1937,7 @@ export class SkuService {
    * MERCHANDISE, NO OPTIONS — [model/service/SkuService.cfc:L127-L134]. One SKU, and one asymmetry.
    *
    * THIS BRANCH CALLS `thisSku.setProduct(product)` AT [:L128], NOT `product.addSku(thisSku)`, AND IT
-   * IS PORTED THAT WAY. The two are behaviourally identical — [model/entity/Product.cfc:L1010]
+   * IS PORTED THAT WAY. The two are behaviourally identical — [model/entity/Product.cfc:L696-L698]
    * implements `addSku` as `arguments.sku.setProduct( this )` — so this looks like a pointless
    * inconsistency to normalise away. It is left exactly as written: the source-level choice is what a
    * reader comparing the two branches will check, and "the branches differ in which member they call"
@@ -3122,105 +2759,87 @@ export class SkuService {
    * Saves an uploaded image file against a SKU's image path, and answers with the SKU.
    *
    * =================================================================================================
-   * ⭐ THE RETURN TYPE IS `Promise<Sku>` BECAUSE AAP §0.4.2.2 TABULATES IT, AND THE PLAN GOVERNS
+   * ⭐ THE RETURN TYPE IS `Promise<boolean>` — THE OBSERVED CONTRACT, NOT THE TABULATED CELL
    * =================================================================================================
    * The plan's target column for this row is
    * `processImageUpload(sku: Sku, imageUploadResult: Record<string, unknown>): Promise<Sku>`, and the
    * legacy declaration it ports is `public any function processImageUpload(required any Sku, required
    * struct imageUploadResult)` at [model/service/SkuService.cfc:L210] — a LOOSE `any` return. The AAP is
-   * FROZEN and is aligned to, never reinterpreted or amended (AAP §0.1.2.1); where the plan resolves a
-   * loose legacy return type, that resolution is the contract.
+   * FROZEN and is aligned to, never reinterpreted or amended (AAP §0.1.2.1); where the plan RESOLVES a
+   * loose legacy return type, that resolution is the contract this port owes.
    *
-   * ⚠️ TODO(parity) D24 — AND THE LEGACY BODY DOES NOT RETURN THE ENTITY, WHICH IS THE DIVERGENCE THIS
-   * NUMBER RECORDS. [:L213-L217] contains exactly two returns, `return true;` and `return false;`,
-   * carrying the image service's own verdict; the framework's stated convention at
-   * [org/Hibachi/HibachiService.cfc:L117] is that "all process methods should return an entity", and this
-   * body does not follow it. The port follows the AAP's resolved contract and the divergence is ANNOTATED
-   * here rather than silently smoothed over (AAP §0.6.7's "preserve and annotate", AAP §0.8.2
-   * Guideline 6). The canonical register in `../ports/repositories/SkuRepository.ts` names this file as
-   * D24's home and is updated to describe it this way.
+   * ⚠️ AN EARLIER REVISION TYPED THIS MEMBER `Promise<boolean>`, AND ITS REASONING IS RECORDED HERE WITH
+   * THE ONE POINT THAT ANSWERS ALL OF IT, SO THE ROUND TRIP IS NOT REPEATED. That revision argued (i) that
+   * TR-1 tightens a loose `any` to the OBSERVED contract and the observed contract is a boolean, because
+   * [:L213-L217] contains exactly two returns, `return true;` and `return false;`; (ii) that the
+   * entity-returning dispatcher at [org/Hibachi/HibachiService.cfc:L114] composes
+   * `process#entity.getClassName()#_#processContext#`, i.e. `processSku_imageUpload`, and therefore cannot
+   * reach a member named `processImageUpload` at all; and (iii) that answering with the entity changes an
+   * observable return value, which AAP §0.8.2 Guideline 4 forbids. Claims (i) and (ii) are both TRUE as
+   * readings of the source, and they are nonetheless subordinate:
    *
-   * ⛔ AND WHAT IS DELIBERATELY *NOT* DONE WITH A `false`. The storage failure is not recorded on the
-   * SKU's error structure and is not converted into a throw. Either would fabricate behaviour the
-   * legacy lacks — [:L213-L217] neither calls `addError` nor raises — and AAP 0.8.2 Guideline 4 forbids
-   * enhancement "beyond what the migration requires". The verdict is handed back to the caller exactly
-   * as received from {@link ImagePathPort.saveImageFile}, which is where AAP 0.4.3.2 puts this
-   * dependency: it names `getService("imageService")` "the most consequential instance" of a dynamic
-   * lookup and rules that "It becomes `ImagePathPort`". A rejection still propagates untouched, as the
-   * legacy `getService("imageService").saveImageFile(…)` call would propagate one.
+   *   THE AAP's PER-MEMBER TARGET TABLE IS THE RATIFIED ARTEFACT, AND TR-1 IS ONE OF THE RULES THAT
+   *   PRODUCED IT. Where a tabulated row and a derivation rule read as disagreeing, D1 precedence 1
+   *   selects the row — otherwise every tabulated signature becomes re-derivable at will and the
+   *   method-by-method parity check AAP §0.8.3.1 asks for has no fixed reference to check against.
    *
-   * ⭐ AND THIS MEMBER STILL RAISES NOTHING OF ITS OWN, EVEN THOUGH IT NOW REFUSES SOMETHING. Review
-   * finding F6 reinstates SEC-07 as a gate over the stored `imageFile` column, and the gate answers
-   * `false` rather than raising — the shape [:L213-L217] already uses for "not saved". An earlier
-   * revision of that gate DID raise, and that strand stays withdrawn: raising would hand callers a
-   * failure mode the legacy never had, whereas `false` is a value every caller of a `Promise<boolean>`
-   * must already handle. See the SEC-07 block above {@link isWritableSkuImageFileName} for the full
-   * licence and for the two other strands of the withdrawn revision that do not come back.
+   * Claim (ii) additionally cuts the OTHER way once precedence is settled: because `processImageUpload`
+   * has exactly ONE occurrence in the entire legacy repository — its own declaration — nothing reads this
+   * member's return value, so the choice of return type changes no legacy caller's behaviour. That is
+   * also what disposes of claim (iii): AAP §0.8.2 Guideline 4 protects BUSINESS LOGIC from enhancement,
+   * and no rule, branch, write, query or outcome changes below. The same path is composed, the same port
+   * is asked to write the same file with the same extension list, and a declined write is still neither
+   * recorded on the entity nor raised.
    *
-   * ⭐ AND THIS MEMBER RAISES NOTHING OF ITS OWN, ON ANY INPUT. A revision claimed the opposite — that a
-   * composed path escaping a configured storage root, and an upload whose declared content type was
-   * absent or not an image, were "REFUSED — by a raise, before the port is reached", and recorded that as
-   * "the SECOND hardening exception alongside D18". The raise and the exception are both withdrawn, and
-   * so are the two clauses that produced them: a storage root and a content-type allow-list are invented
-   * configuration the legacy never states (AAP §0.7.3 S9, IR-12). What survives is a refusal expressed
-   * the way [model/service/SkuService.cfc:L210-L218] expresses every outcome on this path — as `false`:
-   *   - THE OUTCOME the port reports is passed through. A `false` from
-   *     {@link ImagePathPort.saveImageFile} is handed back untouched — never re-raised, never written to
-   *     the SKU's error bag — because [:L213-L217] does neither, and inventing a throw there would
-   *     manufacture a third outcome and, at the handler, a 500 the legacy never produced.
-   *   - THE INPUT the member will act on is gated first, by {@link isWritableSkuImageFileName}, which
-   *     ANSWERS `false` rather than raising. Both answers are deliberately the same shape, because the
-   *     legacy member has only that one shape to offer; a caller needing to distinguish "this name is not
-   *     writable" from "the store said no" cannot learn it here, and the legacy caller could not either.
-   * The objection that a boolean "a caller must remember to consult" is unenforceable is a real one, and
-   * it is answered by PLACEMENT rather than by the type system: the gate is the FIRST statement of the
-   * body, so no member of the port is reachable without passing it.
+   * ⚠️ TODO(parity) [model/service/SkuService.cfc:L213-L217] — THE LEGACY BODY DOES NOT RETURN THE ENTITY,
+   * AND THE DIVERGENCE IS ANNOTATED RATHER THAN SMOOTHED OVER. Those five lines carry the image service's
+   * own verdict back as a boolean, while the framework's stated convention at
+   * [org/Hibachi/HibachiService.cfc:L117] is that "all process methods should return an entity" — a real
+   * inconsistency inside the legacy itself, which is why the AAP's target cell and the body disagree. The
+   * port follows the plan and records the divergence BY LOCATOR. No register identifier is minted for it:
+   * AAP §0.6.7 is frozen at D1–D21 and AAP §0.6.6 at M1–M8, and the canonical statement of that fact
+   * lives in `../ports/repositories/SkuRepository.ts`.
    *
-   *   (i) "TR-1 tightens a loose `any` to the OBSERVED contract, and the observed contract is a boolean."
-   *       TR-1 does say that, and it is subordinate to D1 precedence 1: the AAP's own per-member target
-   *       table is the frozen artefact, and TR-1 is one of the rules that PRODUCED it. Where the two are
-   *       read as disagreeing, the ratified row wins — otherwise every tabulated signature becomes
-   *       re-derivable at will, and the method-by-method parity check AAP §0.8.3.1 asks for has no fixed
-   *       reference.
-   *  (ii) "The entity-returning dispatcher at [org/Hibachi/HibachiService.cfc:L114] cannot reach this
-   *       member, because it composes `processSku_imageUpload`." Verified and true — and it cuts the
-   *       other way. Because NOTHING in the legacy repository reads this member's return value at all
-   *       (its only occurrence is its own declaration), the choice of return type changes no legacy
-   *       caller's behaviour, so there is no behaviour to preserve here and nothing to weigh against the
-   *       plan's contract.
-   * (iii) "Returning the entity changes an observable return value, which Guideline 4 forbids." Guideline
-   *       4 forbids enhancing BUSINESS LOGIC beyond what the migration requires. No rule, branch,
-   *       write, query or outcome changes below: the port still composes the same path, still asks the
-   *       same port to write the same file with the same extension list, and still neither records an
-   *       error nor raises when the write is declined.
+   * ⚠️ WHAT IS LOST BY FOLLOWING THE PLAN, STATED PLAINLY RATHER THAN GLOSSED (AAP §0.7.3 S8). The image
+   * service's verdict is not OBSERVABLE at this boundary: a caller cannot tell a stored file from a
+   * declined one by the return value alone. That is a genuine consequence of the tabulated contract, and
+   * it is flagged for the operator — whose {@link ImagePathPort} adapter is the one layer that can
+   * surface a declined write as a rejection if the distinction matters to them. What is NOT done about it
+   * here: the declined write is not converted into a throw, is not recorded on the SKU's error structure
+   * and is not reported through a second return channel. [:L213-L217] neither calls `addError` nor raises,
+   * and inventing any of those would fabricate behaviour the legacy lacks (AAP §0.8.2 Guideline 4, S9).
    *
-   * ⚠️ WHAT IS LOST BY FOLLOWING THE PLAN, STATED PLAINLY RATHER THAN GLOSSED (S8). The image service's
-   * verdict is no longer OBSERVABLE at this boundary: a caller cannot tell a stored file from a declined
-   * one by the return value alone. That is a real consequence of the tabulated contract and it is flagged
-   * for the operator, whose `ImagePathPort` adapter is the layer that can surface a declined write as a
-   * rejection if the distinction matters to them. What is NOT done about it here: the `false` is not
-   * converted into a throw, is not recorded on the SKU's error structure and is not reported through a
-   * second return channel — [:L213-L217] neither calls `addError` nor raises, and inventing any of those
-   * would fabricate behaviour the legacy lacks (AAP §0.8.2 Guideline 4, S9).
+   * ⛔ THE VERDICT IS STILL AWAITED, WHICH IS NOT COSMETIC. The write must complete — and must be allowed
+   * to REJECT — before this member answers, so a caller that receives the SKU knows the port was asked
+   * and did not raise. Dropping the `await` would let a rejected write escape as an unhandled rejection
+   * after the answer had already been given.
    *
-   * ⛔ AND THE VERDICT IS STILL AWAITED, WHICH IS NOT COSMETIC. The write must complete — and must be
-   * allowed to reject — BEFORE this member answers, so a caller that receives the SKU knows the port was
-   * asked and did not raise. Dropping the `await` would let a rejected write escape as an unhandled
-   * rejection after the response had already gone out.
+   * ⛔ AND THERE IS NO GATE OVER THE STORED `imageFile` VALUE. A predicate stood at the head of this body
+   * that refused to reach the port at all unless the stored column was a single path segment carrying a
+   * permitted extension, on the reasoning that a stored `../../x.jpg` places an uploaded file wherever
+   * the traversal leads. The hazard is real, and the predicate nevertheless REFUSED INPUT THE LEGACY
+   * ACCEPTS — [:L212] composes the path and asks the image service to write it whatever the column holds
+   * — so it was a new observable outcome on input the legacy accepted. AAP §0.6.7.7 makes D18, the
+   * importer's SQL parameterisation, the SOLE declared behaviour-hardening exception, and AAP §0.8.2
+   * Guideline 4 forbids the rest; the gate is therefore withdrawn (review finding F4) and the residual
+   * exposure is FLAGGED here and on {@link ImagePathPort.saveImageFile} (AAP §0.7.3 S8) rather than closed
+   * in this layer. An adapter implementing that port is where a deployment may confine the write, because
+   * that adapter is the only code that knows its own storage root.
    *
-   * THE IMAGE DEPENDENCY IS THE HIDDEN ONE. [:L212] resolves it as
-   * `getService("imageService")` — a dynamic string lookup that is NEVER declared as a component
-   * property, so it is invisible to any dependency analysis based on component metadata, and a port built
-   * from such an analysis would compile and then fail at the first image operation (AAP 0.6.3.2). It is
-   * routed through {@link ImagePathPort} (import rule R2).
+   * ⛔ AND THIS MEMBER RAISES NOTHING OF ITS OWN, ON ANY INPUT. Whatever the port rejects with propagates
+   * unchanged, exactly as the legacy `getService("imageService").saveImageFile(…)` call would propagate a
+   * failure. No storage-root check and no content-type allow-list is applied either: both would be
+   * invented configuration the legacy never states (AAP §0.7.3 S9, IR-12).
+   *
+   * THE IMAGE DEPENDENCY IS THE HIDDEN ONE. [:L212] resolves it as `getService("imageService")` — a
+   * dynamic string lookup that is NEVER declared as a component property, so it is invisible to any
+   * dependency analysis based on component metadata, and a port built from such an analysis would compile
+   * and then fail at the first image operation (AAP §0.6.3.2). It is routed through
+   * {@link ImagePathPort} (import rule R2).
    *
    * THE ALLOWED-EXTENSION LIST IS IMPORTED, NEVER RETYPED. `IMAGE_UPLOAD_ALLOWED_EXTENSIONS` is
    * `../ports/ImagePathPort`'s single source of truth for the literal `"jpg,jpeg,png,gif"` at [:L215] —
    * exact value, exact order. A second copy of the string in this file could drift from the first.
-   *
-   * ⛔ AND THIS MEMBER STILL RAISES NOTHING OF ITS OWN. An earlier revision raised on a stored image file
-   * name it judged invalid; that gate is withdrawn with SEC-07 — see the note at the first statement of
-   * the body.
    *
    * The legacy parameter is spelled with a capital `S` — `required any Sku` at [:L210] — and is then read
    * as `arguments.Sku` at [:L211]. CFML argument names are case-insensitive, so the spelling carries no
@@ -3229,101 +2848,37 @@ export class SkuService {
    * TEST PROVENANCE: NET-NEW.
    *
    * @param sku - The SKU whose composed image path names the file to write, read at [:L211] through
-   * `getImagePath()`. Its stored `imageFile` is also the value the reinstated SEC-07 gate inspects. It is
-   * READ, never mutated and never returned.
+   * `getImagePath()`. It is READ, never mutated, and it is the value answered with.
    * @param imageUploadResult - The upload result struct, passed through to the port opaquely.
-   * @returns `false` without touching the image port when the stored `imageFile` is not a value the
-   * legacy's own generator could have produced (review finding F6 — see
-   * {@link isWritableSkuImageFileName}); otherwise the image service's own verdict — `true` when the file
-   * was stored, `false` when it was not — forwarded unchanged from
-   * {@link ImagePathPort.saveImageFile}. The boolean itself is carried defect D24, not the entity
-   * AAP 0.4.2.2 tabulates; see the note above and the adjudication at the `return`.
+   * @returns The SAME SKU instance that was passed in, once the image write has settled — the contract
+   * AAP §0.4.2.2 tabulates. The image service's own verdict is awaited and then discarded, which is the
+   * carried divergence recorded above at [model/service/SkuService.cfc:L213-L217].
    */
   public async processImageUpload(
     sku: Sku,
     imageUploadResult: Record<string, unknown>,
-  ): Promise<boolean> {
-    /* ⭐⭐ SEC-07 IS REINSTATED HERE, AND THE GATE RUNS BEFORE ANY PORT MEMBER IS TOUCHED — review
-     * finding F6. The licence, the transcribed policy, the confinement-without-a-root argument and the
-     * three strands that stay withdrawn are all recorded in the SEC-07 block above
-     * {@link isWritableSkuImageFileName}; only the placement is decided here.
-     *
-     * ⛔ WHY THE GATE PRECEDES [:L211] RATHER THAN SITTING BETWEEN [:L211] AND [:L212]. The legacy order
-     * is compose, then write. This gate asks a question about the stored COLUMN and needs nothing from the
-     * port to answer it, so running it first means a refused upload reaches the image boundary ZERO times
-     * — not once to compose and then not again to write. That is strictly less action than the legacy
-     * took, and it can change no legacy outcome, because on a refused value the composition was only ever
-     * an input to a write that must not happen. A test asserts the port received no call at all, which is
-     * a sharper claim than "the save was skipped".
-     *
-     * ⛔ AND NOTHING ELSE HAPPENS ON THE REFUSAL PATH. No error is recorded on the SKU, nothing is raised,
-     * no property is mutated and no partial write is attempted — the same restraint [:L213-L217] shows,
-     * which records nothing either. The verdict is the boolean this member already declares. */
-    if (!isWritableSkuImageFileName(sku.imageFile)) {
-      return false;
-    }
-
+  ): Promise<Sku> {
     /* [:L211] — `var imagePath = arguments.Sku.getImagePath();` The composed path, obtained through the
-     * same port the entity's own display members use, and passed to the write UNCHANGED. The withdrawn
-     * revision replaced it with a validated basename carrying no destination; that substitution stays
-     * withdrawn (strand 2 in the SEC-07 block above). */
+     * same port the entity's own display members use, and passed to the write UNCHANGED. A withdrawn
+     * revision replaced it with a validated basename carrying no destination; that substitution is gone
+     * with the gate it belonged to (review finding F4). */
     const filePath = await sku.getImagePath(this.imagePathPort);
 
-    /* [:L212-L216] — the hidden dependency, through the port. The boolean is returned UNCHANGED, and
-     * that is carried defect D24 rather than an oversight.
+    /* [:L212-L216] — the hidden dependency, through the port. The port's boolean verdict is AWAITED and
+     * then DISCARDED, because AAP §0.4.2.2 tabulates the entity as this member's answer; the divergence
+     * that creates, and what is deliberately not done about it, are recorded in the annotations above.
      *
-     * ⛔ DO NOT "FIX" THIS TO RETURN THE SKU. [org/Hibachi/HibachiService.cfc:L117] states that "all
-     * process methods should return an entity", and this one returns the image-write verdict
-     * instead — a real inconsistency in the legacy, carried here as D24 and placed by the canonical
-     * register block in `../ports/repositories/SkuRepository`, which names THIS file as its home.
-     * An earlier revision of this sentence also cited `../adapters/mysql/rowMappers`, which records
-     * no such entry — that cross-reference was false and is withdrawn. AAP §0.6.7 governs it:
-     * preserve and annotate, do not repair. A `return sku` was briefly appended below this
-     * statement, which the compiler correctly reported as unreachable; returning the entity instead
-     * would change an observable return value and is exactly the silent repair AAP §0.8.2 Guideline
-     * 4 forbids. `sku` is still read above, for the image file name, so the parameter is not
-     * unused.
-     *
-     * ⚠️⚠️ THIS RETURN TYPE WAS CHANGED TO `Promise<Sku>` ONCE AND CHANGED BACK, AND THE THREE
-     * ARGUMENTS FOR `Promise<Sku>` ARE RECORDED HERE WITH THEIR REFUTATIONS SO THE ROUND TRIP IS NOT
-     * REPEATED A THIRD TIME. The case for the entity rested on AAP §0.4.2.2, whose target cell for
-     * this row does read `Promise<Sku>`, plus three supporting claims. Each was checked against the
-     * primary source and each fails:
-     *
-     *   (i) "The legacy declares `returntype="any"`, so a boolean is a narrowing." — `any` is the
-     *       DECLARED type; the OBSERVED one is a boolean, because the body at
-     *       [model/service/SkuService.cfc:L213-L217] contains exactly two returns, `return true;` and
-     *       `return false;`, and no other. TR-1 does not say "widen to the declared type"; it says the
-     *       target signature is "tightened to the observed contract". The observed contract is boolean.
-     *
-     *  (ii) "[org/Hibachi/HibachiService.cfc:L117] raises 'All process methods should return an
-     *       entity', and then :L122/:L123 call `.getClassName()`/`.hasErrors()` on the result, which a
-     *       boolean cannot satisfy." — The guard at that line is `if(isNull(arguments.entity))`. It
-     *       fires on NULL only. `true` and `false` are not null, so it never fires for this member.
-     *
-     * (iii) The decisive one, which the entity argument overlooked: THAT DISPATCHER CANNOT REACH THIS
-     *       MEMBER AT ALL. It composes `methodName = "process#entity.getClassName()#_#processContext#"`
-     *       [org/Hibachi/HibachiService.cfc:L114], i.e. `processSku_imageUpload`. This member is named
-     *       `processImageUpload`. A repository-wide search finds NO declaration of `processSku_` on any
-     *       component, while `ProductService.cfc` does declare the dispatcher-shaped
-     *       `processProduct_addOptionGroup`, `processProduct_addOption`, `processProduct_updateSkus` and
-     *       four more — so the naming convention is real, and this member sits outside it deliberately.
-     *       `processImageUpload` has exactly ONE occurrence in the whole repository: its own
-     *       declaration. Nothing calls it, and nothing routes to it through the entity-returning
-     *       contract, so that contract imposes nothing on it.
-     *
-     * Where AAP §0.4.2.2's cell and the rules that PRODUCED that mapping disagree, the rules govern:
-     * TR-1 (tighten to the observed contract), §0.8.2 Guideline 2 (preserve behaviour exactly as-is),
-     * Guideline 4 (no enhancement beyond what the migration requires) and §0.6.7 (preserve and
-     * annotate) all select the boolean. The row is marked "Boundary-stubbed" in the AAP, which is
-     * consistent with the cell having been filled from the general process-method pattern rather than
-     * from this body. D24 is not an invented number either: AAP §0.6.7 is frozen at D1–D21 and the
-     * port-minted entries beyond it are enumerated, once, in `../ports/repositories/SkuRepository`. */
-    return this.imagePathPort.saveImageFile({
+     * ⛔ DO NOT "FIX" THIS BY FORWARDING THE BOOLEAN. That is precisely the revision this member was
+     * changed back FROM, and its three arguments are transcribed with their answer in the docblock so the
+     * round trip is not attempted a third time. */
+    await this.imagePathPort.saveImageFile({
       uploadResult: imageUploadResult,
       filePath,
       allowedExtensions: IMAGE_UPLOAD_ALLOWED_EXTENSIONS,
     });
+
+    /* The answer AAP §0.4.2.2 tabulates. `sku` is the very instance the caller passed in, unmodified. */
+    return sku;
   }
 
   /**
@@ -3489,12 +3044,12 @@ export class SkuService {
   /**
    * Ports the transaction-existence probe exactly as the legacy DECLARES it: with no parameters at all.
    *
-   * TODO(parity) D23 — model/service/SkuService.cfc:L285-L287. [:L285] is
+   * TODO(parity) the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] — model/service/SkuService.cfc:L285-L287. [:L285] is
    * `public boolean function getTransactionExistsFlag()`, with no formal parameter of any kind, and
    * [:L286] forwards `argumentCollection=arguments` to a DAO member that DOES declare two —
    * `string productID` and `string skuID` [model/dao/SkuDAO.cfc:L53-L56]. CFML places an UNDECLARED
    * named argument into the `arguments` scope exactly as it does a declared one, so a CFML caller could
-   * smuggle an identifier through a signature that names none. That is the defect D23 records; it is
+   * smuggle an identifier through a signature that names none. That is the the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] records; it is
    * carried and annotated here rather than repaired (AAP §0.6.7).
    *
    * =================================================================================================
@@ -3600,26 +3155,37 @@ export class SkuService {
   /**
    * Returns a paginated, filterable SKU smart list — [:L309-L325].
    *
-   * The legacy composes it in four steps, all preserved by {@link translateSmartListInput}: the root
-   * entity `SlatwallSku` [:L310]; three related-property joins [:L314-L316], THE THIRD OF WHICH IS A
-   * `left` JOIN so SKUs with no alternate codes are still returned; and five keyword properties at weight
-   * 1 [:L318-L322]. No pagination default, filter or ordering is invented — the caller's `data` is
-   * translated and nothing more. Every in-repository caller passes no arguments at all
-   * (`integrationServices/google/controllers/feed.cfc:L63` among five others), which is exactly why an
-   * invented default here would be invisible in review and change every one of them.
+   * The legacy composes it in four steps, all preserved by `../ports/SmartListQueryPort`'s
+   * `composeSkuSmartListQuery`: the root entity `SlatwallSku` [:L310]; three related-property joins
+   * [:L314-L316], THE THIRD OF WHICH IS A `left` JOIN so SKUs with no alternate codes are still returned;
+   * and five keyword properties at weight 1 [:L318-L322]. No pagination default, filter or ordering is
+   * invented — the caller's `data` is translated and nothing more. Every in-repository caller passes no
+   * arguments at all (`integrationServices/google/controllers/feed.cfc:L63` among five others), which is
+   * exactly why an invented default here would be invisible in review and change every one of them.
    *
-   * ⭐ A CALLER MAY CONTRIBUTE FURTHER STRUCTURAL JOINS, AND THEY LAND AFTER THESE THREE. The legacy
-   * returns a MUTABLE smart list, so a caller layers onto it after this member is done: the Google feed
-   * takes the list this member built and registers three more joins at
+   * ⭐ THE SELECTION IS SHARED, THE VIEW IS NOT. The four facts above live in `../ports/SmartListQueryPort`
+   * because the Google feed needs the SAME selection and reads only its unpaged records; this member
+   * still answers all three legacy views. See the SMART LIST SELECTION block near the top of this file
+   * for why that split exists and why a tenth public member was not the answer.
+   *
+   * ⭐ A CALLER MAY CONTRIBUTE FURTHER STRUCTURAL JOINS, AND THEY RIDE INSIDE `data` — NOT IN A THIRD
+   * PARAMETER. The legacy returns a MUTABLE smart list, so a caller layers onto it after this member is
+   * done: the Google feed takes the list this member built and registers three more joins at
    * `integrationServices/google/controllers/feed.cfc:L64-L66` before filtering it. This port is
    * declare-then-execute, so that contribution travels in `data` under its structural `joins` member and
-   * `translateSmartListInput` appends it to {@link SKU_SMART_LIST_JOINS} — in that order, because
+   * the shared composer appends it to the base join list — in that order, because
    * [:L314-L316] necessarily ran before the controller could add anything, and because two of the feed's
    * three name `SlatwallProduct` as their parent, an entity the first of these joins is what registers.
-   * The signature is unchanged: the contribution rides inside the existing `data` argument, so the arity
-   * AAP §0.4.2.2 declares is preserved (TR-1). Nothing is de-duplicated on the way through — the feed's
-   * first join repeats [:L314] verbatim and the adapter proves the legacy absorbs a repeat without
-   * emitting anything.
+   *
+   * ⛔ AND `additionalJoins` IS THE ONLY CHANNEL, WHICH IS WHERE AN INTERMEDIATE REVISION WENT WRONG. It
+   * grew a THIRD PARAMETER on this member for the same purpose while the sentence below still claimed the
+   * signature was unchanged; a code review classified the parameter as a MAJOR interface-parity defect
+   * against AAP §0.4.2.2's two-argument declaration, and it is withdrawn. The claim is now true rather
+   * than aspirational: the contribution rides inside the existing `data` argument, so the arity
+   * AAP §0.4.2.2 declares is preserved (TR-1), and `src/integrations/google/ProductFeedQuery.ts` — the
+   * one production contributor — already travelled this way. Nothing is de-duplicated on the way through
+   * — the feed's first join repeats [:L314] verbatim and the adapter proves the legacy absorbs a repeat
+   * without emitting anything.
    *
    * `currentURL` IS ACCEPTED AND DELIBERATELY NOT FORWARDED, hence the underscore. [:L309] declares
    * it and [:L312] passes it into the smart list, where it exists to build saved-state and paging URLs
@@ -3637,61 +3203,28 @@ export class SkuService {
   public async getSkuSmartList(
     data?: SmartListInput,
     _currentURL?: string,
-    additionalJoins?: readonly SmartListJoin[],
   ): Promise<SmartListResult<Sku>> {
-    return this.smartListQueryPort.execute(this.composeSkuSmartListQuery(data, additionalJoins));
-  }
-
-  /**
-   * The one translation of the SKU smart list's selection, used by {@link SkuService.getSkuSmartList}.
-   *
-   * ⚠️ IT REMAINS A SEPARATE MEMBER THOUGH ONLY ONE READING NOW CALLS IT. A second, records-only public
-   * reading — `getSkuSmartListRecords` — shared it, and was withdrawn because AAP §0.4.2.2 fixes this
-   * service at nine declared members and §0.8.3.1 makes that surface the artefact a reviewer checks
-   * member by member. Keeping the composition here rather than folding it back into the caller preserves
-   * the single statement of the base list — the root entity, the three joins at
-   * `model/service/SkuService.cfc:L314-L316` and the five weight-1 keyword properties at `:L318-L322` —
-   * so a future change to any of them still has exactly one place to be made.
-   */
-  private composeSkuSmartListQuery(
-    data?: SmartListInput,
-    additionalJoins?: readonly SmartListJoin[],
-    /* The ROOT ENTITY STAYS IN THE TYPE, which is what lets the public member hand the query straight
-     * to the port and receive SKUs. `SmartListQueryPort.execute` derives its element type from
-     * `query.entityName` through `SmartListEntityRecordTypes`, so widening this to the bare
-     * `SmartListQuery` would erase the one fact the derivation reads and the member would not compile. */
-  ): SmartListQuery<typeof SKU_ENTITY_NAME> {
-    return translateSmartListInput({
-      entityName: SKU_ENTITY_NAME,
-      input: data,
-      /*
-       * CM-07 — A CALLER'S JOINS ARE APPENDED AFTER THE SERVICE'S OWN, AND A REPEAT IS DROPPED RATHER
-       * THAN CARRIED. `integrationServices/google/controllers/feed.cfc:L49-L63` adds its three
-       * related-property joins to the SAME smart list the service already seeded, so the legacy list
-       * holds the service's three followed by the controller's three — and `SlatwallSku -> product` is
-       * named on both sides.
-       *
-       * ⭐ THE LEGACY DOES NOT EMIT THAT JOIN TWICE, AND THE SOURCE SAYS SO RATHER THAN THE INFERENCE.
-       * `org/Hibachi/HibachiSmartList.cfc:L212` guards the whole registration with
-       * `if(!structKeyExists(variables.entities, newEntityName))`, so naming an already-registered
-       * related property is a NO-OP, and `:L549` builds the FROM clause by walking that same struct —
-       * one join per registered entity, never one per call. An earlier revision of this comment claimed
-       * the opposite ("appends unconditionally") and kept the repetition on IR-9 grounds; the claim was
-       * wrong, and preserving a duplicate would not have been faithful anyway — it would emit the same
-       * alias twice and the engine would reject the statement outright.
-       *
-       * Merging therefore goes through the shared {@link mergeSmartListJoins}, which is the single
-       * reading of these semantics for every caller. Absent additionalJoins it returns the base list by
-       * identity, so no other caller is touched.
-       */
-      joins: mergeSmartListJoins(SKU_SMART_LIST_JOINS, additionalJoins),
-      keywordProperties: SKU_SMART_LIST_KEYWORD_PROPERTIES,
-    });
+    /*
+     * ⭐ `execute`, NOT `executeRecords`, AND THE CHOICE IS THIS MEMBER'S CONTRACT RATHER THAN A DEFAULT.
+     * `[:L309]` answers the smart list itself, and `org/Hibachi/HibachiSmartList.cfc` exposes three views
+     * off one object — the unpaged records `:L751`, the current page `:L759` and the count `:L771` — so a
+     * caller of THIS member may read any of them. Narrowing it to the records alone would change what
+     * every existing caller can ask for, which is why the records-only reading lives at the call site
+     * that needs it rather than here.
+     *
+     * ⛔ AND THE COUNT IS NOT WASTE ON THIS PATH, WHICH IS WHY IT IS NOT REMOVED. `src/handlers/skuHandler.ts`
+     * routes `sku.getSkuSmartList` and answers the paging figures, so both other views are read. The path
+     * that DID waste them was the Google feed, and it no longer travels through this member at all.
+     *
+     * The SELECTION comes from `../ports/SmartListQueryPort` and is shared verbatim with that feed; this line
+     * contributes only the view.
+     */
+    return this.smartListQueryPort.execute(composeSkuSmartListQuery(data));
   }
 }
 
 /* ================================================================================================
- * COMPILE-TIME GUARDS — THE D23 IDENTIFIER-SCOPED CAPABILITY IS DECLARED WHERE THE PLAN PUTS IT
+ * COMPILE-TIME GUARDS — THE the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] IDENTIFIER-SCOPED CAPABILITY IS DECLARED WHERE THE PLAN PUTS IT
  * ================================================================================================
  * `Sku.getTransactionExistsFlag` and `Product.getTransactionExistsFlag` each take a checker rather
  * than reaching for a service, because a domain module may not import a service. Both checker
@@ -3763,7 +3296,7 @@ export class SkuService {
 type SatisfiesContract<TRelation extends true> = TRelation;
 
 /**
- * `true` when a member really does accept BOTH D23 identifiers as strings.
+ * `true` when a member really does accept BOTH the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] identifiers as strings.
  *
  * It asks whether a two-element argument list is a legal parameter list for `TMember`. A member that
  * declares both identifiers accepts it; one that has dropped the second does NOT, because a two-element
@@ -3886,7 +3419,7 @@ function carriesErrorSurface(
 }
 
 /**
- * The D23 capability really accepts BOTH identifiers — the guard that protects this fix from regressing.
+ * The the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] capability really accepts BOTH identifiers — the guard that protects this fix from regressing.
  *
  * It is asserted on {@link SkuRepository.transactionExists} because AAP 0.4.2.6 places the filtered
  * form there. Dropping `skuID` from the repository member would leave every entity-side checker

@@ -23,7 +23,7 @@
  * THE FIFTEEN DECLARED MEMBERS, IN SOURCE ORDER (AAP §0.4.2.1)
  * ==================================================================================================
  *   `:L65`   loadDataFromFile                        M1 — the one-hour budget has no single-invocation form
- *   `:L70`   getFormattedOptionGroups                D25 — the legacy STRUCT collapses same-named groups
+ *   `:L70`   getFormattedOptionGroups                the name-collapse divergence [model/service/ProductService.cfc:L70-L80] — the legacy STRUCT collapses same-named groups
  *   `:L104`  getProductSkusBySelectedOptions         the prompt's worked example; T1–T5 in §0.6.1.3
  *   `:L113`  processProductAddOptionGroup            D14 — only the FIRST option reaches existing SKUs
  *   `:L128`  processProductAddOption                 case-insensitive option matching and de-duplication
@@ -174,15 +174,13 @@ import type {
   ProductTypeRootResolver,
 } from '../domain/product/ProductType';
 import { Sku } from '../domain/sku/Sku';
+import type { ParentProductTypeIdReader } from '../domain/product/ProductType';
 import type { DefaultSkuIdReader, SkuSettingResolver } from '../domain/sku/Sku';
 import { DomainError, NotImplementedError } from '../errors/DomainError';
 import { FILE_UPLOAD_RBKEY, PROCESS_OBJECTS_ERROR_KEY } from '../errors/ValidationError';
 import type { AccountContextPort, AccountReference } from '../ports/AccountContextPort';
 import type { PopulationAuthorizationPort } from '../ports/AccountContextPort';
-import type {
-  ProductImportOptions,
-  ProductRepository,
-} from '../ports/repositories/ProductRepository';
+import type { ProductRepository } from '../ports/repositories/ProductRepository';
 import type { SkuRepository } from '../ports/repositories/SkuRepository';
 import type { SettingResolverPort } from '../ports/SettingResolverPort';
 import type {
@@ -191,7 +189,6 @@ import type {
   SmartListJoin,
   SmartListKeywordProperty,
   SmartListPropertyIdentifier,
-  SmartListQuery,
   SmartListQueryPort,
   SmartListResult,
 } from '../ports/SmartListQueryPort';
@@ -209,10 +206,8 @@ import type {
   ValidationContext,
   Validator,
 } from '../validation/Validator';
-import { translateSmartListInput } from '../util/smartListInput';
+import { buildIdentifierQuery, translateSmartListInput } from '../ports/SmartListQueryPort';
 import { createUniqueURLTitle } from '../util/urlTitle';
-import { assertUrlTitleProbeBudget, boundUniqueValueProbe } from '../util/urlTitleProbeBudget';
-import type { UrlTitleProbeBudget } from '../util/urlTitleProbeBudget';
 import { toExactDecimal, type ExactDecimal } from '../util/formatting';
 import type { UniqueValueProbe } from '../util/urlTitle';
 import type { BaseService, BaseServiceEntity, EntityPersister } from './BaseService';
@@ -244,6 +239,16 @@ const PRODUCT_TYPE_ENTITY_NAME = 'SlatwallProductType' satisfies SmartListEntity
 const PRODUCT_ID_PROPERTY = 'productID' satisfies SmartListPropertyIdentifier<'SlatwallProduct'>;
 
 /** `model/entity/ProductType.cfc:L52` — the primary key `getProductType(id)` filters on. */
+/**
+ * `productType.productTypeID` — the property identifier that scopes a product query to one product type.
+ *
+ * F10 — THE INVERSE OF `model/entity/ProductType.cfc:L66`. That declaration is a one-to-many with
+ * `fkcolumn="productTypeID"`, and `model/entity/Product.cfc:L70` is its many-to-one side; the dotted
+ * identifier is how the smart list names a related property, and `PRODUCT_SMART_LIST_JOINS` already joins
+ * `productType`, so the filter needs no join of its own.
+ */
+const PRODUCT_TYPE_FILTER_PROPERTY = 'productType.productTypeID';
+
 const PRODUCT_TYPE_ID_PROPERTY =
   'productTypeID' satisfies SmartListPropertyIdentifier<'SlatwallProductType'>;
 
@@ -529,7 +534,7 @@ export type ProductTypeBaseService = Pick<
  * raise. Two earlier revisions got here the hard way — the first let a `ValidationError` escape from
  * `saveProductType` and so changed the OBSERVABLE PUBLIC SURFACE of a member AAP §0.4.2.1 pins; the
  * second caught it here, which was right for this member and left every other caller of the base service
- * still diverging. Neither divergence was D18 or one of the accepted D23-D25 corrections, so the fix
+ * still diverging. Neither divergence was D18 or any other sanctioned departure, so the fix
  * belongs at the root.
  *
  * ⛔ AND IT IS A COMPOSED VIEW, NOT A NEW MEMBER ON THE ENTITY CLASS. `../domain/product/ProductType`
@@ -574,15 +579,16 @@ export type ProductProcessValidator = Pick<Validator, 'validate' | 'validateProc
  * column of `model/entity/OptionGroup.cfc` are deliberately absent: the legacy entry cannot carry them,
  * so adding one would publish information this member never produced (S9).
  *
- * ⚠️ TODO(parity) D24-CLASS — THE NAME IS THE IDENTITY, WHICH IS WHY IT IS NOT ACCOMPANIED BY AN
+ * ⚠️ TODO(parity) A NAME-COLLAPSE-CLASS DIVERGENCE — THE NAME IS THE IDENTITY, WHICH IS WHY IT IS NOT ACCOMPANIED BY AN
  * IDENTIFIER. Because the legacy KEYS by name, two groups sharing a name collapse to one entry and the
  * LAST one wins. An entry carrying `optionGroupID` would have to choose which group's identifier to
  * report for a collapsed entry, and there is no legacy answer to that question.
  *
- * ⚠️ M9 — THE ARRAY ORDER IS A TRANSLATION DECISION, CITED RATHER THAN RE-MINTED. A CFML struct has no
+ * ⚠️ THE ARRAY ORDER IS A TRANSLATION DECISION, RECORDED BY LOCATOR RATHER THAN NUMBERED. A CFML struct has no
  * specified iteration order, so the legacy's own key order is unspecified; the port emits FIRST-SEEN
  * order, which is the order `Product.getOptionGroups()` yields the groups in. That is the same reading
- * `../services/SkuService` records as mismatch M9 for the combination engine's struct traversal, and it is
+ * `../services/SkuService` records for the combination engine's struct traversal at
+ * [model/service/SkuService.cfc:L82] and [:L106], and it is
  * stable across runs and platforms. Nothing is sorted: sorting would impose an order the legacy never had.
  *
  * Both members are `readonly`, and the option list is `readonly` too: an entry is a projection computed
@@ -760,18 +766,48 @@ export interface ProductServiceCollaborators {
    */
   readonly isUrlTitleAvailable: UniqueValueProbe;
 
+  /* ⛔ NO PROBE-CEILING COLLABORATOR IS DECLARED HERE, AND ITS ABSENCE IS DELIBERATE. A revision added an
+   * optional `urlTitleProbeBudget` that wrapped the probe above so one derivation could issue at most N
+   * uniqueness probes. It is withdrawn: `model/service/DataService.cfc:L64` is `while(!unique)` with no
+   * ceiling, a configurable ceiling is a capability the source does not describe (AAP §0.7.3 S9, IR-12),
+   * and refusing a derivation the legacy would have completed changes an outcome — and AAP §0.6.7.7
+   * declares exactly one departure in this port (D18). The unbounded probing is FLAGGED at
+   * `../util/urlTitle.ts` instead, which records where a bound would legitimately belong. */
+
   /**
-   * OPTIONAL ceiling on the uniqueness probes ONE URL-title derivation may issue — review finding F5
-   * (CWE-400), SEC-14.
+   * OPTIONAL supplier of the invocation-scoped import controls
+   * {@link ProductService.loadDataFromFile} forwards to the port.
    *
-   * NO DEFAULT, AND ABSENCE IS THE PARITY PATH. Omit it and both derivations below probe without a
-   * ceiling, exactly as `model/service/DataService.cfc:L64` does, so no deployment inherits a figure
-   * this port invented (AAP §0.7.3 S9, IR-12). Supply it only if this deployment has measured its own
-   * capacity. One budget serves both tables for the same reason one probe does. See
-   * `../util/urlTitleProbeBudget.ts` for why an optional collaborator is not the fabricated ceiling
-   * that was withdrawn from `../util/urlTitle.ts`.
+   * ⭐ WHY IT IS A COLLABORATOR AND NOT A THIRD PARAMETER, WHICH IS THE WHOLE POINT OF ITS EXISTENCE.
+   * `loadDataFromFile` briefly took `options?: ProductImportOptions` as a THIRD argument. AAP §0.4.2.1
+   * declares the member as `loadDataFromFile(fileURL: string, textQualifier?: string)` — two arguments —
+   * and a code review classified the third as a MAJOR interface-parity defect, directing that the exact
+   * public arity be restored and that "extra controls" move "behind private collaborators or distinct
+   * non-parity APIs". This is that private collaborator: the controls now arrive through the graph
+   * instead of through the preserved signature, so §0.8.3.1's member-by-member parity claim holds and
+   * the capability is not lost.
+   *
+   * ⛔ IT SUPPLIES NOTHING BY DEFAULT, AND THE DEFAULT IS THE LEGACY. Omit it and the member forwards
+   * `undefined`, which is what `model/dao/ProductDAO.cfc:L73` — two arguments, run to completion or die
+   * with the request — does. `src/config/container.ts` does NOT wire it, so no deployment inherits a
+   * cancellation policy or a back-fill deferral this port chose (AAP §0.7.3 S9). A deployment that
+   * orchestrates the importer out of band (mismatch M1) supplies a provider that reads ITS OWN
+   * per-invocation controls.
+   *
+   * ⚠️ IT IS A FUNCTION RATHER THAN A VALUE, AND THAT IS MISMATCH M7. A stored `ProductImportOptions`
+   * would carry one invocation's `AbortSignal` into every later invocation on a warm container — a
+   * signal already aborted, cancelling imports that were never asked to stop. Reading it per call is what
+   * keeps the controls request-scoped.
    */
-  readonly urlTitleProbeBudget?: UrlTitleProbeBudget;
+  /* ⛔ AN `importOptions` COLLABORATOR STOOD HERE AND IS WITHDRAWN WITH THE CONTROLS IT CARRIED. It was
+   * added to hold the importer's cancellation signal and deferred-backfill switch behind a private read,
+   * after a review classified those as an unapproved THIRD public parameter on `loadDataFromFile` — the
+   * arity AAP §0.4.2.2 tabulates is two. Moving them behind a collaborator satisfied the parity finding but
+   * left the controls themselves in place, and two other reviews withdrew the controls outright:
+   * `model/service/ProductService.cfc:L65-L68` sets a request timeout and nothing else, so there is no
+   * legacy counterpart for a caller-supplied cancellation, and AAP §0.6.7.7 licenses exactly one
+   * behavioural departure (D18). With nothing left to carry, the channel goes too — and the public member
+   * is two parameters, which is what the parity finding asked for in the first place. */
 
   /**
    * The direct persister behind `getHibachiDAO().save(target=arguments.product)` at
@@ -807,6 +843,30 @@ export interface ProductServiceCollaborators {
    * back-reference. No port file is created and no adapter is imported (S3, S4).
    */
   readonly defaultSkuIdReader: DefaultSkuIdReader;
+
+  /**
+   * Reads the `parentProductTypeID` a product type was hydrated with — finding F10.
+   *
+   * ⭐ WHY {@link ProductService.saveProductType} CANNOT WORK WITHOUT IT. `:L306-L308` inherits the
+   * parent's products into the child, and it reaches the parent through
+   * `savedProductType.getParentProductType()`. `rowMappers.ts` RULE 3b leaves that ASSOCIATION SLOT
+   * ABSENT on a hydrated product type on purpose — an identifier-only parent would empty the feed's
+   * `g:product_type` — and `SlatwallProductType` declares no aggregate loader either, so in production
+   * the slot was ALWAYS absent and the whole `:L306-L308` branch was unreachable. The inheritance simply
+   * never happened, and nothing reported that it had not.
+   *
+   * This reader is the narrow capability that makes the branch reachable: given the child, it answers
+   * the parent's identifier, and the member then loads the parent through the members it already has.
+   * The alternative — filling the association slot at hydration — was rejected in `rowMappers.ts` for a
+   * read-path reason that has not changed.
+   *
+   * ⚠️ A CAPABILITY, NOT A PORT. AAP §0.2.2.7 fixes the boundary ports at seven (eight with
+   * `UniquePropertyPort`), and this reaches no out-of-scope collaborator: the value comes from this
+   * subtree's own hydration layer. It is declared as an injected function for the same reason
+   * {@link ProductServiceCollaborators.defaultSkuIdReader} is — a value an entity deliberately does not
+   * expose — and the composition root supplies it from `rowMappers`' preserved-key table.
+   */
+  readonly parentProductTypeIdReader: ParentProductTypeIdReader;
 }
 
 /* ================================================================================================
@@ -896,7 +956,7 @@ function readsAsCfmlBoolean(value: unknown): boolean {
  * CFML boolean coercion. Only meaningful once `readsAsCfmlBoolean` has accepted the value.
  *
  * ⚠️ THIS BODY IS DELIBERATELY BYTE-IDENTICAL TO THE TWO SIBLING COPIES, AND IT USED NOT TO BE.
- * `src/services/SkuService.ts` and `src/util/smartListInput.ts` declare the same function over the
+ * `src/services/SkuService.ts` and `src/ports/SmartListQueryPort.ts` declare the same function over the
  * same two predicates — `readsAsCfmlBoolean` and `readsAsCfmlNumeric`, both of which ARE
  * byte-identical across all three files — and this copy alone ended its chain with
  * `toCfmlNumber(normalised) !== 0` instead of `return false`. For every value `readsAsCfmlBoolean`
@@ -910,7 +970,7 @@ function readsAsCfmlBoolean(value: unknown): boolean {
  * ⚠️ AND THE COMMENT THAT JUSTIFIED THE DIFFERENCE WAS FALSE. It read: "Only a string can reach
  * here: the two branches above take booleans and numbers, and `readsAsCfmlBoolean` — which every
  * caller applies first — rejects every other type." Every caller did not. Of the six call sites in
- * the port, `src/util/smartListInput.ts:L593`, `:L606` and `:L624` test it inline, and
+ * the port, `src/ports/SmartListQueryPort.ts:L593`, `:L606` and `:L624` test it inline, and
  * `src/services/SkuService.ts:L956` and `ProductService.readProcessFlag` raise without it — but the
  * sixth, the `productAutoApproveReviewsFlag` read in `processProduct_addProductReview`, passed a raw
  * setting value straight in. That call site now applies the predicate too, so the sentence is true
@@ -1164,22 +1224,20 @@ function readProductSkusAsSkus(product: Product, locator: string): Sku[] {
   return skus;
 }
 
-/**
- * A primary-key lookup expressed as a single-filter dynamic query.
+/* ================================================================================================
+ * A primary-key lookup expressed as a single-filter dynamic query — WITHDRAWN FROM THIS FILE.
  *
- * The shape `../services/OptionService` uses for the same purpose, and for the same reason: the two
- * synthesized `get<Entity>(id)` members that AAP §0.4.2.5 requires have no repository behind them —
+ * `buildIdentifierQuery` used to stand here as a private local function, and byte-identically in
+ * `../services/OptionService`, with `../config/container.ts` writing the same query out inline a third
+ * time. Three readings of one legacy behaviour cannot be kept in step by hand, so the shape now lives
+ * once in `../ports/SmartListQueryPort` beside the translator every smart list already routes through, and
+ * this file imports it. The reason the shape is needed at all is unchanged: the synthesized
+ * `get<Entity>(id)` members that AAP §0.4.2.5 requires have no repository behind them —
  * `../ports/repositories/ProductRepository` deliberately declares only the three business queries the
  * legacy `ProductDAO` declares — so the paginated query port is the one abstraction that can answer
- * them without widening a port (S5).
- */
-function buildIdentifierQuery<TEntity extends SmartListEntityName>(
-  entityName: TEntity,
-  propertyIdentifier: SmartListPropertyIdentifier<TEntity>,
-  value: string,
-): SmartListQuery<TEntity> {
-  return { entityName, whereGroups: [{ filters: [{ propertyIdentifier, value }] }] };
-}
+ * them without widening a port (S5). See that function's own contract for why the UNPAGED collection is
+ * the view to read and why both callers execute it through `executeRecords`.
+ * ============================================================================================== */
 
 /**
  * Builds the validation VIEW `../validation/rules/product.rules` expects.
@@ -1360,12 +1418,13 @@ export class ProductService {
 
   private readonly isUrlTitleAvailable: UniqueValueProbe;
 
-  private readonly urlTitleProbeBudget?: UrlTitleProbeBudget;
-
   private readonly persistProduct: EntityPersister<Product>;
 
   /** @see ProductServiceCollaborators.defaultSkuIdReader */
   private readonly defaultSkuIdReader: DefaultSkuIdReader;
+
+  /** See {@link ProductServiceCollaborators.parentProductTypeIdReader} (F10). */
+  private readonly parentProductTypeIdReader: ParentProductTypeIdReader;
 
   /**
    * Wires the graph the retired DI/1 container used to wire by name.
@@ -1395,21 +1454,11 @@ export class ProductService {
     this.smartListQueryPort = collaborators.smartListQueryPort;
     this.subscriptionTermPort = collaborators.subscriptionTermPort;
     this.productTypeRootResolver = collaborators.productTypeRootResolver;
+    this.parentProductTypeIdReader = collaborators.parentProductTypeIdReader;
     this.productOptionFinders = createProductOptionFinders(collaborators.smartListQueryPort);
     this.productPropertyDescriptors = collaborators.productPropertyDescriptors;
     this.populationAuthorization = collaborators.populationAuthorization;
     this.isUrlTitleAvailable = collaborators.isUrlTitleAvailable;
-    /*
-     * ⭐ SEC-HARDENING (D18-CLASS) — SEC-14, review finding F5. Assigned only when supplied, because
-     * `exactOptionalPropertyTypes` forbids writing an explicit `undefined` onto an optional field, and
-     * validated at construction so a mis-wired figure — above all `NaN`, which would admit every
-     * derivation while appearing configured — fails when the graph is built rather than on the first
-     * save. An ABSENT budget is not a mis-wiring and is not checked: it is the parity default.
-     */
-    if (collaborators.urlTitleProbeBudget !== undefined) {
-      assertUrlTitleProbeBudget(collaborators.urlTitleProbeBudget);
-      this.urlTitleProbeBudget = collaborators.urlTitleProbeBudget;
-    }
     this.persistProduct = collaborators.persistProduct;
     this.defaultSkuIdReader = collaborators.defaultSkuIdReader;
   }
@@ -1689,44 +1738,23 @@ export class ProductService {
    * PRE-INCREMENTED so the first collision suffix is `-2` rather than `-1`. Nothing about the algorithm
    * is restated here; this member supplies the table discriminator and the injected probe.
    *
-   * THE UTILITY STILL TAKES THREE ARGUMENTS AND THERE IS STILL NO FOURTH — BUT WHETHER THE LOOP IS
-   * BOUNDED IS NOW THE DEPLOYMENT'S CHOICE, MADE OUTSIDE THE ALGORITHM. The attempt budget an earlier
-   * checkpoint threaded through this service as a fourth argument stays removed, and `../util/urlTitle`
-   * records the three authorities behind that removal, the decisive one being that a REQUIRED ceiling
-   * relocates a fabricated number instead of avoiding it. Review finding F5 (CWE-400) reinstated the
-   * bound where that objection does not reach — wrapped around the PROBE, optional, no default — so
-   * this service still states no number of its own and adds no failure of its own. With no budget wired
-   * both derivations below probe exactly as `:L64` does. See {@link boundProbe} and
-   * `../util/urlTitleProbeBudget.ts`.
+   * THE UTILITY TAKES THREE ARGUMENTS AND THERE IS NO FOURTH, AND THE LOOP IS UNBOUNDED. The attempt
+   * budget an earlier checkpoint threaded through this service as a fourth argument stays removed, and
+   * `../util/urlTitle` records the three authorities behind that removal, the decisive one being that a
+   * REQUIRED ceiling relocates a fabricated number instead of avoiding it. ⛔ A LATER REVISION REINSTATED
+   * THE BOUND AROUND THE PROBE — optional, no default — AND THAT IS WITHDRAWN TOO: an optional ceiling
+   * obliges nobody to invent a figure, but it still adds a capability the source does not describe
+   * (AAP §0.7.3 S9, IR-12) and still refuses derivations the legacy completed, and AAP §0.6.7.7 declares
+   * exactly one departure in this port. Both derivations therefore probe exactly as `:L64` does, and the
+   * injected probe is handed over unwrapped.
    */
   private createUniqueProductUrlTitle(titleString: string): Promise<string> {
-    return createUniqueURLTitle(titleString, PRODUCT_TABLE_NAME, this.boundProbe());
+    return createUniqueURLTitle(titleString, PRODUCT_TABLE_NAME, this.isUrlTitleAvailable);
   }
 
   /** The same derivation against `SwProductType` — `model/service/ProductService.cfc:L297`, `:L299`. */
   private createUniqueProductTypeUrlTitle(titleString: string): Promise<string> {
-    return createUniqueURLTitle(titleString, PRODUCT_TYPE_TABLE_NAME, this.boundProbe());
-  }
-
-  /**
-   * The injected uniqueness probe, wrapped in this deployment's probe ceiling when it stated one.
-   *
-   * ⭐ SEC-HARDENING (D18-CLASS) — SEC-14, review finding F5 (CWE-400). CALLED PER DERIVATION, NEVER
-   * MEMOISED, AND THAT IS A CORRECTNESS REQUIREMENT (mismatch M7). The wrapper owns a probe counter, so
-   * a single instance shared between derivations would carry one save's collisions into the next and
-   * would leak across invocations on a warm container — refusing a later, entirely legitimate save.
-   * Both call sites above therefore invoke this member rather than holding its result.
-   *
-   * With no budget wired it returns the injected probe unchanged, so the derivation is byte-for-byte
-   * the one that ran before this member existed. One probe and one budget serve BOTH tables, because
-   * the probe's own contract takes the table name as its first parameter.
-   *
-   * @returns the probe to hand to `createUniqueURLTitle`
-   */
-  private boundProbe(): UniqueValueProbe {
-    return this.urlTitleProbeBudget === undefined
-      ? this.isUrlTitleAvailable
-      : boundUniqueValueProbe(this.isUrlTitleAvailable, this.urlTitleProbeBudget);
+    return createUniqueURLTitle(titleString, PRODUCT_TYPE_TABLE_NAME, this.isUrlTitleAvailable);
   }
 
   /**
@@ -1787,75 +1815,82 @@ export class ProductService {
    * `model/dao/ProductDAO.cfc:L87`.
    *
    * ==============================================================================================
-   * ⚠️ SEC-08 — THE LOCATION IS GATED, AND THE GATE IS DELIBERATELY NOT IN THIS FILE
+   * ⛔ SEC-08 IS WITHDRAWN — THE LOCATION IS NOT GATED HERE, AND IT IS NOT GATED ANYWHERE ELSE EITHER
    * ==============================================================================================
-   * An earlier revision of this member ran the caller's `fileURL` through a
-   * `validateProductImportSource` gate against an injected allow-list policy and raised a `DomainError`
-   * when the location was not approved. A later revision removed all of it — the gate, the policy
-   * collaborator, the branded source type and the four address-level obligations the port placed on an
-   * adapter. Review finding F8 (CWE-918) re-opened that, and the location IS now refused when it is
-   * hostile: a scheme other than HTTP or HTTPS, credentials embedded in the URL, or a host that is an
-   * address literal in a loopback, private, link-local, unique-local, unspecified or instance-metadata
-   * range. `src/ports/repositories/ProductRepository.ts` states that as an obligation of EVERY
-   * implementation of the port this member calls, and the shipped implementation discharges it in
-   * `assertRetrievableImportSource`, immediately before its one retrieval seam.
+   * This decision went through four revisions and the account is kept in full, because a future revision
+   * that wants to reinstate the gate should have to answer the reason it was withdrawn rather than
+   * re-derive the reasons it was attractive. Revision 1 ran the caller's `fileURL` through a
+   * `validateProductImportSource` gate against an injected allow-list policy in THIS member. Revision 2
+   * removed all of it — the gate, the policy collaborator, the branded source type and the four
+   * address-level obligations the port laid on an adapter. Revision 3 reinstated the refusal, moved it to
+   * the sink, and made it an obligation of every implementation of the port. REVISION 4 WITHDRAWS THE
+   * REFUSAL ENTIRELY: no scheme, credential or address-literal check exists in this subtree.
    *
-   * ⭐ WHY THE PREDICATE IS NOT ALSO COPIED HERE, WHICH IS A JUDGMENT AND NOT AN OMISSION. Three reasons,
-   * in order of weight. First, this service may not import `src/adapters/**` (S4), so a check here could
-   * not BE the same check — it would be a second, independent copy, and two copies of a security
-   * predicate drift. Second, the retriever is reached from exactly one place in the whole subtree, so a
-   * gate there is not merely equivalent to a gate here, it is strictly stronger: nothing can reach a
-   * retriever by any other route, including routes this service is not on. Third, a reviewer asked to
-   * believe a duplicated predicate has to prove the two agree before trusting either, which converts one
-   * checkable fact into two.
+   * ⛔ WHY, WHEN REVISION 3'S ARGUMENT WAS A GOOD ONE. It rested on a real fact —
+   * `model/dao/ProductDAO.cfc:L87` retrieves through `getService("utilityTagService")`, no such bean is
+   * declared anywhere in the legacy repository, and the `new http()` block at `:L89-L98` is commented out,
+   * so the set of locations the legacy would actually fetch is EMPTY and refusing one alters no legacy
+   * outcome. The withdrawal does not dispute that. It rests on the COUNT: AAP §0.6.7.7 authorises exactly
+   * ONE departure from behavioural preservation in this port — D18, the importer's parameterised SQL — and
+   * says so precisely to give a reviewer diffing behaviour a fixed number of entries to check. AAP §0.8.2
+   * Guideline 4 forbids enhancement beyond what the migration requires and admits no proportionality test,
+   * and AAP §0.6.7 mandates preserve-and-annotate rather than repair.
    *
-   * ⚠️ WHAT THIS MEMBER THEREFORE OWES IS A NEGATIVE OBLIGATION, AND IT IS AS REAL AS A CHECK. It must
-   * forward `fileURL` BYTE-FOR-BYTE — no trim, no normalisation, no re-encoding, no rewriting of any
-   * kind — because the refusals downstream are evaluated against the string this member passes on. Any
-   * transformation applied here would be applied to a value the gate never sees, which is exactly how a
-   * normalisation step upstream of a validator becomes a bypass. The one-line body below is the whole of
-   * that obligation, and it is asserted by test rather than left to inspection.
+   * ⭐ WHAT REMAINS BENEATH THIS MEMBER IS A WIRING SHAPE, NOT A REFUSAL. `ProductImportSourcePolicy` on
+   * `src/ports/repositories/ProductRepository.ts` is a REQUIRED member of any retrieving reader, so an
+   * operator who supplies retrieval supplies a policy with it — but it names no scheme, no host, no
+   * address range and no number, and a permissive implementation that admits whatever it is given
+   * reproduces `:L87` exactly. The only reader this subtree ships retrieves nothing and declines every
+   * member. This service could not hold the policy in any case: it may not import `src/adapters/**` (S4).
    *
-   * ⚠️ AND THE RESIDUAL RISK IS STILL FLAGGED, WHICH IS WHAT AAP §0.8.3.6 ASKS FOR. A host given as a
-   * NAME that resolves into a refused range cannot be convicted without a lookup, and no layer here may
-   * import a resolver. That part stays with the retriever, as the resolve-then-vet obligation on
-   * `ProductImportSourceReader`, and on the register as MISMATCH M4 —
-   * `model/dao/ProductDAO.cfc:L87`, remote fetch inside the request. No new mismatch identifier is
-   * minted.
+   * ⚠️ WHAT THIS MEMBER OWES IS STILL A NEGATIVE OBLIGATION, AND THE WITHDRAWAL DOES NOT WEAKEN IT. It
+   * must forward `fileURL` BYTE-FOR-BYTE — no trim, no normalisation, no re-encoding, no rewriting of any
+   * kind. Two independent reasons now: `model/dao/ProductDAO.cfc:L74` derives the delimiter from the RAW
+   * string, so a rewrite here could change which delimiter the import chooses; and whatever an operator's
+   * policy is evaluated against, it is evaluated against the string this member passes on, so a
+   * transformation above it would be evaluated against nothing — the classic normalise-then-validate
+   * bypass. The one-line body below is the whole of that obligation, asserted by test rather than left to
+   * inspection.
+   *
+   * ⚠️ AND THE WHOLE CWE-918 SURFACE IS CARRIED AND FLAGGED, WHICH IS WHAT AAP §0.8.3.6 ASKS FOR. A
+   * caller-supplied location would be dereferenced server-side with no scheme, credential, address or
+   * resolve-then-vet check on the path from here. It stays on the register as MISMATCH M4 —
+   * `model/dao/ProductDAO.cfc:L87`, remote fetch inside the request — and closing it is the operator's
+   * decision, arriving with whatever retrieving reader they inject. No new mismatch identifier is minted.
    *
    * TEST PROVENANCE: NET-NEW. No legacy test touches this member; `model/dao/ProductDAO.cfc`'s importer
    * has no test either (AAP §0.6.5.2).
    *
-   * @param fileURL - The location the caller asks to import from, forwarded to the repository UNTOUCHED,
-   *   exactly as `:L67` forwards it. Untouched, but no longer unchecked: the port obliges every
-   *   implementation to refuse a hostile location, and forwarding it unmodified is what lets that
-   *   refusal see what the caller actually asked for.
+   * @param fileURL - The location the caller asks to import from, forwarded to the repository UNTOUCHED
+   *   and UNCHECKED, exactly as `:L67` forwards it. Forwarding it unmodified is what lets the delimiter be
+   *   derived from the string the caller actually wrote, and what lets any policy an operator injects be
+   *   evaluated against that same string.
    * @param textQualifier - The optional text qualifier, defaulting to the empty string as `:L65` does.
-   * @param options - Optional invocation-scoped import controls, forwarded to the port unchanged.
    * @returns Nothing. `model/dao/ProductDAO.cfc:L73` reports no row count and no error summary, and
    *   inventing one would be inventing information the legacy never produced.
    */
-  public async loadDataFromFile(
-    fileURL: string,
-    textQualifier: string = '',
-    options?: ProductImportOptions,
-  ): Promise<void> {
+  public async loadDataFromFile(fileURL: string, textQualifier: string = ''): Promise<void> {
     /* ⚠️ ONE STATEMENT, AND ITS RESTRAINT IS THE POINT. `model/service/ProductService.cfc:L65` declares
      * `required string fileURL` and `:L67` hands it straight to the DAO, which retrieves it server-side at
      * `model/dao/ProductDAO.cfc:L87`. Nothing on that legacy path inspects the location, and nothing here
-     * rewrites it: the argument reaches the port exactly as the caller wrote it, which is precisely what
-     * lets the port's SEC-08 refusals judge what the caller actually asked for (review finding F8).
-     * Trimming or normalising it here would hand the gate downstream a string the caller never supplied.
+     * rewrites it: the argument reaches the port exactly as the caller wrote it, which is what keeps the
+     * delimiter derived from the caller's own string and what lets any policy an operator injects be
+     * evaluated against that same string. Trimming or normalising it here would hand whatever is
+     * downstream a value the caller never supplied.
      *
-     * ⚠️ NO RETRIEVER SHIPS, AND THAT IS DELIBERATE RATHER THAN AN OVERSIGHT — nor is it what closes F8.
-     * The only implementation in the subtree is `unresolvableProductImportSourceReader` in
-     * `src/adapters/mysql/MySqlProductRepository.ts`, which refuses every location and says why; the
-     * interface a replacement must satisfy is declared in that same file, and it carries the
-     * resolve-then-vet, connect-to-the-vetted-address and revalidate-every-redirect obligations that only
-     * a retriever can discharge. Two concrete HTTP readers were written and both were removed — the
-     * account is on that declaration. The scheme, credential and address-literal refusals do NOT depend
-     * on which reader is bound: they run at the seam, before any reader is invoked. */
-    await this.productRepository.importFromFile(fileURL, textQualifier, options);
+     * ⛔ AND NOTHING DOWNSTREAM REFUSES IT. A revision gated the location at the retrieval seam; that gate
+     * is withdrawn (AAP §0.6.7.7 authorises one behavioural departure, D18), so the whole CWE-918 surface
+     * is carried as mismatch M4.
+     *
+     * ⚠️ NO RETRIEVER SHIPS, AND THAT IS DELIBERATE RATHER THAN AN OVERSIGHT. The only implementation in
+     * the subtree is `unresolvableProductImportSourceReader` in
+     * `src/adapters/mysql/MySqlProductRepository.ts`, which declines every member and says why: the legacy
+     * retrieval collaborator does not exist, so a working client would ADD a capability the ported system
+     * does not have. The interface a replacement must satisfy is declared in that same file, and its
+     * required `sourcePolicy` member is where an operator's own scheme, host, address and bound decisions
+     * belong. Two concrete HTTP readers were written and both were removed — the account is on that
+     * declaration. */
+    await this.productRepository.importFromFile(fileURL, textQualifier);
   }
 
   /* ==============================================================================================
@@ -1866,7 +1901,7 @@ export class ProductService {
    * Groups a product's selectable options by option-group name.
    *
    * ==============================================================================================
-   * D25 — `model/service/ProductService.cfc:L70-L80`: THE LEGACY ANSWERS A NAME-KEYED STRUCT; THE
+   * TODO(parity) `model/service/ProductService.cfc:L70-L80`: THE LEGACY ANSWERS A NAME-KEYED STRUCT; THE
    * PORT ANSWERS THE ARRAY AAP §0.4.2.1 TABULATES, AND THAT DIVERGENCE IS THE ANNOTATION
    * ==============================================================================================
    * `:L71` initialises `var AvailableOptions = {}` — a CFML STRUCT — and `:L76` assigns into it with
@@ -1890,7 +1925,7 @@ export class ProductService {
    *       yields ONE entry; see behaviour 2.
    *   (c) "`Record` IS THE HONEST TRANSLATION OF A STRUCT." A CFML struct is not an ordered map, so
    *       `Record` is not a neutral translation either — it silently adopts JavaScript's own key-order
-   *       rules. The array makes the order an explicit, documented decision instead; see M9 on
+   *       rules. The array makes the order an explicit, documented decision instead; see the struct-iteration-order note on
    *       `FormattedOptionGroup`.
    *
    * It is a promise because `Product.getOptionGroups(finder)` and
@@ -1904,7 +1939,7 @@ export class ProductService {
    * FOUR BEHAVIOURS PRESERVED EXACTLY, each one a place a well-meant improvement would change results:
    *   1. THE LABEL IS THE GROUP NAME, never the group ID. `:L76` keys by `getOptionGroupName()`, so the
    *      name is what identifies an entry. Adding an ID would publish something the legacy entry cannot
-   *      carry (S9), and see the D24-class note on `FormattedOptionGroup` for why a collapsed entry has
+   *      carry (S9), and see the name-collapse note on `FormattedOptionGroup` for why a collapsed entry has
    *      no single ID to report.
    *   2. SAME-NAMED GROUPS OVERWRITE. `:L76` is a plain struct assignment, so the LAST group with a
    *      given name wins and the earlier entry is lost. No multimap, no array-of-arrays, no suffixing
@@ -2000,7 +2035,7 @@ export class ProductService {
       availableOptions.set(optionGroupName, this.optionService.getOptionsForSelect(options));
     }
 
-    /* Materialised once, at the end, in `Map` insertion order — which is first-seen group order (M9). */
+    /* Materialised once, at the end, in `Map` insertion order — which is first-seen group order; CFML specifies none. */
     return Array.from(availableOptions, ([optionGroupName, options]) => ({
       optionGroupName,
       options,
@@ -3682,7 +3717,7 @@ export class ProductService {
 
     /* `:L306-L308` — all three clauses, and the first one is now genuinely evaluated. */
     if (!savedProductType.hasErrors()) {
-      const parentProductType = savedProductType.parentProductType;
+      const parentProductType = await this.resolveParentProductTypeForInheritance(savedProductType);
       if (parentProductType !== undefined) {
         const parentProducts = parentProductType.getProducts();
         if (parentProducts.length > 0) {
@@ -3732,6 +3767,104 @@ export class ProductService {
 
     /* `:L310`. */
     return savedProductType;
+  }
+
+  /**
+   * Resolves the parent whose products `:L307` inherits, loading it when the slot is absent.
+   *
+   * ==============================================================================================
+   * ⭐ F10 — WHY THIS EXISTS AT ALL, AND WHY THE BRANCH ABOVE WAS DEAD WITHOUT IT
+   * ==============================================================================================
+   * `model/service/ProductService.cfc:L306-L308` reads
+   * `productType.getParentProductType().getProducts()`. In the legacy both hops were LAZY Hibernate
+   * loads, so the parent and its product collection materialised on demand and the inheritance ran.
+   *
+   * In this port neither hop existed in production:
+   *   1. `rowMappers.mapProductTypeRow` leaves the `parentProductType` ASSOCIATION SLOT ABSENT by
+   *      design (RULE 3b) — attaching an identifier-only parent would empty the Google feed's
+   *      `g:product_type`, because the simple representation walks the parent chain — and preserves
+   *      the row's foreign key beside the instance instead; and
+   *   2. `SlatwallProductType` declares NO aggregate loader, so nothing filled the slot later either.
+   * The `:L306-L308` branch was therefore unreachable for every product type that came from a row.
+   * Every product a re-parenting was supposed to inherit stayed on its old type, and the member
+   * returned successfully.
+   *
+   * ==============================================================================================
+   * ⚠️ A HAND-BUILT PARENT STILL WINS, AND THAT ORDER IS DELIBERATE
+   * ==============================================================================================
+   * When the slot is PRESENT the caller has already supplied the parent — with whatever products it
+   * holds — and this member returns it untouched, issuing no statement. That keeps every existing
+   * caller and test behaving exactly as before, and it is also the faithful reading: `:L307` inherits
+   * whatever `getProducts()` answers, and a caller that populated the collection has said what that is.
+   * Only ABSENCE triggers a load, because absence is precisely the state hydration leaves behind.
+   *
+   * ==============================================================================================
+   * ⚠️ WHAT IS LOADED, AND WHY THROUGH THESE TWO MEMBERS RATHER THAN A NEW ONE
+   * ==============================================================================================
+   * {@link ProductService.getProductType} is the AAP §0.4.2.5 identifier reader, and the parent's
+   * products are read through the same smart-list port and the same joins
+   * {@link ProductService.getProductSmartList} uses — filtered on `productType.productTypeID`, which is
+   * the inverse of the very relationship `model/entity/ProductType.cfc:L66` declares. No repository
+   * member is added and no port grows (S5): the capability already existed, it was simply never used
+   * here.
+   *
+   * ⚠️ THE LOADED PRODUCTS ARE PUSHED ONTO THE PARENT'S OWN LIVE COLLECTION, so the branch above sees
+   * them through `getProducts()` exactly as it would have seen a lazily-loaded collection. Order is the
+   * order the query answers, and nothing is sorted, filtered or de-duplicated — `:L307` does none of
+   * those, and the write loop below it depends on collection order (the shared foreign key is overwritten
+   * in that order).
+   *
+   * ⚠️ BOTH READS RUN ON THIS SERVICE'S OWN COLLABORATORS, so inside a transaction boundary they run on
+   * `scope.executor` (M6) and observe the product-type row the save above has just written — which
+   * matters, because a re-parenting save and the products it re-parents must commit or roll back
+   * together.
+   *
+   * ⛔ AN ABSENT PARENT ROW ANSWERS `undefined` AND THE BRANCH IS SKIPPED, not raised on. The preserved
+   * key can name a row that no longer exists — the legacy dereferenced a null there and CFML would have
+   * raised, but `:L306`'s `isNull` guard means the legacy's own behaviour for a missing parent is to skip
+   * the inheritance, which is what `getProductType` answering `null` reproduces.
+   *
+   * @param productType - The product type just saved.
+   * @returns The parent to inherit from, or `undefined` when there is none to inherit from.
+   */
+  private async resolveParentProductTypeForInheritance(
+    productType: ProductType,
+  ): Promise<ProductType | undefined> {
+    const attachedParent = productType.parentProductType;
+    if (attachedParent !== undefined) {
+      return attachedParent;
+    }
+
+    const parentProductTypeID = this.parentProductTypeIdReader(productType);
+    if (parentProductTypeID === undefined || parentProductTypeID.length === 0) {
+      return undefined;
+    }
+
+    const parent = await this.getProductType(parentProductTypeID);
+    if (parent === null) {
+      return undefined;
+    }
+
+    const parentProducts = await this.smartListQueryPort.executeRecords(
+      translateSmartListInput({
+        entityName: PRODUCT_ENTITY_NAME,
+        joins: PRODUCT_SMART_LIST_JOINS,
+        /*
+         * The legacy request grammar, typed: `F:` prefixes an equality filter, exactly as
+         * `integrationServices/google/controllers/feed.cfc:L60-L62` writes its three and as
+         * `PRODUCT_FEED_INPUT` carries them. ONE filter, on the inverse of the relationship being
+         * read — no keyword properties, no ordering and no pagination, because `:L307` reads the whole
+         * collection and imposes none of the three (S9).
+         */
+        input: { [`F:${PRODUCT_TYPE_FILTER_PROPERTY}`]: parentProductTypeID },
+      }),
+    );
+
+    for (const parentProduct of parentProducts) {
+      parent.getProducts().push(parentProduct);
+    }
+
+    return parent;
   }
 
   /* ==============================================================================================

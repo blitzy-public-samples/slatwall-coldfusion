@@ -144,17 +144,23 @@ declaring `this.publicMethods="product"` at `feed.cfc:L54`.
 delivered and owns the feed operation, the M2 mismatch of §11, and every request-shaped concern the feed
 has.
 
-⚠️ **There is no target route yet, and this document does not invent one.** `slatwall-ts/src/handlers/`
-currently holds the per-service handlers and the shared response helper; the front controller that AAP
-§0.4.1.9 plans as `slatwall-ts/src/handlers/router.ts` — the file that would map an incoming path onto
-`googleFeedHandler` the way the `slatAction` convention above maps one onto `feed.cfc:L58` — is **not
-delivered**, so the route-to-handler mapping is still open. Nothing follows from that for this folder:
-nothing in `integrations/google/**` names a URL path, a query parameter, an HTTP method, a status code
-or a content type either way, and **this document deliberately does not define a new route shape** — the
-legacy route above is recorded as history, not restated as a target. Route decisions belong to the
-handler layer, which is also the only layer permitted to name serverless or gateway types at all (AAP
-§0.7.3), and this is precisely why §11 leaves M2's delivery model to that layer rather than settling it
-here.
+✅ **The target route is delivered, and it keeps the legacy address verbatim.** The front controller AAP
+§0.4.1.9 plans as `slatwall-ts/src/handlers/router.ts` exists: it builds the feed handler through
+`createGoogleFeedHandlerFromContainer` and mounts `createGoogleFeedRoutes` into its frozen route table,
+so `?slatAction=google:feed.product` — colon, subsystem and all — resolves to
+`googleFeedHandler.product()` the way the `slatAction` convention above resolved it to `feed.cfc:L58`.
+The route table is a closed literal union of 34 addresses, of which this is the one attested anywhere in
+the legacy tree; a route that is not declared cannot be reached, and a declared route that mounts
+nothing fails to compile.
+
+Nothing follows from that for this folder, which is why the delivery changed nothing here: nothing in
+`integrations/google/**` names a URL path, a query parameter, an HTTP method, a status code or a content
+type, and **this document still defines no route shape of its own** — the legacy route above is recorded
+as history, and the target address is recorded as the handler layer's decision rather than restated as
+this folder's. Route decisions belong to the handler layer, which is also the only layer permitted to
+name serverless or gateway types at all (AAP §0.7.3). What remains genuinely open is narrower than the
+route: the **gateway type** in front of the function, and with it M2's asynchronous-or-streamed delivery
+model, which §11 leaves to that layer rather than settling here.
 
 ---
 
@@ -220,14 +226,38 @@ framework and has no counterpart here.
 
 **What the port does with those seven lines.** All three parts above are wired, and they travel together
 through one typed call rather than one call plus seven mutations. `ProductFeedQuery.ts` calls
-`SkuService.getSkuSmartListRecords`, handing it one frozen description in which the feed's three joins
-travel under `additionalJoins` — the only join channel the input translator reads. Both public SKU
-readings compose through the same private member of that service, so the base entity name, the base joins
-and the keyword properties come from one place and cannot drift; that member appends the feed's three
-joins after the service's own, in the legacy's registration order, and the three filters and the
-availability range travel in the same description. Nothing in
-this folder emits SQL, names a table or assembles an identifier: the property each filter names is
-resolved against the entity schema by the port's translator, and every value binds.
+`SkuService.getSkuSmartList` — the member AAP §0.4.2.2 tabulates, with ITS OWN two-parameter signature and
+no addition — handing it one frozen description in which the feed's three joins travel under
+`additionalJoins`, the only join channel the input translator reads. (Two earlier names appear in the
+history and neither exists: a records-only reading called `getSkuSmartListRecords`, withdrawn because
+§0.4.2.2 fixes that service at nine declared members, and a third `additionalJoins` PARAMETER on
+`getSkuSmartList`, withdrawn under review finding F2c for the same parity reason.) That service states its
+own base entity name, base joins and keyword properties in one place, and the translator appends the feed's
+three joins after them, in the legacy's registration order; the three filters and the availability range
+travel in the same description. Nothing in this folder emits SQL, names a table or assembles an identifier:
+the property each filter names is resolved against the entity schema by the port's translator, and every
+value binds.
+through one composed description rather than one call plus seven mutations. `ProductFeedQuery.ts` composes
+the SKU selection with `composeSkuSmartListQuery` from `src/ports/SmartListQueryPort.ts` — the same
+module `SkuService.getSkuSmartList` composes through, so the base entity name, the base joins and the five
+keyword properties come from ONE place and cannot drift — handing it one frozen input in which the feed's
+three joins travel under `additionalJoins`, the only join channel the input translator reads. The composer
+appends those three after the service's own, in the legacy's registration order, and the three filters and
+the availability range travel in the same description. Nothing in this folder emits SQL, names a table or
+assembles an identifier: the property each filter names is resolved against the entity schema by the port's
+translator, and every value binds.
+
+**One statement per request, and the route to it is deliberate.** The feed executes that description
+through `SmartListQueryPort.executeRecords` — the unpaged records alone, which is the one view
+`product.cfm:L16` loops. An earlier revision injected `SkuService` and called `getSkuSmartList`, which
+answers all three legacy views, so every feed request also materialised a `COUNT(*)` nothing reads and,
+past the first page, a paged statement nothing reads; a review pass measured it. The legacy framework
+materialises a view only on first read of it (`org/Hibachi/HibachiSmartList.cfc:L751-L755`, `:L771`), so
+the legacy feed issues exactly one statement — one statement here is parity rather than optimisation. The
+other candidate route, a tenth records-only member on `SkuService`, was written once and withdrawn: AAP
+§0.4.2.2 fixes that service at nine declared members and §0.8.3.1 makes the surface the artefact a reviewer
+checks method by method. Sharing the selection keeps the count at nine and keeps the statement count at
+one.
 
 ⚠️ **Declaring the joins is only half of what the legacy does, and the other half is easy to miss.** In
 the legacy the joins exist so that Hibernate _can_ reach the associated rows; the reaching happens later
@@ -262,6 +292,44 @@ the repeated additional-image elements, and the shipping-weight element assemble
 `product.cfm:L58`. The field groups that are commented out in the template — at `product.cfm:L33-L38`,
 `L40-L57` and `L59-L61` — remain commented in the port with their element names intact, because
 deleting them would lose the record of an intended surface.
+
+#### 6.3.1 Escaping is the template's own, at the template's own six fields
+
+The template wraps **six** dynamic values in `htmlEditFormat` — `g:id` (`:L17`), `title` (`:L18`),
+`description` (`:L19`), `g:product_type` (`:L21`), `g:brand` (`:L32`) and `g:item_group_id` (`:L39`) — and
+interpolates **nine** raw: the channel `link` (`:L14`) and `description` (`:L15`), the item `link`
+(`:L22`), `g:image_link` (`:L23`), each `g:additional_image_link` (`:L24`), `g:price` (`:L27`),
+`g:sale_price` (`:L29`), `g:sale_price_effective_date` (`:L30`) and `g:shipping_weight` (`:L58`). The port
+reproduces that split **field for field**, and percent-encodes nothing.
+
+An intermediate revision escaped all fifteen dynamic nodes and additionally percent-encoded the
+data-derived path of the three URL fields, on the authority of an earlier code review that classified the
+nine raw sinks as a MAJOR CWE-91 finding. **Both are withdrawn** under the current review's finding F4:
+AAP §0.6.7.7 makes D18 — the importer's SQL parameter binding — the port's single authorised divergence,
+and AAP §0.1.2.1 freezes the plan, so a second exception cannot be reached by resembling the first.
+
+The consequence is stated rather than left implicit, per AAP §0.7.3 S8: an XML-significant character in any
+of the nine raw values leaves the document with no defined XML parse, and a stored path can move the
+authority of the three absolute URLs — exactly as in `product.cfm`. `test/integrations/ProductFeedBuilder.test.ts`
+asserts both halves: that the six escape, and that a hostile value in a raw sink produces a document the
+suite's own XML reader refuses. The one refusal that survives is `validateFeedHostAuthority`, over the
+**configured** host rather than any catalog value; finding F4 does not name it, and refusing a
+misconfigured origin withholds no record the legacy published.
+⚠️ **BUILDER CAPABILITY AND ROUTE BEHAVIOUR ARE DIFFERENT FACTS, AND THE ADDITIONAL-IMAGE ELEMENT IS
+WHERE THEY DIVERGE.** Everything above describes what this file DOES when it is given a record. The
+repeated `g:additional_image_link` mapping is carried in full here and is covered by
+`slatwall-ts/test/integrations/ProductFeedBuilder.test.ts` — but the DATA behind it comes from
+`sku.getProduct().getProductImages()` (`product.cfm:L24`), and no in-scope layer can read it:
+`model/entity/Image.cfc` is not one of the six in-scope entities of AAP §0.2.1.2 and AAP §0.2.2.4
+excludes `model/validation/ProductImage.json`. So the handler supplies the images alongside each record,
+and as shipped it **refuses** rather than supplying an empty list —
+`createGoogleFeedHandlerFromContainer` takes an optional `readProductImages` override, and with it
+omitted the delivered route answers `501` for any selection that reaches the reader. An earlier revision
+returned `[]` there, which review finding F24 correctly rejected: an empty list publishes "this product
+has no additional images", which is a different fact from "this service cannot read images", and the feed
+would have published the second as the first for every product in the catalogue. Reading this section as
+"the port emits additional images end to end" is therefore the one misreading to avoid: it emits them
+when the image subsystem is supplied, and reports the boundary when it is not.
 
 ### 6.4 Why two files rather than one
 
@@ -436,16 +504,17 @@ one HTTP connection open for as long as the render takes — has no equivalent o
 ⚠️ **No single figure is named for that second ceiling, because there is not one to name.** Synchronous
 integration limits differ by gateway type, differ by region, and for some gateway types are themselves
 configurable; a buffered request-response integration and a streamed one do not have the same ceiling at
-all. **This deliverable selects no gateway.** Infrastructure as code is out of scope (AAP §0.2.2.5), and
-as §4 records, the front controller that would map a route onto the feed handler is not delivered either
-— so there is no API type, no gateway configuration and no route from which an effective ceiling could be
-read. Stating one number as "the" limit would present as settled a fact that the deployment decides.
+all. **This deliverable selects no gateway.** Infrastructure as code is out of scope (AAP §0.2.2.5), so
+although §4 records that the route itself is now delivered, there is still no API type and no gateway
+configuration from which an effective ceiling could be read — the route determines which function
+answers, not what budget the thing in front of it allows. Stating one number as "the" limit would present
+as settled a fact that the deployment decides.
 
-**The mismatch is therefore flagged, not resolved, and it stays flagged until a gateway is chosen.** The
-choice between an **asynchronous** and a **streamed** delivery model — the two AAP §0.6.6 names, and no
-third of this document's invention — is an explicit, open
-decision, and it belongs to `slatwall-ts/src/handlers/googleFeedHandler.ts`, which owns M2 — **not** to
-this folder. `ProductFeedBuilder.ts` and `ProductFeedQuery.ts` therefore set no budget, no record bound,
+**The mismatch is therefore flagged, not resolved, and it stays flagged until a gateway is chosen** —
+which the delivered route does not do and was never going to do. The choice between an **asynchronous**
+and a **streamed** delivery model — the two AAP §0.6.6 names, and no third of this document's invention —
+is an explicit, open decision, and it belongs to
+`slatwall-ts/src/handlers/googleFeedHandler.ts`, which owns M2 — **not** to this folder. `ProductFeedBuilder.ts` and `ProductFeedQuery.ts` therefore set no budget, no record bound,
 no batching policy, no streaming policy and no cache lifetime of any kind. The 360 is not silently
 re-timed to fit, and it is not capped to fit any gateway figure.
 
@@ -513,9 +582,13 @@ An integration sits above `services`, `ports` and `domain`, and below `handlers`
 - **Permitted:** `domain/`, `ports/`, `services/`, `util/`, `errors/`, and siblings within this folder.
   What is imported today is a strict subset of that — `domain/product/Product`,
   `domain/product/ProductType`, `domain/sku/Sku`, `errors/DomainError`, `ports/ImagePathPort`,
-  `ports/PricingPort`, `ports/SettingResolverPort`, `ports/SmartListQueryPort` and
-  `services/SkuService`. `util/` is permitted but is not reached from this folder at all, which is
-  recorded as a fact rather than dressed up as a dependency.
+  `ports/PricingPort`, `ports/SettingResolverPort`, `ports/SmartListQueryPort`,
+  `ports/SmartListQueryPort` and `util/formatting`.
+  ⚠️ `services/SkuService` STOOD IN THAT LIST AND NO LONGER DOES. The selection reached the service
+  until a review pass measured the cost (PERF-02, §9): it now reaches the leaf module
+  `ports/SmartListQueryPort`, which the service composes through too, so the selection is shared
+  without the feed depending on a nine-member service surface. `util/` is likewise no longer unreached —
+  the two modules above are the shared formatting helper and the shared input translator.
 - **Not imported at all:** `adapters/**`, `config/**`, `handlers/**`. There is no data access of any
   kind here — no statement text, no driver, no connection, no placeholder array — because selection is
   composed as a typed port call and never as a query.
@@ -534,7 +607,7 @@ of them through a declared port rather than by widening its own scope (AAP §0.2
 | Port                  | Used by                 | What it supplies                                                                                                                   |
 | --------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `PricingPort`         | `ProductFeedBuilder.ts` | The **promotional** sale price and its expiration, and nothing else (`product.cfm:L28-L30`)                                        |
-| `ImagePathPort`       | `ProductFeedBuilder.ts` | The primary and additional resized image paths                                                                                     |
+| `ImagePathPort`       | `ProductFeedBuilder.ts` | The primary and additional resized image paths. **Unwired in this slice** — see §6.3 and the note below                            |
 | `SettingResolverPort` | `ProductFeedBuilder.ts` | Four keys: `skuShippingWeight` and `skuShippingWeightUnitCode` (`product.cfm:L58`), `imageMissingImagePath`, `globalURLKeyProduct` |
 | `SmartListQueryPort`  | `ProductFeedQuery.ts`   | Filter, join and range composition, **and** the association projection that materialises the joined graph (§6.2)                   |
 
@@ -563,9 +636,96 @@ carries the association projection described in §6.2 — the mechanism that rep
 session fetch — which is why its row above names composition **and** materialisation rather than
 composition alone.
 
-The ports inventory is **closed at thirteen files**, and **this folder creates no new port**. If a
-future change to the feed appears to need one, that is a scope decision to be taken deliberately, not
-a file to add here.
+The ports inventory stands at **fifteen files**, and **this folder creates no new port**. If a future
+change to the feed appears to need one, that is a scope decision to be taken deliberately, not a file to
+add here.
+
+📐 **Fifteen rather than thirteen, and the two additions are named so the count is auditable.** The
+thirteen the AAP's inventory implies are the nine boundary ports — `SettingResolverPort`, `ImagePathPort`,
+`SubscriptionTermPort`, `AccessContentPort`, `PricingPort`, `AccountContextPort`, `UniquePropertyPort`,
+`SmartListQueryPort` and `TransactionalWritePort` — together with the four repository ports for the four
+catalog DAOs. Two further files were required by the port as built, and neither is a new boundary:
+`slatwall-ts/src/ports/repositories/BrandRepository.ts`, because `BrandService` has no legacy DAO at all
+and relies entirely on the CRUD surface `onMissingMethod` synthesized (**IR-1**), so the repository has to
+be declared explicitly; and `slatwall-ts/src/ports/repositories/BoundedRead.ts`, which is a shared read
+type the repository ports use rather than a collaborator interface. `TransactionalWritePort.ts` is itself
+the ninth boundary port, beyond the eight the plan enumerates, and it exists so a handler can reach a
+transaction without importing from `adapters/**`. Counting by file, that is 9 + 5 + 1 = **15**.
+
+---
+
+## 13a. Escaping parity, and the one residual risk this port declares
+
+`integrationServices/google/views/feed/product.cfm` escapes **six** of its fifteen dynamic values and
+emits **nine raw**, field by field with no rule behind the choice. `ProductFeedBuilder.ts` reproduces that
+split exactly.
+
+| Legacy locator | Field                         | Legacy           | Port                |
+| -------------- | ----------------------------- | ---------------- | ------------------- |
+| `:L17`         | `g:id`                        | `htmlEditFormat` | `escapeFeedText`    |
+| `:L18`         | `title`                       | `htmlEditFormat` | `escapeFeedText`    |
+| `:L19`         | `description`                 | `htmlEditFormat` | `escapeFeedText`    |
+| `:L21`         | `g:product_type`              | `htmlEditFormat` | `escapeFeedText`    |
+| `:L32`         | `g:brand`                     | `htmlEditFormat` | `escapeFeedText`    |
+| `:L39`         | `g:item_group_id`             | `htmlEditFormat` | `escapeFeedText`    |
+| `:L14`         | channel `link`                | raw              | `renderRawFeedNode` |
+| `:L15`         | channel `description`         | raw              | `renderRawFeedNode` |
+| `:L22`         | item `link`                   | raw              | `renderRawFeedNode` |
+| `:L23`         | `g:image_link`                | raw              | `renderRawFeedNode` |
+| `:L24`         | `g:additional_image_link`     | raw              | `renderRawFeedNode` |
+| `:L27`         | `g:price`                     | raw              | `renderRawFeedNode` |
+| `:L29`         | `g:sale_price`                | raw              | `renderRawFeedNode` |
+| `:L30`         | `g:sale_price_effective_date` | raw              | `renderRawFeedNode` |
+| `:L58`         | `g:shipping_weight`           | raw              | `renderRawFeedNode` |
+
+The channel `title`, `g:google_product_category`, `g:condition` and `g:availability` interpolate nothing
+dynamic and pass through neither helper. `test/integrations/ProductFeedBuilder.test.ts` pins this table as
+a **source-level census**, so a field added without either helper fails a test rather than shipping.
+
+### The history matters, because the table moved twice
+
+An earlier revision escaped **all fifteen** sinks and additionally **percent-encoded** the data-derived
+path of the three URL fields, on review finding **F7**'s authority as a CWE-91 remedy. Review finding
+**CQ-9** reversed both, and it was right to: escaping a raw sink emits bytes the legacy never emitted — a
+stored `&raquo;` becomes `&amp;raquo;` — and the encoder changed even innocuous paths, publishing a
+stored `a%20b` as `a%2520b` with no metacharacter involved at all.
+
+### What replaced the escaping, so nothing F7 identified is left open
+
+`renderRawFeedNode` **refuses** three things rather than escaping them: `&`, `<`, and the `]]>` sequence.
+Those are exactly the inputs whose legacy render had **no defined XML parse**, so no intended outcome is
+removed — and a markup payload cannot reach the document through a raw sink any more than it could when
+the sink was escaped. Review finding **SEC-2** is the authority: _do not publish malformed XML
+successfully_. The failure is a `DataIntegrityError`, which `googleFeedHandler.ts` answers **500**.
+
+`assertRepresentableInXml` additionally refuses, at **all fifteen** sinks, any code point outside the XML
+1.0 `Char` production — the C0 controls other than tab, line feed and carriage return; unpaired
+surrogates; `U+FFFE` and `U+FFFF`. No entity reference can carry any of them, so escaping was never an
+alternative remedy there. Tab, line feed, carriage return and well-formed astral pairs all still travel
+untouched, and **nothing is stripped, substituted or normalised**: SEC-2's other half — _remediate
+existing invalid data_ — is work at the point the data is **written**, which is outside this module and
+outside the AAP's scope.
+
+### The residual risk, declared because CQ-9 asks for it to be
+
+A data-derived URL **path** is now emitted with its stored bytes. Three consequences follow, and none is
+engineered away:
+
+1. **Origin.** A path that does not begin with `/` lands inside the authority of `http://<host><path>`, so
+   a leading `@` would move the origin. The **host** half of this exposure stays closed —
+   `validateFeedHostAuthority` refuses `@`, `/`, `\`, `?`, `#`, whitespace and control characters in the
+   configured authority. The **path** half is open.
+2. **Query and fragment smuggling.** A stored `?` or `#` can terminate the path.
+3. **Traversal.** A stored `../..` traverses. It always did — the withdrawn encoder never closed this,
+   because a traversal segment contains nothing reserved to encode.
+
+**No replacement gate is minted for any of them**, and the reason is specific rather than general:
+`imageMissingImagePath` is an **operator-editable setting** (see `src/ports/ImagePathPort.ts`) whose
+legitimate values include relative forms, so requiring a leading `/` would refuse a value the legacy
+published successfully. That is the outcome change AAP §0.8.2 guideline 4 forbids, and it is the same
+ground on which DECISION G-2's `requireRelativeFeedPath` has stayed withdrawn throughout. The write path
+for `urlTitle` is `src/util/urlTitle.ts`, whose output is already slug-safe; the risk that remains is
+owned by whoever writes the image settings.
 
 ---
 
@@ -575,7 +735,8 @@ The legacy repository contains **no test for the feed at all**, and **no mocking
 MXUnit and CFSelenium are **not vendored** in the repository, so the legacy suite cannot be executed in
 this environment even in principle (AAP §0.5.4, §0.6.5.3).
 
-Both suites covering this folder are therefore **NET-NEW coverage**:
+All **five** suites covering this folder are therefore **NET-NEW coverage**, and every one of them names
+its cases `NET-NEW` in the suite itself, so the label travels with the test rather than living only here:
 
 - `slatwall-ts/test/integrations/ProductFeedBuilder.test.ts` — the field mapping, every conditional
   branch, and the escaping.
@@ -583,8 +744,21 @@ Both suites covering this folder are therefore **NET-NEW coverage**:
   are applied on top of the SKU smart list rather than instead of it, that returned SKUs arrive with
   their associations already attached, that an absent association (the brandless product reaching the
   feed through the left join) is reported as absent rather than fabricated, and that a projection the
-  schema cannot satisfy fails loudly rather than half-building. Each of its cases is named `NET-NEW` in
-  the suite itself, so the label travels with the test rather than living only here.
+  schema cannot satisfy fails loudly rather than half-building.
+- `slatwall-ts/test/integrations/IntegrationContract.test.ts` — the five-method contract ported from
+  `integrationServices/IntegrationInterface.cfc:L51-L89`, asserted as a contract rather than through an
+  implementation.
+- `slatwall-ts/test/integrations/BaseIntegration.test.ts` — the default implementations carried from
+  `integrationServices/BaseIntegration.cfc:L49-L73`.
+- `slatwall-ts/test/integrations/GoogleIntegration.test.ts` — the stub itself: that
+  `getIntegrationTypes()` answers `fw1`, that `getDisplayName()` answers `Google` while the component
+  attribute it was cloned from said otherwise (defect **D11**), that `getSettings()` is empty, and that
+  no live call to Google exists anywhere in it.
+
+The feed's delivered route is additionally covered outside this folder, by
+`slatwall-ts/test/handlers/googleFeedHandler.test.ts` and
+`slatwall-ts/test/handlers/entrySurface.test.ts`, which own the request-shaped behaviour this folder
+deliberately does not describe — including the additional-image boundary of §6.3.
 
 Neither is parity coverage, neither extends an existing test, and nothing in this port should be read as
 implying that either does. AAP §0.8.3.7 makes stating this an explicit requirement, because the question

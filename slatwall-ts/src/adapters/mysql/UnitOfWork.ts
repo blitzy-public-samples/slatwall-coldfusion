@@ -206,17 +206,18 @@
  * ------------------------------------------------------------------------------------------------
  * THIS FILE MINTS NO NEW IDENTIFIER, AND MAKES NO GLOBAL CLOSURE CLAIM
  * ------------------------------------------------------------------------------------------------
- * the register is stated canonically, and only once, in the header of
- * `src/ports/repositories/SkuRepository.ts` (AAP 0.6.7's frozen source range D1-D21, plus the
- * source extension D22 and the three contract corrections D23, D24 and D25, with no D26 or beyond;
- * and AAP 0.6.6's M1-M8 plus M9, with no M10 or beyond). This file mints no new defect or mismatch
+ * the two registers are stated canonically, and only once, in the header of
+ * `src/ports/repositories/SkuRepository.ts`, and BOTH ARE FROZEN AT THE AAP's OWN BOUNDS — AAP
+ * 0.6.7's D1-D21 and AAP 0.6.6's M1-M8. Nothing in this port mints an identifier beyond either
+ * range; a further source observation is recorded by its `path:Lnnn` locator instead. This file mints no new defect or mismatch
  * identifier. It owns M3, M5 and M6, is bound by M7, cites
- * D22, M1, M2 and M8, and records every other finding by `path:Lnnn` locator alone. D18 — the single
+ * the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132], M1, M2 and M8, and records every other finding by `path:Lnnn` locator alone. D18 — the single
  * declared parameterization-hardening exception — belongs exclusively to
  * src/adapters/mysql/MySqlProductRepository.ts and is not claimed here.
  * ============================================================================================== */
 
 import { DataIntegrityError, DomainError } from '../../errors/DomainError';
+import type { TransactionalWriteRunner } from '../../ports/UniquePropertyPort';
 import {
   assertColumnName,
   assertTableName,
@@ -235,12 +236,12 @@ import type {
 import type { MySqlRow } from './rowMappers';
 
 /* ================================================================================================
- * TODO(parity) D22 — org/Hibachi/HibachiEntity.cfc:L642 AND :L644 HAND THIS FILE A TABLE NAME IN THE
+ * TODO(parity) the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] — org/Hibachi/HibachiEntity.cfc:L642 AND :L644 HAND THIS FILE A TABLE NAME IN THE
  * PHYSICAL VOCABULARY, AND IT IS STILL VALIDATED RATHER THAN TRUSTED
  * ================================================================================================
  * The legacy tree speaks two table vocabularies at once and both are correct; the full account, the
  * six entity rows and the five framework prefixing sites are documented in ./QueryRunner, which
- * holds the name-mapping table. D22's register home is ../../ports/repositories/SkuRepository, and
+ * holds the name-mapping table. the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132]'s register home is ../../ports/repositories/SkuRepository, and
  * neither that adapter nor this one owns the entry. What matters at THIS file's one
  * statement-composing member is which vocabulary arrives:
  *
@@ -268,20 +269,6 @@ import type { MySqlRow } from './rowMappers';
  * {@link assertColumnName}: nothing in the schema is named after it.
  */
 const TOP_SORT_ORDER_ALIAS = 'topSortOrder';
-
-/**
- * The locking clause appended to the sort-order read — see {@link UnitOfWork.getTableTopSortOrder}.
- *
- * ⭐ SEC-HARDENING (D18-CLASS) — F8. A module constant rather than a literal appended inline, so the
- * clause that closes the finding is greppable by name and so the whole-table and scoped variants — which
- * share one builder but differ in their `WHERE` — cannot end up disagreeing about whether they lock. The
- * leading space is part of the constant because it is always appended to a complete statement.
- *
- * `./UniquePropertyChecker` declares its own copy for its own two probes rather than importing this one.
- * That is deliberate: the two files close the same finding class on different statements, and a shared
- * constant would imply a shared policy that a future change to one could silently apply to the other.
- */
-const LOCKING_READ_SUFFIX = ' FOR UPDATE';
 
 /**
  * The error-state predicate for a boundary that has no error gate of its own.
@@ -1821,7 +1808,7 @@ export class UnitOfWork {
    * :L646 reaches an accessor the framework generates from the property declaration. Noted so nobody
    * hunts for a missing implementation.
    *
-   * ⭐ SEC-HARDENING (D18-CLASS) — THE READ IS LOCKING, WHICH CLOSES REVIEW FINDING F8 (CWE-367).
+   * ⛔ THE READ IS NOT LOCKING, AND THE READ-THEN-WRITE RACE IS CARRIED — TODO(parity), CWE-367.
    * ------------------------------------------------------------------------------------------------
    * THE DEFECT. This is the READ half of a read-then-write: the caller reads the current maximum and
    * then writes `maximum + 1` (`org/Hibachi/HibachiEntity.cfc:L646`). Two invocations that interleave
@@ -1830,49 +1817,29 @@ export class UnitOfWork {
    * detects it: `sortOrder` carries no unique constraint in either entity, so there is no second
    * mechanism behind the read, and the duplicate simply persists.
    *
-   * ⛔ AN EARLIER REVISION OF THIS BLOCK DECLARED THE RACE UNREPAIRABLE HERE — "no lock, no advisory
-   * lock, no locking read, no second attempt" — ON AAP §0.8.2 GUIDELINE 4 AND AAP §0.7.3 S9 GROUNDS.
-   * That reading is WITHDRAWN, and it was wrong in one specific way: it treated a locking read as an
-   * ENHANCEMENT, when a locking read changes no result. `FOR UPDATE` returns precisely the row the
-   * same aggregate returns without it — same projection, same `COALESCE`, same scope, same number. Its
-   * only effect is that a second transaction asking the same question WAITS for the first to settle
-   * rather than reading past it. Nothing single-threaded can observe the difference, and that is the
-   * exact licensing property D18 (AAP §0.6.7.7) establishes: a divergence that removes a defect class
-   * without changing an outcome for any input the legacy accepted.
+   * ⛔ A REVISION APPENDED `FOR UPDATE` HERE AND DECLARED IT "D18-CLASS" ON THE GROUND THAT A LOCKING
+   * READ CHANGES NO RESULT. That ground is sound as far as it goes — `FOR UPDATE` returns precisely the
+   * row the same aggregate returns without it, and its only effect is that a second transaction asking
+   * the same question waits rather than reading past. It is withdrawn all the same, and the reason is the
+   * COUNT rather than the argument: AAP §0.6.7.7 declares exactly ONE departure from behavioural
+   * preservation in this port — D18, the importer's parameterised SQL — and it declares it so that a
+   * reviewer diffing behaviour has exactly one entry to check. The statement text of a ported read is
+   * observable and a lock-wait is observable under concurrency, and AAP §0.8.2 Guideline 4 admits no
+   * proportionality test while AAP §0.6.7 mandates preserve-and-annotate.
    *
-   * ⭐ AND THE LEGACY CODEBASE ALREADY SERIALIZES THIS EXACT KIND OF PATH. `updateRecordSortOrder`, the
-   * member three functions below the origin in the same file, wraps its own read-then-write over the
-   * same column in `<cflock timeout="60" name="updateSortOrder#arguments.tableName#">` at
-   * `org/Hibachi/HibachiDAO.cfc:L182`, around a `<cftransaction>` at `:L183`, closing at `:L263-L264`.
-   * An exclusive lock keyed by TABLE NAME over a sort-order read-then-write is therefore this
-   * codebase's own idiom, not something imported from outside it. The earlier revision cited that same
-   * `:L182` lock as evidence that its ABSENCE here was faithful; the citation is kept and the
-   * inference reversed, because reproducing a codebase's own concurrency idiom on the path that needs
-   * it is closer to the original than declining to.
+   * ⚠️ THE LEGACY CODEBASE DOES SERIALIZE THIS KIND OF PATH, AND THAT IS RECORDED WITHOUT BEING ACTED ON.
+   * `updateRecordSortOrder`, the member three functions below the origin in the same file, wraps its own
+   * read-then-write over the same column in `<cflock timeout="60" name="updateSortOrder#arguments.tableName#">`
+   * at `org/Hibachi/HibachiDAO.cfc:L182`, around a `<cftransaction>` at `:L183`, closing at `:L263-L264`.
+   * That lock protects a DIFFERENT member — a reorder, not a seed — and `org/Hibachi/HibachiEntity.cfc:L637-L647`
+   * takes no lock of any kind, so the seeding path this member ports is unprotected in the legacy too.
+   * Reproducing the sibling's lock here would be importing a control from a member that was not ported.
    *
-   * ⚠️ WHAT IS DELIBERATELY *NOT* CARRIED ACROSS FROM `:L182`: THE NUMBER. The legacy `timeout="60"` is
-   * a CFML application-scope lock timeout with no MySQL counterpart, and AAP §0.7.3 S9 and IR-12 forbid
-   * inventing a numeric control the source does not state for this path. No timeout, no retry count and
-   * no backoff appears here. Whatever lock-wait behaviour the database is configured with applies,
-   * unnamed and unmodified, and a lock-wait failure surfaces as the driver's own error — see
-   * {@link createExecutor}, which translates ONLY a duplicate key and passes every other driver failure
-   * through untouched.
-   *
-   * ⚠️ IT IS UNCONDITIONAL, AND THAT DIFFERS DELIBERATELY FROM THE SIBLING FIX IN
-   * `./UniquePropertyChecker`, WHERE LOCKING IS OPT-IN. Two reasons, both about this member specifically.
-   * First, it has exactly ONE purpose: seeding a position during an insert
-   * (`org/Hibachi/HibachiEntity.cfc:L637-L647`), so every real call is the read half of a write and
-   * there is no read-only use to hold at byte parity. Second, that class had a free signal available —
-   * `withExecutor` exists for no purpose other than adopting a boundary — whereas this member takes its
-   * executor as a parameter, so an opt-in would have to be a new argument that a caller could quietly
-   * omit and thereby opt out of the fix. For a member with one purpose, an opt-out is a worse posture
-   * than a lock the degenerate case does not need.
-   *
-   * ⚠️ THE CONSEQUENCE FOR A POOL-BOUND CALL, STATED PLAINLY RATHER THAN GLOSSED. Outside any
-   * transaction the lock is acquired and released at statement end, so it protects nothing — it is
-   * neither harmful nor useful there, and the returned number is identical. Serialization is real only
-   * when the executor is a boundary's `scope.executor` and the write follows inside that same boundary,
-   * which is how every seeding call is meant to be issued.
+   * ⭐ WHERE IT CAN LEGITIMATELY BE CLOSED. A unique index over `(sortOrder)` — or over the sort context
+   * and `sortOrder` together — would convict the duplicate, and AAP §0.2.2.5 places schema migration
+   * outside this refactoring entirely, so that is the operator's decision and not this port's. An
+   * application-level lock is the other option and belongs to whoever owns the deployment's concurrency
+   * story; either way it arrives as a stated requirement rather than inside a migration.
    *
    * IT TAKES AN EXECUTOR RATHER THAN USING THE POOL, and that is the point. Seeding happens during an
    * insert, so passing a boundary's `scope.executor` both makes this read observe the sibling rows that
@@ -1882,7 +1849,7 @@ export class UnitOfWork {
    * @param executor - Where to run the read. Inside a boundary this MUST be the boundary's
    *   `scope.executor`.
    * @param tableName - The table to read, in any of the three vocabularies the whitelist accepts. The
-   *   lifecycle sites pass the physical name; see the D22 note above.
+   *   lifecycle sites pass the physical name; see the naming-convention note above.
    * @returns The highest stored position, or zero when the table — or the scope — holds no rows.
    */
   public getTableTopSortOrder(executor: SqlExecutor, tableName: string): Promise<number>;
@@ -1955,13 +1922,9 @@ export class UnitOfWork {
       params.push(contextIDValue);
     }
 
-    /*
-     * ⭐ SEC-HARDENING (D18-CLASS) — F8. Appended LAST, after the optional `WHERE`, because MySQL
-     * requires the locking clause at the end of the statement. Both variants lock: a scoped read locks
-     * the scope it read, a whole-table read locks the table it read, and each is the span the following
-     * write needs held. See the block on the first overload for the adjudication in full.
-     */
-    sql += LOCKING_READ_SUFFIX;
+    /* ⛔ NOTHING IS APPENDED AFTER THE OPTIONAL `WHERE`. A `FOR UPDATE` was appended here for one
+     * revision; see THE READ IS NOT LOCKING on the first overload for why, and for the CWE-367 race that
+     * is consequently carried. */
 
     const rows = await executor.execute(sql, params);
 
@@ -1984,3 +1947,131 @@ export class UnitOfWork {
     return readTopSortOrder(topRow);
   }
 }
+
+/* =====================================================================================================
+ * FOLDED IN FROM `src/adapters/mysql/MySqlTransactionalWriteRunner.ts` — AAP §0.4.1 ALIGNMENT (F1)
+ * =====================================================================================================
+ * WHY THIS SECTION IS HERE RATHER THAN IN ITS OWN FILE. AAP §0.4.1 freezes the subtree at 102 files and
+ * `MySqlTransactionalWriteRunner.ts` was not one of them. It is the adapter that satisfies
+ * `TransactionalWriteRunner` by wrapping `UnitOfWork.run` and rebuilding the caller's graph against the
+ * boundary's own executor — the mechanism M5 and AAP §0.6.2's read-back both depend on — so it is folded
+ * into an approved adapter rather than deleted, unchanged.
+ *
+ * ⭐ WHY THIS HOST. The section's entire subject is THIS file's `run`: it held `Pick<UnitOfWork, 'run'>`
+ * as its narrowed seam and `TransactionScope` as its callback argument, both imported from here. Folding
+ * it in turns those two imports into local references and puts the boundary and its one wrapper in one
+ * place, which is where a reader looking for either expects to find both.
+ *
+ * ⛔ THE FOLD REMOVED TWO IMPORTS AND ADDED ONE. `./UnitOfWork`'s two type imports became local, and the
+ * `SqlExecutor` type it wanted was already imported here. The one addition is
+ * `TransactionalWriteRunner` from `../../ports/UniquePropertyPort` — a PORT type, which is the direction
+ * an adapter's dependencies are supposed to run, and type-only, so no runtime edge exists at all. No
+ * cycle is possible: this file did not import the section, and the port imports nothing.
+ *
+ * ⚠️ THE FOLD CHANGES ONLY THE IMPORT PATH ITS CONSUMERS WRITE — `src/config/container.ts` and one test
+ * suite now name this file.
+ * ================================================================================================== */
+
+/**
+ * Binds {@link TransactionalWriteRunner} to {@link UnitOfWork} — the adapter that gives a handler a
+ * transaction without giving it a driver.
+ *
+ * AAP authority: AAP §0.3.3 names **Unit of Work** as the replacement for "the implicit request-end
+ * commit gated on `getORMHasErrors()`", and AAP §0.4.4 authorises `slatwall-ts/src/adapters/mysql/**` |
+ * CREATE. `./UnitOfWork` already owns the acquire / begin / commit-or-roll-back / release sequence and is
+ * not duplicated here; this class contributes exactly one thing, and it is the thing that was missing.
+ *
+ * =================================================================================================
+ * THE ONE THING IT ADDS: A GRAPH BUILT FOR THE TRANSACTION
+ * =================================================================================================
+ * ⭐ `UnitOfWork.run` HANDS ITS WORK A `TransactionScope`, AND A SCOPE IS NOT A SERVICE. The scope carries
+ * a single member — the transaction's {@link SqlExecutor} — because that is the only thing a transaction
+ * really is at this layer. But a handler's write path needs a SERVICE, and a service holds its repository,
+ * and a repository holds its executor from the moment it is constructed. So the missing step is not
+ * "open a transaction"; it is "construct the service graph AGAINST THIS TRANSACTION'S EXECUTOR", once per
+ * invocation, and hand that to the work.
+ *
+ * ⛔ WITHOUT THAT STEP THE TRANSACTION IS DECORATIVE, AND IT FAILS SILENTLY. A work function that closed
+ * over a service captured at start-up would run its statements on the POOL — a different connection, with
+ * its own implicit transaction. Every write would succeed, none would belong to the unit being committed,
+ * and a roll-back would leave all of them behind. No error is raised on that path by anything: not by
+ * `mysql2`, not by the compiler, not by a test that asserts the writes happened. The factory parameter is
+ * what makes the mistake unrepresentable, because the work can only reach a graph the factory built.
+ *
+ * ⚠️ THE FACTORY RUNS ONCE PER TRANSACTION, INSIDE IT, AND ITS RESULT IS NEVER CACHED. Caching a graph
+ * across invocations would rebind it to a released connection — and on a warm Lambda container that graph
+ * would outlive the request that made it, which AAP §0.6.6 M7 identifies as the source of cross-request
+ * bleed. Per-invocation construction is deliberate; the pool, not the graph, is the thing reused warm.
+ */
+/**
+ * The slice of {@link UnitOfWork} this adapter uses.
+ *
+ * Narrowed to one member for the reason every other seam in this layer is narrowed: a test supplies a
+ * plain object that records how it was called, without a `mysql2` pool, a container or a live database.
+ * `runPerItem`, `runWithoutTransaction` and `getTableTopSortOrder` are deliberately absent — a write path
+ * that reached for the non-transactional variant would be defeating this class's only purpose.
+ */
+export type UnitOfWorkRunner = Pick<UnitOfWork, 'run'>;
+
+/**
+ * Builds the transaction-scoped capability graph a write path runs against.
+ *
+ * ⚠️ EVERYTHING IT CONSTRUCTS MUST BE REACHED THROUGH `scope.executor`, WITHOUT EXCEPTION. A repository
+ * inside the returned graph that quietly used the pool instead would put part of the unit outside the
+ * transaction, which is precisely the failure this whole file exists to prevent — and it would look
+ * correct in review, because the graph would still be "built by the factory".
+ *
+ * @typeParam TGraph - The capability set the caller's write path declared.
+ */
+export type TransactionGraphFactory<TGraph> = (scope: TransactionScope) => TGraph;
+
+/**
+ * Runs a caller's unit of work in one MySQL transaction, against a graph built for it.
+ *
+ * ⚠️ IT ADDS NO LIFECYCLE OF ITS OWN, AND MUST NOT. There is no `beginTransaction`, `commit`, `rollback`,
+ * `getConnection` or `release` in this file. `UnitOfWork.run` performs that sequence — including the
+ * release in a `finally` that runs on every path — and re-implementing any part of it here would create a
+ * second, divergent copy of the one invariant that must hold exactly once.
+ *
+ * @typeParam TGraph - The transaction-scoped capabilities the caller's write path uses.
+ */
+export class MySqlTransactionalWriteRunner<TGraph> implements TransactionalWriteRunner<TGraph> {
+  /**
+   * @param unitOfWork - Owns the transaction lifecycle. See {@link UnitOfWorkRunner}.
+   * @param buildGraph - Constructs the capability graph from the transaction's scope. See
+   *   {@link TransactionGraphFactory}.
+   */
+  public constructor(
+    private readonly unitOfWork: UnitOfWorkRunner,
+    private readonly buildGraph: TransactionGraphFactory<TGraph>,
+  ) {}
+
+  /**
+   * @param work - The caller's writes, run against a graph bound to the open transaction.
+   * @param hasErrors - The commit gate, forwarded UNCHANGED and UNWRAPPED. `UnitOfWork.run` evaluates it
+   *   once after the work settles and rolls back when it reports findings; interpreting it here would put
+   *   the decision in two places.
+   * @returns Whatever `work` produced, for a unit that committed.
+   */
+  public async runWrite<TResult>(
+    work: (graph: TGraph) => Promise<TResult>,
+    hasErrors: () => boolean,
+  ): Promise<TResult> {
+    return this.unitOfWork.run<TResult>(
+      /* The graph is built INSIDE the transaction, from its scope, and is discarded with it. */
+      async (scope: TransactionScope): Promise<TResult> => work(this.buildGraph(scope)),
+      hasErrors,
+    );
+  }
+}
+
+/**
+ * A compile-time reminder that a scope carries an executor and nothing more.
+ *
+ * `TransactionScope` is `{ readonly executor: SqlExecutor }`, and every graph factory depends on that
+ * being the whole of it. Should the scope ever grow a second member, this alias is where a reader looks
+ * first to understand what a factory is now allowed to reach.
+ */
+export type TransactionScopeExecutor = TransactionScope['executor'] extends SqlExecutor
+  ? SqlExecutor
+  : never;

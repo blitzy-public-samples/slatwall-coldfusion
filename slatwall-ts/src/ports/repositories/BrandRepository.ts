@@ -546,4 +546,57 @@ export interface BrandRepository {
    * `false` when it is already in use. Never null or undefined.
    */
   isUrlTitleAvailable(urlTitle: string): Promise<boolean>;
+
+  /**
+   * Reads the identifiers of the products a brand currently owns.
+   *
+   * ==============================================================================================
+   * ⭐ FINDING F9 — WHY THIS MEMBER EXISTS, AND WHY IT IS NOT AN INVENTED CAPABILITY
+   * ==============================================================================================
+   * `model/validation/Brand.json:L6` guards the delete context with a `maxCollection` of ZERO on
+   * `products`, and `model/entity/Brand.cfc:L61` declares that collection `fieldtype="one-to-many"
+   * fkcolumn="brandID" inverse="true"` with NO `lazy` attribute — so it is a LAZY Hibernate
+   * collection. When the legacy rule read `getProducts()`, Hibernate issued
+   * `SELECT ... FROM SwProduct WHERE brandID = ?` and populated it, and the rule then counted what
+   * came back. THE READ IS THE LEGACY'S OWN; it was simply performed by the ORM rather than written
+   * down.
+   *
+   * In this port `mapBrandRow` maps columns only, and `src/domain/product/Brand.ts` initialises
+   * `products` to an EMPTY ARRAY. A brand loaded from a row therefore reached delete validation with
+   * `products.length === 0`, the ceiling of zero PASSED, and a brand that still owned products was
+   * deletable — leaving every one of those `SwProduct.brandID` values pointing at a row that no
+   * longer exists. `model/entity/Brand.cfc:L61` declares NO cascade, so nothing cleaned them up, and
+   * nothing anywhere reported a problem. That is the whole of the finding.
+   *
+   * ⚠️ SO THIS IS THE LAZY LOAD, WRITTEN DOWN — NOT A NEW PRIMITIVE. AAP §0.7.3 S5 forbids growing a
+   * port to obtain a capability the legacy did not have; it does not forbid declaring one the legacy
+   * had implicitly. The distinction is the whole reason this docblock is long: a
+   * `deleteBrandAndItsProducts` member WOULD be invented, because the legacy cascades nothing here,
+   * and it is not added.
+   *
+   * ⚠️ IT PROJECTS ONE COLUMN, WHERE HIBERNATE WOULD HAVE SELECTED THE ROWS. Narrowed on the same
+   * ground the two other narrowed projections in this layer are — `isUrlTitleAvailable` above and
+   * `SkuRepository.transactionExists` — and provably answer-preserving here, because the guard reads
+   * a LENGTH and nothing else. `src/validation/rules/brand.rules.ts` states that in its own words:
+   * the products guard "is a COLLECTION-SIZE CHECK AND NOTHING MORE; it never recursively validates
+   * the products it counts". One identifier per owned row yields exactly the length the rule reads,
+   * and hydrating whole product aggregates to count them would issue work the guard cannot observe.
+   *
+   * ⚠️ IT MUST BE ABLE TO RUN ON A TRANSACTION'S OWN EXECUTOR (M6). A guard that reads on the pool
+   * while the DELETE writes inside a transaction can answer from a state that transaction never sees.
+   * The adapter's `withExecutor` is what carries that, and the composition root builds the
+   * boundary-scoped brand graph's resolver from the re-bound instance.
+   *
+   * ⛔ NO ORDERING, NO PAGINATION AND NO CEILING. A lazy collection load imposes none of the three,
+   * and the guard refuses at one row just as it refuses at ten thousand, so an ordering clause or a
+   * `LIMIT` would be invented control (AAP §0.7.3 S9). No register identifier is minted here; the
+   * bounds are stated once, in `src/ports/repositories/SkuRepository.ts`.
+   *
+   * @param brandID - The identifier of the brand whose owned products are counted. Bound as a
+   * placeholder parameter, never interpolated.
+   * @returns One identifier per product row whose `brandID` is this brand's, in the order the server
+   * answers them. Empty when the brand owns none — which is the only state that satisfies
+   * `model/validation/Brand.json:L6`.
+   */
+  findProductIdentifiersByBrand(brandID: string): Promise<string[]>;
 }

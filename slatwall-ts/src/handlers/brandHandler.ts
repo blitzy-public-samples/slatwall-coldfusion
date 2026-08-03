@@ -22,9 +22,14 @@
  * function of what it was handed — which is what makes it assertable with hand-written doubles, without a
  * database, a network call or an AWS runtime (AAP 0.7.3 S6).
  *
- * That entry section is the one place ../config/container is reached, through a DEFERRED CommonJS
- * require evaluated on first invocation, because the bundle built from this file has to carry a
- * `handler` the runtime can address. A native dynamic `import()` was measured to be unusable here and
+ * That entry section is the one place ../config/container's `getBrandSurfaceGraph` is reached, through a DEFERRED
+ * CommonJS require evaluated on first invocation, because the bundle built from this file has to carry a
+ * `handler` the runtime can address. It reaches the composition root's NARROW accessor
+ * `getBrandSurfaceGraph` rather than the aggregate `getCatalogContainer`, because a review pass (PERF-01)
+ * measured this artifact constructing the whole catalog graph on its first invocation; the accessor builds
+ * and memoises only what this entry's own routes can reach. Both accessors live in the same module
+ * (AAP §0.3.1's file inventory admits no separate surface modules), so what differs is WHAT is
+ * constructed rather than which file is required; the section itself records the measurement. A native dynamic `import()` was measured to be unusable here and
  * the section itself records why. Module LOAD still touches no configuration and opens no pool; the
  * reasoning is recorded at the section itself. src/handlers/router.ts reaches the same composition root
  * for the aggregate surface and
@@ -236,7 +241,7 @@
  * mocking library at all (AAP 0.4.3.6).
  */
 
-import type { CatalogContainer } from '../config/container';
+import type { CatalogContainer, TransactionalWriteRunner } from '../config/container';
 import type { Brand } from '../domain/product/Brand';
 import type {
   EntityCrudType,
@@ -257,7 +262,7 @@ import {
   okResponse,
   readJsonObjectBody,
   readPathParameter,
-  resolveFailClosedAuthorization,
+  resolveRequestAuthorization,
   unauthorizedResponse,
   HTTP_STATUS,
   type ActionRoute,
@@ -510,16 +515,21 @@ export const BRAND_ACCESS_MATRIX: Readonly<
  * that renders the value in a link position needs both halves.
  *
  * GUARANTEED, because `../validation/Validator`'s `dataType: 'url'` rule enforces it on every save
- * (`model/validation/Brand.json:L4`):
- *   - the value parses as a URL in one of the six protocols CFML's own `isValid(…, "url")` accepts;
- *   - it carries NO ASCII control character anywhere — U+0000 to U+001F and U+007F are all refused, so
- *     a stored value can never be a CR-LF header-injection or log-injection payload;
- *   - its authority carries NO userinfo credentials, so it cannot be the `https://acme.test@evil.test/`
- *     deceptive-authority form.
- * The last two are SEC-HARDENING (D18-CLASS) rules; see THE SIX-PROTOCOL URL CHECK IS STILL THE WHOLE
- * CHECK in `../validation/Validator` for which is a parity correction and which is a declared departure.
+ * (`model/validation/Brand.json:L4`), and this is the WHOLE of what it guarantees: the value parses as a
+ * URL in one of the six protocols CFML's own `isValid(…, "url")` accepts, with no whitespace inside it.
  *
- * NOT GUARANTEED, and deliberately so: the SCHEME is unconstrained beyond those six. A brand may
+ * ⚠️ NOT GUARANTEED — THREE EXPOSURES A CONSUMER MUST HANDLE ITSELF, each carried deliberately. A
+ * revision of the predicate refused the second and third of them and both refusals are withdrawn, because
+ * AAP §0.6.7.7 declares exactly one departure from behavioural preservation in this port (D18); see THE
+ * SIX-PROTOCOL URL CHECK IS STILL THE WHOLE CHECK in `../validation/Validator` for the record.
+ *   - a raw ASCII CONTROL CHARACTER may be stored — U+0000 to U+001F and U+007F are not judged — so a
+ *     stored value can be a CR-LF header-injection or log-injection payload (CWE-113 / CWE-117), and a
+ *     NUL-truncation payload at a C-string boundary (CWE-158). JSON encoding escapes it on the way out
+ *     of this body, so the response itself is well-formed; what travels is the stored value.
+ *   - the AUTHORITY may carry USERINFO, so `https://acme.test@evil.test/` — which reads as `acme.test`
+ *     and resolves to `evil.test` (CWE-601) — and the credential-bearing `https://user:pass@acme.test/`
+ *     form RFC 3986 §3.2.1 deprecates are both storable and both reach this body.
+ *   - the SCHEME is unconstrained beyond those six. A brand may
  * legitimately carry `file:`, `ftp:`, `mailto:` or `news:`, because the legacy engine accepted all four
  * and refusing them would decline a save the legacy performed and meant (AAP §0.8.2 guideline 2). A
  * CONSUMER that puts this value in an `href`, a redirect target or a fetch URL must therefore apply its
@@ -793,7 +803,7 @@ function readBrandIdentifier(event: BrandIdentifierEvent): string | undefined {
  * applies to population authorisation.
  *
  * ⭐ IT IS A RESOLVER RATHER THAN A CONTEXT, FOR A REASON AAP 0.6.6 M7 MAKES NON-NEGOTIABLE.
- * `../config/container` is a memoised factory (AAP §0.4.1.3), so anything captured when this handler
+ * `../config/container`'s `getBrandSurfaceGraph` is a memoised factory (AAP §0.4.1.3), so anything captured when this handler
  * is built survives across warm invocations of the same container — and M7 requires memoisation to
  * be request-scoped, never module-scope, "to avoid cross-tenant bleed on a warm container". A
  * principal captured at build time would be precisely such bleed: the second caller would be
@@ -816,6 +826,7 @@ function readBrandIdentifier(event: BrandIdentifierEvent): string | undefined {
 export function createBrandHandler(
   brandService: BrandHandlerService,
   resolveAuthorization: RequestAuthorizationResolver<BrandAuthorizationEvent>,
+  writeRunner: TransactionalWriteRunner<BrandHandlerService>,
 ): BrandHandler {
   /**
    * Runs the gate `setupRequest()` [org/Hibachi/Hibachi.cfc:L188] ran, for one CRUD type.
@@ -976,18 +987,60 @@ export function createBrandHandler(
     const brandID: string | undefined = readBrandIdentifier(event);
 
     try {
-      // Judgment (f): no identifier addressed is a creation; an addressed identifier is an update and
-      // must resolve to a real row. `newBrand()` never yields null, so the single null test below
-      // rejects exactly the missing-row case and nothing else.
-      const brand: ManagedBrand | null =
-        brandID === undefined ? brandService.newBrand() : await brandService.getBrand(brandID);
+      /*
+       * ==========================================================================================
+       * ⭐ F1 — THE WHOLE OPERATION RUNS INSIDE ONE TRANSACTION, RESOLUTION INCLUDED
+       * ==========================================================================================
+       * `BaseService.save` persists and THEN runs `settingCleanup`, and that cleanup can fail. On the
+       * pool-bound graph each statement auto-commits on its own connection, so a cleanup failure left
+       * a COMMITTED brand row behind while this member answered an error — the caller was told its
+       * write failed against a row that exists. The boundary is what makes the two outcomes agree.
+       *
+       * ⚠️ THE RESOLUTION IS INSIDE THE UNIT, NOT BEFORE IT. `getBrand` reads the row this operation is
+       * about to write, and `saveBrand` derives a unique `urlTitle` by probing the same table
+       * [`model/service/BrandService.cfc:L70`, `:L72`]. Both must observe the transaction's own pending
+       * state, which they can only do on its connection (M6) — the same requirement AAP §0.6.2 states
+       * for the SKU read-back, on a different column.
+       *
+       * ⚠️ AND `brandService` IS NOT USED HERE — `graph` IS. Reaching the closed-over pool-bound service
+       * from inside the boundary is the exact mistake this tier exists to prevent: it compiles, it
+       * passes a happy-path test, and it writes on a connection the commit does not cover.
+       */
+      /* ⚠️ THE GATE IS READ OFF A SEPARATE CAPTURE, NOT OFF `saved`. `runWrite` calls the gate BEFORE it
+       * commits — and therefore before the `const` below is initialised — so a gate closing over `saved`
+       * would throw a `ReferenceError` from its temporal dead zone on the very path that matters most.
+       * `./productHandler` captures its subject the same way and for the same reason. */
+      let outcome: ManagedBrand | null = null;
 
-      if (brand === null) {
+      const saved: ManagedBrand | null = await writeRunner.runWrite<ManagedBrand | null>(
+        async (graph) => {
+          // Judgment (f): no identifier addressed is a creation; an addressed identifier is an update
+          // and must resolve to a real row. `newBrand()` never yields null, so the single null test
+          // below rejects exactly the missing-row case and nothing else.
+          const brand: ManagedBrand | null =
+            brandID === undefined ? graph.newBrand() : await graph.getBrand(brandID);
+
+          if (brand === null) {
+            return null;
+          }
+
+          // model/service/BrandService.cfc:L67 — brand first, payload second, positional, unaltered.
+          outcome = await graph.saveBrand(brand, body.value);
+
+          return outcome;
+        },
+        /* M5 — the rollback gate. A failed validation is a SUCCESSFUL call returning an invalid entity
+         * [`model/service/HibachiService.cfc:L103`], so without this the transaction would commit and
+         * any cleanup the operation performed would commit with it. `null` is the missing-row path,
+         * which wrote nothing and must not be reported as a failure. */
+        () => outcome !== null && outcome.hasErrors(),
+      );
+
+      /* THE EMPTY TRANSACTION ON THE MISSING-ROW PATH IS COMMITTED, NOT ROLLED BACK: nothing was
+       * written, and a rollback would report a failure the caller did not cause. */
+      if (saved === null) {
         return notFoundResponse();
       }
-
-      // model/service/BrandService.cfc:L67 — brand first, payload second, positional, unaltered.
-      const saved: ManagedBrand = await brandService.saveBrand(brand, body.value);
 
       /*
        * ⭐ THE FAILURE IS READ OFF THE RETURNED BRAND, BECAUSE THAT IS WHERE THE SERVICE PUTS IT.
@@ -1149,17 +1202,43 @@ export function createBrandHandler(
     }
 
     try {
-      // Judgment (e): the service contract takes the entity, so the identifier is resolved first.
-      const brand: ManagedBrand | null = await brandService.getBrand(brandID);
+      /*
+       * ⭐ F1 AND F9 TOGETHER, AND THE TWO ARE INSEPARABLE ON THIS PATH. `BaseService.delete` removes
+       * the row and THEN runs both cleanup ports; on the pool-bound graph a cleanup failure left the
+       * row GONE while this member answered an error. And the delete guard itself now READS
+       * [`model/validation/Brand.json:L6`] — a live products count — which must observe the same
+       * connection the DELETE writes on, or it can pass against a state the transaction never sees.
+       * One boundary satisfies both.
+       *
+       * ⚠️ `verdict` IS `null` ONLY FOR THE MISSING-ROW PATH. A guarded refusal is `false`, which is a
+       * legitimate answer the legacy also gives [`org/Hibachi/HibachiService.cfc:L79`] and NOT a
+       * rollback trigger — nothing was written to roll back.
+       */
+      const verdict: boolean | null = await writeRunner.runWrite<boolean | null>(
+        async (graph) => {
+          // Judgment (e): the service contract takes the entity, so the identifier is resolved first —
+          // inside the unit, so the read and the removal share one connection.
+          const brand: ManagedBrand | null = await graph.getBrand(brandID);
 
-      // Addressed but absent — nothing is removed and no removal is attempted.
-      if (brand === null) {
+          // Addressed but absent — nothing is removed and no removal is attempted.
+          if (brand === null) {
+            return null;
+          }
+
+          return graph.deleteBrand(brand);
+        },
+        /* Nothing this member produces is an "errors" state: the verdict is a boolean and a refusal is
+         * a committed no-op. A raise rolls back on its own, inside the runner. */
+        () => false,
+      );
+
+      if (verdict === null) {
         return notFoundResponse();
       }
 
       // Judgment (g): the verdict is serialised exactly as returned — not inverted, not restated as a
       // status, not wrapped.
-      return okResponse(await brandService.deleteBrand(brand));
+      return okResponse(verdict);
     } catch (error) {
       return errorResponse(error);
     }
@@ -1220,13 +1299,30 @@ export type BrandRouteKey = 'brand.saveBrand' | 'brand.getBrand' | 'brand.delete
  *
  * The wiring lives in this file rather than in `./router.ts` because this file is what knows which
  * collaborators the brand surface needs; the router asks for a handler rather than assembling one.
- * Both dependencies are the ones {@link createBrandHandler} declares — no default, no fallback.
+ *
+ * ⭐ THE RESOLVER IS A PARAMETER, AND AN EARLIER REVISION HARD-WIRED IT. It passed
+ * `resolveFailClosedAuthorization` as a literal argument, so nothing a deployment could reach — not
+ * this factory, not `./router.ts`, not the packaged entry point — was able to supply a principal, and
+ * every brand action answered `401` permanently. A code review classified that as a CRITICAL
+ * callable-boundary defect; the remedy it directed is this parameter plus the registration seam in
+ * `./httpResponse.ts` §8.1, which the default reads on EVERY invocation rather than capturing once.
  *
  * @param container the memoized service graph
+ * @param resolveAuthorization the per-invocation authorisation resolver. Defaults to
+ *   `./httpResponse.ts`'s registered-resolver reader, which answers with the deployment's resolver when
+ *   one is registered and with the constant deny-all context otherwise — so the default is fail-closed
+ *   and the fallback is the ONLY thing this file decides about identity.
  * @returns the three routed brand operations
  */
-export function createBrandHandlerFromContainer(container: CatalogContainer): BrandHandler {
-  return createBrandHandler(container.brandService, resolveFailClosedAuthorization);
+export function createBrandHandlerFromContainer(
+  container: Pick<CatalogContainer, 'brandService' | 'brandWriteRunner'>,
+  resolveAuthorization: RequestAuthorizationResolver<BrandAuthorizationEvent> = resolveRequestAuthorization,
+): BrandHandler {
+  return createBrandHandler(
+    container.brandService,
+    resolveAuthorization,
+    container.brandWriteRunner,
+  );
 }
 
 /**
@@ -1257,12 +1353,20 @@ export function createBrandRoutes(handlers: BrandHandler): ActionRouteTable<Bran
 }
 
 /**
- * The shape `../config/container` publishes, used to type the deferred require inside {@link handler}.
+ * The shape `../config/container`'s `getBrandSurfaceGraph` publishes, used to type the deferred require inside
+ * {@link handler}.
  *
  * `typeof import(...)` is a TYPE position only. It is erased at emit, so it adds no load-time edge from
  * this file to the composition root — which is the entire point of resolving the graph lazily.
+ *
+ * ⭐ IT NAMES THE BRAND SURFACE, NOT THE AGGREGATE ROOT, AND THAT ONE SPECIFIER IS THE WHOLE OF PERF-01 ON
+ * THIS ENTRY. `../config/container.ts` names all thirty-one collaborators of the slice, so a `require` of
+ * it made every one of them reachable from this artifact and constructed every one of them on the first
+ * invocation. `../config/container.ts`'s folded brand-surface section composes the three collaborators these three routes can
+ * reach — and it does so by calling the SAME `composeBrandSurface` the aggregate root calls, so the two
+ * cannot diverge on how a brand service is assembled.
  */
-type CatalogContainerModule = typeof import('../config/container');
+type BrandSurfaceModule = typeof import('../config/container');
 
 /**
  * The dispatcher, built once per container and reused for every later invocation.
@@ -1323,9 +1427,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
        * start while this entry stays loadable and answers the classified configuration failure per
        * invocation.
        */
-      // eslint-disable-next-line @typescript-eslint/no-require-imports -- deliberate; see above
-      const { getCatalogContainer } = require('../config/container') as CatalogContainerModule;
-      const container = getCatalogContainer();
+      const { getBrandSurfaceGraph } =
+        // eslint-disable-next-line @typescript-eslint/no-require-imports -- deliberate; see above
+        require('../config/container') as BrandSurfaceModule;
+      const container = getBrandSurfaceGraph();
 
       dispatchBrandAction = createActionDispatcher<BrandRouteKey>({
         routes: createBrandRoutes(createBrandHandlerFromContainer(container)),
@@ -1354,3 +1459,56 @@ type _BrandHandlerSatisfiesLambdaContract = AssertAssignable<
   typeof handler,
   APIGatewayProxyHandler
 >;
+
+/* ================================================================================================
+ * THE DEPLOYMENT REGISTRATION SEAM, RE-EXPORTED SO IT IS REACHABLE FROM THE PACKAGED ARTIFACT
+ * ============================================================================================== */
+
+/*
+ * ⭐ THIS ARTIFACT SERVES THE GATED BRAND SURFACE, so a deployment that mounts `handler` above — rather
+ * than `./router.ts`'s aggregate — needs the registration seam on THIS module. Every brand route is
+ * gated, so without a registered resolver this artifact answers `401` and nothing else.
+ */
+/*
+ * ⛔ WHY A RE-EXPORT IS NECESSARY AND NOT MERELY TIDY. `registerRequestAuthorizationResolver` is declared
+ * in `./httpResponse.ts` §8.1, which is NOT a build entry point — `build/esbuild.mjs` lists it under
+ * `NON_ENTRY_HANDLER_MODULES` precisely because it is a shared helper. esbuild therefore INLINES it into
+ * every entry it bundles, and an inlined module's exports do not survive: a deployment that requires the
+ * emitted artifact sees only what the ENTRY module exports. Measured before this block existed,
+ * `Object.keys(require('./dist/handlers/router.js'))` was exactly `['createRouter', 'handler']`, and the
+ * registration function appeared nowhere in any of the five gated bundles.
+ *
+ * ⛔ THAT IS THE SAME DEFECT SHAPE THE REVIEW RAISED, ONE LAYER OUT. CQ-1's first remedy — the optional
+ * `resolveAuthorization` parameter this module already accepts — serves a deployment that compiles its own
+ * entry module against the SOURCE. It does nothing for one that takes a packaged bundle as it stands, and
+ * `README.md` §7.2 promises that second route in as many words. A seam documented as callable that no
+ * caller can reach is what CQ-1 was about; leaving the registrar unexported would have reproduced it.
+ *
+ * ⭐ WHAT THE RE-EXPORT MAKES REACHABLE IS A REGISTRAR, NOT A PRINCIPAL. §8.1 holds one module-scope cell
+ * containing the deployment's resolver FUNCTION, read inside every invocation's call rather than when the
+ * graph was composed, so nothing is memoized across invocations and AAP §0.6.6 M7 is untouched. The four
+ * gated factories already default their resolver to §8.1's `resolveRequestAuthorization`, which is the
+ * reader of that cell — so a resolver registered during initialisation is honoured by this artifact even
+ * though its dispatcher was built at module load.
+ *
+ * ⚠️ AND IT CHANGES NO ANSWER BY ITSELF. Nothing in this subtree calls either function, so a graph built
+ * by this port alone still resolves no principal and every gated route still answers `401`. Re-exporting a
+ * registrar is not registering one, and this module still parses no header, decodes no token and verifies
+ * no signature — AAP §0.2.2.3 excludes the legacy authentication adapters and §0.8.3.2 forbids carrying
+ * `org/Hibachi/**` forward, so the identity itself remains the deployment's to supply.
+ *
+ * `clearRequestAuthorizationResolver` travels with it because the only thing it can do is take a gate
+ * AWAY: it resets the cell to absent, which is the fail-closed state, so exposing it cannot relax
+ * anything. A deployment able to register must be able to unwind that registration — in a harness, or
+ * between two configuration attempts — without discarding the module registry.
+ *
+ * The two types are re-exported for the same reason the functions are: a deployment writing a resolver
+ * against a packaged artifact needs the shape it must satisfy, and `CatalogAuthorizationRequest` is the
+ * one request slice — `Pick<APIGatewayProxyEvent, 'headers'>` — that serves all four gated surfaces.
+ */
+export {
+  clearRequestAuthorizationResolver,
+  registerRequestAuthorizationResolver,
+} from './httpResponse';
+
+export type { CatalogAuthorizationRequest, CatalogAuthorizationResolver } from './httpResponse';

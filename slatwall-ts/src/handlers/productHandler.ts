@@ -22,9 +22,14 @@
  * function of what it was handed — which is what makes it assertable with hand-written doubles, without a
  * database, a network call or an AWS runtime (AAP §0.7.3 S6).
  *
- * That entry section is the one place ../config/container is reached, through a DEFERRED CommonJS
- * require evaluated on first invocation, because the bundle built from this file has to carry a
- * `handler` the runtime can address. A native dynamic `import()` was measured to be unusable here and
+ * That entry section is the one place ../config/container's `getProductSurfaceGraph` is reached, through a DEFERRED
+ * CommonJS require evaluated on first invocation, because the bundle built from this file has to carry a
+ * `handler` the runtime can address. It reaches the composition root's NARROW accessor
+ * `getProductSurfaceGraph` rather than the aggregate `getCatalogContainer`, because a review pass (PERF-01)
+ * measured this artifact constructing the whole catalog graph on its first invocation; the accessor builds
+ * and memoises only what this entry's own routes can reach. Both accessors live in the same module
+ * (AAP §0.3.1's file inventory admits no separate surface modules), so what differs is WHAT is
+ * constructed rather than which file is required; the section itself records the measurement. A native dynamic `import()` was measured to be unusable here and
  * the section itself records why. Module LOAD still touches no configuration and opens no pool; the
  * reasoning is recorded at the section itself. src/handlers/router.ts reaches the same composition root
  * for the aggregate surface.
@@ -37,7 +42,7 @@
  * frozen and the service is aligned TO it (§0.1.2.1, D1 precedence 1). An earlier version of this
  * paragraph claimed "where the plan and the file disagree, the file wins", on the strength of three of
  * that file's return types having been corrected against the plan's prose; that claim is WITHDRAWN, and
- * the formatted-option-groups shape it chiefly rested on now matches the plan's array. Defect D25 is
+ * the formatted-option-groups shape it chiefly rested on now matches the plan's array. The name-collapse divergence [model/service/ProductService.cfc:L70-L80] is
  * still live and still recorded on the service member, but it names a LEGACY-versus-PORT divergence — the
  * CFML body builds a name-keyed struct — rather than a port-versus-plan one. Nothing here "corrects" the
  * service (AAP §0.8.2 Guideline 4), and nothing here reinterprets the plan.
@@ -94,7 +99,7 @@
  * The legacy committed implicitly at request end, and only when the ORM session carried no errors
  * (AAP §0.6.6 M5). A stateless handler has no request-end hook, so the boundary is made explicit:
  * eleven of the eighteen routes run their work through the injected
- * ../ports/TransactionalWritePort runner, which builds a TRANSACTION-SCOPED service graph and commits or
+ * ../ports/UniquePropertyPort runner, which builds a TRANSACTION-SCOPED service graph and commits or
  * rolls back on one gate. Judgments (k), (l) and (m) record why the graph must be built inside the
  * transaction rather than captured, why the gate must read the SKUs as well as the product, and why
  * `loadDataFromFile` is the one write that is deliberately NOT wrapped.
@@ -148,6 +153,16 @@
  *     (`processProductDeleteDefaultImage`, `processProductUpdateDefaultImageFileNames`) and the temp
  *     directory and tag service (`processProductUploadDefaultImage`). TR-5, verbatim: "The member is
  *     never quietly dropped from the interface."
+ *
+ *     ⭐ THREE OF THE SIX ARE REFUSED AT THIS BOUNDARY WITH A CLASSIFIED `501`, AND THE SPLIT IS
+ *     PRINCIPLED RATHER THAN CONVENIENT. `processProductAddProductReview`,
+ *     `processProductAddSubscriptionTerm` and `processProductUploadDefaultImage` take a legacy PROCESS
+ *     OBJECT whose members ../services/ProductService narrows by testing for CALLABLE accessors, and a
+ *     parsed JSON body cannot carry a function — so no payload this layer could accept would let them
+ *     complete, and every request used to answer a deterministic `500` with the reason withheld. See
+ *     {@link refuseUnsatisfiableProcessObject}. The other three take serializable arguments — a location,
+ *     a `struct data`, a product — so their availability remains the SERVICE's answer to give and this
+ *     layer hardcodes nothing about them.
  *
  * (g) **D6 — CARRIED, NOT REPAIRED.** [model/service/ProductService.cfc:L180-L181] guards on
  *     `arguments.processObject.getListPrice()` and then assigns from `arguments.data.listPrice`, but
@@ -225,6 +240,16 @@
 
 import type { CatalogContainer } from '../config/container';
 import type { Product } from '../domain/product/Product';
+/*
+ * ⭐ TWO ERROR TYPES ARE CONSTRUCTED IN THIS FILE, AND NEITHER IS MAPPED HERE.
+ *
+ * `NotImplementedError` names the three process routes whose collaborators no in-scope layer can supply,
+ * and `ValidationError` carries the keyed findings a refused write accumulated. Both are handed to
+ * ./httpResponse's single mapping, which is the only place a status or a message is chosen — this file
+ * decides WHAT the failure is, never how it is published.
+ */
+import { NotImplementedError } from '../errors/DomainError';
+import { ValidationError } from '../errors/ValidationError';
 import type { ProductType } from '../domain/product/ProductType';
 import type { ProductAddOption } from '../domain/process/ProductAddOption';
 import type { ProductAddOptionGroup } from '../domain/process/ProductAddOptionGroup';
@@ -238,7 +263,7 @@ import type {
   RequestAuthorizationResolver,
 } from '../ports/AccountContextPort';
 import type { SmartListInput, SmartListResult } from '../ports/SmartListQueryPort';
-import type { TransactionalWriteRunner } from '../ports/TransactionalWritePort';
+import type { TransactionalWriteRunner } from '../config/container';
 import type { SelectOption } from '../services/OptionService';
 import type {
   FormattedOptionGroup,
@@ -255,7 +280,7 @@ import type {
  * invalid batches. The services layer is the layer this handler is allowed to call (AAP §0.7.3 S4); no
  * adapter, no validation module and no configuration module is imported anywhere in this file.
  */
-import { skuBatchHasErrors } from '../services/SkuService';
+import { collectSkuBatchErrors, skuBatchHasErrors } from '../services/SkuService';
 import type { ProductWithErrorState } from '../services/SkuService';
 
 import {
@@ -269,7 +294,7 @@ import {
   readPathParameter,
   readQueryStringParameter,
   readSmartListInput,
-  resolveFailClosedAuthorization,
+  resolveRequestAuthorization,
   unauthorizedResponse,
   createActionDispatcher,
   HTTP_STATUS,
@@ -434,6 +459,58 @@ const SELECTED_OPTIONS_REQUIRED_MESSAGE = `A "${SELECTED_OPTIONS_QUERY_PARAMETER
 const FILE_URL_REQUIRED_MESSAGE = `A "${FILE_URL_QUERY_PARAMETER}" query parameter is required`;
 
 /* ================================================================================================
+ * THE THREE ROUTES A JSON PAYLOAD CANNOT SATISFY — AN EXPLICIT BOUNDARY, NOT A DETERMINISTIC 500
+ *
+ * ⛔ THE DEFECT THIS CLOSES. `processProductAddProductReview`, `processProductAddSubscriptionTerm` and
+ * `processProductUploadDefaultImage` each take a legacy PROCESS OBJECT, and ../services/ProductService
+ * narrows that argument by testing for CALLABLE members — `getNewProductReview`;
+ * `getSubscriptionTermID`/`getPrice`/`getRenewalPrice`/`getListPrice`; and
+ * `getImageFile`/`getPropertyMetaData`/`addError`. The legacy CFC carried them as generated accessors. A
+ * PARSED JSON BODY CANNOT CARRY A FUNCTION AT ALL, so every request on these three routes failed that
+ * narrowing, the service raised a plain `DomainError`, and ./httpResponse published `500` — every time,
+ * for every input, with the reason withheld. A code review classified that as a MAJOR boundary-contract
+ * defect: "success is impossible and failures become generic 500 … surface explicit
+ * `NotImplementedError`/501 boundaries unless a frozen serializable adapter contract exists".
+ *
+ * ⭐ SO THE BOUNDARY IS DECLARED HERE, WHERE IT IS KNOWN. There is no serializable adapter contract for
+ * any of the three — `ProductReview` is excluded by AAP §0.2.2.4, the `Subscription*` family and the
+ * image subsystem by §0.2.2.1 and §0.2.2.6, and the two framework facilities `getHibachiTempDirectory()`
+ * and `getHibachiTagService()` by §0.8.3.2 — so no payload shape this layer could accept would let the
+ * member complete. Answering `501` says exactly that, and `../errors/DomainError`'s `NotImplementedError`
+ * is the type ./httpResponse already maps to it, publishing its own neutral text and naming no member
+ * (AAP §0.7.3 S9).
+ *
+ * ⭐ THE MEMBERS STAY ROUTABLE, WHICH IS TR-5. "The member is never quietly dropped from the interface":
+ * all three keep their route keys, their access-matrix rows, their request-shape checks and their place on
+ * {@link ProductHandler}. What changes is that the refusal is now CLASSIFIED instead of arriving as an
+ * unclassified service fault — and that no transaction is opened for work that cannot succeed.
+ *
+ * ⛔ AND NOTHING IS FABRICATED TO MAKE THEM WORK (AAP §0.8.2 Guideline 4). No accessor-bearing adapter is
+ * synthesised from the body, no process-object factory is introduced, no multipart decoder and no storage
+ * target. Manufacturing any of those would be inventing the very capability the migration does not carry.
+ * ============================================================================================== */
+
+/**
+ * Builds the refusal for a route whose process-object collaborators are outside this slice.
+ *
+ * @param member the routed member being refused, recorded in the error's own context for the server-side
+ *   diagnostic only — ./httpResponse publishes a neutral text and never the name (AAP §0.8.3.9)
+ * @param locator the legacy declaration the member ports, so the refusal is traceable to source
+ * @returns the classified refusal, ready to hand to {@link errorResponse}
+ */
+function refuseUnsatisfiableProcessObject(
+  member: keyof ProductHandler,
+  locator: string,
+): NotImplementedError {
+  return new NotImplementedError(
+    `ProductService.${member}`,
+    'it requires a legacy process object exposing callable accessors, which a JSON payload cannot ' +
+      'carry and no in-scope collaborator can construct',
+    { context: { locator } },
+  );
+}
+
+/* ================================================================================================
  * THE INJECTED SERVICE SEAM
  * ============================================================================================== */
 
@@ -480,7 +557,7 @@ export interface ProductHandlerService {
    *
    * ⚠️ AN ARRAY OF NAME-AND-OPTIONS ENTRIES, WHICH IS WHAT AAP §0.4.2.1 TABULATES. The legacy body builds
    * a CFML STRUCT — [:L71] initialises `{}` and [:L76] keys it by the option group's NAME — and that
-   * divergence is defect D25, annotated on the service member. An earlier revision of this seam typed the
+   * divergence is the name-collapse divergence [model/service/ProductService.cfc:L70-L80], annotated on the service member. An earlier revision of this seam typed the
    * result `Promise<Record<string, SelectOption[]>>` to mirror the struct; the service withdrew that
    * reading, and this seam follows the service because {@link ProductHandlerService} is compiler-checked
    * against the real class. The promise is real — the domain's option-group and option reads are
@@ -932,7 +1009,7 @@ export interface FormattedOptionGroupResponse {
 /**
  * The formatted option groups a product exposes, one entry per distinct option-group NAME.
  *
- * ⚠️ AN ARRAY, AND THE LABEL IS THE NAME (defect D25 — the legacy body builds a name-keyed struct, and the
+ * ⚠️ AN ARRAY, AND THE LABEL IS THE NAME (the name-collapse divergence [model/service/ProductService.cfc:L70-L80] — the legacy body builds a name-keyed struct, and the
  * port answers the array AAP §0.4.2.1 tabulates). Three behaviours travel through this contract untouched:
  * the label is the group name and never the group ID; same-named groups COLLAPSE TO ONE ENTRY, because
  * [model/service/ProductService.cfc:L76] is a plain struct assignment and the LAST one wins; and NOTHING IS
@@ -942,7 +1019,7 @@ export interface FormattedOptionGroupResponse {
  *
  * ⭐ AND AN ARRAY IS THE SHAPE THAT CAN CARRY THE ORDER ACROSS THE WIRE. A JSON object's member order is
  * not part of the value a client is entitled to rely on, so serializing these as an object would silently
- * drop the first-seen order recorded as M9 on {@link FormattedOptionGroup}.
+ * drop the first-seen order recorded on {@link FormattedOptionGroup}.
  */
 export type FormattedOptionGroupsResponse = readonly FormattedOptionGroupResponse[];
 
@@ -1284,6 +1361,80 @@ export interface ProductHandler {
  * first. ../services/ProductService states the same relationship from its own side.
  */
 type _ProductCarriesErrorState = AssertAssignable<Product, ProductWithErrorState>;
+
+/* ================================================================================================
+ * THE COMMIT-GATE FAILURE, TRANSLATED INTO THE FINDINGS THAT CAUSED IT
+ *
+ * ⛔ THE DEFECT THIS CLOSES. Every write route on this surface gates its transaction on accumulated
+ * findings, and `../adapters/mysql/UnitOfWork.ts` reports that gate answering `true` by rolling back and
+ * raising a plain `DomainError`. `./httpResponse.ts` maps a plain `DomainError` to `500` with its detail
+ * withheld — correct for a service fault, and wrong for this case: the caller's request was REFUSED BY
+ * VALIDATION, the rule sets produced keyed findings, and the response threw every one of them away. A code
+ * review classified that as a MAJOR validation/error-mapping defect, directing that "product/SKU/product-type
+ * error bags" be lifted "into `ValidationError`, matching SKU and Brand handlers".
+ *
+ * ⭐ SO THE LIFT HAPPENS HERE, ONCE, AND IT IS THE SAME LIFT THE SIBLINGS PERFORM. `./skuHandler.ts` does
+ * it for `createSkus` and `./brandHandler.ts` for `saveBrand`; both copy the entity's bag into a
+ * `../errors/ValidationError` VERBATIM — no key renamed, no message rewritten, no ordering imposed — so
+ * the body stays byte-identical to the one a raised validation failure produces and AAP §0.4.1.11's
+ * requirement that the error-key structure remain comparable to legacy output is met by copying rather
+ * than by reshaping.
+ *
+ * ⚠️ IT TRANSLATES, IT DOES NOT SWALLOW. A failure whose subject carries NO findings is returned
+ * unchanged — the importer's refusal, a connection fault, the mandated legacy `throw()` strings, a
+ * boundary stub's `NotImplementedError`. Only the gate's own outcome is re-expressed, and it is
+ * re-expressed as what it always was.
+ * ============================================================================================== */
+
+/**
+ * Translates a failed product write into its keyed findings, when findings are what caused it.
+ *
+ * @param error the failure the write boundary raised, forwarded unchanged when it is not a gate refusal
+ * @param subject the product the work resolved, or `null` when none was — read AFTER the boundary
+ *   settled, so it carries whatever the service accumulated
+ * @returns a `ValidationError` carrying the merged product-and-SKU bag when the subject holds findings;
+ *   otherwise the original failure, untouched
+ */
+function liftProductWriteFindings(error: unknown, subject: ProductWithErrorState | null): unknown {
+  if (subject === null || !skuBatchHasErrors(subject)) {
+    return error;
+  }
+
+  const failure = new ValidationError();
+
+  /* THE COMPLETE BAG, MATCHING THE COMPLETE GATE. The gate refuses on a finding that lives on a SKU
+   * rather than on the product, so lifting `subject.getErrors()` alone would publish an EMPTY `errors`
+   * member for exactly that case — a refusal saying nothing about what was refused. */
+  failure.addErrors(collectSkuBatchErrors(subject));
+
+  return failure;
+}
+
+/**
+ * The product-type variant: its bag is its own, and there is no SKU batch to merge.
+ *
+ * `saveProductType` resolves a `ProductTypeWithErrorState` and gates on `outcome.hasErrors()`, so the
+ * complete predicate here IS the entity's own — asking `skuBatchHasErrors` would require a product this
+ * route never touches, which is why the two lifts are two functions rather than one with a flag.
+ *
+ * @param error the failure the write boundary raised
+ * @param subject the saved product type, or `null` when the addressed one did not exist
+ * @returns a `ValidationError` carrying its bag when it holds findings; otherwise the original failure
+ */
+function liftProductTypeWriteFindings(
+  error: unknown,
+  subject: ProductTypeWithErrorState | null,
+): unknown {
+  if (subject === null || !subject.hasErrors()) {
+    return error;
+  }
+
+  const failure = new ValidationError();
+
+  failure.addErrors(subject.getErrors());
+
+  return failure;
+}
 
 /* ================================================================================================
  * REQUEST READERS
@@ -1918,20 +2069,32 @@ export function createProductHandler(
   ): Promise<TResult | null> => {
     let subject: Product | null = null;
 
-    return writeRunner.runWrite<TResult | null>(
-      async (graph) => {
-        const product: Product | null = await graph.getProduct(productID);
+    /* Read through a function so the declared type survives: assigning inside the closure narrows the
+     * binding to `never` for the reader below, and a function body sees the DECLARED type instead. This is
+     * the same device ./skuHandler uses for its captured batch, and it needs no cast (S1). */
+    const capturedSubject = (): ProductWithErrorState | null => subject;
 
-        if (product === null) {
-          return null;
-        }
+    try {
+      return await writeRunner.runWrite<TResult | null>(
+        async (graph) => {
+          const product: Product | null = await graph.getProduct(productID);
 
-        subject = product;
+          if (product === null) {
+            return null;
+          }
 
-        return work(graph, product);
-      },
-      () => subject !== null && skuBatchHasErrors(subject),
-    );
+          subject = product;
+
+          return work(graph, product);
+        },
+        () => subject !== null && skuBatchHasErrors(subject),
+      );
+    } catch (error) {
+      /* ⭐ THE ROLL-BACK IS TRANSLATED INTO THE FINDINGS THAT CAUSED IT — see
+       * {@link liftProductWriteFindings}. Without this the gate above refused, the boundary raised its own
+       * generic `DomainError`, and the caller received a 500 with every keyed finding discarded. */
+      throw liftProductWriteFindings(error, capturedSubject());
+    }
   };
 
   /* --------------------------------------------------------------------------------------------
@@ -1986,23 +2149,27 @@ export function createProductHandler(
    *   http method doens't work for tab delimiter" [sic]. It is recorded here as the DISABLED path it is,
    *   not as a live fallback, because a reader told it were live would look for a branch that does not
    *   execute. Network I/O inside the transaction-bearing request, compounding both M1 and M3. Not
-   *   resolved here either: the fetch is the repository's, and so is the gate that guards it.
+   *   resolved here either: the fetch is the repository's, and nothing anywhere gates it.
    *
-   * ⭐ SEC-HARDENING (D18-CLASS) — REVIEW FINDING F9 (CWE-918). THE LOCATION READ AT
-   * {@link FILE_URL_QUERY_PARAMETER} IS CALLER-CONTROLLED AND IS DEREFERENCED SERVER-SIDE, WHICH IS THE
-   * FINDING. This route forwards it unexamined, on purpose, and an earlier revision of this note placed
-   * the guarding policy in "the service's" hands, which was wrong: `ProductService.loadDataFromFile` is a
-   * positional delegation that opens no socket either. The refusal belongs at the SINK, so
-   * `ProductImportSourcePolicy` is declared on `../ports/repositories/ProductRepository` and enforced in
-   * `../adapters/mysql/MySqlProductRepository` before any reader is invoked. A gate placed HERE would
-   * protect only callers that arrive through this route, while the composition root reaches the adapter
-   * directly.
+   * ⛔ TODO(parity) — THE LOCATION READ AT {@link FILE_URL_QUERY_PARAMETER} IS CALLER-CONTROLLED AND
+   * WOULD BE DEREFERENCED SERVER-SIDE, AND NO LAYER REFUSES IT (CWE-918, carried as MISMATCH M4). A
+   * revision of this port refused non-`http`/`https` schemes and loopback, link-local and private-range
+   * addresses inside `../adapters/mysql/MySqlProductRepository` and raised an `ImportSourceRejectedError`
+   * that this note described. BOTH ARE WITHDRAWN. The reasoning behind them was careful — the legacy
+   * retrieval is unreachable, so nothing it would actually fetch is refused — but AAP §0.6.7.7 authorises
+   * exactly ONE departure from behavioural preservation in this port, D18, and does so precisely so that a
+   * reviewer diffing behaviour has one entry to check; AAP §0.8.2 Guideline 4 admits no proportionality
+   * test. So this route forwards the location unexamined and so does every layer beneath it.
    *
-   * ⚠️ WHAT THAT MEANS FOR THIS RESPONSE. A refused location arrives as an `ImportSourceRejectedError`,
-   * whose public presentation is `CATALOG_REQUEST_REJECTED` — a 400, because the caller can name a
-   * permitted location — carrying a message that names neither the location nor the policy. It travels the
-   * ordinary classified-error path below; nothing here re-wraps it, and re-wrapping it would drop the
-   * presentation and turn a configured refusal into an unclassified 500.
+   * ⚠️ WHAT THAT MEANS FOR THIS RESPONSE. What remains beneath is a WIRING shape rather than a refusal:
+   * `ProductImportSourcePolicy` on `../ports/repositories/ProductRepository` is a REQUIRED member of any
+   * retrieving reader, so an operator who supplies retrieval supplies a policy with it. The only reader
+   * this subtree ships retrieves nothing and declines with a `NotImplementedError`, which the classified
+   * path below answers at 501 with its own neutral text — no location echoed, no member named. An
+   * operator's policy raises whatever that implementation chooses, and the path below classifies it by
+   * `getPublicError().code` on the `DomainError` base without needing to know the class. Nothing here
+   * re-wraps anything, because re-wrapping would drop the presentation and turn a classified answer into
+   * an unclassified 500.
    *
    * TWO ARGUMENTS, IN THE LEGACY'S ORDER AND WITH THE LEGACY'S OPTIONALITY — judgment (h). `fileURL` is
    * `required`, so its absence is answered here rather than forwarded. `textQualifier` carries a default,
@@ -2072,7 +2239,7 @@ export function createProductHandler(
    * the legacy did not have.
    *
    * ⚠️ THE RESULT IS AN ARRAY OF NAME-AND-OPTIONS ENTRIES, WHICH IS WHAT AAP §0.4.2.1 TABULATES (defect
-   * D25 — the legacy body builds a name-keyed struct instead). Three behaviours travel through untouched,
+   * the name-collapse divergence [model/service/ProductService.cfc:L70-L80] — the legacy body builds a name-keyed struct instead). Three behaviours travel through untouched,
    * and {@link toFormattedOptionGroupsResponse} is where they are enforced: the label is the group NAME and
    * never the group ID; same-named groups COLLAPSE TO ONE ENTRY, because
    * [model/service/ProductService.cfc:L76] is a plain struct assignment; and NOTHING IS SORTED, because
@@ -2342,52 +2509,61 @@ export function createProductHandler(
    * AND THE ACCOUNT CONTEXT: the `Content*.cfc` family under `model/` and the review entity fall outside AAP §0.2.2.1's
    * boundary, and the legacy member reads the current account off the framework scope. The member is
    * therefore PRESENT AND ROUTABLE — TR-5: "The member is never quietly dropped from the interface" — and
-   * ../services/ProductService narrows the process object STRUCTURALLY, raising when the members it calls
-   * are absent. That failure surfaces through {@link errorResponse}, which is where the not-implemented and
-   * domain-failure branches decide the status; this route does not pre-empt it with a hardcoded refusal,
-   * because the layer that owns the gap owns the message.
+   * the route answers `501` through {@link refuseUnsatisfiableProcessObject}.
    *
-   * ⚠️ THE PAYLOAD IS FORWARDED AS THE PARSED OBJECT, AND NO GETTERS ARE SYNTHESISED FOR IT. The service
-   * narrows `unknown` by testing for CALLABLE members, which the legacy CFC's generated accessors provided
-   * and a JSON body cannot. Manufacturing an accessor-bearing adapter here would be inventing a
-   * process-object factory for a member whose collaborators are out of scope — capability beyond what the
-   * migration requires (AAP §0.8.2 Guideline 4).
+   * ⚠️ AN EARLIER REVISION FORWARDED THE PARSED PAYLOAD AND LET THE SERVICE DECIDE, AND THAT WAS THE
+   * DEFECT. ../services/ProductService narrows the process object by testing for a CALLABLE
+   * `getNewProductReview`, which the legacy CFC's generated accessors provided and a JSON body cannot
+   * carry, so the narrowing failed for EVERY input; the service raised a plain `DomainError` and
+   * {@link errorResponse} published a deterministic `500` with the reason withheld. A code review
+   * classified that as a MAJOR boundary-contract defect and directed an explicit `NotImplementedError`/501
+   * boundary. The section above {@link refuseUnsatisfiableProcessObject} carries the full reasoning,
+   * including why no accessor-bearing adapter is synthesised from the body (AAP §0.8.2 Guideline 4).
    *
    * NET-NEW coverage (AAP §0.6.5.2).
    *
    * @param event the proxy event, or any object carrying its body, path-parameters and headers members
    * @returns the product after the attempt, projected, or the response describing why it was not attempted
    */
-  const processProductAddProductReview = async (
+  const processProductAddProductReview = (
     event: ProductPayloadEvent,
   ): Promise<APIGatewayProxyResult> => {
+    /* ⚠️ NOT `async`, AND THE ABSENCE IS EVIDENCE RATHER THAN STYLE. Nothing in this member awaits
+     * anything, because nothing in it reaches the service, the graph or the database: it answers the
+     * request-shape questions and then reports the boundary. `Promise.resolve` keeps the member's declared
+     * contract — the routed shape is `(event) => Promise<APIGatewayProxyResult>` — while an `async` body
+     * with no `await` would advertise work that is not performed. */
     const refusal = refuseUnauthorized(event, 'processProductAddProductReview');
 
     if (refusal !== undefined) {
-      return refusal;
+      return Promise.resolve(refusal);
     }
 
     const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
+      return Promise.resolve(messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE));
     }
 
     const body = readJsonObjectBody(event);
 
     if (!body.present) {
-      return invalidRequestBodyResponse(body.problem);
+      return Promise.resolve(invalidRequestBodyResponse(body.problem));
     }
 
-    try {
-      const updated: Product | null = await runProductWrite(productID, (graph, product) =>
-        graph.processProductAddProductReview(product, body.value),
-      );
-
-      return updated === null ? notFoundResponse() : okResponse(toProductResponse(updated));
-    } catch (error) {
-      return errorResponse(error);
-    }
+    /* ⛔ THE BOUNDARY IS ANSWERED HERE, BEFORE ANY TRANSACTION IS OPENED — see
+     * {@link refuseUnsatisfiableProcessObject}. The request-shape checks above still run, so a caller that
+     * addressed nothing or sent an unparseable body still learns THAT first; a well-formed request is then
+     * refused as unavailable rather than being carried into a service narrowing it provably cannot pass and
+     * an opaque `500` that named no reason. The member remains routed and declared (TR-5). */
+    return Promise.resolve(
+      errorResponse(
+        refuseUnsatisfiableProcessObject(
+          'processProductAddProductReview',
+          'model/service/ProductService.cfc:L157-L171',
+        ),
+      ),
+    );
   };
 
   /**
@@ -2413,6 +2589,13 @@ export function createProductHandler(
    * NO `data` argument, so `data` is undefined at run time and the legacy raises there too.
    * ../services/ProductService raises at exactly that point with the defect named.
    *
+   * ⛔ AND THIS ROUTE NOW REPORTS THE BOUNDARY BEFORE THE SERVICE IS REACHED, WHICH DOES NOT REPAIR D6.
+   * The service's own narrowing requires four CALLABLE accessors — `getSubscriptionTermID`, `getPrice`,
+   * `getRenewalPrice`, `getListPrice` — that a JSON payload cannot carry, so the member could never
+   * complete and every request answered a deterministic `500`. A code review directed an explicit
+   * `NotImplementedError`/501 boundary; see {@link refuseUnsatisfiableProcessObject}. D6 is untouched by
+   * that: it stays annotated on the service member, unrepaired, exactly where the legacy raises.
+   *
    * ⛔ NO THIRD ARGUMENT IS ADDED TO THIS ROUTE TO MAKE IT WORK, the payload is not copied into a
    * fabricated `data` slot, and the guarded branch is not skipped to route around the raise. AAP §0.8.2
    * Guideline 4 forbids the repair, and AAP §0.6.7 records the governing rule as "preserve and annotate, do
@@ -2423,36 +2606,45 @@ export function createProductHandler(
    * @param event the proxy event, or any object carrying its body, path-parameters and headers members
    * @returns the product after the attempt, projected, or the response describing why it was not attempted
    */
-  const processProductAddSubscriptionTerm = async (
+  const processProductAddSubscriptionTerm = (
     event: ProductPayloadEvent,
   ): Promise<APIGatewayProxyResult> => {
+    /* ⚠️ NOT `async`, AND THE ABSENCE IS EVIDENCE RATHER THAN STYLE. Nothing in this member awaits
+     * anything, because nothing in it reaches the service, the graph or the database: it answers the
+     * request-shape questions and then reports the boundary. `Promise.resolve` keeps the member's declared
+     * contract — the routed shape is `(event) => Promise<APIGatewayProxyResult>` — while an `async` body
+     * with no `await` would advertise work that is not performed. */
     const refusal = refuseUnauthorized(event, 'processProductAddSubscriptionTerm');
 
     if (refusal !== undefined) {
-      return refusal;
+      return Promise.resolve(refusal);
     }
 
     const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
+      return Promise.resolve(messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE));
     }
 
     const body = readJsonObjectBody(event);
 
     if (!body.present) {
-      return invalidRequestBodyResponse(body.problem);
+      return Promise.resolve(invalidRequestBodyResponse(body.problem));
     }
 
-    try {
-      const updated: Product | null = await runProductWrite(productID, (graph, product) =>
-        graph.processProductAddSubscriptionTerm(product, body.value),
-      );
-
-      return updated === null ? notFoundResponse() : okResponse(toProductResponse(updated));
-    } catch (error) {
-      return errorResponse(error);
-    }
+    /* ⛔ THE BOUNDARY IS ANSWERED HERE, BEFORE ANY TRANSACTION IS OPENED — see
+     * {@link refuseUnsatisfiableProcessObject}. The request-shape checks above still run, so a caller that
+     * addressed nothing or sent an unparseable body still learns THAT first; a well-formed request is then
+     * refused as unavailable rather than being carried into a service narrowing it provably cannot pass and
+     * an opaque `500` that named no reason. The member remains routed and declared (TR-5). */
+    return Promise.resolve(
+      errorResponse(
+        refuseUnsatisfiableProcessObject(
+          'processProductAddSubscriptionTerm',
+          'model/service/ProductService.cfc:L173-L196',
+        ),
+      ),
+    );
   };
 
   /**
@@ -2613,8 +2805,12 @@ export function createProductHandler(
    * ⛔ BOUNDARY-STUBBED (TR-5, judgment (f)). THE OUT-OF-SCOPE COLLABORATORS ARE THE HIBACHI TEMP DIRECTORY
    * AND THE TAG SERVICE — `getHibachiTempDirectory()` and `getHibachiTagService()` are framework facilities
    * that do not cross the boundary (AAP §0.8.3.2), and the uploaded file itself never reaches this port.
-   * ../services/ProductService narrows the process object structurally on its three observed members and
-   * raises when they are absent.
+   * ../services/ProductService narrows the process object structurally on three CALLABLE members —
+   * `getImageFile`, `getPropertyMetaData`, `addError` — which a JSON payload cannot carry, so the member
+   * could never complete. The route therefore answers `501` through
+   * {@link refuseUnsatisfiableProcessObject} rather than letting a provably impossible call arrive as a
+   * deterministic `500`; a code review classified the earlier behaviour as a MAJOR boundary-contract
+   * defect.
    *
    * ⚠️ NO MULTIPART DECODING, NO FILE BUFFER AND NO STORAGE TARGET IS INTRODUCED HERE. Adding any of them
    * would be capability beyond what the migration requires (AAP §0.8.2 Guideline 4), and there is no
@@ -2625,36 +2821,45 @@ export function createProductHandler(
    * @param event the proxy event, or any object carrying its body, path-parameters and headers members
    * @returns the product after the attempt, projected, or the response describing why it was not attempted
    */
-  const processProductUploadDefaultImage = async (
+  const processProductUploadDefaultImage = (
     event: ProductPayloadEvent,
   ): Promise<APIGatewayProxyResult> => {
+    /* ⚠️ NOT `async`, AND THE ABSENCE IS EVIDENCE RATHER THAN STYLE. Nothing in this member awaits
+     * anything, because nothing in it reaches the service, the graph or the database: it answers the
+     * request-shape questions and then reports the boundary. `Promise.resolve` keeps the member's declared
+     * contract — the routed shape is `(event) => Promise<APIGatewayProxyResult>` — while an `async` body
+     * with no `await` would advertise work that is not performed. */
     const refusal = refuseUnauthorized(event, 'processProductUploadDefaultImage');
 
     if (refusal !== undefined) {
-      return refusal;
+      return Promise.resolve(refusal);
     }
 
     const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
+      return Promise.resolve(messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE));
     }
 
     const body = readJsonObjectBody(event);
 
     if (!body.present) {
-      return invalidRequestBodyResponse(body.problem);
+      return Promise.resolve(invalidRequestBodyResponse(body.problem));
     }
 
-    try {
-      const updated: Product | null = await runProductWrite(productID, (graph, product) =>
-        graph.processProductUploadDefaultImage(product, body.value),
-      );
-
-      return updated === null ? notFoundResponse() : okResponse(toProductResponse(updated));
-    } catch (error) {
-      return errorResponse(error);
-    }
+    /* ⛔ THE BOUNDARY IS ANSWERED HERE, BEFORE ANY TRANSACTION IS OPENED — see
+     * {@link refuseUnsatisfiableProcessObject}. The request-shape checks above still run, so a caller that
+     * addressed nothing or sent an unparseable body still learns THAT first; a well-formed request is then
+     * refused as unavailable rather than being carried into a service narrowing it provably cannot pass and
+     * an opaque `500` that named no reason. The member remains routed and declared (TR-5). */
+    return Promise.resolve(
+      errorResponse(
+        refuseUnsatisfiableProcessObject(
+          'processProductUploadDefaultImage',
+          'model/service/ProductService.cfc:L235-L257',
+        ),
+      ),
+    );
   };
 
   /* --------------------------------------------------------------------------------------------
@@ -2709,6 +2914,10 @@ export function createProductHandler(
    * received a findings-bearing product from a request whose flush was skipped had nothing persisted, and a
    * `200` carrying a product would tell this caller the opposite.
    *
+   * ⭐ AND THE RAISE CARRIES THE FINDINGS, WHICH IT DID NOT BEFORE. {@link liftProductWriteFindings}
+   * re-expresses the boundary's generic `DomainError` as the keyed `ValidationError` the rule sets actually
+   * produced, so the refusal says WHICH rule refused instead of publishing an opaque 500.
+   *
    * NET-NEW coverage (AAP §0.6.5.2).
    *
    * @param event the proxy event, or any object carrying its body, path-parameters and headers members
@@ -2730,6 +2939,10 @@ export function createProductHandler(
 
     let subject: Product | null = null;
     let outcome: Product | null = null;
+
+    /* Read through functions for the narrowing reason recorded on {@link runProductWrite}. */
+    const capturedSubject = (): ProductWithErrorState | null => subject;
+    const capturedOutcome = (): ProductWithErrorState | null => outcome;
 
     try {
       const saved: Product | null = await writeRunner.runWrite<Product | null>(
@@ -2753,7 +2966,15 @@ export function createProductHandler(
 
       return saved === null ? notFoundResponse() : okResponse(toProductResponse(saved));
     } catch (error) {
-      return errorResponse(error);
+      /* ⭐ BOTH REFERENCES ARE OFFERED TO THE LIFT, IN THE GATE'S OWN ORDER, because the persister may
+       * answer with a DIFFERENT INSTANCE and the findings may therefore live on either one. The gate above
+       * asks the subject first, so the lift does too — a refusal is published with the bag of whichever
+       * instance the gate itself refused on. */
+      const withSubject = liftProductWriteFindings(error, capturedSubject());
+
+      return errorResponse(
+        withSubject === error ? liftProductWriteFindings(error, capturedOutcome()) : withSubject,
+      );
     }
   };
 
@@ -2802,10 +3023,15 @@ export function createProductHandler(
    * this route to ask about; passing an unrelated one would make the answer depend on an entity the member
    * never touched. The subject is the product type, and only the product type.
    *
-   * ⭐ THE ROLL-BACK IS WHAT REPORTS THE FAILURE, so nothing is lifted into a carrier here.
-   * ../adapters/mysql/UnitOfWork rolls back and RAISES a `DomainError` when the gate answers `true`, and
-   * that raise reaches {@link errorResponse}. The findings themselves stay on the entity, exactly as the
-   * legacy left them on `arguments.productType`.
+   * ⭐ THE ROLL-BACK IS TRANSLATED INTO THE FINDINGS THAT CAUSED IT, AND AN EARLIER REVISION SAID IT WAS
+   * NOT. It read "the roll-back is what reports the failure, so nothing is lifted into a carrier here",
+   * which described the defect rather than the design: ../adapters/mysql/UnitOfWork rolls back and raises a
+   * plain `DomainError`, and {@link errorResponse} publishes that as `500` with all detail withheld — so a
+   * caller whose `productTypeName` was rejected received a service fault and not one keyed finding. A code
+   * review classified that as a MAJOR validation/error-mapping defect. The bag is now lifted verbatim into
+   * a `../errors/ValidationError` by {@link liftProductTypeWriteFindings}, exactly as ./skuHandler and
+   * ./brandHandler already do; the findings still stay on the entity too, exactly as the legacy left them
+   * on `arguments.productType`.
    *
    * NET-NEW coverage (AAP §0.6.5.2).
    *
@@ -2840,6 +3066,9 @@ export function createProductHandler(
      */
     let outcome: ProductTypeWithErrorState | null = null;
 
+    /* Read through a function for the narrowing reason recorded on {@link runProductWrite}. */
+    const capturedOutcome = (): ProductTypeWithErrorState | null => outcome;
+
     try {
       const saved: ProductTypeWithErrorState | null =
         await writeRunner.runWrite<ProductTypeWithErrorState | null>(
@@ -2859,7 +3088,13 @@ export function createProductHandler(
 
       return saved === null ? notFoundResponse() : okResponse(toProductTypeResponse(saved));
     } catch (error) {
-      return errorResponse(error);
+      /* ⭐ THE ROLL-BACK IS TRANSLATED INTO THE PRODUCT TYPE'S OWN FINDINGS — see
+       * {@link liftProductTypeWriteFindings}. An earlier revision of this member's docblock said "the
+       * roll-back is what reports the failure, so nothing is lifted into a carrier here"; that was the
+       * defect, not the design. The boundary's own raise is a plain `DomainError`, which publishes 500
+       * with every keyed finding withheld, and a caller whose product-type name was rejected learned
+       * nothing about which rule rejected it. */
+      return errorResponse(liftProductTypeWriteFindings(error, capturedOutcome()));
     }
   };
 
@@ -3235,13 +3470,37 @@ export type ProductRouteKey =
  * product surface needs — the service, the per-invocation authorisation resolver, and the transactional
  * write runner whose scope the write members are expressed against.
  *
+ * ⚠️ THE PARAMETER IS NARROWED TO THE MEMBERS THIS SURFACE READS, AND THE NARROWING IS LOAD-BEARING.
+ * It used to be the whole `CatalogContainer`, which meant only the aggregate graph could satisfy it — and
+ * the aggregate graph is every collaborator of the slice. Asking for just these members lets BOTH the
+ * aggregate root (`../config/container.ts`, which `./router.ts` passes) and this entry's own narrow graph
+ * (`../config/container.ts`'s `getProductSurfaceGraph`) satisfy it, which is what keeps this factory
+ * exercisable with an object literal instead of a whole graph (PERF-01). The type import of the container
+ * stays: a `type` position is erased at emit, so it adds no load-time edge.
+ *
+ * ⚠️ WHAT THE NARROWING NO LONGER BUYS, STATED SO THE CLAIM MATCHES THE TREE. An earlier revision put the
+ * narrow graph in its own module, `src/config/surfaces/productSurface.ts`, and this note said the narrowing
+ * removed this artifact's module EDGE to collaborators no route here can reach. AAP §0.3.1 enumerates 102
+ * files and that module was not among them, so it is folded into the composition root: requiring the root
+ * now reaches the whole of it, and the bundler can no longer drop the unreached half per artifact. That is a
+ * package-SIZE consequence and nothing more — the finding itself labelled the figure a disclosure rather
+ * than a budget, and IR-12 forbids restating it as a threshold. What survives is the load-bearing half: the
+ * accessor still composes and memoises only this surface's collaborators, so a warm invocation constructs
+ * exactly what this entry can reach, and this parameter still accepts a literal.
+ *
  * @param container the memoized service graph
+ * @param resolveAuthorization the per-invocation authorisation resolver. Defaults to
+ *   `./httpResponse.ts`'s registered-resolver reader — the deployment's resolver when one is
+ *   registered, the constant deny-all context otherwise, so the default remains fail-closed.
  * @returns the eighteen routed product operations
  */
-export function createProductHandlerFromContainer(container: CatalogContainer): ProductHandler {
+export function createProductHandlerFromContainer(
+  container: Pick<CatalogContainer, 'productService' | 'productWriteRunner'>,
+  resolveAuthorization: RequestAuthorizationResolver<ProductAuthorizationEvent> = resolveRequestAuthorization,
+): ProductHandler {
   return createProductHandler(
     container.productService,
-    resolveFailClosedAuthorization,
+    resolveAuthorization,
     container.productWriteRunner,
   );
 }
@@ -3309,12 +3568,20 @@ export function createProductRoutes(handlers: ProductHandler): ActionRouteTable<
 let dispatchProductAction: ActionRoute | undefined;
 
 /**
- * The shape `../config/container` publishes, used to type the deferred require inside {@link handler}.
+ * The shape `../config/container`'s `getProductSurfaceGraph` publishes, used to type the deferred require inside
+ * {@link handler}.
  *
  * `typeof import(...)` is a TYPE position only. It is erased at emit, so it adds no load-time edge from
  * this file to the composition root — which is the entire point of resolving the graph lazily.
+ *
+ * ⭐ IT NAMES THIS SURFACE, NOT THE AGGREGATE ROOT, AND THAT ONE SPECIFIER IS THE WHOLE OF PERF-01 ON THIS
+ * ENTRY. `../config/container.ts` names all thirty-one collaborators of the slice, so a `require` of it
+ * made every one of them reachable from this artifact and constructed every one of them on the first
+ * invocation. `../config/container.ts`'s folded product-surface section composes only what these routes can reach — and it does so
+ * by calling the SAME `compose*Surface` function the aggregate root calls, so the two cannot diverge on how
+ * any service is assembled.
  */
-type CatalogContainerModule = typeof import('../config/container');
+type ProductSurfaceModule = typeof import('../config/container');
 
 /**
  * The Lambda entry point for the product surface.
@@ -3365,9 +3632,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
        * start while this entry stays loadable and answers the classified configuration failure per
        * invocation.
        */
-      // eslint-disable-next-line @typescript-eslint/no-require-imports -- deliberate; see above
-      const { getCatalogContainer } = require('../config/container') as CatalogContainerModule;
-      const container = getCatalogContainer();
+      const { getProductSurfaceGraph } =
+        // eslint-disable-next-line @typescript-eslint/no-require-imports -- deliberate; see above
+        require('../config/container') as ProductSurfaceModule;
+      const container = getProductSurfaceGraph();
 
       dispatchProductAction = createActionDispatcher<ProductRouteKey>({
         routes: createProductRoutes(createProductHandlerFromContainer(container)),
@@ -3394,3 +3662,56 @@ type _ProductHandlerSatisfiesLambdaContract = AssertAssignable<
   typeof handler,
   APIGatewayProxyHandler
 >;
+
+/* ================================================================================================
+ * THE DEPLOYMENT REGISTRATION SEAM, RE-EXPORTED SO IT IS REACHABLE FROM THE PACKAGED ARTIFACT
+ * ============================================================================================== */
+
+/*
+ * ⭐ THIS ARTIFACT SERVES THE GATED PRODUCT SURFACE, so a deployment that mounts `handler` above — rather
+ * than `./router.ts`'s aggregate — needs the registration seam on THIS module. Every product route is
+ * gated, so without a registered resolver this artifact answers `401` and nothing else.
+ */
+/*
+ * ⛔ WHY A RE-EXPORT IS NECESSARY AND NOT MERELY TIDY. `registerRequestAuthorizationResolver` is declared
+ * in `./httpResponse.ts` §8.1, which is NOT a build entry point — `build/esbuild.mjs` lists it under
+ * `NON_ENTRY_HANDLER_MODULES` precisely because it is a shared helper. esbuild therefore INLINES it into
+ * every entry it bundles, and an inlined module's exports do not survive: a deployment that requires the
+ * emitted artifact sees only what the ENTRY module exports. Measured before this block existed,
+ * `Object.keys(require('./dist/handlers/router.js'))` was exactly `['createRouter', 'handler']`, and the
+ * registration function appeared nowhere in any of the five gated bundles.
+ *
+ * ⛔ THAT IS THE SAME DEFECT SHAPE THE REVIEW RAISED, ONE LAYER OUT. CQ-1's first remedy — the optional
+ * `resolveAuthorization` parameter this module already accepts — serves a deployment that compiles its own
+ * entry module against the SOURCE. It does nothing for one that takes a packaged bundle as it stands, and
+ * `README.md` §7.2 promises that second route in as many words. A seam documented as callable that no
+ * caller can reach is what CQ-1 was about; leaving the registrar unexported would have reproduced it.
+ *
+ * ⭐ WHAT THE RE-EXPORT MAKES REACHABLE IS A REGISTRAR, NOT A PRINCIPAL. §8.1 holds one module-scope cell
+ * containing the deployment's resolver FUNCTION, read inside every invocation's call rather than when the
+ * graph was composed, so nothing is memoized across invocations and AAP §0.6.6 M7 is untouched. The four
+ * gated factories already default their resolver to §8.1's `resolveRequestAuthorization`, which is the
+ * reader of that cell — so a resolver registered during initialisation is honoured by this artifact even
+ * though its dispatcher was built at module load.
+ *
+ * ⚠️ AND IT CHANGES NO ANSWER BY ITSELF. Nothing in this subtree calls either function, so a graph built
+ * by this port alone still resolves no principal and every gated route still answers `401`. Re-exporting a
+ * registrar is not registering one, and this module still parses no header, decodes no token and verifies
+ * no signature — AAP §0.2.2.3 excludes the legacy authentication adapters and §0.8.3.2 forbids carrying
+ * `org/Hibachi/**` forward, so the identity itself remains the deployment's to supply.
+ *
+ * `clearRequestAuthorizationResolver` travels with it because the only thing it can do is take a gate
+ * AWAY: it resets the cell to absent, which is the fail-closed state, so exposing it cannot relax
+ * anything. A deployment able to register must be able to unwind that registration — in a harness, or
+ * between two configuration attempts — without discarding the module registry.
+ *
+ * The two types are re-exported for the same reason the functions are: a deployment writing a resolver
+ * against a packaged artifact needs the shape it must satisfy, and `CatalogAuthorizationRequest` is the
+ * one request slice — `Pick<APIGatewayProxyEvent, 'headers'>` — that serves all four gated surfaces.
+ */
+export {
+  clearRequestAuthorizationResolver,
+  registerRequestAuthorizationResolver,
+} from './httpResponse';
+
+export type { CatalogAuthorizationRequest, CatalogAuthorizationResolver } from './httpResponse';

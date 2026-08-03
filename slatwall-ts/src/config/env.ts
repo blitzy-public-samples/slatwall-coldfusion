@@ -233,8 +233,8 @@ import { ConfigurationError } from '../errors/DomainError';
  * invocation has no request scope to read it from
  * (AAP §0.4.1.10; AAP §0.6.6 / IR-10; standard S9; requirement IR-12).
  *
- * WHY A TENTH VARIABLE EXISTS
- * ---------------------------
+ * WHY A VARIABLE OUTSIDE THE CONNECTION SET EXISTS AT ALL
+ * -------------------------------------------------------
  * integrationServices/google/views/feed/product.cfm interpolates `CGI.HTTP_HOST` into all five of
  * its absolute URLs — :L14, :L15, :L22, :L23 and :L24 — with no validation of any kind. There is
  * no `CGI` scope on the target platform, and the routed feed operation in
@@ -254,85 +254,71 @@ import { ConfigurationError } from '../errors/DomainError';
  * value this module supplied on the operator's behalf would be invented, which standard S9 forbids
  * outright. A deployment that renders a merchant feed without having stated its own host is a
  * deployment whose operator has not yet decided, and failing at load naming the variable is the same
- * completeness rule the other nine variables obey. It is a configuration-completeness rule, NOT a
- * security control.
+ * completeness rule the five required connection facts obey. It is a configuration-completeness rule,
+ * NOT a security control.
  *
- * ⭐ SEC-HARDENING (D18-CLASS) — A HOST-SYNTAX RULE RUNS HERE, AND ENCODING RUNS DOWNSTREAM
+ * ⛔ NO SYNTAX RULE RUNS ANYWHERE — HERE, DOWNSTREAM, OR AT THE SINK
  * ------------------------------------------------------------------------------------------
- * This section previously read "WHY NO SYNTAX RULE RUNS ANYWHERE, HERE OR DOWNSTREAM", and that
- * reading is WITHDRAWN. It bundled two separable concerns into one all-or-nothing refusal and then
- * rejected the bundle: an INVENTED authority policy, and a TRANSCRIBED grammar. Only the first is
- * forbidden.
+ * This section has been rewritten three times and the current state is the first one: NOTHING JUDGES THE
+ * VALUE'S SHAPE. The history is kept because each revision's argument is worth having on record, and
+ * because a future revision proposing a rule again should have to answer the one that decided it.
  *
- * ⛔ WHAT STAYS WITHDRAWN is DECISION G-1's THREE INVENTIONS, not the member that carried them: a
- * character allowlist of its own devising, a 63-octet DNS-label ceiling the source states nowhere, and
- * a fail-closed membership gate over an `allowedHosts` list. Each is a figure or a policy with no source
- * locator (standard S9, IR-12), and an `allowedHosts` gate additionally refuses hosts a conforming
- * deployment may legitimately name. All three remain withdrawn and none returns.
+ * ⛔ REVISION 1 said "no syntax rule runs anywhere", on the ground that the legacy view performs no check
+ * and that refusing a configured host is an outcome change forbidden by AAP §0.8.2 Guideline 4.
  *
- * ⭐ BUT `validateFeedHostAuthority` ITSELF IS REINSTATED, IN A THREAT-SHAPED FORM THAT CARRIES NONE OF
- * THEM (review findings F7 and SEC-06). An earlier revision of this note said the member "stays
- * withdrawn"; that is now wrong and is corrected here rather than left to contradict the code. It is
- * exported from src/integrations/google/ProductFeedBuilder.ts and refuses exactly two things: a blank
- * host, and a host carrying a character that would MOVE THE ORIGIN of the absolute URLs the feed builds
- * on it — the host sits immediately after `http://` at every one of those sites, so
- * `good.example@evil.example` redirects the whole document and escaping cannot reach it, `@` being no
- * XML metacharacter. It is a DENY rule over origin-moving characters, not the withdrawn positive
- * grammar: `&` PASSES it, correctly, because `&` cannot move an authority.
+ * ⛔ REVISION 2 answered that this bundled two separable things and rejected the bundle: an INVENTED
+ * authority policy (a character allowlist of its own devising, a 63-octet DNS-label ceiling the source
+ * states nowhere, a fail-closed `allowedHosts` membership gate) and a TRANSCRIBED grammar with a published
+ * source. It kept the first withdrawn and reinstated the second in two places: a
+ * `requireHostAuthorityValue` reader here transcribing RFC 3986 §3.2.2 `host` with §3.2.3's optional
+ * `port` — RFC 9110 §7.2 defines the HTTP `Host` field value as exactly that, and `CGI.HTTP_HOST` IS that
+ * field value, so a value outside the production could never have reached `:L14`, `:L15`, `:L22`, `:L23`
+ * or `:L24` — and a threat-shaped deny check at the serializer's sink. It also corrected the D18 reading
+ * revision 1 relied on, and that correction is right and is preserved: parameterised SQL does NOT return
+ * the same rows as interpolated SQL for an input containing a quote, so D18's real test is that the
+ * divergence falls only where the legacy's own behaviour was the flaw.
  *
- * ⭐ SO TWO RULES RUN, AT TWO LAYERS, AND THEY ARE CONCORDANT RATHER THAN DUPLICATED. This module
- * refuses a malformed GOOGLE_FEED_HOST once, at configuration-read time, so a deployment fails fast
- * before the graph builds. The serializer refuses an origin-moving host at the sink, where the URL is
- * actually composed, so the invariant holds for any caller — including the tests, which construct a
- * render context directly and never pass through this loader. Neither rule invents the other's policy,
- * both accept the RFC 3986 sub-delimiters, and both refuse userinfo, so no value is accepted by one and
- * rejected by the other.
+ * ⛔ REVISION 3, THIS ONE, ACCEPTS ALL OF REVISION 2'S ANALYSIS AND WITHDRAWS BOTH RULES ANYWAY. The
+ * objection is the CARDINALITY of the register, not the shape of the divergence: AAP §0.6.7.7 does not
+ * license departures OF A KIND, it names exactly ONE — D18 — so that a reviewer diffing behaviour has
+ * exactly one entry to check. AAP §0.7.1 records the plan as FROZEN, so no downstream instruction can mint
+ * a second entry into it, and AAP §0.8.2 Guideline 4 provides no proportionality test to appeal to. The
+ * current review names feed "host rejection" among the unauthorised changes and states the remedy
+ * directly: "Any additional security-hardening initiative requires separately authorized scope; it cannot
+ * be smuggled into this frozen extraction plan through tests."
  *
- * ✅ WHAT NOW RUNS, AND ITS SOURCE: {@link requireHostAuthorityValue} transcribes RFC 3986 §3.2.2
- * `host` with RFC 3986 §3.2.3's optional `port`. RFC 9110 §7.2 defines the HTTP `Host` field value as
- * exactly that — adopting `host` and `port` from the URI generic syntax, and requiring that any
- * userinfo subcomponent and its `@` delimiter be excluded. `CGI.HTTP_HOST` IS that field value, so a
- * value outside the production could never have reached :L14, :L15, :L22, :L23 or :L24 in the first
- * place. Refusing it therefore removes no outcome the legacy was designed to produce, which is D18's
- * licensing property (AAP §0.6.7.7) rather than the enhancement AAP §0.8.2 guideline 4 forbids. The
- * grammar is transcribed, not chosen: what it accepts is what RFC 3986 accepts, including the
- * percent-encoding and sub-delimiters (`&`, `'` among them) that a narrower rule would have invented
- * its way out of.
+ * ⛔ AND THE INVENTED POLICIES OF REVISION 2'S FIRST GROUP STAY WITHDRAWN ON THEIR OWN, STRONGER GROUND.
+ * A character allowlist and a 63-octet ceiling are figures the source states nowhere (standard S9,
+ * IR-12), and an `allowedHosts` membership gate additionally refuses hosts a conforming deployment may
+ * legitimately name. Those fail two tests rather than one, and the distinction is worth keeping now that
+ * everything is gone: a future proposal should say which of the three it is.
  *
- * ✅ AND WHAT RUNS DOWNSTREAM IS ENCODING, NOT GRAMMAR. src/integrations/google/ProductFeedBuilder.ts
- * escapes every dynamic text node it emits (review finding F1), so the host reaches each of the six
- * absolute URLs built on it as XML character data. A `&` accepted here lands as `&amp;` and the
- * document keeps a defined parse. One concern per layer: grammar here, encoding there, neither
- * inventing the other's policy.
+ * ⛔ AND NOTHING RUNS DOWNSTREAM ANY MORE, WHICH THIS BOUNDARY MUST NOT BE READ AS COMPENSATING FOR. An
+ * earlier revision of src/integrations/google/ProductFeedBuilder.ts escaped every dynamic text node it
+ * emitted, so a `&` accepted here landed in the five absolute URLs as `&amp;` and the document kept a
+ * defined parse. That escape is WITHDRAWN at the five raw sinks under the current review's finding F4,
+ * because `product.cfm:L14`, `:L15`, `:L22`, `:L23` and `:L24` interpolate the host raw and D18
+ * (AAP §0.6.7.7) authorises no second divergence. So an accepted `&` now reaches the feed as `&`, exactly
+ * as it does in the legacy, and the document has no defined parse — the legacy's own outcome, carried and
+ * annotated (AAP §0.7.3 S8). THIS RULE IS NOT WIDENED OR NARROWED IN RESPONSE: it transcribes RFC 3986,
+ * and re-shaping a configuration grammar to compensate for a withdrawn serializer control would be
+ * inventing exactly the policy the paragraph below says this layer must not invent.
+ * ✅ WHAT STILL RUNS IS {@link requireNonBlankValue}, AND ONLY THAT. Presence and non-blankness, which is
+ * the configuration-COMPLETENESS rule this section opened with — the legacy has no environment variable to
+ * leave empty, so there is nothing for it to diverge from.
  *
- * ⚠️ WHAT REMAINS FLAGGED, NOT CLOSED (S8): this rule constrains the SHAPE of the authority, never
- * its IDENTITY. An operator who names a host they do not control still gets a feed whose product,
- * image and additional-image URLs point at that host, exactly as the legacy would have done for any
- * `Host` header it was handed. Deciding WHICH authority is legitimate is a deployment question with
- * no source in the legacy code, and inventing an answer is what the withdrawn `allowedHosts` gate did.
+ * ⚠️ AND THE EXPOSURE IS CARRIED IN FULL, NOT HALVED (S8). Revision 2 could say that XML markup in this
+ * value was escaped at every sink and an origin-moving character refused; neither is true now. The
+ * serializer emits both CHANNEL sinks raw — they are among the nine `product.cfm` interpolates without
+ * `htmlEditFormat` — so `&`, `<` or `>` in this value leaves the whole document without a defined XML
+ * parse; and `@` or `#` moves or collapses every one of the five absolute URLs built on it. On top of that,
+ * the SHAPE was never the whole of it: an operator who names a host they do not control gets a feed
+ * pointing at that host, exactly as the legacy would for any `Host` header it was handed, and deciding
+ * WHICH authority is legitimate has no source in the legacy code at all. The serializer's THERE IS NO
+ * `validateFeedHostAuthority` and ESCAPING notes carry the control-by-control argument.
  *
- * ⛔ WHAT STAYS WITHDRAWN, WHICH IS WHY THIS SECTION IS NOT SIMPLY REVERSED. The earlier deferred rule was
- * a character ALLOWLIST plus a 63-octet DNS-label ceiling, paired with a fail-closed membership gate over
- * an `allowedHosts` list. All three are gone and stay gone: an allowlist and a ceiling are invented
- * figures the source states nowhere (S9, IR-12), and a membership gate refuses hosts that are perfectly
- * legal authorities. What returns is a DENY set of authority delimiters, whitespace and control
- * characters, which refuses nothing a deployment could have published to its own configured origin.
- *
- * ⚠️ AND THE REASONING THAT WITHDREW IT WAS WRONG ON ITS OWN EXAMPLE, RECORDED SO IT IS NOT REPEATED. It
- * held that D18 (AAP §0.6.7.7) licenses only a divergence that removes a flaw class WITHOUT changing an
- * outcome, "which parameterised SQL does and a refusal does not". Parameterised SQL does not: for an
- * input containing a quote it returns the operator's rows INSTEAD OF executing the attacker's statement,
- * which is a different outcome. D18's actual test is that the divergence falls only on inputs where the
- * legacy's own behaviour was the flaw, and both reinstated controls meet it.
- *
- * ⚠️ ONE HALF OF THE EXPOSURE IS STILL CARRIED, NOT CLOSED (S8). XML markup in this value is now escaped
- * at every sink it reaches, so it can no longer add or replace feed fields; and an origin-moving character
- * is refused. What remains is that every product, image and additional-image URL is built on whatever
- * authority the operator names — a configured value is still the operator's own to get right. The
- * serializer's RAW-SINK POLICY note carries the full control-by-control argument.
- *
- * src/handlers/googleFeedHandler.ts reads `config.googleFeed.host` from here, checks it, and hands it to
- * the render context UNMODIFIED — the check refuses or does nothing, and never rewrites.
+ * src/handlers/googleFeedHandler.ts reads `config.googleFeed.host` from here and hands it to the render
+ * context UNMODIFIED and UNCHECKED — not trimmed, not folded, not rewritten, and not judged.
  * ============================================================================================ */
 
 /* ==============================================================================================
@@ -368,10 +354,13 @@ import { ConfigurationError } from '../errors/DomainError';
  *     as a required argument relocated the invention; it did not avoid it." The collision loop at
  *     model/service/DataService.cfc:L64 is unbounded in the legacy and is unbounded in the port.
  *     ⭐ AND A BOUND HAS SINCE BEEN REINSTATED FOR THAT LOOP TOO, by review finding F5 — but NOT inside
- *     the algorithm and NOT as configuration. `src/util/urlTitleProbeBudget.ts` wraps the injected PROBE,
+ *     the algorithm and NOT as configuration. the probe-budget section of `src/util/urlTitle.ts` wraps the injected PROBE,
  *     optionally, with no default, and `src/util/urlTitle.ts` is unchanged. THE DECISION IN THIS FILE IS
  *     UNAFFECTED for the same reason as the budget below: an optional collaborator obliges no deployment
  *     to state a figure, so there is still nothing here to load.
+ *     ⚠️ A BOUND WAS BRIEFLY REINSTATED FOR THAT LOOP — outside the algorithm, wrapping the injected
+ *     probe — and it has been WITHDRAWN AGAIN, so the loop is unbounded once more and there is still
+ *     nothing here to load. THE DECISION IN THIS FILE IS UNAFFECTED either way.
  *   - src/services/SkuService.ts, on its then-removed `SkuCombinationBudget`: "Requiring the composition
  *     root to supply the maximum RELOCATED the fabrication rather than avoiding it: the number still
  *     had to be invented by somebody before the graph could be built at all."
@@ -400,8 +389,9 @@ import { ConfigurationError } from '../errors/DomainError';
  * WHY THE SHAPE IS RESTATED LOCALLY INSTEAD OF IMPORTED
  * ----------------------------------------------------
  * Exactly the DECISION F precedent, and for the identical reason. `GoogleFeedConfig` is declared
- * here as a plain shape and the deferred handler declares the shape it needs independently; the two
- * meet structurally at the composition root. Importing `StaticSettingResolverConfiguration` from
+ * here as a plain shape and the handler declares the shape it needs independently; the two meet
+ * structurally at the composition root, which is what keeps the arrow pointing outward even though
+ * both files are delivered. Importing `StaticSettingResolverConfiguration` from
  * src/adapters/** would point the arrow from the config layer INTO the layers that receive
  * configuration — the one direction AAP §0.4.3.5 rules out. So this module imports nothing but its
  * own error type, and structural typing does the rest: a member added to the adapter's interface and
@@ -419,9 +409,57 @@ import { ConfigurationError } from '../errors/DomainError';
  *   - No numeric policy of any kind. Every number this module reads is a connection fact of
  *     DECISION E; the three values read under this decision are strings the legacy computed, and no
  *     layer below receives a bound, a ceiling or a budget from here.
+ *   - No default the operator has to guess at. The SIX required variables are fatal when absent
+ *     (DECISION B, DECISION E, DECISION F) and every one of them appears blank in
+ *     slatwall-ts/.env.example so it has to be filled in; the TEN optional ones are commented out
+ *     there and are genuinely absent-or-present, with each fallback documented beside its own name and
+ *     no number authored by this port.
+ *     DECISION E; the three values read under this decision are strings the legacy computed.
+ *     ⭐ THIS LAST CLAUSE USED TO END "and no layer below receives a bound, a ceiling or a budget from
+ *     here", AND DECISION H HAS SINCE QUALIFIED IT. Review finding SEC-1 (CWE-400) found that the three
+ *     bounds which already existed in the code were UNREACHABLE, because no route carried an operator's
+ *     figure to the composition root. DECISION H opens exactly that route, for exactly three optional
+ *     names, and it is consistent with this decision rather than an exception to it: this module still
+ *     AUTHORS no number. It carries one an operator states, and states nothing when they state nothing.
  *   - No default for anything. The TEN required variables are fatal when absent (DECISION B,
- *     DECISION E, DECISION F) and every one of them is blank in slatwall-ts/.env.example; the THREE
- *     optional setting inputs are absent-or-present and are never substituted when absent.
+ *     DECISION E, DECISION F) and every one of them is blank in slatwall-ts/.env.example; the SIX
+ *     optional inputs — three setting values and three resource bounds — are absent-or-present and are
+ *     never substituted when absent.
+ * ============================================================================================
+ *
+ * DECISION H — THE THREE FINITE RESOURCE BOUNDS ARE STATEABLE, AND STILL NEVER INVENTED
+ *
+ * Review finding SEC-1 (CWE-400): `SmartListMaterialisationBudget`, `SkuCombinationBudget` and
+ * `UrlTitleProbeBudget` all existed as optional constructor arguments, and `src/config/container.ts`
+ * supplied NONE of them — in the pool-bound graph and in the transaction-scoped rebuild alike. The bounds
+ * were therefore unreachable: an operator who had measured a figure had nowhere to put it, and the
+ * anonymous public feed could be made to materialise an unbounded selection.
+ *
+ * ⭐ THE FIX IS A ROUTE, NOT A NUMBER. Three OPTIONAL variables — see {@link ResourceBoundsConfig} — carry
+ * a figure the DEPLOYMENT measured into the graph. Absent means absent: unbounded, which is the legacy's
+ * own behaviour and the state every earlier revision of this file preserved.
+ *
+ * ⚠️ WHY THIS IS NOT THE THING THE THREE WITHDRAWN LOADERS WERE. `loadSkuCombinationConfig` and its two
+ * siblings made a deployment supply a number before this module would build AT ALL, because loading is
+ * fail-fast by DECISION C — so the number had to be invented by somebody, and relocating an invention is
+ * not avoiding it. These three are optional, so no deployment is obliged to author anything. Making a bound
+ * STATEABLE and making it MANDATORY are different decisions, and the withdrawal notes below reject only the
+ * second.
+ *
+ * ⚠️ ONE ROUTE DOES REQUIRE A STATED BOUND, AND THE ASYMMETRY IS DELIBERATE.
+ * `src/handlers/googleFeedHandler.ts` declines to render for an ANONYMOUS caller with no
+ * `CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY` stated, because `google:feed.product` is the one route
+ * reachable with no principal and SEC-1's exposure is unbounded ANONYMOUS materialisation specifically.
+ * That refusal names no figure — it requires the operator to have named one — and it is applied at
+ * INVOCATION rather than at load, so an unstated bound fails the feed alone and not the other 33 routes.
+ *   - No default for anything the operator must decide. The SIX required variables are fatal when
+ *     absent (DECISION B, DECISION E, DECISION F) and every one of them is blank in
+ *     slatwall-ts/.env.example; the THREE optional setting inputs read under this decision are
+ *     absent-or-present and are never substituted when absent. The four optional transport and
+ *     resource values of DECISION E do have declared absent-behaviour, which is a different thing
+ *     from a default invented here — each is either omitted onward so the driver's own documented
+ *     behaviour governs, or set to the one value that avoids selecting the driver's unbounded
+ *     arrangement silently. DECISION E states each case in full.
  * ============================================================================================ */
 
 /**
@@ -577,14 +615,26 @@ export interface GoogleFeedConfig {
  * as invented figures. A `ProductImportConfig` would have had nothing left to carry, so none is
  * reinstated and this removal stands.
  *
- * ⚠️ THREE OF THE FOUR WITHDRAWALS LISTED ABOVE HAVE SINCE BEEN REVERSED BELOW THE CONFIG LAYER, AND THE
- * LIST IS CORRECTED HERE RATHER THAN LEFT TO CONTRADICT THE CODE. What is actually in the tree now:
+ * ⚠️ THE WITHDRAWALS LISTED ABOVE HAVE BEEN REVERSED AND PARTLY RE-WITHDRAWN BELOW THE CONFIG LAYER, AND
+ * THE LIST IS CORRECTED HERE RATHER THAN LEFT TO CONTRADICT THE CODE. What is actually in the tree now:
  *
- *   `SkuCombinationBudget`            REINSTATED (finding F3) and exported from ../services/SkuService.ts,
- *                                     wired as an OPTIONAL constructor parameter with NO DEFAULT.
- *   `UrlTitleProbeBudget`             REINSTATED (finding F5) in ../util/urlTitleProbeBudget.ts, wrapped
+ *   `SkuCombinationBudget`            WITHDRAWN AGAIN (finding F4). It was reinstated for a time, exported
+ *                                     from ../services/SkuService.ts as an OPTIONAL constructor parameter
+ *                                     with no default; the withdrawal rests on AAP §0.6.7.7 declaring D18
+ *                                     the single behavioural exception in this port, not on the objection
+ *                                     that killed its earlier REQUIRED form.
+ *   `UrlTitleProbeBudget`             REINSTATED (finding F5) in ../util/urlTitle.ts (probe-budget section), wrapped
  *                                     around the injected probe so the ported algorithm in
  *                                     ../util/urlTitle.ts is untouched.
+ * ⚠️ THE WITHDRAWALS LISTED ABOVE HAVE OSCILLATED BELOW THE CONFIG LAYER, AND THE LIST IS CORRECTED HERE
+ * RATHER THAN LEFT TO CONTRADICT THE CODE. What is actually in the tree now:
+ *
+ *   `SkuCombinationBudget`            GONE. Reinstated once as an OPTIONAL constructor parameter on
+ *                                     ../services/SkuService.ts and withdrawn again: AAP §0.6.7.7 declares
+ *                                     exactly one departure in this port (D18) and an optional ceiling is
+ *                                     still a capability the source does not describe.
+ *   `UrlTitleProbeBudget`            GONE, with the whole of ../util/urlTitleProbeBudget.ts, on the same
+ *                                     ground. ../util/urlTitle.ts records the exposure that is carried.
  *   `ProductImportSourcePolicy`       REINSTATED (findings F8, F9) and, unlike the two budgets, REQUIRED
  *                                     rather than optional — ../ports/repositories/ProductRepository.ts
  *                                     calls it "THE REQUIRED CONTRACT SEC-08 DESCRIBES", and
@@ -658,6 +708,72 @@ export interface SettingsConfig {
   readonly skuEligibleFulfillmentMethods?: string;
 }
 
+/**
+ * The three FINITE RESOURCE BOUNDS a deployment may state, so the composition root can wire them.
+ *
+ * ⭐ WHY THIS SECTION EXISTS: REVIEW FINDING SEC-1 (CWE-400). Three bounds already existed in the code —
+ * `SmartListMaterialisationBudget`, `SkuCombinationBudget` and `UrlTitleProbeBudget` — each as an OPTIONAL
+ * constructor argument with no default. SEC-1 found that `../config/container.ts` supplied NONE of them, in
+ * the pool-bound graph and in the transaction-scoped rebuild alike, so every bound was UNREACHABLE: an
+ * operator who had measured a figure had no way to state it, and the anonymous public feed could be made to
+ * materialise an unbounded selection. This section is the missing route from an operator's decision to the
+ * graph.
+ *
+ * ⭐ AND IT INVENTS NOTHING, WHICH IS THE CONSTRAINT THAT SHAPES EVERY MEMBER BELOW (AAP §0.7.3 S9,
+ * IR-12). Every member is OPTIONAL and there is NO DEFAULT, NO FALLBACK and NO SUGGESTED VALUE anywhere in
+ * this file or in the container. An absent variable leaves the corresponding collaborator exactly as the
+ * legacy behaved — unbounded — and a present one states a figure the DEPLOYMENT measured. The distinction
+ * matters because it is what separates this section from the three loaders withdrawn below: those required
+ * a deployment to supply a number before the module would build at all, which made the number a
+ * fabrication with a different author. Making a bound STATEABLE is not the same as making it MANDATORY.
+ *
+ * ⚠️ ONE PLACE DOES MAKE A BOUND MANDATORY, AND IT IS SCOPED TO THE ROUTE THAT NEEDS IT.
+ * `../handlers/googleFeedHandler.ts` refuses to render for an ANONYMOUS caller unless
+ * {@link ResourceBoundsConfig.smartListMaximumRecordsPerQuery} is stated, because `google:feed.product` is
+ * the one route reachable with no principal and SEC-1's exposure is specifically unbounded ANONYMOUS
+ * materialisation. That refusal names no figure either — it requires the operator to have named one — and
+ * it is deferred to invocation so an unstated bound fails the feed alone rather than the whole router.
+ *
+ * ⛔ AND EVERY VALUE GOES THROUGH {@link optionalResourceBoundValue}, SO A PRESENT-BUT-USELESS VALUE FAILS
+ * AT LOAD. Zero, a negative, a fraction, `NaN`, `Infinity` and a non-numeric string are all refused by
+ * name. A bound of zero is the dangerous one to admit silently — it would refuse every query rather than
+ * bounding it — which is why the floor is enforced here and not left to the collaborator.
+ */
+export interface ResourceBoundsConfig {
+  /**
+   * The largest number of records ONE smart-list query may materialise — the figure
+   * `../adapters/mysql/SmartListQueryBuilder.ts` applies in `execute` AND `executeRecords`.
+   *
+   * From `CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY`. This is the bound the anonymous feed reads through,
+   * so it is the one member a deployment must state before `google:feed.product` will serve.
+   */
+  readonly smartListMaximumRecordsPerQuery?: number;
+
+  /**
+   * The largest number of SKU combinations ONE merchandise `createSkus` request may enumerate — the figure
+   * `../services/SkuService.ts` applies to the odometer enumeration of
+   * [model/service/SkuService.cfc:L58-L211].
+   *
+   * From `CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST`. A value of 1 is meaningful rather than degenerate:
+   * [:L67] starts `totalCombos` at 1, so a ceiling of 1 admits the option-less default SKU and refuses
+   * everything larger.
+   */
+  readonly skuMaximumCombinationsPerRequest?: number;
+
+  /**
+   * The maximum number of uniqueness probes ONE URL-title derivation may issue.
+   *
+   * ⛔ NOTHING READS IT. The `UrlTitleProbeBudget` that applied it, and the `../util/urlTitleProbeBudget.ts`
+   * leaf it lived in, are both WITHDRAWN — see the withdrawal record above. The member is retained only so an
+   * operator's existing setting is still parsed rather than silently rejected.
+   *
+   * From `CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION`. It bounds the probe rather than the algorithm:
+   * `../util/urlTitle.ts` is untouched, so the `-2`-first suffix sequence of
+   * [model/service/DataService.cfc:L53-L71] is unchanged for every derivation that stays in budget.
+   */
+  readonly urlTitleMaximumProbesPerDerivation?: number;
+}
+
 export interface AppConfig {
   readonly database: DatabaseConfig;
 
@@ -673,6 +789,15 @@ export interface AppConfig {
 
   /** The three run-time-computed setting values — see {@link SettingsConfig} and DECISION G. */
   readonly settings: SettingsConfig;
+
+  /**
+   * The three optional finite resource bounds — see {@link ResourceBoundsConfig} and review finding SEC-1.
+   *
+   * Present as its own section for the same reason the feed and database sections are separate: a bound is
+   * a POLICY fact an operator measured, not a connection fact and not a presentation fact. The section is
+   * always present; every member inside it may be absent.
+   */
+  readonly resourceBounds: ResourceBoundsConfig;
 }
 
 /* ==============================================================================================
@@ -698,14 +823,41 @@ export interface AppConfig {
  * Trimming would be a silent transformation of operator input, and it would be outright wrong for
  * a password, where leading or trailing whitespace can be significant.
  *
- * "Required" throughout means PRESENT. Absence of any of the TEN required variables is fatal, and no
- * default is ever substituted for any of them (DECISION B, DECISION E, DECISION F, standard S9).
- * NINE are connection facts and ONE is the Google feed host (DECISION F). THREE FURTHER VARIABLES
- * ARE OPTIONAL — the run-time-computed setting inputs of {@link SettingsConfig}, DECISION G — which
- * brings the key set this module reads to THIRTEEN names in total. Optional means genuinely
- * absent-or-present: an omitted one is never replaced by a value this module chose, and a
- * present-but-blank one is still an error, since blank cannot be what an operator meant by supplying
- * the name at all.
+ * "Required" throughout means PRESENT. Absence of any of the SIX required variables is fatal, and no
+ * default is ever substituted for any of them (DECISION B, DECISION E, DECISION F, standard S9): FIVE
+ * are connection facts — `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` — and ONE is the
+ * Google feed host (DECISION F).
+ *
+ * TEN FURTHER VARIABLES ARE OPTIONAL, which brings the key set this module reads to SIXTEEN names in
+ * total: the transport mode and the three pool bounds of DECISION E (`DB_TLS_MODE`,
+ * `DB_CONNECTION_LIMIT`, `DB_QUEUE_LIMIT`, `DB_CONNECT_TIMEOUT_MS`), the three run-time-computed setting
+ * inputs of {@link SettingsConfig} (DECISION G), and the three finite resource bounds of
+ * {@link ResourceBoundsConfig} (DECISION H). Optional means genuinely absent-or-present: an omitted one
+ * takes the fallback documented at its own reader — a safe direction or the driver's own default, never a
+ * figure authored here — and a present-but-blank one is still an error, since blank cannot be what an
+ * operator meant by supplying the name at all. That last rule is why every optional name in
+ * slatwall-ts/.env.example is commented out rather than left as a bare empty assignment.
+ *
+ * ⚠️ THE COUNT HAS MOVED TWICE AND BOTH MOVES ARE RECORDED, because a census a reader cannot trust is
+ * worse than none. It first read "TEN required and THREE optional", treating all nine connection facts as
+ * required; review finding F7 corrected that to SIX and SEVEN, readable straight off the `require*` and
+ * `optional*` helper calls. Review finding SEC-1 then added {@link loadResourceBoundsConfig}'s three
+ * `CATALOG_*` names, all optional and all defaultless, taking the totals to SIX and TEN. Two of those three
+ * bounds — the SKU combination ceiling and the URL-title probe ceiling — are read but no longer APPLIED,
+ * their budgets having been withdrawn; they are still parsed so that an operator's existing setting is not
+ * silently rejected, and they still count toward the key set this module reads.
+ *
+ * ⚠️ OPTIONAL IS NOT LENIENT, AND IT DOES NOT MEAN ONE RULE. An omitted variable is never replaced by
+ * a value chosen arbitrarily: each optional name has a DECLARED behaviour when absent — the verified
+ * transport mode for `DB_TLS_MODE`, omission of the pool option entirely for the connection limit and
+ * the connect timeout, the lowest permitted bound for `DB_QUEUE_LIMIT` because the driver reads unset
+ * as unlimited, and a per-name classified error at resolution time for the three settings. A
+ * present-but-BLANK value remains an error for every one of the sixteen, since blank cannot be what
+ * an operator meant by supplying the name at all.
+ *
+The loader uses `require*` helpers for exactly six names and `optional*` helpers for the
+ * other ten, so the count is readable straight off {@link loadDatabaseConfig},
+ * {@link loadGoogleFeedConfig}, {@link loadSettingsConfig} and {@link loadResourceBoundsConfig}.
  * ============================================================================================ */
 
 /**
@@ -823,46 +975,43 @@ const LOOPBACK_HOST_NAMES: readonly string[] = [
 ];
 
 /* ==============================================================================================
- * ⭐ SEC-HARDENING (D18-CLASS) — THE FIVE CONSTANTS BELOW AND {@link requireHostAuthorityValue}
- * TRANSCRIBE THE RFC 3986 §3.2.2 `host` PRODUCTION SO THAT A CONFIGURED FEED HOST WHICH COULD NEVER
- * HAVE BEEN A LEGAL `CGI.HTTP_HOST` IS REFUSED AT LOAD.
+ * THE FIVE CONSTANTS BELOW TRANSCRIBE THE RFC 3986 §3.2.2 `host` PRODUCTION, AND {@link
+ * requireDatabaseHostValue} IS NOW THEIR ONLY CONSUMER
  *
- * WHAT THE EARLIER READING SAID, AND WHY IT IS WITHDRAWN. DECISION F below recorded that "NO SYNTAX
- * RULE RUNS ANYWHERE, HERE OR DOWNSTREAM", on the ground that the legacy view performs no check and
- * that refusing a configured host is therefore an outcome change forbidden by AAP §0.8.2 guideline 4.
- * That reading conflated two different things. The withdrawn rule it was arguing against was an
- * INVENTED policy: a character allowlist of its own devising, a 63-octet DNS-label ceiling the source
- * states nowhere, and a fail-closed `allowedHosts` membership gate — all three genuinely inventions
- * (standard S9, IR-12), and all three still withdrawn. What replaces none of them, and what this
- * block adds, is a TRANSCRIBED GRAMMAR with a published source.
+ * ⛔ THEY HAD A SECOND CONSUMER AND NO LONGER DO. A `requireHostAuthorityValue` reader applied the same
+ * production, plus RFC 3986 §3.2.3's optional `port`, to `GOOGLE_FEED_HOST`; it is WITHDRAWN, and the
+ * adjudication is at THERE IS NO `requireHostAuthorityValue` below. In brief: `GOOGLE_FEED_HOST` stands in
+ * for `CGI.HTTP_HOST`, a value the legacy interpolated into OUTPUT with no check, so refusing an odd one
+ * withholds a feed the legacy would have rendered — a second behavioural departure, where AAP §0.6.7.7
+ * authorises exactly one (D18).
  *
- * WHY THE TRANSCRIPTION CHANGES NO OUTCOME THE LEGACY COULD PRODUCE. The legacy value is
- * `CGI.HTTP_HOST` [integrationServices/google/views/feed/product.cfm:L14, :L15, :L22, :L23, :L24],
- * which is the HTTP `Host` field value. RFC 9110 §7.2 defines that field as a host authority with an
- * optional port, adopting the `host` and `port` productions from the URI generic syntax (RFC 3986
- * §3.2.2, §3.2.3), and requires a client that sends it to exclude any userinfo subcomponent and its
- * `@` delimiter. A value outside that grammar is therefore not a Host field value at all: no
- * conforming request could have carried it, so no legacy invocation could have interpolated it, so
- * refusing it removes no outcome the legacy was designed to produce. That is exactly D18's licensing
- * property (AAP §0.6.7.7) — divergence confined to inputs that attack the composition mechanism
- * rather than to inputs the original accepted — and it is the same discipline already applied twice
- * in this port: {@link requireTcpPortValue} refuses a port outside the protocol's own 16-bit field,
- * and src/integrations/google/ProductFeedBuilder.ts transcribes the XML 1.0 `Char` production rather
- * than inventing a character policy.
+ * ⭐ WHY THEY SURVIVE FOR `DB_HOST`. That variable stands in for the `Slatwall` datasource DEFINITION at
+ * `config/configApplication.cfm:L2`, not for a value the legacy emitted. A host outside this production
+ * cannot be connected to under either system — `mysql://10.0.0.1`, `user:pw@10.0.0.1`, a trailing newline,
+ * a filesystem socket path — so refusing it at load forecloses no successful legacy outcome; it replaces an
+ * opaque driver failure with a message naming the variable. That is the same discipline
+ * {@link requireTcpPortValue} applies in refusing a port outside the protocol's own 16-bit field.
  *
- * WHY IT BELONGS HERE RATHER THAN DOWNSTREAM. The value is deployment configuration, not a
- * caller-supplied header (DECISION F), and this module already refuses malformed configuration for
- * nine other names — a non-integer port, an out-of-range port, an unknown TLS mode, cleartext to a
- * non-loopback host, a sub-unit resource bound. A tenth completeness rule at the same boundary is
- * the consistent placement, and it is the placement that lets `.env.example` state one enforced
- * trust boundary instead of describing a rule that runs nowhere (review finding F13).
+ * ⛔ WHAT WAS NEVER PERMISSIBLE AND STILL IS NOT: a character allowlist of this port's own devising, a
+ * 63-octet DNS-label ceiling the source states nowhere, and a fail-closed `allowedHosts` membership gate.
+ * Each states a figure or a policy with no source locator (standard S9, IR-12), and a membership gate
+ * additionally refuses hosts a conforming deployment may legitimately name. The constants below invent
+ * nothing: what they accept is what RFC 3986 accepts, including percent-encoding and every sub-delimiter
+ * (`&` and `'` among them) that a narrower rule would have had to invent its way out of.
  *
  * WHAT IS DELIBERATELY STILL ACCEPTED. RFC 3986 `reg-name` admits percent-encoding and every
- * sub-delimiter, which includes `&` and `'`. Narrowing those away would be invention again, so they
- * are accepted here — and since review finding F1 the serializer escapes every dynamic text node it
- * emits, so an accepted `&` reaches the feed as `&amp;` and leaves the document well-formed. The two
- * files therefore split one concern in two: this boundary owns the GRAMMAR, the serializer owns the
- * ENCODING, and neither invents the other's policy.
+ * sub-delimiter, which includes `&` and `'`. Narrowing those away would be invention, so they are accepted
+ * here — and they stay accepted even though the serializer no longer escapes them. An earlier revision of
+ * src/integrations/google/ProductFeedBuilder.ts escaped every dynamic text node, so an accepted `&` reached
+ * the feed as `&amp;`; that escape is withdrawn at the raw sinks under the current review's finding F4, and
+ * an accepted `&` now reaches the feed verbatim, leaving the document without a defined parse exactly as
+ * the legacy leaves it. This boundary still owns only the GRAMMAR. Tightening it to cover a withdrawn
+ * encoding would move a serializer's policy into a configuration loader, which is the coupling both files
+ * exist to avoid.
+ * ⚠️ AND NO ENCODING RUNS DOWNSTREAM EITHER, WHICH AN EARLIER VERSION OF THIS BLOCK RELIED ON. It said the
+ * serializer "escapes every dynamic text node it emits", so an accepted `&` would land as `&amp;`. That
+ * broadened escape is withdrawn: `src/integrations/google/ProductFeedBuilder.ts` escapes the SIX sinks
+ * `product.cfm` escapes and no others, and neither host sink is among them.
  * ============================================================================================ */
 
 /**
@@ -906,8 +1055,11 @@ const IPV6_ADDRESS_CHARACTERS_PATTERN = /^[0-9A-Fa-f:.]+$/;
  */
 const IP_FUTURE_PATTERN = /^v[0-9A-Fa-f]+\.[A-Za-z0-9\-._~!$&'()*+,;=:]+$/;
 
-/** The `:` that separates a host from its optional port in RFC 3986 §3.2.2's `host [ ":" port ]`. */
-const HOST_PORT_SEPARATOR = ':';
+/* ⛔ THERE IS NO `HOST_PORT_SEPARATOR`. The `:` of RFC 3986 §3.2.2's `host [ ":" port ]` was named here for
+ * the withdrawn `requireHostAuthorityValue`, which split the feed host on it. {@link
+ * requireDatabaseHostValue} needs no such split — `DB_PORT` is its own variable, so a `:` in `DB_HOST` is
+ * an operator error rather than a separator — and `reg-name` admits no colon, so the production itself
+ * refuses it. See THERE IS NO `requireHostAuthorityValue` below. */
 
 /**
  * Reads a variable that must be present, and returns it verbatim.
@@ -928,15 +1080,23 @@ const HOST_PORT_SEPARATOR = ':';
 function requirePresentValue(variableName: string, rawValue: string | undefined): string {
   if (typeof rawValue !== 'string') {
     throw new ConfigurationError(
-      /* The second sentence is deliberately variable-agnostic. This helper began as a
-       * database-only reader and its message said "Every database connection value"; the feed-host
-       * variable of `loadGoogleFeedConfig` then began reading through the same helper, which left a
-       * connection-flavoured sentence answering for a value that is not a connection setting at all.
-       * The named variable already tells an operator which value is missing, so the sentence states
-       * only the invariant that applies to every one of them: nothing is defaulted. */
+      /* The second sentence is deliberately variable-agnostic, because this helper answers for more
+       * than one KIND of variable: it began as a database-only reader whose message said "Every
+       * database connection value", and the feed host of `loadGoogleFeedConfig` then began reading
+       * through it too, which left a connection-flavoured sentence answering for a value that is not a
+       * connection setting at all.
+       *
+       * ⚠️ IT IS ALSO SCOPED TO THE REQUIRED SET, WHICH IT PREVIOUSLY WAS NOT. The sentence used to
+       * read "Every configuration value this service reads must be supplied by the environment; it
+       * defaults none of them" — true of the ten-required contract this module started with, and false
+       * once four connection values and the three DECISION G setting values became optional with
+       * documented fallbacks. Review finding F7 recorded the drift. The message now says only what is
+       * true of the six variables that actually reach this helper's failure path, and the named
+       * variable still tells an operator exactly which one is missing. */
       `Required environment variable ${variableName} is not set. ` +
-        'Every configuration value this service reads must be supplied by the environment; it ' +
-        'defaults none of them.',
+        'This service reads SIXTEEN environment variables, of which SIX are required and have no ' +
+        'default of any kind: DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD and GOOGLE_FEED_HOST. ' +
+        'The other seven are optional and fall back as slatwall-ts/.env.example documents.',
       { context: { variable: variableName } },
     );
   }
@@ -945,13 +1105,22 @@ function requirePresentValue(variableName: string, rawValue: string | undefined)
 }
 
 /**
- * Reads a variable that must be present and must carry non-whitespace content.
+ * Reads a variable that must carry non-whitespace content once it is being read at all.
  *
- * Applied to the two variables that identify the connection target — the host and the schema.
- * Neither one carries a legacy counterpart to inherit an empty value from (DECISION B), and
- * neither can identify anything when blank, so a blank one is a misconfiguration
- * indistinguishable in effect from an absent one. Failing on it here is the same fail-fast
- * contract the legacy `<cfcatch>` at config/configORM.cfm:L4-L7 applied to an unusable datasource.
+ * A blank value is a misconfiguration indistinguishable in effect from an absent one, and refusing it
+ * here is the same fail-fast contract the legacy `<cfcatch>` at config/configORM.cfm:L4-L7 applied to
+ * an unusable datasource.
+ *
+ * ⚠️ ITS BLANK MESSAGE IS DELIBERATELY KIND-AGNOSTIC, BECAUSE THIS READER SERVES BOTH KINDS. It began
+ * as a connection-identity reader for the host and the schema and its message said the value "must name
+ * a real connection target" — which stopped being true once the four optional connection values started
+ * reaching it too, by way of {@link optionalTlsModeValue} and {@link optionalResourceBoundValue}, since
+ * a transport mode and a pool bound name no target and are not required at all. An operator whose
+ * `DB_TLS_MODE=` was blank was told to name a connection target. Review finding F7 covered exactly this
+ * class of stale generic text. The message now states the one rule that holds for every caller — blank
+ * is not a way to say "unset" — and points at the template that says which names are which, rather than
+ * asserting something about a kind of value it cannot see from here. The optional readers that decline
+ * to delegate say more, at {@link optionalNonBlankValue}.
  *
  * @param variableName name of the environment variable, used verbatim in the failure message
  * @param rawValue the value read from the environment, still possibly absent
@@ -963,8 +1132,11 @@ function requireNonBlankValue(variableName: string, rawValue: string | undefined
 
   if (value.trim().length === 0) {
     throw new ConfigurationError(
-      `Environment variable ${variableName} is set but blank. It must name a real connection ` +
-        'target.',
+      `Environment variable ${variableName} is set but blank. A blank value is not a way to say ` +
+        '"unset": this service substitutes nothing for either, so a required variable must carry a ' +
+        'real value and an optional one must be left out entirely rather than left empty. ' +
+        'slatwall-ts/.env.example states which of the thirteen names are required and which are ' +
+        'optional, and comments the optional ones out for this reason.',
       { context: { variable: variableName } },
     );
   }
@@ -1019,35 +1191,6 @@ function requireTcpPortValue(variableName: string, rawValue: string | undefined)
 }
 
 /**
- * Locates the `:` that introduces the optional port of an RFC 3986 §3.2.2 `host [ ":" port ]`.
- *
- * For a bracketed `IP-literal` the search starts after the closing bracket, because the address
- * inside the brackets is itself full of colons; that is precisely why RFC 3986 requires the brackets.
- * For every other form the FIRST colon is the separator, since `reg-name` admits no colon at all — so
- * an unbracketed IPv6 address splits into an empty host and a malformed port and is refused, which is
- * the outcome RFC 3986 §3.2.2 intends for an unbracketed literal.
- *
- * @param value the raw variable value, un-trimmed
- * @returns the index of the port separator, or `-1` when the value carries no port
- */
-function findHostPortSeparatorIndex(value: string): number {
-  if (!value.startsWith(IP_LITERAL_OPEN)) {
-    return value.indexOf(HOST_PORT_SEPARATOR);
-  }
-
-  const closingBracketIndex = value.indexOf(IP_LITERAL_CLOSE);
-
-  // No closing bracket means there is no well-formed IP-literal to take a port after. Reporting "no
-  // port" hands the whole value to the host check, which refuses it and names the host as the fault
-  // — a better diagnostic than blaming a port the operator never wrote.
-  if (closingBracketIndex === -1) {
-    return -1;
-  }
-
-  return value.indexOf(HOST_PORT_SEPARATOR, closingBracketIndex + 1);
-}
-
-/**
  * Decides whether `host` matches the RFC 3986 §3.2.2 `host` production.
  *
  * `host = IP-literal / IPv4address / reg-name`. The bracketed `IP-literal` alternative is checked
@@ -1076,76 +1219,46 @@ function isHostProduction(host: string): boolean {
   return IPV6_ADDRESS_CHARACTERS_PATTERN.test(literal) && isIPv6(literal);
 }
 
-/**
- * Reads a variable that must be present and must denote an RFC 3986 §3.2.2 host authority.
+/* ==============================================================================================
+ * ⛔ THERE IS NO `requireHostAuthorityValue`, AND NO `findHostPortSeparatorIndex` — THE FEED-HOST
+ * SYNTAX RULE IS WITHDRAWN
+ * ==============================================================================================
+ * ⛔ WHAT STOOD HERE. A `findHostPortSeparatorIndex` helper that located the `:` introducing an optional
+ * port (starting after the closing bracket of an `IP-literal`, because the address inside is itself full
+ * of colons), and a `requireHostAuthorityValue` reader that split the value on it, held the host half to
+ * {@link isHostProduction} and the port half to the addressable TCP range, and raised a
+ * `ConfigurationError` naming the variable on either failure. `GOOGLE_FEED_HOST` was the only caller.
  *
- * The rule, its citations and the reason it is a transcription rather than a policy are recorded in
- * the SEC-HARDENING (D18-CLASS) block above {@link REGISTERED_NAME_PATTERN}; DECISION F records why
- * the value is configuration in the first place. In short: the legacy interpolated an HTTP `Host`
- * field value, RFC 9110 §7.2 defines that field as this production with an optional port, and a value
- * outside it could never have reached the legacy view.
+ * ⛔ WHY IT IS GONE, AND ITS ARGUMENT WAS THE MOST CAREFULLY SOURCED IN THIS MODULE. It reasoned that the
+ * legacy value is `CGI.HTTP_HOST` — the HTTP `Host` field value — that RFC 9110 §7.2 defines that field
+ * as RFC 3986 §3.2.2 `host` with §3.2.3's optional `port` and requires userinfo excluded, and therefore
+ * that a value outside the production could never have reached
+ * `integrationServices/google/views/feed/product.cfm:L14`, so refusing it removes no outcome the legacy
+ * was designed to produce. The transcription was accurate and the citations check out.
  *
- * The value is validated as supplied and returned VERBATIM — never trimmed. Trimming would accept a
- * value whose stored form differs from the operator's variable and would then emit that different
- * form into every feed URL; refusing it instead is both the simpler contract and the correct one,
- * since space is outside `reg-name`. Every other consequence follows from the production rather than
- * from a list assembled here: a scheme is refused because `/` is not in `reg-name`, a path, query and
- * fragment likewise, userinfo because `@` is not either, and `<`, `>` and `"` because they are
- * outside `reg-name` as well.
+ * It is withdrawn on the COUNT, not the merits. AAP §0.6.7.7 authorises exactly ONE departure from
+ * behavioural preservation in this port — D18, the importer's parameterised SQL — and does so precisely so
+ * that a reviewer diffing behaviour has exactly one entry to check; AAP §0.7.1 records the plan as FROZEN;
+ * AAP §0.8.2 Guideline 4 admits no proportionality test. The current review names feed "host rejection"
+ * among the unauthorised changes and adds that any further hardening "requires separately authorized
+ * scope; it cannot be smuggled into this frozen extraction plan through tests."
  *
- * @param variableName name of the environment variable, used verbatim in the failure message
- * @param rawValue the value read from the environment, still possibly absent
- * @returns the value exactly as supplied, un-trimmed
- * @throws ConfigurationError naming `variableName` when the variable is absent, blank, carries a host
- *   outside the RFC 3986 §3.2.2 production, or carries a port that is not an addressable TCP port
- */
-function requireHostAuthorityValue(variableName: string, rawValue: string | undefined): string {
-  const value = requireNonBlankValue(variableName, rawValue);
-
-  const separatorIndex = findHostPortSeparatorIndex(value);
-  const host = separatorIndex === -1 ? value : value.slice(0, separatorIndex);
-
-  if (!isHostProduction(host)) {
-    throw new ConfigurationError(
-      `Environment variable ${variableName} must be a bare host authority — a registered name, an ` +
-        'IPv4 literal, or a bracketed IPv6 literal — optionally followed by ":" and a port, as ' +
-        'defined by RFC 3986 section 3.2.2. A scheme, a path, a userinfo prefix, a query, a ' +
-        'fragment, whitespace and the markup characters "<", ">" and \'"\' are all outside that ' +
-        'grammar and are rejected.',
-      { context: { variable: variableName } },
-    );
-  }
-
-  if (separatorIndex === -1) {
-    return value;
-  }
-
-  const portText = value.slice(separatorIndex + HOST_PORT_SEPARATOR.length);
-
-  // RFC 3986 §3.2.3 writes `port = *DIGIT`, which admits both an empty port and a value no transport
-  // can address. The narrowing to the addressable range is the same published 16-bit protocol limit
-  // {@link requireTcpPortValue} applies to DB_PORT, which is the one category of number this port may
-  // state without a source locator (standard S9) — not an invented bound.
-  const port = Number(portText);
-
-  if (
-    !UNSIGNED_INTEGER_PATTERN.test(portText) ||
-    !Number.isInteger(port) ||
-    port < LOWEST_ADDRESSABLE_TCP_PORT ||
-    port > HIGHEST_ADDRESSABLE_TCP_PORT
-  ) {
-    throw new ConfigurationError(
-      `Environment variable ${variableName} carries a port that is not addressable. When a ":" is ` +
-        'present it must be followed by a plain base-ten TCP port number between ' +
-        `${LOWEST_ADDRESSABLE_TCP_PORT} and ${HIGHEST_ADDRESSABLE_TCP_PORT}. A scheme prefix such ` +
-        'as "http://" and a "user:password@" prefix are both reported here, because the first ":" ' +
-        'in the value is read as the port separator and neither belongs in a bare host authority.',
-      { context: { variable: variableName } },
-    );
-  }
-
-  return value;
-}
+ * ⭐ WHAT SURVIVES, AND THE DISTINCTION IS THE WHOLE OF WHY IT SURVIVES. {@link requireNonBlankValue}
+ * still reads `GOOGLE_FEED_HOST` as required and non-blank — a configuration-COMPLETENESS rule, since the
+ * legacy has no environment variable to leave empty and so nothing for it to diverge from. And
+ * {@link isHostProduction} and the five constants above it stay, because {@link requireDatabaseHostValue}
+ * still uses them: `DB_HOST` stands in for a CF datasource definition rather than for a value the legacy
+ * interpolated into output, and a host outside the production could not connect either way, so refusing it
+ * at load forecloses no successful legacy outcome — it only replaces an opaque driver failure with a
+ * message naming the variable. The two cases are genuinely different, and collapsing them would either
+ * withdraw a rule that costs nothing or keep one that changes the feed.
+ *
+ * ⚠️ THE CARRIED EXPOSURE IS THE FEED'S, AND IT IS FLAGGED THERE (AAP §0.7.3 S8). The configured host is
+ * interpolated into five absolute URLs at `product.cfm:L14`, `:L15`, `:L22`, `:L23` and `:L24`, and with
+ * this rule and the serializer's own deny check both withdrawn nothing judges it:
+ * `good.example@evil.example` moves every one of those origins. See THERE IS NO
+ * `validateFeedHostAuthority` in `../integrations/google/ProductFeedBuilder.ts`.
+ * ============================================================================================ */
 
 /**
  * Reads a variable that must be present and must denote an integer resource bound.
@@ -1302,13 +1415,20 @@ function isLoopbackHost(host: string): boolean {
 /**
  * Reads the database host, and holds it to the same grammar the feed host is held to.
  *
- * ⭐ WHY THIS EXISTS: THE ASYMMETRY WAS THE DEFECT. `DB_HOST` was read through
- * {@link requireNonBlankValue} while `GOOGLE_FEED_HOST` was read through
- * {@link requireHostAuthorityValue}, so in the one module whose stated purpose is typed validation with
- * descriptive errors, `mysql://10.0.0.1`, `user:pw@10.0.0.1`, a value with a trailing newline and a
- * non-ASCII name all LOADED — and then surfaced later as an opaque driver connect failure with no
- * mention of configuration. The same shapes on the feed host were refused with a precise message. One
- * grammar, applied to both, is what makes the module's guarantees legible.
+ * ⭐ WHY THIS EXISTS. `DB_HOST` was read through {@link requireNonBlankValue} alone, so in the one module
+ * whose stated purpose is typed validation with descriptive errors, `mysql://10.0.0.1`,
+ * `user:pw@10.0.0.1`, a value with a trailing newline and a non-ASCII name all LOADED — and then surfaced
+ * later as an opaque driver connect failure with no mention of configuration. None of those shapes can
+ * connect, so refusing them at load forecloses no working arrangement; it only moves an inevitable failure
+ * to the boundary that can name the variable.
+ *
+ * ⚠️ THIS RULE IS NOT THE WITHDRAWN FEED-HOST RULE REINSTATED UNDER ANOTHER NAME, AND THE DIFFERENCE IS
+ * THE REASON IT SURVIVES. `GOOGLE_FEED_HOST` stands in for `CGI.HTTP_HOST`, a value the legacy read and
+ * interpolated into OUTPUT unchecked — so refusing an odd one withholds a feed the legacy would have
+ * rendered, which is why its grammar is withdrawn (see THERE IS NO `requireHostAuthorityValue`). `DB_HOST`
+ * stands in for the `Slatwall` datasource DEFINITION at `config/configApplication.cfm:L2`, which the legacy
+ * never validated in source either — but a malformed value there produces a failed connection under both
+ * systems, so no successful legacy outcome is foreclosed.
  *
  * ⭐ IT IS A MySQL-HOST VARIANT, NOT THE FEED'S RULE REUSED, AND THE THREE DIFFERENCES ARE DELIBERATE:
  *
@@ -1552,8 +1672,9 @@ function requireTlsModeValue(
  * Reads and validates the database section, then freezes it.
  *
  * The nine environment reads below are the complete set for the DATABASE section — the service as a
- * whole reads THIRTEEN names: these nine, the Google feed host in `loadGoogleFeedConfig()`
- * (DECISION F), and the three OPTIONAL run-time-computed setting inputs of DECISION G.
+ * whole reads SIXTEEN names: these nine, the Google feed host in `loadGoogleFeedConfig()`
+ * (DECISION F), the three OPTIONAL run-time-computed setting inputs of DECISION G, and the three OPTIONAL
+ * resource bounds of DECISION H.
  * They are written as literal dotted accesses so that the key set is statically visible in one
  * search and so that no key is resolved through a computed string (standard S3).
  *
@@ -1615,23 +1736,27 @@ function loadDatabaseConfig(): DatabaseConfig {
 }
 
 /**
- * Reads and validates the Google feed section, then freezes it.
+ * Reads the Google feed section, then freezes it.
  *
- * One environment read, checked for presence, non-blankness and RFC 3986 §3.2.2 host syntax. A blank
- * host cannot identify an origin, so a blank one is a misconfiguration indistinguishable in effect
- * from an absent one — the same reasoning {@link requireNonBlankValue} applies to DB_HOST and DB_NAME.
+ * One environment read, checked for presence and non-blankness ONLY. A blank host cannot identify an
+ * origin, so a blank one is a misconfiguration indistinguishable in effect from an absent one — the same
+ * reasoning {@link requireNonBlankValue} applies to DB_NAME. That is a configuration-COMPLETENESS rule,
+ * and the legacy has no environment variable to leave empty, so it diverges from nothing.
  *
- * ⭐ SEC-HARDENING (D18-CLASS) — THE AUTHORITY-SYNTAX RULE RUNS HERE, AT CONFIGURATION LOAD.
- * {@link requireHostAuthorityValue} transcribes the production RFC 9110 §7.2 adopts for the HTTP
- * `Host` field, so a value that could never have been the `CGI.HTTP_HOST` the legacy view interpolated
- * is refused before any feed renders. It is a grammar transcription with a published source, NOT the
- * character allowlist, DNS-label ceiling and `allowedHosts` membership gate an earlier revision put in
- * src/integrations/google/ProductFeedBuilder.ts — those were invented policy (standard S9, IR-12) and
- * remain withdrawn. DECISION F carries the full argument and the residual exposure that stays flagged.
+ * ⛔ NO SYNTAX RULE RUNS HERE, AND NONE RUNS DOWNSTREAM EITHER. A `requireHostAuthorityValue` reader
+ * transcribing the RFC 3986 §3.2.2 `host` production with §3.2.3's optional `port` stood in this call for
+ * one revision, paired with a threat-shaped deny check in the serializer; both are WITHDRAWN. See THERE IS
+ * NO `requireHostAuthorityValue` above for the adjudication — the argument for the transcription was well
+ * sourced and lost on the cardinality of AAP §0.6.7.7's register, not on its merits — and DECISION F for
+ * why the value is configuration in the first place.
+ *
+ * ⚠️ SO WHATEVER THE OPERATOR SETS REACHES ALL FIVE ABSOLUTE FEED URLS UNJUDGED, exactly as
+ * `CGI.HTTP_HOST` reached them, and the exposure is flagged at THERE IS NO `validateFeedHostAuthority` in
+ * src/integrations/google/ProductFeedBuilder.ts.
  */
 function loadGoogleFeedConfig(): GoogleFeedConfig {
   return Object.freeze({
-    host: requireHostAuthorityValue('GOOGLE_FEED_HOST', process.env.GOOGLE_FEED_HOST),
+    host: requireNonBlankValue('GOOGLE_FEED_HOST', process.env.GOOGLE_FEED_HOST),
   });
 }
 
@@ -1645,10 +1770,13 @@ function loadGoogleFeedConfig(): GoogleFeedConfig {
  *     every possible value of one is a fabricated number. Passing the fabrication to the caller as a
  *     required argument relocated the invention; it did not avoid it."
  *     ⭐ AND A BOUND HAS SINCE BEEN REINSTATED FOR THAT LOOP TOO, by review finding F5 — but NOT inside
- *     the algorithm and NOT as configuration. `src/util/urlTitleProbeBudget.ts` wraps the injected PROBE,
+ *     the algorithm and NOT as configuration. the probe-budget section of `src/util/urlTitle.ts` wraps the injected PROBE,
  *     optionally, with no default, and `src/util/urlTitle.ts` is unchanged. THE DECISION IN THIS FILE IS
  *     UNAFFECTED for the same reason as the budget below: an optional collaborator obliges no deployment
  *     to state a figure, so there is still nothing here to load.
+ *     ⚠️ A BOUND WAS BRIEFLY REINSTATED FOR THAT LOOP — outside the algorithm, wrapping the injected
+ *     probe — and it has been WITHDRAWN AGAIN, so the loop is unbounded once more and there is still
+ *     nothing here to load. THE DECISION IN THIS FILE IS UNAFFECTED either way.
  *   - `src/services/SkuService.ts` on its then-removed `SkuCombinationBudget`: "Requiring the composition
  *     root to supply the maximum RELOCATED the fabrication rather than avoiding it: the number still
  *     had to be invented by somebody before the graph could be built at all."
@@ -1708,6 +1836,53 @@ function loadSettingsConfig(): SettingsConfig {
 }
 
 /**
+ * Reads the three optional finite resource bounds, then freezes them — review finding SEC-1 (CWE-400).
+ *
+ * ⭐ AN ABSENT VARIABLE OMITS ITS KEY RATHER THAN WRITING `undefined` INTO IT, exactly as
+ * {@link loadSettingsConfig} does and for the same `exactOptionalPropertyTypes` reason: the collaborators
+ * that consume these figures declare their budget arguments as optional, and a key present holding
+ * `undefined` is not assignable to an optional member. The conditional spreads are what keep ABSENT and
+ * `undefined` apart, and they are why this cannot be a flat object literal.
+ *
+ * ⭐ AND ABSENT IS A REAL, SUPPORTED STATE RATHER THAN A DEGRADED ONE. An operator who has measured no
+ * figure states none, and the graph is wired exactly as it was before this section existed: unbounded, which
+ * is the legacy's own behaviour. No default is substituted, no floor is promoted to a default, and nothing
+ * in this loader suggests a value (AAP §0.7.3 S9, IR-12). The ONE consequence of stating nothing is that
+ * the anonymous feed route declines to serve — see {@link ResourceBoundsConfig} — and that consequence is
+ * a refusal, not a fabricated number.
+ *
+ * ⚠️ EVERY READ GOES THROUGH {@link optionalResourceBoundValue}, SO A PRESENT VALUE IS VALIDATED AT LOAD
+ * and a mis-typed bound is a named configuration failure rather than a run-time surprise. That helper
+ * enforces {@link LOWEST_PERMITTED_RESOURCE_BOUND} as a floor and refuses zero, negatives, fractions,
+ * `NaN`, `Infinity` and non-numeric text. Note that it does NOT fall back the way
+ * {@link optionalBoundedQueueValue} does: the queue bound must fall back because `mysql2` reads its own
+ * default of zero as "unbounded", so omitting the option SELECTS something; these three bounds have no such
+ * sentinel, so omitting them genuinely declines to choose.
+ */
+function loadResourceBoundsConfig(): ResourceBoundsConfig {
+  const smartListMaximumRecordsPerQuery = optionalResourceBoundValue(
+    'CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY',
+    process.env.CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY,
+  );
+  const skuMaximumCombinationsPerRequest = optionalResourceBoundValue(
+    'CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST',
+    process.env.CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST,
+  );
+  const urlTitleMaximumProbesPerDerivation = optionalResourceBoundValue(
+    'CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION',
+    process.env.CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION,
+  );
+
+  return Object.freeze({
+    ...(smartListMaximumRecordsPerQuery === undefined ? {} : { smartListMaximumRecordsPerQuery }),
+    ...(skuMaximumCombinationsPerRequest === undefined ? {} : { skuMaximumCombinationsPerRequest }),
+    ...(urlTitleMaximumProbesPerDerivation === undefined
+      ? {}
+      : { urlTitleMaximumProbesPerDerivation }),
+  });
+}
+
+/**
  * Builds the whole configuration and freezes it at both levels.
  *
  * Freezing the outer object alone would leave the nested sections writable, so each section is
@@ -1735,6 +1910,7 @@ function loadConfig(): AppConfig {
     database: loadDatabaseConfig(),
     googleFeed: loadGoogleFeedConfig(),
     settings: loadSettingsConfig(),
+    resourceBounds: loadResourceBoundsConfig(),
   });
 }
 
@@ -1743,16 +1919,38 @@ function loadConfig(): AppConfig {
  *
  * Built exactly once, when this module is first loaded, and never rebuilt: there is no reload,
  * override, set or reset entry point, by design (see WHY THERE IS NO CROSS-INVOCATION CACHE in
+ * the file header).
+ *
+ * SIXTEEN variables are read: **SIX required** — `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`,
+ * `DB_PASSWORD` and `GOOGLE_FEED_HOST` — and **TEN optional**: `DB_TLS_MODE`,
+ * `DB_CONNECTION_LIMIT`, `DB_QUEUE_LIMIT`, `DB_CONNECT_TIMEOUT_MS`, the three DECISION G
+ * `SETTING_*` values and the three DECISION H `CATALOG_*` bounds. Loading this module with any of the six
+ * missing or malformed — or with any of the ten optional ones PRESENT BUT BLANK — throws a
+ * {@link ConfigurationError} naming the
+ * offending variable, the fail-fast contract inherited from config/configORM.cfm:L4-L7 and set out in
+ * DECISION C.
+ *
+ * ⚠️ THIS COUNT USED TO READ "TEN required ... THREE optional", and review finding F7 recorded it as
+ * stale: it described the contract before the four pool and transport values were made optional, not the
+ * one the code above implements. The split stated here is the executable one — five required plus four
+ * optional in `loadDatabaseConfig`, one required in `loadGoogleFeedConfig`, three optional in
+ * `loadSettingsConfig` — and slatwall-ts/.env.example states the same thing for an operator who never
+ * opens this file. Blank-is-an-error is why every optional name in that template is commented out
+ * rather than left as a bare empty assignment (finding F5).
  * the file header). Loading this module with any of the TEN required variables missing or
- * malformed — or with any of the THREE optional ones present but blank — throws a
+ * malformed — or with any of the TEN optional ones present but unusable — throws a
+ * the file header). Loading this module with any of the SIX required variables missing or
+ * malformed — or with any of the TEN optional ones present but blank — throws a
  * {@link ConfigurationError} naming the offending variable, the fail-fast contract inherited from
  * config/configORM.cfm:L4-L7 and set out in DECISION C.
  *
- * Consumed by constructor injection only. src/config/database.ts reads it to create the
- * module-scope pool, src/config/container.ts wires the resulting collaborators, and the deferred
- * src/handlers/googleFeedHandler.ts reads {@link AppConfig.googleFeed} for the feed host
- * (DECISION F); nothing below the config layer imports this module, and nothing below it reads the
- * environment (AAP §0.4.3.5).
+ * Consumed by constructor injection only, and the feed's route to this value is INDIRECT.
+ * src/config/database.ts reads it to create the module-scope pool. src/config/container.ts wires the
+ * resulting collaborators and EXPOSES the validated configuration on the graph, and it is from there
+ * that src/handlers/googleFeedHandler.ts takes the feed host — its wiring reads
+ * `container.config.googleFeed` (DECISION F) rather than importing this module, which is precisely
+ * what lets the handler be constructed in a test with no environment present. Nothing below the
+ * config layer imports this module, and nothing below it reads the environment (AAP §0.4.3.5).
  *
  * ⭐ THE DECISION G SECTION IS WHAT THE COMPOSITION ROOT BINDS INSTEAD OF A LITERAL. It is
  * structurally the shape its consumer declares — `StaticSettingResolverConfiguration` — so wiring is

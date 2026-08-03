@@ -2,28 +2,31 @@
 # to THIS directory, so nothing here reaches the legacy CFML tree.
 #
 # That scoping is the reason the file exists. The repository-root .gitignore covers the legacy
-# application and none of its entries covers node_modules, dist or coverage; closing that gap
-# here rather than there keeps the root file, and the whole CFML tree, byte-for-byte unchanged,
-# so this port stays a single additive diff.
+# application and not one of its fifteen entries covers node_modules, dist, build-meta or
+# coverage; closing that gap here rather than there keeps the root file, and the whole CFML tree,
+# byte-for-byte unchanged, so this port stays a single additive diff.
 #
-# The list is deliberately short — FOUR patterns and nothing else. The count is spelled
-# out because an earlier version of this note said three and then listed four: the three
-# generated directories node_modules/, dist/ and coverage/, plus the single file pattern
-# .env at the end. Speculative boilerplate is omitted rather than copied in (AAP 0.7.3
-# standard 9, guideline 0.8.2/1). The three DIRECTORY names are shared with tsconfig.json
-# "exclude", tsconfig.build.json "outDir" and "exclude", eslint.config.mjs "ignores",
-# jest.config.ts "coverageDirectory" and "testPathIgnorePatterns", and the output directory
-# in build/esbuild.mjs. Every one of those must keep saying the same three words, or a
-# build product ends up tracked.
+# The list is deliberately short — FIVE patterns and nothing else, and the count has now been
+# wrong twice, so it is stated against the file rather than from memory: the FOUR generated
+# directories node_modules/, dist/, build-meta/ and coverage/, plus the single file pattern
+# .env at the end. An earlier version of this note said three and listed four; the version
+# after it said four while build-meta/ was already present, making five. Count the patterns
+# below before editing this sentence. Speculative boilerplate is omitted rather than copied
+# in (AAP 0.7.3 standard 9, guideline 0.8.2/1). The four DIRECTORY names are shared with
+# tsconfig.json "exclude", tsconfig.build.json "outDir" and "exclude", eslint.config.mjs
+# "ignores", jest.config.ts "coverageDirectory" and "testPathIgnorePatterns", and the output,
+# staging and sourcemap directories in build/esbuild.mjs. Every one of those must keep saying
+# the same words, or a build product ends up tracked — or, as a QA pass found for build-meta/
+# in eslint.config.mjs, ends up LINTED.
 #
 # Nothing else belongs here, and the omissions are decisions rather than oversights. The
-# fourth pattern is the only credential-bearing entry, and it is deliberate: a real .env
+# fifth pattern is the only credential-bearing entry, and it is deliberate: a real .env
 # may hold live database credentials, whereas configuration otherwise reaches the service
 # only through the process environment (AAP 0.4.3.5, 0.8.3.9) and no file in this subtree
-# holds a credential. The committed .env.example carries variable names with empty values
-# and is therefore tracked on purpose — see the note on the .env entry below. No editor, OS
-# or tool-cache pattern is listed: each would be boilerplate for an artifact this subtree
-# never emits.
+# holds a credential. The committed .env.example carries variable NAMES only — the required ones
+# blank, the optional ones commented out, and no value of any kind — and is therefore tracked on
+# purpose; see the note on the .env entry below. No editor, OS or tool-cache pattern is listed:
+# each would be boilerplate for an artifact this subtree never emits.
 
 # Installed dependency tree, materialised by `npm ci` from package-lock.json. The
 # lockfile itself is deliberately NOT ignored: a committed lockfile is what makes the
@@ -40,7 +43,16 @@ dist/
 # tree carries only the artifacts the runtime loads. `build/esbuild.mjs` writes them here
 # with `sourcemap: 'external'` — no `sourceMappingURL` comment is written into the
 # JavaScript, so the maps are relocatable without leaving a dangling reference. Generated
-# output like the two directories above, and never committed.
+# output like the directory above, and never committed.
+#
+# IT ALSO HOLDS THE PACKAGE WHILE IT IS BEING ASSEMBLED. `build/esbuild.mjs` writes every
+# artifact — the six bundles, the production manifest and the staged runtime dependency
+# closure — into `build-meta/package-staging/` and then creates `dist/` with a single
+# `rename` of that directory, so a build that fails at any step leaves `dist/` ABSENT rather
+# than stale or partial. The staging directory is a sibling of `dist/` for a concrete reason:
+# `rename` is atomic only within one filesystem, so a system temporary directory would not do.
+# It normally exists only for the duration of a build; the failure handler removes it, and this
+# pattern is what guarantees a hard crash cannot leave it tracked.
 #
 # NOT to be confused with `build/`, which holds the build script itself and IS tracked. The
 # names are deliberately distinct for that reason.

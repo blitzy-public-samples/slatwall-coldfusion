@@ -171,7 +171,7 @@ import type { SubscriptionBenefitReference } from '../../ports/SubscriptionTermP
  *   {@link SkuSalePricingLookup}          <- PricingPort.getSalePriceDetailsForProductSkus
  *   {@link SubscriptionTermRef}           <- SubscriptionTermPort's term reference, widened by one
  *                                            optional member. See the note on that interface.
- *   {@link SkuTransactionExistenceChecker} <- the service contract as corrected by D23: AAP §0.4.2.2
+ *   {@link SkuTransactionExistenceChecker} <- the service contract as corrected by PARITY (model/service/SkuService.cfc:L285-L287): AAP §0.4.2.2
  *                                            Discrepancy 4 read literally produced a zero-argument
  *                                            member that discarded this identifier, so the service
  *                                            declares `(skuID?, productID?)` and satisfies this
@@ -400,11 +400,12 @@ export interface SkuResizedImagePathRequest {
  * forwards the composed path to the probe, exactly as [:L222] does. `src/ports/ImagePathPort.ts`
  * DECISION I-1 control (3) carries the adjudication and the flagged residual exposure.
  *
- * ⭐ THE WRITE HALF OF THAT SAME CONTROL IS NOT WITHDRAWN ANY MORE, AND ITS ABSENCE FROM THIS FILE IS WHY
- * THIS FILE NEEDED NO CHANGE FOR IT. Review finding F6 reinstates a name gate over the stored `imageFile`
- * at the one member that writes, `processImageUpload` in `src/services/SkuService.ts` — which the paragraph
- * three above already establishes is unreachable from this entity. The three READ members declared below
- * are ungated, deliberately, and stay byte-compatible with [:L147], [:L195] and [:L222].
+ * ⛔ AND THE WRITE HALF OF THAT SAME CONTROL IS WITHDRAWN TOO, WHICH AGAIN NEEDS NO CHANGE HERE. A name
+ * gate over the stored `imageFile` briefly stood at the one member that writes, `processImageUpload` in
+ * `src/services/SkuService.ts` — which the paragraph three above already establishes is unreachable from
+ * this entity — and review finding F4 withdrew it, because it refused input the legacy ACCEPTS and AAP
+ * §0.6.7.7 declares D18 the sole behaviour-hardening exception. The three READ members declared below were
+ * never gated and still are not, and stay byte-compatible with [:L147], [:L195] and [:L222].
  *
  * ⛔ NO RUNTIME VALUE IS IMPORTED AND NONE IS NEEDED. This entity never mints a brand: it FORWARDS the
  * {@link ImageWebPath} it received from {@link SkuImagePathResolver.getImagePath}. The tag function
@@ -533,7 +534,7 @@ export interface SkuSalePricingLookup {
 /**
  * Answers whether any transaction references this SKU.
  *
- * ⚠️ D23 — THE IDENTIFIER IS PASSED, AND EARLIER PROSE HERE CLAIMED THE OPPOSITE ON A FALSE READING
+ * ⚠️ the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] — THE IDENTIFIER IS PASSED, AND EARLIER PROSE HERE CLAIMED THE OPPOSITE ON A FALSE READING
  * OF CFML. [model/entity/Sku.cfc:L594] calls `getTransactionExistsFlag( skuID=this.getSkuID() )` with
  * a NAMED argument, and the service member it reaches —
  * `public boolean function getTransactionExistsFlag()` at [model/service/SkuService.cfc:L285] —
@@ -1045,13 +1046,14 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * reach this field through a populate-and-save path, and NOTHING here refuses it. That is [:L58]'s
    * behaviour and AAP §0.8.2 guideline 4 keeps it.
    *
-   * What IS now checked is the one place the deliverable turns this value into a WRITE DESTINATION:
-   * `SkuService.processImageUpload` gates the stored name through `isWritableSkuImageFileName` before
-   * any member of `ImagePathPort` is reached, refusing the write with `false`. The distinction is deliberate
-   * and is the whole of the F2 adjudication — a value that merely NAMES a subject to compose or probe is
-   * left alone; a value that would CHOOSE a destination on disk is refused. Neither
-   * {@link Sku.getImagePath} nor {@link Sku.getImageExistsFlag} nor {@link Sku.getImageExtension} inspects
-   * it, and none of them should start.
+   * ⚠️ NOR IS IT CHECKED AT THE ONE PLACE THE DELIVERABLE TURNS THIS VALUE INTO A WRITE DESTINATION.
+   * `SkuService.processImageUpload` briefly gated the stored name before any member of `ImagePathPort` was
+   * reached; review finding F4 withdrew that gate, because it refused input the legacy ACCEPTS and AAP
+   * §0.6.7.7 declares D18 the sole behaviour-hardening exception in this port. So the CWE-22 exposure is
+   * carried on the write path as well as the read paths, FLAGGED on `ImagePathPort.saveImageFile` for the
+   * adapter that can legitimately confine it (AAP §0.7.3 S8). Neither {@link Sku.getImagePath} nor
+   * {@link Sku.getImageExistsFlag} nor {@link Sku.getImageExtension} inspects it, and none of them should
+   * start — an entity is not where a storage policy belongs.
    */
   declare imageFile?: string;
 
@@ -2464,11 +2466,12 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * (§0.6.7.7) does not license, D18 being a licence only for divergences that change no outcome for any
    * value the legacy was designed to accept.
    *
-   * The gate lives at the one member that turns the same field into a destination rather than a subject:
-   * `SkuService.processImageUpload`, via `isWritableSkuImageFileName`. Consequently the value this member
-   * receives may still be hostile, and `ImagePathPort.saveImageFile` is under a STATED obligation not to
-   * derive any destination from the {@link ImageWebPath} this member returns — see that member's three
-   * mandatory adapter obligations. Read paths compose; only the write path chooses. The CFML runtime is not reproducible in
+   * ⛔ AND NO GATE STANDS AT THE WRITE EITHER, AS OF REVIEW FINDING F4. One briefly did, at
+   * `SkuService.processImageUpload`; it refused input the legacy ACCEPTS, which only AAP §0.6.7.7's single
+   * declared exception could license. So the value this member composes may be hostile and the write may
+   * receive it; `ImagePathPort.saveImageFile` carries the flagged exposure and the notice that an adapter is
+   * the layer that may confine the destination. Read paths compose; the write path chooses, and neither
+   * refuses. The CFML runtime is not reproducible in
    * this environment (AAP §0.8.4.1), and engines differ on whether interpolating a null return value
    * raises or yields the empty string; the permissive reading is chosen and disclosed here rather
    * than a failure being invented.
@@ -2750,8 +2753,10 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * D18 actually licenses is a divergence that falls ONLY where the legacy's own behaviour was the flaw,
    * and that test is genuinely not met HERE: [:L222] answers a boolean about whatever the composed path
    * resolves to, which is a well-defined, intended result even for a traversed file, on an operation that
-   * writes nothing and discloses one bit. The conclusion stands; the ground behind it does not, and review
-   * finding F6 uses the corrected test to reinstate the gate on the WRITE — which this member is not.
+   * writes nothing and discloses one bit. The conclusion stands; the ground behind it does not. A revision
+   * used the corrected test to reinstate a gate on the WRITE — which this member is not — and review
+   * finding F4 withdrew even that, on the precedence ground that §0.6.7.7 declares ONE exception rather than
+   * a class of them.
    *
    * ⚠️ THE ANSWERS ARE STILL ONLY `true` ([:L223]) AND `false` ([:L225]) — the legacy member yields no
    * third state and raises nothing, and neither does this one. An absent `imageFile` reads as the empty
@@ -2867,7 +2872,7 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * The legacy body memoizes
    * `getService("skuService").getTransactionExistsFlag( skuID=this.getSkuID() )`.
    *
-   * ⚠️ D23 — `skuID` IS FORWARDED, because CFML forwards it. [:L594] passes it as a NAMED ARGUMENT to
+   * ⚠️ the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] — `skuID` IS FORWARDED, because CFML forwards it. [:L594] passes it as a NAMED ARGUMENT to
    * a service member that [model/service/SkuService.cfc:L285] declares with no formal parameters, and
    * [`:L286`] then forwards the entire `arguments` scope to the DAO with `argumentCollection=arguments`.
    * An undeclared named argument still lands in that scope, so the identifier arrives at
@@ -2889,7 +2894,7 @@ export class Sku implements AuditableEntity, ManagedEntity {
    */
   async getTransactionExistsFlag(checker: SkuTransactionExistenceChecker): Promise<boolean> {
     if (this.#transactionExistsFlag === undefined) {
-      // D23: skuID occupies the FIRST parameter — the SKU-scoped branch at SkuDAO.cfc:L58-L59.
+      // PARITY (model/service/SkuService.cfc:L285-L287): skuID occupies the FIRST parameter — the SKU-scoped branch at SkuDAO.cfc:L58-L59.
       this.#transactionExistsFlag = await checker.getTransactionExistsFlag(this.skuID);
     }
     return this.#transactionExistsFlag;

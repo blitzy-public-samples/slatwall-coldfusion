@@ -63,8 +63,8 @@
  * `BrandService` "the cleanest of the four services", and the measurements agree: zero dead injections,
  * zero non-persistent properties on `model/entity/Brand.cfc`, and — with no legacy data-access component
  * — no interpolated-statement site and no logical-versus-physical naming mistake to carry. Stated as the
- * two identifiers a reviewer will look for: THERE IS NO D18 SITE HERE and THERE IS NO D22 SITE HERE.
- * D18 is exclusive to `MySqlProductRepository.ts`; D22 needs a legacy statement for this entity and
+ * two identifiers a reviewer will look for: THERE IS NO D18 SITE HERE and THERE IS NO the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] SITE HERE.
+ * D18 is exclusive to `MySqlProductRepository.ts`; the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] needs a legacy statement for this entity and
  * there is none, which is why the naming note above is a plain warning rather than a carry-over
  * annotation. Nothing in the legacy tree is corrected (TR-6).
  *
@@ -134,16 +134,14 @@
  * `model/entity/Brand.cfc` so nothing is boundary-excluded from the entity, and — because there is no
  * legacy data-access component — no interpolated-statement site and no logical-versus-physical
  * naming mistake to carry. Stated as the two register identifiers a reviewer will look for: THERE IS
- * NO D18 SITE HERE and THERE IS NO D22 SITE HERE. D18 is the single declared hardening exception of
+ * NO D18 SITE HERE and THERE IS NO the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] SITE HERE. D18 is the single declared hardening exception of
  * the whole port and it is exclusive to `MySqlProductRepository.ts`, which translates the importer's
- * twenty-one value-interpolating statements; this file neither inherits it nor claims it. D22 is a
+ * twenty-one value-interpolating statements; this file neither inherits it nor claims it. the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] is a
  * logical-versus-physical naming instance, and with no legacy statement for this entity there is no
  * instance of it to carry — which is why the naming note above is a plain warning and deliberately
  * NOT a carry-over annotation. Both numbers are placed by the canonical register statement: the
  * register is stated canonically, and only once, in the header of
- * `src/ports/repositories/SkuRepository.ts` (AAP 0.6.7's frozen source range D1-D21, plus the
- * source extension D22 and the three contract corrections D23, D24 and D25, with no D26 or beyond;
- * and AAP 0.6.6's M1-M8 plus M9, with no M10 or beyond).
+ * `src/ports/repositories/SkuRepository.ts` (BOTH FROZEN AT THE AAP's OWN BOUNDS — AAP 0.6.7's D1-D21 and AAP 0.6.6's M1-M8. Nothing in this port mints an identifier beyond either range; a further source observation is recorded by its `path:Lnnn` locator instead).
  *
  * What IS annotated below, each with its locator: the two `get()` behaviours deliberately not
  * reproduced (`org/Hibachi/HibachiDAO.cfc:L24` and `:L19`), the availability polarity
@@ -243,6 +241,29 @@ const BIND_PLACEHOLDER = '?';
 const CLAUSE_JOINER = ', ';
 
 const BRAND_COLUMN_LIST = [BRAND_COLUMN.brandID, ...BRAND_WRITABLE_COLUMNS].join(CLAUSE_JOINER);
+
+/**
+ * `SwProduct`, and the two of its columns the F9 products guard reads.
+ *
+ * ⭐ WHY A BRAND ADAPTER NAMES THE PRODUCT TABLE AT ALL. `model/entity/Brand.cfc:L61` declares
+ * `products` as a one-to-many with `fkcolumn="brandID" inverse="true"`, which means the relationship
+ * is stored ENTIRELY on the product side — there is no link table and no column of `SwBrand` involved.
+ * Reading a brand's owned products is therefore necessarily a read of `SwProduct`, and it was one in
+ * the legacy too: Hibernate's lazy load of that collection issued exactly this statement. Naming the
+ * table here rather than delegating to the product adapter keeps the read on the BRAND boundary's own
+ * executor, which is what M6 requires of a guard that runs inside a brand delete's transaction.
+ *
+ * ⚠️ BOTH IDENTIFIERS GO THROUGH THE SAME WHITELIST AS EVERY OTHER ONE IN THIS FILE. `?` binds values
+ * only and cannot substitute an identifier (TR-4), so a table or column name that reached a statement
+ * from anywhere but a checked constant would be the D18 class of defect one file further along.
+ */
+const PRODUCT_TABLE = assertTableName('SwProduct');
+
+/** The two `SwProduct` columns the products guard reads: the key it counts and the key it filters on. */
+const PRODUCT_COLUMN = Object.freeze({
+  productID: assertColumnName(PRODUCT_TABLE, 'productID'),
+  brandID: assertColumnName(PRODUCT_TABLE, 'brandID'),
+});
 
 export interface BrandStatementExecutor extends SqlExecutor {
   /**
@@ -657,6 +678,54 @@ export class MySqlBrandRepository implements BrandRepository {
    * property for the same reason. A bind position cannot express absence, so absence is translated to
    * SQL null exactly at this seam, and nowhere earlier.
    */
+  /**
+   * Reads the identifiers of every product this brand owns — the F9 delete guard's live read.
+   *
+   * Implements {@link BrandRepository.findProductIdentifiersByBrand}, whose docblock carries the full
+   * reasoning: this is `model/entity/Brand.cfc:L61`'s LAZY collection load written down, narrowed to the
+   * one column `model/validation/Brand.json:L6`'s `maxCollection` ceiling actually reads.
+   *
+   * ⚠️ ONE STATEMENT, ONE BOUND PARAMETER, NO CLAUSE THE LAZY LOAD DID NOT HAVE. No ordering, because a
+   * lazy collection load imposes none and the guard is order-blind. No `LIMIT`, because the guard refuses
+   * at one row exactly as it refuses at ten thousand, so a ceiling would change nothing it can observe
+   * while inventing a bound the legacy has nowhere (AAP §0.7.3 S9).
+   *
+   * ⚠️ A ROW WHOSE `productID` IS UNUSABLE IS A REFUSAL, NOT A SKIP. `productID` is the primary key and
+   * cannot be null, so a row that answers no usable identifier means the projection or the schema is not
+   * what this member believes. Dropping it would UNDERCOUNT the collection — and an undercount here is
+   * precisely the failure F9 reported, so it is raised rather than absorbed.
+   *
+   * @param brandID - The brand whose owned products are counted. Bound, never interpolated.
+   * @returns One identifier per owned product row, in server order. Empty for an unsaved or unowned brand.
+   */
+  public async findProductIdentifiersByBrand(brandID: string): Promise<string[]> {
+    /* An unsaved brand cannot own a row, and probing for one would issue a statement the legacy's lazy
+     * load never issued either — Hibernate does not query a collection of a transient instance. */
+    if (brandID.length === 0) {
+      return [];
+    }
+
+    const sql =
+      `SELECT ${PRODUCT_COLUMN.productID} FROM ${PRODUCT_TABLE} ` +
+      `WHERE ${PRODUCT_COLUMN.brandID} = ${BIND_PLACEHOLDER}`;
+
+    const rows = await this.executor.execute(sql, [brandID]);
+
+    return rows.map((row): string => {
+      const productID = row[PRODUCT_COLUMN.productID];
+
+      if (typeof productID !== 'string' || productID.length === 0) {
+        throw new DataIntegrityError(
+          'A product row owned by this brand answered no usable identifier, so the brand delete ' +
+            'guard cannot count the collection it is required to count.',
+          { context: { brandID, received: typeof productID } },
+        );
+      }
+
+      return productID;
+    });
+  }
+
   private collectWritableValues(brand: ManagedEntity<Brand>): readonly unknown[] {
     return [
       brand.activeFlag ?? null,

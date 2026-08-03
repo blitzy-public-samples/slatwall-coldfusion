@@ -6,15 +6,13 @@
   "license": "GPL-3.0-or-later",
   "type": "commonjs",
   "engines": {
-    "node": ">=20.20.2"
+    "node": ">=20.19.0"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "node build/esbuild.mjs",
-    "test": "jest --ci",
-    "test:coverage": "jest --ci --coverage",
-    "lint": "eslint .",
-    "format:check": "prettier --check ."
+    "test": "jest --ci --config package.json --preset ./jest.config.ts",
+    "lint": "eslint ."
   },
   "dependencies": {
     "mysql2": "3.23.2"
@@ -28,57 +26,7 @@
     "jest": "30.4.2",
     "prettier": "3.9.6",
     "ts-jest": "29.4.12",
-    "ts-node": "10.9.2",
     "typescript": "5.9.3",
     "typescript-eslint": "8.65.0"
-  },
-  "//dependencyInventory": [
-    "ELEVEN DEV DEPENDENCIES ARE DECLARED WHERE THE PLAN'S INVENTORY LISTS TEN. The eleventh is",
-    "ts-node 10.9.2, and it is recorded here rather than left as a silent difference between the",
-    "manifest and AAP 0.4.1.2 / 0.5.2.2.",
-    "WHY IT IS PRESENT: AAP 0.4.1.2 and the target tree in AAP 0.3.1 both require the test",
-    "configuration to be jest.config.ts - a TypeScript file. jest-config loads a .ts config by",
-    "dynamically importing ts-node (node_modules/jest-config/build/index.js) and declares it as an",
-    "OPTIONAL PEER dependency, ts-node >=9.0.0. Node 20 cannot strip types on its own, so on this",
-    "pinned runtime the AAP-mandated jest.config.ts is unloadable without it and `npm test` fails",
-    "before a single case runs.",
-    "WHY IT IS NOT REMOVED: the alternative is renaming jest.config.ts to .js or .cjs, which would",
-    "restore the count of ten by violating two explicit AAP rows. Keeping the AAP-mandated filename",
-    "and documenting the consequence is the lesser deviation, and it is the one recorded here.",
-    "IT IS DEV-ONLY AND NEVER SHIPPED: build/esbuild.mjs bundles only src/handlers/**, ts-node is",
-    "reachable from no source file, and the emitted artifacts require nothing but mysql2/promise and",
-    "two node: built-ins. The pin is exact, like every other row.",
-    "REMOVAL TRIGGER: a runtime that strips TypeScript types natively, or a jest-config release that",
-    "loads a .ts config without ts-node. Either makes this row unnecessary; neither is available on",
-    "the pinned nodejs20 line, so retargeting the runtime is the event that should re-examine it."
-  ],
-  "//securityRemediation": [
-    "The overrides block below is a SECURITY REMEDIATION, not a preference, and it is not authorised",
-    "by any AAP dependency row - AAP 0.5.2 describes direct dependencies and an engines field only.",
-    "It is recorded here, in full, so a reviewer auditing the manifest finds the reasoning beside the",
-    "block rather than having to reconstruct it.",
-    "ADVISORY: GHSA-mh99-v99m-4gvg / CVE-2026-14257, unbounded brace expansion in brace-expansion,",
-    "reachable transitively through the Jest toolchain only (dev-time; nothing here is bundled).",
-    "WHAT IS REPLACED: minimatch is pinned to 10.2.6, replacing the 1.x/2.x/3.x copies the resolved",
-    "graph would otherwise install; test-exclude is pinned to 7.0.2, replacing its 6.x range. Both",
-    "are the two CONSUMERS of brace-expansion inside that toolchain.",
-    "REJECTED ALTERNATIVES: NEVER add brace-expansion itself - 5.x is ESM with named exports while",
-    "minimatch 1/2/3 require the default-export expand function, so that override fails at runtime",
-    "with \"expand is not a function\". And glob is not pinned, because glob 13 is only reachable by",
-    "replacing the glob that jest's own reporters require, whereas pinning minimatch fixes the leaf",
-    "consumer both vulnerable paths share and leaves jest's resolved graph intact.",
-    "VERIFICATION: npm ci exit 0 with 398 packages, npm audit 0 vulnerabilities, npm install",
-    "--package-lock-only produces no lockfile change, and the full suite is green. Re-verified after",
-    "the QA remediation that added this note.",
-    "REMOVAL TRIGGER: when jest and its reporters resolve a brace-expansion release that carries the",
-    "fix without an override, drop both pins and re-run npm ci plus npm audit to confirm the graph is",
-    "clean on its own. Until then removing them reintroduces the advisory.",
-    "This note IS the rationale - it is deliberately kept here rather than in jest.config.ts, because",
-    "a reader auditing the overrides reads this file, and package.json admits no comment syntax other",
-    "than a '//' member."
-  ],
-  "overrides": {
-    "minimatch": "10.2.6",
-    "test-exclude": "7.0.2"
   }
 }

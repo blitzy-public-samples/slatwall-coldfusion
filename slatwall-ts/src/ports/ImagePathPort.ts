@@ -60,10 +60,13 @@
  * three paragraphs up excludes, and {@link toImageWebPath} is admitted only because it performs no
  * inspection at all. A `const` union or a nominal type would have been fine here; a validator never was.
  *
- * ⭐ SO THE GATE MOVED RATHER THAN DISAPPEARING. Review finding F6 reinstates the WRITE-boundary half of
- * it as `isWritableSkuImageFileName` in `src/services/SkuService.ts` — at the member that decides the
- * write, where a predicate is ordinary code. Three other strands of that earlier revision do NOT come
- * back. DECISION I-1 below records which, and why, control by control.
+ * ⛔ AND NO NARROWER SUCCESSOR ENFORCES IT ANYWHERE EITHER, AS OF REVIEW FINDING F4. A write-boundary
+ * predicate did briefly stand in `src/services/SkuService.ts`; it is withdrawn, because it refused input
+ * the legacy ACCEPTS and AAP §0.6.7.7 declares D18 the SINGLE behaviour-hardening exception in this port
+ * (AAP §0.8.2 Guideline 4, §0.1.2.1). The exposure is therefore CARRIED, and it is flagged on
+ * {@link ImagePathPort.saveImageFile} for the implementer who can legitimately confine it — an adapter is
+ * the only layer that knows its own storage root. DECISION I-1 below records the whole sequence, control by
+ * control.
  *
  * ASYNCHRONY, AND WHY IT DIFFERS FROM `SettingResolverPort`
  * --------------------------------------------------------
@@ -175,13 +178,13 @@
  * the error: AAP §0.8.2 guideline 4 forbids it, and DECISION I-1 below keeps both members taking the
  * composed path exactly as the legacy hands it over.
  *
- * ⭐ REFUSING A VALUE AND REWRITING ONE ARE DIFFERENT ACTS, AND ONLY THE FIRST IS REINSTATED. Review
- * finding F6 puts a gate over the stored `imageFile` column in `src/services/SkuService.ts`, ahead of
- * this port entirely: on a value the legacy's own generator could not have produced, the write is refused
- * and NO member of this port is called at all. On every other value the composed path arrives here
- * byte-for-byte, unnarrowed and unrewritten, which is why {@link SaveImageFileRequest.filePath} still
- * types the whole path and not a name. The READ path is not gated at all — see (3) in DECISION I-1 —
- * so the residual CWE-22 reach on the probe is registered, not closed. What remains a mismatch is exactly
+ * ⛔ AND NEITHER ACT IS PERFORMED NOW: NOTHING IS REWRITTEN AND NOTHING IS REFUSED. A gate over the
+ * stored `imageFile` column stood briefly in `src/services/SkuService.ts`, ahead of this port entirely; it
+ * is withdrawn under review finding F4 because it refused input the legacy ACCEPTS, and AAP §0.6.7.7
+ * declares D18 the sole behaviour-hardening exception in this port. So EVERY value arrives here
+ * byte-for-byte, unnarrowed and unrewritten, which is why {@link SaveImageFileRequest.filePath} still types
+ * the whole path and not a name — and the residual CWE-22 reach on BOTH the probe and the write is
+ * registered rather than closed (DECISION I-1 controls (1) and (3)). What remains a mismatch is exactly
  * what it always was — a Lambda runtime has no `expandPath` equivalent and no persistent product-image
  * directory to resolve against.
  *
@@ -198,9 +201,9 @@
  * NO MISMATCH NUMBER IS CLAIMED, AND NO RANGE IS RESTATED HERE. Every mismatch the port recognises is
  * already allocated to an owner elsewhere — M1, M3 and M4 to the product importer, M2 to the feed
  * handler, M5 to the unit of work for the request-end implicit transaction demarcation, M6 to the
- * validation read-back loop, M7 to the repository ports, M8 to `SettingResolverPort`, and M9 to
- * `src/services/SkuService.ts` — so the gap recorded above is an additional, UNNUMBERED mismatch.
- * Minting a number for it would violate AAP 0.7.3 S9. The register's bounds are stated in exactly one
+ * validation read-back loop, M7 to the repository ports and M8 to `SettingResolverPort` — so the gap
+ * recorded above is an additional, UNNUMBERED mismatch. Minting a number for it would violate AAP 0.7.3
+ * S9, and AAP 0.6.6 is FROZEN at M1-M8 in any case. The two frozen bounds are stated in exactly one
  * place, `src/ports/repositories/SkuRepository.ts`, and deliberately not repeated here.
  */
 
@@ -422,13 +425,21 @@ export const IMAGE_UPLOAD_ALLOWED_EXTENSIONS = 'jpg,jpeg,png,gif';
  */
 
 /* ================================================================================================
- * SEC-07 / DECISION I-1, RE-ADJUDICATED — THE WRITE BOUNDARY IS CLOSED, THE READ PATH IS NOT, AND THE
- * PATH TYPE STAYS NOMINAL
+ * SEC-07 / DECISION I-1, RE-ADJUDICATED TWICE — ALL SIX CONTROLS ARE WITHDRAWN, THE EXPOSURE IS
+ * CARRIED AND FLAGGED, AND THE PATH TYPE STAYS NOMINAL
  *
- * This block was previously headed "IS WITHDRAWN". It withdrew SIX distinct controls on ONE argument,
- * and the argument was sound for four of them and false for two. Review finding F6 (CWE-22 / CWE-434)
- * forced each one to be adjudicated separately. The verdicts are below, control by control, in the
- * register style D18 (AAP §0.6.7.7) established for a declared divergence.
+ * THE HISTORY MATTERS HERE, BECAUSE THIS BLOCK HAS BEEN WRITTEN THREE TIMES AND A READER DESERVES TO SEE
+ * WHY IT SETTLED WHERE IT DID. It first withdrew SIX distinct controls on ONE argument. A later revision
+ * found that argument sound for four of them and false for two, and REINSTATED control (1) — a name gate
+ * at the write boundary — on the ground that D18's own example already changes outcomes on malicious
+ * input, so a refusal shares D18's shape. Review finding F4 then withdrew control (1) again, and NOT by
+ * disputing that reading: by PRECEDENCE. AAP §0.6.7.7 declares D18 "the single place where the port
+ * intentionally does not preserve legacy behavior exactly", AAP §0.8.2 Guideline 4 forbids enhancement
+ * beyond what the migration requires, and AAP §0.1.2.1 makes the plan FROZEN and not reinterpretable.
+ * Reaching a SECOND exception by analogy with the first is exactly the reinterpretation §0.1.2.1
+ * excludes, however well-argued the analogy. So all six controls are withdrawn, the CWE-22 exposure on
+ * BOTH the read and the write path is CARRIED, and it is FLAGGED for the operator per AAP §0.7.3 S8
+ * rather than closed here. The verdicts are below, control by control.
  *
  * ⛔ WHAT THE LEGACY DOES, VERBATIM, AND IT VALIDATES NOTHING AT THE POINT OF USE.
  * `model/entity/Sku.cfc:L146` composes a WEB URL by interpolating the stored column value:
@@ -448,19 +459,24 @@ export const IMAGE_UPLOAD_ALLOWED_EXTENSIONS = 'jpg,jpeg,png,gif';
  * and `generateImageFileName` (`model/entity/Sku.cfc:L131-L139`) filters every contributed segment
  * through `reReplaceNoCase(…, "[^a-z0-9\-\_]", "", "all")` before appending one `"."` and one extension.
  * So the legacy's own writers can only ever store a single path segment drawn from `[A-Za-z0-9\-_]` plus
- * one dot. The generator IS the policy; it was simply never re-checked at the point of use. Transcribing
- * it into a gate at the write invents nothing — see `src/services/SkuService.ts`, which carries the
- * transcription and the closed-set evidence for the two settings the generator reads.
+ * one dot. The generator IS the policy; it was simply never re-checked at the point of use — and this
+ * port does not re-check it either, because re-checking it refuses values the legacy ACCEPTS. That
+ * measurement is preserved here because it bounds the exposure honestly: a deployment whose column was
+ * only ever written by those two writers is not exposed at all, and one whose column was written by any
+ * other route is. `src/services/SkuService.ts` records the same finding at the write it decides.
  *
  * ================================ THE SIX CONTROLS, ADJUDICATED ==================================
  *
- * ⭐ (1) A NAME GATE OVER THE STORED VALUE — REINSTATED, AT THE WRITE ONLY, AND NOT IN THIS FILE.
- * Reinstated as `isWritableSkuImageFileName` in `src/services/SkuService.ts`, consulted by
- * `processImageUpload` BEFORE any member of this port is touched. It does not live here because this
- * module declares contracts and performs no inspection — a compiled `RegExp` and a function body are
- * outside that contract, which is why the earlier revision's `validateImageFileName` had to leave this
- * file whatever the security verdict had been. That much of the withdrawal was RIGHT, on grounds of
- * architecture rather than of behaviour, and the earlier note never said so.
+ * ⛔ (1) A NAME GATE OVER THE STORED VALUE — WITHDRAWN AGAIN, ON PRECEDENCE (review finding F4). It was
+ * briefly reinstated in `src/services/SkuService.ts` as a single predicate consulted by
+ * `processImageUpload` before any member of this port was touched, transcribed from the legacy's own
+ * generator and answering `false` rather than raising. It was as narrow as such a gate can be, and it was
+ * still a behaviour change on input the legacy accepts, which only AAP §0.6.7.7's declared exception could
+ * license and §0.6.7.7 declares exactly one. TWO SECONDARY POINTS SURVIVE THAT WITHDRAWAL and are kept
+ * because they remain true independently: such a gate could never have lived in THIS file (a compiled
+ * `RegExp` and a function body are outside a contracts-only module, which is why the earliest revision's
+ * `validateImageFileName` had to leave regardless of the security verdict), and the place to confine an
+ * image write is an ADAPTER, which is the only layer that knows its own storage root.
  *
  * ⛔ (2) `ImageStorageBase`, AN INJECTED CONTAINMENT DIRECTORY — STAYS WITHDRAWN, AND GROUND 3 BELOW IS
  * SOUND. It had no legacy counterpart, so any value for it would be invented configuration, which AAP
@@ -477,15 +493,17 @@ export const IMAGE_UPLOAD_ALLOWED_EXTENSIONS = 'jpg,jpeg,png,gif';
  *
  * ⛔ (4) REPLACING {@link SaveImageFileRequest.filePath} WITH A VALIDATED BASENAME — STAYS WITHDRAWN, and
  * it was never a hardening. A basename carries no destination, so the earlier revision did not confine
- * the write, it destroyed it. The reinstated gate REFUSES a bad value and passes a good one through
- * UNCHANGED; it never rewrites one. `src/services/SkuService.ts`'s own schema puts this beyond doubt —
- * it requires that member to "preserve the exact file path supplied by the SKU/image path contract".
+ * the write, it destroyed it. The composed path is passed through UNCHANGED, exactly as
+ * `model/service/SkuService.cfc:L211-L212` passes it, and `src/services/SkuService.ts`'s own schema puts
+ * that beyond doubt — it requires that member to "preserve the exact file path supplied by the SKU/image
+ * path contract". This control stays withdrawn on its own merits, not merely on precedence.
  *
- * ⛔ (5) RAISING ON REFUSAL — STAYS WITHDRAWN. `model/service/SkuService.cfc:L213-L217` has exactly two
- * outcomes, `true` and `false`, and records nothing on either. The reinstated gate answers `false`,
- * which every caller of a `Promise<boolean>` already handles. Note that the two halves of the earlier
- * revision CONTRADICTED each other on this point — {@link ImagePathPort.saveImageFile}'s own note chose
- * `false` while the service side raised — and `false` is the half that was right.
+ * ⛔ (5) RAISING ON REFUSAL — STAYS WITHDRAWN, AND IS NOW MOOT SINCE NOTHING REFUSES.
+ * `model/service/SkuService.cfc:L213-L217` has exactly two outcomes, `true` and `false`, and records
+ * nothing on either, so a raise would have handed callers a failure mode the legacy never had. Note that
+ * the two halves of the middle revision CONTRADICTED each other on this point —
+ * {@link ImagePathPort.saveImageFile}'s own note chose `false` while the service side raised — and `false`
+ * was the half that was right, for as long as either existed.
  *
  * ⛔ (6) INSPECTING THE UPLOADED BYTES FOR A PERMITTED IMAGE TYPE — STAYS WITHDRAWN. Nothing in the
  * legacy sniffs content. `L212` passes an `allowedExtensions` list and nothing more; a magic-number or
@@ -504,10 +522,15 @@ export const IMAGE_UPLOAD_ALLOWED_EXTENSIONS = 'jpg,jpeg,png,gif';
  *     for every input on which the legacy produced a well-defined, intended result, the port produces
  *     the same result; the divergence falls only on inputs where the legacy's behaviour WAS the flaw.
  *
- * Control (1) satisfies that test exactly. Every value the legacy's own two writers can store is
- * admitted, so every intended input is unchanged; only a value no generator could have produced — a
- * separator, a second dot, a traversal — is refused, and on those the legacy's behaviour was the flaw.
- * Grounds 1 and 3 of the original withdrawal survive intact and are honoured above at (2), (3) and (6).
+ * ⛔ AND CONTROL (1) DID SATISFY THAT TEST, WHICH IS PRECISELY WHY THE WITHDRAWAL HAD TO REST ON
+ * SOMETHING ELSE. Every value the legacy's own two writers can store would have been admitted, so every
+ * intended input was unchanged; only a value no generator could have produced — a separator, a second
+ * dot, a traversal — was refused, and on those the legacy's behaviour WAS the flaw. Sharing D18's shape
+ * is not the same as being D18: AAP §0.6.7.7 names ONE divergence, by locator, and §0.1.2.1 forbids
+ * reading the plan as licensing a class of them. A future iteration that wants this control has a clean
+ * route — amend the AAP, which is a decision above this port's authority — and until then the exposure is
+ * carried and flagged. Grounds 1 and 3 of the original withdrawal survive intact and are honoured above at
+ * (2), (3) and (6).
  *
  * ⚠️ AND A SEPARATE FACT ABOUT THIS PATH, VERIFIED REPO-WIDE, THAT MAKES (1) EASIER STILL. The
  * collaborator member `saveImageFile` DOES NOT EXIST ANYWHERE IN THE LEGACY. A grep across every `.cfc`
@@ -520,24 +543,27 @@ export const IMAGE_UPLOAD_ALLOWED_EXTENSIONS = 'jpg,jpeg,png,gif';
  * limitation outright: "Ordered arguments only--named arguments not supported." `L212` passes only NAMED
  * arguments. So the legacy has no well-defined result on this path for ANY input, which is the same
  * class of defect as D4 and D5 (AAP §0.6.7.3). It is recorded here by locator and NOT minted as a new
- * register number: the canonical block in `src/ports/repositories/SkuRepository.ts` closes the live
- * numbering at D25/M9, minting past it caused a documented contradiction once already, and AAP §0.8.2
- * guideline 6 asks for the decision to be COMMENTED, not numbered. It is also why this port's
+ * register number: the canonical block in `src/ports/repositories/SkuRepository.ts` records that AAP
+ * §0.6.7 is FROZEN at D1-D21 and AAP §0.6.6 at M1-M8, minting past either range caused a documented
+ * contradiction once already, and AAP §0.8.2 guideline 6 asks for the decision to be COMMENTED with its
+ * locator, not numbered. It is also why this port's
  * {@link ImagePathPort.saveImageFile} contract is defined by AAP §0.4.3.2 and by the call site rather
  * than by a legacy body — there is no legacy body to reproduce.
  *
- * ⚠️ WHAT IS STILL ONLY FLAGGED, NOT CLOSED. The READ path keeps the legacy's CWE-22 reach, by decision
- * (3) above. It is FLAGGED here by locator and at {@link ImagePathPort.getImageExistsFlag}, and left for
- * the operator to close in whichever adapter implements this port — the S8 treatment the AAP prescribes
- * for a divergence a port is not licensed to make. No adapter for this port is authored in this
- * checkpoint (AAP §0.4.1.7 enumerates none).
+ * ⚠️ WHAT IS FLAGGED AND NOT CLOSED — NOW BOTH PATHS, NOT ONE. The READ path keeps the legacy's CWE-22
+ * reach by decision (3), and the WRITE path keeps it by decision (1). Both are FLAGGED by locator, at
+ * {@link ImagePathPort.getImageExistsFlag} and {@link ImagePathPort.saveImageFile} respectively, and both
+ * are left for the operator to close in whichever adapter implements this port — the S8 treatment the AAP
+ * prescribes for a divergence a port is not licensed to make. No adapter for this port is authored in this
+ * checkpoint (AAP §0.4.1.7 enumerates none), so no confinement is authored here either.
  *
  * ⭐ WHAT SURVIVES HERE, AND IT CHANGES NOTHING. {@link ImageWebPath} remains, as a purely NOMINAL label
  * for "a path this slice composed for an image". EVERY member that consumes a path accepts it — the
  * existence probe and the save request both do — so it refuses nothing, gates nothing and alters no
  * outcome. It is documentation the compiler can carry, not a restriction: {@link toImageWebPath} tags
- * any string on request and no member demands a tag a caller cannot obtain. The enforcement is at the
- * write decision, in the service; the type system is not asked to carry it.
+ * any string on request and no member demands a tag a caller cannot obtain. There is no enforcement
+ * anywhere for it to stand in for; the type system was never asked to carry one, and now neither is the
+ * service.
  * ============================================================================================== */
 
 declare const IMAGE_WEB_PATH: unique symbol;
@@ -730,12 +756,12 @@ export interface SaveImageFileRequest {
    * basename and no destination, and for why that rewrite was never a hardening — a basename carries no
    * destination, so it did not confine the write, it destroyed it.
    *
-   * ⭐ THE VALUE THAT ARRIVES HERE IS NOW PRE-SCREENED, AND IT IS STILL THE WHOLE COMPOSED PATH. Review
-   * finding F6 gates the stored `imageFile` in `src/services/SkuService.ts` BEFORE the path is composed,
-   * so a name the legacy's own generator could not have produced never reaches this member at all. What
-   * does reach it is unchanged: the same composed path the legacy passes, byte for byte. Refusing and
-   * rewriting are different acts and only the first is reinstated; this member's type is deliberately
-   * untouched by the fix. The CWE-22 exposure that remains is on the READ path — see control (3).
+   * ⚠️ THE VALUE THAT ARRIVES HERE IS NOT PRE-SCREENED, AND IT IS THE WHOLE COMPOSED PATH. A gate over the
+   * stored `imageFile` briefly stood in `src/services/SkuService.ts` before the path was composed; it is
+   * withdrawn under review finding F4 (DECISION I-1 control (1)), so whatever the column holds reaches this
+   * member as part of the composed path, byte for byte, exactly as `model/service/SkuService.cfc:L211-L212`
+   * hands it over. The CWE-22 exposure is carried on this WRITE path and on the READ path alike — see
+   * controls (1) and (3), and the confinement notice on {@link ImagePathPort.saveImageFile}.
    *
    * The name is the boundary's name, not the caller's, exactly as `uploadResult` is: the enclosing
    * legacy member holds the value in a local called `imagePath` at `:L211` and passes it as `filePath`
@@ -797,10 +823,10 @@ export interface ImagePathPort {
    * still be handed to them. The claim survived from the pre-withdrawal revision, where the brand DID make
    * those two call shapes uncompilable. Nothing here refuses anything.
    *
-   * ⛔ AND REVIEW FINDING F6 DOES NOT GATE THIS MEMBER EITHER, for the same reason it does not gate the
-   * probe: composition is display work, reached by the Google feed and by admin display for every SKU. The
-   * gate sits at the one CALLER that writes — `processImageUpload` in `src/services/SkuService.ts` — and
-   * runs before it composes, so a refused name reaches neither this member nor the write.
+   * ⛔ AND NO GATE PRECEDES THIS MEMBER, ON ANY PATH. Composition is display work, reached by the Google
+   * feed and by admin display for every SKU, so it was never gated; the write-side gate that briefly
+   * preceded the ONE caller that writes — `processImageUpload` in `src/services/SkuService.ts` — is
+   * withdrawn under review finding F4 (DECISION I-1 control (1)). Whatever is stored composes.
    *
    * @param imageFile the SKU's stored image file name — the persistent property declared at
    *   `model/entity/Sku.cfc:58`, which `model/entity/Sku.cfc:146` interpolates as the final segment
@@ -853,12 +879,13 @@ export interface ImagePathPort {
    * reported on the traversed file, which is an outcome change, and the containment directory had no
    * legacy counterpart to derive a value from. See DECISION I-1 above, control (3).
    *
-   * ⛔ AND REVIEW FINDING F6 DOES NOT REACH THIS MEMBER, BY DECISION RATHER THAN BY OVERSIGHT. F6 closes
-   * the WRITE boundary in `src/services/SkuService.ts`; this is the READ. `:L222` answers a boolean about
-   * whatever the composed path resolves to, including a traversed one, and that answer is a defined legacy
-   * outcome: refusing to probe would replace it with a different one, on an operation that writes nothing
-   * and discloses one bit. The residual CWE-22 exposure on this member is therefore FLAGGED at
-   * `model/entity/Sku.cfc:L222` for the operator to close in an adapter — deliberately still open.
+   * ⛔ AND NO GATE REACHES THIS MEMBER, WHICH WAS ALWAYS THE VERDICT FOR THE READ PATH AND IS NOW THE
+   * VERDICT FOR THE WRITE PATH TOO (review finding F4, DECISION I-1 controls (1) and (3)). `:L222` answers
+   * a boolean about whatever the composed path resolves to, including a traversed one, and that answer is a
+   * defined legacy outcome: refusing to probe would replace it with a different one, on an operation that
+   * writes nothing and discloses one bit. The residual CWE-22 exposure on this member is therefore FLAGGED
+   * at `model/entity/Sku.cfc:L222` for the operator to close in an adapter — deliberately still open, as is
+   * its counterpart on {@link ImagePathPort.saveImageFile}.
    *
    * @param imagePath the composed path, as `model/entity/Sku.cfc:L222` supplies it — the result of
    *   {@link ImagePathPort.getImagePath}, which is what `expandPath` receives there. Accepted
@@ -886,20 +913,27 @@ export interface ImagePathPort {
    * IMPOSED FOUR. It required the adapter to resolve the destination by joining a validated basename
    * under an injected containment directory, to canonicalise that join and re-verify containment, to
    * verify that the bytes really are an image of a permitted type, and to resolve `false` rather than
-   * raise when any of those refused. This member still imposes NONE of them, and DECISION I-1 above
-   * adjudicates each: the basename substitution stays withdrawn as control (4) — it destroyed the
-   * destination rather than confining it — the containment directory stays withdrawn as control (2), and
-   * content inspection stays withdrawn as control (6). The fourth is the odd one out and is worth naming:
-   * resolving `false` rather than raising is the shape review finding F6's gate ADOPTS, so that
-   * obligation was right all along, and it now sits at the caller rather than being imposed on an
-   * implementation here. This block appeared TWICE in the same doc comment once; the duplicate is gone.
+   * raise when any of those refused. This member imposes NONE of them, and DECISION I-1 above adjudicates
+   * each: the basename substitution stays withdrawn as control (4) — it destroyed the destination rather
+   * than confining it — the containment directory stays withdrawn as control (2), and content inspection
+   * stays withdrawn as control (6). The fourth is moot: nothing refuses anywhere on this path, so there is
+   * no refusal for an implementation to shape.
    *
-   * ⭐ THE NAME POLICY IS ENFORCED UPSTREAM OF THIS MEMBER, NOT BY IT. `src/services/SkuService.ts`
-   * screens the stored `imageFile` before composing a path, so a name the legacy's own generator
-   * (`model/entity/Sku.cfc:L131-L139`) could not have produced never becomes a request at all. That keeps
-   * this contract exactly as wide as the legacy's — an implementation is still handed a whole composed
-   * path and still owes nothing but the store — while the refusal happens where the write is decided.
-   * The residual CWE-22 exposure that remains is on the READ path only; see
+   * ⚠️⚠️ THE STORED FILE NAME IS NOT SCREENED BY ANY LAYER OF THIS PORT, AND THE CWE-22 EXPOSURE ON THIS
+   * MEMBER IS CARRIED RATHER THAN CLOSED (AAP §0.7.3 S8). `model/entity/Sku.cfc:L146` interpolates the
+   * stored `imageFile` column straight into the composed path and
+   * `model/service/SkuService.cfc:L211-L212` hands that same value to this member as `filePath`, so a
+   * stored `../../../../tmp/payload.jpg` names a destination outside the product image directory. A gate
+   * over that column stood briefly in `src/services/SkuService.ts` and is withdrawn under review finding
+   * F4, because it refused input the legacy ACCEPTS and AAP §0.6.7.7 declares D18 the sole
+   * behaviour-hardening exception in this port; DECISION I-1 control (1) above carries the full reasoning.
+   *
+   * ⭐ SO THE IMPLEMENTER OF THIS MEMBER IS WHERE CONFINEMENT BELONGS, AND THIS IS THE NOTICE OF IT. An
+   * adapter is the only layer that knows its own storage root, and it may reject or confine a request whose
+   * `filePath` escapes that root WITHOUT changing any Catalog-side outcome, because the port's contract
+   * already admits a `false`. Nothing here requires it to — imposing it would be the same unlicensed
+   * hardening one layer down — but nothing here prevents it either, and an implementer who ignores this
+   * paragraph inherits the legacy's exposure knowingly. The equivalent notice for the READ path is on
    * {@link ImagePathPort.getImageExistsFlag}.
    *
    * ⚠️ NO OVERWRITE, RETENTION, PERMISSION OR NAMING POLICY IS STATED HERE, deliberately. The legacy

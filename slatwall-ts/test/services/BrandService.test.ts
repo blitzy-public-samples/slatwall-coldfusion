@@ -14,7 +14,7 @@
  * constructor. Nothing boots an application, nothing resolves a name at run time, and nothing
  * touches a database.
  *
- * The legacy harness could not work that way. `meta/tests/unit/SlatwallUnitTestBase.cfc:L49-L84`
+ * The legacy harness could not work that way. `meta/tests/unit/SlatwallUnitTestBase.cfc:L49-L79`
  * extends `mxunit.framework.TestCase`, instantiates the whole FW/1 application object at `:L52`,
  * calls `bootstrap()` at `:L60` and then reaches its subject through a DI/1 string lookup —
  * `request.slatwallScope.getService("brandService")` at
@@ -196,12 +196,10 @@ import { BrandService } from '../../src/services/BrandService';
  * `delete` reports refusal as `false` rather than raising, per `:L68`. So no case in this file has an
  * error class to name, and the two imports would now be dead weight the linter would reject.
  *
- * ⚠️ `RequestBudgetExhaustedError` IS STILL IMPORTED, BELOW, AND IT IS NOT AN EXCEPTION TO THE ABOVE.
- * It names a BUDGET refusal raised by the injected url-title probe bound, not a validation outcome of
- * `save` or `delete`, and two cases assert it by class. F1 changed how validation failures are
- * reported; it did not touch the probe bound.
+ * ⛔ NOR IS `RequestBudgetExhaustedError`, ANY LONGER. It was imported to assert the refusal of an
+ * over-budget URL-title derivation by class; the optional probe ceiling that raised it is withdrawn, so no
+ * case in this file has any error class to name. See the GROUP A2 IS GONE block below.
  */
-import { RequestBudgetExhaustedError } from '../../src/errors/DomainError';
 import { createUniqueURLTitle } from '../../src/util/urlTitle';
 import {
   brandValidationRules,
@@ -224,7 +222,6 @@ import type { BrandRepository } from '../../src/ports/repositories/BrandReposito
 import type { UniquePropertyPort } from '../../src/ports/UniquePropertyPort';
 import type { BrandBaseService, ManagedBrand } from '../../src/services/BrandService';
 import type { UniqueValueProbe } from '../../src/util/urlTitle';
-import type { UrlTitleProbeBudget } from '../../src/util/urlTitleProbeBudget';
 import type { ValidationContext } from '../../src/validation/Validator';
 import type {
   BaseServicePersistenceDouble,
@@ -237,6 +234,29 @@ import type {
   UrlTitleTableName,
   ValidatorHarness,
 } from '../support/inMemoryRepositories';
+import { BRAND_ENTITY_METADATA, Brand } from '../../src/domain/product/Brand';
+import { manageEntity } from '../../src/domain/base/populate';
+import { Product } from '../../src/domain/product/Product';
+import { BRAND_ACCESS_MATRIX, createBrandHandler } from '../../src/handlers/brandHandler';
+import type {
+  BrandAuthorizationEvent,
+  BrandHandler,
+  BrandHandlerService,
+  BrandIdentifierEvent,
+  BrandSaveEvent,
+} from '../../src/handlers/brandHandler';
+import type {
+  AccountReference,
+  EntityAuthorizationRequest,
+  RequestAuthorizationResolver,
+} from '../../src/ports/AccountContextPort';
+import type { TransactionalWriteRunner } from '../../src/config/container';
+import { DomainError } from '../../src/errors/DomainError';
+import {
+  clearRequestAuthorizationResolver,
+  registerRequestAuthorizationResolver,
+  resolveRequestAuthorization,
+} from '../../src/handlers/httpResponse';
 
 /* ================================================================================================
  * SHARED IMMUTABLE BINDINGS
@@ -395,13 +415,6 @@ interface BrandHarnessOptions {
   readonly settingValuesUpdated?: number;
   /** Brands already stored, so a read or a delete has something to find. */
   readonly storedBrands?: readonly ManagedBrand[];
-  /**
-   * The OPTIONAL URL-title probe ceiling — review finding F5 (SEC-14).
-   *
-   * Absent in every case that does not name it, which is how the parity path stays the default here
-   * exactly as it is in a composition root.
-   */
-  readonly urlTitleProbeBudget?: UrlTitleProbeBudget;
 }
 
 /** The service under test plus every observation point the real graph offers. */
@@ -486,10 +499,7 @@ function createBrandHarness(options: BrandHarnessOptions = {}): BrandHarness {
     baseService,
     brands,
     persistence,
-    service:
-      options.urlTitleProbeBudget === undefined
-        ? new BrandService(brands.repository, baseService)
-        : new BrandService(brands.repository, baseService, options.urlTitleProbeBudget),
+    service: new BrandService(brands.repository, baseService),
     validation,
   };
 }
@@ -807,7 +817,7 @@ describe('createUniqueURLTitle — the collision suffix sequence', () => {
      *   • This case calls `createUniqueURLTitle` DIRECTLY with an unwrapped probe. There is no budget
      *     to wire at this boundary and none is wired, so 501 probes is exactly right here and stays
      *     asserted — permanently. It is the parity guard.
-     *   • F5's bound wraps the PROBE (`src/util/urlTitleProbeBudget.ts`) and is applied by the SERVICE
+     *   • F5's bound wraps the PROBE (the probe-budget section of `src/util/urlTitle.ts`) and is applied by the SERVICE
      *     when a deployment stated a figure. A bound in the algorithm would still fail here; a bound
      *     on the probe is invisible to this case by construction.
      *   • The WIRED half is asserted separately, in its own describe block below, where a budget IS
@@ -859,220 +869,30 @@ describe('createUniqueURLTitle — the collision suffix sequence', () => {
 });
 
 /* ================================================================================================
- * GROUP A2 — THE OPTIONAL PROBE CEILING (SEC-14, review finding F5, CWE-400)
+ * ⛔ GROUP A2 IS GONE — THE OPTIONAL PROBE CEILING IS WITHDRAWN
  *
  * ⭐ THE BOUND IS NOT IN THE ALGORITHM, AND EVERY CASE HERE IS ORGANISED AROUND THAT. `:L64`'s
- * `while(!unique)` is ported verbatim and stays unbounded; `src/util/urlTitleProbeBudget.ts` wraps the
+ * `while(!unique)` is ported verbatim and stays unbounded; the probe-budget section of `src/util/urlTitle.ts` wraps the
  * PROBE, `BrandService` applies the wrapper only when a deployment stated a figure, and the refusal
  * reaches the algorithm through the one channel it already declares — "whatever the probe rejects with
  * propagates unchanged".
+ * A revision declared an optional `UrlTitleProbeBudget` third constructor parameter on `BrandService`
+ * and a `boundUniqueValueProbe` wrapper in `src/util/urlTitleProbeBudget.ts`, and this file carried a
+ * whole describe block — "saveBrand — the probe ceiling exists only when an operator states it" — pinning
+ * the wired refusal, the at-ceiling admission, a ceiling of one, the per-derivation counter lifetime (M7)
+ * and the mis-wiring refusal. Every one of those cases is deleted along with the mechanism.
  *
- * So the UNWIRED case in Group A and the WIRED cases here are not in tension: they assert the two
- * wirings of one mechanism. Group A's 501-probe run stays green permanently, and these cases would all
- * fail if the ceiling were moved into the algorithm, because the algorithm must remain incapable of
- * refusing anything on its own.
- * ============================================================================================== */
-
-describe('saveBrand — the probe ceiling exists only when an operator states it', () => {
-  /** A budget of three probes: the bare candidate, `-2` and `-3`. */
-  const THREE_PROBES: UrlTitleProbeBudget = { maximumProbesPerDerivation: 3 };
-
-  it('NET-NEW WIRED — refuses the derivation once the stated probe ceiling is passed, writing nothing', async () => {
-    /*
-     * Four titles are held, so the free candidate is `-5` and reaching it needs five probes. The ceiling
-     * is three, so the fourth probe is refused.
-     *
-     * ⚠️ THE PROBE COUNT IS THE ASSERTION THAT MATTERS. `probedUrlTitles` must show EXACTLY three round
-     * trips: the refusal happens BEFORE the fourth read is issued, so the ceiling bounds database work
-     * rather than merely reporting on it afterwards. A wrapper that counted after probing would show
-     * four here.
-     *
-     * And nothing is written. The derivation feeds `data.urlTitle` into the save that follows it, so a
-     * refused derivation means `saveBrand` never reaches the base collaborator: no brand is persisted
-     * and the store stays empty.
-     */
-    const harness = createBrandHarness({
-      takenUrlTitles: candidateRun('acme-widgets', 3),
-      urlTitleProbeBudget: THREE_PROBES,
-    });
-
-    const rejection: unknown = await harness.service
-      .saveBrand(harness.service.newBrand(), { brandName: 'ACME Widgets' })
-      .then(
-        () => undefined,
-        (error: unknown) => error,
-      );
-
-    if (!(rejection instanceof RequestBudgetExhaustedError)) {
-      throw new Error('The over-budget derivation was expected to be refused.');
-    }
-    expect(rejection.message).toMatch(/collided more times than this deployment permits probing/);
-    expect(rejection.context).toMatchObject({
-      tableName: BRAND_TABLE,
-      candidateUrlTitle: 'acme-widgets-4',
-      probes: 4,
-      maximumProbesPerDerivation: 3,
-      locator: 'model/service/DataService.cfc:L64',
-    });
-
-    /*
-     * The public account names no figure and no table: publishing the ceiling would hand an attacker
-     * probing for a denial-of-service threshold the exact number it is looking for. It classifies as a
-     * REQUEST rejection rather than a service fault, because the caller chose a title that collides and
-     * can choose another — `src/handlers/httpResponse.ts` maps that code to 400, not 500.
-     */
-    expect(rejection.getPublicError()).toEqual({
-      code: 'CATALOG_REQUEST_REJECTED',
-      message: 'The request asks for more work than one operation may perform',
-    });
-
-    expect(probedUrlTitles(harness.brands.calls)).toEqual(candidateRun('acme-widgets', 2));
-    expect(persistedBrands(harness.brands.calls)).toEqual([]);
-    expect(harness.brands.brands).toEqual([]);
-  });
-
-  it('NET-NEW WIRED — admits a derivation that lands exactly ON the stated ceiling', async () => {
-    /*
-     * The other half of the boundary. Two titles are held, so the free candidate is `-3` and reaching it
-     * takes exactly three probes — the ceiling, not one past it. The comparison is `probes > maximum`,
-     * so the Nth probe is genuinely performed, and the derived title is the algorithm's own.
-     *
-     * A wrapper that counted before probing would refuse here, which is why this case exists alongside
-     * the refusal above rather than being assumed from it.
-     */
-    const harness = createBrandHarness({
-      takenUrlTitles: candidateRun('acme-widgets', 1),
-      urlTitleProbeBudget: THREE_PROBES,
-    });
-
-    const saved = await harness.service.saveBrand(harness.service.newBrand(), {
-      brandName: 'ACME Widgets',
-    });
-
-    expect(saved.urlTitle).toBe('acme-widgets-3');
-    expect(probedUrlTitles(harness.brands.calls)).toEqual(candidateRun('acme-widgets', 2));
-    expect(persistedBrands(harness.brands.calls)).toHaveLength(1);
-  });
-
-  it('NET-NEW WIRED — a ceiling of ONE admits an uncontested title and refuses the first collision', async () => {
-    /*
-     * The tightest legal figure, and it has to be usable: `model/service/DataService.cfc:L62` probes the
-     * bare candidate ONCE before the loop, so a budget of 1 permits exactly that probe. A deployment
-     * choosing 1 is saying "never suffix" — which the algorithm can satisfy whenever the title is free.
-     *
-     * Asserted from both sides with one service graph each, because the budget counts per DERIVATION and
-     * the second half must not be reading a counter the first half advanced.
-     */
-    const uncontested = createBrandHarness({
-      urlTitleProbeBudget: { maximumProbesPerDerivation: 1 },
-    });
-    const saved = await uncontested.service.saveBrand(uncontested.service.newBrand(), {
-      brandName: 'ACME Widgets',
-    });
-    expect(saved.urlTitle).toBe('acme-widgets');
-    expect(probedUrlTitles(uncontested.brands.calls)).toEqual(['acme-widgets']);
-
-    const contested = createBrandHarness({
-      takenUrlTitles: ['acme-widgets'],
-      urlTitleProbeBudget: { maximumProbesPerDerivation: 1 },
-    });
-    await expect(
-      contested.service.saveBrand(contested.service.newBrand(), { brandName: 'ACME Widgets' }),
-    ).rejects.toBeInstanceOf(RequestBudgetExhaustedError);
-    // One probe, then refusal: the `-2` candidate is never read.
-    expect(probedUrlTitles(contested.brands.calls)).toEqual(['acme-widgets']);
-    expect(persistedBrands(contested.brands.calls)).toEqual([]);
-  });
-
-  it('NET-NEW WIRED — M7 — the ceiling is per DERIVATION, so one save cannot spend the next save budget', async () => {
-    /*
-     * ⭐ THE CASE THAT PINS THE LIFETIME, AND THE ONE A NAIVE IMPLEMENTATION FAILS. The wrapper owns a
-     * probe counter, so a single wrapper memoised on the service — or on a module, or in a container —
-     * would carry the first save's probes into the second and refuse a later, entirely legitimate save.
-     * On a warm Lambda container that leaks across INVOCATIONS, which is exactly what AAP §0.6.6 M7
-     * forbids: nothing survives between invocations except deliberately module-scoped state.
-     *
-     * Two saves on ONE service instance, each needing two probes against a ceiling of two. Both must
-     * succeed. If the counter were shared the second would be refused, and the second title proves the
-     * derivation genuinely ran rather than being short-circuited.
-     */
-    const harness = createBrandHarness({
-      takenUrlTitles: ['acme-widgets', 'globex-tools'],
-      urlTitleProbeBudget: { maximumProbesPerDerivation: 2 },
-    });
-
-    const first = await harness.service.saveBrand(harness.service.newBrand(), {
-      brandName: 'ACME Widgets',
-    });
-    const second = await harness.service.saveBrand(harness.service.newBrand(), {
-      brandName: 'Globex Tools',
-    });
-
-    expect(first.urlTitle).toBe('acme-widgets-2');
-    expect(second.urlTitle).toBe('globex-tools-2');
-    expect(probedUrlTitles(harness.brands.calls)).toEqual([
-      'acme-widgets',
-      'acme-widgets-2',
-      'globex-tools',
-      'globex-tools-2',
-    ]);
-    expect(persistedBrands(harness.brands.calls)).toHaveLength(2);
-  });
-
-  it('NET-NEW — a mis-wired ceiling is refused when the graph is built, not on the first save', () => {
-    /*
-     * Zero, a negative, a fraction, `Infinity` and `NaN` are all rejected in the constructor. `NaN` is
-     * the decisive one: every comparison against it is false, so a `NaN` ceiling would admit EVERY
-     * derivation while appearing to be configured — finding F5 would be open and the deployment would
-     * believe it closed. `Infinity` is refused because it is indistinguishable in effect from stating
-     * nothing, and stating nothing is already how a deployment asks for unbounded probing.
-     *
-     * ⛔ AND AN ABSENT BUDGET IS NOT A MIS-WIRING. The two-argument construction is asserted here to
-     * NOT throw, because it is the parity path every other case in this file relies on.
-     */
-    for (const maximum of [0, -1, 1.5, Number.POSITIVE_INFINITY, Number.NaN]) {
-      expect(() =>
-        createBrandHarness({ urlTitleProbeBudget: { maximumProbesPerDerivation: maximum } }),
-      ).toThrow(/URL-title probe budget must be a positive safe integer/);
-    }
-
-    expect(() =>
-      createBrandHarness({ urlTitleProbeBudget: { maximumProbesPerDerivation: 1 } }),
-    ).not.toThrow();
-    expect(() => createBrandHarness()).not.toThrow();
-  });
-
-  it('NET-NEW UNWIRED — the same service with NO budget derives the title the legacy would, however many probes it takes', async () => {
-    /*
-     * The service-level parity guard, complementing Group A's utility-level one. Nine held titles force
-     * ten probes through the real `BrandService` with no budget wired, and the derivation completes.
-     *
-     * ⚠️ THIS CASE MUST KEEP RESOLVING. It is what proves the ceiling added for finding F5 is genuinely
-     * absent by default — that no deployment inherits a capacity figure this port invented (AAP §0.7.3
-     * S9, IR-12) — and it is the service-level statement of the same fact `src/util/urlTitle.ts` records
-     * about the algorithm itself.
-     */
-    const harness = createBrandHarness({ takenUrlTitles: candidateRun('acme-widgets', 8) });
-
-    const saved = await harness.service.saveBrand(harness.service.newBrand(), {
-      brandName: 'ACME Widgets',
-    });
-
-    expect(saved.urlTitle).toBe('acme-widgets-10');
-    expect(probedUrlTitles(harness.brands.calls)).toEqual(candidateRun('acme-widgets', 9));
-    expect(persistedBrands(harness.brands.calls)).toHaveLength(1);
-  });
-});
-
-/* ================================================================================================
- * GROUP B — `saveBrand`, THE DERIVATION GUARD AND THE DELEGATION
- * `model/service/BrandService.cfc:L67-L77`
+ * WHY. `model/service/DataService.cfc:L64` is `while(!unique)` with no ceiling. An OPTIONAL ceiling
+ * obliges no deployment to invent a figure — that objection is answered — but it still adds a capability
+ * the source does not describe (AAP §0.7.3 S9, IR-12), and it still refuses derivations the legacy
+ * completed, which is an outcome change. AAP §0.6.7.7 declares exactly ONE departure from behavioural
+ * preservation in this port (D18, the importer's parameterised SQL) and AAP §0.8.2 Guideline 4 admits no
+ * proportionality test.
  *
- * These cases run over the RECORDING base collaborator, not the real one. The behaviour under test is
- * what `saveBrand` decides and what it hands on — which branch of `:L68-L74` it takes, which name
- * source it picks, what it writes onto the payload, and in what order it passes its two arguments.
- * Introducing validation here would confuse a skipped derivation with a refused save, so validation
- * gets its own group.
+ * ⭐ WHAT SURVIVES, AND IT IS THE PART THAT MATTERS. Group A's 501-probe run above is the parity guard and
+ * is unchanged: the algorithm probes once per collision, indefinitely, and this suite asserts it. The
+ * unbounded probing is FLAGGED at `src/util/urlTitle.ts`, which records where a bound would legitimately
+ * belong — an invocation-level deadline, or a database-side unique constraint the adapter reports.
  * ============================================================================================== */
 
 describe('saveBrand — the L68 derivation guard', () => {
@@ -2666,25 +2486,19 @@ describe('the declared surface — no synthesis, no dead injection, no invented 
      * context, no image port, no logger — nothing beyond what the legacy line declares is DEMANDED of a
      * composition root.
      *
-     * ⭐ AND ONE OPTIONAL THIRD PARAMETER EXISTS, WHICH THIS CASE NOW PINS AS OPTIONAL RATHER THAN
-     * DENYING (review finding F5, SEC-14). An earlier revision of this case asserted
-     * `BrandService.length` was 2 and listed "no attempt budget" among the things that ruled out. Both
-     * halves needed correcting, and the second is why:
+     * ⛔ AND THERE IS NO THIRD PARAMETER. An optional `UrlTitleProbeBudget` occupied that position for one
+     * revision, and this case asserted an arity of 3 to pin it as optional-but-present. Both the parameter
+     * and that assertion are withdrawn — see the GROUP A2 IS GONE block above for the authority — so the
+     * arity is back to 2 and the constructor takes exactly the two collaborators §0.6.3.3 counted.
      *
-     *   • `Function.length` COUNTS a TypeScript optional (`?`) parameter. `?` erases to nothing at
-     *     run time — only a DEFAULT VALUE or a rest element stops the count — so the arity is 3 the
-     *     moment an optional parameter is declared, whether or not anyone passes it. Measured, not
-     *     assumed: this assertion failed at 3 when the parameter landed.
-     *   • The third parameter is `UrlTitleProbeBudget | undefined` and it carries NO DEFAULT, so a
-     *     deployment that states nothing gets `model/service/DataService.cfc:L64`'s unbounded probing
-     *     exactly. The claim worth pinning is therefore not "there is no budget" but "no composition
-     *     root is OBLIGED to invent one" — and the two-argument construction two lines below is what
-     *     proves it, since a required parameter would not compile there.
+     * `Function.length` is the right instrument either way: it COUNTS a TypeScript optional (`?`)
+     * parameter, because `?` erases to nothing at run time and only a DEFAULT VALUE or a rest element
+     * stops the count. So an optional third parameter reinstated without this being revisited fails here,
+     * and so does a default quietly added to either existing parameter.
      */
-    expect(BrandService.length).toBe(3);
+    expect(BrandService.length).toBe(2);
 
-    // And the graph really is constructible from just the two REQUIRED collaborators — the optional
-    // budget is genuinely omissible, and every other case in this file omits it.
+    // And the graph really is constructible from exactly those two collaborators.
     const harness = createBrandHarness();
     expect(harness.service).toBeInstanceOf(BrandService);
     await expect(
@@ -2694,15 +2508,26 @@ describe('the declared surface — no synthesis, no dead injection, no invented 
     /*
      * THE FIRST COLLABORATOR'S SURFACE, PINNED EXHAUSTIVELY. Annotated with the landed port type so
      * the whole assertion is compile-checked as well as asserted, and stated as an exact member list
-     * because that is what rules out a re-imported DAO layer: five members, no `executeQuery`, no
-     * `ormExecuteQuery` passthrough, no `getBrandSmartList`, no `countBrand`, no `listBrand`, no
-     * `exportBrand`. There is no `BrandDAO` in the legacy repository to port — a repository-wide scan
-     * finds none, which is precisely why AAP §0.4.1.6 declares this port from the SYNTHESIZED surface
-     * at `org/Hibachi/HibachiService.cfc:L255-L281` rather than from a DAO file.
+     * because that is what rules out a re-imported DAO layer: no `executeQuery`, no `ormExecuteQuery`
+     * passthrough, no `getBrandSmartList`, no `countBrand`, no `listBrand`, no `exportBrand`. There is
+     * no `BrandDAO` in the legacy repository to port — a repository-wide scan finds none, which is
+     * precisely why AAP §0.4.1.6 declares this port from the SYNTHESIZED surface at
+     * `org/Hibachi/HibachiService.cfc:L255-L281` rather than from a DAO file.
+     *
+     * ⭐ THE SIXTH MEMBER IS `findProductIdentifiersByBrand`, ADDED FOR FINDING F9, AND IT IS NOT A
+     * COUNTEREXAMPLE TO WHAT THIS CASE ASSERTS. The four synthesized-CRUD members plus the narrowed
+     * uniqueness probe are still the whole of what `BrandService` reaches; the sixth is read by the
+     * DELETE GUARD, from the composition root, and `../../src/services/BrandService.ts` never calls it.
+     * It exists because `model/entity/Brand.cfc:L61` declares `products` as a LAZY inverse collection
+     * and `model/validation/Brand.json:L6` counts it — so the legacy performed this read through
+     * Hibernate, and declaring it explicitly is IR-1 applied to a lazy load rather than to a
+     * synthesized method. A member with no legacy counterpart at all — `getBrandSmartList` say — would
+     * still fail this list, which is the property worth keeping.
      */
     const repositoryPort: BrandRepository = harness.brands.repository;
     expect(Object.keys(repositoryPort).sort()).toEqual([
       'deleteBrand',
+      'findProductIdentifiersByBrand',
       'getBrand',
       'isUrlTitleAvailable',
       'newBrand',
@@ -2800,5 +2625,981 @@ describe('the declared surface — no synthesis, no dead injection, no invented 
     // The rule set reaches the same two collections and nothing else outside the entity.
     expect(productsPropertyValidation.read(brand)).toBe(brand.getProducts());
     expect(physicalCountsPropertyValidation.read()).toBeUndefined();
+  });
+});
+
+/* =====================================================================================================
+ * FOLDED IN FROM `test/handlers/brandHandler.test.ts` — AAP §0.4.1.12 SUITE ALIGNMENT (F1, F5)
+ * =====================================================================================================
+ * WHY THESE CASES ARE HERE RATHER THAN IN A SUITE OF THEIR OWN. AAP §0.4.1.12 declares exactly seventeen
+ * executable suites, and `test/handlers/brandHandler.test.ts` was not one of them — a QA pass recorded it,
+ * with eighteen siblings, as running outside the declared test plan. The coverage was never the problem;
+ * the file's existence was. So the cases are folded into an approved suite, unchanged.
+ *
+ * ⭐ WHY THIS HOST. The handler is a thin adapter over `BrandService`: every route it serves dispatches to a member this
+ * file already tests directly, so reading the two together is what makes the handler's own contribution —
+ * argument extraction, authorisation and the error-to-HTTP mapping — visible as a layer rather than as a
+ * second, parallel account of the service.
+ *
+ * ⛔ THE BODY IS WRAPPED IN ONE `describe`, WHICH IS THE WHOLE OF THE MECHANICAL CHANGE. Every helper,
+ * constant and type the folded suite declared at module scope is now block-scoped to this callback, so it
+ * cannot collide with this file's own declarations or with another folded body's — and any `beforeEach`,
+ * `afterEach` or `beforeAll` it carries now applies to its own cases only, never to the host's. Not one
+ * assertion, case name or comment was altered.
+ * ================================================================================================== */
+
+/**
+ * `brandHandler` — the authorization gate in front of the Brand boundary, and the projection it answers
+ * with instead of the entity.
+ *
+ * AAP authority: the AAP §0.4.4 wildcard row authorises `slatwall-ts/test/**` | CREATE. The suite sits
+ * beside `test/handlers/skuHandler.test.ts` and `test/handlers/productHandler.test.ts`, so every Lambda
+ * boundary that has coverage is covered in the same place. `test/services/BrandService.test.ts` keeps the
+ * SERVICE matrix — the slug pipeline, the collision-suffix sequence, `saveBrand`'s two-part guard,
+ * `newBrand`, `getBrand` and `deleteBrand` — and this file keeps the BOUNDARY matrix; neither duplicates
+ * the other.
+ *
+ * =============================================================================================
+ * WHAT IS UNDER TEST
+ * =============================================================================================
+ *   - THE GATE. `src/handlers/brandHandler.ts` refuses before it reads a body and before it reads an
+ *     identifier, so a refusal can neither report a body problem nor act as an existence oracle. The
+ *     three-way outcome asserted here is the legacy's: no principal is 401, a logged-in principal without
+ *     permission is 403, and a permitted principal reaches the service. `getLoggedInFlag()` is the
+ *     NEGATION of `isNew()` [org/Hibachi/HibachiScope.cfc:L40-L45], which is why the admitted principal
+ *     is the one whose `newFlag` is false.
+ *   - THE CRUD QUESTION EACH MEMBER ASKS. `save` asks `create` first and then `update`, short-circuiting
+ *     on the first grant [org/Hibachi/HibachiAuthenticationService.cfc:L71-L77]; every other member asks
+ *     for its own crudType and only that one [:L55-L58].
+ *   - THE PROJECTION. The response carries exactly the six persistent members a caller asked for. None of
+ *     the eight relationship collections [model/entity/Brand.cfc:L60-L71] and neither `remoteID` nor the
+ *     audit members [:L75-L80] reach the body, an unset optional member is OMITTED rather than published
+ *     as null, and `deleteBrand` still answers the boolean verdict, which is not an entity at all.
+ *
+ * TEST PROVENANCE: every case below is **NET-NEW**. AAP §0.6.5.2 verified that no legacy
+ * `BrandServiceTest` exists, and that the legacy suite contains no controller test of any kind. The
+ * legacy signal for the brand slice is `meta/tests/unit/entity/BrandTest.cfc`, which is an ENTITY test and
+ * is already carried in `test/domain/Brand.test.ts`. Nothing in this file extends a legacy assertion, and
+ * none is labelled as though it did.
+ *
+ * WHAT THIS FILE DOES NOT COVER: how a route string reaches a member — `src/handlers/router.ts` owns the
+ * `slatAction` table and mounts these members, and that seam is asserted in
+ * `test/handlers/entrySurface.test.ts` for this surface and the four beside it rather than here; and the
+ * URL-title probe sequence is asserted in the service suite, not
+ * through the boundary. Stating that is preferable to implying a completeness this file does not have.
+ */
+describe("test/handlers/brandHandler.test.ts — the brand surface's final wiring — the handler is a thin adapter over `BrandService` (folded, F1, F5)", () => {
+  /**
+   * A write runner that EVALUATES the gate and throws on a roll-back — finding F1.
+   *
+   * ⛔ IT MUST DO BOTH, because the commit DECISION is what F1 is about. A double that ran the work and
+   * returned its value unconditionally would make every atomicity case pass while asserting nothing.
+   * `test/handlers/productHandler.test.ts` uses the identical double for the identical reason.
+   *
+   * ⚠️ IT HANDS THE WORK THE GRAPH IT WAS GIVEN, NOT THE HANDLER'S OWN SERVICE. That is what makes a
+   * handler that reached its closed-over pool-bound service observable here: the graph records its own
+   * calls, so a member that bypassed the boundary shows up as a call the graph never saw.
+   *
+   * @param graph the transaction-scoped graph the work receives
+   * @returns the runner plus the commit decisions it took, in order
+   */
+  function makeBrandWriteRunner(graph: BrandHandlerService): {
+    readonly runner: TransactionalWriteRunner<BrandHandlerService>;
+    readonly decisions: ('commit' | 'rollback')[];
+  } {
+    const decisions: ('commit' | 'rollback')[] = [];
+
+    return {
+      decisions,
+      runner: {
+        runWrite: async <TResult>(
+          work: (graph: BrandHandlerService) => Promise<TResult>,
+          hasErrors: () => boolean,
+        ): Promise<TResult> => {
+          const result = await work(graph);
+
+          if (hasErrors()) {
+            decisions.push('rollback');
+            throw new DomainError('rolled back because the caller reported accumulated findings');
+          }
+
+          decisions.push('commit');
+          return result;
+        },
+      },
+    };
+  }
+
+  /**
+   * A principal, defaulting to the one shape the gate admits: logged in, non-admin, no groups needed.
+   *
+   * `newFlag: false` is the DEFAULT because `getLoggedInFlag()` is the NEGATION of `isNew()`
+   * [org/Hibachi/HibachiScope.cfc:L40-L45] — so "logged in" is "not new", and a case that wants the
+   * refused principal has to say `newFlag: true` explicitly.
+   */
+  function account(overrides: Partial<AccountReference>): AccountReference {
+    return {
+      accountID: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+      newFlag: false,
+      adminAccountFlag: false,
+      ...overrides,
+    };
+  }
+
+  /** The identifier-addressed event slice, with the headers container the resolver is handed. */
+  function identifierEvent(brandID: string): BrandIdentifierEvent {
+    return { pathParameters: { brandID }, headers: {} };
+  }
+
+  /** The save event slice. No identifier is addressed, so the save is a creation. */
+  function saveEvent(body: string): BrandSaveEvent {
+    return { body, pathParameters: null, headers: {} };
+  }
+
+  describe('brandHandler — SEC-03, the gate `setupRequest()` ran', () => {
+    interface Probe {
+      /** Every entity question asked, in the order asked, so the legacy sequence is observable. */
+      readonly asked: EntityAuthorizationRequest[];
+      /** How many times the resolver was invoked, so per-request resolution is observable. */
+      readonly resolutions: { count: number };
+      /** Every service member reached, so "refused before the service" is observable. */
+      readonly serviceCalls: string[];
+      readonly handler: BrandHandler;
+    }
+
+    /**
+     * @param account   the principal the resolver reports, or `undefined` for "no principal at all"
+     * @param grant     the entity CRUD types the permission model grants
+     */
+    function makeHandler(account: AccountReference | undefined, grant: readonly string[]): Probe {
+      const asked: EntityAuthorizationRequest[] = [];
+      const resolutions = { count: 0 };
+      const serviceCalls: string[] = [];
+
+      const stored = managedBrand();
+      stored.brandID = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+      stored.brandName = 'Stored Brand';
+      stored.brandWebsite = 'https://example.com';
+      stored.urlTitle = 'stored-brand';
+      stored.activeFlag = true;
+      stored.publishedFlag = false;
+      stored.remoteID = 'REMOTE-1';
+      stored.createdByAccount = 'account-1';
+      stored.modifiedByAccount = 'account-2';
+
+      const service: BrandHandlerService = {
+        saveBrand: (brand: ManagedBrand): Promise<ManagedBrand> => {
+          serviceCalls.push('saveBrand');
+          return Promise.resolve(brand);
+        },
+        newBrand: (): ManagedBrand => {
+          serviceCalls.push('newBrand');
+          return stored;
+        },
+        getBrand: (): Promise<ManagedBrand | null> => {
+          serviceCalls.push('getBrand');
+          return Promise.resolve(stored);
+        },
+        deleteBrand: (): Promise<boolean> => {
+          serviceCalls.push('deleteBrand');
+          return Promise.resolve(true);
+        },
+      };
+
+      const resolve: RequestAuthorizationResolver<BrandAuthorizationEvent> = () => {
+        resolutions.count += 1;
+
+        return {
+          accountContext: { getCurrentAccount: () => account },
+          entityAuthorization: {
+            authenticateEntity: (request: EntityAuthorizationRequest): boolean => {
+              asked.push(request);
+              return grant.includes(request.crudType);
+            },
+          },
+        };
+      };
+
+      return {
+        asked,
+        resolutions,
+        serviceCalls,
+        /* The graph IS the same recording service here: these cases assert the AUTHORISATION ladder, and
+         * routing the work through a second object would record each call twice. F1's boundary behaviour
+         * is asserted in its own describe block below. */
+        handler: createBrandHandler(service, resolve, makeBrandWriteRunner(service).runner),
+      };
+    }
+
+    it('NET-NEW — org/Hibachi/HibachiAuthenticationService.cfc:L83 — NO principal refuses all three with 401', async () => {
+      const probe = makeHandler(undefined, ['create', 'read', 'update', 'delete']);
+
+      const results = [
+        await probe.handler.getBrand(identifierEvent('any-id')),
+        await probe.handler.saveBrand(saveEvent('{}')),
+        await probe.handler.deleteBrand(identifierEvent('any-id')),
+      ];
+
+      for (const result of results) {
+        expect(result.statusCode).toBe(401);
+        expect(JSON.parse(result.body)).toStrictEqual({ message: 'Authentication is required' });
+      }
+
+      // Refused BEFORE the service, so nothing was read, saved or deleted.
+      expect(probe.serviceCalls).toStrictEqual([]);
+      // And refused before any permission question, because there was no principal to ask about.
+      expect(probe.asked).toStrictEqual([]);
+    });
+
+    it('NET-NEW — brandHandler — HibachiScope.cfc:L40-L45 — the logged-in test is the NEGATION of newFlag', async () => {
+      // `getLoggedInFlag()` is `if(!getSession().getAccount().isNew())`, and `newFlag` carries
+      // `isNew()`. A principal that is NEW is therefore NOT logged in.
+      const notLoggedIn = makeHandler(account({ newFlag: true }), ['read']);
+      expect((await notLoggedIn.handler.getBrand(identifierEvent('x'))).statusCode).toBe(401);
+      expect(notLoggedIn.serviceCalls).toStrictEqual([]);
+
+      // Inverting the predicate would have admitted exactly this caller and refused the next one.
+      const loggedIn = makeHandler(account({ newFlag: false }), ['read']);
+      expect((await loggedIn.handler.getBrand(identifierEvent('x'))).statusCode).toBe(200);
+    });
+
+    it('NET-NEW — L43-L49 — a logged-in principal without permission gets 403, not 401 and not 200', async () => {
+      const probe = makeHandler(account({}), []);
+
+      const results = [
+        await probe.handler.getBrand(identifierEvent('x')),
+        await probe.handler.saveBrand(saveEvent('{}')),
+        await probe.handler.deleteBrand(identifierEvent('x')),
+      ];
+
+      for (const result of results) {
+        expect(result.statusCode).toBe(403);
+        expect(JSON.parse(result.body)).toStrictEqual({ message: 'Not authorized' });
+      }
+
+      expect(probe.serviceCalls).toStrictEqual([]);
+    });
+
+    it('NET-NEW — L55-L58 — each member asks for its OWN legacy crudType and only that one', async () => {
+      const read = makeHandler(account({}), []);
+      await read.handler.getBrand(identifierEvent('x'));
+      expect(read.asked).toStrictEqual([{ crudType: 'read', entityName: 'Brand' }]);
+
+      const remove = makeHandler(account({}), []);
+      await remove.handler.deleteBrand(identifierEvent('x'));
+      expect(remove.asked).toStrictEqual([{ crudType: 'delete', entityName: 'Brand' }]);
+    });
+
+    it('NET-NEW — L71-L77 — save asks create FIRST, then update, and short-circuits on the first grant', async () => {
+      const neither = makeHandler(account({}), []);
+      expect((await neither.handler.saveBrand(saveEvent('{}'))).statusCode).toBe(403);
+      expect(neither.asked.map((request) => request.crudType)).toStrictEqual(['create', 'update']);
+
+      // `if(createOK) { return true; }` at :L73-L75 means `update` is never asked once create grants.
+      const createOnly = makeHandler(account({}), ['create']);
+      expect((await createOnly.handler.saveBrand(saveEvent('{}'))).statusCode).toBe(200);
+      expect(createOnly.asked.map((request) => request.crudType)).toStrictEqual(['create']);
+
+      // And `update` alone still grants, via `return updateOK` at :L77.
+      const updateOnly = makeHandler(account({}), ['update']);
+      expect((await updateOnly.handler.saveBrand(saveEvent('{}'))).statusCode).toBe(200);
+      expect(updateOnly.asked.map((request) => request.crudType)).toStrictEqual([
+        'create',
+        'update',
+      ]);
+    });
+
+    it('NET-NEW — the resolver is invoked EXACTLY ONCE per request, even for the two-question save', async () => {
+      // Two calls would ask the two questions of two separately resolved principals.
+      const probe = makeHandler(account({}), ['update']);
+      await probe.handler.saveBrand(saveEvent('{}'));
+      expect(probe.resolutions.count).toBe(1);
+    });
+
+    it('NET-NEW — the gate runs BEFORE the identifier is read, so it is not an existence oracle', async () => {
+      const probe = makeHandler(account({}), []);
+
+      const existing = await probe.handler.getBrand(
+        identifierEvent('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+      );
+      const absent = await probe.handler.getBrand(identifierEvent('does-not-exist'));
+      const noIdentifierAtAll = await probe.handler.getBrand({ pathParameters: null, headers: {} });
+
+      // Three different addressing outcomes, one indistinguishable refusal.
+      expect(existing).toStrictEqual(absent);
+      expect(absent).toStrictEqual(noIdentifierAtAll);
+      expect(existing.statusCode).toBe(403);
+    });
+
+    it('NET-NEW — the gate runs BEFORE the body is read, so a refusal never reports a body problem', async () => {
+      const probe = makeHandler(account({}), []);
+      const result = await probe.handler.saveBrand({
+        body: '<<not json>>',
+        pathParameters: null,
+        headers: {},
+      });
+
+      expect(result.statusCode).toBe(403);
+      expect(JSON.parse(result.body)).toStrictEqual({ message: 'Not authorized' });
+    });
+
+    it('NET-NEW — brandHandler — no refusal carries a WWW-Authenticate header or names any scheme', async () => {
+      const probe = makeHandler(undefined, []);
+      const result = await probe.handler.getBrand(identifierEvent('x'));
+
+      expect(result.headers).toStrictEqual({ 'Content-Type': 'application/json' });
+      expect(result.body).not.toMatch(/bearer|basic|scheme|token/i);
+    });
+
+    it('NET-NEW — newBrand is NOT a member of the routed surface', () => {
+      const probe = makeHandler(account({}), ['create']);
+
+      // `admin/views/entity/` carries only detailbrand.cfm and listbrand.cfm — no create or edit view —
+      // and `newBrand` had no source declaration at all: `onMissingMethod` fabricated it. It is
+      // therefore absent from the frozen result, so `router.ts` has nothing to mount.
+      expect(Object.keys(probe.handler).sort()).toStrictEqual([
+        'deleteBrand',
+        'getBrand',
+        'saveBrand',
+      ]);
+      expect('newBrand' in probe.handler).toBe(false);
+    });
+
+    it('NET-NEW — every routed member carries an access classification, and all three are secure', () => {
+      // admin/controllers/entity.cfc:L66 declares `this.publicMethods=''`, so not one Brand item is
+      // public. The matrix is keyed on `keyof BrandHandler`, so the two sets cannot drift.
+      expect(BRAND_ACCESS_MATRIX).toStrictEqual({
+        saveBrand: 'secure',
+        getBrand: 'secure',
+        deleteBrand: 'secure',
+      });
+      expect(Object.isFrozen(BRAND_ACCESS_MATRIX)).toBe(true);
+    });
+  });
+
+  /**
+   * A brand carrying the error-surface members the base collaborator needs.
+   *
+   * `BrandService` and `BrandHandlerService` are both typed over `ManagedBrand` — a `Brand` INTERSECTED
+   * with the metadata and error surface `manageEntity` supplies — because `../validation/Validator`
+   * calls `getClassName()` and attaches findings to the entity's own bag at run time. A bare `new
+   * Brand()` type-checked against those signatures only while the injected view was written in METHOD
+   * syntax, which TypeScript compares bivariantly; the view is arrow-typed now, so the substitution is
+   * correctly rejected. `manageEntity` augments and RETURNS THE SAME OBJECT, so every assertion below
+   * observes the identical instance it would have without this call.
+   */
+  function managedBrand(): ManagedBrand {
+    return manageEntity(new Brand(), BRAND_ENTITY_METADATA);
+  }
+
+  describe('brandHandler — SEC-04, the response is a projection and not the entity', () => {
+    function handlerReturning(stored: ManagedBrand): BrandHandler {
+      const service: BrandHandlerService = {
+        saveBrand: (brand: ManagedBrand): Promise<ManagedBrand> => Promise.resolve(brand),
+        newBrand: (): ManagedBrand => stored,
+        getBrand: (): Promise<ManagedBrand | null> => Promise.resolve(stored),
+        deleteBrand: (): Promise<boolean> => Promise.resolve(true),
+      };
+
+      return createBrandHandler(
+        service,
+        () => ({
+          accountContext: { getCurrentAccount: () => account({}) },
+          entityAuthorization: { authenticateEntity: () => true },
+        }),
+        makeBrandWriteRunner(service).runner,
+      );
+    }
+
+    function fullyPopulatedBrand(): ManagedBrand {
+      const brand = managedBrand();
+      brand.brandID = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+      brand.brandName = 'Acme';
+      brand.brandWebsite = 'https://acme.example';
+      brand.urlTitle = 'acme';
+      brand.activeFlag = true;
+      brand.publishedFlag = true;
+      brand.remoteID = 'ERP-4711';
+      brand.createdByAccount = 'account-created';
+      brand.modifiedByAccount = 'account-modified';
+      brand.createdDateTime = new Date(0);
+      brand.modifiedDateTime = new Date(0);
+      return brand;
+    }
+
+    it('NET-NEW — the body carries exactly the six persistent members a caller asked for', async () => {
+      const result = await handlerReturning(fullyPopulatedBrand()).getBrand(identifierEvent('x'));
+
+      expect(result.statusCode).toBe(200);
+      expect(JSON.parse(result.body)).toStrictEqual({
+        brandID: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        brandName: 'Acme',
+        brandWebsite: 'https://acme.example',
+        urlTitle: 'acme',
+        activeFlag: true,
+        publishedFlag: true,
+      });
+    });
+
+    it('NET-NEW — SEC-HARDENING (D18-CLASS): brandWebsite reaches the body VERBATIM, and the body is the only consumer boundary for it', async () => {
+      /* ⚠️ This is the one place in the deliverable that hands `brandWebsite` to a consumer, so the
+       * residual exposure the validation layer flags is pinned here as well as at the predicate.
+       *
+       * WHAT THE VALIDATION LAYER GUARANTEES about anything that got stored: it parses as a URL in one of
+       * CFML's six `isValid(…, "url")` protocols, it carries no ASCII control character, and its authority
+       * carries no userinfo credentials. `test/domain/Brand.test.ts` pins all three against the real rule.
+       *
+       * WHAT IT DOES NOT GUARANTEE: the scheme. All four non-web legacy protocols still save, because
+       * refusing them would decline a save the legacy performed and meant (AAP §0.8.2 g2). So a consumer
+       * putting this value in an `href`, a redirect or a fetch URL must apply its own scheme policy — and
+       * this case pins that the handler does NOT apply one, and does not silently rewrite the value either.
+       * A projection that quietly filtered or re-encoded here would make the response disagree with the
+       * stored record, which is the pass-through rule `src/handlers/httpResponse.ts` sets for this layer. */
+      const brand = fullyPopulatedBrand();
+      brand.brandWebsite = 'mailto:hello@acme.example';
+
+      const result = await handlerReturning(brand).getBrand(identifierEvent('x'));
+      const body = JSON.parse(result.body) as Record<string, unknown>;
+
+      expect(result.statusCode).toBe(200);
+      expect(body['brandWebsite']).toBe('mailto:hello@acme.example');
+
+      // And an absent website is OMITTED rather than emitted as a null, so a consumer distinguishes
+      // "no website" from "an empty website" without inspecting the value.
+      const withoutWebsite = fullyPopulatedBrand();
+      delete withoutWebsite.brandWebsite;
+      const bare = await handlerReturning(withoutWebsite).getBrand(identifierEvent('x'));
+      expect(Object.keys(JSON.parse(bare.body) as Record<string, unknown>)).not.toContain(
+        'brandWebsite',
+      );
+    });
+
+    it('NET-NEW — model/entity/Brand.cfc:L75-L80 — remoteID and the audit members never reach the body', async () => {
+      const result = await handlerReturning(fullyPopulatedBrand()).getBrand(identifierEvent('x'));
+      const body: unknown = JSON.parse(result.body);
+
+      for (const withheld of [
+        'remoteID',
+        'createdByAccount',
+        'modifiedByAccount',
+        'createdDateTime',
+        'modifiedDateTime',
+      ]) {
+        expect(Object.prototype.hasOwnProperty.call(body, withheld)).toBe(false);
+      }
+
+      expect(result.body).not.toContain('ERP-4711');
+      expect(result.body).not.toContain('account-created');
+    });
+
+    it('NET-NEW — model/entity/Brand.cfc:L60-L71 — none of the EIGHT relationship collections reaches the body', async () => {
+      const result = await handlerReturning(fullyPopulatedBrand()).getBrand(identifierEvent('x'));
+      const body: unknown = JSON.parse(result.body);
+
+      // Six of the eight collaborators — promotion rewards and qualifiers with their exclusions,
+      // vendors and physical counts — are EXPLICITLY out of scope (AAP §0.2.2.1), so publishing the
+      // arrays would disclose structure this deliverable does not even model.
+      for (const withheld of [
+        'attributeValues',
+        'products',
+        'promotionRewards',
+        'promotionRewardExclusions',
+        'promotionQualifiers',
+        'promotionQualifierExclusions',
+        'vendors',
+        'physicals',
+      ]) {
+        expect(Object.prototype.hasOwnProperty.call(body, withheld)).toBe(false);
+      }
+    });
+
+    it('NET-NEW — a brand holding a product serializes, where the raw entity would have thrown', async () => {
+      const brand = fullyPopulatedBrand();
+      const product = new Product();
+      product.productID = 'cccccccccccccccccccccccccccccccc';
+      brand.addProduct(product);
+
+      // `Brand.products` -> `Product.brand` is a CYCLE that `JSON.stringify` refuses outright, so
+      // whole-entity serialization would have produced an opaque 500 for any brand with a product.
+      expect(() => JSON.stringify(brand)).toThrow(TypeError);
+
+      const result = await handlerReturning(brand).getBrand(identifierEvent('x'));
+      expect(result.statusCode).toBe(200);
+      expect(JSON.parse(result.body)).not.toHaveProperty('products');
+    });
+
+    it('NET-NEW — an unset optional member is OMITTED rather than published as null', async () => {
+      const sparse = managedBrand();
+      sparse.brandID = 'dddddddddddddddddddddddddddddddd';
+
+      const result = await handlerReturning(sparse).getBrand(identifierEvent('x'));
+
+      expect(JSON.parse(result.body)).toStrictEqual({
+        brandID: 'dddddddddddddddddddddddddddddddd',
+      });
+      expect(result.body).not.toContain('null');
+    });
+
+    it('NET-NEW — deleteBrand still returns the boolean verdict, which is not an entity at all', async () => {
+      const result = await handlerReturning(fullyPopulatedBrand()).deleteBrand(
+        identifierEvent('x'),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(JSON.parse(result.body)).toBe(true);
+    });
+  });
+
+  describe('brandHandler — an unaddressed brand is a REQUEST fault, an unmatched one is a MISS', () => {
+    /*
+     * ⭐ WHY THIS BLOCK EXISTS. `getBrand` and `deleteBrand` answered the neutral 404 for BOTH "no
+     * identifier was addressed" and "the addressed identifier matches nothing", and the collapse was
+     * defended as non-disclosure. It is not one: the gate runs BEFORE the identifier is read, so an
+     * unauthorised caller never reaches either answer (the SEC-03 block above asserts exactly that), and
+     * among callers who do reach it, "you addressed nothing" says nothing whatsoever about any brand. The
+     * cost fell entirely on a legitimate client, which could not tell a bug in its own request from a brand
+     * that is genuinely gone — and every sibling handler answered the first case with a NAMED 400.
+     *
+     * The convention now held across the whole boundary layer, and asserted here:
+     *   400  the REQUEST is at fault — nothing was addressed, or what was addressed cannot identify anything
+     *   404  the request was well formed and the addressed resource does not exist
+     *
+     * ⚠️ THE EMPTY IDENTIFIER BELONGS TO THE 400 SIDE, and that is legacy-evidenced rather than tidy:
+     * [model/entity/Brand.cfc:L52] declares `brandID` with `unsavedvalue=""` and `default=""`, so no
+     * persisted row can carry it and it cannot address anything. This is the OPPOSITE of `skuCode`, whose
+     * empty form is a legal value the lookup runs for — see `test/handlers/skuHandler.test.ts`. The two
+     * differ because the legacy declarations differ, not because the boundary chose differently.
+     *
+     * TEST PROVENANCE: NET-NEW (AAP §0.6.5.2).
+     */
+
+    const STORED_BRAND_ID = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const NAMED_REFUSAL = { message: 'A "brandID" path parameter is required' };
+
+    /** A permitted principal, so every case below lands past the gate on the identifier logic. */
+    function handlerFor(reached: string[]): BrandHandler {
+      const stored = managedBrand();
+      stored.brandID = STORED_BRAND_ID;
+      stored.brandName = 'Stored Brand';
+
+      const service: BrandHandlerService = {
+        saveBrand: (brand: ManagedBrand): Promise<ManagedBrand> => Promise.resolve(brand),
+        newBrand: (): ManagedBrand => stored,
+        getBrand: (brandID: string): Promise<ManagedBrand | null> => {
+          reached.push(brandID);
+          return Promise.resolve(brandID === STORED_BRAND_ID ? stored : null);
+        },
+        deleteBrand: (): Promise<boolean> => Promise.resolve(true),
+      };
+
+      return createBrandHandler(
+        service,
+        () => ({
+          accountContext: { getCurrentAccount: () => account({}) },
+          entityAuthorization: { authenticateEntity: () => true },
+        }),
+        makeBrandWriteRunner(service).runner,
+      );
+    }
+
+    it('NET-NEW — getBrand with NO identifier answers 400 NAMED, and never asks the service', async () => {
+      const reached: string[] = [];
+      const result = await handlerFor(reached).getBrand({ pathParameters: null, headers: {} });
+
+      expect(result.statusCode).toBe(400);
+      expect(JSON.parse(result.body)).toStrictEqual(NAMED_REFUSAL);
+      expect(reached).toEqual([]);
+    });
+
+    it('NET-NEW — deleteBrand with NO identifier answers 400 NAMED, and removes nothing', async () => {
+      const reached: string[] = [];
+      const result = await handlerFor(reached).deleteBrand({ pathParameters: null, headers: {} });
+
+      expect(result.statusCode).toBe(400);
+      expect(JSON.parse(result.body)).toStrictEqual(NAMED_REFUSAL);
+      expect(reached).toEqual([]);
+    });
+
+    it('NET-NEW — the EMPTY identifier is the legacy unsaved sentinel and is refused the same way', async () => {
+      const reached: string[] = [];
+      const handler = handlerFor(reached);
+
+      const read = await handler.getBrand({ pathParameters: { brandID: '' }, headers: {} });
+      const remove = await handler.deleteBrand({ pathParameters: { brandID: '' }, headers: {} });
+
+      expect(read.statusCode).toBe(400);
+      expect(remove.statusCode).toBe(400);
+      expect(JSON.parse(read.body)).toStrictEqual(NAMED_REFUSAL);
+      /* No row can carry `''`, so no lookup is attempted for it. */
+      expect(reached).toEqual([]);
+    });
+
+    it('NET-NEW — an identifier that matches nothing STILL answers the neutral 404', async () => {
+      const reached: string[] = [];
+      const handler = handlerFor(reached);
+
+      const read = await handler.getBrand({
+        pathParameters: { brandID: 'ffffffffffffffffffffffffffffffff' },
+        headers: {},
+      });
+      const remove = await handler.deleteBrand({
+        pathParameters: { brandID: 'ffffffffffffffffffffffffffffffff' },
+        headers: {},
+      });
+
+      expect(read.statusCode).toBe(404);
+      expect(remove.statusCode).toBe(404);
+      /* Still neutral: neither the identifier nor the route is echoed back. */
+      expect(JSON.parse(read.body)).toStrictEqual({ message: 'Not found' });
+      expect(reached).toEqual([
+        'ffffffffffffffffffffffffffffffff',
+        'ffffffffffffffffffffffffffffffff',
+      ]);
+    });
+
+    it('NET-NEW — the two conditions are now DISTINGUISHABLE, which is the whole point', async () => {
+      const reached: string[] = [];
+      const handler = handlerFor(reached);
+
+      const unaddressed = await handler.getBrand({ pathParameters: null, headers: {} });
+      const unmatched = await handler.getBrand({
+        pathParameters: { brandID: 'ffffffffffffffffffffffffffffffff' },
+        headers: {},
+      });
+
+      expect(unaddressed.statusCode).not.toBe(unmatched.statusCode);
+      expect(unaddressed.body).not.toBe(unmatched.body);
+    });
+
+    it('NET-NEW — a matched identifier is unaffected and still answers 200 with the projection', async () => {
+      const reached: string[] = [];
+      const result = await handlerFor(reached).getBrand({
+        pathParameters: { brandID: STORED_BRAND_ID },
+        headers: {},
+      });
+
+      expect(result.statusCode).toBe(200);
+      expect(JSON.parse(result.body)).toMatchObject({
+        brandID: STORED_BRAND_ID,
+        brandName: 'Stored Brand',
+      });
+    });
+
+    it('NET-NEW — the GATE still answers first, so the 400 is unreachable without permission', async () => {
+      /* The anti-enumeration property the old collapse was defending lives HERE, in the ordering — not in
+       * the status. An unauthorised caller gets the same refusal whatever it addresses. */
+      const stored = managedBrand();
+      stored.brandID = STORED_BRAND_ID;
+
+      const refusingService: BrandHandlerService = {
+        saveBrand: (brand: ManagedBrand): Promise<ManagedBrand> => Promise.resolve(brand),
+        newBrand: (): ManagedBrand => stored,
+        getBrand: (): Promise<ManagedBrand | null> => Promise.resolve(stored),
+        deleteBrand: (): Promise<boolean> => Promise.resolve(true),
+      };
+
+      const refusing = createBrandHandler(
+        refusingService,
+        () => ({
+          accountContext: { getCurrentAccount: () => account({}) },
+          entityAuthorization: { authenticateEntity: () => false },
+        }),
+        makeBrandWriteRunner(refusingService).runner,
+      );
+
+      const unaddressed = await refusing.getBrand({ pathParameters: null, headers: {} });
+      const addressed = await refusing.getBrand({
+        pathParameters: { brandID: STORED_BRAND_ID },
+        headers: {},
+      });
+
+      expect(unaddressed.statusCode).toBe(403);
+      expect(unaddressed).toStrictEqual(addressed);
+    });
+  });
+
+  /* ================================================================================================
+   * F1 — EVERY BRAND MUTATION RUNS INSIDE A TRANSACTION BOUNDARY
+   *
+   * ⭐ WHAT WAS BROKEN. `BaseService.save` persists and THEN runs `settingCleanup`; `BaseService.delete`
+   * removes and THEN runs both cleanup ports. Every one of those post-write steps can fail. Product and
+   * SKU writes were already safe — not because their base services differ, but because every route that
+   * reaches them goes through a runner that rebuilds them from a transaction's executor. BRAND HAD NO
+   * SUCH RUNNER. It was reached through the pool-bound graph, where each statement auto-commits on its
+   * own connection, so a brand save whose cleanup then failed left a COMMITTED row while this handler
+   * answered an error, and a brand delete whose cleanup failed left the row GONE while it answered an
+   * error. Neither outcome is recoverable and neither was visible in any type.
+   *
+   * ⚠️ THE TWO PROPERTIES ASSERTED HERE ARE DIFFERENT AND BOTH ARE NECESSARY. That the work runs through
+   * the BOUNDARY GRAPH rather than the closed-over pool-bound service — otherwise the transaction commits
+   * around statements it never covered — and that the ROLLBACK GATE is evaluated, because a boundary that
+   * always commits is no boundary at all.
+   * ============================================================================================== */
+
+  describe('brandHandler — F1, every mutation runs inside a transaction boundary', () => {
+    const BOUNDARY_BRAND_ID = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+    /** Which object answered a member: the pool-bound service, or the transaction-scoped graph. */
+    type Answerer = 'service' | 'graph';
+
+    /**
+     * Two OBSERVABLY DIFFERENT brand services — one standing for the pool-bound graph, one for the
+     * transaction-scoped one — plus the call log that says which answered.
+     *
+     * ⚠️ THE POOL-BOUND ONE IS NOT A FAILING STUB, AND THAT IS DELIBERATE. If it threw, a handler that
+     * wrongly used it would fail for the RIGHT reason by accident, and the case would still pass after
+     * the routing regressed to something else that happens to throw. Recording which object answered
+     * makes the assertion about the routing itself.
+     */
+    function makeSurfaces(options: {
+      readonly savedHasErrors?: boolean;
+      readonly found?: boolean;
+    }): {
+      readonly service: BrandHandlerService;
+      readonly graph: BrandHandlerService;
+      readonly answered: { member: string; by: Answerer }[];
+    } {
+      const answered: { member: string; by: Answerer }[] = [];
+
+      const build = (by: Answerer): BrandHandlerService => ({
+        newBrand: (): ManagedBrand => {
+          answered.push({ member: 'newBrand', by });
+          const brand = managedBrand();
+          brand.brandID = '';
+          return brand;
+        },
+        getBrand: (brandID: string): Promise<ManagedBrand | null> => {
+          answered.push({ member: 'getBrand', by });
+          if (options.found === false) {
+            return Promise.resolve(null);
+          }
+          const brand = managedBrand();
+          brand.brandID = brandID;
+          return Promise.resolve(brand);
+        },
+        saveBrand: (brand: ManagedBrand): Promise<ManagedBrand> => {
+          answered.push({ member: 'saveBrand', by });
+          if (options.savedHasErrors === true) {
+            /* The legacy's single exit: a failed save RETURNS the entity carrying findings rather than
+             * raising [`model/service/HibachiService.cfc:L103`]. This is the state the gate must catch. */
+            brand.addError('brandName', 'validate.save.Brand.brandName.required');
+          }
+          return Promise.resolve(brand);
+        },
+        deleteBrand: (): Promise<boolean> => {
+          answered.push({ member: 'deleteBrand', by });
+          return Promise.resolve(true);
+        },
+      });
+
+      return { service: build('service'), graph: build('graph'), answered };
+    }
+
+    /** An assembled handler whose runner hands the work the boundary graph. */
+    function makeProbe(
+      options: { readonly savedHasErrors?: boolean; readonly found?: boolean } = {},
+    ): {
+      readonly handler: BrandHandler;
+      readonly answered: { member: string; by: Answerer }[];
+      readonly decisions: ('commit' | 'rollback')[];
+    } {
+      const surfaces = makeSurfaces(options);
+      const runner = makeBrandWriteRunner(surfaces.graph);
+
+      return {
+        answered: surfaces.answered,
+        decisions: runner.decisions,
+        handler: createBrandHandler(
+          surfaces.service,
+          () => ({
+            accountContext: { getCurrentAccount: () => account({}) },
+            entityAuthorization: { authenticateEntity: () => true },
+          }),
+          runner.runner,
+        ),
+      };
+    }
+
+    const saveEvent = (brandID?: string): Parameters<BrandHandler['saveBrand']>[0] => ({
+      pathParameters: brandID === undefined ? null : { brandID },
+      headers: {},
+      body: JSON.stringify({ brandName: 'ACME Widgets' }),
+    });
+
+    it('NET-NEW — a CREATE resolves and saves through the BOUNDARY graph, never the pool-bound service', async () => {
+      const probe = makeProbe();
+
+      const response = await probe.handler.saveBrand(saveEvent());
+
+      expect(response.statusCode).toBe(200);
+      // ⚠️ THE ASSERTION THE FINDING TURNS ON: both members answered from inside the transaction.
+      expect(probe.answered).toStrictEqual([
+        { member: 'newBrand', by: 'graph' },
+        { member: 'saveBrand', by: 'graph' },
+      ]);
+      expect(probe.decisions).toStrictEqual(['commit']);
+    });
+
+    it('NET-NEW — an UPDATE resolves its subject INSIDE the unit, so the read shares the write connection (M6)', async () => {
+      // `getBrand` reading on the pool while the save writes in a transaction is the partial-rebuild
+      // failure mode: it compiles and the happy path passes.
+      const probe = makeProbe();
+
+      const response = await probe.handler.saveBrand(saveEvent(BOUNDARY_BRAND_ID));
+
+      expect(response.statusCode).toBe(200);
+      expect(probe.answered).toStrictEqual([
+        { member: 'getBrand', by: 'graph' },
+        { member: 'saveBrand', by: 'graph' },
+      ]);
+    });
+
+    it('NET-NEW — a save that returns findings ROLLS BACK rather than committing (M5)', async () => {
+      // ⚠️ THE GATE IS THE POINT. Without it the transaction would commit around a failed save, taking
+      // any cleanup the operation performed with it, while the response still reported the failure.
+      const probe = makeProbe({ savedHasErrors: true });
+
+      const response = await probe.handler.saveBrand(saveEvent(BOUNDARY_BRAND_ID));
+
+      expect(probe.decisions).toStrictEqual(['rollback']);
+      // The rollback surfaces as a failure response rather than a 200 projecting an unpersisted brand.
+      expect(response.statusCode).toBeGreaterThanOrEqual(400);
+    });
+
+    it('NET-NEW — the gate reads a SEPARATE capture, so it cannot throw from a temporal dead zone', async () => {
+      // ⛔ A REGRESSION GUARD FOR A REAL BUG THAT WAS WRITTEN AND CAUGHT. `runWrite` evaluates the gate
+      // BEFORE it commits, and therefore before the `const` holding the saved brand is initialised. A gate
+      // closing over that `const` throws `ReferenceError` on exactly the failing-save path — the one path
+      // where the gate matters. The rollback case above would surface it, so this case pins the SUCCESS
+      // path too: the gate is evaluated there as well, and must not throw.
+      const probe = makeProbe();
+
+      const response = await probe.handler.saveBrand(saveEvent(BOUNDARY_BRAND_ID));
+
+      expect(response.statusCode).toBe(200);
+      expect(probe.decisions).toStrictEqual(['commit']);
+    });
+
+    it('NET-NEW — a DELETE resolves and removes through the BOUNDARY graph', async () => {
+      const probe = makeProbe();
+
+      const response = await probe.handler.deleteBrand({
+        pathParameters: { brandID: BOUNDARY_BRAND_ID },
+        headers: {},
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(probe.answered).toStrictEqual([
+        { member: 'getBrand', by: 'graph' },
+        { member: 'deleteBrand', by: 'graph' },
+      ]);
+      expect(probe.decisions).toStrictEqual(['commit']);
+    });
+
+    it('NET-NEW — a missing row COMMITS an empty transaction and answers 404, on both write paths', async () => {
+      // Nothing was written, so a rollback would report a failure the caller did not cause. The same
+      // reasoning `./productHandler` records for its own missing-product path.
+      const onSave = makeProbe({ found: false });
+      const onDelete = makeProbe({ found: false });
+
+      const saveResponse = await onSave.handler.saveBrand(saveEvent(BOUNDARY_BRAND_ID));
+      const deleteResponse = await onDelete.handler.deleteBrand({
+        pathParameters: { brandID: BOUNDARY_BRAND_ID },
+        headers: {},
+      });
+
+      expect(saveResponse.statusCode).toBe(404);
+      expect(deleteResponse.statusCode).toBe(404);
+      expect(onSave.decisions).toStrictEqual(['commit']);
+      expect(onDelete.decisions).toStrictEqual(['commit']);
+      // Neither reached its write member.
+      expect(onSave.answered).toStrictEqual([{ member: 'getBrand', by: 'graph' }]);
+      expect(onDelete.answered).toStrictEqual([{ member: 'getBrand', by: 'graph' }]);
+    });
+  });
+
+  /* ==============================================================================================
+   * THE SHIPPED COMPOSITION IS CALLABLE — the CRITICAL callable-boundary defect, pinned end to end
+   *
+   * `createBrandHandlerFromContainer` used to pass the deny-all resolver as a LITERAL, so a deployment
+   * had no way to reach the seam and every brand action answered 401 forever. The factory now defaults to
+   * `resolveRequestAuthorization`, which reads the deployment registry on EVERY call. These two cases
+   * exercise that exact default — the same function the factory installs — so they pin the shipped
+   * behaviour rather than a test-only wiring: unregistered stays 401, registered reaches the service.
+   * ============================================================================================== */
+
+  describe('brandHandler — the production default resolver is a real seam, fail-closed until used', () => {
+    const STORED_BRAND_ID = 'ffffffffffffffffffffffffffffffff';
+
+    function handlerOnTheProductionDefault(): {
+      readonly handler: BrandHandler;
+      readonly serviceCalls: string[];
+    } {
+      const serviceCalls: string[] = [];
+      const stored = managedBrand();
+      stored.brandID = STORED_BRAND_ID;
+      stored.brandName = 'Stored Brand';
+
+      const service: BrandHandlerService = {
+        saveBrand: (brand: ManagedBrand): Promise<ManagedBrand> => Promise.resolve(brand),
+        newBrand: (): ManagedBrand => stored,
+        getBrand: (): Promise<ManagedBrand | null> => {
+          serviceCalls.push('getBrand');
+          return Promise.resolve(stored);
+        },
+        deleteBrand: (): Promise<boolean> => Promise.resolve(true),
+      };
+
+      /* ⭐ THE RESOLVER IS THE PRODUCTION DEFAULT, NOT A DOUBLE. `createBrandHandlerFromContainer` supplies
+       * exactly this function when a caller names none, so whatever this case observes is what a deployed
+       * artifact does.
+       *
+       * ⭐ AND THE WRITE RUNNER IS REAL TOO — review finding F1 made brand writes transactional, so the
+       * handler takes the boundary as its third collaborator. This case is about the RESOLVER, so the
+       * runner is the recording double every other case in this file uses; what it proves here is only
+       * that the resolver's verdict is reached before any write is attempted. */
+      return {
+        handler: createBrandHandler(
+          service,
+          resolveRequestAuthorization,
+          makeBrandWriteRunner(service).runner,
+        ),
+        serviceCalls,
+      };
+    }
+
+    afterEach(() => {
+      clearRequestAuthorizationResolver();
+    });
+
+    it('NET-NEW — with no resolver registered the route answers 401 and the service is never reached', async () => {
+      const { handler, serviceCalls } = handlerOnTheProductionDefault();
+
+      const result = await handler.getBrand({
+        pathParameters: { brandID: STORED_BRAND_ID },
+        headers: {},
+      });
+
+      expect(result.statusCode).toBe(401);
+      expect(serviceCalls).toStrictEqual([]);
+    });
+
+    it('NET-NEW — a registered resolver makes the SAME route reach the service and answer 200', async () => {
+      const { handler, serviceCalls } = handlerOnTheProductionDefault();
+
+      registerRequestAuthorizationResolver(() => ({
+        accountContext: { getCurrentAccount: () => account({}) },
+        entityAuthorization: { authenticateEntity: () => true },
+      }));
+
+      const result = await handler.getBrand({
+        pathParameters: { brandID: STORED_BRAND_ID },
+        headers: {},
+      });
+
+      expect(result.statusCode).toBe(200);
+      expect(serviceCalls).toStrictEqual(['getBrand']);
+      expect(JSON.parse(result.body)).toMatchObject({ brandID: STORED_BRAND_ID });
+    });
   });
 });

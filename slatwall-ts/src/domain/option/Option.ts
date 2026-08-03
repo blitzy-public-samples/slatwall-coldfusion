@@ -527,10 +527,10 @@ export interface SkuOptionOwner {
  * These are NOT in the AAP §0.6.7 source register — it attributes D1, D2, D3, D16 and D19 to
  * `Sku.cfc`, D5 to `Product.cfc` and D21 to `ProductType.cfc`, and lists nothing at all for this file —
  * so they are a finding of this port's own analysis, carried here WITHOUT a number of their own:
- * the register is stated canonically, and only once, in the header of
- * `src/ports/repositories/SkuRepository.ts` (AAP 0.6.7's frozen source range D1-D21, plus the
- * source extension D22 and the three contract corrections D23, D24 and D25, with no D26 or beyond;
- * and AAP 0.6.6's M1-M8 plus M9, with no M10 or beyond).
+ * the two registers are stated canonically, and only once, in the header of
+ * `src/ports/repositories/SkuRepository.ts`, and BOTH ARE FROZEN AT THE AAP's OWN BOUNDS — AAP
+ * 0.6.7's D1-D21 and AAP 0.6.6's M1-M8. Nothing in this port mints an identifier beyond either
+ * range; a further source observation is recorded by its `path:Lnnn` locator instead.
  *
  * The treatment S7 dictates, and the reasoning for it: because the members themselves are out of
  * scope, the honest carry-over is this record and NO CODE. Porting the two methods purely in order to

@@ -1654,24 +1654,22 @@ describe('Brand — declared-type coercion, org/Hibachi/HibachiTransient.cfc:L19
  * failures pinned a save the legacy performed and the port refused, which AAP 0.8.2 guideline 2 forbids.
  * Those four remain WITHDRAWAL REGRESSIONS: they fail if the protocol narrowing is ever reinstated.
  *
- * ⭐ TWO SYNTACTIC RULES CAME BACK, so three of those cases now assert REFUSAL again — and each carries
- * its own argument rather than inheriting one:
+ * ⛔ AND THE TWO SYNTACTIC RULES THAT ONCE CAME BACK ARE WITHDRAWN TOO, so the remaining three cases
+ * assert ACCEPTANCE as well. A revision refused an ASCII control character (argued as a "parity
+ * correction") and a userinfo component in the authority (argued as a "second declared departure").
+ * Both are gone, and the count is what settles it rather than either argument's merits:
+ * AAP §0.6.7.7 declares ONE departure from behavioural preservation in this port — D18, the importer's
+ * parameterised SQL — and it does so precisely so a reviewer diffing behaviour has exactly one entry to
+ * check. AAP §0.8.2 guideline 4 admits no proportionality test. `'https://acme.test\n'`,
+ * `'https://ac\u0000me.test'`, `https://user:pass@acme.test/` and `https://acme.test@evil.test/` are all
+ * values `:L259` accepts and stores, so all four are accepted here.
  *
- *   1. ASCII CONTROL CHARACTERS — a parity CORRECTION. RFC 3986 §2 admits no raw control character
- *      anywhere in a URI, so `isValid(…, "url")` cannot be accepting one AS a valid URL; accepting it
- *      was a hole in the port's documented APPROXIMATION, not a legacy behaviour. This closes the
- *      CWE-20 half of the security finding, and with it the CWE-113/CWE-117 payload a stored raw CRLF
- *      hands to any consumer that puts the value in a header or a log line.
- *   2. USERINFO CREDENTIALS IN THE AUTHORITY — a narrow DECLARED departure, the second in this port
- *      after D18 itself. `https://acme.test@evil.test/` reads as `acme.test` and resolves to
- *      `evil.test` (CWE-601), and RFC 3986 §3.2.1 deprecates the `user:password` form. This one IS a
- *      value the legacy accepted, so it is declared rather than dressed up as a correction. It costs
- *      one deprecated sub-component of one component of four schemes, against four whole schemes for
- *      the withdrawn policy.
- *
- * Neither rule rejects a protocol, which is exactly why neither is bound by the withdrawal above. See
- * THE SIX-PROTOCOL URL CHECK IS STILL THE WHOLE CHECK in `src/validation/Validator.ts` for the full
- * record, and for the residual non-web-scheme exposure that remains flagged and NOT closed.
+ * ⚠️ WHAT IS THEREFORE FLAGGED AND NOT CLOSED — three exposures carried deliberately: a non-web scheme
+ * reaching a link position (CWE-601-adjacent, CWE-79-adjacent once rendered); a stored raw control
+ * character (CWE-113 / CWE-117 for a consumer that puts it in a header or a log line, CWE-158 at a
+ * C-string boundary); and a deceptive `user@host` authority (CWE-601), including the credential-bearing
+ * `user:password` form RFC 3986 §3.2.1 deprecates. See THE SIX-PROTOCOL URL CHECK IS STILL THE WHOLE
+ * CHECK in `src/validation/Validator.ts` for the full record and for where closing them belongs.
  *
  * ⭐ WHAT IS UNCHANGED THROUGHOUT: a value with no scheme still fails, an absent value still passes,
  * ordinary surrounding spaces are still trimmed and accepted, the stored value is never rewritten, and
@@ -1716,27 +1714,27 @@ describe('Brand — brandWebsite URL check, model/validation/Brand.json:L4', () 
     ['userinfo on ftp, which is still an authority-bearing scheme', 'ftp://anonymous@files.test/x'],
     ['userinfo on a scheme written in upper case', 'HTTPS://USER@ACME.TEST/'],
   ])(
-    'NET-NEW — SEC-HARDENING (D18-CLASS): %s is REFUSED, a declared departure',
+    'NET-NEW TODO(parity) — WITHDRAWAL REGRESSION: %s is ACCEPTED, and the CWE-601 exposure is carried',
     async (_label, website) => {
-      /* ⭐ THE SECOND DECLARED DEPARTURE IN THIS PORT, after D18 itself, and this case previously
-       * asserted the opposite. `https://acme.test@evil.test/` reads to a human as acme.test and resolves
-       * to evil.test — CWE-601 — and RFC 3986 §3.2.1 deprecates the `user:password` form outright.
+      /* ⛔ THIS CASE HAS ASSERTED BOTH DIRECTIONS, AND ACCEPTANCE IS THE ONE PARITY PERMITS.
+       * `https://acme.test@evil.test/` reads to a human as acme.test and resolves to evil.test (CWE-601),
+       * and `https://user:pass@acme.test/` stores a credential in a field that is read back and rendered
+       * — the form RFC 3986 §3.2.1 deprecates. A revision refused both as a "second declared departure".
        *
-       * It IS a value `org/Hibachi/HibachiValidationService.cfc:L259` accepted, so it is declared rather
-       * than presented as a correction. What licenses it where the withdrawn protocol narrowing was not
-       * licensed: this rejects no scheme. All six still pass — the four WITHDRAWAL REGRESSIONS above
-       * prove it — and what is refused is one deprecated sub-component that carries no business meaning
-       * in a brand website field. The upper-case row pins that the scheme match is case-insensitive, so
-       * the rule cannot be evaded by casing. */
+       * Every one of these values is nonetheless accepted by
+       * `org/Hibachi/HibachiValidationService.cfc:L259`, which is a URL SYNTAX check and admits the
+       * userinfo production. Refusing them is therefore a behaviour change, and AAP §0.6.7.7 declares
+       * exactly ONE in this port (D18). The exposure is FLAGGED at the predicate instead of being closed
+       * inside a ported format check — see THE SIX-PROTOCOL URL CHECK IS STILL THE WHOLE CHECK in
+       * `src/validation/Validator.ts`. The upper-case row is retained because it also pins that the
+       * scheme match itself stays case-insensitive. */
       const brand = new Brand();
       brand.brandName = 'ACME';
       brand.urlTitle = 'acme';
       brand.brandWebsite = website;
 
       const { errors } = await validateBrand(brand, 'save');
-      expect(errors.getError('brandWebsite')).toEqual([
-        'validate.save.Brand.brandWebsite.dataType.url',
-      ]);
+      expect(errors.hasError('brandWebsite')).toBe(false);
     },
   );
 
@@ -1747,39 +1745,57 @@ describe('Brand — brandWebsite URL check, model/validation/Brand.json:L4', () 
     ['a trailing DEL', 'https://acme.test\u007f'],
     ['a unit separator inside the path', 'https://acme.test/a\u001fb'],
     ['a trailing CRLF — the response-splitting payload', 'https://acme.test\r\n'],
-    ['a CRLF plus a forged header', 'https://acme.test\r\nX-Injected: 1'],
     ['a leading tab', '\thttps://acme.test'],
     ['a trailing newline', 'https://acme.test\n'],
     ['a control character on a non-web legacy scheme', 'mailto:hello@acme.test\u0000'],
   ])(
-    'NET-NEW — SEC-HARDENING (D18-CLASS): %s is REFUSED, a parity correction',
+    'NET-NEW TODO(parity) — WITHDRAWAL REGRESSION: %s is ACCEPTED, and the CWE-113/117 exposure is carried',
     async (_label, website) => {
-      /* ⭐ A PARITY CORRECTION, and this case previously asserted acceptance. RFC 3986 §2 defines the
-       * complete character set a URI may contain and no control character is in any of its productions —
-       * a control character may appear in a URI only percent-encoded, never raw. So `isValid(…, "url")`
-       * cannot be accepting these AS valid URLs, and accepting them was a hole in the port's own
-       * documented APPROXIMATION rather than a legacy behaviour being preserved.
+      /* ⛔ ALSO WITHDRAWN, AND THIS IS THE SUBTLER OF THE TWO. The refusal was argued as a "parity
+       * CORRECTION" on the ground that RFC 3986 §2 admits no raw control character in a URI, so the
+       * engine's own `isValid(…, "url")` cannot be accepting one AS valid. That argument is not
+       * checkable here: AAP §0.8.4.1 records that no CFML runtime exists in this environment, so the
+       * engine's internal pattern was never observed, and the predicate is a documented APPROXIMATION.
+       * A change of outcome justified by a conjecture about an unobserved implementation is a behaviour
+       * change with extra steps, and AAP §0.6.7 mandates preserve-and-annotate.
        *
-       * THE CHECK RUNS BEFORE THE TRIM, which is why the last three rows are here. `String.prototype
-       * .trim` strips tab, newline and carriage return, so a check placed after it would pass
-       * `'https://acme.test\r\n'` — and validation trimming does NOT trim what gets STORED, so the value
-       * would be persisted carrying a raw CRLF. That is CWE-113 for any consumer that puts it in a
-       * header and CWE-117 for any consumer that logs it. Ordinary SPACES are still trimmed and still
-       * accepted; the very next case pins that.
-       *
-       * The last row pins that the rule is orthogonal to the scheme: `mailto:` is one of the four
-       * protocols the withdrawal deliberately keeps, and it is still refused when it carries a NUL. */
+       * So these values are accepted, and note where that bites: the rows whose only control characters
+       * are at the edges pass because the predicate trims before matching, and the rows with an EMBEDDED
+       * control character pass because the trimmed value still matches the six-protocol pattern — a raw
+       * NUL, BEL, DEL or unit separator is not JavaScript whitespace. Either way the STORED value keeps
+       * the character, because validation never rewrites what it inspects (the case further down pins
+       * that), which is what makes it a CWE-113 / CWE-117 payload for a consumer that puts the value in a
+       * header or a log line, and CWE-158 at a C-string boundary. Flagged, not closed. */
       const brand = new Brand();
       brand.brandName = 'ACME';
       brand.urlTitle = 'acme';
       brand.brandWebsite = website;
 
       const { errors } = await validateBrand(brand, 'save');
-      expect(errors.getError('brandWebsite')).toEqual([
-        'validate.save.Brand.brandWebsite.dataType.url',
-      ]);
+      expect(errors.hasError('brandWebsite')).toBe(false);
     },
   );
+
+  it('NET-NEW — a CRLF plus a forged header still FAILS, on the whitespace rule and not the control character', async () => {
+    /* The one row that changed sides when the control-character refusal was withdrawn, and stating why
+     * matters: `'https://acme.test\r\nX-Injected: 1'` is refused because the trimmed candidate carries
+     * INTERNAL whitespace — the CR, the LF and the space in the forged header line — and
+     * `isValid("url", …)` admits no whitespace inside a URL either. So this refusal is the legacy
+     * approximation's own, not a reinstated hardening, and it survives the withdrawal untouched.
+     *
+     * The boundary is exact and worth pinning: the same payload WITHOUT the trailing text —
+     * `'https://acme.test\r\n'` — is trimmed clean and ACCEPTED by the row above, which is precisely the
+     * residual CWE-113 exposure that remains carried. */
+    const brand = new Brand();
+    brand.brandName = 'ACME';
+    brand.urlTitle = 'acme';
+    brand.brandWebsite = 'https://acme.test\r\nX-Injected: 1';
+
+    const { errors } = await validateBrand(brand, 'save');
+    expect(errors.getError('brandWebsite')).toEqual([
+      'validate.save.Brand.brandWebsite.dataType.url',
+    ]);
+  });
 
   it('NET-NEW — ordinary surrounding SPACES are still trimmed away and the value is ACCEPTED', async () => {
     /* The boundary of the correction above, pinned from the accepting side so the two cases together
@@ -1801,11 +1817,11 @@ describe('Brand — brandWebsite URL check, model/validation/Brand.json:L4', () 
     }
   });
 
-  it('NET-NEW — an `@` in the PATH is not userinfo, so it is still ACCEPTED', async () => {
-    /* The boundary of the userinfo departure, pinned from the accepting side. Only the span between
-     * `://` and the first `/`, `?` or `#` is the authority, so an `@` after the path has begun carries
-     * no deceptive-authority meaning and is left alone. `mailto:` and `news:` have no authority component
-     * at all, which is why `mailto:hello@acme.test` above still passes. */
+  it('NET-NEW — an `@` anywhere in the value is ACCEPTED, in the path as in the authority', async () => {
+    /* Retained from the withdrawn userinfo departure, where it pinned the boundary from the accepting
+     * side. With that departure gone the rule is simply that no `@` is judged at all, wherever it sits —
+     * and the rows are kept because they are the ones a reinstated authority scan would have had to leave
+     * alone, so they still fail if one is ever added without this being revisited. */
     for (const website of [
       'https://acme.test/a@b',
       'https://acme.test/?to=a@b',
@@ -1898,13 +1914,13 @@ describe('Brand — brandWebsite URL check, model/validation/Brand.json:L4', () 
  * `org/Hibachi/HibachiValidationService.cfc:L162` skips every rule when the context casts to boolean
  * false. These cases pin that the nine members of `ValidationContext` all validate normally.
  *
- * ⭐ THE REFUSAL HALF IS ENFORCED AT RUNTIME AND IS TESTED, in `test/validation/rules.test.ts` section
- * C1. This paragraph previously stated that the compile-time union was the only enforcement and that
- * `'false'`, `'no'` and `'0'` were "not expressible as a test" — that is no longer true, and it was the
- * weaker claim even then, because a union is erased at run time and so binds only the callers the
- * compiler checks. `Validator.validate` now refuses any context outside its exported nine-member
- * inventory before it does anything else, so the bypass is closed on the paths a type cannot reach: a
- * parsed request body, an `as ValidationContext` assertion, and a JavaScript consumer of the bundle.
+ * ⛔ THERE IS NO REFUSAL HALF, AND ITS ABSENCE IS DELIBERATE. A revision added a runtime membership
+ * guard to `Validator.validate` so that `'false'`, `'no'` and `'0'` were refused rather than honoured;
+ * it is withdrawn, because refusing a value `:L162` accepts is a behaviour change and AAP §0.6.7.7
+ * declares exactly one (D18). The compile-time union is therefore the whole of the enforcement, and it
+ * binds only the callers the compiler checks. `test/validation/rules.test.ts` section C1 pins the
+ * carried bypass as it behaves, on the three paths a type cannot reach: a parsed request body, an
+ * `as ValidationContext` assertion, and a JavaScript consumer of the bundle.
  * ============================================================================================== */
 describe('Brand — the closed validation context, org/Hibachi/HibachiValidationService.cfc:L162', () => {
   it('NET-NEW — the save context validates rather than skipping, for an entity that must fail', async () => {

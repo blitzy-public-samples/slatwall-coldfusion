@@ -52,7 +52,6 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-
 import {
   composeAttributeSetSelection,
   composeExistenceLookup,
@@ -60,25 +59,35 @@ import {
   composeImportUpdate,
   composeProductSearch,
   MySqlProductRepository,
+  unresolvableProductContentAssignmentFactory,
   unresolvableProductContentAssignmentPort,
   unresolvableProductImportSourceReader,
+  MySqlProductPersistence,
 } from '../../src/adapters/mysql/MySqlProductRepository';
+import type {
+  ProductContentAssignmentFactory,
+  ProductImportTransactionScope,
+} from '../../src/adapters/mysql/MySqlProductRepository';
+import type { TransactionalSqlExecutor } from '../../src/adapters/mysql/UnitOfWork';
 import type {
   ProductContentAssignmentPort,
   ProductContentAssignmentRow,
   ResolvedProductListingContent,
-} from '../../src/adapters/mysql/MySqlProductRepository';
-import type {
   DelimitedImportRecord,
   DelimitedImportRecordSet,
   MySqlProductRepositoryDependencies,
   ProductImportSourceReader,
   ProductImportTransactionBoundary,
+  ProductDependencyCleanup,
+  ProductPersistenceExecutor,
 } from '../../src/adapters/mysql/MySqlProductRepository';
 import { assertTableName } from '../../src/adapters/mysql/QueryRunner';
-import { DomainError } from '../../src/errors/DomainError';
+import type { SqlExecutor } from '../../src/adapters/mysql/QueryRunner';
+import { DomainError, DataIntegrityError } from '../../src/errors/DomainError';
 import type { UnitOfWork } from '../../src/adapters/mysql/UnitOfWork';
-import { Product } from '../../src/domain/product/Product';
+import { Product, PRODUCT_PROPERTY_DESCRIPTORS } from '../../src/domain/product/Product';
+import type { ProductPropertyName } from '../../src/domain/product/Product';
+import type { ProductDefaultSkuDelegate } from '../../src/domain/product/Product';
 import type { AccountContextPort } from '../../src/ports/AccountContextPort';
 import type { SettingName } from '../../src/ports/SettingResolverPort';
 import type {
@@ -100,13 +109,60 @@ import {
   sqlFailure,
   sqlRows,
   TEST_ADMIN_ACCOUNT_ID,
+  buildSku,
+  createPopulationAuthorizationDouble,
+  createBaseServicePersistenceDouble,
+  createUniquePropertyDouble,
+  createSettingResolverDouble,
+  createUrlTitleAvailabilityDouble,
 } from '../support/inMemoryRepositories';
 import type {
   SqlExecutorCall,
   SqlExecutorOutcome,
   UnitOfWorkEventKind,
   UnitOfWorkSettlementResponder,
+  UrlTitleTableName,
 } from '../support/inMemoryRepositories';
+import {
+  attachSkuOptions,
+  createCatalogAggregateLoaders,
+  SmartListQueryBuilder,
+} from '../../src/adapters/mysql/SmartListQueryBuilder';
+import type { CatalogAggregateDependencies } from '../../src/adapters/mysql/SmartListQueryBuilder';
+import { toExactDecimal } from '../../src/util/formatting';
+import type { ExactDecimal } from '../../src/util/formatting';
+import {
+  readProductDefaultSkuId,
+  forgetHydratedParentProductTypeID,
+  isSkuOwnedLinkAuthoritative,
+  mapProductRow,
+  mapProductTypeRow,
+  readHydratedParentProductTypeID,
+} from '../../src/adapters/mysql/rowMappers';
+import type { MySqlRow } from '../../src/adapters/mysql/rowMappers';
+import type { Option } from '../../src/domain/option/Option';
+import { Sku } from '../../src/domain/sku/Sku';
+import type { SmartListRecord } from '../../src/ports/SmartListQueryPort';
+import { OptionService } from '../../src/services/OptionService';
+import { Brand } from '../../src/domain/product/Brand';
+import { ProductType } from '../../src/domain/product/ProductType';
+import type { ManagedEntity } from '../../src/domain/base/populate';
+import { ProductService } from '../../src/services/ProductService';
+import { MySqlProductTypeRepository } from '../../src/adapters/mysql/MySqlProductTypeRepository';
+import { BaseService } from '../../src/services/BaseService';
+import type { EntityPersister, EntityRemover } from '../../src/services/BaseService';
+import {
+  createOptionGroupSortOrderMemo,
+  createTransactionExistenceChecker,
+  MySqlSkuRepository,
+} from '../../src/adapters/mysql/MySqlSkuRepository';
+import { Validator } from '../../src/validation/Validator';
+import { productValidationRuleSet } from '../../src/validation/rules/product.rules';
+import type { BrandStatementExecutor } from '../../src/adapters/mysql/MySqlBrandRepository';
+import { MySqlBrandRepository } from '../../src/adapters/mysql/MySqlBrandRepository';
+import { assertColumnName } from '../../src/adapters/mysql/QueryRunner';
+import type { BrandRepository } from '../../src/ports/repositories/BrandRepository';
+import { createManagedBrand } from '../support/inMemoryRepositories';
 
 /* ================================================================================================
  * THE HARNESS — ASSEMBLED FROM THE SUPPORT DOUBLES, NOT REBUILT
@@ -198,8 +254,25 @@ interface Harness {
    * how the `afterRetrieval` cancellation boundary is reached without a second harness shape.
    */
   readonly sourceReader: ProductImportSourceReader;
+  /**
+   * The transactional executor the unit-of-work double hands to every scope — finding F11.
+   *
+   * The double shares ONE recording executor across every transaction so that an invocation's statements
+   * read back as a single ordered list while the event log still attributes each to its own transaction.
+   * That is what makes `region` work; it also means the per-row scopes are distinguished by IDENTITY
+   * rather than by executor, which is what the F11 cases assert.
+   */
+  readonly transactionalExecutor: TransactionalSqlExecutor;
   /** The collaborator itself, so a test can make one of its members fail. */
   readonly contentAssignmentPort: ProductContentAssignmentPort;
+  /**
+   * Every transaction scope the content-assignment FACTORY was built from, in call order — finding F11.
+   *
+   * One entry per row that actually had a page to assign, and each entry is the scope of THAT row's
+   * transaction. Comparing an entry's executor against the executor the row's other statements ran on is
+   * what proves the step joined the row's transaction rather than committing beside it.
+   */
+  readonly contentAssignmentScopes: readonly ProductImportTransactionScope[];
   /** Every content page the assignment collaborator was asked to resolve, in call order. */
   readonly contentLookups: readonly string[];
   /** Every existence probe, in call order — `model/dao/ProductDAO.cfc:L271`. */
@@ -462,7 +535,9 @@ function buildHarness(
   const resolvableContentPages = new Map<string, ResolvedProductListingContent>();
   const existingAssignments = new Set<string>();
 
-  const contentAssignment: ProductContentAssignmentPort = {
+  const contentAssignmentScopes: ProductImportTransactionScope[] = [];
+
+  const contentAssignmentPort: ProductContentAssignmentPort = {
     findProductListingContent: (
       pageFileName: string,
     ): Promise<ResolvedProductListingContent | null> => {
@@ -556,6 +631,17 @@ function buildHarness(
           },
         };
 
+  /*
+   * ⭐ F11 — A FACTORY THAT RECORDS THE SCOPE IT WAS HANDED. The adapter now builds the collaborator per
+   * row from that row's `TransactionScope`, so the double records the scope and then answers the SAME port
+   * instance every time — which keeps every existing `contentLookups` / `contentProbes` / `contentInserts`
+   * assertion in this file working unchanged, while making the new per-row binding observable.
+   */
+  const contentAssignment: ProductContentAssignmentFactory = (scope) => {
+    contentAssignmentScopes.push(scope);
+    return contentAssignmentPort;
+  };
+
   const dependencies: MySqlProductRepositoryDependencies = {
     executor: sqlExecutor.executor,
     transactions: unitOfWork.unitOfWork,
@@ -577,10 +663,14 @@ function buildHarness(
     revalidatedHops,
     sourcePolicy: admittingSourcePolicy,
     sourceReader,
+    /* F11 — the transactional executor every scope hands out, so a test can assert that the scope the
+     * content-assignment factory received is the row's own rather than some other object. */
+    transactionalExecutor: sqlExecutor.executor,
     contentLookups,
     contentProbes,
     contentInserts,
-    contentAssignmentPort: contentAssignment,
+    contentAssignmentPort,
+    contentAssignmentScopes,
     resolvableContentPages,
     existingAssignments,
     readerCalls,
@@ -1325,17 +1415,21 @@ describe('NET-NEW — importFromFile, and mismatch M3: one transaction per row',
     expect(typeof acceptsProductionBoundary).toBe('function');
   });
 
-  it('NET-NEW — runs the back-fills as their own step, on the same un-transacted region', async () => {
+  it('NET-NEW — runs the back-fills at the TAIL of the import, on an un-transacted region', async () => {
     const harness = buildHarness(fileWith([]));
 
-    await harness.repository.backfillImportDerivedColumns();
+    /*
+     * ⛔ REACHED THROUGH THE IMPORT, BECAUSE THERE IS NO OTHER WAY IN. This case used to invoke
+     * `backfillImportDerivedColumns()` directly: the member was public and declared on the port so an
+     * out-of-band workflow could defer the pass. Review finding F4 withdrew that flag and the exposure with
+     * it, so the member is private again and the import's tail is its one caller — which is where
+     * `model/dao/ProductDAO.cfc:L288`/`:L304` sit. The claim is unchanged: same two statements, same order,
+     * same un-transacted region, nothing begun or committed.
+     */
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
 
-    /* The member exists so an out-of-band workflow can run the two statements once for a logical import
-     * rather than once per invocation. It adds no behaviour: same two statements, same order, same
-     * un-transacted region, and still nothing begun or committed. */
     expect(only(harness, 'SET defaultSkuID').region).toBe('backfill');
     expect(only(harness, 'SET imageFile').region).toBe('backfill');
-    expect(harness.eventKinds()).toEqual(['poolWork']);
     expect(harness.transactionsStarted()).toBe(0);
   });
 });
@@ -1938,7 +2032,7 @@ describe('NET-NEW — importFromFile, and D18: the declared hardening of every f
 
     /*
      * ⚠️ TODO(parity) `model/dao/ProductDAO.cfc:L193`, `:L207`, `:L386`, `:L394`, `:L402` and `:L412`
-     * — D22, THE LOGICAL-TO-PHYSICAL TRANSLATION. `:L193` and `:L207` pass the LOGICAL literals
+     * — the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132], THE LOGICAL-TO-PHYSICAL TRANSLATION. `:L193` and `:L207` pass the LOGICAL literals
      * `"SlatwallProduct"` and `"SlatwallSku"` into `saveImportData`, which then interpolates them
      * straight into NATIVE statement text at `:L386`, `:L394` and `:L412` — and `:L402` writes
      * `FROM SlatwallProduct` directly. Those are entity names, not table names: the entity components
@@ -2464,7 +2558,7 @@ describe('NET-NEW — importFromFile, and the parity decisions adjacent to D18',
     expect(supplied.params[suppliedColumns.indexOf('publishedFlag')]).toBe('0');
   });
 
-  it('NET-NEW — remembers a resolved brand across rows and re-probes an unresolved one', async () => {
+  it('NET-NEW — re-probes the brand on EVERY row, resolved or not (finding F12)', async () => {
     const twoRowsOneBrand = fileWith(
       [
         'product_productCode',
@@ -2488,13 +2582,26 @@ describe('NET-NEW — importFromFile, and the parity decisions adjacent to D18',
     await resolving.repository.importFromFile('https://feeds.example/catalog.csv');
     await unresolved.repository.importFromFile('https://feeds.example/catalog.csv');
 
-    /* ⭐ ONLY A POSITIVE RESOLUTION IS REMEMBERED, AND THAT ASYMMETRY IS WHAT KEEPS IT FAITHFUL. A brand
-     * that resolves is resolved once for the whole import; a brand that does NOT resolve is probed again
-     * on every row, so a row created concurrently in between is observed on exactly the row the legacy
-     * would first have observed it. Neither statement declares an `ORDER BY`, so the legacy's own answer
-     * for a duplicated name is already unspecified and the memory cannot narrow it. */
-    expect(matching(resolving, 'FROM SwBrand')).toHaveLength(1);
+    /*
+     * ⛔ TWO ROWS, TWO STATEMENTS — WHETHER THE BRAND RESOLVES OR NOT. `model/dao/ProductDAO.cfc:L179-L182`
+     * sits inside the record loop and is re-run per row, with no memory of any kind.
+     *
+     * THIS CASE USED TO ASSERT THE OPPOSITE for the resolving harness — one statement, because an
+     * import-scoped memory remembered POSITIVE resolutions. Review finding F12 withdrew that memory: the
+     * asymmetry it relied on (misses re-probe, hits do not) narrowed the divergence from the legacy without
+     * closing it, because a rename or a delete-and-recreate mid-import stayed hidden behind a remembered
+     * identifier. AAP §0.8.2 guideline 4 and IR-9 both point the same way, and no source-backed
+     * immutability guarantee exists to license it. The withdrawal block above `ImportPlan` in
+     * `src/adapters/mysql/MySqlProductRepository.ts` preserves the full argument that was made for it.
+     */
+    expect(matching(resolving, 'FROM SwBrand')).toHaveLength(2);
     expect(matching(unresolved, 'FROM SwBrand')).toHaveLength(2);
+
+    /* And both carry the same bound cell value — the read is repeated, not varied. */
+    expect(matching(resolving, 'FROM SwBrand').map((call) => call.params)).toEqual([
+      ['Acme'],
+      ['Acme'],
+    ]);
   });
 });
 
@@ -2782,11 +2889,13 @@ describe('NET-NEW — searchByProductType, and its optional plural surface', () 
      * return would each break it — which is the compile-time equivalent of the method-by-method mapping
      * the migration is meant to make checkable.
      *
-     * ⚠️ ALL SIX ARE NAMED, NOT THREE. An earlier revision asserted "all three declared members" and
+     * ⚠️ ALL FIVE ARE NAMED, NOT THREE. An earlier revision asserted "all three declared members" and
      * listed only the three legacy DAO members, which silently under-counted the port: `ProductRepository`
-     * also declares `backfillImportDerivedColumns`, `saveProduct` and `removeProduct`, and each is
-     * documented as additive at its own declaration. An assertion that names a subset cannot notice a
-     * member disappearing from outside that subset, so the whole surface is enumerated.
+     * also declares `saveProduct` and `removeProduct`, each documented as additive at its own declaration.
+     * An assertion that names a subset cannot notice a member disappearing from outside that subset, so the
+     * whole surface is enumerated. (It listed SIX for a time. The sixth was
+     * `backfillImportDerivedColumns`, withdrawn under review finding F4 with the back-fill deferral that
+     * was its only justification.)
      */
     const asPort: ProductRepository = buildHarness(fileWith([])).repository;
 
@@ -2795,8 +2904,7 @@ describe('NET-NEW — searchByProductType, and its optional plural surface', () 
     expect(typeof asPort.importFromFile).toBe('function');
     expect(typeof asPort.searchByProductType).toBe('function');
 
-    /* The three additive members, each defended at its declaration. */
-    expect(typeof asPort.backfillImportDerivedColumns).toBe('function');
+    /* The two additive members, each defended at its declaration. */
     expect(typeof asPort.saveProduct).toBe('function');
     expect(typeof asPort.removeProduct).toBe('function');
 
@@ -2814,10 +2922,14 @@ describe('NET-NEW — searchByProductType, and its optional plural surface', () 
      * out-of-scope admin layer, not from `model/service/ProductService.cfc` — so a caller would have
      * needed an unratified sixteenth member, which TR-1 and AAP §0.8.2 guideline 4 forbid.
      *
-     * ⭐ THE SIBLING BOUNDED MEMBERS ARE UNAFFECTED, and that asymmetry is the point rather than an
-     * inconsistency: `SkuRepository.searchByProductTypeBounded` is reached from
-     * `SkuService.searchSkusByProductTypeBounded` and the two `OptionRepository` bounded reads from
-     * `OptionService`, so each of those has a routed caller this one never had.
+     * ⭐ AND THE THREE SIBLING BOUNDED MEMBERS HAVE SINCE GONE THE SAME WAY, so what was an asymmetry is
+     * now a uniform rule. This note used to record that `SkuRepository.searchByProductTypeBounded` was
+     * reached from `SkuService.searchSkusByProductTypeBounded`, and the two `OptionRepository` windowed
+     * reads from `OptionService` — but those service members were themselves withdrawn to keep
+     * `SkuService` at the nine members AAP §0.4.2.1/§0.4.2.2 tabulate and `OptionService` at the seven
+     * §0.4.1.8 fixes, which left all three repository members with no routed caller either. NO BOUNDED
+     * REPOSITORY MEMBER EXISTS ANYWHERE IN THE PORT LAYER NOW, and the window vocabulary that typed them
+     * survives only at `src/ports/repositories/BoundedRead.ts` for a future member to use.
      */
     expect('searchByProductTypeBounded' in asPort).toBe(false);
     expect(
@@ -2845,21 +2957,20 @@ describe('NET-NEW — searchByProductType, and its optional plural surface', () 
    * against the six-member interface — which is precisely the property being relied on here, working as
    * intended.
    */
-  it('NET-NEW — F3: the ProductRepository surface is EXHAUSTIVE at SIX members, keyed off the port itself', () => {
+  it('NET-NEW — the ProductRepository surface is EXHAUSTIVE at FIVE members, keyed off the port itself', () => {
     const asPort: ProductRepository = buildHarness(fileWith([])).repository;
 
     const everyPortMember: Record<keyof ProductRepository, true> = {
       findAttributeSets: true,
       importFromFile: true,
       searchByProductType: true,
-      backfillImportDerivedColumns: true,
       saveProduct: true,
       removeProduct: true,
     };
 
     const declared = Object.keys(everyPortMember) as readonly (keyof ProductRepository)[];
 
-    expect(declared).toHaveLength(6);
+    expect(declared).toHaveLength(5);
     for (const member of declared) {
       expect(typeof asPort[member]).toBe('function');
     }
@@ -2942,8 +3053,10 @@ async function everyStatementTheAdapterCanEmit(): Promise<readonly RecordedState
    */
   await writing.repository.saveProduct(adversarialProduct());
   await writing.repository.saveProduct(adversarialProduct({ productID: PERSISTED_PRODUCT_ID }));
-  /* The back-fill, which the importer normally invokes for itself but which is separately declared. */
-  await writing.repository.backfillImportDerivedColumns();
+  /* The two back-fill statements are already in `importing.statements`: the import above runs them at its
+   * tail, unconditionally, and since review finding F4 withdrew the deferral flag that is their only
+   * route — the member is private again. Invoking them a second time here would double-count them in the
+   * sweep without covering a statement the sweep has not already seen. */
 
   return [
     ...importing.statements,
@@ -3071,7 +3184,7 @@ describe('NET-NEW — the query discipline every statement in this adapter is he
 
     /* A statement addresses tables and columns and nothing else. The connection is the pool's business,
      * and the datasource name — `Slatwall`, per the legacy application configuration — is deliberately
-     * absent from statement text, which is also what makes the D22 assertion above unambiguous. */
+     * absent from statement text, which is also what makes the the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] assertion above unambiguous. */
     for (const forbidden of [
       'slatwall.',
       'information_schema',
@@ -3146,8 +3259,9 @@ describe('NET-NEW — the query discipline every statement in this adapter is he
      * literal `LIMIT 1` FIXED BY THIS ADAPTER rather than a number a caller chose — one of the three
      * quoted from the legacy text and the other two the documented answer-preserving decisions above.
      * (The distinction is provenance, not shape: all three are `LIMIT 1`, and none is caller-supplied.)
-     * The routed windowed member that DOES exist lives on `SkuRepository` and is gated in that adapter's
-     * own suite.
+     * NO WINDOWED REPOSITORY MEMBER EXISTS ANYWHERE NOW: the `SkuRepository` and `OptionRepository`
+     * companions this note used to point at have been withdrawn on the same no-caller ground, so no port
+     * in the slice emits a caller-supplied `LIMIT ? OFFSET ?` at all.
      *
      * Nothing else is capped. The UNBOUNDED product search in particular carries none, because `:L421`
      * declares none and a ceiling there would change which rows a caller sees.
@@ -3255,7 +3369,7 @@ describe('NET-NEW — the query discipline every statement in this adapter is he
         },
         read: () => Promise.resolve(fileWith([])),
       },
-      contentAssignment: unresolvableProductContentAssignmentPort,
+      contentAssignment: unresolvableProductContentAssignmentFactory,
       accountContext: createAccountContextDouble(persistedAdminAccount()).accountContext,
       urlTitleFilter: (productName) => productName,
       readDefaultSkuId: () => '',
@@ -3324,8 +3438,9 @@ describe('NET-NEW — the query discipline every statement in this adapter is he
  * capped rows on a statement the legacy never capped, and nothing reached it: AAP §0.4.2.1 closes
  * `ProductService` at fifteen members and §0.4.2.5 enumerates the synthesized set, with no product
  * search in either, so wiring a caller would have meant inventing a sixteenth member. It is asserted
- * ABSENT in the port-satisfaction case above rather than tested here. The routed windowed member that
- * does exist is `SkuRepository.searchByProductTypeBounded`, gated in that adapter's own suite.
+ * ABSENT in the port-satisfaction case above rather than tested here. The `SkuRepository` and
+ * `OptionRepository` companions that once justified calling this withdrawal an asymmetry have since been
+ * withdrawn on the same ground, so no windowed repository member survives in the slice.
  *
  * WHY THE REMAINING THREE EXIST, since a reviewer is entitled to ask before reading their cases:
  *   - `saveProduct` / `removeProduct` — persistence formerly reached the database through the ORM
@@ -3741,156 +3856,54 @@ describe('NET-NEW — removeProduct: refusal, and the four-statement order', () 
   });
 });
 
-describe('NET-NEW — ProductImportOptions: the cancellation signal', () => {
-  /** An `AbortSignal` already in the aborted state. */
-  function abortedSignal(): AbortSignal {
-    const controller = new AbortController();
-    controller.abort();
-    return controller.signal;
-  }
+describe('NET-NEW — the importer takes the legacy’s TWO arguments, and back-fills unconditionally (finding F4)', () => {
+  /*
+   * ⛔ TWO DESCRIBE BLOCKS STOOD HERE AND ARE REPLACED BY THIS ONE. They exercised
+   * `ProductImportOptions` — nine cases over a caller-supplied `AbortSignal` observed at four checkpoints
+   * (`beforeRetrieval`, `afterSourceValidation`, `afterRetrieval`, `row`) with a `committedRows` context,
+   * and over a `deferBackfills` flag with its separately invocable `backfillImportDerivedColumns` member.
+   * Review finding F4 removed all of it, and the reason is precedence rather than defect:
+   *   • `model/dao/ProductDAO.cfc:L73` declares exactly two arguments, and the legacy importer runs to
+   *     completion or dies with its request — it has no way to express either control.
+   *   • AAP §0.6.7.7 declares D18, the importer's SQL parameterisation, "the single place where the port
+   *     intentionally does not preserve legacy behavior exactly"; §0.8.2 Guideline 4 forbids the rest; and
+   *     §0.7.3 S9 / IR-12 forbid inventing runtime controls. An optional control that defaults to legacy
+   *     behaviour is still a control.
+   *
+   * ⚠️ MISMATCH M1 IS THEREFORE STILL OPEN, AND THAT IS THE CORRECT OUTCOME (AAP §0.8.3.6). A
+   * 3600-second budget (`model/service/ProductService.cfc:L65-L68`) cannot be represented in one
+   * invocation of the target runtime; the answer is an out-of-band model at the handler layer (AAP
+   * §0.4.1.9), not a control in this contract.
+   *
+   * What the cases below keep is everything those blocks asserted that the LEGACY actually does: both
+   * back-fills run, after the row loop, outside every transaction, in order, unconditionally — including
+   * for an empty file.
+   */
 
-  it('NET-NEW — aborts BEFORE the retrieval, so the source is never even read', async () => {
-    const harness = buildHarness(THREE_ROW_FILE, resolvingOptionGroup);
-
-    await expect(
-      harness.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
-        signal: abortedSignal(),
-      }),
-    ).rejects.toMatchObject({
-      context: { fileURL: 'https://feeds.example/catalog.csv', phase: 'beforeRetrieval' },
-    });
+  it('NET-NEW — importFromFile accepts EXACTLY two arguments, so no control can be smuggled in', () => {
+    const harness = buildHarness(fileWith([]));
 
     /*
-     * The earliest checkpoint costs nothing and saves the most: an already-cancelled import performs
-     * no network retrieval and issues no statement. The empty retrieval log is the observable half —
-     * a signal checked only inside the row loop would have fetched the file first.
+     * ⭐ `Function.length` COUNTS THE LEADING PARAMETERS UP TO THE FIRST ONE WITH A DEFAULT, and neither
+     * of these has one, so the count is the whole declared arity. It is the sharpest available guard
+     * against a third parameter reappearing: a reinstated `options` argument fails here by name, even if
+     * every behavioural case still passed because the new control defaulted to legacy behaviour.
      */
-    expect(harness.retrievals).toHaveLength(0);
-    expect(harness.statements).toHaveLength(0);
-    expect(harness.eventKinds()).toEqual([]);
+    expect(harness.repository.importFromFile.length).toBe(2);
   });
 
-  it('NET-NEW — carries NO row number in the pre-row phases, because no row has been reached', async () => {
-    const harness = buildHarness(THREE_ROW_FILE, resolvingOptionGroup);
-
-    const failure = await harness.repository
-      .importFromFile('https://feeds.example/catalog.csv', undefined, { signal: abortedSignal() })
-      .catch((error: unknown) => error);
-
-    /*
-     * The context shape differs by phase, deliberately: a pre-row abort reports only the file and the
-     * phase, while a row abort adds `rowNumber` and `committedRows`. Fabricating a zero row number
-     * here would imply the loop had started.
-     */
-    expect(failure).toMatchObject({ context: { phase: 'beforeRetrieval' } });
-    expect((failure as { context?: Record<string, unknown> }).context).not.toHaveProperty(
-      'rowNumber',
-    );
-    expect((failure as { context?: Record<string, unknown> }).context).not.toHaveProperty(
-      'committedRows',
-    );
-  });
-
-  it('NET-NEW — an UNABORTED signal changes nothing about the import', async () => {
-    const withSignal = buildHarness(THREE_ROW_FILE, resolvingOptionGroup);
-    const withoutSignal = buildHarness(THREE_ROW_FILE, resolvingOptionGroup);
-    const controller = new AbortController();
-
-    await withSignal.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
-      signal: controller.signal,
-    });
-    await withoutSignal.repository.importFromFile('https://feeds.example/catalog.csv');
-
-    /*
-     * Supplying a signal that never fires must be indistinguishable from supplying none. Otherwise
-     * every caller that wants cancellability would pay for it in changed behaviour.
-     */
-    expect(withSignal.statements.map((statement) => collapse(statement.sql))).toEqual(
-      withoutSignal.statements.map((statement) => collapse(statement.sql)),
-    );
-    expect(withSignal.transactionsCommitted()).toBe(withoutSignal.transactionsCommitted());
-    expect(withSignal.eventKinds()).toEqual(withoutSignal.eventKinds());
-  });
-
-  it('NET-NEW — aborting mid-file COMMITS the rows already done and attempts no later row', async () => {
-    const controller = new AbortController();
-    let rowTransactionsSeen = 0;
-    const harness = buildHarness(THREE_ROW_FILE, (statement) => {
-      /*
-       * Abort as soon as the first row's INSERT has been issued. The signal is checked at the TOP of
-       * each row iteration and never between two statements of the same row, so the first row runs to
-       * completion and commits, and the second row is never attempted.
-       */
-      if (collapse(statement.sql).startsWith('INSERT INTO SwProduct')) {
-        rowTransactionsSeen += 1;
-        controller.abort();
-      }
-      return resolvingOptionGroup(statement);
-    });
-
-    const failure = await harness.repository
-      .importFromFile('https://feeds.example/catalog.csv', undefined, { signal: controller.signal })
-      .catch((error: unknown) => error);
-
-    /*
-     * ⭐ THIS IS THE M3 PARTIAL-IMPORT SHAPE, PRESERVED RATHER THAN REPAIRED. The legacy opens a
-     * transaction per row, so a mid-file failure already leaves earlier rows committed and no later
-     * row attempted. Cancellation reproduces exactly that shape instead of inventing an all-or-nothing
-     * import, and `committedRows` reports it as `rowNumber - 1`.
-     */
-    expect(rowTransactionsSeen).toBe(1);
-    expect(failure).toMatchObject({
-      context: { phase: 'row', rowNumber: 2, committedRows: 1 },
-    });
-    expect(harness.transactionsCommitted()).toBe(1);
-    /*
-     * ⚠️ ROW TWO'S BOUNDARY IS OPENED AND THEN ROLLED BACK, AND THAT IS THE POINT RATHER THAN A LEAK.
-     * The signal is checked at the top of the row body, which runs INSIDE the per-row boundary, so the
-     * abort rolls back a transaction in which nothing has been written yet. That is precisely what
-     * guarantees the abort cannot leave a row half-written: the alternative — checking before the
-     * boundary opens — would be indistinguishable here but would not hold if a row's first statement
-     * were ever issued before the check. One committed row and one empty rollback is the exact shape.
-     */
-    expect(harness.transactionsRolledBack()).toBe(1);
-    expect(harness.transactionsStarted()).toBe(2);
-  });
-
-  it('NET-NEW — a mid-file abort runs NO back-fill, because the import did not complete', async () => {
-    const controller = new AbortController();
-    const harness = buildHarness(THREE_ROW_FILE, (statement) => {
-      if (collapse(statement.sql).startsWith('INSERT INTO SwProduct')) {
-        controller.abort();
-      }
-      return resolvingOptionGroup(statement);
-    });
-
-    await harness.repository
-      .importFromFile('https://feeds.example/catalog.csv', undefined, { signal: controller.signal })
-      .catch(() => undefined);
-
-    /*
-     * The back-fills run AFTER the row loop, so an abort that escapes the loop skips them. A back-fill
-     * over a partially imported file would derive default-SKU and image columns from half a catalog.
-     */
-    expect(harness.statements.filter((statement) => statement.region === 'backfill')).toHaveLength(
-      0,
-    );
-  });
-});
-
-describe('NET-NEW — ProductImportOptions: deferBackfills', () => {
-  it('NET-NEW — runs BOTH back-fills after the row loop when the flag is absent', async () => {
+  it('NET-NEW — runs BOTH back-fills after the row loop, in order, outside every transaction', async () => {
     const harness = buildHarness(THREE_ROW_FILE, resolvingOptionGroup);
 
     await harness.repository.importFromFile('https://feeds.example/catalog.csv');
 
-    /*
-     * The default is to back-fill, which is what the legacy does at `:L288-L302` — unconditionally,
-     * with no flag to suppress it. Two statements, outside any row transaction, in the pool region the
-     * harness labels `backfill`.
-     */
+    /* `model/dao/ProductDAO.cfc:L288-L302` then `:L304-L325`, both past the closing braces of the
+     * transaction (`:L284`) and the loop (`:L285`) — so both run once, in that order, un-transacted. */
     const backfills = harness.statements.filter((statement) => statement.region === 'backfill');
     expect(backfills).toHaveLength(2);
+    expect(collapse(backfills[0]?.sql ?? '')).toContain('SET defaultSkuID');
+    expect(collapse(backfills[1]?.sql ?? '')).toContain('SET imageFile');
+    expect(harness.transactionsCommitted()).toBe(3);
   });
 
   it('NET-NEW — runs the back-fills even for an EMPTY file, exactly as the legacy does', async () => {
@@ -3899,95 +3912,43 @@ describe('NET-NEW — ProductImportOptions: deferBackfills', () => {
     await harness.repository.importFromFile('https://feeds.example/catalog.csv');
 
     /*
-     * A file with no rows still triggers the back-fills, because the legacy statement is outside the
-     * loop and has no row-count guard. Skipping them for an empty file would be a defensible
-     * optimisation and a behaviour change, so it is not made.
+     * ⛔ THE UNCONDITIONALITY IS THE BEHAVIOUR, AND IT IS NOW UNSUPPRESSIBLE. `:L288` and `:L304` are
+     * guarded by neither a record count nor a file type, so an empty file still runs both whole-catalog
+     * statements. A `deferBackfills` flag could once suppress them; with it withdrawn, the only remaining
+     * arm is the legacy's.
      */
     expect(harness.statements.filter((statement) => statement.region === 'backfill')).toHaveLength(
       2,
     );
+    expect(harness.transactionsStarted()).toBe(0);
   });
 
-  it('NET-NEW — SUPPRESSES both back-fills when deferBackfills is true, and imports the rows anyway', async () => {
-    const harness = buildHarness(THREE_ROW_FILE, resolvingOptionGroup);
-
-    await harness.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
-      deferBackfills: true,
+  it('NET-NEW — a mid-file FAILURE still runs NO back-fill, because the loop is left early (M3)', async () => {
+    /*
+     * ⭐ THIS CASE SURVIVES THE WITHDRAWAL WITH ITS CLAIM INTACT, ONLY ITS TRIGGER CHANGED. It used to
+     * abort the import through the cancellation signal; it now fails the first row's INSERT, which is the
+     * mechanism `model/dao/ProductDAO.cfc` itself has. Either way the back-fills sit after the loop, so
+     * leaving the loop early skips them — and a back-fill over a partially imported file would derive
+     * default-SKU and image columns from half a catalog.
+     */
+    const failure = new Error('the row could not be written');
+    const harness = buildHarness(THREE_ROW_FILE, (statement) => {
+      if (collapse(statement.sql).startsWith('INSERT INTO SwProduct')) {
+        throw failure;
+      }
+      return resolvingOptionGroup(statement);
     });
 
-    /*
-     * The flag exists because M1's 3600-second budget is unrepresentable in one Lambda invocation, so a
-     * long import has to be chunked — and the derived columns must be computed ONCE at the end rather
-     * than per chunk. Suppression must not disturb the rows themselves, which the commit count proves.
-     */
+    await expect(
+      harness.repository.importFromFile('https://feeds.example/catalog.csv'),
+    ).rejects.toBe(failure);
+
     expect(harness.statements.filter((statement) => statement.region === 'backfill')).toHaveLength(
       0,
     );
-    expect(harness.transactionsCommitted()).toBe(3);
-  });
-
-  it('NET-NEW — deferBackfills FALSE is the same as absent, not a third behaviour', async () => {
-    const explicitlyFalse = buildHarness(THREE_ROW_FILE, resolvingOptionGroup);
-    const absent = buildHarness(THREE_ROW_FILE, resolvingOptionGroup);
-
-    await explicitlyFalse.repository.importFromFile(
-      'https://feeds.example/catalog.csv',
-      undefined,
-      {
-        deferBackfills: false,
-      },
-    );
-    await absent.repository.importFromFile('https://feeds.example/catalog.csv');
-
-    /*
-     * Production tests `options?.deferBackfills !== true`, so only the exact boolean `true` suppresses.
-     * Pinning `false` as equivalent to absent keeps a later `Boolean(...)`-style rewrite from turning
-     * any other falsy value into a third behaviour.
-     */
-    expect(
-      explicitlyFalse.statements.filter((statement) => statement.region === 'backfill'),
-    ).toHaveLength(2);
-    expect(absent.statements.filter((statement) => statement.region === 'backfill')).toHaveLength(
-      2,
-    );
-  });
-
-  it('NET-NEW — the deferred back-fill is separately invocable and issues the SAME two statements', async () => {
-    const deferred = buildHarness(THREE_ROW_FILE, resolvingOptionGroup);
-    const inline = buildHarness(THREE_ROW_FILE, resolvingOptionGroup);
-
-    await deferred.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
-      deferBackfills: true,
-    });
-    await deferred.repository.backfillImportDerivedColumns();
-    await inline.repository.importFromFile('https://feeds.example/catalog.csv');
-
-    /*
-     * Deferring then invoking has to be equivalent to not deferring at all, or chunking would change
-     * the result. Comparing the two back-fill statement sequences byte for byte is that equivalence.
-     */
-    const backfillsOf = (harness: Harness): readonly string[] =>
-      harness.statements
-        .filter((statement) => statement.region === 'backfill')
-        .map((statement) => collapse(statement.sql));
-
-    expect(backfillsOf(deferred)).toEqual(backfillsOf(inline));
-    expect(backfillsOf(deferred)).toHaveLength(2);
-  });
-
-  it('NET-NEW — runs the back-fill outside any transaction, on the pool', async () => {
-    const harness = buildHarness(fileWith([]));
-
-    await harness.repository.backfillImportDerivedColumns();
-
-    /*
-     * Both statements are bulk updates over the whole table, which the legacy issues at request scope
-     * with no transaction of its own. `runWithoutTransaction` preserves that, and the harness's
-     * `backfill` region is how that choice becomes observable.
-     */
-    expect(harness.statements).toHaveLength(2);
-    expect(harness.statements.every((statement) => statement.region === 'backfill')).toBe(true);
-    expect(harness.transactionsStarted()).toBe(0);
+    /* M3: the first row's own boundary rolled back, and no later row was attempted. */
+    expect(harness.transactionsRolledBack()).toBe(1);
+    expect(harness.transactionsCommitted()).toBe(0);
   });
 });
 /* ================================================================================================
@@ -4024,289 +3985,97 @@ describe('NET-NEW — ProductImportOptions: deferBackfills', () => {
  * sibling describe. Neither is redundant, and neither subsumes the other.
  * ============================================================================================== */
 
-describe('NET-NEW — importFromFile, and SEC-08: the import-source gate', () => {
+describe('NET-NEW TODO(parity) — importFromFile: NO import-source gate, and the CWE-918 exposure carried', () => {
   /**
-   * One hostile location per clause of the reinstated policy, each with the reason it is refused.
+   * One hostile location per clause of the WITHDRAWN policy, each with what the withdrawn gate refused it
+   * for — and each now ADMITTED, because `model/dao/ProductDAO.cfc:L73-L87` admits it.
    *
-   * Every IPv4 entry that is not already dotted-quad is here because the WHATWG parser canonicalises it
-   * to one before the gate sees it — which is the anti-evasion behaviour a hand-rolled host check gets
-   * wrong, and the reason the gate does not attempt its own decoding.
+   * ⛔ A REVISION REFUSED EVERY ONE OF THESE, AND THAT REFUSAL IS GONE. It was declared as a departure
+   * "in the same register as D18"; AAP §0.6.7.7 declares exactly ONE departure in this port (D18 itself,
+   * the parameterised SQL asserted two describes above) and AAP §0.8.2 Guideline 4 admits no
+   * proportionality test. So the gate, its ~420 lines of address-parsing apparatus and the
+   * `ImportSourceRejectedError` presentation that reported it are all deleted.
+   *
+   * ⚠️ WHAT THESE ROWS NOW PIN. That the adapter forwards each location to the injected reader UNJUDGED,
+   * so the CWE-918 surface of mismatch M4 is intact and visible rather than quietly half-closed. Closing
+   * it belongs to whoever supplies a real reader — no HTTP client exists in this subtree at all
+   * (AAP §0.5.2.1 makes `mysql2` the only runtime dependency) — through the `ProductImportSourcePolicy`
+   * the next describe covers.
    */
-  const REFUSED_LOCATIONS: readonly { readonly location: string; readonly because: string }[] =
+  const UNJUDGED_LOCATIONS: readonly { readonly location: string; readonly because: string }[] =
     Object.freeze([
-      { location: 'file:///etc/passwd', because: 'scheme — a local file is not HTTP' },
+      { location: 'file:///etc/passwd', because: 'scheme — the withdrawn gate refused non-HTTP' },
       { location: 'ftp://files.test/x.csv', because: 'scheme — cfhttp does not speak FTP' },
       { location: 'gopher://files.test/1', because: 'scheme — a classic request-smuggling vector' },
       { location: 'data:text/csv,a,b', because: 'scheme — no retrieval happens at all' },
       {
         location: 'https://operator:secret@feeds.example/catalog.csv',
-        because: 'credentials — cfhttp took them as separate attributes, never from the URL',
+        because: 'credentials — the withdrawn gate refused a userinfo component',
       },
       {
-        location: 'https://operator@feeds.example/catalog.csv',
-        because: 'credentials — a username alone still counts',
-      },
-      { location: 'http://127.0.0.1/catalog.csv', because: 'loopback — RFC 1122 127.0.0.0/8' },
-      { location: 'http://127.1/catalog.csv', because: 'loopback — short form, canonicalised' },
-      { location: 'http://2130706433/catalog.csv', because: 'loopback — decimal integer form' },
-      { location: 'http://0x7f000001/catalog.csv', because: 'loopback — hexadecimal form' },
-      { location: 'http://017700000001/catalog.csv', because: 'loopback — octal form' },
-      { location: 'http://localhost/catalog.csv', because: 'loopback — RFC 6761 reserved name' },
-      {
-        location: 'http://admin.localhost/catalog.csv',
-        because: 'loopback — the reserved suffix covers subdomains',
-      },
-      { location: 'http://[::1]/catalog.csv', because: 'loopback — RFC 4291 IPv6 ::1' },
-      {
-        location: 'http://[::ffff:127.0.0.1]/catalog.csv',
-        because: 'loopback — IPv4-mapped IPv6, which no IPv6 clause alone would catch',
-      },
-      { location: 'http://10.0.0.5/catalog.csv', because: 'private — RFC 1918 10/8' },
-      { location: 'http://172.20.0.5/catalog.csv', because: 'private — RFC 1918 172.16/12' },
-      { location: 'http://192.168.1.1/catalog.csv', because: 'private — RFC 1918 192.168/16' },
-      {
-        location: 'http://169.254.169.254/latest/meta-data/iam/security-credentials/',
-        because: 'instance metadata — inside RFC 3927 link-local, the headline CWE-918 target',
+        location: 'http://127.0.0.1/catalog.csv',
+        because: 'address — IPv4 loopback, reachable only from inside',
       },
       {
-        location: 'http://[fd00:ec2::254]/latest/meta-data/',
-        because: 'instance metadata over IPv6 — inside RFC 4193 unique-local',
+        location: 'http://169.254.169.254/latest/meta-data/catalog.csv',
+        because: 'address — the instance-metadata service',
       },
-      { location: 'http://[fc00::1]/catalog.csv', because: 'unique-local — RFC 4193 fc00::/7' },
-      { location: 'http://[fe80::1]/catalog.csv', because: 'link-local — RFC 4291 fe80::/10' },
-      { location: 'http://0.0.0.0/catalog.csv', because: 'unspecified — RFC 1122 0/8' },
-      { location: '/import/catalog.csv', because: 'not an absolute URL, so nothing to retrieve' },
-      { location: 'catalog.csv', because: 'not an absolute URL either' },
+      { location: 'http://[::1]/catalog.csv', because: 'address — IPv6 loopback' },
+      { location: 'http://localhost/catalog.csv', because: 'name — RFC 6761 §6.3 reserved' },
+      {
+        location: 'not-a-url-at-all',
+        because: 'shape — the withdrawn gate required an absolute URL',
+      },
     ]);
 
-  /**
-   * Locations that MUST still be retrieved, which is the half no amount of refusal testing can show.
-   *
-   * The boundary entries are the point: each sits one step outside a refused range, so a gate that is
-   * even slightly too wide fails here rather than passing quietly.
-   */
-  const ADMITTED_LOCATIONS: readonly string[] = Object.freeze([
-    'https://feeds.example/catalog.csv',
-    'http://feeds.example/catalog.csv',
-    'HTTPS://Feeds.Example/catalog.csv',
-    'https://feeds.example:8443/catalog.csv?since=1#top',
-    'http://8.8.8.8/catalog.csv',
-    // One step outside each RFC 1918 block, and outside 127/8 on both sides.
-    'http://172.15.0.5/catalog.csv',
-    'http://172.32.0.5/catalog.csv',
-    'http://192.167.1.1/catalog.csv',
-    'http://126.0.0.1/catalog.csv',
-    'http://128.0.0.1/catalog.csv',
-    // RFC 6598 carrier-grade NAT space is NOT one of the six refused ranges, and is not added.
-    'http://100.64.0.1/catalog.csv',
-    // Just outside fc00::/7 and fe80::/10 respectively.
-    'http://[fbff::1]/catalog.csv',
-    'http://[fec0::1]/catalog.csv',
-    'http://[2001:db8::1]/catalog.csv',
-    // An IPv4-mapped address whose embedded IPv4 is public must survive the mapped-address decode.
-    'http://[::ffff:8.8.8.8]/catalog.csv',
-    // Names that merely LOOK like refused hosts, and are not.
-    'http://localhostx.test/catalog.csv',
-    'http://notlocalhost/catalog.csv',
-  ]);
-
-  it('NET-NEW — refuses every hostile location, one vector per clause of the policy', async () => {
-    const admitted: string[] = [];
-
-    for (const { location, because } of REFUSED_LOCATIONS) {
-      const harness = buildHarness(THREE_ROW_FILE);
-      let refused = false;
-
-      try {
-        await harness.repository.importFromFile(location);
-      } catch {
-        refused = true;
-      }
-
-      if (!refused) {
-        admitted.push(`${location} — should have been refused: ${because}`);
-      }
-    }
-
-    /* Reported as a list rather than one assertion per vector so a widened gate names every location it
-     * newly lets through, instead of stopping at the first. */
-    expect(admitted).toEqual([]);
-  });
-
-  it('NET-NEW — a refused location reaches the retriever ZERO times and writes NOTHING', async () => {
-    const harness = buildHarness(THREE_ROW_FILE);
-
-    await expect(
-      harness.repository.importFromFile(
-        'http://169.254.169.254/latest/meta-data/iam/security-credentials/',
-      ),
-    ).rejects.toThrow();
-
-    /*
-     * ⭐ THE ORDERING IS THE WHOLE CONTROL, AND THIS IS WHERE IT IS PROVED. The gate runs before the
-     * branch that selects between the streaming and materialising retrieval members, so the reader is
-     * never asked for anything: an empty `retrievals` list is the assertion that no request was made,
-     * not merely that its result was discarded.
-     */
-    expect(harness.retrievals).toEqual([]);
-
-    /* No transaction opened, so there is no partially imported catalogue — the M3 shape a mid-file
-     * failure produces is absent because no row was ever attempted. */
-    expect(harness.transactionsStarted()).toBe(0);
-    expect(harness.transactionsCommitted()).toBe(0);
-    expect(harness.transactionsRolledBack()).toBe(0);
-
-    /*
-     * ⚠️ AND NOT ONE STATEMENT WAS ISSUED, INCLUDING THE TWO BULK BACK-FILLS. That is the strict part:
-     * `:L288` and `:L304` sit outside the row loop and outside the spreadsheet branch, so an empty file
-     * and an `.xls` upload both still run them. A refusal must not, because a refusal happens before the
-     * import begins rather than during it.
-     */
-    expect(harness.statements).toEqual([]);
-    expect(matching(harness, 'SET defaultSkuID')).toEqual([]);
-    expect(matching(harness, 'SET imageFile')).toEqual([]);
-  });
-
-  it('NET-NEW — no refusal echoes the raw location, so a logged rejection leaks no secret', async () => {
-    const harness = buildHarness(THREE_ROW_FILE);
-    const secret = 'sup3rs3cret';
-
-    let raised: unknown;
-    try {
-      await harness.repository.importFromFile(
-        `https://operator:${secret}@feeds.example/catalog.csv?token=${secret}`,
-      );
-    } catch (error) {
-      raised = error;
-    }
-
-    /*
-     * A refusal is a thing that gets logged, and the location it refuses can carry a password in its
-     * userinfo or a token in its query. The message and context therefore report the host and the reason
-     * only. Serialising the whole error — message plus context — and searching it for the secret is the
-     * assertion, because either half leaking it would be equally bad.
-     */
-    expect(raised).toBeInstanceOf(Error);
-
-    /*
-     * ⚠️ SERIALISED IN TWO HALVES ON PURPOSE, BECAUSE ONE CALL CANNOT SEE BOTH. `message` and `stack` are
-     * NON-enumerable own properties of an `Error`, so `JSON.stringify` alone omits them; `context` is an
-     * ordinary enumerable property, so `String(...)` alone omits it. An earlier version of this case
-     * passed `Object.getOwnPropertyNames(raised)` as the replacer array and reported a context of `{}` —
-     * a replacer array is a whitelist applied at EVERY depth, so it filtered out the very keys under
-     * inspection and would have passed no matter what the context held.
-     */
-    const rendered = `${String(raised)} ${JSON.stringify(raised)}`;
-    expect(rendered).not.toContain(secret);
-    /* The host IS reported, because a refusal nobody can diagnose gets disabled by whoever it blocks. */
-    expect(rendered).toContain('feeds.example');
-  });
-
-  it('NET-NEW — still retrieves every legitimate location, including the boundary ones', async () => {
-    const refused: string[] = [];
-
-    for (const location of ADMITTED_LOCATIONS) {
+  it.each(UNJUDGED_LOCATIONS.map(({ location, because }) => [because, location]))(
+    'NET-NEW TODO(parity) — %s: the location is forwarded to the reader unjudged',
+    async (_because, location) => {
+      /* The reader is the one collaborator that would open a socket, and it is a recording double here, so
+       * "forwarded" is observable without any network. What matters is that the adapter reached it AT ALL
+       * for a location the withdrawn gate would have refused before it, and that the location arrives byte
+       * for byte — a normalisation here would be evaluated against a string an operator's policy never
+       * sees, which is the classic bypass shape. */
       const harness = buildHarness(fileWith([]));
 
-      try {
-        await harness.repository.importFromFile(location);
-      } catch (error) {
-        refused.push(`${location} :: ${String(error)}`);
-        continue;
-      }
+      await harness.repository.importFromFile(location);
 
-      if (harness.retrievals.length !== 1) {
-        refused.push(`${location} :: reached the retriever ${harness.retrievals.length} times`);
-      }
-    }
+      expect(harness.retrievals).toHaveLength(1);
+      expect(harness.retrievals[0]?.source).toBe(location);
+    },
+  );
 
-    /*
-     * ⭐ THIS IS THE DIRECTION A REFUSAL SUITE CANNOT ESTABLISH. A gate that refuses everything passes
-     * every hostile case above and is useless; only this case fails it. The boundary entries — 172.15,
-     * 172.32, 192.167, 126, 128, fbff::, fec0:: — are one step outside a refused range each, so an
-     * off-by-one in a mask or an octet comparison shows up here as a named location rather than as a
-     * silent narrowing of what the importer can read.
-     */
-    expect(refused).toEqual([]);
-  });
+  it('NET-NEW — still retrieves every legitimate location too, so the withdrawal is not a widening of one clause only', async () => {
+    /* The complement of the rows above: an ordinary HTTPS location behaves exactly as it always did. Both
+     * directions are asserted so a future reinstated gate fails the rows above rather than passing them by
+     * accident. */
+    const harness = buildHarness(fileWith([]));
 
-  it('NET-NEW — forwards the approved location BYTE-FOR-BYTE, gating without rewriting it', async () => {
-    const mixedCase = 'HTTPS://Feeds.Example:8443/Catalog.CSV';
-    const withQueryAndFragment = 'https://feeds.example/catalog.csv?since=1#top';
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv', '"');
 
-    const first = buildHarness(fileWith([]));
-    await first.repository.importFromFile(mixedCase);
-
-    /*
-     * ⭐ THIS IS THE DISCRIMINATING ASSERTION, AND THE MIXED CASE IS WHY. The gate parses the location to
-     * judge it and then throws the parse away. Had it handed on its own canonical form instead, the scheme
-     * and host would arrive lower-cased — `new URL('HTTPS://Feeds.Example:8443/Catalog.CSV').href` is
-     * `https://feeds.example:8443/Catalog.CSV` — so an unchanged `HTTPS://Feeds.Example` proves no
-     * canonicalisation happened, which an already-lower-case URL could not have shown either way. A gate
-     * that normalises is a gate that judges one string and fetches another.
-     */
-    expect(first.retrievals).toEqual([{ source: mixedCase, delimiter: ',', textQualifier: '' }]);
-
-    const second = buildHarness(fileWith([]));
-    await second.repository.importFromFile(withQueryAndFragment);
-
-    /*
-     * ⚠️ AND THE QUERY AND FRAGMENT SURVIVE TOO — WITH A LEGACY QUIRK THE GATE MUST NOT TIDY AWAY. The
-     * delimiter here is EMPTY, not a comma, and that is `model/dao/ProductDAO.cfc:L74` behaving exactly as
-     * written: the file type is the last dot-delimited segment of the WHOLE location, with no extraction of
-     * the URL path, so the type resolves to `csv?since=1#top`, matches neither `csv` nor `txt`, and falls
-     * to the no-delimiter case at `:L75`. Stripping the query to "fix" that would be new behaviour, and
-     * the gate is the one place holding a parsed URL and therefore the one place tempted to do it. It does
-     * not. This expectation was originally written as a comma and was wrong for exactly that reason.
-     */
-    expect(second.retrievals).toEqual([
-      { source: withQueryAndFragment, delimiter: '', textQualifier: '' },
+    expect(harness.retrievals).toEqual([
+      { source: 'https://feeds.example/catalog.csv', delimiter: ',', textQualifier: '"' },
     ]);
   });
 
-  it('NET-NEW — leaves the .xls no-op UNGATED, because that path never opens a socket', async () => {
+  it('NET-NEW — the .xls no-op still reaches no retriever, which is the legacy empty branch and not a gate', async () => {
+    /* `model/dao/ProductDAO.cfc:L83-L85` is an empty `//Read xls` branch, so the spreadsheet path opens no
+     * socket. The withdrawn gate was guarded on exactly this file type to avoid refusing a `.xls` location
+     * it never retrieved; with the gate gone the guard is gone too, and the branch is still silent for the
+     * reason it always was. */
     const harness = buildHarness(THREE_ROW_FILE);
 
-    /*
-     * ⭐ A DELIBERATE HOLE IN THE GATE, AND THE REASON IT IS CORRECT. `:L83-L85` is an empty branch: a
-     * spreadsheet upload retrieves nothing, imports nothing, raises nothing, and still falls through to
-     * the two bulk back-fills at `:L288-L325`. Gating it would refuse a location the legacy processes
-     * without ever making a request — changing an outcome on a path that has no egress to protect, which
-     * is exactly the divergence D18's precedent does NOT license. So the hostile host below is accepted
-     * here, and it is accepted safely, because nothing fetches it.
-     */
     await expect(
       harness.repository.importFromFile('http://169.254.169.254/catalog.xls'),
     ).resolves.toBeUndefined();
 
     expect(harness.retrievals).toEqual([]);
     expect(harness.transactionsStarted()).toBe(0);
-    /* The back-fills still run, which is the behaviour a refusal here would have destroyed. */
+    /* The back-fills still run, exactly as `:L288-L325` does after the empty branch. */
     expect(matching(harness, 'SET defaultSkuID')).toHaveLength(1);
     expect(matching(harness, 'SET imageFile')).toHaveLength(1);
   });
 });
-
-/* ================================================================================================
- * REVIEW FINDING 14 — THE IMPORT-SOURCE POLICY IS A REQUIRED CONTRACT (CWE-918, was latent)
- * ==============================================================================================
- * The finding: "Arbitrary locations are forwarded unchanged to an injected reader with no required
- * scheme, host, IP, redirect, size, or timeout policy. The shipped reader refuses, so no current network
- * exploit exists; a future operator reader becomes SSRF-capable unless it independently supplies all
- * controls." Its resolution: "Make source validation a required port contract and require
- * redirect-hop/IP revalidation plus explicit size/time bounds."
- *
- * ⭐ WHY THESE ASSERT ON THE SEAM RATHER THAN ON A BLOCKED REQUEST. There is no transport client in this
- * subtree to exploit, so there is no request to block; what the finding identifies is a CONTRACT that
- * permitted an unsafe implementation. These cases therefore prove the contract is unskippable: that the
- * adapter consults the policy, that it does so before retrieving, that a refusal stops everything, and
- * that the shipped policy is not a permissive default a future reader could inherit.
- *
- * ⚠️ AND THE COMPILE-TIME HALF CANNOT BE ASSERTED AT RUNTIME AT ALL. `read` and `readStreaming` accept
- * only a `ValidatedProductImportSource`, whose brand is unforgeable outside the port module, so "a reader
- * cannot be reached with an unvetted location" is enforced by `tsc` rather than by a case here. The
- * harness has to cast to produce one, which is itself the evidence.
- * ============================================================================================== */
 
 describe('NET-NEW — the required import-source policy (review finding 14, CWE-918)', () => {
   it('NET-NEW — consults the policy with the location VERBATIM, before it retrieves anything', async () => {
@@ -4503,6 +4272,189 @@ describe('NET-NEW — the required import-source policy (review finding 14, CWE-
  * WHITELIST constraint is asserted by the `assertTableName` case above: no excluded identifier is composed
  * in this subtree, because every statement the step needs is issued by the collaborator.
  * ============================================================================================== */
+
+/* ================================================================================================
+ * F11 — THE CONTENT-ASSIGNMENT STEP BELONGS TO EACH ROW'S OWN TRANSACTION
+ *
+ * `model/dao/ProductDAO.cfc:L177` opens `transaction{` INSIDE the record loop and `:L257-L282` — the
+ * content-assignment step — sits inside that block. Its three statements are therefore part of the row's
+ * transaction in the legacy: they observe the row's own uncommitted product insert, and they roll back
+ * with the row when anything later in the row fails.
+ *
+ * ⛔ WHAT WAS BROKEN. The collaborator was captured ONCE at construction, with no transaction executor of
+ * any kind, and called directly. A real implementation could therefore neither see the uncommitted
+ * product its probe filters on, nor be rolled back with a failing row — so a row that failed after this
+ * point rolled back its product and SKU while leaving its content links committed, with nothing anywhere
+ * reporting the split.
+ *
+ * ⚠️ THE FIX IS A FACTORY, AND WHAT IT HANDS OVER IS THE SCOPE, NOT AN EXECUTOR. This subtree owns
+ * neither the content schema nor its access path (AAP §0.2.2.1 excludes the `Content*` family), so it
+ * cannot pass a `ProductStatementExecutor` typed against tables it may not name. The scope IS the
+ * transaction; an implementation adopts it however its own data layer requires, and no excluded-schema
+ * identifier crosses the boundary in either direction.
+ * ============================================================================================== */
+
+describe('F11 — the content-assignment collaborator is built per row, from that row’s transaction', () => {
+  const CONTENT_HEADINGS = [
+    'productcontent_page',
+    'product_productCode',
+    'product_productName',
+    'brand_brandname',
+  ];
+
+  /** A harness whose single content page resolves, so the step runs to its insert. */
+  function harnessWithResolvablePage(
+    ...rows: readonly string[][]
+  ): ReturnType<typeof buildHarness> {
+    const harness = buildHarness(importable(CONTENT_HEADINGS, ...rows));
+    harness.resolvableContentPages.set('page-1', {
+      contentId: 'cccccccccccccccccccccccccccc0001',
+      contentPath: '/site/products/widget',
+    });
+    harness.resolvableContentPages.set('page-2', {
+      contentId: 'cccccccccccccccccccccccccccc0002',
+      contentPath: '/site/products/gadget',
+    });
+    return harness;
+  }
+
+  it('NET-NEW — the factory is invoked ONCE PER ROW that has a page to assign', async () => {
+    const harness = harnessWithResolvablePage(
+      ['page-1', 'CODE-1', 'Widget', 'Acme'],
+      ['page-2', 'CODE-2', 'Gadget', 'Acme'],
+    );
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    // ⚠️ THE ASSERTION THE FINDING TURNS ON: two rows, two builds. Before the fix there were zero.
+    expect(harness.contentAssignmentScopes).toHaveLength(2);
+    expect(harness.contentLookups).toEqual(['page-1', 'page-2']);
+  });
+
+  it('NET-NEW — each row is handed a DIFFERENT scope, one per transaction (M3)', async () => {
+    // `:L177` commits once per row, so each row is its own transaction. A shared scope would mean the
+    // step could not be rolled back with the row that produced it.
+    const harness = harnessWithResolvablePage(
+      ['page-1', 'CODE-1', 'Widget', 'Acme'],
+      ['page-2', 'CODE-2', 'Gadget', 'Acme'],
+    );
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    const [first, second] = harness.contentAssignmentScopes;
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    expect(first).not.toBe(second);
+    expect(harness.transactionsCommitted()).toBe(2);
+  });
+
+  it('NET-NEW — the scope carries the SAME executor the row’s own statements ran on (M6)', async () => {
+    /*
+     * ⭐ THIS IS THE PROPERTY THE WHOLE FINDING IS ABOUT. The step's existence probe filters on the
+     * `productID` the product save has just written and NOT yet committed [`:L271`]. On any other
+     * connection it would not find it, so a re-import would insert a duplicate link. The only way it can
+     * see it is for the step to hold the row's own connection.
+     */
+    const harness = harnessWithResolvablePage(['page-1', 'CODE-1', 'Widget', 'Acme']);
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    const scope = harness.contentAssignmentScopes[0];
+    expect(scope).toBeDefined();
+
+    /*
+     * The scope's executor is the TRANSACTIONAL one the row's own statements travelled through — not the
+     * pool-bound executor the adapter was constructed with, and not an object of the factory's own.
+     */
+    const rowStatements = harness.statements.filter((statement) => statement.region === 'row#1');
+    expect(rowStatements.length).toBeGreaterThan(0);
+    expect(scope?.executor).toBe(harness.transactionalExecutor);
+  });
+
+  it('NET-NEW — an ordinary import never builds the collaborator at all', async () => {
+    // `:L258`'s heading test returns before anything else. A factory invoked for a file that requests no
+    // assignment would make an implementation open work it has nothing to do.
+    const harness = buildHarness(
+      importable(['product_productCode', 'product_productName'], ['CODE-1', 'Widget']),
+    );
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    expect(harness.contentAssignmentScopes).toEqual([]);
+    expect(harness.contentLookups).toEqual([]);
+  });
+
+  it('NET-NEW — a row whose content cell is EMPTY builds nothing either', async () => {
+    // `:L259`'s `listToArray` of an empty cell is an empty array and `:L260` iterates zero times. The
+    // file DOES carry the heading, so `:L258` passes and only the per-row emptiness stops the step.
+    const harness = harnessWithResolvablePage(
+      ['', 'CODE-1', 'Widget', 'Acme'],
+      ['page-1', 'CODE-2', 'Gadget', 'Acme'],
+    );
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /* One build, for the second row only. */
+    expect(harness.contentAssignmentScopes).toHaveLength(1);
+    expect(harness.contentLookups).toEqual(['page-1']);
+  });
+
+  it('NET-NEW — a failing content assignment ROLLS BACK its own row and stops the import (M3)', async () => {
+    /*
+     * ⛔ THE PARTIAL-IMPORT SHAPE IS THE LEGACY'S AND IS PRESERVED, NOT FIXED. `:L177` commits per row, so
+     * a failure on row 2 leaves row 1 COMMITTED and attempts no row 3. What the finding changes is the
+     * other half: row 2's own content links no longer survive its rollback, because they are now written
+     * inside the transaction that rolls back.
+     */
+    const harness = harnessWithResolvablePage(
+      ['page-1', 'CODE-1', 'Widget', 'Acme'],
+      ['page-2', 'CODE-2', 'Gadget', 'Acme'],
+      ['page-1', 'CODE-3', 'Doohickey', 'Acme'],
+    );
+
+    let builds = 0;
+    const failing = harness.contentAssignmentPort;
+    const originalInsert = failing.insertContentAssignment.bind(failing);
+    jest
+      .spyOn(harness.contentAssignmentPort, 'insertContentAssignment')
+      .mockImplementation((row) => {
+        builds += 1;
+        if (builds === 2) {
+          return Promise.reject(new Error('the content application refused the link row'));
+        }
+        return originalInsert(row);
+      });
+
+    await expect(
+      harness.repository.importFromFile('https://feeds.example/catalog.csv'),
+    ).rejects.toThrow(/refused the link row/);
+
+    /* Row 1 committed, row 2 rolled back, row 3 never ran — the first-failure shape M3 records. */
+    expect(harness.transactionsCommitted()).toBe(1);
+    expect(harness.transactionsRolledBack()).toBe(1);
+    expect(harness.contentAssignmentScopes).toHaveLength(2);
+  });
+
+  it('NET-NEW — the refusing DEFAULT factory answers the refusing port, and issues no statement', async () => {
+    // The default states that the schema is not owned. It must refuse rather than silently no-op, because
+    // a no-op would import a catalogue with every requested assignment DROPPED and report success.
+    const scope = { executor: {} } as unknown as ProductImportTransactionScope;
+
+    const port = unresolvableProductContentAssignmentFactory(scope);
+
+    expect(port).toBe(unresolvableProductContentAssignmentPort);
+    await expect(port.findProductListingContent('page-1')).rejects.toThrow(/not implemented/);
+    await expect(port.hasContentAssignment('p', 'c')).rejects.toThrow(/not implemented/);
+    await expect(
+      port.insertContentAssignment({
+        productContentId: 'a',
+        contentId: 'b',
+        contentPath: '/c',
+        productId: 'd',
+      }),
+    ).rejects.toThrow(/not implemented/);
+  });
+});
 
 describe('NET-NEW — the ported content assignment (review finding 12)', () => {
   const CONTENT_FILE_HEADINGS = [
@@ -4714,10 +4666,16 @@ describe('NET-NEW — the ported content assignment (review finding 12)', () => 
  * ================================================================================================
  * Four groups of runtime behaviour existed on this adapter with no direct coverage at all, and the
  * review named every one of them: the streaming retrieval arm, cancellation at each observed boundary,
- * both arms of the back-fill deferral, and two of the three import lookup-memory key families. They are
- * grouped here because they share one property that makes untested-ness especially dangerous: NONE of
- * them changes the statements a plain import issues, so a regression in any of them is invisible to
- * every other case in this file.
+ * both arms of the back-fill deferral, and two of the three import lookup families. They are grouped here
+ * because they share one property that makes untested-ness especially dangerous: NONE of them changes the
+ * statements a plain import issues, so a regression in any of them is invisible to every other case in
+ * this file.
+ *
+ * ⛔ THREE OF THOSE FOUR SUBJECTS HAVE SINCE BEEN WITHDRAWN by later review findings — cancellation and
+ * the back-fill deferral by F4, the lookup memory by F12 — and the cases that covered them were rewritten
+ * to assert the restored legacy behaviour rather than deleted. The grouping is kept because the reason for
+ * it survives every one of those withdrawals: a per-row statement CADENCE is exactly the kind of property
+ * no other case in this file observes.
  *
  * ⛔ WHAT THESE CASES DO NOT DO. Not one of them asserts a NEW behaviour into existence. Each pins
  * behaviour the adapter and the port already document, so that the documentation and the code cannot
@@ -4903,321 +4861,100 @@ describe('NET-NEW — the streaming retrieval arm (review finding 13)', () => {
   });
 });
 
-describe('NET-NEW — cancellation at every observed boundary (review finding 13)', () => {
-  /** An already-aborted signal, which is all `throwIfCancelled` ever reads. */
-  function abortedSignal(): AbortSignal {
-    const controller = new AbortController();
-    controller.abort();
-    return controller.signal;
-  }
+describe('NET-NEW — no cancellation boundary exists anywhere in the importer (finding F4)', () => {
+  /*
+   * ⛔ TWO DESCRIBE BLOCKS STOOD HERE — one per-checkpoint cancellation suite and one back-fill-deferral
+   * suite — and both are withdrawn with the controls they exercised. The reasoning is recorded once, above,
+   * at the importer's two-argument case. What replaces them is a pair of SOURCE-LEVEL guards, because an
+   * absence is what has to be asserted now and a behavioural case cannot assert an absence: a reinstated
+   * control that defaults to legacy behaviour would leave every behavioural case passing.
+   */
 
-  /** The `DomainError` context a rejected import carried, so the phase can be asserted directly. */
-  async function cancellationContext(
-    run: Promise<void>,
-  ): Promise<Record<string, unknown> | undefined> {
-    try {
-      await run;
-    } catch (error) {
-      expect(error).toBeInstanceOf(DomainError);
-      return (error as DomainError).context;
-    }
-
-    throw new Error('the import resolved instead of reporting cancellation');
-  }
-
-  it('NET-NEW — beforeRetrieval: nothing is validated, retrieved or written', async () => {
-    const harness = buildHarness(THREE_ROW_FILE);
-
-    const context = await cancellationContext(
-      harness.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
-        signal: abortedSignal(),
-      }),
-    );
-
-    /*
-     * ⭐ THE FIRST BOUNDARY IS BEFORE THE POLICY, NOT AFTER IT, and the ordering is deliberate: a caller
-     * who has already abandoned the work should not cause a collaborator to resolve an address on its
-     * behalf. So an already-aborted import consults nothing at all.
-     */
-    expect(context).toEqual({
-      fileURL: 'https://feeds.example/catalog.csv',
-      phase: 'beforeRetrieval',
-    });
-    expect(harness.validatedSources).toEqual([]);
-    expect(harness.retrievals).toEqual([]);
-    expect(harness.statements).toEqual([]);
-    expect(harness.transactionsStarted()).toBe(0);
-  });
-
-  it('NET-NEW — afterSourceValidation: the policy ran, the retrieval did not', async () => {
-    const harness = buildHarness(THREE_ROW_FILE);
-    const controller = new AbortController();
-
-    /* Aborts DURING validation, which is the only way to land on this boundary: it sits between the
-     * policy and the retrieval, and nothing else runs in between. */
-    jest.spyOn(harness.sourcePolicy, 'validateSource').mockImplementation((fileURL: string) => {
-      controller.abort();
-      return Promise.resolve(fileURL as ValidatedProductImportSource);
-    });
-
-    const context = await cancellationContext(
-      harness.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
-        signal: controller.signal,
-      }),
-    );
-
-    /*
-     * ⭐ THIS BOUNDARY EXISTS BECAUSE REVIEW FINDING 14 ADDED A STEP THAT CAN BLOCK. A policy may perform
-     * its own address resolution, so it is the one place in the pre-retrieval path that can take real
-     * time — and a caller that abandoned the work while it was waiting must not then have the file
-     * fetched. It is checked after the policy rather than inside it, so no policy has to know about
-     * cancellation to be correct.
-     */
-    expect(context).toEqual({
-      fileURL: 'https://feeds.example/catalog.csv',
-      phase: 'afterSourceValidation',
-    });
-    expect(harness.retrievals).toEqual([]);
-    expect(harness.statements).toEqual([]);
-    expect(harness.transactionsStarted()).toBe(0);
-  });
-
-  it('NET-NEW — afterRetrieval: the file was fetched, but no row boundary opened', async () => {
-    const harness = buildHarness(THREE_ROW_FILE);
-    const controller = new AbortController();
-
-    jest
-      .spyOn(harness.sourceReader, 'read')
-      .mockImplementation((source: string, delimiter: string, textQualifier: string) => {
-        controller.abort();
-        return Promise.resolve(
-          fileWith(
-            ['product_productCode', 'product_productName', 'brand_brandname'],
-            ['CODE-1', 'One', 'Acme'],
-          ),
-        ).then((set) => {
-          void source;
-          void delimiter;
-          void textQualifier;
-          return set;
-        });
-      });
-
-    const context = await cancellationContext(
-      harness.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
-        signal: controller.signal,
-      }),
-    );
-
-    /*
-     * ⭐ THE RETRIEVAL IS THE LONGEST STEP AND IT IS NOT INTERRUPTIBLE FROM HERE — the collaborator owns
-     * its own transport. So the check sits immediately after it and before the plan is built, which is
-     * the earliest point the adapter regains control. Nothing has been written, so the import is a no-op
-     * even though bytes were fetched.
-     */
-    expect(context).toEqual({
-      fileURL: 'https://feeds.example/catalog.csv',
-      phase: 'afterRetrieval',
-    });
-    expect(harness.statements).toEqual([]);
-    expect(harness.transactionsStarted()).toBe(0);
-  });
-
-  it('NET-NEW — row: earlier rows stay committed and the aborting row writes nothing (M3)', async () => {
-    const controller = new AbortController();
-
-    const harness = buildHarness(THREE_ROW_FILE, (statement) => {
-      // Abort while row 1 is being written, so row 2's boundary check is the one that fires.
-      if (
-        collapse(statement.sql).startsWith('INSERT INTO SwProduct') &&
-        statement.params.includes('CODE-1')
-      ) {
-        controller.abort();
-      }
-
-      return undefined;
-    });
-
-    const context = await cancellationContext(
-      harness.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
-        signal: controller.signal,
-      }),
-    );
-
-    /*
-     * ⭐⭐ THE ROW BOUNDARY IS THE ONE THAT HAD TO BE GOT RIGHT, and the reported numbers are the proof.
-     * The check runs BEFORE row 2's first statement, so row 2's transaction is opened and rolled back
-     * with nothing in it, row 1 stays committed, and row 3 is never attempted. That is EXACTLY the shape
-     * a mid-file data failure produces (M3), which is the point: cancellation is not allowed to invent an
-     * outcome the legacy cannot already reach.
-     *
-     * ⛔ AND IT IS NEVER CHECKED INSIDE A BOUNDARY. Aborting between two statements of one row could
-     * leave that row half-written inside an open transaction — an outcome with no legacy counterpart at
-     * all. `committedRows` is `rowNumber - 1` precisely because every earlier row committed on its own.
-     */
-    expect(context).toEqual({
-      fileURL: 'https://feeds.example/catalog.csv',
-      phase: 'row',
-      rowNumber: 2,
-      committedRows: 1,
-    });
-    expect(harness.transactionsCommitted()).toBe(1);
-    expect(harness.transactionsRolledBack()).toBe(1);
-    expect(matching(harness, 'INSERT INTO SwProduct')).toHaveLength(1);
-
-    /* The back-fills are reached by falling out of the loop, and a raise leaves the loop early. */
-    expect(matching(harness, 'SET defaultSkuID')).toEqual([]);
-  });
-
-  it('NET-NEW — an un-aborted signal changes nothing, and an absent one changes nothing', async () => {
-    const withSignal = buildHarness(THREE_ROW_FILE);
-    const withoutSignal = buildHarness(THREE_ROW_FILE);
-
-    await withSignal.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
-      signal: new AbortController().signal,
-    });
-    await withoutSignal.repository.importFromFile('https://feeds.example/catalog.csv');
-
-    /* ⭐ THE OPTION IS OBSERVED, NEVER CREATED. `ProductImportOptions.signal` is supplied by the caller
-     * or it is absent; the adapter derives none from a deadline and imposes no timeout of its own,
-     * because AAP §0.6.6 M1 records the legacy's own budget as a 3600-second REQUEST timeout owned by
-     * `model/service/ProductService.cfc:L65-L68`, and S9 forbids minting a substitute. So a live signal
-     * that never aborts must be indistinguishable from no signal at all. */
-    expect(withSignal.statements.map((statement) => collapse(statement.sql))).toEqual(
-      withoutSignal.statements.map((statement) => collapse(statement.sql)),
-    );
-    expect(withSignal.eventKinds()).toEqual(withoutSignal.eventKinds());
-  });
-
-  it('NET-NEW — the boundary set is EXACTLY four, and the source names all four', () => {
+  it('NET-NEW — the adapter source contains NO cancellation checkpoint at all', () => {
     const adapter = readFileSync(
       join(__dirname, '../../src/adapters/mysql/MySqlProductRepository.ts'),
       'utf8',
     );
 
-    const phases = [...adapter.matchAll(/throwIfCancelled\('([A-Za-z]+)'/g)].map(
-      (match) => match[1],
+    /*
+     * ⛔ A DRIFT GUARD AIMED AT A DRIFT THAT ALREADY HAPPENED TWICE. The predecessor of this case
+     * enumerated the checkpoint set FROM THE SOURCE and asserted it equalled
+     * `['beforeRetrieval', 'afterSourceValidation', 'afterRetrieval', 'row']`, precisely so a fifth
+     * boundary could not arrive untested. The same technique now asserts that the set is EMPTY.
+     *
+     * ⚠️ EVERY PATTERN IS CODE-SHAPED, NOT WORD-SHAPED, AND THAT IS DELIBERATE. The adapter DISCUSSES the
+     * withdrawn control at length — AAP §0.8.2 Guideline 6 requires the decision to be recorded where it was
+     * made — so a bare `not.toContain('AbortSignal')` would fail on the withdrawal note itself and force
+     * the explanation to be deleted to make the test pass. Each pattern below can only match a
+     * DECLARATION, a CALL or a PROPERTY READ.
+     */
+    expect(adapter).not.toMatch(/throwIfCancelled\(/u);
+    expect(adapter).not.toMatch(/:\s*AbortSignal/u);
+    expect(adapter).not.toMatch(/\.aborted\b/u);
+    expect(adapter).not.toMatch(/options\?\./u);
+  });
+
+  it('NET-NEW — the PORT declares neither the options object nor a separate back-fill member', () => {
+    const port = readFileSync(
+      join(__dirname, '../../src/ports/repositories/ProductRepository.ts'),
+      'utf8',
     );
 
     /*
-     * ⛔ A DRIFT GUARD, AND IT IS AIMED AT A REAL DRIFT THAT ALREADY HAPPENED. The review's inventory
-     * said "four boundaries" and named a set that is no longer current: review finding 14 added
-     * `afterSourceValidation`, and review finding 12 removed `contentAssignmentPreflight` together with
-     * the whole-file preflight it lived on. Enumerating the set from the SOURCE rather than from a list
-     * means a fifth boundary added later arrives with this case failing and a test owed for it, instead
-     * of arriving untested and being described as covered.
+     * The port is where a control becomes a CONTRACT, so it is guarded independently of the adapter: an
+     * interface member reinstated here would be a parity break even before any implementation used it.
+     * Both names still APPEAR in the file, inside the withdrawal blocks that record why they are gone, so
+     * every pattern here is a DECLARATION shape.
      */
-    expect(phases).toEqual(['beforeRetrieval', 'afterSourceValidation', 'afterRetrieval', 'row']);
+    expect(port).not.toContain('export interface ProductImportOptions');
+    expect(port).not.toMatch(/^\s*backfillImportDerivedColumns\(\): Promise<void>;/mu);
+    expect(port).not.toMatch(/options\?: ProductImportOptions/u);
+    expect(port).not.toMatch(/readonly signal\?: AbortSignal/u);
+  });
+
+  it('NET-NEW — M3 is unchanged by the withdrawal: earlier rows stay committed, no later row is attempted', async () => {
+    /*
+     * ⭐ THE ONE BEHAVIOURAL CLAIM WORTH CARRYING OVER FROM THE WITHDRAWN SUITE, re-pointed at the
+     * mechanism the legacy actually has. `model/dao/ProductDAO.cfc:L176-L177` opens a transaction INSIDE
+     * the row loop, so a mid-file failure commits everything before it, rolls back the failing row and
+     * attempts nothing after it. That is M3, and it was never the cancellation control's doing.
+     */
+    const failure = new Error('row two could not be written');
+    const harness = buildHarness(THREE_ROW_FILE, (statement) => {
+      if (
+        collapse(statement.sql).startsWith('INSERT INTO SwProduct') &&
+        statement.params.includes('CODE-2')
+      ) {
+        throw failure;
+      }
+
+      return undefined;
+    });
+
+    await expect(
+      harness.repository.importFromFile('https://feeds.example/catalog.csv'),
+    ).rejects.toBe(failure);
+
+    expect(harness.transactionsCommitted()).toBe(1);
+    expect(harness.transactionsRolledBack()).toBe(1);
+    expect(matching(harness, 'INSERT INTO SwProduct')).toHaveLength(2);
+    /* The back-fills are reached by falling out of the loop, and a raise leaves the loop early. */
+    expect(matching(harness, 'SET defaultSkuID')).toEqual([]);
   });
 });
 
-describe('NET-NEW — both back-fill deferral arms (review finding 13)', () => {
-  it('NET-NEW — the DEFAULT arm runs both statements, in order, outside every transaction', async () => {
-    const harness = buildHarness(THREE_ROW_FILE);
+describe('NET-NEW — every import lookup is re-issued per row (finding F12)', () => {
+  /* The brand family is covered by "re-probes the brand on EVERY row" above; these are the product-type
+   * and option families, each asserted at the per-row cadence `model/dao/ProductDAO.cfc:L179-L186` and
+   * `:L209-L235` establish.
+   *
+   * ⛔ THIS BLOCK WAS TITLED "every import lookup-memory key family" and existed to pin the KEYS of an
+   * import-scoped resolution memory. Review finding F12 withdrew that memory; the cases are kept because
+   * the underlying questions — how many statements a file issues, what each one binds, and which branch
+   * `:L217` takes — are legacy behaviour either way, and they are now asserted against the legacy's own
+   * per-row cadence rather than against the cache's. */
 
-    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
-
-    /* `model/dao/ProductDAO.cfc:L288-L302` then `:L304-L325`, both past the closing braces of the
-     * transaction (`:L284`) and the loop (`:L285`) — so both run once, in that order, un-transacted. */
-    const backfills = harness.statements.filter((statement) => statement.region === 'backfill');
-    expect(backfills).toHaveLength(2);
-    expect(collapse(backfills[0]?.sql ?? '')).toContain('SET defaultSkuID');
-    expect(collapse(backfills[1]?.sql ?? '')).toContain('SET imageFile');
-
-    // The last lifecycle event is the un-transacted pool work, after the connection was released.
-    expect(harness.eventKinds().slice(-2)).toEqual(['release', 'poolWork']);
-  });
-
-  it('NET-NEW — deferBackfills: true suppresses BOTH, and nothing else about the import', async () => {
-    const deferred = buildHarness(THREE_ROW_FILE);
-    const immediate = buildHarness(THREE_ROW_FILE);
-
-    await deferred.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
-      deferBackfills: true,
-    });
-    await immediate.repository.importFromFile('https://feeds.example/catalog.csv');
-
-    /*
-     * ⭐ THE DEFERRAL IS ALL-OR-NOTHING AND TOUCHES NOTHING ELSE. Every per-row statement is identical
-     * between the two arms; the only difference is the two whole-catalog statements at the end. That is
-     * what makes it a change to WORKFLOW COMPOSITION rather than to either statement — which is the
-     * ground on which AAP §0.8.2 Guideline 4 permits it at all.
-     */
-    expect(deferred.statements.filter((statement) => statement.region === 'backfill')).toEqual([]);
-    expect(matching(deferred, 'SET defaultSkuID')).toEqual([]);
-    expect(matching(deferred, 'SET imageFile')).toEqual([]);
-
-    const rowStatements = (harness: Harness): readonly string[] =>
-      harness.statements
-        .filter((statement) => statement.region !== 'backfill')
-        .map((statement) => collapse(statement.sql));
-
-    expect(rowStatements(deferred)).toEqual(rowStatements(immediate));
-  });
-
-  it('NET-NEW — deferBackfills: false is the default arm, not a third behaviour', async () => {
-    const explicit = buildHarness(THREE_ROW_FILE);
-    const omitted = buildHarness(THREE_ROW_FILE);
-
-    await explicit.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
-      deferBackfills: false,
-    });
-    await omitted.repository.importFromFile('https://feeds.example/catalog.csv');
-
-    /* The adapter tests `options?.deferBackfills !== true`, so `false`, `undefined` and an absent options
-     * object are one arm rather than three. Asserted because a later `=== false` would silently split
-     * them and only an explicit `false` caller would notice. */
-    expect(explicit.statements.map((statement) => collapse(statement.sql))).toEqual(
-      omitted.statements.map((statement) => collapse(statement.sql)),
-    );
-  });
-
-  it('NET-NEW — deferring then invoking the member issues exactly the deferred pair', async () => {
-    const harness = buildHarness(THREE_ROW_FILE);
-
-    await harness.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
-      deferBackfills: true,
-    });
-
-    const afterImport = harness.statements.length;
-
-    await harness.repository.backfillImportDerivedColumns();
-
-    /*
-     * ⭐ THE OBLIGATION TRANSFERS, IT DOES NOT DISAPPEAR — and the member the caller must invoke issues
-     * the SAME two statements the default arm would have issued, in the same order and the same
-     * un-transacted region. Anything else and deferring would be a behaviour change rather than a
-     * re-timing, and a workflow that deferred across several invocations would end with a catalogue the
-     * legacy never leaves behind.
-     */
-    const late = harness.statements.slice(afterImport);
-    expect(late).toHaveLength(2);
-    expect(collapse(late[0]?.sql ?? '')).toContain('SET defaultSkuID');
-    expect(collapse(late[1]?.sql ?? '')).toContain('SET imageFile');
-    expect(late.every((statement) => statement.region === 'backfill')).toBe(true);
-  });
-
-  it('NET-NEW — the default arm runs both even for a file with NO rows at all', async () => {
-    const harness = buildHarness(importable([]));
-
-    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
-
-    /* ⛔ THE UNCONDITIONALITY IS THE BEHAVIOUR. `:L288` and `:L304` are guarded by neither a record count
-     * nor a file type, so an empty file still runs both whole-catalog statements — and a well-meaning
-     * "skip the back-fills when nothing was imported" would change which rows the database ends up with
-     * for every caller that imports an empty file. */
-    expect(harness.transactionsStarted()).toBe(0);
-    expect(matching(harness, 'SET defaultSkuID')).toHaveLength(1);
-    expect(matching(harness, 'SET imageFile')).toHaveLength(1);
-  });
-});
-
-describe('NET-NEW — every import lookup-memory key family (review finding 13)', () => {
-  /* The brand family is covered by "remembers a resolved brand across rows and re-probes an unresolved
-   * one" above; these are the two the review found uncovered, plus the composite-key property that is
-   * the whole reason the third family needs a key function of its own. */
-
-  it('NET-NEW — remembers a resolved product type across rows, and re-probes an unresolved one', async () => {
+  it('NET-NEW — re-probes the product type on EVERY row, resolved or not (finding F12)', async () => {
     const twoRowsOneType = importable(
       ['product_productCode', 'productType_productTypeName'],
       ['CODE-1', 'Merchandise'],
@@ -5237,18 +4974,15 @@ describe('NET-NEW — every import lookup-memory key family (review finding 13)'
     await unresolved.repository.importFromFile('https://feeds.example/catalog.csv');
 
     /*
-     * ⭐ THE SAME ASYMMETRY THE BRAND FAMILY HAS, AND FOR THE SAME REASON. `:L183-L186` declares no
-     * `ORDER BY`, so where two product types share a name the legacy's own answer is already whatever the
-     * engine yields first and may differ between two probes of one import — remembering the first answer
-     * therefore returns a value the legacy could itself have returned on every row. A MISS is not
-     * remembered, so a type created concurrently is observed on exactly the row the legacy would first
-     * have observed it on.
+     * ⛔ THE SAME WITHDRAWAL AS THE BRAND FAMILY (F12). `:L183-L186` is inside the record loop, so both
+     * harnesses issue one statement per row. The asymmetry this case used to assert — one for the resolving
+     * harness, two for the unresolved one — was the memory's signature, and it is gone.
      */
-    expect(matching(resolving, 'FROM SwProductType')).toHaveLength(1);
+    expect(matching(resolving, 'FROM SwProductType')).toHaveLength(2);
     expect(matching(unresolved, 'FROM SwProductType')).toHaveLength(2);
   });
 
-  it('NET-NEW — remembers a resolved option across rows, while re-probing the LINK every row', async () => {
+  it('NET-NEW — re-probes BOTH the option and the link on every row (finding F12)', async () => {
     const twoRowsOneOption = importable(
       ['product_productCode', 'option_Size'],
       ['CODE-1', 'Small'],
@@ -5276,24 +5010,33 @@ describe('NET-NEW — every import lookup-memory key family (review finding 13)'
     await harness.repository.importFromFile('https://feeds.example/catalog.csv');
 
     /*
-     * ⭐⭐ TWO DIFFERENT ANSWERS TO TWO DIFFERENT QUESTIONS, AND CONFLATING THEM WOULD BE THE BUG.
-     * The OPTION resolution — "which option is code `Small` in this group" — is a catalogue fact that
-     * cannot change under the import, so `:L212-L215` is asked once. The LINK probe at `:L218-L220` is
-     * asked EVERY row, because its key includes the SKU identifier and two file rows CAN resolve to the
-     * same SKU: `:L200-L203` derives the SKU code from cell values, so duplicate rows collide, and the
-     * second such row must observe the link the first inserted. That is the same-connection read-back M6
-     * requires, and remembering it would substitute a stale answer for the one read that has to be live.
+     * ⛔ BOTH READS ARE NOW PER ROW, AND THE CASE USED TO ASSERT THAT ONLY ONE OF THEM WAS.
+     * `:L212-L215` re-runs the option lookup for every row × every surviving option group, and
+     * `:L218-L220` re-runs the link probe for every row. The distinction this case was built around —
+     * the option resolution remembered, the link probe live — was the memory's, not the legacy's, and
+     * review finding F12 withdrew it.
+     *
+     * ⚠️ THE LINK PROBE'S OWN REASON FOR BEING LIVE STILL STANDS AND IS WORTH KEEPING ON RECORD: its key
+     * includes the SKU identifier, two file rows CAN resolve to the same SKU because `:L200-L203` derives
+     * the code from cell values, and the second such row must observe the link the first inserted — the
+     * same-connection read-back M6 requires. It was never the memoised one; now neither is.
      */
-    expect(matching(harness, 'LEFT JOIN SwOption')).toHaveLength(1);
+    expect(matching(harness, 'LEFT JOIN SwOption')).toHaveLength(2);
     expect(matching(harness, 'FROM SwSkuOption')).toHaveLength(2);
 
-    // The remembered identifier is the one the link probe binds on the second row, not a re-read.
+    /* Each row's link probe binds the identifier ITS OWN lookup answered. */
     expect(matching(harness, 'FROM SwSkuOption')[1]?.params[0]).toBe(
       'dddddddddddddddddddddddddddd0001',
     );
+
+    /* And both option lookups bind the same code and group — the read is repeated, not varied. */
+    expect(matching(harness, 'LEFT JOIN SwOption').map((call) => call.params)).toEqual([
+      ['Small', 'cccccccccccccccccccccccccccc0001'],
+      ['Small', 'cccccccccccccccccccccccccccc0001'],
+    ]);
   });
 
-  it('NET-NEW — the option key is COMPOSITE, so one code in two groups is two lookups', async () => {
+  it('NET-NEW — one code in two groups is looked up per group, per row (finding F12)', async () => {
     /* Both headings carry the SAME option code, in two DIFFERENT groups — the exact collision a
      * code-only key would produce a wrong answer for. */
     const sameCodeTwoGroups = importable(
@@ -5329,17 +5072,16 @@ describe('NET-NEW — every import lookup-memory key family (review finding 13)'
     await harness.repository.importFromFile('https://feeds.example/catalog.csv');
 
     /*
-     * ⭐ THE ARITHMETIC IS THE ASSERTION. Two groups × the same code = two DISTINCT keys, so row 1 issues
-     * two lookups and row 2 issues none. A code-only key would report 1 here and would then assign row 1's
-     * `Colour` cell the identifier of its `Size` option — a silently wrong catalogue, with no error
-     * anywhere. `:L212-L215` matches on BOTH the code and the group, which is why the key must too.
+     * ⛔ THE ARITHMETIC IS THE ASSERTION, AND F12 CHANGED IT FROM 2 TO 4. Two rows × two option groups =
+     * FOUR lookups, because `:L212-L215` is inside both the record loop and the per-group loop.
      *
-     * ⚠️ AND THE JOINING CHARACTER MATTERS. The two parts are joined on a NUL rather than a printable
-     * separator, because an option code is FILE CONTENT and may contain any printable character —
-     * including whatever separator seemed safe. The next case proves a printable separator would be
-     * forgeable.
+     * This case previously asserted 2 — two distinct composite keys resolved on row 1, nothing on row 2 —
+     * which was the memory's arithmetic. The property it was really defending survives the withdrawal and
+     * is still asserted below: the SAME code in two DIFFERENT groups must resolve to two DIFFERENT options,
+     * because `:L212-L215` matches on BOTH the code and the group. Under a memory that was a keying
+     * question; with no memory it is a binding question, and the parameter assertions are what answer it.
      */
-    expect(matching(harness, 'LEFT JOIN SwOption')).toHaveLength(2);
+    expect(matching(harness, 'LEFT JOIN SwOption')).toHaveLength(4);
 
     /*
      * ⚠️ AND THE TWO LOOPS OVER THE SAME ARRAY RUN IN OPPOSITE DIRECTIONS, WHICH IS OBSERVABLE HERE.
@@ -5351,19 +5093,19 @@ describe('NET-NEW — every import lookup-memory key family (review finding 13)'
      * The directions are asserted rather than assumed, because a reader harmonising the two loops would
      * change this order and nothing else in the file would notice.
      */
-    expect(matching(harness, 'LEFT JOIN SwOption')[0]?.params).toEqual([
-      'One',
-      'cccccccccccccccccccccccccccc0001',
-    ]);
-    expect(matching(harness, 'LEFT JOIN SwOption')[1]?.params).toEqual([
-      'One',
-      'cccccccccccccccccccccccccccc0002',
+    expect(matching(harness, 'LEFT JOIN SwOption').map((call) => call.params)).toEqual([
+      /* row 1 */ ['One', 'cccccccccccccccccccccccccccc0001'],
+      ['One', 'cccccccccccccccccccccccccccc0002'],
+      /* row 2, the same pair again — this is the per-row repetition F12 restored. */
+      ['One', 'cccccccccccccccccccccccccccc0001'],
+      ['One', 'cccccccccccccccccccccccccccc0002'],
     ]);
   });
 
-  it('NET-NEW — an option code cannot forge another key by containing a separator', async () => {
-    /* The `Size` cell is spelled so that a naive `group + separator + code` key would collide with the
-     * `Colour` cell's key under any printable separator a reader might have reached for. */
+  it('NET-NEW — an option code that LOOKS like a composite key is still just a bound value', async () => {
+    /* The `Size` cell is spelled to look like `<groupID>|<code>`, which is how a key-forging attempt would
+     * be shaped. Nothing composes a key any more (F12), so the cell can only ever reach a bind position —
+     * this case now asserts that property directly rather than the unforgeability of a key that is gone. */
     const forging = importable(
       ['product_productCode', 'option_Size', 'option_Colour'],
       ['CODE-1', 'cccccccccccccccccccccccccccc0002|Blue', 'Blue'],
@@ -5391,19 +5133,40 @@ describe('NET-NEW — every import lookup-memory key family (review finding 13)'
 
     await harness.repository.importFromFile('https://feeds.example/catalog.csv');
 
-    /* ⛔ BOTH CELLS ARE LOOKED UP. If the key were `group + '|' + code`, the `Colour` cell would have hit
-     * the `Size` cell's entry and been assigned its option — a cross-group leak driven entirely by file
-     * content. A NUL cannot appear in a cell that survived delimited parsing, so the composite key is
-     * unforgeable rather than merely unlikely to collide. */
+    /*
+     * ⛔ BOTH CELLS ARE LOOKED UP, AND EACH CELL TRAVELS AS A BOUND VALUE. The withdrawn memory keyed its
+     * entries on `groupID + NUL + code` precisely so a printable separator in file content could not forge
+     * another group's entry; with the memory gone there is no key to forge, and the residual property is
+     * the stronger one — the cell reaches only a placeholder, never statement text (TR-4, D18).
+     */
     expect(matching(harness, 'LEFT JOIN SwOption')).toHaveLength(2);
+
+    /* The forged-looking cell is bound VERBATIM in slot one, and the group it is matched against comes
+     * from the pre-pass in slot two. Neither appears in the statement text. */
+    const forged = matching(harness, 'LEFT JOIN SwOption')[0];
+    expect(forged?.params).toEqual([
+      'cccccccccccccccccccccccccccc0002|Blue',
+      'cccccccccccccccccccccccccccc0001',
+    ]);
+    expect(forged?.sql).not.toContain('|Blue');
   });
 
-  it('NET-NEW — an option the import CREATES is remembered, so no second row re-creates it', async () => {
+  it('NET-NEW — an option the import CREATES is re-looked-up by the next row, and FOUND (finding F12)', async () => {
     const twoRowsOneNewOption = importable(
       ['product_productCode', 'option_Size'],
       ['CODE-1', 'Small'],
       ['CODE-2', 'Small'],
     );
+
+    /*
+     * ⚠️ A STATEFUL STUB, AND THE STATE IS THE POINT. This case used to answer `optionID: null` on every
+     * probe and assert that row 2 never probed at all, because the withdrawn memory answered it from the
+     * entry row 1 recorded. With no memory, row 2 DOES probe — so a stub frozen at `null` would make row 2
+     * create a SECOND option, which is neither the legacy's behaviour nor the database's. Modelling the
+     * insert is what lets the case assert the real property: the re-query sees row 1's uncommitted insert,
+     * on row 1's own connection, which is the same-connection read-back M6 requires.
+     */
+    let createdOptionID: string | null = null;
 
     const harness = buildHarness(twoRowsOneNewOption, (statement) => {
       const sql = collapse(statement.sql);
@@ -5411,10 +5174,17 @@ describe('NET-NEW — every import lookup-memory key family (review finding 13)'
       if (sql.startsWith('SELECT optionGroupID FROM SwOptionGroup')) {
         return sqlRows([{ optionGroupID: 'cccccccccccccccccccccccccccc0001' }]);
       }
+      if (sql.startsWith('INSERT INTO SwOption ')) {
+        /* `:L222-L227` — remember what the import minted, so the next probe can find it. */
+        createdOptionID = String(statement.params[0]);
+        return undefined;
+      }
       if (sql.includes('LEFT JOIN SwOption')) {
-        /* `:L212-L215` is an OUTER join, so it returns the GROUP with a NULL option when the option does
-         * not exist yet — which is the `:L217` empty branch that creates one. */
-        return sqlRows([{ optionID: null, optionGroupID: 'cccccccccccccccccccccccccccc0001' }]);
+        /* `:L212-L215` is an OUTER join: it returns the GROUP with a NULL option while none exists — the
+         * `:L217` empty branch that creates one — and the option itself once it does. */
+        return sqlRows([
+          { optionID: createdOptionID, optionGroupID: 'cccccccccccccccccccccccccccc0001' },
+        ]);
       }
 
       return undefined;
@@ -5423,32 +5193,28 @@ describe('NET-NEW — every import lookup-memory key family (review finding 13)'
     await harness.repository.importFromFile('https://feeds.example/catalog.csv');
 
     /*
-     * ⭐ THE CREATED IDENTIFIER IS RECORDED, AND FIRST-FAILURE IS WHY THAT IS ADMISSIBLE. The insert at
-     * `:L222-L227` happens inside row 1's transaction, so a rolled-back row could in principle leave a
-     * remembered identifier pointing at nothing. It cannot happen: the per-row boundary stops at the
-     * FIRST failure (M3), so no later row runs after a row whose transaction rolled back, and no later
-     * row can read the entry. This is not defence in depth — it is the entry's whole licence, and if the
-     * boundary ever gained a continue-on-error mode the recording would have to go with it.
+     * ⛔ EXACTLY ONE OPTION IS CREATED, AND NOT BECAUSE ANYTHING WAS REMEMBERED. Row 2 re-issues
+     * `:L212-L215`, the outer join now returns the option row 1 inserted, and `:L217` takes its non-empty
+     * branch — so the creation arm does not run a second time. The legacy reaches the same outcome by the
+     * same route, and it is the DATABASE that carries the fact across rows rather than a cache.
      */
     const created = matching(harness, 'INSERT INTO SwOption ');
     expect(created).toHaveLength(1);
     expect(String(created[0]?.params[0])).toMatch(HEX_32);
 
-    // One lookup for two rows: row 2 took the memory hit.
-    expect(matching(harness, 'LEFT JOIN SwOption')).toHaveLength(1);
+    /* TWO lookups for two rows — the per-row repetition F12 restored. */
+    expect(matching(harness, 'LEFT JOIN SwOption')).toHaveLength(2);
 
     /*
      * ⭐⭐ THE CREATION ARM ISSUES NO EXISTENCE PROBE AT ALL, AND THAT ASYMMETRY IS THE LEGACY'S.
      * `model/dao/ProductDAO.cfc:L217` probes `SlatwallSkuOption` only on its non-empty branch; the empty
      * branch at `:L222-L228` creates the option and then sets `exists = false` OUTRIGHT, without asking,
      * because an option that did not exist a statement ago can carry no link. So row 1 probes zero times
-     * and links once, and row 2 — arriving through the memory — takes the `:L217` non-empty branch and
+     * and links once, and row 2 — arriving through its own lookup — takes the `:L217` non-empty branch and
      * probes exactly once. One probe across two rows, not two.
      *
-     * ⭐ AND THE SINGLE PROBE BINDS THE CREATED IDENTIFIER, which is the actual proof that the identifier
-     * minted at `:L223` was recorded rather than re-derived. A memory that recorded only FOUND options
-     * would send row 2 back to `:L212-L215`, find the option this import created, and — because the outer
-     * join is not repeated here — the lookup count above would read 2.
+     * ⭐ AND THE PROBE BINDS THE IDENTIFIER ROW 2'S OWN LOOKUP RETURNED, which is the same value row 1
+     * minted. Under the withdrawn memory this assertion proved the recording; now it proves the read-back.
      */
     const probes = matching(harness, 'FROM SwSkuOption');
     expect(probes).toHaveLength(1);
@@ -5459,7 +5225,7 @@ describe('NET-NEW — every import lookup-memory key family (review finding 13)'
     expect(matching(harness, 'INSERT INTO SwSkuOption')).toHaveLength(2);
   });
 
-  it('NET-NEW — the memory is IMPORT-scoped, never instance-scoped (M7)', async () => {
+  it('NET-NEW — no lookup state survives an import, so a warm instance cannot leak one (M7, F12)', async () => {
     const oneRowOneBrand = importable(['product_productCode'], ['CODE-1']);
 
     const harness = buildHarness(oneRowOneBrand, (statement) => {
@@ -5474,13 +5240,4820 @@ describe('NET-NEW — every import lookup-memory key family (review finding 13)'
     await harness.repository.importFromFile('https://feeds.example/catalog.csv');
 
     /*
-     * ⛔⛔ THE HAZARD M7 NAMES, ASSERTED RATHER THAN DOCUMENTED. Nothing survives between Lambda
-     * invocations except module-scope state, so a memory held as a FIELD on the repository would let one
-     * caller's catalogue identifiers answer the next caller's import on a warm container. The memory is
-     * created inside `buildImportPlan` and reachable only through the `ImportPlan` that call returns, so
-     * it dies with the import — and the second import therefore re-probes every family from scratch, on
-     * the very same repository instance.
+     * ⛔⛔ THE HAZARD M7 NAMES, ASSERTED RATHER THAN DOCUMENTED — AND NOW STRUCTURALLY IMPOSSIBLE.
+     * Nothing survives between Lambda invocations except module-scope state, so lookup state held as a
+     * FIELD on the repository would let one caller's catalogue identifiers answer the next caller's import
+     * on a warm container.
+     *
+     * This case was written when an import-scoped memory existed, and it asserted that the memory died with
+     * its `ImportPlan` rather than living on the instance. Review finding F12 withdrew the memory entirely,
+     * so the property is no longer a matter of where state is held — there is none to hold. The assertion
+     * is KEPT rather than deleted, because it is the one that would fail first if a cache were ever
+     * reintroduced as an instance field, and it costs one statement to keep.
      */
     expect(matching(harness, 'FROM SwBrand')).toHaveLength(2);
+
+    /* One row per import, one brand statement per row, two imports — and each binds the same cell. */
+    expect(matching(harness, 'FROM SwBrand').map((call) => call.params)).toEqual([
+      ['Acme'],
+      ['Acme'],
+    ]);
+  });
+});
+
+/* ================================================================================================
+ * AGGREGATE LOADERS — cases merged from catalogAggregates.test.ts
+ * ------------------------------------------------------------------------------------------------
+ * Merged in from `test/adapters/catalogAggregates.test.ts` when review finding F5 folded that file's SUBJECT into
+ * `src/adapters/mysql/MySqlProductRepository.ts` and `src/adapters/mysql/SmartListQueryBuilder.ts`.
+ * Every case is carried across unchanged; only four local identifiers were renamed to avoid a
+ * collision with declarations already in this file — `matching` -> `persistenceMatching`,
+ * `makeExecutor` -> `makePersistenceExecutor`, `Journal` -> `PersistenceJournal` and `ID` ->
+ * `PERSISTENCE_ID`.
+ *
+ * THE ORIGINAL MODULE HEADER FOLLOWS, VERBATIM:
+
+ * Aggregate materialization — INT-02 and DATA-02.
+ *
+ * AAP authority: AAP 0.4.4 authorises `slatwall-ts/test/**` | CREATE. This file covers
+ * the aggregate-loader section of `src/adapters/mysql/SmartListQueryBuilder.ts` and the hook it is invoked through in
+ * `src/adapters/mysql/SmartListQueryBuilder.execute`.
+ *
+ * =================================================================================================
+ * WHAT THESE CASES PROVE
+ * =================================================================================================
+ * Two reported findings were one fault observed at two roots. `SmartListQueryBuilder` projects
+ * `<baseAlias>.*` and the row mappers hydrate scalar columns only — `rowMappers.ts` RULE 3 leaves every
+ * many-to-one association GENUINELY ABSENT, by design — so before this fix:
+ *
+ *   INT-02 — a SKU smart list produced SKUs with no `product`, and the Google feed's very first act,
+ *            `requireProduct(sku)`, raised for every item. The feed emitted nothing at all.
+ *   DATA-02 — an option smart list produced options with no `optionGroup`, and
+ *            `SkuService.createSkus` raised at `requireOptionGroupID` for every merchandise product
+ *            carrying options.
+ *
+ * The consumers' guards were never the defect and are not touched. What these cases assert is that the
+ * data now arrives complete, so the guards no longer have anything to fire on.
+ *
+ * ⚠️ THE `defaultSku` CASES ARE THE INTERESTING ONES. `Product.defaultSku` is typed as
+ * `ProductDefaultSkuDelegate`, which `Sku` is DELIBERATELY not assignable to — the domain layer records
+ * that asymmetry rather than inventing a `getImageDirectory` the legacy `Sku.cfc` never declared. So the
+ * loader binds through an injected adapter, and the case below asserts that the binder is actually the
+ * thing consulted rather than the entity being quietly cast.
+ *
+ * NO DATABASE. A recording executor double answers each statement by shape, which is how the sibling
+ * adapter suites work and what AAP 0.7.3 standard 6 requires here: no CFML runtime exists and the `Sw*`
+ * tables are absent from this repository.
+ *
+ * TEST PROVENANCE: every case is **NET-NEW**. AAP 0.6.5.2 records that no legacy data-access test exists
+ * for this slice, and none exists for the framework smart list either (AAP 0.8.3.7).
+ * ============================================================================================== */
+/* ================================================================================================
+ * MIN-01 — THE ELEMENT TYPE IS DERIVED FROM THE ROOT ENTITY, PINNED HERE RATHER THAN ASSUMED
+ * ================================================================================================
+ * Every `builder.execute(...)` below passes a query and NO element type, because
+ * `SmartListQueryPort.execute` reads the pairing out of `query.entityName` through
+ * `SmartListEntityRecordTypes`. These three aliases are what makes that a checked claim in this file:
+ * each one fails to compile if a root's record type ever stops being the domain type the port pairs
+ * with it — which is exactly what would happen if the signature were loosened back to a caller-chosen
+ * parameter and the adapter resumed asserting its mapper's output into it.
+ * ============================================================================================== */
+type AssertAssignable<TActual extends TExpected, TExpected> = TActual;
+type _SkuRootYieldsSku = AssertAssignable<SmartListRecord<'SlatwallSku'>, Sku>;
+type _OptionRootYieldsOption = AssertAssignable<SmartListRecord<'SlatwallOption'>, Option>;
+type _ProductRootYieldsProduct = AssertAssignable<SmartListRecord<'SlatwallProduct'>, Product>;
+
+/** Distinct 32-character identifiers, so a crossed association is visible rather than coincidental. */
+const ID = {
+  sku: 'aaaaaaaa000000000000000000000001',
+  siblingSku: 'aaaaaaaa000000000000000000000002',
+  product: 'bbbbbbbb000000000000000000000001',
+  productType: 'cccccccc000000000000000000000001',
+  brand: 'dddddddd000000000000000000000001',
+  defaultSku: 'eeeeeeee000000000000000000000001',
+  option: 'ffffffff000000000000000000000001',
+  optionGroup: '99999999000000000000000000000001',
+} as const;
+
+/** Every statement the builder and the loaders issued, in order. */
+interface Journal {
+  readonly statements: { readonly sql: string; readonly params: readonly unknown[] }[];
+}
+
+/**
+ * An executor backed by a tiny in-memory table store that HONOURS THE WHERE CLAUSE.
+ *
+ * ⚠️ IT HAS TO HONOUR IT, AND THAT IS NOT GOLD-PLATING. Two different statements in these scenarios read
+ * `SwSku`: the builder's own record projection, and the loader's `WHERE skuID IN (…)` lookup for a
+ * product's DEFAULT SKU. A double that answered both with the same fixture rows would hand the
+ * default-SKU lookup the wrong rows, the lookup would miss, and the case asserting that the delegate
+ * binder is consulted would fail for a reason that has nothing to do with the code under test. Filtering
+ * by the bound parameters is what keeps the double honest about which row a statement asked for.
+ */
+function makeExecutor(tables: Readonly<Record<string, readonly MySqlRow[]>>): {
+  readonly executor: SqlExecutor;
+  readonly journal: Journal;
+} {
+  const journal: Journal = { statements: [] };
+
+  const executor: SqlExecutor = {
+    execute: (sql: string, params: readonly unknown[]): Promise<MySqlRow[]> => {
+      journal.statements.push({ sql, params: [...params] });
+
+      /* The count statement answers with its count column, never with entity rows. */
+      if (sql.includes('recordsCount')) {
+        return Promise.resolve([{ recordsCount: 1 }]);
+      }
+
+      const table = Object.keys(tables).find((name) => new RegExp(`FROM ${name}\\b`).test(sql));
+      if (table === undefined) {
+        return Promise.resolve([]);
+      }
+      const rows = tables[table] ?? [];
+
+      /* `WHERE <column> IN (?, …)` — the shape every loader lookup uses. */
+      const filter = /WHERE (?:\w+\.)?(\w+) IN \(/.exec(sql);
+      if (filter !== null) {
+        const column = filter[1];
+        if (column !== undefined) {
+          return Promise.resolve(rows.filter((row) => params.includes(row[column])));
+        }
+      }
+
+      return Promise.resolve([...rows]);
+    },
+  };
+
+  return { executor, journal };
+}
+
+/** A binder that records what it was handed and returns a delegate reporting a known price. */
+function makeBinderSpy(price: number): {
+  readonly dependencies: CatalogAggregateDependencies;
+  readonly boundSkuIds: string[];
+} {
+  const boundSkuIds: string[] = [];
+
+  return {
+    boundSkuIds,
+    dependencies: {
+      bindDefaultSkuDelegate: (sku: Sku): ProductDefaultSkuDelegate => {
+        boundSkuIds.push(sku.skuID);
+        return {
+          getCurrencyCode: (): string | undefined => undefined,
+          /* F07 — `Sku.price` is exact-decimal text, so the spy's numeric literal is adopted at this
+           * boundary rather than handed through as a double. */
+          getPrice: (): ExactDecimal | undefined => toExactDecimal(price),
+          getRenewalPrice: (): ExactDecimal | undefined => undefined,
+          getListPrice: (): ExactDecimal | undefined => undefined,
+          getImageDirectory: (): string => '',
+          getImagePath: (): string => '',
+          getImage: (): string => '',
+          getResizedImagePath: (): string => '',
+          getImageExistsFlag: (): boolean => false,
+        };
+      },
+    },
+  };
+}
+
+/**
+ * Identifies the product-load statement the SKU and option roots' loaders issue.
+ *
+ * ⚠️ MATCHED ON THE QUALIFIED PROJECTION, AND WRITTEN ONCE FOR A REASON THE TWO NEGATIVE ASSERTIONS
+ * BELOW DEPEND ON. `catalogAggregates.projectionFor` qualifies every projected column with its
+ * whitelisted table name, so the product load now opens `SELECT SwProduct.productID`. Three inline
+ * `startsWith` calls against a stale prefix would leave the two NEGATIVE assertions passing vacuously —
+ * a predicate that can never match proves nothing about the statement it claims is absent — so the
+ * prefix lives here, where the POSITIVE assertion breaks first and forces the others to stay honest.
+ */
+function isProductLoad(sql: string): boolean {
+  return sql.startsWith('SELECT SwProduct.productID');
+}
+
+describe('SmartListQueryBuilder aggregate materialization — INT-02, the SKU root', () => {
+  /** A SKU result set whose rows name a product, plus that product's own row and its associations. */
+  function skuScenario(): Readonly<Record<string, readonly MySqlRow[]>> {
+    return {
+      /* ⚠️ THE THREE MONEY COLUMNS ARE STRINGS, NOT NUMBERS, AND THAT IS THE DRIVER CONTRACT RATHER
+       * THAN A FIXTURE QUIRK. `model/entity/Sku.cfc:L55-L57` declares them `ormtype="big_decimal"`, and
+       * `rowMappers.ts` reads them through `readOptionalExactDecimal`, which REFUSES a JavaScript number
+       * because by the time one arrives the exact digits are already gone (F16). Handing a number here
+       * would be asserting against a result set the configured pool cannot produce. */
+      SwSku: [
+        { skuID: ID.sku, skuCode: 'SKU-1', price: '10.00', productID: ID.product },
+        { skuID: ID.siblingSku, skuCode: 'SKU-2', price: '20.00', productID: ID.product },
+        /* The product's default SKU, which the loader fetches by identifier. */
+        { skuID: ID.defaultSku, skuCode: 'SKU-DEFAULT', price: '99.00', productID: ID.product },
+      ],
+      SwProduct: [
+        {
+          productID: ID.product,
+          productName: 'Feed Product',
+          productCode: 'FP',
+          productTypeID: ID.productType,
+          brandID: ID.brand,
+          defaultSkuID: ID.defaultSku,
+        },
+      ],
+      SwProductType: [{ productTypeID: ID.productType, productTypeName: 'Merchandise' }],
+      SwBrand: [{ brandID: ID.brand, brandName: 'Nike' }],
+    };
+  }
+
+  it('attaches the product every SKU names, so requireProduct no longer has anything to refuse', async () => {
+    const { executor } = makeExecutor(skuScenario());
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+    );
+
+    const result = await builder.execute({ entityName: 'SlatwallSku' });
+
+    /* All three rows in the store belong to this product — the two ordinary SKUs and the default one. */
+    expect(result.records).toHaveLength(3);
+    for (const sku of result.records) {
+      /* Before the fix this key was absent on every record, which is exactly what the feed's guard
+       * reported — once per item, for every item. */
+      expect(sku.product).toBeDefined();
+      expect(sku.product?.productID).toBe(ID.product);
+    }
+  });
+
+  it('attaches the product type and the brand the product names', async () => {
+    const { executor } = makeExecutor(skuScenario());
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+    );
+
+    const result = await builder.execute({ entityName: 'SlatwallSku' });
+    const product = result.records[0]?.product;
+
+    expect(product?.productType?.productTypeID).toBe(ID.productType);
+    expect(product?.brand?.brandID).toBe(ID.brand);
+  });
+
+  /*
+   * THE CASE THAT PROVES THE BINDER IS REAL. `Sku` is not assignable to `ProductDefaultSkuDelegate`, so
+   * a loader that "attached the default SKU" by casting would compile only with a suppression and would
+   * hand the product an object missing four of the nine members the delegate promises. Asserting that
+   * the binder was consulted, and that the price reaches the product through it, is what distinguishes a
+   * real binding from a cast.
+   */
+  it('binds the default SKU through the injected adapter, and product.getPrice reads through it', async () => {
+    const { executor } = makeExecutor(skuScenario());
+    const binder = makeBinderSpy(1234);
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(binder.dependencies),
+    );
+
+    const result = await builder.execute({ entityName: 'SlatwallSku' });
+    const product = result.records[0]?.product;
+
+    expect(binder.boundSkuIds).toContain(ID.defaultSku);
+    /* `Product.getPrice()` falls through to `defaultSku.getPrice()`, which is the whole reason the
+     * default SKU is loaded — the feed's `g:price` reads it. */
+    expect(product?.getPrice()).toBe(toExactDecimal(1234));
+  });
+
+  it('gives sibling SKUs of one product the SAME product instance', async () => {
+    const { executor } = makeExecutor(skuScenario());
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+    );
+
+    const result = await builder.execute({ entityName: 'SlatwallSku' });
+
+    /* ⚠️ DEFINEDNESS IS ASSERTED FIRST, AND DELIBERATELY. `toBe` alone would be satisfied by two
+     * `undefined`s, so with the loader removed this case would pass vacuously while asserting nothing —
+     * the exact failure mode a mutation check exists to expose. */
+    const first = result.records[0]?.product;
+    const second = result.records[1]?.product;
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+
+    /* Identity, not equality: the mapping layer's semantics, and what lets a consumer compare by
+     * reference. It is also the evidence that one statement served every sibling. */
+    expect(first).toBe(second);
+  });
+
+  it('issues ONE product statement for a batch that names one product twice', async () => {
+    const { executor, journal } = makeExecutor(skuScenario());
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+    );
+
+    await builder.execute({ entityName: 'SlatwallSku' });
+
+    const productLookups = journal.statements.filter((statement) => isProductLoad(statement.sql));
+    /* Two SKUs naming one product, and the builder materialises `records` and `pageRecords` separately —
+     * so a naive implementation would issue up to four. De-duplication across the whole invocation is
+     * what makes it one. */
+    expect(productLookups).toHaveLength(1);
+    expect(productLookups[0]?.params).toEqual([ID.product]);
+  });
+
+  it('leaves the brand absent when the product names none, without raising', async () => {
+    const scenario = {
+      ...skuScenario(),
+      SwProduct: [
+        {
+          productID: ID.product,
+          productName: 'Unbranded',
+          productTypeID: ID.productType,
+          brandID: null,
+          defaultSkuID: null,
+        },
+      ],
+    };
+    const { executor } = makeExecutor(scenario);
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+    );
+
+    const result = await builder.execute({ entityName: 'SlatwallSku' });
+    const product = result.records[0]?.product;
+
+    /* The legacy feed LEFT-joins brand and guards the read, so absence is ordinary data. */
+    expect(product).toBeDefined();
+    expect(product?.brand).toBeUndefined();
+  });
+
+  it('issues no association statement at all for an empty result set', async () => {
+    const { executor, journal } = makeExecutor({ SwSku: [] });
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+    );
+
+    const result = await builder.execute({ entityName: 'SlatwallSku' });
+
+    expect(result.records).toEqual([]);
+    /* `IN ()` is not legal SQL and there is nothing to ask for. */
+    expect(journal.statements.some((statement) => statement.sql.includes('IN ()'))).toBe(false);
+    expect(journal.statements.filter((s) => isProductLoad(s.sql))).toHaveLength(0);
+  });
+
+  it('binds every identifier positionally and interpolates none', async () => {
+    const { executor, journal } = makeExecutor(skuScenario());
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+    );
+
+    await builder.execute({ entityName: 'SlatwallSku' });
+
+    for (const statement of journal.statements) {
+      expect(statement.sql).not.toContain(ID.product);
+      expect(statement.sql).not.toContain(ID.brand);
+      expect(statement.sql).not.toContain(ID.productType);
+      expect(statement.sql).not.toContain("'");
+    }
+  });
+});
+
+describe('SmartListQueryBuilder aggregate materialization — DATA-02, the option root', () => {
+  it('attaches the required option group, so requireOptionGroupID no longer refuses', async () => {
+    const { executor } = makeExecutor({
+      SwOption: [{ optionID: ID.option, optionName: 'Large', optionGroupID: ID.optionGroup }],
+      SwOptionGroup: [{ optionGroupID: ID.optionGroup, optionGroupCode: 'size' }],
+    });
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+    );
+
+    const result = await builder.execute({ entityName: 'SlatwallOption' });
+
+    /* `model/entity/Option.cfc:L59` declares this relationship REQUIRED. Before the fix it was absent on
+     * every hydrated option, so every merchandise SKU creation carrying options raised. */
+    expect(result.records[0]?.optionGroup).toBeDefined();
+    expect(result.records[0]?.optionGroup?.optionGroupID).toBe(ID.optionGroup);
+    expect(result.records[0]?.optionGroup?.optionGroupCode).toBe('size');
+  });
+
+  it('needs no delegate binder to resolve, since an option group is loaded whole', async () => {
+    const { executor, journal } = makeExecutor({
+      SwOption: [{ optionID: ID.option, optionGroupID: ID.optionGroup }],
+      SwOptionGroup: [{ optionGroupID: ID.optionGroup, optionGroupCode: 'size' }],
+    });
+    const binder = makeBinderSpy(42);
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(binder.dependencies),
+    );
+
+    await builder.execute({ entityName: 'SlatwallOption' });
+
+    /* The option root touches no product and therefore no default SKU. */
+    expect(binder.boundSkuIds).toEqual([]);
+    expect(journal.statements.some((s) => isProductLoad(s.sql))).toBe(false);
+  });
+
+  it('leaves the group absent when the column is empty, deferring to the consumer guard', async () => {
+    const { executor } = makeExecutor({
+      SwOption: [{ optionID: ID.option, optionGroupID: '' }],
+    });
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+    );
+
+    const result = await builder.execute({ entityName: 'SlatwallOption' });
+
+    /* `unsavedvalue=""` means the empty string spells absence, so no `WHERE id = ''` is issued. The
+     * consumer's own guard reports it with the option identifier and the legacy locator, which is a
+     * better error than this loader could produce. */
+    expect(result.records[0]).toBeDefined();
+    expect(result.records[0]?.optionGroup).toBeUndefined();
+  });
+});
+
+describe('SmartListQueryBuilder aggregate materialization — DATA-03, the product root', () => {
+  /** A single product row plus every row its four associations need. */
+  function productScenario(): Readonly<Record<string, readonly MySqlRow[]>> {
+    return {
+      SwProduct: [
+        {
+          productID: ID.product,
+          productName: 'Feed Product',
+          productCode: 'FP',
+          productTypeID: ID.productType,
+          brandID: ID.brand,
+          defaultSkuID: ID.defaultSku,
+        },
+      ],
+      SwProductType: [{ productTypeID: ID.productType, productTypeName: 'Merchandise' }],
+      SwBrand: [{ brandID: ID.brand, brandName: 'Nike' }],
+      /* Money columns are strings for the reason stated on the SKU scenario above (F16). */
+      SwSku: [
+        { skuID: ID.defaultSku, skuCode: 'SKU-DEFAULT', price: '99.00', productID: ID.product },
+        { skuID: ID.sku, skuCode: 'SKU-1', price: '10.00', productID: ID.product },
+      ],
+    };
+  }
+
+  it('attaches the productType, brand, defaultSku and skus a product aggregate needs', async () => {
+    const { executor } = makeExecutor(productScenario());
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+    );
+
+    const result = await builder.execute({ entityName: 'SlatwallProduct' });
+    const product = result.records[0];
+
+    /* The four associations DATA-03 named as missing from `ProductService.getProduct`. */
+    expect(product?.productType?.productTypeID).toBe(ID.productType);
+    expect(product?.brand?.brandID).toBe(ID.brand);
+    expect(product?.defaultSku?.getPrice()).toBe(toExactDecimal(99));
+    expect(product?.getSkus()).toHaveLength(2);
+  });
+
+  it('gives every SKU in the collection a back-reference to the product that owns it', async () => {
+    const { executor } = makeExecutor(productScenario());
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+    );
+
+    const result = await builder.execute({ entityName: 'SlatwallProduct' });
+    const product = result.records[0];
+    const skus = product?.getSkus() ?? [];
+
+    expect(product).toBeDefined();
+    expect(skus).toHaveLength(2);
+    for (const member of skus) {
+      /* Definedness asserted first, so `toBe` cannot be satisfied by two `undefined`s. */
+      expect((member as Sku).product).toBeDefined();
+      expect((member as Sku).product).toBe(product);
+    }
+  });
+
+  /*
+   * ⭐ THE IDENTITY CASE, AND ITS PREMISE WAS REVERSED ON PURPOSE. It was written when `records` and
+   * `pageRecords` were materialised into DISTINCT objects for the same row, and it asserted that no SKU
+   * object was shared between the two graphs — the mistake it policed being a loader that pushed one
+   * SKU instance onto both collections, leaving `records[0].getSkus()[0].product` pointing at
+   * `pageRecords[0]`.
+   *
+   * Materialisation now runs both result sets through ONE identity map, so a row seen twice yields ONE
+   * instance — which is what a single Hibernate session guaranteed, and which matters here because
+   * `manageEntity` installs a FRESH error bag per mapping: two instances for one row would split the
+   * findings §0.6.2's validation reads back. Sharing is therefore the CONTRACT now, not the defect.
+   *
+   * The case keeps its real subject by inverting the assertion. What must not happen is an owner that
+   * appears in BOTH collections having its aggregate loaded TWICE: the loader mutates what it is handed,
+   * so a product offered once per collection came back holding FOUR SKUs instead of two. That is the
+   * defect this now fails on, and on no other.
+   */
+  it('loads a shared owner ONCE, even when it appears in both collections', async () => {
+    const { executor } = makeExecutor(productScenario());
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+    );
+
+    /*
+     * ⚠️ THE PAGE IS ASKED FOR FROM THE SECOND ROW ON PURPOSE, AND THAT IS WHAT MAKES THIS CASE MEAN
+     * ANYTHING. The builder skips the page statement and reuses the unpaged collection when the page
+     * window provably covers every row in hand — `pageRecordsStart === 1 && recordCount <= show` — and
+     * this scenario has a single product row, so a default query would take that path and hand back the
+     * SAME array for both collections — the loader would then be offered the owner ONCE and the
+     * double-append this case polices could not occur, so the case would pass while proving nothing. A
+     * start of two puts the page on its own statement, which is the situation the loader has to get
+     * right: two offers of one owner, one aggregate.
+     */
+    const result = await builder.execute({
+      entityName: 'SlatwallProduct',
+      pagination: { pageRecordsStart: 2 },
+    });
+    const fromRecords = result.records[0];
+    const fromPageRecords = result.pageRecords[0];
+
+    expect(fromRecords).toBeDefined();
+    expect(fromPageRecords).toBeDefined();
+    /* ONE instance for one row, across both result sets. The identity map's contract. */
+    expect(fromRecords).toBe(fromPageRecords);
+
+    /*
+     * ⭐ TWO, NOT FOUR. The scenario holds two SKU rows for this product, and the product was offered to
+     * the loader from the unpaged collection AND from the page. Appending per offer would double the
+     * collection while every other assertion here still passed.
+     */
+    expect(fromRecords?.getSkus()).toHaveLength(2);
+
+    /* And the SKUs are the SAME instances through either handle, since there is only one graph. */
+    const recordSkus = fromRecords?.getSkus() ?? [];
+    const pageSkus = fromPageRecords?.getSkus() ?? [];
+    expect(recordSkus).toStrictEqual(pageSkus);
+    for (const member of recordSkus) {
+      expect((member as Sku).product).toBeDefined();
+      expect((member as Sku).product).toBe(fromRecords);
+    }
+  });
+
+  it('issues ONE SKU collection statement for the whole invocation', async () => {
+    const { executor, journal } = makeExecutor(productScenario());
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+    );
+
+    await builder.execute({ entityName: 'SlatwallProduct' });
+
+    const collectionReads = journal.statements.filter((statement) =>
+      /FROM SwSku WHERE productID IN \(/.test(statement.sql),
+    );
+    /* One product named twice — once by `records`, once by `pageRecords` — is still one identifier. */
+    expect(collectionReads).toHaveLength(1);
+    expect(collectionReads[0]?.params).toEqual([ID.product]);
+  });
+
+  it('leaves a product with no SKU rows carrying an empty collection, without raising', async () => {
+    const scenario = { ...productScenario(), SwSku: [] };
+    const { executor, journal } = makeExecutor(scenario);
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+    );
+
+    const result = await builder.execute({ entityName: 'SlatwallProduct' });
+
+    expect(result.records[0]?.getSkus()).toEqual([]);
+
+    /* ⚠️ THE SLOT IS NOT EMPTY, AND THE ASSERTION THAT IT WAS DESCRIBED A DIFFERENT FIXTURE.
+     * This scenario keeps `productScenario()`'s product row — which CARRIES `defaultSkuID` — and empties
+     * `SwSku`. That is a DANGLING foreign key, not "a product with no SKUs yet"; a product with no SKUs
+     * yet has `defaultSkuID` NULL, and for that row the slot genuinely is absent.
+     *
+     * `rowMappers.ts` rule 3a fills the slot with an identifier-only REFERENCE whenever the row names
+     * one, and the loader above assigns a bound delegate only when it actually resolved a SKU — so an
+     * unresolvable identifier leaves the reference in place. That is the safe outcome and the one this
+     * suite wants: the identifier survives, so writing the product back cannot NULL the column, while
+     * every VALUE read refuses instead of answering a fabricated price. `Product.getPrice()` falls
+     * through to this delegate, so an empty slot here would let a corrupt row render as a free product.
+     */
+    const unresolved = result.records[0]?.defaultSku;
+    expect(unresolved).toBeDefined();
+    expect(readProductDefaultSkuId(unresolved ?? {})).toBe(ID.defaultSku);
+    expect(() => unresolved?.getPrice()).toThrow();
+
+    expect(journal.statements.some((statement) => statement.sql.includes('IN ()'))).toBe(false);
+  });
+
+  /* ==============================================================================================
+   * FINDING F7 — THE PRODUCT ROOT HYDRATES ITS SKUs' OPTIONS, AND MARKS ONLY THAT COLLECTION READ
+   * ==============================================================================================
+   * ⭐ WHY THE PRODUCT ROOT AND NOT THE SKU ROOT. `ProductService.getProduct` executes an identifier
+   * query against `SlatwallProduct`, so this loader is the SINGLE hydration path into every product
+   * mutation member. Two of those members read the collection this section is about:
+   * `processProductAddOption` composes its selected-option list from `existingSku.getOptions()`
+   * (`model/service/ProductService.cfc:L140-L148`), and `processProductAddOptionGroup` calls
+   * `sku.addOption(options[1])` on each existing SKU (`:L117-L121`). With the collection empty the first
+   * produced a silently wrong list and the second handed `persistSku` a one-option SKU, which replaced
+   * the link table with it and deleted the rest.
+   *
+   * ⚠️ AND THE OTHER THREE OWNED COLLECTIONS MUST STAY UNREAD, which the last case pins. No in-scope
+   * member reads them, so Hibernate never lazily loaded them on this path either — and it is precisely
+   * their UNREAD state that makes `persistSku` preserve their stored rows rather than delete them. A
+   * loader that eagerly read all four would issue three statements the legacy never issued AND would
+   * make the write side authoritative over collections nobody populated.
+   * ============================================================================================ */
+
+  /**
+   * The product scenario plus the SKU-option link and the group behind it.
+   *
+   * ⚠️ THE `SwSkuOption` ROWS CARRY THE OPTION'S OWN COLUMNS, AND THAT IS HOW A JOIN IS MODELLED HERE.
+   * `attachSkuOptions` issues the ONE joined statement in the adapter — `FROM SwSkuOption link INNER JOIN
+   * SwOption …` — and {@link makeExecutor} resolves a statement to the FIRST table its `FROM` names, then
+   * filters by the bound parameters. It does not perform joins, so the fixture row has to be the JOINED
+   * row: the link table's `skuID` plus every option column the projection selects. Splitting them into a
+   * separate `SwOption` fixture would leave the option columns unreachable and the group silently absent,
+   * which is exactly the failure this section exists to catch — so the shape is stated here rather than
+   * discovered again.
+   */
+  function optionedProductScenario(): Readonly<Record<string, readonly MySqlRow[]>> {
+    return {
+      ...productScenario(),
+      SwSkuOption: [
+        {
+          skuID: ID.sku,
+          optionID: ID.option,
+          optionCode: 'SM',
+          optionName: 'Small',
+          optionGroupID: ID.optionGroup,
+        },
+      ],
+      SwOptionGroup: [{ optionGroupID: ID.optionGroup, optionGroupName: 'Size' }],
+    };
+  }
+
+  it('attaches each SKU option WITH its option group, so the members that read through it work', async () => {
+    const { executor } = makeExecutor(optionedProductScenario());
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+    );
+
+    const result = await builder.execute({ entityName: 'SlatwallProduct' });
+    const withOption = (result.records[0]?.getSkus() ?? []).find(
+      (member) => (member as Sku).skuID === ID.sku,
+    ) as Sku | undefined;
+
+    expect(withOption?.getOptions()).toHaveLength(1);
+    expect(withOption?.getOptions()[0]?.optionID).toBe(ID.option);
+    /*
+     * THE GROUP COMES WITH IT, and that is not incidental: `Sku.generateImageFileName` reads
+     * `option.getOptionGroup().getImageGroupFlag()` (`model/entity/Sku.cfc:L134`) and
+     * `processProductAddOption` reads the group's identifier at `:L144`, so an option attached without
+     * its group would satisfy the type and then answer from a class default.
+     */
+    expect(withOption?.getOptions()[0]?.optionGroup?.optionGroupID).toBe(ID.optionGroup);
+  });
+
+  it('marks `options` authoritative for EVERY SKU in the batch, including one with no link rows', async () => {
+    const { executor } = makeExecutor(optionedProductScenario());
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+    );
+
+    const result = await builder.execute({ entityName: 'SlatwallProduct' });
+    /* `Product.getSkus()` answers `ProductSkuMember`, the narrow read surface the domain exposes; the
+     * provenance predicate takes `object`, so the members are passed through as such rather than cast to
+     * `Sku` — a cast the domain layer deliberately makes impossible (see the defaultSku delegate note). */
+    const skus: readonly object[] = result.records[0]?.getSkus() ?? [];
+
+    expect(skus).toHaveLength(2);
+    for (const member of skus) {
+      /*
+       * INCLUDING THE DEFAULT SKU, WHICH THE LINK TABLE RETURNED NOTHING FOR. The read established that
+       * it has NO options, which is a fact, and recording it is what keeps removal working: an emptied
+       * collection has to stay distinguishable from an unloaded one or `persistSku` could never clear
+       * one. Marking only the SKUs that came back with rows would silently break that.
+       */
+      expect(isSkuOwnedLinkAuthoritative(member, 'options')).toBe(true);
+    }
+  });
+
+  it('leaves the three out-of-scope owned collections UNREAD, issuing no statement for them', async () => {
+    const { executor, journal } = makeExecutor(optionedProductScenario());
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+    );
+
+    const result = await builder.execute({ entityName: 'SlatwallProduct' });
+    /* `Product.getSkus()` answers `ProductSkuMember`, the narrow read surface the domain exposes; the
+     * provenance predicate takes `object`, so the members are passed through as such rather than cast to
+     * `Sku` — a cast the domain layer deliberately makes impossible (see the defaultSku delegate note). */
+    const skus: readonly object[] = result.records[0]?.getSkus() ?? [];
+
+    for (const member of skus) {
+      for (const collection of [
+        'accessContents',
+        'subscriptionBenefits',
+        'renewalSubscriptionBenefits',
+      ] as const) {
+        expect(isSkuOwnedLinkAuthoritative(member, collection)).toBe(false);
+      }
+    }
+
+    /* And no statement went near their tables, which is the read-side half of the same claim. */
+    for (const table of ['SwSkuAccessContent', 'SwSkuSubsBenefit', 'SwSkuRenewalSubsBenefit']) {
+      expect(journal.statements.some((statement) => statement.sql.includes(table))).toBe(false);
+    }
+  });
+
+  it('issues ONE option statement for the whole page rather than one per SKU', async () => {
+    const { executor, journal } = makeExecutor(optionedProductScenario());
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+    );
+
+    await builder.execute({ entityName: 'SlatwallProduct' });
+
+    /*
+     * THE BATCHING IS THE TRANSLATION, AND IT IS WORTH PINNING. The legacy triggered one lazy load per
+     * SKU as the members above iterated; this port has no lazy proxy, so the rows are fetched
+     * deliberately — once for the page, which is the same shape `attachProductAssociations` already uses
+     * for the many-to-ones. A per-SKU loop would be the N+1 the batching exists to avoid.
+     */
+    const optionReads = journal.statements.filter((statement) =>
+      statement.sql.includes('FROM SwSkuOption'),
+    );
+    expect(optionReads).toHaveLength(1);
+    /* Both SKUs of the page are in the one predicate. */
+    expect(optionReads[0]?.params).toEqual(expect.arrayContaining([ID.sku, ID.defaultSku]));
+  });
+});
+
+describe('SmartListQueryBuilder aggregate materialization — the roots that declare no loader', () => {
+  it('hydrates a brand root with no extra statement, because Brand declares no many-to-one', async () => {
+    const { executor, journal } = makeExecutor({
+      SwBrand: [{ brandID: ID.brand, brandName: 'Nike' }],
+    });
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+    );
+
+    const result = await builder.execute({ entityName: 'SlatwallBrand' });
+
+    expect(result.records).toHaveLength(1);
+    /*
+     * TWO statements and no more, and the point of the case is the "no more". A root with nothing to
+     * resolve declares no loader — a decision per root rather than a fallback — so NO aggregate
+     * statement is issued on top of the query's own.
+     *
+     * Why two rather than three: the page statement is legitimately skipped here. This root returns a
+     * single row and the page window starts at one, so the window provably covers every row already in
+     * hand and the builder reuses the unpaged collection as the page instead of re-reading it. The count
+     * is still counted through its own dedicated statement, never inferred from the collection's length,
+     * which is the asymmetry the port's contract insists on.
+     */
+    expect(journal.statements).toHaveLength(2);
+  });
+});
+
+/*
+ * ===================================================================================================
+ * F2 — THE JOINED OPTION FETCH, ASSERTED ON ITS STATEMENT TEXT RATHER THAN ON ITS OBJECTS
+ * ===================================================================================================
+ * These cases exist because a whole class of defect was invisible to this suite. Every case above
+ * asserts on hydrated OBJECTS, and an in-memory double answers whatever shape it is asked for, so a
+ * statement no server would accept still produced a green run. `attachSkuOptions` — the port of
+ * `model/dao/SkuDAO.cfc:L157`'s `INNER JOIN FETCH sku.options`, and the only JOIN in the module — was
+ * emitting `SELECT link.skuID, optionID, …` with the option's own columns UNQUALIFIED. Both joined
+ * tables declare `optionID`, so MySQL refused the statement outright:
+ *
+ *   ER_NON_UNIQ_ERROR (1052): Column 'optionID' in field list is ambiguous
+ *
+ * That made `SkuRepository.findByProduct(product, true)` — and through it `SkuService.getProductSkus`
+ * with the fetch flag raised, an AAP 0.4.2.2 public member — non-functional against the real `Sw*`
+ * schema on EVERY invocation, while 779 tests stayed green.
+ *
+ * So these cases read the SQL rather than the objects, which is the half of the gate a suite with no
+ * database can hold. The other half was executed against MySQL 8.4.11 in a disposable schema shaped
+ * from the legacy column declarations, where the same statement failed before this fix and succeeds
+ * after it.
+ *
+ * ⚠️ THE LAST CASE IS THE ONE THAT CLOSES THE CLASS. The `*_PROJECTION` constants are shared across
+ * every loader in the module, so qualifying only the join would leave the next join to be written
+ * carrying the same fault. It asserts that NO projection this module emits is bare, wherever it
+ * appears — which is the property {@link projectionFor} now guarantees by construction.
+ *
+ * TEST PROVENANCE: every case is **NET-NEW**. AAP 0.6.5.2 records that no legacy data-access test
+ * exists for this slice.
+ */
+describe('F2 — the joined option fetch emits a statement a real server accepts', () => {
+  /**
+   * Runs the joined option fetch for two SKUs that share one option.
+   *
+   * ⚠️ THE `SwSkuOption` FIXTURE ROWS CARRY THE OPTION'S COLUMNS TOO, and that is the join being
+   * modelled rather than a fixture shortcut: the double resolves a statement to ONE table by its `FROM`
+   * clause, so for a joined read the row it returns has to be the JOINED row — the link table's `skuID`
+   * alongside the option's own columns, which is exactly what the server hands back.
+   */
+  async function fetchOptions(): Promise<{
+    readonly journal: Journal;
+    readonly skus: readonly Sku[];
+  }> {
+    const { executor, journal } = makeExecutor({
+      SwSkuOption: [
+        { skuID: ID.sku, optionID: ID.option, optionName: 'Small', optionGroupID: ID.optionGroup },
+        {
+          skuID: ID.siblingSku,
+          optionID: ID.option,
+          optionName: 'Small',
+          optionGroupID: ID.optionGroup,
+        },
+      ],
+      SwOptionGroup: [{ optionGroupID: ID.optionGroup, optionGroupCode: 'size' }],
+    });
+
+    const skus = [buildSku({ skuID: ID.sku }), buildSku({ skuID: ID.siblingSku })];
+    await attachSkuOptions(executor, skus);
+
+    return { journal, skus };
+  }
+
+  /** The one joined statement in the module, located by its `INNER JOIN` rather than by position. */
+  function joinedStatement(journal: Journal): {
+    readonly sql: string;
+    readonly params: readonly unknown[];
+  } {
+    const statement = journal.statements.find((candidate) =>
+      candidate.sql.includes('INNER JOIN SwOption'),
+    );
+    if (statement === undefined) {
+      throw new Error('the joined option fetch was never issued');
+    }
+    return statement;
+  }
+
+  /** The projected identifier list of a statement, or an empty string when it projects none. */
+  function projectionOf(sql: string): string {
+    return /^SELECT (.*?) FROM /.exec(sql)?.[1] ?? '';
+  }
+
+  it('qualifies EVERY projected column, so the field list carries no bare identifier', async () => {
+    const { journal } = await fetchOptions();
+    const projected = projectionOf(joinedStatement(journal).sql).split(', ');
+
+    /*
+     * Read off the statement rather than compared against a literal list, so the assertion stays true
+     * as the option's column set grows: `link.` is the link table's alias and `SwOption.` is the
+     * whitelisted table name, and those are the only two qualifiers this statement may carry.
+     */
+    expect(projected.length).toBeGreaterThan(1);
+    for (const column of projected) {
+      expect(column).toMatch(/^(?:link|SwOption)\.[A-Za-z]+$/);
+    }
+  });
+
+  it('never projects a bare `optionID`, the column both joined tables declare', async () => {
+    const { journal } = await fetchOptions();
+    const projection = projectionOf(joinedStatement(journal).sql);
+
+    /* The exact shape MySQL rejected: `optionID` with nothing in front of it. */
+    expect(projection.split(', ')).not.toContain('optionID');
+    expect(projection).toContain('SwOption.optionID');
+    expect(projection).toContain('link.skuID');
+  });
+
+  it('binds one placeholder per requested SKU and interpolates no value', async () => {
+    const { journal } = await fetchOptions();
+    const statement = joinedStatement(journal);
+
+    /* TR-4 — placeholder count equals parameter count, and every value travels as a parameter. */
+    expect((statement.sql.match(/\?/g) ?? []).length).toBe(statement.params.length);
+    expect(statement.params).toEqual([ID.sku, ID.siblingSku]);
+    expect(statement.sql).not.toContain(ID.sku);
+    expect(statement.sql).not.toContain(ID.siblingSku);
+    expect(statement.sql).not.toContain("'");
+  });
+
+  it('hydrates the options AND their groups onto every SKU that owns them', async () => {
+    const { skus } = await fetchOptions();
+
+    expect(skus).toHaveLength(2);
+    for (const sku of skus) {
+      expect(sku.options).toHaveLength(1);
+      /* The group comes with the option because the members that matter read through it:
+       * `Sku.generateImageFileName` reads `option.getOptionGroup().getImageGroupFlag()`
+       * [model/entity/Sku.cfc:L134]. */
+      expect(sku.options[0]?.optionGroup?.optionGroupCode).toBe('size');
+    }
+  });
+
+  it('qualifies the single-table loaders too, so no shared projection is a join hazard', async () => {
+    const { executor, journal } = makeExecutor({
+      SwProduct: [
+        {
+          productID: ID.product,
+          productName: 'Feed Product',
+          productTypeID: ID.productType,
+          brandID: ID.brand,
+          defaultSkuID: ID.defaultSku,
+        },
+      ],
+      SwProductType: [{ productTypeID: ID.productType, productTypeName: 'Merchandise' }],
+      SwBrand: [{ brandID: ID.brand, brandName: 'Nike' }],
+      SwSku: [
+        { skuID: ID.defaultSku, skuCode: 'SKU-DEFAULT', price: '99.00', productID: ID.product },
+      ],
+    });
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+    );
+
+    await builder.execute({ entityName: 'SlatwallProduct' });
+
+    /*
+     * The product root exercises four of the module's five projection constants in one pass. The
+     * builder's own record statement projects the base alias with a star and the count statement
+     * projects an aggregate, so neither names a column and both are excluded — what remains is exactly
+     * the loader statements, every one of which must qualify.
+     */
+    const projections = journal.statements
+      .map((statement) => projectionOf(statement.sql))
+      .filter((projection) => projection !== '' && !projection.includes('*'))
+      .filter((projection) => !projection.includes('recordsCount'));
+
+    expect(projections.length).toBeGreaterThan(0);
+    for (const projection of projections) {
+      for (const column of projection.split(', ')) {
+        expect(column).toMatch(/^[A-Za-z]+\.[A-Za-z]+$/);
+      }
+    }
+  });
+});
+
+/* =================================================================================================
+ * RELATIONSHIP HYDRATION REACHED THROUGH THE SYNTHESIZED SERVICE MEMBERS — REVIEW FINDING 15
+ * -------------------------------------------------------------------------------------------------
+ * RESTORED COVERAGE. Four hydration/identity-map cases were dropped when the suite was reorganised and
+ * the review found no replacement for them. They are restored here because this file owns hydration;
+ * the eight builder cases dropped alongside them are restored in
+ * `test/adapters/SmartListQueryBuilder.test.ts`.
+ *
+ * WHY THEY ARE NOT COVERED BY THE `DATA-02` BLOCK ABOVE. That block drives `builder.execute()` directly
+ * and asserts the INJECTED loader for the option root. These four enter through
+ * `OptionService.getOption`, `getOptionGroup` and `getOptionSmartList` — synthesized CRUD members
+ * (AAP §0.1.1.3 IR-1) with no declaration anywhere in the legacy source — and they exercise the
+ * builder's OWN built-in relationship pass, which is a different mechanism reached by a different code
+ * path. `createCatalogAggregateLoaders` declares `SlatwallOptionGroup: undefined` deliberately, so the
+ * option-group root's `options` collection is loaded by `hydrateOptionGroupOptions` and by nothing in
+ * this file's other blocks. Two of the four assert the INVERSE direction and the identity map, neither
+ * of which appears anywhere above.
+ *
+ * ⚠️ NO SMART-LIST DOUBLE IS USED, AND THAT IS THE POINT. A double can model correct relationships while
+ * the production adapter does not, and would then report success no matter what the adapter did. A REAL
+ * {@link SmartListQueryBuilder} is constructed over a one-method executor, so production statement
+ * composition, production row mappers and the production hydrator all run. The executor routes on the
+ * owner-key alias — a projection only an association statement carries — so the routing itself is what
+ * asserts that a SECOND statement was issued at all.
+ * ================================================================================================*/
+
+describe('OptionService relationship hydration through the real builder (finding 15)', () => {
+  const OPTION_GROUP_ROW = Object.freeze({
+    optionGroupID: ID.optionGroup,
+    optionGroupName: 'Size',
+    optionGroupCode: 'size',
+    imageGroupFlag: 1,
+    sortOrder: 1,
+  });
+
+  /** The option repository is genuinely unreached by these members, so it refuses rather than pretends. */
+  const UNREACHED_OPTION_REPOSITORY = {
+    findUnusedOptions: (): never => {
+      throw new Error('the option repository is not reached by a synthesized get member');
+    },
+    findUnusedOptionGroups: (): never => {
+      throw new Error('the option repository is not reached by a synthesized get member');
+    },
+  } as unknown as ConstructorParameters<typeof OptionService>[0];
+
+  /**
+   * Routes statements by SHAPE, because the two roots these cases exercise are hydrated by two DIFFERENT
+   * mechanisms and a fixture that conflated them would prove nothing about either.
+   *
+   * ⭐ THIS IS THE ONE PLACE THE RESTORED CASES HAD TO BE ADAPTED TO THE CURRENT API SURFACE, so it is
+   * worth naming precisely. When these cases were originally written, BOTH roots went through the
+   * builder's built-in relationship pass, and one route on the owner-key alias served both. Today:
+   *
+   *   • `SlatwallOption` is hydrated by the INJECTED loader `loadOptionAggregates`, which collects the
+   *     `optionGroupID` foreign key off the option rows and issues
+   *     `SELECT … FROM SwOptionGroup WHERE optionGroupID IN (…)` — no owner-key alias anywhere.
+   *   • `SlatwallOptionGroup` declares `undefined` in `createCatalogAggregateLoaders`, so its `options`
+   *     collection is loaded by the builder's own `hydrateOptionGroupOptions`, whose statement DOES
+   *     project `smartListAssociationOwnerKey`.
+   *
+   * Both are still a SECOND statement issued to resolve a relationship the row mapper left absent, which
+   * is what the restored cases assert; only the statement's shape differs. Routing on both shapes keeps
+   * every original assertion intact instead of weakening one to fit the other.
+   */
+  function makeService(spec: {
+    readonly entityRows: readonly MySqlRow[];
+    /** Answers the built-in pass — the OptionGroup root's `options` collection. */
+    readonly associationRows?: readonly MySqlRow[];
+    /** Answers the injected loader's foreign-key lookup — the Option root's `optionGroup`. */
+    readonly optionGroupRows?: readonly MySqlRow[];
+  }): { readonly service: OptionService; readonly statements: string[] } {
+    const statements: string[] = [];
+    const executor: SqlExecutor = {
+      execute: (sql: string): Promise<MySqlRow[]> => {
+        statements.push(sql);
+        if (sql.includes('smartListAssociationOwnerKey')) {
+          return Promise.resolve([...(spec.associationRows ?? [])]);
+        }
+        if (sql.includes('recordsCount')) {
+          return Promise.resolve([{ recordsCount: spec.entityRows.length }]);
+        }
+        /* The injected loader's lookup. The ` IN (` test is what separates it from the OptionGroup root's
+         * own BASE record statement, which also reads `FROM SwOptionGroup` but carries no WHERE clause —
+         * without that test, case three's base statement would be answered with group-association rows. */
+        if (/FROM SwOptionGroup\b/.test(sql) && sql.includes(' IN (')) {
+          return Promise.resolve([...(spec.optionGroupRows ?? [])]);
+        }
+        return Promise.resolve([...spec.entityRows]);
+      },
+    };
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+    );
+
+    return { service: new OptionService(UNREACHED_OPTION_REPOSITORY, builder), statements };
+  }
+
+  /** The second statement, whichever mechanism issued it. */
+  function issuedARelationshipStatement(statements: readonly string[]): boolean {
+    return statements.some(
+      (sql) =>
+        sql.includes('smartListAssociationOwnerKey') ||
+        (/FROM SwOptionGroup\b/.test(sql) && sql.includes(' IN (')),
+    );
+  }
+
+  it('getOption hydrates optionGroup, and a SECOND statement is issued to do it', async () => {
+    const { service, statements } = makeService({
+      entityRows: [
+        {
+          optionID: ID.option,
+          optionName: 'Small',
+          optionCode: 'sm',
+          sortOrder: 1,
+          optionGroupID: ID.optionGroup,
+        },
+      ],
+      optionGroupRows: [{ ...OPTION_GROUP_ROW }],
+    });
+
+    const option = await service.getOption(ID.option);
+
+    /* `model/entity/Option.cfc:L59` declares the relationship, and `rowMappers.ts` RULE 3 deliberately
+     * leaves it unresolved — so without the hydration pass this is `undefined` and every merchandise SKU
+     * creation carrying options raises at `requireOptionGroupID`. */
+    expect(option?.optionGroup).toBeDefined();
+    expect(option?.optionGroup?.optionGroupID).toBe(ID.optionGroup);
+    expect(option?.optionGroup?.optionGroupName).toBe('Size');
+    /* The chain `Sku.hasOneOptionPerOptionGroup` walks — `model/entity/Sku.cfc:L772-L784`. The port reads
+     * the FIELD rather than an accessor, because `Option` declares `setOptionGroup` and no getter: the
+     * CFML accessor is one the ORM synthesizes. */
+    expect(issuedARelationshipStatement(statements)).toBe(true);
+    /* And it really is a SECOND statement, not the base one doing double duty. */
+    expect(statements.length).toBeGreaterThan(1);
+  });
+
+  it('a NULL foreign key leaves optionGroup ABSENT rather than stubbed', async () => {
+    /* `SwOption.optionGroupID` carries no `notnull` in the mapping, so a row with no value is possible.
+     * RULE 3 forbids a stub precisely because `option.getOptionGroup().getImageGroupFlag()` would read a
+     * CLASS DEFAULT off one — the association must be absent, not an object answering `false`.
+     *
+     * ⭐ THE COLUMN IS OMITTED ENTIRELY HERE, which is a different input from the empty string the
+     * `DATA-02` block above exercises. An INNER join returns no row for either, so both must reach the
+     * same absent outcome by the same path — and asserting only one of the two would leave the other
+     * free to start stubbing. */
+    const { service, statements } = makeService({
+      entityRows: [{ optionID: ID.option, optionName: 'Small', optionCode: 'sm', sortOrder: 1 }],
+    });
+
+    const option = await service.getOption(ID.option);
+
+    expect(option).not.toBeNull();
+    /* No key was collected, so no lookup was even attempted — the absence costs nothing. */
+    expect(issuedARelationshipStatement(statements)).toBe(false);
+    expect(option?.optionGroup).toBeUndefined();
+  });
+
+  it("getOptionGroup hydrates options in the declared sortOrder, and sets each option's group back", async () => {
+    /* `model/entity/OptionGroup.cfc:L70` declares `orderby="sortOrder"`, so ORDER IS BEHAVIOUR here —
+     * unlike `Sku.options`, which declares no `orderby` at all. The statement asks the database for that
+     * order, so the rows arrive in it; this asserts the collection preserves what it was given. */
+    const { service } = makeService({
+      entityRows: [{ ...OPTION_GROUP_ROW }],
+      associationRows: [
+        {
+          smartListAssociationOwnerKey: ID.optionGroup,
+          optionID: 'ffffffff000000000000000000000011',
+          optionName: 'Small',
+          optionCode: 'sm',
+          sortOrder: 1,
+        },
+        {
+          smartListAssociationOwnerKey: ID.optionGroup,
+          optionID: 'ffffffff000000000000000000000012',
+          optionName: 'Medium',
+          optionCode: 'md',
+          sortOrder: 2,
+        },
+      ],
+    });
+
+    const group = await service.getOptionGroup(ID.optionGroup);
+
+    /* The D14 site indexes `options[1]` — `model/service/ProductService.cfc:L115-L119`. With an empty
+     * collection that carried-over defect is not even reproducible, which is why this assertion is on the
+     * ORDER and not merely on the length. */
+    expect(group?.options.map((option) => option.optionID)).toEqual([
+      'ffffffff000000000000000000000011',
+      'ffffffff000000000000000000000012',
+    ]);
+    /* Both directions consistent, as one Hibernate session would give — and BY REFERENCE, so what is
+     * asserted is the identity map rather than a value copy. */
+    expect(group?.options[0]?.optionGroup).toBe(group);
+    expect(group?.options[1]?.optionGroup).toBe(group);
+  });
+
+  it('two options of one group share ONE OptionGroup instance (the identity map)', async () => {
+    /* One instance per identifier per read is what a single Hibernate session gives, and it is what makes
+     * `===` between two references to the same row meaningful. Two separate instances would also mean the
+     * row had been managed twice, which installs a FRESH error bag and discards anything already
+     * accumulated on it. */
+    const { service } = makeService({
+      entityRows: [
+        {
+          optionID: ID.option,
+          optionName: 'Small',
+          optionCode: 'sm',
+          sortOrder: 1,
+          optionGroupID: ID.optionGroup,
+        },
+        {
+          optionID: 'ffffffff000000000000000000000002',
+          optionName: 'Medium',
+          optionCode: 'md',
+          sortOrder: 2,
+          optionGroupID: ID.optionGroup,
+        },
+      ],
+      /* ONE group row for TWO options, which is what makes the identity assertion meaningful: the loader
+       * de-duplicates the foreign keys into a single `IN (…)` lookup and must hand both options the same
+       * instance built from that one row. */
+      optionGroupRows: [{ ...OPTION_GROUP_ROW }],
+    });
+
+    const result = await service.getOptionSmartList();
+
+    expect(result.records).toHaveLength(2);
+    const [first, second] = result.records;
+    expect(first?.optionGroup).toBeDefined();
+    expect(first?.optionGroup).toBe(second?.optionGroup);
+  });
+});
+
+/* ================================================================================================
+ * PRODUCT WRITE SURFACE — cases merged from MySqlProductPersistence.test.ts
+ * ------------------------------------------------------------------------------------------------
+ * Merged in from `test/adapters/MySqlProductPersistence.test.ts` when review finding F5 folded that file's SUBJECT into
+ * `src/adapters/mysql/MySqlProductRepository.ts` and `src/adapters/mysql/SmartListQueryBuilder.ts`.
+ * Every case is carried across unchanged; only four local identifiers were renamed to avoid a
+ * collision with declarations already in this file — `matching` -> `persistenceMatching`,
+ * `makeExecutor` -> `makePersistenceExecutor`, `Journal` -> `PersistenceJournal` and `ID` ->
+ * `PERSISTENCE_ID`.
+ *
+ * THE ORIGINAL MODULE HEADER FOLLOWS, VERBATIM:
+
+ * Product and product-type persistence — DATA-03.
+ *
+ * AAP authority: AAP 0.4.4 authorises `slatwall-ts/test/**` | CREATE. This file covers the persistence
+ * adapter — which now lives in the folded persistence section of
+ * `src/adapters/mysql/MySqlProductRepository.ts`, AAP §0.3.1 enumerating no separate module for it — and the
+ * four `src/services/ProductService.ts` seams it fills.
+ *
+ * =================================================================================================
+ * WHAT THESE CASES PROVE
+ * =================================================================================================
+ * The reported finding had two halves, and they failed for unrelated reasons:
+ *
+ *   READ  — `ProductService.getProduct` answered a product with no `productType`, no `defaultSku`, no
+ *           `brand` and no `skus`, because the smart-list builder projects `<baseAlias>.*` and
+ *           `rowMappers.ts` RULE 3 leaves every many-to-one GENUINELY ABSENT by design.
+ *   WRITE — the service declares `persistProduct` plus two composed base services and implements every
+ *           member against them, but NOTHING in `src/` supplied a production implementation of any of
+ *           the four capabilities behind them. A composition root could not have wired a working
+ *           product flow without inventing SQL at the wiring site.
+ *
+ * The read half is now closed by the aggregate-loader section of `src/adapters/mysql/SmartListQueryBuilder.ts`; the cases at the end of
+ * this file assert it THROUGH the real service rather than through the builder alone, because
+ * "`getProduct` returns a scalar Product" is a statement about the service's answer.
+ *
+ * The write half is closed by the adapter under test. The statement-level cases assert what reaches the
+ * driver; the seam cases assert that a real `ProductService` wired to the real adapter actually writes.
+ *
+ * ⚠️ THE ASSIGNABILITY OF ALL FOUR MEMBERS IS PROVEN HERE RATHER THAN IN THE ADAPTER. The adapter does
+ * not import `EntityPersister` or `EntityRemover`, because an adapter that reached up into the service
+ * layer's type surface would invert the dependency direction the hexagonal separation exists to fix
+ * (AAP §0.7.3 S4). A test file is under no such constraint, so the four bindings below are where a
+ * signature drift becomes a compile error.
+ *
+ * NO DATABASE. A recording executor double answers each statement by shape, which is how the sibling
+ * adapter suites work and what AAP 0.7.3 standard 6 requires here: no CFML runtime exists and the `Sw*`
+ * tables are absent from this repository.
+ *
+ * TEST PROVENANCE: every case is **NET-NEW**. AAP 0.6.5.2 records that no `ProductServiceTest` exists
+ * and that no data-access test exists for this slice at all. `meta/tests/unit/IssuesTest.cfc:L51-L71`
+ * (`issue_1097`) populates, saves and deletes a product with a nested product-type struct and is
+ * TRACEABLE for the BEHAVIOUR these cases assert, but it asserts no statement, because no legacy
+ * statement for either table exists — both entities were saved and deleted through the surface
+ * `org/Hibachi/HibachiService.cfc:L255-L281` fabricated by prefix (IR-1).
+ * ============================================================================================== */
+/**
+ * A collaborator this scenario never reaches needs no behaviour, and giving it one would suggest the
+ * case depends on it. Same discipline as `test/services/SkuService.test.ts`.
+ */
+const UNREACHED_COLLABORATOR = {} as never;
+
+/** Distinct 32-character identifiers, so a crossed binding is visible rather than coincidental. */
+const PERSISTENCE_ID = {
+  product: 'aaaaaaaa000000000000000000000001',
+  /* A SECOND product, so an inheritance case can assert collection ORDER rather than membership. */
+  otherProduct: 'aaaaaaaa000000000000000000000002',
+  productType: 'bbbbbbbb000000000000000000000001',
+  parentProductType: 'bbbbbbbb000000000000000000000002',
+  brand: 'cccccccc000000000000000000000001',
+  defaultSku: 'dddddddd000000000000000000000001',
+  otherSku: 'dddddddd000000000000000000000002',
+} as const;
+
+/**
+ * The URL-title availability probe, shared by every scenario that constructs a service.
+ *
+ * Declared once at module level because it holds no per-case state worth isolating: nothing below seeds
+ * a collision, so every candidate is reported available and the derivation terminates on its first
+ * attempt.
+ */
+const urlTitleProbe = createUrlTitleAvailabilityDouble();
+
+/** One statement, as the driver saw it. */
+interface Statement {
+  readonly sql: string;
+  readonly params: readonly unknown[];
+}
+
+/** The recorded journal plus the executor that fills it. */
+interface PersistenceJournal {
+  readonly statements: Statement[];
+}
+
+/**
+ * A recording executor.
+ *
+ * `execute` answers with whatever rows the caller seeded for the table the statement reads, and
+ * `executeMutation` answers with a configurable affected-row count — configurable BECAUSE the update
+ * path must be shown not to read it.
+ */
+function makePersistenceExecutor(
+  rowsByTable: Readonly<Record<string, readonly MySqlRow[]>> = {},
+  affectedRows = 1,
+): { readonly executor: ProductPersistenceExecutor; readonly journal: PersistenceJournal } {
+  const journal: PersistenceJournal = { statements: [] };
+
+  const executor: ProductPersistenceExecutor = {
+    execute: (sql: string, params: readonly unknown[]): Promise<MySqlRow[]> => {
+      journal.statements.push({ sql, params: [...params] });
+
+      const table = Object.keys(rowsByTable).find((name) =>
+        new RegExp(`FROM ${name}\\b`).test(sql),
+      );
+
+      return Promise.resolve(table === undefined ? [] : [...(rowsByTable[table] ?? [])]);
+    },
+    executeMutation: (sql: string, params: readonly unknown[]): Promise<number> => {
+      journal.statements.push({ sql, params: [...params] });
+      return Promise.resolve(affectedRows);
+    },
+  };
+
+  return { executor, journal };
+}
+
+/** A cleanup collaborator that records the identifiers it was asked to clear. */
+function makeCleanup(): {
+  readonly cleanup: ProductDependencyCleanup;
+  readonly productIds: string[];
+  readonly productTypeIds: string[];
+} {
+  const productIds: string[] = [];
+  const productTypeIds: string[] = [];
+
+  return {
+    productIds,
+    productTypeIds,
+    cleanup: {
+      removeProductDependencies: (productID: string): Promise<void> => {
+        productIds.push(productID);
+        return Promise.resolve();
+      },
+      removeProductTypeDependencies: (productTypeID: string): Promise<void> => {
+        productTypeIds.push(productTypeID);
+        return Promise.resolve();
+      },
+    },
+  };
+}
+
+/**
+ * Reads the identifier of a default-SKU delegate.
+ *
+ * The delegate in these cases is a wrapper closing over a `Sku`, exactly as `src/domain/sku/Sku.ts`
+ * records: `Sku` is DELIBERATELY not assignable to `ProductDefaultSkuDelegate`, so the value in
+ * `Product.defaultSku` is never the entity itself and an `instanceof Sku` test against it is false.
+ */
+function makeDefaultSkuDelegate(skuID: string): {
+  readonly delegate: ProductDefaultSkuDelegate;
+  readonly skuID: string;
+} {
+  return {
+    skuID,
+    delegate: {
+      getCurrencyCode: (): string | undefined => undefined,
+      getPrice: (): ExactDecimal | undefined => undefined,
+      getRenewalPrice: (): ExactDecimal | undefined => undefined,
+      getListPrice: (): ExactDecimal | undefined => undefined,
+      getImageDirectory: (): string => '',
+      getImagePath: (): string => '',
+      getImage: (): string => '',
+      getResizedImagePath: (): string => '',
+      getImageExistsFlag: (): boolean => false,
+    },
+  };
+}
+
+/** The delegate-to-identifier map these cases inject, keyed by delegate object identity. */
+function makeDefaultSkuIdReader(): {
+  readonly read: (defaultSku: object) => string;
+  register(delegate: ProductDefaultSkuDelegate, skuID: string): void;
+} {
+  const identifiers = new Map<object, string>();
+
+  return {
+    register: (delegate: ProductDefaultSkuDelegate, skuID: string): void => {
+      identifiers.set(delegate, skuID);
+    },
+    read: (defaultSku: object): string => identifiers.get(defaultSku) ?? '',
+  };
+}
+
+/** The adapter under test, with everything it needs recorded. */
+function makeAdapter(
+  rowsByTable: Readonly<Record<string, readonly MySqlRow[]>> = {},
+  affectedRows = 1,
+): {
+  readonly adapter: MySqlProductPersistence;
+  readonly journal: PersistenceJournal;
+  readonly cleanup: ReturnType<typeof makeCleanup>;
+  readonly defaultSkuIds: ReturnType<typeof makeDefaultSkuIdReader>;
+} {
+  const { executor, journal } = makePersistenceExecutor(rowsByTable, affectedRows);
+  const cleanup = makeCleanup();
+  const defaultSkuIds = makeDefaultSkuIdReader();
+
+  return {
+    journal,
+    cleanup,
+    defaultSkuIds,
+    adapter: new MySqlProductPersistence(executor, cleanup.cleanup, defaultSkuIds.read),
+  };
+}
+
+/** A saved product carrying all three of its many-to-one associations. */
+function savedProduct(): Product {
+  const product = new Product();
+  product.productID = PERSISTENCE_ID.product;
+  product.productName = 'Feed Product';
+  product.productCode = 'FP-1';
+  product.urlTitle = 'feed-product';
+  product.activeFlag = true;
+  product.publishedFlag = true;
+
+  const brand = new Brand();
+  brand.brandID = PERSISTENCE_ID.brand;
+  product.brand = brand;
+
+  const productType = new ProductType();
+  productType.productTypeID = PERSISTENCE_ID.productType;
+  product.productType = productType;
+
+  return product;
+}
+
+/** A saved product type carrying its self-referencing parent. */
+function savedProductType(): ProductType {
+  const productType = new ProductType();
+  productType.productTypeID = PERSISTENCE_ID.productType;
+  productType.productTypeName = 'Merchandise';
+  productType.urlTitle = 'merchandise';
+  productType.productTypeIDPath = `${PERSISTENCE_ID.parentProductType},${PERSISTENCE_ID.productType}`;
+
+  const parent = new ProductType();
+  parent.productTypeID = PERSISTENCE_ID.parentProductType;
+  productType.parentProductType = parent;
+
+  return productType;
+}
+
+/** Every statement whose text matches, in journal order. */
+function persistenceMatching(journal: PersistenceJournal, pattern: RegExp): readonly Statement[] {
+  return journal.statements.filter((statement) => pattern.test(statement.sql));
+}
+
+/* =================================================================================================
+ * THE `SwProduct` WRITE PATH
+ * ============================================================================================== */
+
+describe('MySqlProductPersistence — the SwProduct write path (DATA-03)', () => {
+  it('NET-NEW — a transient product is INSERTed with a freshly minted 32-character identifier', async () => {
+    const { adapter, journal } = makeAdapter();
+    const product = new Product();
+    product.productName = 'New Product';
+
+    // `model/entity/Product.cfc:L52` declares `unsavedvalue=""`, which is what `isNew()` tests.
+    expect(product.isNew()).toBe(true);
+
+    await adapter.saveProduct(product);
+
+    // IR-6: 32 lowercase hexadecimal characters, no dashes, never an auto-increment.
+    expect(product.productID).toMatch(/^[0-9a-f]{32}$/);
+    expect(product.isNew()).toBe(false);
+
+    const inserts = persistenceMatching(journal, /^INSERT INTO SwProduct/);
+    expect(inserts).toHaveLength(1);
+    // The identifier is bound FIRST, persistenceMatching the column list's own ordering.
+    expect(inserts[0]?.params[0]).toBe(product.productID);
+  });
+
+  it('NET-NEW — the insert names every SwProduct column and binds one value per column', async () => {
+    const { adapter, journal } = makeAdapter();
+
+    await adapter.saveProduct(new Product());
+
+    const insert = persistenceMatching(journal, /^INSERT INTO SwProduct/)[0];
+    const columnList = /\(([^)]*)\) VALUES/.exec(insert?.sql ?? '')?.[1] ?? '';
+    const columns = columnList.split(', ');
+
+    // Twenty columns: the primary key plus the nineteen writable ones. `model/entity/Product.cfc`
+    // declares eight scalars (:L52-L59), four persisted calculated columns (:L62-L65), three
+    // many-to-one foreign keys (:L68-L70), a remote identifier (:L93) and four audit members
+    // (:L96-L99). Its twenty NON-persistent properties (:L102-L123) are not columns and are absent.
+    expect(columns).toHaveLength(20);
+    expect(columns).toContain('productID');
+    expect(columns).toContain('calculatedTitle');
+    expect(columns).toContain('brandID');
+    expect(columns).toContain('productTypeID');
+    expect(columns).toContain('defaultSkuID');
+    // The crossed audit pairing: the COLUMNS carry the `PERSISTENCE_ID` suffix, the fields do not.
+    expect(columns).toContain('createdByAccountID');
+    expect(columns).toContain('modifiedByAccountID');
+    // A non-persistent property must never appear as a column.
+    expect(columns).not.toContain('price');
+    expect(columns).not.toContain('optionGroups');
+
+    expect(insert?.params).toHaveLength(columns.length);
+  });
+
+  it('NET-NEW — the three foreign keys come from the ASSOCIATION OBJECTS, not from scalars', async () => {
+    // "Preserve association identity" in practice: `rowMappers.ts` RULE 3 leaves every many-to-one
+    // absent, so there is no `product.brandID` field anywhere in the domain to copy out. A stale
+    // scalar cannot drift out of step with the graph because no stale scalar exists.
+    const { adapter, journal, defaultSkuIds } = makeAdapter();
+    const product = savedProduct();
+    const { delegate } = makeDefaultSkuDelegate(PERSISTENCE_ID.defaultSku);
+    product.defaultSku = delegate;
+    defaultSkuIds.register(delegate, PERSISTENCE_ID.defaultSku);
+
+    await adapter.saveProduct(product);
+
+    const update = persistenceMatching(journal, /^UPDATE SwProduct SET/)[0];
+    expect(update?.params).toContain(PERSISTENCE_ID.brand);
+    expect(update?.params).toContain(PERSISTENCE_ID.productType);
+    // The default SKU arrives through the INJECTED READER, because the delegate exposes no
+    // identifier accessor — `src/domain/sku/Sku.ts` mismatch M-ii.
+    expect(update?.params).toContain(PERSISTENCE_ID.defaultSku);
+  });
+
+  it('NET-NEW — a saved product is UPDATEd with the primary key bound LAST and no identifier minted', async () => {
+    const { adapter, journal } = makeAdapter();
+    const product = savedProduct();
+
+    await adapter.saveProduct(product);
+
+    // The identity is the entity's own answer, not a probe's: no existence read is issued.
+    expect(persistenceMatching(journal, /^SELECT/)).toHaveLength(0);
+    expect(product.productID).toBe(PERSISTENCE_ID.product);
+
+    const updates = persistenceMatching(journal, /^UPDATE SwProduct SET/);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]?.sql).toContain('WHERE productID = ?');
+    // Nineteen assignments plus the key: the key is the LAST bound value, persistenceMatching its position in
+    // the statement text.
+    expect(updates[0]?.params).toHaveLength(20);
+    expect(updates[0]?.params[19]).toBe(PERSISTENCE_ID.product);
+  });
+
+  it('NET-NEW — the update path does NOT read the affected-row count', async () => {
+    // Measured against MySQL 8.4.11 through mysql2 3.23.2: re-saving unchanged data reports 1 with
+    // `CLIENT_FOUND_ROWS` and 0 without, and `src/config/database.ts` pins no capability flags. So a
+    // zero count must NOT be treated as a failure — otherwise correctness would depend on an
+    // unpinned connection negotiation detail.
+    const { adapter } = makeAdapter({}, 0);
+    const product = savedProduct();
+
+    await expect(adapter.saveProduct(product)).resolves.toBe(product);
+  });
+
+  it('NET-NEW — an absent field binds as SQL null rather than being omitted', async () => {
+    // The domain expresses a legacy null by the ABSENCE of a property. A bind position cannot express
+    // absence, so the translation happens exactly at this seam and nowhere earlier. Omitting the
+    // column instead would let the database apply a default, which is a different outcome.
+    const { adapter, journal } = makeAdapter();
+    const product = new Product();
+    product.productName = 'Sparse';
+
+    await adapter.saveProduct(product);
+
+    const insert = persistenceMatching(journal, /^INSERT INTO SwProduct/)[0];
+    expect(insert?.params).toContain(null);
+    expect(insert?.params).toContain('Sparse');
+    // Absence never reaches the driver as `undefined`.
+    expect(insert?.params).not.toContain(undefined);
+  });
+
+  it('NET-NEW — no value is ever interpolated into statement text', async () => {
+    // The structural reason the D18 class of flaw cannot occur here: the statement text is a function
+    // of the whitelist alone.
+    const { adapter, journal } = makeAdapter();
+    const product = savedProduct();
+    product.productName = "Bobby'); DROP TABLE SwProduct;--";
+
+    await adapter.saveProduct(product);
+
+    for (const statement of journal.statements) {
+      expect(statement.sql).not.toContain('DROP TABLE');
+      expect(statement.sql).not.toContain('Bobby');
+    }
+  });
+});
+
+/* =================================================================================================
+ * THE `SwProductType` WRITE PATH
+ * ============================================================================================== */
+
+describe('MySqlProductPersistence — the SwProductType write path (DATA-03)', () => {
+  it('NET-NEW — a transient product type is INSERTed with a minted identifier and all fourteen columns', async () => {
+    const { adapter, journal } = makeAdapter();
+    const productType = new ProductType();
+    productType.productTypeName = 'Merchandise';
+
+    await adapter.saveProductType(productType);
+
+    expect(productType.productTypeID).toMatch(/^[0-9a-f]{32}$/);
+
+    const insert = persistenceMatching(journal, /^INSERT INTO SwProductType/)[0];
+    const columns = (/\(([^)]*)\) VALUES/.exec(insert?.sql ?? '')?.[1] ?? '').split(', ');
+
+    // Fourteen: eight scalars (`model/entity/ProductType.cfc:L52-L59`), the self-referencing foreign
+    // key (:L62), a remote identifier (:L80) and four audit members (:L83-L86).
+    expect(columns).toHaveLength(14);
+    expect(columns).toContain('productTypeID');
+    expect(columns).toContain('productTypeIDPath');
+    expect(columns).toContain('systemCode');
+    expect(columns).toContain('parentProductTypeID');
+    expect(insert?.params).toHaveLength(14);
+  });
+
+  it('NET-NEW — the parent key comes from the self-referencing association object', async () => {
+    const { adapter, journal } = makeAdapter();
+
+    await adapter.saveProductType(savedProductType());
+
+    const update = persistenceMatching(journal, /^UPDATE SwProductType SET/)[0];
+    expect(update?.sql).toContain('WHERE productTypeID = ?');
+    expect(update?.params).toContain(PERSISTENCE_ID.parentProductType);
+    // The key is bound last; the parent key is one of the thirteen assignments before it.
+    expect(update?.params[13]).toBe(PERSISTENCE_ID.productType);
+  });
+
+  it('NET-NEW — productTypeIDPath is written as held and is NOT derived at this boundary', async () => {
+    // `model/entity/ProductType.cfc:L53` declares it a plain persistent column and
+    // `model/service/ProductService.cfc:L294-L310` never recomputes it on save. Deriving it here
+    // would add behaviour the legacy save path does not have (AAP §0.7.3 S9).
+    const { adapter, journal } = makeAdapter();
+    const productType = savedProductType();
+    const held = productType.productTypeIDPath;
+
+    await adapter.saveProductType(productType);
+
+    expect(productType.productTypeIDPath).toBe(held);
+    expect(persistenceMatching(journal, /^UPDATE SwProductType SET/)[0]?.params[0]).toBe(held);
+  });
+});
+
+/* =================================================================================================
+ * THE PRODUCT-TYPE PARENT ROUND TRIP — RULE 3b
+ * ================================================================================================
+ * ⭐ WHY THIS SECTION EXISTS. `./rowMappers.ts` deliberately does NOT resolve
+ * `ProductType.parentProductType` when it hydrates a row, because an identifier-only parent would make
+ * `ProductType.getSimpleRepresentation` (`src/domain/product/ProductType.ts:1153`) return `undefined`
+ * as soon as it reached the parent's absent name, and that value renders the Google feed's
+ * `g:product_type` element — so a reference would turn `Parent &raquo; Child` into an EMPTY element,
+ * a reference that lies.
+ *
+ * An earlier revision stopped there, and the consequence was silent data loss: both write paths ended
+ * their parent-key expression at `?? null`, so READING a child and SAVING it back wrote `NULL` into
+ * `parentProductTypeID` and DETACHED the child from its parent. Rule 3b closes that by preserving the
+ * row's raw key beside the entity — object-keyed, so nothing leaks across warm invocations (M7) —
+ * without populating the association. These cases prove the round trip on both write paths, and prove
+ * that an explicit detach still reaches `NULL`.
+ *
+ * The parent-key column is assignment index 7 of thirteen and the primary key is bound last at index
+ * 13; `PRODUCT_TYPE_WRITABLE_COLUMNS` in `src/adapters/mysql/MySqlProductTypeRepository.ts:320-341`
+ * fixes that order against `model/entity/ProductType.cfc:L53-L86`.
+ * ============================================================================================== */
+
+describe('MySqlProductPersistence / MySqlProductTypeRepository — the parent round trip (rule 3b)', () => {
+  /** Assignment index of `parentProductTypeID` among the thirteen writable columns. */
+  const PARENT_KEY_INDEX = 7;
+  /** Assignment index of `productTypeIDPath` — the first writable column. */
+  const PATH_INDEX = 0;
+
+  /**
+   * A child product type as it arrives FROM THE DATABASE: hydrated from a driver row, carrying a real
+   * `parentProductTypeID` column and NO resolved association.
+   *
+   * ⚠️ THE ROW IS WHAT `mysql2` HANDS BACK, NOT WHAT THE SEED DOCUMENT RENDERS. A root's parent column
+   * arrives as JS `null`, because `model/dao/DataDAO.cfc:L71-L72` and `:L104-L105` both test the seed
+   * document's `"NULL"` string and bind `<cfqueryparam ... null="yes">` instead. The four-character
+   * string therefore never reaches a row, and no production mapper compares against it.
+   */
+  function hydratedChild(): ProductType {
+    return mapProductTypeRow({
+      productTypeID: PERSISTENCE_ID.productType,
+      productTypeIDPath: `${PERSISTENCE_ID.parentProductType},${PERSISTENCE_ID.productType}`,
+      parentProductTypeID: PERSISTENCE_ID.parentProductType,
+      productTypeName: 'Merchandise',
+      urlTitle: 'merchandise',
+      activeFlag: 1,
+    });
+  }
+
+  /** The tree repository over the recording seam, so its own read and write paths can be observed. */
+  function makeTreeRepository(rowsByTable: Readonly<Record<string, readonly MySqlRow[]>> = {}): {
+    readonly repository: MySqlProductTypeRepository;
+    readonly journal: PersistenceJournal;
+  } {
+    const { executor, journal } = makePersistenceExecutor(rowsByTable, 1);
+
+    return {
+      journal,
+      repository: new MySqlProductTypeRepository(
+        executor,
+        createAccountContextDouble().accountContext,
+      ),
+    };
+  }
+
+  it('NET-NEW — hydration leaves the association absent so the feed cannot be handed a lying reference', () => {
+    const child = hydratedChild();
+
+    /* The association stays unresolved — this is the deliberate half of rule 3a. */
+    expect(child.parentProductType).toBeUndefined();
+    /* And the row's own ancestry path is preserved verbatim, naming a parent the association omits. */
+    expect(child.productTypeIDPath).toBe(
+      `${PERSISTENCE_ID.parentProductType},${PERSISTENCE_ID.productType}`,
+    );
+  });
+
+  it('NET-NEW — read-modify-save through MySqlProductPersistence preserves the parent key and the path', async () => {
+    const { adapter, journal } = makeAdapter();
+    const child = hydratedChild();
+
+    /* The "modify" of read-modify-save: a field a caller would plausibly edit. */
+    child.productTypeName = 'Merchandise Renamed';
+
+    await adapter.saveProductType(child);
+
+    const update = persistenceMatching(journal, /^UPDATE SwProductType SET/)[0];
+
+    /* ⭐ THE REGRESSION THIS SECTION EXISTS FOR: this bound `null` before rule 3b. */
+    expect(update?.params[PARENT_KEY_INDEX]).toBe(PERSISTENCE_ID.parentProductType);
+    expect(update?.params[PARENT_KEY_INDEX]).not.toBeNull();
+    /* The ancestry path survives intact, so the row stays internally consistent. */
+    expect(update?.params[PATH_INDEX]).toBe(
+      `${PERSISTENCE_ID.parentProductType},${PERSISTENCE_ID.productType}`,
+    );
+    expect(update?.params[13]).toBe(PERSISTENCE_ID.productType);
+  });
+
+  it('NET-NEW — read-modify-save through MySqlProductTypeRepository preserves the parent key and does NOT flatten the path', async () => {
+    /*
+     * ⚠️ THIS PATH ALSO RUNS THE LIFECYCLE HOOK, WHICH IS WHY IT NEEDS ITS OWN CASE.
+     * `MySqlProductTypeRepository.saveProductType` invokes `ProductType.preUpdate`, porting
+     * `model/entity/ProductType.cfc:L311`, and that hook REBUILDS `productTypeIDPath` by walking
+     * `parentProductType` to the root. With the association deliberately unresolved the walk finds
+     * nothing and would yield the child's own identifier alone — flattening the ancestry and leaving a
+     * row whose preserved parent key contradicts its path. `ProductType.getBaseProductType` reads
+     * `listFirst` of this path to find the root, so a flattened path silently changes a product's
+     * discriminator. The capture-and-restore guard puts the database's own value back.
+     */
+    const { repository, journal } = makeTreeRepository();
+    const child = hydratedChild();
+
+    await repository.saveProductType(child);
+
+    const update = persistenceMatching(journal, /^UPDATE SwProductType SET/)[0];
+
+    expect(update?.params[PARENT_KEY_INDEX]).toBe(PERSISTENCE_ID.parentProductType);
+    /* NOT the flattened `PERSISTENCE_ID.productType` the unguarded rebuild would have produced. */
+    expect(update?.params[PATH_INDEX]).toBe(
+      `${PERSISTENCE_ID.parentProductType},${PERSISTENCE_ID.productType}`,
+    );
+    expect(update?.params[PATH_INDEX]).not.toBe(PERSISTENCE_ID.productType);
+  });
+
+  it('NET-NEW — the FULL round trip through the real read member survives: findAllForTree then saveProductType', async () => {
+    /*
+     * ⭐⭐ THIS IS THE CASE THE REVIEW ASKED FOR, END TO END, WITH NO HAND-BUILT ENTITY ANYWHERE.
+     * Every case above hydrates through `mapProductTypeRow` directly. This one goes through the actual
+     * port member `findAllForTree()` — the read the finding cites — takes the entity it returns, and
+     * hands that same entity to the write member. Nothing in between is constructed by the test.
+     *
+     * It also pins a mechanism detail worth pinning: `mapProductTypeTreeRow` builds its row by calling
+     * `mapProductTypeRow` and then `Object.assign`ing the two counts onto THE SAME OBJECT, so the
+     * object-keyed rule 3b entry recorded during hydration is still keyed to the entity that comes back
+     * out. Had the tree mapper spread into a fresh object instead, the preserved key would have been
+     * silently orphaned and this assertion would fail while every other case here still passed.
+     */
+    const { repository, journal } = makeTreeRepository({
+      SwProductType: [
+        {
+          productTypeID: PERSISTENCE_ID.productType,
+          productTypeIDPath: `${PERSISTENCE_ID.parentProductType},${PERSISTENCE_ID.productType}`,
+          parentProductTypeID: PERSISTENCE_ID.parentProductType,
+          productTypeName: 'Merchandise',
+          urlTitle: 'merchandise',
+          activeFlag: 1,
+          isAssigned: 0,
+          childCount: 0,
+        },
+      ],
+    });
+
+    const [readBack] = await repository.findAllForTree();
+    if (readBack === undefined) {
+      throw new Error('expected exactly one product type row');
+    }
+
+    /* Read as the tree member presents it: counts attached, association still unresolved. */
+    expect(readBack.productTypeID).toBe(PERSISTENCE_ID.productType);
+    expect(readBack.parentProductType).toBeUndefined();
+
+    await repository.saveProductType(readBack);
+
+    const update = persistenceMatching(journal, /^UPDATE SwProductType SET/)[0];
+    expect(update?.params[PARENT_KEY_INDEX]).toBe(PERSISTENCE_ID.parentProductType);
+    expect(update?.params[PATH_INDEX]).toBe(
+      `${PERSISTENCE_ID.parentProductType},${PERSISTENCE_ID.productType}`,
+    );
+    expect(update?.params[13]).toBe(PERSISTENCE_ID.productType);
+  });
+
+  it('NET-NEW — a resolved association still wins over the preserved key', async () => {
+    /*
+     * The association comes first in the expression, mirroring the mapping declaration at
+     * `model/entity/ProductType.cfc:L62`. Re-parenting therefore behaves exactly as before rule 3b:
+     * the preserved key is a FALLBACK, never an override.
+     */
+    const { adapter, journal } = makeAdapter();
+    const child = hydratedChild();
+
+    const newParent = new ProductType();
+    newParent.productTypeID = PERSISTENCE_ID.brand; // any identifier distinct from the hydrated one
+    child.parentProductType = newParent;
+
+    await adapter.saveProductType(child);
+
+    const update = persistenceMatching(journal, /^UPDATE SwProductType SET/)[0];
+    expect(update?.params[PARENT_KEY_INDEX]).toBe(PERSISTENCE_ID.brand);
+    expect(update?.params[PARENT_KEY_INDEX]).not.toBe(PERSISTENCE_ID.parentProductType);
+  });
+
+  it('NET-NEW — an explicit detach writes NULL, so rule 3b cannot resurrect a removed parent', async () => {
+    /*
+     * ⭐ THE ESCAPE HATCH IS PART OF THE CONTRACT. Preserving the key would be a trap if there were no
+     * way to say "this child genuinely has no parent now", because `removeParentProductType` clears the
+     * association and the preserved key would silently put the old parent back. A caller that means to
+     * detach calls `forgetHydratedParentProductTypeID` first.
+     */
+    const { adapter, journal } = makeAdapter();
+    const child = hydratedChild();
+
+    forgetHydratedParentProductTypeID(child);
+
+    await adapter.saveProductType(child);
+
+    const update = persistenceMatching(journal, /^UPDATE SwProductType SET/)[0];
+    expect(update?.params[PARENT_KEY_INDEX]).toBeNull();
+  });
+
+  it('NET-NEW — a genuine root records no key and still writes NULL', async () => {
+    /*
+     * The three seeded discriminators are roots: `config/dbdata/SlatwallProductType.xml.cfm:L13-L15`
+     * gives each a `productTypeIDPath` equal to its own identifier and no parent. The driver hands the
+     * parent column back as `null`, `readOptionalString` maps that to `undefined`, and rule 3b records
+     * nothing — so the column is nulled because there is genuinely no parent, not because the key was
+     * lost.
+     */
+    const { adapter, journal } = makeAdapter();
+    const root = mapProductTypeRow({
+      productTypeID: PERSISTENCE_ID.productType,
+      productTypeIDPath: PERSISTENCE_ID.productType,
+      parentProductTypeID: null,
+      productTypeName: 'Merchandise',
+      systemCode: 'merchandise',
+      urlTitle: 'merchandise',
+      activeFlag: 1,
+    });
+
+    await adapter.saveProductType(root);
+
+    const update = persistenceMatching(journal, /^UPDATE SwProductType SET/)[0];
+    expect(update?.params[PARENT_KEY_INDEX]).toBeNull();
+    expect(update?.params[PATH_INDEX]).toBe(PERSISTENCE_ID.productType);
+  });
+});
+
+/* =================================================================================================
+ * THE PRODUCT REMOVAL PATH
+ * ============================================================================================== */
+
+describe('MySqlProductPersistence — the product removal path (DATA-03)', () => {
+  /** A product whose two SKU rows the cascade will find. */
+  function productWithSkus(): Readonly<Record<string, readonly MySqlRow[]>> {
+    return { SwSku: [{ skuID: PERSISTENCE_ID.defaultSku }, { skuID: PERSISTENCE_ID.otherSku }] };
+  }
+
+  it('NET-NEW — the six steps run in the legacy order, with the SKU cascade before the product row', async () => {
+    const { adapter, journal, cleanup } = makeAdapter(productWithSkus());
+
+    await adapter.deleteProduct(savedProduct());
+
+    const shapes = journal.statements.map((statement) =>
+      statement.sql.replace(/\s+/g, ' ').slice(0, 46),
+    );
+
+    // Step 2 first: the self-reference must be broken before either row can go.
+    expect(shapes[0]).toContain('UPDATE SwProduct SET defaultSkuID = NULL');
+    // Step 4 next — step 3 is the collaborator, which issues no statement of its own here.
+    expect(shapes[1]).toContain('DELETE FROM SwRelatedProduct');
+    // Step 5: read the identifiers, clear the four link tables, then the SKU rows.
+    expect(shapes[2]).toContain('SELECT skuID FROM SwSku');
+    expect(shapes[3]).toContain('DELETE FROM SwSkuOption');
+    expect(shapes[4]).toContain('DELETE FROM SwSkuAccessContent');
+    expect(shapes[5]).toContain('DELETE FROM SwSkuSubsBenefit');
+    expect(shapes[6]).toContain('DELETE FROM SwSkuRenewalSubsBenefit');
+    expect(shapes[7]).toContain('DELETE FROM SwSku WHERE');
+    // Step 6 last.
+    expect(shapes[8]).toContain('DELETE FROM SwProduct WHERE');
+    expect(shapes).toHaveLength(9);
+
+    // Step 3 ran, and ran BEFORE the product row went — `org/Hibachi/HibachiService.cfc:L61`
+    // precedes `:L64`.
+    expect(cleanup.productIds).toEqual([PERSISTENCE_ID.product]);
+  });
+
+  it('NET-NEW — all FOUR SKU link tables are cleared, not just the option one', async () => {
+    // Leaving three out would leave orphan link rows pointing at a `skuID` that no longer exists,
+    // which no error anywhere would report. `model/entity/Sku.cfc:L76-L79` declares all four.
+    const { adapter, journal } = makeAdapter(productWithSkus());
+
+    await adapter.deleteProduct(savedProduct());
+
+    for (const table of [
+      'SwSkuOption',
+      'SwSkuAccessContent',
+      'SwSkuSubsBenefit',
+      'SwSkuRenewalSubsBenefit',
+    ]) {
+      const statements = persistenceMatching(
+        journal,
+        new RegExp(`^DELETE FROM ${table} WHERE skuID IN`),
+      );
+      expect(statements).toHaveLength(1);
+      // One placeholder per identifier, each value bound rather than interpolated.
+      expect(statements[0]?.sql).toContain('IN (?, ?)');
+      expect(statements[0]?.params).toEqual([PERSISTENCE_ID.defaultSku, PERSISTENCE_ID.otherSku]);
+    }
+  });
+
+  it('NET-NEW — SwRelatedProduct is cleared on the OWNER side only', async () => {
+    // `model/entity/Product.cfc:L81` carries NO `inverse="true"`, so this product owns the rows whose
+    // `productID` is its own and does not own the rows whose `relatedProductID` is.
+    // `org/Hibachi/HibachiEntity.cfc:L277` iterates only this entity's own collection, so the legacy
+    // left the reverse rows too. Widening the predicate would remove rows the legacy keeps.
+    const { adapter, journal } = makeAdapter(productWithSkus());
+
+    await adapter.deleteProduct(savedProduct());
+
+    const statements = persistenceMatching(journal, /^DELETE FROM SwRelatedProduct/);
+    expect(statements).toHaveLength(1);
+    expect(statements[0]?.sql).toContain('WHERE productID = ?');
+    expect(statements[0]?.sql).not.toContain('relatedProductID');
+    expect(statements[0]?.params).toEqual([PERSISTENCE_ID.product]);
+  });
+
+  it('NET-NEW — a product with no SKUs issues no SKU statement at all', async () => {
+    // An empty identifier list would compose `IN ()`, which is a syntax error rather than an empty
+    // match — the same rule `the aggregate-loader section of SmartListQueryBuilder.ts` records for its loaders.
+    const { adapter, journal } = makeAdapter({ SwSku: [] });
+
+    await adapter.deleteProduct(savedProduct());
+
+    expect(persistenceMatching(journal, /IN \(\)/)).toHaveLength(0);
+    expect(persistenceMatching(journal, /^DELETE FROM SwSku\b/)).toHaveLength(0);
+    expect(persistenceMatching(journal, /^DELETE FROM SwSkuOption/)).toHaveLength(0);
+    // The product itself still goes.
+    expect(persistenceMatching(journal, /^DELETE FROM SwProduct WHERE/)).toHaveLength(1);
+  });
+
+  it('NET-NEW — a transient product is refused and NOTHING is issued', async () => {
+    // Every statement would be keyed on `''`, a predicate that matches nothing in a sound table and
+    // an arbitrary row in an unsound one. The mapping layer would have raised on the same input.
+    const { adapter, journal, cleanup } = makeAdapter();
+
+    await expect(adapter.deleteProduct(new Product())).rejects.toBeInstanceOf(DataIntegrityError);
+
+    expect(journal.statements).toHaveLength(0);
+    expect(cleanup.productIds).toHaveLength(0);
+  });
+
+  it('NET-NEW — a SKU row with an unusable identifier is refused rather than skipped', async () => {
+    // Skipping it would leave that SKU's link rows behind AND then fail the product removal on a
+    // foreign-key constraint, with nothing anywhere naming the cause.
+    const { adapter } = makeAdapter({ SwSku: [{ skuID: 42 }] });
+
+    await expect(adapter.deleteProduct(savedProduct())).rejects.toBeInstanceOf(DataIntegrityError);
+  });
+});
+
+/* =================================================================================================
+ * THE PRODUCT-TYPE REMOVAL PATH
+ * ============================================================================================== */
+
+describe('MySqlProductPersistence — the product-type removal path (DATA-03)', () => {
+  it('NET-NEW — the excluded-family rows are cleared before the product-type row', async () => {
+    const { adapter, journal, cleanup } = makeAdapter();
+
+    await adapter.deleteProductType(savedProductType());
+
+    expect(cleanup.productTypeIds).toEqual([PERSISTENCE_ID.productType]);
+    const statements = persistenceMatching(journal, /^DELETE FROM SwProductType/);
+    expect(statements).toHaveLength(1);
+    expect(statements[0]?.params).toEqual([PERSISTENCE_ID.productType]);
+  });
+
+  it('NET-NEW — no cascade is attempted over products or child product types', async () => {
+    // Not an omission: `model/validation/ProductType.json` bounds BOTH at `maxCollection 0` for the
+    // delete context, so a product type carrying either is refused before any removal is attempted
+    // and the `cascade="all"` at `model/entity/ProductType.cfc:L65-L66` is unreachable. Implementing
+    // it would add behaviour the legacy cannot reach.
+    const { adapter, journal } = makeAdapter();
+
+    await adapter.deleteProductType(savedProductType());
+
+    expect(persistenceMatching(journal, /DELETE FROM SwProduct\b/)).toHaveLength(0);
+    expect(persistenceMatching(journal, /parentProductTypeID/)).toHaveLength(0);
+    expect(journal.statements).toHaveLength(1);
+  });
+
+  it('NET-NEW — a transient product type is refused and NOTHING is issued', async () => {
+    const { adapter, journal, cleanup } = makeAdapter();
+
+    await expect(adapter.deleteProductType(new ProductType())).rejects.toBeInstanceOf(
+      DataIntegrityError,
+    );
+
+    expect(journal.statements).toHaveLength(0);
+    expect(cleanup.productTypeIds).toHaveLength(0);
+  });
+});
+
+/* =================================================================================================
+ * THE FOUR SEAMS — THE FINDING'S ACTUAL CLAIM
+ * ============================================================================================== */
+
+/* ================================================================================================
+ * F8 — THE PRODUCT DELETE GUARD, RESOLVED ON THE DELETE BOUNDARY'S OWN EXECUTOR
+ *
+ * `model/validation/Product.json:L12` guards the delete context with `transactionExistsFlag eq false`,
+ * and `model/entity/Product.cfc:L667-L673` answers that property by DELEGATING to
+ * `model/service/SkuService.cfc:L285`, which issues the ten-disjunct existence query at
+ * `model/dao/SkuDAO.cfc:L53-L98`. In the legacy the property was a live read at validation time.
+ *
+ * `BaseService` has always had the seam for that — `resolveDeleteSubject`, invoked immediately BEFORE
+ * `validator.validate` — but neither production graph supplied one for `Product`. The consequence was
+ * NOT that the guard leaked: `eq` is one of only two constraints that FAIL on an absent value
+ * [`org/Hibachi/HibachiValidationService.cfc:L387-L391`], so an unresolved flag made the guard refuse
+ * EVERY product delete, including of products with no transaction history at all. Both halves are
+ * asserted below, and the third case pins the defect itself so a silent un-wiring cannot return.
+ *
+ * ⚠️ ONE EXECUTOR SERVES BOTH THE PROBE AND THE DELETE, and that is the point rather than a
+ * convenience of the harness. M6 requires the guard to read on the same connection the DELETE will
+ * write on; the container builds the resolver from the graph-matching repository for exactly that
+ * reason, and the ordering assertion below is what proves the read precedes the write.
+ * ============================================================================================== */
+describe('F8 — the Product delete guard resolves against a live transaction-existence query', () => {
+  /** The alias `MySqlSkuRepository.transactionExists` projects its scalar verdict under. */
+  const VERDICT_ALIAS = 'transactionExists';
+
+  /**
+   * The container's `productBaseService` delete path, rebuilt over ONE recording executor.
+   *
+   * Every collaborator that decides an outcome is the REAL one: the real `MySqlSkuRepository` composes
+   * and issues the existence query, the real `Validator` runs the real `productValidationRuleSet`
+   * delete context over its answer, and the real `MySqlProductPersistence` performs the removal. Only
+   * the executor is a double, and it records rather than decides.
+   */
+  function makeGuardedDeleteHarness(options: {
+    readonly transactionExists: boolean;
+    /** Omitting the resolver reproduces the defect this finding reported. */
+    readonly wireResolver?: boolean;
+  }): {
+    readonly service: BaseService<Product, ProductPropertyName>;
+    readonly statements: { sql: string; params: readonly unknown[] }[];
+  } {
+    const statements: { sql: string; params: readonly unknown[] }[] = [];
+    const cleanupSeams = createBaseServicePersistenceDouble<Product>().seams;
+
+    const record = (sql: string, params: readonly unknown[]): void => {
+      statements.push({ sql: sql.replace(/\s+/g, ' ').trim(), params: [...params] });
+    };
+
+    const executor = {
+      execute: (sql: string, params: readonly unknown[]): Promise<MySqlRow[]> => {
+        record(sql, params);
+
+        /* The scalar existence verdict, in the driver's own shape: `SELECT EXISTS(...)` answers one
+         * row carrying 1 or 0, and `:L93-L97` reads zero as false and anything else as true. */
+        if (sql.includes(`AS ${VERDICT_ALIAS}`)) {
+          return Promise.resolve([{ [VERDICT_ALIAS]: options.transactionExists ? 1 : 0 }]);
+        }
+
+        /* The cascade's identifier read finds no SKU rows; this product has none. */
+        return Promise.resolve([]);
+      },
+      executeMutation: (sql: string, params: readonly unknown[]): Promise<number> => {
+        record(sql, params);
+        return Promise.resolve(1);
+      },
+    };
+
+    const skuRepository = new MySqlSkuRepository(
+      executor,
+      createOptionGroupSortOrderMemo(),
+      (() => undefined) as never,
+      createAccountContextDouble().accountContext,
+    );
+
+    const persistence = new MySqlProductPersistence(
+      executor,
+      makeCleanup().cleanup,
+      makeDefaultSkuIdReader().read,
+    );
+
+    /* ⭐ THE CONTAINER'S CLOSURE, VERBATIM. `src/config/container.ts` builds this from
+     * `createTransactionExistenceChecker` and returns the same instance, because
+     * `Product.getTransactionExistsFlag` memoizes its answer onto the entity. */
+    const resolveDeleteSubject = async (product: Product): Promise<Product> => {
+      await product.getTransactionExistsFlag(createTransactionExistenceChecker(skuRepository));
+      return product;
+    };
+
+    const service = new BaseService<Product, ProductPropertyName>({
+      validator: new Validator(createUniquePropertyDouble().uniqueProperty),
+      ruleSet: productValidationRuleSet,
+      propertyDescriptors: PRODUCT_PROPERTY_DESCRIPTORS,
+      populationAuthorization: createPopulationAuthorizationDouble().populationAuthorization,
+      persist: (product: Product) => persistence.saveProduct(product),
+      remove: async (product: Product): Promise<void> => {
+        await persistence.deleteProduct(product);
+      },
+      /* Both run only INSIDE the `if(deleteOK)` gate [`model/service/HibachiService.cfc:L76`, `:L79`],
+       * so the refusal cases never reach them and the success case only needs them to resolve. The
+       * shared double supplies the full four-member surface rather than a partial literal. */
+      settingCleanup: cleanupSeams.settingCleanup,
+      commentCleanup: cleanupSeams.commentCleanup,
+      ...(options.wireResolver === false ? {} : { resolveDeleteSubject }),
+    });
+
+    return { service, statements };
+  }
+
+  /**
+   * A product as a ROW produces it, which is the state the defect was invisible in.
+   *
+   * Hand-built products in other suites carry whatever the case assigns, so a case could set
+   * `transactionExistsFlag` itself and the missing resolver would never show. `mapProductRow` assigns
+   * it NOWHERE — it is a non-persistent calculated property with no column — so a hydrated product
+   * reaches validation with the slot absent unless something resolves it.
+   */
+  function hydratedProduct(): Product {
+    return mapProductRow({
+      productID: PERSISTENCE_ID.product,
+      productName: 'Feed Product',
+      productCode: 'FP-1',
+      urlTitle: 'feed-product',
+      activeFlag: 1,
+      publishedFlag: 1,
+    });
+  }
+
+  it('NET-NEW — a product WITH transaction history is refused, and no row is deleted', async () => {
+    const { service, statements } = makeGuardedDeleteHarness({ transactionExists: true });
+    const product = hydratedProduct();
+
+    // `org/Hibachi/HibachiService.cfc:L79` — a refused delete answers false rather than throwing.
+    await expect(service.delete(product)).resolves.toBe(false);
+
+    // The guard READ, and the read carried the product identifier in slot one.
+    const probes = statements.filter((statement) => statement.sql.includes(`AS ${VERDICT_ALIAS}`));
+    expect(probes).toHaveLength(1);
+    expect(probes[0]?.params).toStrictEqual([PERSISTENCE_ID.product]);
+
+    // ⚠️ AND NOTHING WAS WRITTEN. This is the assertion the finding turns on: a guard that resolves
+    // but does not stop the write would leave orphan transaction history behind.
+    expect(statements.filter((statement) => /^DELETE|^UPDATE/.test(statement.sql))).toStrictEqual(
+      [],
+    );
+
+    // The resolved verdict is on the entity, where the rule read it.
+    expect(product.transactionExistsFlag).toBe(true);
+  });
+
+  it('NET-NEW — a product with NO transaction history still deletes (the half the defect broke)', async () => {
+    const { service, statements } = makeGuardedDeleteHarness({ transactionExists: false });
+    const product = hydratedProduct();
+
+    await expect(service.delete(product)).resolves.toBe(true);
+
+    expect(product.transactionExistsFlag).toBe(false);
+    expect(statements.some((statement) => /^DELETE FROM SwProduct WHERE/.test(statement.sql))).toBe(
+      true,
+    );
+  });
+
+  it('NET-NEW — the probe runs BEFORE any write, on the SAME executor (M6)', async () => {
+    // One recorder for both, so the ordering assertion is meaningful: a resolver reading on its own
+    // connection could observe a state the DELETE's transaction never sees.
+    const { service, statements } = makeGuardedDeleteHarness({ transactionExists: false });
+
+    await service.delete(hydratedProduct());
+
+    const probeIndex = statements.findIndex((statement) =>
+      statement.sql.includes(`AS ${VERDICT_ALIAS}`),
+    );
+    const firstWriteIndex = statements.findIndex((statement) =>
+      /^DELETE|^UPDATE/.test(statement.sql),
+    );
+
+    expect(probeIndex).toBe(0);
+    expect(firstWriteIndex).toBeGreaterThan(probeIndex);
+  });
+
+  it('NET-NEW — WITHOUT the resolver the guard refuses EVERY delete, history or not (the defect)', async () => {
+    // ⚠️ THE DEFECT, PINNED. `eq` fails on an absent value, so an unresolved flag is not a lenient
+    // guard — it is a total one. Both graphs shipped in exactly this state.
+    const { service, statements } = makeGuardedDeleteHarness({
+      transactionExists: false,
+      wireResolver: false,
+    });
+    const product = hydratedProduct();
+
+    await expect(service.delete(product)).resolves.toBe(false);
+
+    // No probe was issued at all, which is what made the refusal silent.
+    expect(statements).toStrictEqual([]);
+    expect(product.transactionExistsFlag).toBeUndefined();
+  });
+});
+
+describe('the four ProductService seams the adapter fills (DATA-03)', () => {
+  it('NET-NEW — all four members satisfy the service layer\u2019s persister and remover contracts', () => {
+    // ⚠️ THIS IS A COMPILE-TIME ASSERTION WEARING A RUNTIME COAT. The adapter deliberately does not
+    // import these two function types (S4 — an adapter must not reach up into the service layer), so
+    // the assignability is unproven inside it. Binding all four here makes a signature drift a
+    // compile error in this suite rather than a run-time surprise at the wiring site.
+    const { adapter } = makeAdapter();
+
+    const persistProduct: EntityPersister<Product> = (product) => adapter.saveProduct(product);
+    const removeProduct: EntityRemover<Product> = (product) => adapter.deleteProduct(product);
+    const persistProductType: EntityPersister<ProductType> = (productType) =>
+      adapter.saveProductType(productType);
+    const removeProductType: EntityRemover<ProductType> = (productType) =>
+      adapter.deleteProductType(productType);
+
+    expect([persistProduct, removeProduct, persistProductType, removeProductType]).toHaveLength(4);
+  });
+
+  /**
+   * A real `ProductService` wired to the real adapter for exactly the seams a scenario reaches.
+   *
+   * Everything else is `UNREACHED_COLLABORATOR`: `getProduct` touches only the query port, and the
+   * three write members below touch only the collaborators named here. A collaborator that is never
+   * called needs no behaviour, and giving it one would suggest these cases depend on it.
+   */
+  function makeService(
+    adapter: MySqlProductPersistence,
+    smartListQueryPort: ProductService['smartListQueryPort'] = UNREACHED_COLLABORATOR,
+  ): ProductService {
+    return new ProductService({
+      productRepository: UNREACHED_COLLABORATOR,
+      skuRepository: UNREACHED_COLLABORATOR,
+      skuService: UNREACHED_COLLABORATOR,
+      optionService: UNREACHED_COLLABORATOR,
+      /* `ProductBaseService` is `Pick<BaseService<Product, …>, 'delete'>`. The real base service's
+       * delete runs the delete-context rules and then its `remove` collaborator; what matters to
+       * DATA-03 is that the collaborator it would call is the real adapter, so the seam is exercised
+       * with the real statements rather than with a recorder. */
+      baseService: {
+        delete: async (product: Product): Promise<boolean> => {
+          await adapter.deleteProduct(product);
+          return true;
+        },
+      },
+      /* `ProductTypeBaseService` is `Pick<BaseService<ProductType, …>, 'save'>`, whose contract
+       * populates, validates and then persists. The persistence step is the real adapter. */
+      productTypeBaseService: {
+        /* ⚠️ TYPED OVER `ManagedEntity<ProductType>`, NOT OVER A BARE `ProductType`, AND THE REASON IS
+         * F22 ON `src/domain/product/ProductType.ts`. `BaseService.save` is declared over the managed
+         * form, and this entity DELIBERATELY does not declare the seven managed-entity members as class
+         * methods — `manageEntity` attaches them, which is what `rowMappers.ts` already does to every
+         * hydrated product type. A bare `ProductType` is therefore NOT assignable to the slot, and
+         * widening the double here is the honest fix rather than reinstating methods the domain module
+         * decided against. `MySqlProductPersistence.saveProductType` returns THE SAME INSTANCE on both
+         * of its branches, so forwarding the argument back preserves the identity the contract promises
+         * while keeping the managed type. */
+        save: async (
+          productType: ManagedEntity<ProductType>,
+          data?: Record<string, unknown>,
+        ): Promise<ManagedEntity<ProductType>> => {
+          const urlTitle = data?.['urlTitle'];
+          if (typeof urlTitle === 'string') {
+            productType.urlTitle = urlTitle;
+          }
+          await adapter.saveProductType(productType);
+          return productType;
+        },
+      },
+      validator: {
+        validate: () => Promise.resolve({ getErrors: () => ({}) }),
+        validateProcess: UNREACHED_COLLABORATOR,
+      } as never,
+      settings: createSettingResolverDouble({ fallback: '' }).resolver,
+      accountContext: createAccountContextDouble().accountContext,
+      smartListQueryPort,
+      subscriptionTermPort: UNREACHED_COLLABORATOR,
+      productTypeRootResolver: (() => undefined) as never,
+      productPropertyDescriptors: PRODUCT_PROPERTY_DESCRIPTORS,
+      populationAuthorization: createPopulationAuthorizationDouble().populationAuthorization,
+      /* `UniqueValueProbe` takes the table name as a plain string, exactly as
+       * `model/service/DataService.cfc:L53` declares `createUniqueURLTitle(titleString, tableName)`.
+       * The double's own probe narrows that first parameter to its table union, so it is adapted here
+       * rather than the utility's contract being widened. */
+      isUrlTitleAvailable: (tableName: string, value: string): Promise<boolean> =>
+        urlTitleProbe.probe.isUrlTitleAvailable(tableName as UrlTitleTableName, value),
+      persistProduct: (product: Product) => adapter.saveProduct(product),
+      /* Reached only by `requireDefaultSkuEntity`, which only the subscription-term process member
+       * calls. Made LOUD rather than plausible: a reader answering `''` would let a case pass while
+       * silently resolving the wrong SKU. */
+      defaultSkuIdReader: (): string => {
+        throw new Error('defaultSkuIdReader is not reached by these cases.');
+      },
+      /*
+       * F10 — THE REAL HYDRATION READER, NOT A STUB. It answers `undefined` for a hand-built product
+       * type, because nothing wrote a preserved parent key beside one — which is precisely what
+       * production does for a hand-built entity too. Using the real member keeps these cases honest:
+       * they exercise the same branch production takes, and a case that WANTS the inheritance load
+       * hydrates its product type through `mapProductTypeRow` so the reader answers a real key.
+       */
+      parentProductTypeIdReader: readHydratedParentProductTypeID,
+    });
+  }
+
+  it('NET-NEW — ProductService.saveProduct now reaches SwProduct through the real persister', async () => {
+    // The finding, restated: before this adapter existed, `persistProduct` had no production
+    // implementation, so this path could not write anything at all.
+    const { adapter, journal } = makeAdapter();
+    const service = makeService(adapter);
+    const product = savedProduct();
+
+    const saved = await service.saveProduct(product, { productName: 'Renamed' });
+
+    expect(saved).toBe(product);
+    expect(persistenceMatching(journal, /^UPDATE SwProduct SET/)).toHaveLength(1);
+    // Population ran first, so the payload's value is what reached the driver.
+    expect(persistenceMatching(journal, /^UPDATE SwProduct SET/)[0]?.params).toContain('Renamed');
+  });
+
+  it('NET-NEW — ProductService.deleteProduct now removes the rows through the real remover', async () => {
+    const { adapter, journal } = makeAdapter({ SwSku: [{ skuID: PERSISTENCE_ID.defaultSku }] });
+    const service = makeService(adapter);
+    const product = savedProduct();
+    const { delegate } = makeDefaultSkuDelegate(PERSISTENCE_ID.defaultSku);
+    product.defaultSku = delegate;
+
+    await expect(service.deleteProduct(product)).resolves.toBe(true);
+
+    // `:L323` clears the relationship in memory; the adapter's step 2 is what makes the stored
+    // column agree, because this port has no flush.
+    expect(product.defaultSku).toBeUndefined();
+    expect(persistenceMatching(journal, /^UPDATE SwProduct SET defaultSkuID = NULL/)).toHaveLength(
+      1,
+    );
+    expect(persistenceMatching(journal, /^DELETE FROM SwProduct WHERE/)).toHaveLength(1);
+    expect(persistenceMatching(journal, /^DELETE FROM SwSku WHERE/)).toHaveLength(1);
+  });
+
+  it('NET-NEW — ProductService.saveProductType now reaches SwProductType through the real persister', async () => {
+    const { adapter, journal } = makeAdapter();
+    const service = makeService(adapter);
+    const productType = new ProductType();
+
+    await service.saveProductType(productType, { productTypeName: 'Merchandise' });
+
+    // A transient type takes the insert path and is minted here and only here.
+    expect(productType.productTypeID).toMatch(/^[0-9a-f]{32}$/);
+    expect(persistenceMatching(journal, /^INSERT INTO SwProductType/)).toHaveLength(1);
+    // `:L297` writes the derived title INTO THE PAYLOAD, and it only reaches the entity because the
+    // base service populates from that same struct.
+    expect(persistenceMatching(journal, /^INSERT INTO SwProductType/)[0]?.params).toContain(
+      'merchandise',
+    );
+  });
+});
+
+/* =================================================================================================
+ * F10 — THE PARENT-PRODUCT-TYPE INHERITANCE, ON A PRODUCT TYPE THAT CAME FROM A ROW
+ *
+ * `model/service/ProductService.cfc:L306-L308` re-parents the parent's products onto the child:
+ *
+ *     if(!arguments.productType.hasErrors() && !isNull(arguments.productType.getParentProductType())
+ *        && arrayLen(arguments.productType.getParentProductType().getProducts()))
+ *         arguments.productType.setProducts( arguments.productType.getParentProductType().getProducts() );
+ *
+ * In the legacy BOTH hops were lazy Hibernate loads, so `getParentProductType()` materialised the parent
+ * and `getProducts()` materialised its collection.
+ *
+ * ⚠️ IN THIS PORT NEITHER HOP EXISTED, AND THE BRANCH WAS UNREACHABLE FROM A ROW. `mapProductTypeRow`
+ * leaves the `parentProductType` ASSOCIATION ABSENT by design (rule 3b — attaching an identifier-only
+ * parent would empty the feed's `g:product_type`, whose simple representation walks the chain) and
+ * records the row's foreign key beside the instance instead. `SlatwallProductType` declares no aggregate
+ * loader, so nothing filled the slot afterwards either. Every product a re-parenting was supposed to
+ * inherit stayed on its old type, and the member returned successfully — the same shape of silent
+ * omission F09 found one line further down, at the write.
+ *
+ * These cases drive the member with a product type hydrated by the REAL mapper, which is the only state
+ * the defect was observable in.
+ * ============================================================================================== */
+
+describe('F10 — a hydrated product type inherits its parent’s products', () => {
+  /** The parent's two products, in the order the query answers them. */
+  const PARENT_PRODUCT_ROWS: readonly MySqlRow[] = Object.freeze([
+    Object.freeze({
+      productID: PERSISTENCE_ID.product,
+      productName: 'Inherited One',
+      productCode: 'IP-1',
+      urlTitle: 'inherited-one',
+    }),
+    Object.freeze({
+      productID: PERSISTENCE_ID.otherProduct,
+      productName: 'Inherited Two',
+      productCode: 'IP-2',
+      urlTitle: 'inherited-two',
+    }),
+  ]);
+
+  /** One query the service asked the smart-list port to run. */
+  interface RecordedQuery {
+    readonly entityName: string;
+    readonly filters: string;
+  }
+
+  /**
+   * A smart-list port that answers the parent-type read and the parent-products read, and records both.
+   *
+   * ⚠️ IT DISTINGUISHES THE TWO BY ROOT ENTITY, NOT BY CALL ORDER, so a case cannot pass because the
+   * member happened to issue them in the order the double expected.
+   */
+  function makeInheritanceSmartList(options: { readonly parentExists: boolean }): {
+    readonly smartList: ProductService['smartListQueryPort'];
+    readonly queries: readonly RecordedQuery[];
+  } {
+    const queries: RecordedQuery[] = [];
+
+    const smartList = {
+      execute: UNREACHED_COLLABORATOR,
+      executeRecords: (query: {
+        readonly entityName: string;
+        readonly whereGroups?: readonly {
+          readonly filters?: readonly { readonly propertyIdentifier?: string }[];
+        }[];
+      }): Promise<unknown[]> => {
+        queries.push({
+          entityName: query.entityName,
+          filters: (query.whereGroups ?? [])
+            .flatMap((group) => group.filters ?? [])
+            .map((filter) => filter.propertyIdentifier ?? '')
+            .join(','),
+        });
+
+        if (query.entityName === 'SlatwallProductType') {
+          /* The parent row itself, hydrated by the real mapper so it is a genuine managed entity with
+           * its own EMPTY products collection — the state a row-loaded parent is really in. */
+          return Promise.resolve(
+            options.parentExists
+              ? [
+                  mapProductTypeRow({
+                    productTypeID: PERSISTENCE_ID.parentProductType,
+                    productTypeIDPath: PERSISTENCE_ID.parentProductType,
+                    productTypeName: 'Parent',
+                    urlTitle: 'parent',
+                    activeFlag: 1,
+                  }),
+                ]
+              : [],
+          );
+        }
+
+        return Promise.resolve(PARENT_PRODUCT_ROWS.map((row) => mapProductRow(row)));
+      },
+    } as unknown as ProductService['smartListQueryPort'];
+
+    return { smartList, queries };
+  }
+
+  /**
+   * A `ProductService` whose product-type save is a no-op and whose product saves are recorded.
+   *
+   * The save itself is not what these cases are about — `MySqlProductPersistence`'s own suite covers it
+   * — so the base service returns the entity untouched, exactly as `model/service/HibachiService.cfc:L103`
+   * does on the clean path, and the recorder below observes only the re-parenting writes.
+   */
+  function makeInheritanceService(options: { readonly parentExists: boolean }): {
+    readonly service: ProductService;
+    readonly savedProducts: readonly Product[];
+    readonly queries: readonly RecordedQuery[];
+  } {
+    const { smartList, queries } = makeInheritanceSmartList(options);
+    const savedProducts: Product[] = [];
+
+    const service = new ProductService({
+      productRepository: {
+        saveProduct: (product: Product): Promise<Product> => {
+          savedProducts.push(product);
+          return Promise.resolve(product);
+        },
+      } as never,
+      skuRepository: UNREACHED_COLLABORATOR,
+      skuService: UNREACHED_COLLABORATOR,
+      optionService: UNREACHED_COLLABORATOR,
+      baseService: UNREACHED_COLLABORATOR,
+      productTypeBaseService: {
+        save: (productType: ManagedEntity<ProductType>): Promise<ManagedEntity<ProductType>> =>
+          Promise.resolve(productType),
+      },
+      validator: {
+        validate: () => Promise.resolve({ getErrors: () => ({}) }),
+        validateProcess: UNREACHED_COLLABORATOR,
+      } as never,
+      settings: createSettingResolverDouble({ fallback: '' }).resolver,
+      accountContext: createAccountContextDouble().accountContext,
+      smartListQueryPort: smartList,
+      subscriptionTermPort: UNREACHED_COLLABORATOR,
+      productTypeRootResolver: (() => undefined) as never,
+      productPropertyDescriptors: PRODUCT_PROPERTY_DESCRIPTORS,
+      populationAuthorization: createPopulationAuthorizationDouble({ publicPopulateFlag: true })
+        .populationAuthorization,
+      isUrlTitleAvailable: (): Promise<boolean> => Promise.resolve(true),
+      persistProduct: UNREACHED_COLLABORATOR,
+      defaultSkuIdReader: (): string => {
+        throw new Error('defaultSkuIdReader is not reached by these cases.');
+      },
+      /* ⭐ THE REAL READER — the whole point of these cases. */
+      parentProductTypeIdReader: readHydratedParentProductTypeID,
+    });
+
+    return { service, savedProducts, queries };
+  }
+
+  /** A child product type as a ROW produces it: a real parent column, no resolved association. */
+  function hydratedChildType(): ProductType {
+    return mapProductTypeRow({
+      productTypeID: PERSISTENCE_ID.productType,
+      productTypeIDPath: `${PERSISTENCE_ID.parentProductType},${PERSISTENCE_ID.productType}`,
+      parentProductTypeID: PERSISTENCE_ID.parentProductType,
+      productTypeName: 'Merchandise',
+      urlTitle: 'merchandise',
+      activeFlag: 1,
+    });
+  }
+
+  it('NET-NEW — the parent and its products are LOADED, and the products are re-parented', async () => {
+    const { service, savedProducts, queries } = makeInheritanceService({ parentExists: true });
+    const child = hydratedChildType();
+
+    // The association really is absent — this is the state the defect hid in.
+    expect(child.parentProductType).toBeUndefined();
+
+    const saved = await service.saveProductType(child, {});
+
+    // ⚠️ THE ASSERTION THE FINDING TURNS ON. Before the fix NEITHER read was issued: the association
+    // was absent, so `:L306`'s null clause short-circuited and the branch never ran.
+    expect(queries.map((query) => query.entityName)).toStrictEqual([
+      'SlatwallProductType',
+      'SlatwallProduct',
+    ]);
+
+    // `:L307` is a REPLACEMENT and the write is one `saveProduct` per product, in collection order —
+    // which is also the proof the parent's collection really was loaded with BOTH of its products.
+    expect(savedProducts.map((product) => product.productID)).toStrictEqual([
+      PERSISTENCE_ID.product,
+      PERSISTENCE_ID.otherProduct,
+    ]);
+
+    // Each inherited product now names the CHILD type. This is the column `:L307` actually changes:
+    // `products` is mapped `inverse="true"` [`model/entity/ProductType.cfc:L66`], so the child's
+    // `SwProduct.productTypeID` is the only side that persists.
+    for (const product of savedProducts) {
+      expect(product.productType?.productTypeID).toBe(PERSISTENCE_ID.productType);
+    }
+
+    // ⛔ AND THE CHILD'S OWN ARRAY STAYS EMPTY, WHICH IS CORRECT RATHER THAN A MISS.
+    // `ProductType.addProduct` sets only the inverse reference, so `setProducts` leaves
+    // `this.products` empty by design — an `inverse="true"` collection is refreshed from the database
+    // rather than maintained in memory. Asserting a populated array here would demand an in-memory
+    // append the domain module deliberately does not invent.
+    expect(saved.getProducts()).toStrictEqual([]);
+  });
+
+  it('NET-NEW — the parent-products read filters on the inverse of the declared relationship', async () => {
+    // `model/entity/ProductType.cfc:L66` is the one-to-many and `model/entity/Product.cfc:L70` its
+    // many-to-one side, so the products of a type are exactly those whose `productType.productTypeID`
+    // is its own. A filter on anything else would inherit the wrong set.
+    const { service, queries } = makeInheritanceService({ parentExists: true });
+
+    await service.saveProductType(hydratedChildType(), {});
+
+    expect(queries[1]?.filters).toBe('productType.productTypeID');
+  });
+
+  it('NET-NEW — a parent key naming a row that no longer exists SKIPS the branch rather than raising', async () => {
+    // ⛔ `:L306`'s `isNull` guard means the legacy's own behaviour for an absent parent is to skip the
+    // inheritance. The preserved key can outlive the row it names, so answering nothing is the faithful
+    // outcome; raising would refuse a save the legacy completed.
+    const { service, savedProducts, queries } = makeInheritanceService({ parentExists: false });
+
+    const saved = await service.saveProductType(hydratedChildType(), {});
+
+    // The parent read was attempted and answered nothing, so the products read never happened.
+    expect(queries.map((query) => query.entityName)).toStrictEqual(['SlatwallProductType']);
+    // Nothing was re-parented — no product was saved, and `saveProductType` still answered the entity.
+    expect(savedProducts).toStrictEqual([]);
+    expect(saved.productTypeID).toBe(PERSISTENCE_ID.productType);
+  });
+
+  it('NET-NEW — a product type with NO parent key issues no read at all', async () => {
+    // A genuine root. `mapProductTypeRow` records no key for a null column, so the reader answers
+    // `undefined` and the member must not probe for a parent that cannot exist.
+    const { service, savedProducts, queries } = makeInheritanceService({ parentExists: true });
+
+    const root = mapProductTypeRow({
+      productTypeID: PERSISTENCE_ID.parentProductType,
+      productTypeIDPath: PERSISTENCE_ID.parentProductType,
+      parentProductTypeID: null,
+      productTypeName: 'Root',
+      urlTitle: 'root',
+      activeFlag: 1,
+    });
+
+    await service.saveProductType(root, {});
+
+    expect(queries).toStrictEqual([]);
+    expect(savedProducts).toStrictEqual([]);
+  });
+
+  it('NET-NEW — a RESOLVED association still wins, and issues no read', async () => {
+    // ⚠️ ABSENCE IS WHAT TRIGGERS A LOAD, NOT THE KEY. A caller that supplied the parent has already
+    // said what its products are, and `:L307` inherits whatever `getProducts()` answers. Loading over
+    // the top of that would discard the caller's own collection.
+    const { service, savedProducts, queries } = makeInheritanceService({ parentExists: true });
+    const child = hydratedChildType();
+
+    const attachedParent = new ProductType();
+    attachedParent.productTypeID = PERSISTENCE_ID.parentProductType;
+    const ownProduct = new Product();
+    ownProduct.productID = PERSISTENCE_ID.otherProduct;
+    /* ⚠️ THE FIELD, NOT `setProducts`. `ProductType.addProduct` sets only the inverse reference, so
+     * `setProducts` would leave the parent's own array EMPTY and `:L308`'s length clause would skip the
+     * branch — the collection has to be populated the way hydration populates it, which is by
+     * assignment. `src/adapters/mysql/rowMappers.ts` does exactly this. */
+    attachedParent.products = [ownProduct];
+    child.parentProductType = attachedParent;
+
+    const saved = await service.saveProductType(child, {});
+
+    // No read of any kind: the slot was filled, so there was nothing to resolve.
+    expect(queries).toStrictEqual([]);
+    // The caller's own product was inherited, and only it.
+    expect(savedProducts).toStrictEqual([ownProduct]);
+    expect(ownProduct.productType).toBe(saved);
+    /* The inverse-side contract again — see the first case for why this is empty. */
+    expect(saved.getProducts()).toStrictEqual([]);
+  });
+});
+
+/* =================================================================================================
+ * THE READ HALF — `getProduct` MUST ANSWER AN AGGREGATE
+ * ============================================================================================== */
+
+describe('ProductService.getProduct returns a materialised aggregate (DATA-03)', () => {
+  /** A product row plus every row its associations need. */
+  const READ_TABLES: Readonly<Record<string, readonly MySqlRow[]>> = {
+    SwProduct: [
+      {
+        productID: PERSISTENCE_ID.product,
+        productName: 'Feed Product',
+        productCode: 'FP-1',
+        productTypeID: PERSISTENCE_ID.productType,
+        brandID: PERSISTENCE_ID.brand,
+        defaultSkuID: PERSISTENCE_ID.defaultSku,
+      },
+    ],
+    SwProductType: [{ productTypeID: PERSISTENCE_ID.productType, productTypeName: 'Merchandise' }],
+    SwBrand: [{ brandID: PERSISTENCE_ID.brand, brandName: 'Nike' }],
+    /* ⚠️ THE MONEY COLUMN IS A STRING, NOT A NUMBER, AND THAT IS THE DRIVER CONTRACT RATHER THAN A
+     * FIXTURE QUIRK. `model/entity/Sku.cfc:L56` declares `price` `ormtype="big_decimal"`, and
+     * `rowMappers.ts` reads it through the exact-decimal reader, which REFUSES a JavaScript number
+     * because by the time one arrives the exact digits are already gone (F16). */
+    SwSku: [
+      {
+        skuID: PERSISTENCE_ID.defaultSku,
+        skuCode: 'SKU-DEFAULT',
+        price: '99.00',
+        productID: PERSISTENCE_ID.product,
+      },
+      {
+        skuID: PERSISTENCE_ID.otherSku,
+        skuCode: 'SKU-2',
+        price: '20.00',
+        productID: PERSISTENCE_ID.product,
+      },
+    ],
+  };
+
+  /**
+   * An executor that HONOURS BOTH `WHERE <column> IN (…)` AND `WHERE <alias>.<column> = ?`.
+   *
+   * ⚠️ IT HAS TO HONOUR THE `IN` FORM. Two different statements read `SwSku` on this path — the aggregate
+   * loader's product-scoped collection read and its default-SKU lookup by identifier — and a double that
+   * answered both with the same rows would hand the lookup rows it never asked for.
+   *
+   * ⚠️ IT HAS TO HONOUR THE EQUALITY FORM TOO, and for a sharper reason: `getProduct` is a primary-key
+   * lookup expressed as a single-filter dynamic query, which the builder compiles to
+   * `WHERE ((<alias>.productID = ?))`. A double that ignored that predicate would answer EVERY
+   * identifier with the seeded row, so the case asserting that an unmatched identifier yields `null`
+   * could never fail and would be asserting nothing at all.
+   */
+  function readExecutor(): ProductService['smartListQueryPort'] {
+    const executor = {
+      execute: (sql: string, params: readonly unknown[]): Promise<MySqlRow[]> => {
+        if (sql.includes('recordsCount')) {
+          return Promise.resolve([{ recordsCount: 1 }]);
+        }
+
+        const table = Object.keys(READ_TABLES).find((name) =>
+          new RegExp(`FROM ${name}\\b`).test(sql),
+        );
+        if (table === undefined) {
+          return Promise.resolve([]);
+        }
+        const rows = READ_TABLES[table] ?? [];
+
+        const inFilter = /WHERE (?:\w+\.)?(\w+) IN \(/.exec(sql);
+        const inColumn = inFilter?.[1];
+        if (inColumn !== undefined) {
+          return Promise.resolve(rows.filter((row) => params.includes(row[inColumn])));
+        }
+
+        /* The builder's own filter form. The first bound value is the filter's, because the paging
+         * placeholders are appended after the WHERE parameters. */
+        const equalityFilter = /WHERE \(+(?:\w+\.)?(\w+) = \?/.exec(sql);
+        const equalityColumn = equalityFilter?.[1];
+        if (equalityColumn !== undefined) {
+          return Promise.resolve(rows.filter((row) => row[equalityColumn] === params[0]));
+        }
+
+        return Promise.resolve([...rows]);
+      },
+    };
+
+    return new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders({
+        bindDefaultSkuDelegate: (sku: Sku): ProductDefaultSkuDelegate => ({
+          getCurrencyCode: (): string | undefined => undefined,
+          getPrice: (): ExactDecimal | undefined => sku.price,
+          getRenewalPrice: (): ExactDecimal | undefined => undefined,
+          getListPrice: (): ExactDecimal | undefined => undefined,
+          getImageDirectory: (): string => '',
+          getImagePath: (): string => '',
+          getImage: (): string => '',
+          getResizedImagePath: (): string => '',
+          getImageExistsFlag: (): boolean => false,
+        }),
+      }),
+    );
+  }
+
+  /** The same service shape as above, with only the query port live. */
+  function readService(): ProductService {
+    const { adapter } = makeAdapter();
+    return new ProductService({
+      productRepository: UNREACHED_COLLABORATOR,
+      skuRepository: UNREACHED_COLLABORATOR,
+      skuService: UNREACHED_COLLABORATOR,
+      optionService: UNREACHED_COLLABORATOR,
+      baseService: UNREACHED_COLLABORATOR,
+      productTypeBaseService: UNREACHED_COLLABORATOR,
+      validator: UNREACHED_COLLABORATOR,
+      settings: createSettingResolverDouble({ fallback: '' }).resolver,
+      accountContext: createAccountContextDouble().accountContext,
+      smartListQueryPort: readExecutor(),
+      subscriptionTermPort: UNREACHED_COLLABORATOR,
+      productTypeRootResolver: (() => undefined) as never,
+      productPropertyDescriptors: PRODUCT_PROPERTY_DESCRIPTORS,
+      populationAuthorization: createPopulationAuthorizationDouble().populationAuthorization,
+      /* `UniqueValueProbe` takes the table name as a plain string, exactly as
+       * `model/service/DataService.cfc:L53` declares `createUniqueURLTitle(titleString, tableName)`.
+       * The double's own probe narrows that first parameter to its table union, so it is adapted here
+       * rather than the utility's contract being widened. */
+      isUrlTitleAvailable: (tableName: string, value: string): Promise<boolean> =>
+        urlTitleProbe.probe.isUrlTitleAvailable(tableName as UrlTitleTableName, value),
+      persistProduct: (product: Product) => adapter.saveProduct(product),
+      /* Reached only by `requireDefaultSkuEntity`, which only the subscription-term process member
+       * calls. Made LOUD rather than plausible: a reader answering `''` would let a case pass while
+       * silently resolving the wrong SKU. */
+      defaultSkuIdReader: (): string => {
+        throw new Error('defaultSkuIdReader is not reached by these cases.');
+      },
+      /*
+       * F10 — THE REAL HYDRATION READER, NOT A STUB. It answers `undefined` for a hand-built product
+       * type, because nothing wrote a preserved parent key beside one — which is precisely what
+       * production does for a hand-built entity too. Using the real member keeps these cases honest:
+       * they exercise the same branch production takes, and a case that WANTS the inheritance load
+       * hydrates its product type through `mapProductTypeRow` so the reader answers a real key.
+       */
+      parentProductTypeIdReader: readHydratedParentProductTypeID,
+    });
+  }
+
+  it('NET-NEW — the product carries its productType, brand, defaultSku and skus', async () => {
+    const product = await readService().getProduct(PERSISTENCE_ID.product);
+
+    expect(product).not.toBeNull();
+    // All four associations the finding named as missing.
+    expect(product?.productType?.productTypeID).toBe(PERSISTENCE_ID.productType);
+    expect(product?.brand?.brandID).toBe(PERSISTENCE_ID.brand);
+    expect(product?.defaultSku).toBeDefined();
+    expect(product?.getSkus()).toHaveLength(2);
+  });
+
+  it('NET-NEW — the default SKU answers a price, so Product.getPrice has something to fall through to', async () => {
+    // `Product.getPrice()` delegates to the default SKU when the product declares no local override,
+    // which is why an unresolved `defaultSku` made the Google feed emit an empty `<g:price>` for
+    // every item rather than raising.
+    const product = await readService().getProduct(PERSISTENCE_ID.product);
+
+    expect(product?.defaultSku?.getPrice()).toBe(toExactDecimal('99.00'));
+    /* '99.00', not 99: F07 preserves the digits AND the scale the row carried — the fixture row spells
+     * `price: '99.00'`, and keeping that spelling is the whole point of the exact-decimal type. */
+  });
+
+  it('NET-NEW — every SKU back-references the same product instance', async () => {
+    const product = await readService().getProduct(PERSISTENCE_ID.product);
+    const skus = product?.getSkus() ?? [];
+
+    expect(skus).toHaveLength(2);
+    for (const sku of skus) {
+      // Definedness asserted FIRST, so this cannot pass vacuously as `undefined === undefined`.
+      expect(sku).toBeInstanceOf(Sku);
+      expect((sku as Sku).product).toBeDefined();
+      expect((sku as Sku).product).toBe(product);
+    }
+  });
+
+  it('NET-NEW — an identifier that matches no row still answers null', async () => {
+    // `entityLoadByPK` yields null and the callers test it with `isNull()`, so `null` rather than
+    // `undefined` is the legacy answer shape.
+    const product = await readService().getProduct('00000000000000000000000000000000');
+
+    expect(product).toBeNull();
+  });
+});
+
+/* =====================================================================================================
+ * FOLDED IN FROM `test/adapters/MySqlProductPersistence.test.ts` — AAP §0.4.1.12 SUITE ALIGNMENT (F1)
+ * =====================================================================================================
+ * WHY THESE CASES ARE HERE RATHER THAN IN A SUITE OF THEIR OWN. AAP §0.4.1.12 declares exactly seventeen
+ * executable suites, and `test/adapters/MySqlProductPersistence.test.ts` was not one of them — a QA pass recorded it,
+ * with eighteen siblings, as running outside the declared test plan. The coverage was never the problem;
+ * the file's existence was. So the cases are folded into an approved suite, unchanged.
+ *
+ * ⭐ WHY THIS HOST. Phase 8 folded the production module into `src/adapters/mysql/MySqlProductRepository.ts` for exactly
+ * this reason — same tables, opposite direction — so its coverage follows it. The reads and the writes of
+ * `SwProduct` and `SwProductType` are now asserted in one place.
+ *
+ * ⛔ THE BODY IS WRAPPED IN ONE `describe`, WHICH IS THE WHOLE OF THE MECHANICAL CHANGE. Every helper,
+ * constant and type the folded suite declared at module scope is now block-scoped to this callback, so it
+ * cannot collide with this file's own declarations or with another folded body's — and any `beforeEach`,
+ * `afterEach` or `beforeAll` it carries now applies to its own cases only, never to the host's. Not one
+ * assertion, case name or comment was altered.
+ * ================================================================================================== */
+
+/**
+ * Product and product-type persistence — DATA-03.
+ *
+ * AAP authority: AAP 0.4.4 authorises `slatwall-ts/test/**` | CREATE. This file covers
+ * `src/adapters/mysql/MySqlProductRepository.ts` and the four `src/services/ProductService.ts` seams it
+ * fills.
+ *
+ * =================================================================================================
+ * WHAT THESE CASES PROVE
+ * =================================================================================================
+ * The reported finding had two halves, and they failed for unrelated reasons:
+ *
+ *   READ  — `ProductService.getProduct` answered a product with no `productType`, no `defaultSku`, no
+ *           `brand` and no `skus`, because the smart-list builder projects `<baseAlias>.*` and
+ *           `rowMappers.ts` RULE 3 leaves every many-to-one GENUINELY ABSENT by design.
+ *   WRITE — the service declares `persistProduct` plus two composed base services and implements every
+ *           member against them, but NOTHING in `src/` supplied a production implementation of any of
+ *           the four capabilities behind them. A composition root could not have wired a working
+ *           product flow without inventing SQL at the wiring site.
+ *
+ * The read half is now closed by `src/adapters/mysql/QueryRunner.ts`; the cases at the end of
+ * this file assert it THROUGH the real service rather than through the builder alone, because
+ * "`getProduct` returns a scalar Product" is a statement about the service's answer.
+ *
+ * The write half is closed by the adapter under test. The statement-level cases assert what reaches the
+ * driver; the seam cases assert that a real `ProductService` wired to the real adapter actually writes.
+ *
+ * ⚠️ THE ASSIGNABILITY OF ALL FOUR MEMBERS IS PROVEN HERE RATHER THAN IN THE ADAPTER. The adapter does
+ * not import `EntityPersister` or `EntityRemover`, because an adapter that reached up into the service
+ * layer's type surface would invert the dependency direction the hexagonal separation exists to fix
+ * (AAP §0.7.3 S4). A test file is under no such constraint, so the four bindings below are where a
+ * signature drift becomes a compile error.
+ *
+ * NO DATABASE. A recording executor double answers each statement by shape, which is how the sibling
+ * adapter suites work and what AAP 0.7.3 standard 6 requires here: no CFML runtime exists and the `Sw*`
+ * tables are absent from this repository.
+ *
+ * TEST PROVENANCE: every case is **NET-NEW**. AAP 0.6.5.2 records that no `ProductServiceTest` exists
+ * and that no data-access test exists for this slice at all. `meta/tests/unit/IssuesTest.cfc:L51-L71`
+ * (`issue_1097`) populates, saves and deletes a product with a nested product-type struct and is
+ * TRACEABLE for the BEHAVIOUR these cases assert, but it asserts no statement, because no legacy
+ * statement for either table exists — both entities were saved and deleted through the surface
+ * `org/Hibachi/HibachiService.cfc:L255-L281` fabricated by prefix (IR-1).
+ */
+describe('test/adapters/MySqlProductPersistence.test.ts — the WRITE surface for the same two tables this file reads (folded, F1)', () => {
+  /**
+   * A collaborator this scenario never reaches needs no behaviour, and giving it one would suggest the
+   * case depends on it. Same discipline as `test/services/SkuService.test.ts`.
+   */
+  const UNREACHED_COLLABORATOR = {} as never;
+
+  /** Distinct 32-character identifiers, so a crossed binding is visible rather than coincidental. */
+  const ID = {
+    product: 'aaaaaaaa000000000000000000000001',
+    productType: 'bbbbbbbb000000000000000000000001',
+    parentProductType: 'bbbbbbbb000000000000000000000002',
+    brand: 'cccccccc000000000000000000000001',
+    defaultSku: 'dddddddd000000000000000000000001',
+    otherSku: 'dddddddd000000000000000000000002',
+  } as const;
+
+  /**
+   * The URL-title availability probe, shared by every scenario that constructs a service.
+   *
+   * Declared once at module level because it holds no per-case state worth isolating: nothing below seeds
+   * a collision, so every candidate is reported available and the derivation terminates on its first
+   * attempt.
+   */
+  const urlTitleProbe = createUrlTitleAvailabilityDouble();
+
+  /** One statement, as the driver saw it. */
+  interface Statement {
+    readonly sql: string;
+    readonly params: readonly unknown[];
+  }
+
+  /** The recorded journal plus the executor that fills it. */
+  interface Journal {
+    readonly statements: Statement[];
+  }
+
+  /**
+   * A recording executor.
+   *
+   * `execute` answers with whatever rows the caller seeded for the table the statement reads, and
+   * `executeMutation` answers with a configurable affected-row count — configurable BECAUSE the update
+   * path must be shown not to read it.
+   */
+  function makeExecutor(
+    rowsByTable: Readonly<Record<string, readonly MySqlRow[]>> = {},
+    affectedRows = 1,
+  ): { readonly executor: ProductPersistenceExecutor; readonly journal: Journal } {
+    const journal: Journal = { statements: [] };
+
+    const executor: ProductPersistenceExecutor = {
+      execute: (sql: string, params: readonly unknown[]): Promise<MySqlRow[]> => {
+        journal.statements.push({ sql, params: [...params] });
+
+        const table = Object.keys(rowsByTable).find((name) =>
+          new RegExp(`FROM ${name}\\b`).test(sql),
+        );
+
+        return Promise.resolve(table === undefined ? [] : [...(rowsByTable[table] ?? [])]);
+      },
+      executeMutation: (sql: string, params: readonly unknown[]): Promise<number> => {
+        journal.statements.push({ sql, params: [...params] });
+        return Promise.resolve(affectedRows);
+      },
+    };
+
+    return { executor, journal };
+  }
+
+  /** A cleanup collaborator that records the identifiers it was asked to clear. */
+  function makeCleanup(): {
+    readonly cleanup: ProductDependencyCleanup;
+    readonly productIds: string[];
+    readonly productTypeIds: string[];
+  } {
+    const productIds: string[] = [];
+    const productTypeIds: string[] = [];
+
+    return {
+      productIds,
+      productTypeIds,
+      cleanup: {
+        removeProductDependencies: (productID: string): Promise<void> => {
+          productIds.push(productID);
+          return Promise.resolve();
+        },
+        removeProductTypeDependencies: (productTypeID: string): Promise<void> => {
+          productTypeIds.push(productTypeID);
+          return Promise.resolve();
+        },
+      },
+    };
+  }
+
+  /**
+   * Reads the identifier of a default-SKU delegate.
+   *
+   * The delegate in these cases is a wrapper closing over a `Sku`, exactly as `src/domain/sku/Sku.ts`
+   * records: `Sku` is DELIBERATELY not assignable to `ProductDefaultSkuDelegate`, so the value in
+   * `Product.defaultSku` is never the entity itself and an `instanceof Sku` test against it is false.
+   */
+  function makeDefaultSkuDelegate(skuID: string): {
+    readonly delegate: ProductDefaultSkuDelegate;
+    readonly skuID: string;
+  } {
+    return {
+      skuID,
+      delegate: {
+        getCurrencyCode: (): string | undefined => undefined,
+        getPrice: (): ExactDecimal | undefined => undefined,
+        getRenewalPrice: (): ExactDecimal | undefined => undefined,
+        getListPrice: (): ExactDecimal | undefined => undefined,
+        getImageDirectory: (): string => '',
+        getImagePath: (): string => '',
+        getImage: (): string => '',
+        getResizedImagePath: (): string => '',
+        getImageExistsFlag: (): boolean => false,
+      },
+    };
+  }
+
+  /** The delegate-to-identifier map these cases inject, keyed by delegate object identity. */
+  function makeDefaultSkuIdReader(): {
+    readonly read: (defaultSku: object) => string;
+    register(delegate: ProductDefaultSkuDelegate, skuID: string): void;
+  } {
+    const identifiers = new Map<object, string>();
+
+    return {
+      register: (delegate: ProductDefaultSkuDelegate, skuID: string): void => {
+        identifiers.set(delegate, skuID);
+      },
+      read: (defaultSku: object): string => identifiers.get(defaultSku) ?? '',
+    };
+  }
+
+  /** The adapter under test, with everything it needs recorded. */
+  function makeAdapter(
+    rowsByTable: Readonly<Record<string, readonly MySqlRow[]>> = {},
+    affectedRows = 1,
+  ): {
+    readonly adapter: MySqlProductPersistence;
+    readonly journal: Journal;
+    readonly cleanup: ReturnType<typeof makeCleanup>;
+    readonly defaultSkuIds: ReturnType<typeof makeDefaultSkuIdReader>;
+  } {
+    const { executor, journal } = makeExecutor(rowsByTable, affectedRows);
+    const cleanup = makeCleanup();
+    const defaultSkuIds = makeDefaultSkuIdReader();
+
+    return {
+      journal,
+      cleanup,
+      defaultSkuIds,
+      adapter: new MySqlProductPersistence(executor, cleanup.cleanup, defaultSkuIds.read),
+    };
+  }
+
+  /** A saved product carrying all three of its many-to-one associations. */
+  function savedProduct(): Product {
+    const product = new Product();
+    product.productID = ID.product;
+    product.productName = 'Feed Product';
+    product.productCode = 'FP-1';
+    product.urlTitle = 'feed-product';
+    product.activeFlag = true;
+    product.publishedFlag = true;
+
+    const brand = new Brand();
+    brand.brandID = ID.brand;
+    product.brand = brand;
+
+    const productType = new ProductType();
+    productType.productTypeID = ID.productType;
+    product.productType = productType;
+
+    return product;
+  }
+
+  /** A saved product type carrying its self-referencing parent. */
+  function savedProductType(): ProductType {
+    const productType = new ProductType();
+    productType.productTypeID = ID.productType;
+    productType.productTypeName = 'Merchandise';
+    productType.urlTitle = 'merchandise';
+    productType.productTypeIDPath = `${ID.parentProductType},${ID.productType}`;
+
+    const parent = new ProductType();
+    parent.productTypeID = ID.parentProductType;
+    productType.parentProductType = parent;
+
+    return productType;
+  }
+
+  /** Every statement whose text matches, in journal order. */
+  function matching(journal: Journal, pattern: RegExp): readonly Statement[] {
+    return journal.statements.filter((statement) => pattern.test(statement.sql));
+  }
+
+  /* =================================================================================================
+   * THE `SwProduct` WRITE PATH
+   * ============================================================================================== */
+
+  describe('MySqlProductPersistence — the SwProduct write path (DATA-03)', () => {
+    it('NET-NEW — a transient product is INSERTed with a freshly minted 32-character identifier', async () => {
+      const { adapter, journal } = makeAdapter();
+      const product = new Product();
+      product.productName = 'New Product';
+
+      // `model/entity/Product.cfc:L52` declares `unsavedvalue=""`, which is what `isNew()` tests.
+      expect(product.isNew()).toBe(true);
+
+      await adapter.saveProduct(product);
+
+      // IR-6: 32 lowercase hexadecimal characters, no dashes, never an auto-increment.
+      expect(product.productID).toMatch(/^[0-9a-f]{32}$/);
+      expect(product.isNew()).toBe(false);
+
+      const inserts = matching(journal, /^INSERT INTO SwProduct/);
+      expect(inserts).toHaveLength(1);
+      // The identifier is bound FIRST, matching the column list's own ordering.
+      expect(inserts[0]?.params[0]).toBe(product.productID);
+    });
+
+    it('NET-NEW — the insert names every SwProduct column and binds one value per column', async () => {
+      const { adapter, journal } = makeAdapter();
+
+      await adapter.saveProduct(new Product());
+
+      const insert = matching(journal, /^INSERT INTO SwProduct/)[0];
+      const columnList = /\(([^)]*)\) VALUES/.exec(insert?.sql ?? '')?.[1] ?? '';
+      const columns = columnList.split(', ');
+
+      // Twenty columns: the primary key plus the nineteen writable ones. `model/entity/Product.cfc`
+      // declares eight scalars (:L52-L59), four persisted calculated columns (:L62-L65), three
+      // many-to-one foreign keys (:L68-L70), a remote identifier (:L93) and four audit members
+      // (:L96-L99). Its twenty NON-persistent properties (:L102-L123) are not columns and are absent.
+      expect(columns).toHaveLength(20);
+      expect(columns).toContain('productID');
+      expect(columns).toContain('calculatedTitle');
+      expect(columns).toContain('brandID');
+      expect(columns).toContain('productTypeID');
+      expect(columns).toContain('defaultSkuID');
+      // The crossed audit pairing: the COLUMNS carry the `ID` suffix, the fields do not.
+      expect(columns).toContain('createdByAccountID');
+      expect(columns).toContain('modifiedByAccountID');
+      // A non-persistent property must never appear as a column.
+      expect(columns).not.toContain('price');
+      expect(columns).not.toContain('optionGroups');
+
+      expect(insert?.params).toHaveLength(columns.length);
+    });
+
+    it('NET-NEW — the three foreign keys come from the ASSOCIATION OBJECTS, not from scalars', async () => {
+      // "Preserve association identity" in practice: `rowMappers.ts` RULE 3 leaves every many-to-one
+      // absent, so there is no `product.brandID` field anywhere in the domain to copy out. A stale
+      // scalar cannot drift out of step with the graph because no stale scalar exists.
+      const { adapter, journal, defaultSkuIds } = makeAdapter();
+      const product = savedProduct();
+      const { delegate } = makeDefaultSkuDelegate(ID.defaultSku);
+      product.defaultSku = delegate;
+      defaultSkuIds.register(delegate, ID.defaultSku);
+
+      await adapter.saveProduct(product);
+
+      const update = matching(journal, /^UPDATE SwProduct SET/)[0];
+      expect(update?.params).toContain(ID.brand);
+      expect(update?.params).toContain(ID.productType);
+      // The default SKU arrives through the INJECTED READER, because the delegate exposes no
+      // identifier accessor — `src/domain/sku/Sku.ts` mismatch M-ii.
+      expect(update?.params).toContain(ID.defaultSku);
+    });
+
+    it('NET-NEW — a saved product is UPDATEd with the primary key bound LAST and no identifier minted', async () => {
+      const { adapter, journal } = makeAdapter();
+      const product = savedProduct();
+
+      await adapter.saveProduct(product);
+
+      // The identity is the entity's own answer, not a probe's: no existence read is issued.
+      expect(matching(journal, /^SELECT/)).toHaveLength(0);
+      expect(product.productID).toBe(ID.product);
+
+      const updates = matching(journal, /^UPDATE SwProduct SET/);
+      expect(updates).toHaveLength(1);
+      expect(updates[0]?.sql).toContain('WHERE productID = ?');
+      // Nineteen assignments plus the key: the key is the LAST bound value, matching its position in
+      // the statement text.
+      expect(updates[0]?.params).toHaveLength(20);
+      expect(updates[0]?.params[19]).toBe(ID.product);
+    });
+
+    it('NET-NEW — the update path does NOT read the affected-row count', async () => {
+      // Measured against MySQL 8.4.11 through mysql2 3.23.2: re-saving unchanged data reports 1 with
+      // `CLIENT_FOUND_ROWS` and 0 without, and `src/config/database.ts` pins no capability flags. So a
+      // zero count must NOT be treated as a failure — otherwise correctness would depend on an
+      // unpinned connection negotiation detail.
+      const { adapter } = makeAdapter({}, 0);
+      const product = savedProduct();
+
+      await expect(adapter.saveProduct(product)).resolves.toBe(product);
+    });
+
+    it('NET-NEW — an absent field binds as SQL null rather than being omitted', async () => {
+      // The domain expresses a legacy null by the ABSENCE of a property. A bind position cannot express
+      // absence, so the translation happens exactly at this seam and nowhere earlier. Omitting the
+      // column instead would let the database apply a default, which is a different outcome.
+      const { adapter, journal } = makeAdapter();
+      const product = new Product();
+      product.productName = 'Sparse';
+
+      await adapter.saveProduct(product);
+
+      const insert = matching(journal, /^INSERT INTO SwProduct/)[0];
+      expect(insert?.params).toContain(null);
+      expect(insert?.params).toContain('Sparse');
+      // Absence never reaches the driver as `undefined`.
+      expect(insert?.params).not.toContain(undefined);
+    });
+
+    it('NET-NEW — no value is ever interpolated into statement text', async () => {
+      // The structural reason the D18 class of flaw cannot occur here: the statement text is a function
+      // of the whitelist alone.
+      const { adapter, journal } = makeAdapter();
+      const product = savedProduct();
+      product.productName = "Bobby'); DROP TABLE SwProduct;--";
+
+      await adapter.saveProduct(product);
+
+      for (const statement of journal.statements) {
+        expect(statement.sql).not.toContain('DROP TABLE');
+        expect(statement.sql).not.toContain('Bobby');
+      }
+    });
+  });
+
+  /* =================================================================================================
+   * THE `SwProductType` WRITE PATH
+   * ============================================================================================== */
+
+  describe('MySqlProductPersistence — the SwProductType write path (DATA-03)', () => {
+    it('NET-NEW — a transient product type is INSERTed with a minted identifier and all fourteen columns', async () => {
+      const { adapter, journal } = makeAdapter();
+      const productType = new ProductType();
+      productType.productTypeName = 'Merchandise';
+
+      await adapter.saveProductType(productType);
+
+      expect(productType.productTypeID).toMatch(/^[0-9a-f]{32}$/);
+
+      const insert = matching(journal, /^INSERT INTO SwProductType/)[0];
+      const columns = (/\(([^)]*)\) VALUES/.exec(insert?.sql ?? '')?.[1] ?? '').split(', ');
+
+      // Fourteen: eight scalars (`model/entity/ProductType.cfc:L52-L59`), the self-referencing foreign
+      // key (:L62), a remote identifier (:L80) and four audit members (:L83-L86).
+      expect(columns).toHaveLength(14);
+      expect(columns).toContain('productTypeID');
+      expect(columns).toContain('productTypeIDPath');
+      expect(columns).toContain('systemCode');
+      expect(columns).toContain('parentProductTypeID');
+      expect(insert?.params).toHaveLength(14);
+    });
+
+    it('NET-NEW — the parent key comes from the self-referencing association object', async () => {
+      const { adapter, journal } = makeAdapter();
+
+      await adapter.saveProductType(savedProductType());
+
+      const update = matching(journal, /^UPDATE SwProductType SET/)[0];
+      expect(update?.sql).toContain('WHERE productTypeID = ?');
+      expect(update?.params).toContain(ID.parentProductType);
+      // The key is bound last; the parent key is one of the thirteen assignments before it.
+      expect(update?.params[13]).toBe(ID.productType);
+    });
+
+    it('NET-NEW — productTypeIDPath is written as held and is NOT derived at this boundary', async () => {
+      // `model/entity/ProductType.cfc:L53` declares it a plain persistent column and
+      // `model/service/ProductService.cfc:L294-L310` never recomputes it on save. Deriving it here
+      // would add behaviour the legacy save path does not have (AAP §0.7.3 S9).
+      const { adapter, journal } = makeAdapter();
+      const productType = savedProductType();
+      const held = productType.productTypeIDPath;
+
+      await adapter.saveProductType(productType);
+
+      expect(productType.productTypeIDPath).toBe(held);
+      expect(matching(journal, /^UPDATE SwProductType SET/)[0]?.params[0]).toBe(held);
+    });
+  });
+
+  /* =================================================================================================
+   * THE PRODUCT-TYPE PARENT ROUND TRIP — RULE 3b
+   * ================================================================================================
+   * ⭐ WHY THIS SECTION EXISTS. `./rowMappers.ts` deliberately does NOT resolve
+   * `ProductType.parentProductType` when it hydrates a row, because an identifier-only parent would make
+   * `ProductType.getSimpleRepresentation` (`src/domain/product/ProductType.ts:1153`) return `undefined`
+   * as soon as it reached the parent's absent name, and that value renders the Google feed's
+   * `g:product_type` element — so a reference would turn `Parent &raquo; Child` into an EMPTY element,
+   * a reference that lies.
+   *
+   * An earlier revision stopped there, and the consequence was silent data loss: both write paths ended
+   * their parent-key expression at `?? null`, so READING a child and SAVING it back wrote `NULL` into
+   * `parentProductTypeID` and DETACHED the child from its parent. Rule 3b closes that by preserving the
+   * row's raw key beside the entity — object-keyed, so nothing leaks across warm invocations (M7) —
+   * without populating the association. These cases prove the round trip on both write paths, and prove
+   * that an explicit detach still reaches `NULL`.
+   *
+   * The parent-key column is assignment index 7 of thirteen and the primary key is bound last at index
+   * 13; `PRODUCT_TYPE_WRITABLE_COLUMNS` in `src/adapters/mysql/MySqlProductTypeRepository.ts:320-341`
+   * fixes that order against `model/entity/ProductType.cfc:L53-L86`.
+   * ============================================================================================== */
+
+  describe('MySqlProductPersistence / MySqlProductTypeRepository — the parent round trip (rule 3b)', () => {
+    /** Assignment index of `parentProductTypeID` among the thirteen writable columns. */
+    const PARENT_KEY_INDEX = 7;
+    /** Assignment index of `productTypeIDPath` — the first writable column. */
+    const PATH_INDEX = 0;
+
+    /**
+     * A child product type as it arrives FROM THE DATABASE: hydrated from a driver row, carrying a real
+     * `parentProductTypeID` column and NO resolved association.
+     *
+     * ⚠️ THE ROW IS WHAT `mysql2` HANDS BACK, NOT WHAT THE SEED DOCUMENT RENDERS. A root's parent column
+     * arrives as JS `null`, because `model/dao/DataDAO.cfc:L71-L72` and `:L104-L105` both test the seed
+     * document's `"NULL"` string and bind `<cfqueryparam ... null="yes">` instead. The four-character
+     * string therefore never reaches a row, and no production mapper compares against it.
+     */
+    function hydratedChild(): ProductType {
+      return mapProductTypeRow({
+        productTypeID: ID.productType,
+        productTypeIDPath: `${ID.parentProductType},${ID.productType}`,
+        parentProductTypeID: ID.parentProductType,
+        productTypeName: 'Merchandise',
+        urlTitle: 'merchandise',
+        activeFlag: 1,
+      });
+    }
+
+    /** The tree repository over the recording seam, so its own read and write paths can be observed. */
+    function makeTreeRepository(rowsByTable: Readonly<Record<string, readonly MySqlRow[]>> = {}): {
+      readonly repository: MySqlProductTypeRepository;
+      readonly journal: Journal;
+    } {
+      const { executor, journal } = makeExecutor(rowsByTable, 1);
+
+      return {
+        journal,
+        repository: new MySqlProductTypeRepository(
+          executor,
+          createAccountContextDouble().accountContext,
+        ),
+      };
+    }
+
+    it('NET-NEW — hydration leaves the association absent so the feed cannot be handed a lying reference', () => {
+      const child = hydratedChild();
+
+      /* The association stays unresolved — this is the deliberate half of rule 3a. */
+      expect(child.parentProductType).toBeUndefined();
+      /* And the row's own ancestry path is preserved verbatim, naming a parent the association omits. */
+      expect(child.productTypeIDPath).toBe(`${ID.parentProductType},${ID.productType}`);
+    });
+
+    it('NET-NEW — read-modify-save through MySqlProductPersistence preserves the parent key and the path', async () => {
+      const { adapter, journal } = makeAdapter();
+      const child = hydratedChild();
+
+      /* The "modify" of read-modify-save: a field a caller would plausibly edit. */
+      child.productTypeName = 'Merchandise Renamed';
+
+      await adapter.saveProductType(child);
+
+      const update = matching(journal, /^UPDATE SwProductType SET/)[0];
+
+      /* ⭐ THE REGRESSION THIS SECTION EXISTS FOR: this bound `null` before rule 3b. */
+      expect(update?.params[PARENT_KEY_INDEX]).toBe(ID.parentProductType);
+      expect(update?.params[PARENT_KEY_INDEX]).not.toBeNull();
+      /* The ancestry path survives intact, so the row stays internally consistent. */
+      expect(update?.params[PATH_INDEX]).toBe(`${ID.parentProductType},${ID.productType}`);
+      expect(update?.params[13]).toBe(ID.productType);
+    });
+
+    it('NET-NEW — read-modify-save through MySqlProductTypeRepository preserves the parent key and does NOT flatten the path', async () => {
+      /*
+       * ⚠️ THIS PATH ALSO RUNS THE LIFECYCLE HOOK, WHICH IS WHY IT NEEDS ITS OWN CASE.
+       * `MySqlProductTypeRepository.saveProductType` invokes `ProductType.preUpdate`, porting
+       * `model/entity/ProductType.cfc:L311`, and that hook REBUILDS `productTypeIDPath` by walking
+       * `parentProductType` to the root. With the association deliberately unresolved the walk finds
+       * nothing and would yield the child's own identifier alone — flattening the ancestry and leaving a
+       * row whose preserved parent key contradicts its path. `ProductType.getBaseProductType` reads
+       * `listFirst` of this path to find the root, so a flattened path silently changes a product's
+       * discriminator. The capture-and-restore guard puts the database's own value back.
+       */
+      const { repository, journal } = makeTreeRepository();
+      const child = hydratedChild();
+
+      await repository.saveProductType(child);
+
+      const update = matching(journal, /^UPDATE SwProductType SET/)[0];
+
+      expect(update?.params[PARENT_KEY_INDEX]).toBe(ID.parentProductType);
+      /* NOT the flattened `ID.productType` the unguarded rebuild would have produced. */
+      expect(update?.params[PATH_INDEX]).toBe(`${ID.parentProductType},${ID.productType}`);
+      expect(update?.params[PATH_INDEX]).not.toBe(ID.productType);
+    });
+
+    it('NET-NEW — the FULL round trip through the real read member survives: findAllForTree then saveProductType', async () => {
+      /*
+       * ⭐⭐ THIS IS THE CASE THE REVIEW ASKED FOR, END TO END, WITH NO HAND-BUILT ENTITY ANYWHERE.
+       * Every case above hydrates through `mapProductTypeRow` directly. This one goes through the actual
+       * port member `findAllForTree()` — the read the finding cites — takes the entity it returns, and
+       * hands that same entity to the write member. Nothing in between is constructed by the test.
+       *
+       * It also pins a mechanism detail worth pinning: `mapProductTypeTreeRow` builds its row by calling
+       * `mapProductTypeRow` and then `Object.assign`ing the two counts onto THE SAME OBJECT, so the
+       * object-keyed rule 3b entry recorded during hydration is still keyed to the entity that comes back
+       * out. Had the tree mapper spread into a fresh object instead, the preserved key would have been
+       * silently orphaned and this assertion would fail while every other case here still passed.
+       */
+      const { repository, journal } = makeTreeRepository({
+        SwProductType: [
+          {
+            productTypeID: ID.productType,
+            productTypeIDPath: `${ID.parentProductType},${ID.productType}`,
+            parentProductTypeID: ID.parentProductType,
+            productTypeName: 'Merchandise',
+            urlTitle: 'merchandise',
+            activeFlag: 1,
+            isAssigned: 0,
+            childCount: 0,
+          },
+        ],
+      });
+
+      const [readBack] = await repository.findAllForTree();
+      if (readBack === undefined) {
+        throw new Error('expected exactly one product type row');
+      }
+
+      /* Read as the tree member presents it: counts attached, association still unresolved. */
+      expect(readBack.productTypeID).toBe(ID.productType);
+      expect(readBack.parentProductType).toBeUndefined();
+
+      await repository.saveProductType(readBack);
+
+      const update = matching(journal, /^UPDATE SwProductType SET/)[0];
+      expect(update?.params[PARENT_KEY_INDEX]).toBe(ID.parentProductType);
+      expect(update?.params[PATH_INDEX]).toBe(`${ID.parentProductType},${ID.productType}`);
+      expect(update?.params[13]).toBe(ID.productType);
+    });
+
+    it('NET-NEW — a resolved association still wins over the preserved key', async () => {
+      /*
+       * The association comes first in the expression, mirroring the mapping declaration at
+       * `model/entity/ProductType.cfc:L62`. Re-parenting therefore behaves exactly as before rule 3b:
+       * the preserved key is a FALLBACK, never an override.
+       */
+      const { adapter, journal } = makeAdapter();
+      const child = hydratedChild();
+
+      const newParent = new ProductType();
+      newParent.productTypeID = ID.brand; // any identifier distinct from the hydrated one
+      child.parentProductType = newParent;
+
+      await adapter.saveProductType(child);
+
+      const update = matching(journal, /^UPDATE SwProductType SET/)[0];
+      expect(update?.params[PARENT_KEY_INDEX]).toBe(ID.brand);
+      expect(update?.params[PARENT_KEY_INDEX]).not.toBe(ID.parentProductType);
+    });
+
+    it('NET-NEW — an explicit detach writes NULL, so rule 3b cannot resurrect a removed parent', async () => {
+      /*
+       * ⭐ THE ESCAPE HATCH IS PART OF THE CONTRACT. Preserving the key would be a trap if there were no
+       * way to say "this child genuinely has no parent now", because `removeParentProductType` clears the
+       * association and the preserved key would silently put the old parent back. A caller that means to
+       * detach calls `forgetHydratedParentProductTypeID` first.
+       */
+      const { adapter, journal } = makeAdapter();
+      const child = hydratedChild();
+
+      forgetHydratedParentProductTypeID(child);
+
+      await adapter.saveProductType(child);
+
+      const update = matching(journal, /^UPDATE SwProductType SET/)[0];
+      expect(update?.params[PARENT_KEY_INDEX]).toBeNull();
+    });
+
+    it('NET-NEW — a genuine root records no key and still writes NULL', async () => {
+      /*
+       * The three seeded discriminators are roots: `config/dbdata/SlatwallProductType.xml.cfm:L13-L15`
+       * gives each a `productTypeIDPath` equal to its own identifier and no parent. The driver hands the
+       * parent column back as `null`, `readOptionalString` maps that to `undefined`, and rule 3b records
+       * nothing — so the column is nulled because there is genuinely no parent, not because the key was
+       * lost.
+       */
+      const { adapter, journal } = makeAdapter();
+      const root = mapProductTypeRow({
+        productTypeID: ID.productType,
+        productTypeIDPath: ID.productType,
+        parentProductTypeID: null,
+        productTypeName: 'Merchandise',
+        systemCode: 'merchandise',
+        urlTitle: 'merchandise',
+        activeFlag: 1,
+      });
+
+      await adapter.saveProductType(root);
+
+      const update = matching(journal, /^UPDATE SwProductType SET/)[0];
+      expect(update?.params[PARENT_KEY_INDEX]).toBeNull();
+      expect(update?.params[PATH_INDEX]).toBe(ID.productType);
+    });
+  });
+
+  /* =================================================================================================
+   * THE PRODUCT REMOVAL PATH
+   * ============================================================================================== */
+
+  describe('MySqlProductPersistence — the product removal path (DATA-03)', () => {
+    /** A product whose two SKU rows the cascade will find. */
+    function productWithSkus(): Readonly<Record<string, readonly MySqlRow[]>> {
+      return { SwSku: [{ skuID: ID.defaultSku }, { skuID: ID.otherSku }] };
+    }
+
+    it('NET-NEW — the six steps run in the legacy order, with the SKU cascade before the product row', async () => {
+      const { adapter, journal, cleanup } = makeAdapter(productWithSkus());
+
+      await adapter.deleteProduct(savedProduct());
+
+      const shapes = journal.statements.map((statement) =>
+        statement.sql.replace(/\s+/g, ' ').slice(0, 46),
+      );
+
+      // Step 2 first: the self-reference must be broken before either row can go.
+      expect(shapes[0]).toContain('UPDATE SwProduct SET defaultSkuID = NULL');
+      // Step 4 next — step 3 is the collaborator, which issues no statement of its own here.
+      expect(shapes[1]).toContain('DELETE FROM SwRelatedProduct');
+      // Step 5: read the identifiers, clear the four link tables, then the SKU rows.
+      expect(shapes[2]).toContain('SELECT skuID FROM SwSku');
+      expect(shapes[3]).toContain('DELETE FROM SwSkuOption');
+      expect(shapes[4]).toContain('DELETE FROM SwSkuAccessContent');
+      expect(shapes[5]).toContain('DELETE FROM SwSkuSubsBenefit');
+      expect(shapes[6]).toContain('DELETE FROM SwSkuRenewalSubsBenefit');
+      expect(shapes[7]).toContain('DELETE FROM SwSku WHERE');
+      // Step 6 last.
+      expect(shapes[8]).toContain('DELETE FROM SwProduct WHERE');
+      expect(shapes).toHaveLength(9);
+
+      // Step 3 ran, and ran BEFORE the product row went — `org/Hibachi/HibachiService.cfc:L61`
+      // precedes `:L64`.
+      expect(cleanup.productIds).toEqual([ID.product]);
+    });
+
+    it('NET-NEW — all FOUR SKU link tables are cleared, not just the option one', async () => {
+      // Leaving three out would leave orphan link rows pointing at a `skuID` that no longer exists,
+      // which no error anywhere would report. `model/entity/Sku.cfc:L76-L79` declares all four.
+      const { adapter, journal } = makeAdapter(productWithSkus());
+
+      await adapter.deleteProduct(savedProduct());
+
+      for (const table of [
+        'SwSkuOption',
+        'SwSkuAccessContent',
+        'SwSkuSubsBenefit',
+        'SwSkuRenewalSubsBenefit',
+      ]) {
+        const statements = matching(journal, new RegExp(`^DELETE FROM ${table} WHERE skuID IN`));
+        expect(statements).toHaveLength(1);
+        // One placeholder per identifier, each value bound rather than interpolated.
+        expect(statements[0]?.sql).toContain('IN (?, ?)');
+        expect(statements[0]?.params).toEqual([ID.defaultSku, ID.otherSku]);
+      }
+    });
+
+    it('NET-NEW — SwRelatedProduct is cleared on the OWNER side only', async () => {
+      // `model/entity/Product.cfc:L81` carries NO `inverse="true"`, so this product owns the rows whose
+      // `productID` is its own and does not own the rows whose `relatedProductID` is.
+      // `org/Hibachi/HibachiEntity.cfc:L277` iterates only this entity's own collection, so the legacy
+      // left the reverse rows too. Widening the predicate would remove rows the legacy keeps.
+      const { adapter, journal } = makeAdapter(productWithSkus());
+
+      await adapter.deleteProduct(savedProduct());
+
+      const statements = matching(journal, /^DELETE FROM SwRelatedProduct/);
+      expect(statements).toHaveLength(1);
+      expect(statements[0]?.sql).toContain('WHERE productID = ?');
+      expect(statements[0]?.sql).not.toContain('relatedProductID');
+      expect(statements[0]?.params).toEqual([ID.product]);
+    });
+
+    it('NET-NEW — a product with no SKUs issues no SKU statement at all', async () => {
+      // An empty identifier list would compose `IN ()`, which is a syntax error rather than an empty
+      // match — the same rule `QueryRunner.ts` records for its loaders.
+      const { adapter, journal } = makeAdapter({ SwSku: [] });
+
+      await adapter.deleteProduct(savedProduct());
+
+      expect(matching(journal, /IN \(\)/)).toHaveLength(0);
+      expect(matching(journal, /^DELETE FROM SwSku\b/)).toHaveLength(0);
+      expect(matching(journal, /^DELETE FROM SwSkuOption/)).toHaveLength(0);
+      // The product itself still goes.
+      expect(matching(journal, /^DELETE FROM SwProduct WHERE/)).toHaveLength(1);
+    });
+
+    it('NET-NEW — a transient product is refused and NOTHING is issued', async () => {
+      // Every statement would be keyed on `''`, a predicate that matches nothing in a sound table and
+      // an arbitrary row in an unsound one. The mapping layer would have raised on the same input.
+      const { adapter, journal, cleanup } = makeAdapter();
+
+      await expect(adapter.deleteProduct(new Product())).rejects.toBeInstanceOf(DataIntegrityError);
+
+      expect(journal.statements).toHaveLength(0);
+      expect(cleanup.productIds).toHaveLength(0);
+    });
+
+    it('NET-NEW — a SKU row with an unusable identifier is refused rather than skipped', async () => {
+      // Skipping it would leave that SKU's link rows behind AND then fail the product removal on a
+      // foreign-key constraint, with nothing anywhere naming the cause.
+      const { adapter } = makeAdapter({ SwSku: [{ skuID: 42 }] });
+
+      await expect(adapter.deleteProduct(savedProduct())).rejects.toBeInstanceOf(
+        DataIntegrityError,
+      );
+    });
+  });
+
+  /* =================================================================================================
+   * THE PRODUCT-TYPE REMOVAL PATH
+   * ============================================================================================== */
+
+  describe('MySqlProductPersistence — the product-type removal path (DATA-03)', () => {
+    it('NET-NEW — the excluded-family rows are cleared before the product-type row', async () => {
+      const { adapter, journal, cleanup } = makeAdapter();
+
+      await adapter.deleteProductType(savedProductType());
+
+      expect(cleanup.productTypeIds).toEqual([ID.productType]);
+      const statements = matching(journal, /^DELETE FROM SwProductType/);
+      expect(statements).toHaveLength(1);
+      expect(statements[0]?.params).toEqual([ID.productType]);
+    });
+
+    it('NET-NEW — no cascade is attempted over products or child product types', async () => {
+      // Not an omission: `model/validation/ProductType.json` bounds BOTH at `maxCollection 0` for the
+      // delete context, so a product type carrying either is refused before any removal is attempted
+      // and the `cascade="all"` at `model/entity/ProductType.cfc:L65-L66` is unreachable. Implementing
+      // it would add behaviour the legacy cannot reach.
+      const { adapter, journal } = makeAdapter();
+
+      await adapter.deleteProductType(savedProductType());
+
+      expect(matching(journal, /DELETE FROM SwProduct\b/)).toHaveLength(0);
+      expect(matching(journal, /parentProductTypeID/)).toHaveLength(0);
+      expect(journal.statements).toHaveLength(1);
+    });
+
+    it('NET-NEW — a transient product type is refused and NOTHING is issued', async () => {
+      const { adapter, journal, cleanup } = makeAdapter();
+
+      await expect(adapter.deleteProductType(new ProductType())).rejects.toBeInstanceOf(
+        DataIntegrityError,
+      );
+
+      expect(journal.statements).toHaveLength(0);
+      expect(cleanup.productTypeIds).toHaveLength(0);
+    });
+  });
+
+  /* =================================================================================================
+   * THE FOUR SEAMS — THE FINDING'S ACTUAL CLAIM
+   * ============================================================================================== */
+
+  describe('the four ProductService seams the adapter fills (DATA-03)', () => {
+    it('NET-NEW — all four members satisfy the service layer\u2019s persister and remover contracts', () => {
+      // ⚠️ THIS IS A COMPILE-TIME ASSERTION WEARING A RUNTIME COAT. The adapter deliberately does not
+      // import these two function types (S4 — an adapter must not reach up into the service layer), so
+      // the assignability is unproven inside it. Binding all four here makes a signature drift a
+      // compile error in this suite rather than a run-time surprise at the wiring site.
+      const { adapter } = makeAdapter();
+
+      const persistProduct: EntityPersister<Product> = (product) => adapter.saveProduct(product);
+      const removeProduct: EntityRemover<Product> = (product) => adapter.deleteProduct(product);
+      const persistProductType: EntityPersister<ProductType> = (productType) =>
+        adapter.saveProductType(productType);
+      const removeProductType: EntityRemover<ProductType> = (productType) =>
+        adapter.deleteProductType(productType);
+
+      expect([persistProduct, removeProduct, persistProductType, removeProductType]).toHaveLength(
+        4,
+      );
+    });
+
+    /**
+     * A real `ProductService` wired to the real adapter for exactly the seams a scenario reaches.
+     *
+     * Everything else is `UNREACHED_COLLABORATOR`: `getProduct` touches only the query port, and the
+     * three write members below touch only the collaborators named here. A collaborator that is never
+     * called needs no behaviour, and giving it one would suggest these cases depend on it.
+     */
+    function makeService(
+      adapter: MySqlProductPersistence,
+      smartListQueryPort: ProductService['smartListQueryPort'] = UNREACHED_COLLABORATOR,
+    ): ProductService {
+      return new ProductService({
+        productRepository: UNREACHED_COLLABORATOR,
+        skuRepository: UNREACHED_COLLABORATOR,
+        skuService: UNREACHED_COLLABORATOR,
+        optionService: UNREACHED_COLLABORATOR,
+        /* `ProductBaseService` is `Pick<BaseService<Product, …>, 'delete'>`. The real base service's
+         * delete runs the delete-context rules and then its `remove` collaborator; what matters to
+         * DATA-03 is that the collaborator it would call is the real adapter, so the seam is exercised
+         * with the real statements rather than with a recorder. */
+        baseService: {
+          delete: async (product: Product): Promise<boolean> => {
+            await adapter.deleteProduct(product);
+            return true;
+          },
+        },
+        /* `ProductTypeBaseService` is `Pick<BaseService<ProductType, …>, 'save'>`, whose contract
+         * populates, validates and then persists. The persistence step is the real adapter. */
+        productTypeBaseService: {
+          /* ⚠️ TYPED OVER `ManagedEntity<ProductType>`, NOT OVER A BARE `ProductType`, AND THE REASON IS
+           * F22 ON `src/domain/product/ProductType.ts`. `BaseService.save` is declared over the managed
+           * form, and this entity DELIBERATELY does not declare the seven managed-entity members as class
+           * methods — `manageEntity` attaches them, which is what `rowMappers.ts` already does to every
+           * hydrated product type. A bare `ProductType` is therefore NOT assignable to the slot, and
+           * widening the double here is the honest fix rather than reinstating methods the domain module
+           * decided against. `MySqlProductPersistence.saveProductType` returns THE SAME INSTANCE on both
+           * of its branches, so forwarding the argument back preserves the identity the contract promises
+           * while keeping the managed type. */
+          save: async (
+            productType: ManagedEntity<ProductType>,
+            data?: Record<string, unknown>,
+          ): Promise<ManagedEntity<ProductType>> => {
+            const urlTitle = data?.['urlTitle'];
+            if (typeof urlTitle === 'string') {
+              productType.urlTitle = urlTitle;
+            }
+            await adapter.saveProductType(productType);
+            return productType;
+          },
+        },
+        validator: {
+          validate: () => Promise.resolve({ getErrors: () => ({}) }),
+          validateProcess: UNREACHED_COLLABORATOR,
+        } as never,
+        settings: createSettingResolverDouble({ fallback: '' }).resolver,
+        accountContext: createAccountContextDouble().accountContext,
+        smartListQueryPort,
+        subscriptionTermPort: UNREACHED_COLLABORATOR,
+        productTypeRootResolver: (() => undefined) as never,
+        productPropertyDescriptors: PRODUCT_PROPERTY_DESCRIPTORS,
+        populationAuthorization: createPopulationAuthorizationDouble().populationAuthorization,
+        /* `UniqueValueProbe` takes the table name as a plain string, exactly as
+         * `model/service/DataService.cfc:L53` declares `createUniqueURLTitle(titleString, tableName)`.
+         * The double's own probe narrows that first parameter to its table union, so it is adapted here
+         * rather than the utility's contract being widened. */
+        isUrlTitleAvailable: (tableName: string, value: string): Promise<boolean> =>
+          urlTitleProbe.probe.isUrlTitleAvailable(tableName as UrlTitleTableName, value),
+        persistProduct: (product: Product) => adapter.saveProduct(product),
+        /* Reached only by `requireDefaultSkuEntity`, which only the subscription-term process member
+         * calls. Made LOUD rather than plausible: a reader answering `''` would let a case pass while
+         * silently resolving the wrong SKU. */
+        defaultSkuIdReader: (): string => {
+          throw new Error('defaultSkuIdReader is not reached by these cases.');
+        },
+        /* F10 — THE REAL HYDRATION READER, NOT A STUB, matching every other construction in this file.
+         * It answers `undefined` for a hand-built product type, because nothing wrote a preserved parent
+         * key beside one, so these cases observe the same reader the composition root wires. */
+        parentProductTypeIdReader: readHydratedParentProductTypeID,
+      });
+    }
+
+    it('NET-NEW — ProductService.saveProduct now reaches SwProduct through the real persister', async () => {
+      // The finding, restated: before this adapter existed, `persistProduct` had no production
+      // implementation, so this path could not write anything at all.
+      const { adapter, journal } = makeAdapter();
+      const service = makeService(adapter);
+      const product = savedProduct();
+
+      const saved = await service.saveProduct(product, { productName: 'Renamed' });
+
+      expect(saved).toBe(product);
+      expect(matching(journal, /^UPDATE SwProduct SET/)).toHaveLength(1);
+      // Population ran first, so the payload's value is what reached the driver.
+      expect(matching(journal, /^UPDATE SwProduct SET/)[0]?.params).toContain('Renamed');
+    });
+
+    it('NET-NEW — ProductService.deleteProduct now removes the rows through the real remover', async () => {
+      const { adapter, journal } = makeAdapter({ SwSku: [{ skuID: ID.defaultSku }] });
+      const service = makeService(adapter);
+      const product = savedProduct();
+      const { delegate } = makeDefaultSkuDelegate(ID.defaultSku);
+      product.defaultSku = delegate;
+
+      await expect(service.deleteProduct(product)).resolves.toBe(true);
+
+      // `:L323` clears the relationship in memory; the adapter's step 2 is what makes the stored
+      // column agree, because this port has no flush.
+      expect(product.defaultSku).toBeUndefined();
+      expect(matching(journal, /^UPDATE SwProduct SET defaultSkuID = NULL/)).toHaveLength(1);
+      expect(matching(journal, /^DELETE FROM SwProduct WHERE/)).toHaveLength(1);
+      expect(matching(journal, /^DELETE FROM SwSku WHERE/)).toHaveLength(1);
+    });
+
+    it('NET-NEW — ProductService.saveProductType now reaches SwProductType through the real persister', async () => {
+      const { adapter, journal } = makeAdapter();
+      const service = makeService(adapter);
+      const productType = new ProductType();
+
+      await service.saveProductType(productType, { productTypeName: 'Merchandise' });
+
+      // A transient type takes the insert path and is minted here and only here.
+      expect(productType.productTypeID).toMatch(/^[0-9a-f]{32}$/);
+      expect(matching(journal, /^INSERT INTO SwProductType/)).toHaveLength(1);
+      // `:L297` writes the derived title INTO THE PAYLOAD, and it only reaches the entity because the
+      // base service populates from that same struct.
+      expect(matching(journal, /^INSERT INTO SwProductType/)[0]?.params).toContain('merchandise');
+    });
+  });
+
+  /* =================================================================================================
+   * THE READ HALF — `getProduct` MUST ANSWER AN AGGREGATE
+   * ============================================================================================== */
+
+  describe('ProductService.getProduct returns a materialised aggregate (DATA-03)', () => {
+    /** A product row plus every row its associations need. */
+    const READ_TABLES: Readonly<Record<string, readonly MySqlRow[]>> = {
+      SwProduct: [
+        {
+          productID: ID.product,
+          productName: 'Feed Product',
+          productCode: 'FP-1',
+          productTypeID: ID.productType,
+          brandID: ID.brand,
+          defaultSkuID: ID.defaultSku,
+        },
+      ],
+      SwProductType: [{ productTypeID: ID.productType, productTypeName: 'Merchandise' }],
+      SwBrand: [{ brandID: ID.brand, brandName: 'Nike' }],
+      /* ⚠️ THE MONEY COLUMN IS A STRING, NOT A NUMBER, AND THAT IS THE DRIVER CONTRACT RATHER THAN A
+       * FIXTURE QUIRK. `model/entity/Sku.cfc:L56` declares `price` `ormtype="big_decimal"`, and
+       * `rowMappers.ts` reads it through the exact-decimal reader, which REFUSES a JavaScript number
+       * because by the time one arrives the exact digits are already gone (F16). */
+      SwSku: [
+        { skuID: ID.defaultSku, skuCode: 'SKU-DEFAULT', price: '99.00', productID: ID.product },
+        { skuID: ID.otherSku, skuCode: 'SKU-2', price: '20.00', productID: ID.product },
+      ],
+    };
+
+    /**
+     * An executor that HONOURS BOTH `WHERE <column> IN (…)` AND `WHERE <alias>.<column> = ?`.
+     *
+     * ⚠️ IT HAS TO HONOUR THE `IN` FORM. Two different statements read `SwSku` on this path — the aggregate
+     * loader's product-scoped collection read and its default-SKU lookup by identifier — and a double that
+     * answered both with the same rows would hand the lookup rows it never asked for.
+     *
+     * ⚠️ IT HAS TO HONOUR THE EQUALITY FORM TOO, and for a sharper reason: `getProduct` is a primary-key
+     * lookup expressed as a single-filter dynamic query, which the builder compiles to
+     * `WHERE ((<alias>.productID = ?))`. A double that ignored that predicate would answer EVERY
+     * identifier with the seeded row, so the case asserting that an unmatched identifier yields `null`
+     * could never fail and would be asserting nothing at all.
+     */
+    function readExecutor(): ProductService['smartListQueryPort'] {
+      const executor = {
+        execute: (sql: string, params: readonly unknown[]): Promise<MySqlRow[]> => {
+          if (sql.includes('recordsCount')) {
+            return Promise.resolve([{ recordsCount: 1 }]);
+          }
+
+          const table = Object.keys(READ_TABLES).find((name) =>
+            new RegExp(`FROM ${name}\\b`).test(sql),
+          );
+          if (table === undefined) {
+            return Promise.resolve([]);
+          }
+          const rows = READ_TABLES[table] ?? [];
+
+          const inFilter = /WHERE (?:\w+\.)?(\w+) IN \(/.exec(sql);
+          const inColumn = inFilter?.[1];
+          if (inColumn !== undefined) {
+            return Promise.resolve(rows.filter((row) => params.includes(row[inColumn])));
+          }
+
+          /* The builder's own filter form. The first bound value is the filter's, because the paging
+           * placeholders are appended after the WHERE parameters. */
+          const equalityFilter = /WHERE \(+(?:\w+\.)?(\w+) = \?/.exec(sql);
+          const equalityColumn = equalityFilter?.[1];
+          if (equalityColumn !== undefined) {
+            return Promise.resolve(rows.filter((row) => row[equalityColumn] === params[0]));
+          }
+
+          return Promise.resolve([...rows]);
+        },
+      };
+
+      return new SmartListQueryBuilder(
+        executor,
+        createCatalogAggregateLoaders({
+          bindDefaultSkuDelegate: (sku: Sku): ProductDefaultSkuDelegate => ({
+            getCurrencyCode: (): string | undefined => undefined,
+            getPrice: (): ExactDecimal | undefined => sku.price,
+            getRenewalPrice: (): ExactDecimal | undefined => undefined,
+            getListPrice: (): ExactDecimal | undefined => undefined,
+            getImageDirectory: (): string => '',
+            getImagePath: (): string => '',
+            getImage: (): string => '',
+            getResizedImagePath: (): string => '',
+            getImageExistsFlag: (): boolean => false,
+          }),
+        }),
+      );
+    }
+
+    /** The same service shape as above, with only the query port live. */
+    function readService(): ProductService {
+      const { adapter } = makeAdapter();
+      return new ProductService({
+        productRepository: UNREACHED_COLLABORATOR,
+        skuRepository: UNREACHED_COLLABORATOR,
+        skuService: UNREACHED_COLLABORATOR,
+        optionService: UNREACHED_COLLABORATOR,
+        baseService: UNREACHED_COLLABORATOR,
+        productTypeBaseService: UNREACHED_COLLABORATOR,
+        validator: UNREACHED_COLLABORATOR,
+        settings: createSettingResolverDouble({ fallback: '' }).resolver,
+        accountContext: createAccountContextDouble().accountContext,
+        smartListQueryPort: readExecutor(),
+        subscriptionTermPort: UNREACHED_COLLABORATOR,
+        productTypeRootResolver: (() => undefined) as never,
+        productPropertyDescriptors: PRODUCT_PROPERTY_DESCRIPTORS,
+        populationAuthorization: createPopulationAuthorizationDouble().populationAuthorization,
+        /* `UniqueValueProbe` takes the table name as a plain string, exactly as
+         * `model/service/DataService.cfc:L53` declares `createUniqueURLTitle(titleString, tableName)`.
+         * The double's own probe narrows that first parameter to its table union, so it is adapted here
+         * rather than the utility's contract being widened. */
+        isUrlTitleAvailable: (tableName: string, value: string): Promise<boolean> =>
+          urlTitleProbe.probe.isUrlTitleAvailable(tableName as UrlTitleTableName, value),
+        persistProduct: (product: Product) => adapter.saveProduct(product),
+        /* Reached only by `requireDefaultSkuEntity`, which only the subscription-term process member
+         * calls. Made LOUD rather than plausible: a reader answering `''` would let a case pass while
+         * silently resolving the wrong SKU. */
+        defaultSkuIdReader: (): string => {
+          throw new Error('defaultSkuIdReader is not reached by these cases.');
+        },
+        /* F10 — THE REAL HYDRATION READER, NOT A STUB, matching every other construction in this file.
+         * It answers `undefined` for a hand-built product type, because nothing wrote a preserved parent
+         * key beside one, so these cases observe the same reader the composition root wires. */
+        parentProductTypeIdReader: readHydratedParentProductTypeID,
+      });
+    }
+
+    it('NET-NEW — the product carries its productType, brand, defaultSku and skus', async () => {
+      const product = await readService().getProduct(ID.product);
+
+      expect(product).not.toBeNull();
+      // All four associations the finding named as missing.
+      expect(product?.productType?.productTypeID).toBe(ID.productType);
+      expect(product?.brand?.brandID).toBe(ID.brand);
+      expect(product?.defaultSku).toBeDefined();
+      expect(product?.getSkus()).toHaveLength(2);
+    });
+
+    it('NET-NEW — the default SKU answers a price, so Product.getPrice has something to fall through to', async () => {
+      // `Product.getPrice()` delegates to the default SKU when the product declares no local override,
+      // which is why an unresolved `defaultSku` made the Google feed emit an empty `<g:price>` for
+      // every item rather than raising.
+      const product = await readService().getProduct(ID.product);
+
+      expect(product?.defaultSku?.getPrice()).toBe(toExactDecimal('99.00'));
+      /* '99.00', not 99: F07 preserves the digits AND the scale the row carried — the fixture row spells
+       * `price: '99.00'`, and keeping that spelling is the whole point of the exact-decimal type. */
+    });
+
+    it('NET-NEW — every SKU back-references the same product instance', async () => {
+      const product = await readService().getProduct(ID.product);
+      const skus = product?.getSkus() ?? [];
+
+      expect(skus).toHaveLength(2);
+      for (const sku of skus) {
+        // Definedness asserted FIRST, so this cannot pass vacuously as `undefined === undefined`.
+        expect(sku).toBeInstanceOf(Sku);
+        expect((sku as Sku).product).toBeDefined();
+        expect((sku as Sku).product).toBe(product);
+      }
+    });
+
+    it('NET-NEW — an identifier that matches no row still answers null', async () => {
+      // `entityLoadByPK` yields null and the callers test it with `isNull()`, so `null` rather than
+      // `undefined` is the legacy answer shape.
+      const product = await readService().getProduct('00000000000000000000000000000000');
+
+      expect(product).toBeNull();
+    });
+  });
+});
+
+/* =====================================================================================================
+ * FOLDED IN FROM `test/adapters/MySqlBrandRepository.test.ts` — AAP §0.4.1.12 SUITE ALIGNMENT (F1)
+ * =====================================================================================================
+ * WHY THESE CASES ARE HERE RATHER THAN IN A SUITE OF THEIR OWN. AAP §0.4.1.12 declares exactly seventeen
+ * executable suites, and `test/adapters/MySqlBrandRepository.test.ts` was not one of them — a QA pass recorded it,
+ * with eighteen siblings, as running outside the declared test plan. The coverage was never the problem;
+ * the file's existence was. So the cases are folded into an approved suite, unchanged.
+ *
+ * ⭐ WHY THIS HOST. `MySqlBrandRepository` has no legacy DAO to port — `BrandService` reached its CRUD surface entirely
+ * through `onMissingMethod` synthesis — so its coverage has no natural sibling. This file is the closest:
+ * both adapters write a product-family root table through the same `QueryRunner` primitives.
+ *
+ * ⛔ THE BODY IS WRAPPED IN ONE `describe`, WHICH IS THE WHOLE OF THE MECHANICAL CHANGE. Every helper,
+ * constant and type the folded suite declared at module scope is now block-scoped to this callback, so it
+ * cannot collide with this file's own declarations or with another folded body's — and any `beforeEach`,
+ * `afterEach` or `beforeAll` it carries now applies to its own cases only, never to the host's. Not one
+ * assertion, case name or comment was altered.
+ * ================================================================================================== */
+
+/**
+ * `MySqlBrandRepository` — the brand persistence adapter. **NET-NEW** in its entirety.
+ *
+ * AAP authority: the AAP 0.4.4 wildcard row authorises `slatwall-ts/test/**` | CREATE. AAP 0.4.1.12
+ * enumerates four adapter test files and does NOT name this one, which is precisely the gap this file
+ * closes: AAP 0.4.1.7 lists `src/adapters/mysql/MySqlBrandRepository.ts` | CREATE, and AAP 0.7.3
+ * standard 6 requires one test per converted method, so five converted members with no test file at all
+ * was a standing shortfall against the AAP's own standard rather than a boundary the AAP had drawn. Two
+ * sibling files already sit outside the 0.4.1.12 enumeration under the same wildcard —
+ * `MySqlProductPersistence.test.ts` and `catalogAggregates.test.ts` — so this placement follows
+ * established practice in this subtree rather than inventing one.
+ *
+ * =================================================================================================
+ * WHY THIS FILE EXISTS — AND WHAT WAS UNVERIFIED BEFORE IT
+ * =================================================================================================
+ * ⚠️ BEFORE THIS FILE, NOTHING IN THE REPOSITORY IMPORTED `MySqlBrandRepository`. A repository-wide
+ * search found the name in exactly three places, and all three were PROSE: two comments in
+ * `test/support/inMemoryRepositories.ts` and one in `test/services/BrandService.test.ts`, each
+ * describing what the real adapter does while testing a double that stands in for it. Its five port
+ * members and every SQL path it composes had never been executed once.
+ *
+ * ⭐ AND THE DOUBLE COULD NOT HAVE COVERED THEM, WHICH IS THE POINT. `test/services/BrandService.test.ts`
+ * exercises the SERVICE against an in-memory brand repository; that proves the service's behaviour and
+ * says nothing about statement text, bound parameters, row mapping, or the two guards this adapter
+ * raises. One of those comments even concedes the gap in passing, at
+ * `test/services/BrandService.test.ts:2337` — "a deliberate limitation of the double, since the real
+ * `MySqlBrandRepository` answers from the table itself".
+ *
+ * PROVENANCE — EVERY CASE HERE IS **NET-NEW**
+ * No legacy `BrandDAO` exists at all: `model/service/BrandService.cfc` relies entirely on the CRUD
+ * surface `org/Hibachi/HibachiService.cfc:L255-L281` fabricates through `onMissingMethod`, which is
+ * implicit requirement IR-1 and the reason this adapter had to be declared explicitly in the first
+ * place. There is therefore no legacy `BrandDAOTest` either, so nothing below extends a legacy
+ * assertion and every `describe` and `it` carries **NET-NEW** (AAP 0.8.3.7).
+ *
+ * TRACEABILITY IS DOCUMENTARY, AND THE CONSTRAINT IS STATED RATHER THAN IMPLIED. MXUnit and CFSelenium
+ * are not vendored in this repository; `meta/docker/slatwall-local-dev/` does not exist; and no
+ * ColdFusion, Railo or Lucee engine is available here. The CFML runtime is therefore not reproducible
+ * and the legacy suite cannot be executed at all. Every expectation below was derived by INSPECTING
+ * `src/adapters/mysql/MySqlBrandRepository.ts` against `model/entity/Brand.cfc` and
+ * `model/service/BrandService.cfc`, and **no runtime behavioural comparison against the legacy system
+ * was performed**.
+ *
+ * =================================================================================================
+ * WHAT THIS FILE COVERS
+ * =================================================================================================
+ *   1. `newBrand()` — the transient factory, and the managed surface it returns.
+ *   2. `getBrand(brandID)` — the empty-identifier short circuit, the single-row read, the no-row null,
+ *      and the ambiguity guard that refuses to hydrate from several rows.
+ *   3. `saveBrand(brand)` — both arms, the IR-6 identifier mint, the audit block, and the identifier's
+ *      move from FIRST on the insert to LAST on the update.
+ *   4. `deleteBrand(brand)` — the affected-row boolean, and the transient guard that issues nothing.
+ *   5. `isUrlTitleAvailable(urlTitle)` — the polarity, which is the one member whose name and return
+ *      value point in opposite directions and therefore the one most likely to be inverted by mistake.
+ *   6. `withExecutor(executor)` — the rebind seam, and the account context it must carry across.
+ * ===============================================================================================*/
+describe('test/adapters/MySqlBrandRepository.test.ts — the synthesized CRUD surface `BrandService` reaches through `onMissingMethod` (IR-1) (folded, F1)', () => {
+  /* =================================================================================================
+   * IDENTIFIERS, RESOLVED THROUGH THE PRODUCTION WHITELIST RATHER THAN SPELLED BY HAND
+   * =================================================================================================
+   * Every table and column named below is resolved through the same two validators the adapter itself
+   * uses. A typo becomes a thrown `DomainError` at module load rather than an expectation that quietly
+   * matches nothing, and a column renamed in the whitelist breaks this file loudly instead of leaving it
+   * asserting against a name the adapter no longer emits.
+   * ===============================================================================================*/
+
+  const BRAND_TABLE = assertTableName('SwBrand');
+  const BRAND_ID = assertColumnName(BRAND_TABLE, 'brandID');
+  const BRAND_NAME = assertColumnName(BRAND_TABLE, 'brandName');
+  const BRAND_URL_TITLE = assertColumnName(BRAND_TABLE, 'urlTitle');
+
+  /** The 32-character lowercase hexadecimal identifier form of IR-6. */
+  const HEX_32 = /^[0-9a-f]{32}$/;
+
+  /* =================================================================================================
+   * THE HARNESS
+   * ===============================================================================================*/
+
+  /** One exercised adapter and the double that recorded what it issued. */
+  interface Harness {
+    readonly repository: MySqlBrandRepository;
+    readonly calls: readonly SqlExecutorCall[];
+    readonly executor: BrandStatementExecutor;
+    /** How many times the adapter read the current-account context. */
+    accountReads(): number;
+  }
+
+  /**
+   * Build the adapter over the suite's recording executor double.
+   *
+   * ⚠️ THE SEAM IS TYPED AS THE PRODUCTION INTERFACE. `BrandStatementExecutor` is what the constructor
+   * accepts, so naming it here proves the double satisfies the real read-and-write seam rather than some
+   * convenient shape, and it keeps a half-matching call from type-checking here and failing in production.
+   *
+   * @param outcomes - queued answers, consumed in issue order; omit for the double's own defaults.
+   * @param authenticated - whether an administrative actor is present, which decides the audit columns.
+   * @returns the harness.
+   */
+  function harness(
+    outcomes: readonly ReturnType<typeof sqlRows>[] = [],
+    authenticated = true,
+  ): Harness {
+    const double = createSqlExecutorDouble(outcomes.length === 0 ? {} : { outcomes });
+    const accountDouble = authenticated
+      ? createAccountContextDouble()
+      : createAbsentAccountContextDouble();
+    const executor: BrandStatementExecutor = double.executor;
+
+    return {
+      repository: new MySqlBrandRepository(executor, accountDouble.accountContext),
+      calls: double.calls,
+      executor,
+      accountReads: () => accountDouble.callCount(),
+    };
+  }
+
+  /** The single statement the adapter issued, or a failure naming what it actually issued. */
+  function soleCall(subject: Harness): SqlExecutorCall {
+    const [first, ...rest] = subject.calls;
+
+    if (first === undefined) {
+      throw new Error('the adapter issued no statement at all');
+    }
+    if (rest.length > 0) {
+      throw new Error(
+        `the adapter issued ${String(subject.calls.length)} statements, expected one`,
+      );
+    }
+
+    return first;
+  }
+
+  /**
+   * Capture the {@link DomainError} a rejecting call produced, narrowed by a real `instanceof` test.
+   *
+   * ⚠️ WHY NOT `expect.objectContaining`. That matcher is typed `any`, so passing it to `toThrow` trips
+   * `no-unsafe-argument` and — more importantly — would let an assertion about `context` type-check while
+   * inspecting a value the compiler knows nothing about. Narrowing first means every `context` read below
+   * is checked, which is the same discipline the landed adapters use on their own row reads.
+   *
+   * @param call - the promise expected to reject.
+   * @returns the captured error.
+   * @throws {Error} when the call resolved, or rejected with something that is not a `DomainError`.
+   */
+  async function captureDomainError(call: Promise<unknown>): Promise<DomainError> {
+    try {
+      await call;
+    } catch (error: unknown) {
+      if (error instanceof DomainError) {
+        return error;
+      }
+      throw error;
+    }
+    throw new Error('Expected the call to reject with a DomainError, but it resolved.');
+  }
+
+  /** Collapses runs of whitespace so a statement matches without depending on its indentation. */
+  function collapse(sql: string): string {
+    return sql.replace(/\s+/g, ' ').trim();
+  }
+
+  /** The column list of an INSERT, split on the adapter's own joiner. */
+  function insertedColumns(sql: string): readonly string[] {
+    return (/\(([^)]*)\) VALUES/.exec(collapse(sql))?.[1] ?? '').split(', ');
+  }
+
+  /** A complete brand row as the table would return it. */
+  function brandRow(overrides: Readonly<Record<string, unknown>> = {}): Record<string, unknown> {
+    return {
+      brandID: 'brand-1',
+      activeFlag: 1,
+      publishedFlag: 1,
+      urlTitle: 'acme',
+      brandName: 'Acme',
+      brandWebsite: 'https://acme.test',
+      remoteID: '',
+      createdDateTime: new Date('2024-01-01T00:00:00.000Z'),
+      createdByAccountID: TEST_ADMIN_ACCOUNT_ID,
+      modifiedDateTime: new Date('2024-01-02T00:00:00.000Z'),
+      modifiedByAccountID: TEST_ADMIN_ACCOUNT_ID,
+      ...overrides,
+    };
+  }
+
+  /* =================================================================================================
+   * 1. newBrand — the transient factory
+   * ===============================================================================================*/
+
+  describe('NET-NEW — newBrand, the transient factory', () => {
+    it('NET-NEW — returns a transient managed brand and issues no statement', () => {
+      const subject = harness();
+
+      const brand = subject.repository.newBrand();
+
+      /*
+       * `newBrand()` is one of the members `onMissingMethod` fabricated in the legacy (IR-1), and its whole
+       * job is to hand back an unsaved entity. It reaches no database: a factory that pre-inserted would
+       * make `saveBrand`'s own insert arm unreachable and would persist brands a caller then abandoned.
+       */
+      expect(brand.isNew()).toBe(true);
+      expect(brand.brandID).toBe('');
+      expect(subject.calls).toEqual([]);
+    });
+
+    it('NET-NEW — returns a DISTINCT instance on each call, so two callers cannot share one draft', () => {
+      const subject = harness();
+
+      expect(subject.repository.newBrand()).not.toBe(subject.repository.newBrand());
+    });
+
+    it('NET-NEW — returns a MANAGED entity, so the validation surface is present from the start', () => {
+      const subject = harness();
+
+      const brand = subject.repository.newBrand();
+
+      /* The managed wrapper carries the error surface `BaseService.save` attaches findings to — the F1
+       * contract. An unmanaged entity would type-check at this seam and fail inside the save path. */
+      expect(typeof brand.getClassName).toBe('function');
+      expect(brand.getClassName()).toBe('Brand');
+    });
+  });
+
+  /* =================================================================================================
+   * 2. getBrand — the primary-identifier read
+   * ===============================================================================================*/
+
+  describe('NET-NEW — getBrand, the primary-identifier read', () => {
+    it('NET-NEW — short-circuits an EMPTY identifier to null WITHOUT issuing a statement', async () => {
+      const subject = harness();
+
+      const found = await subject.repository.getBrand('');
+
+      /*
+       * ⭐ THE SHORT CIRCUIT IS THE LOAD-BEARING HALF, NOT THE NULL. An empty identifier is exactly what a
+       * transient brand carries, so this path is reached whenever a caller looks up an entity it has not
+       * saved. Without the guard the adapter would issue `WHERE brandID = ''`, which is a real query
+       * against a real index that can only ever match nothing — so the guard is what keeps a routine
+       * miss from becoming a round trip.
+       */
+      expect(found).toBeNull();
+      expect(subject.calls).toEqual([]);
+    });
+
+    it('NET-NEW — binds the identifier as a VALUE and selects from SwBrand by primary key', async () => {
+      const subject = harness([sqlRows([brandRow()])]);
+
+      await subject.repository.getBrand('brand-1');
+
+      const read = soleCall(subject);
+      expect(collapse(read.sql)).toContain(`FROM ${BRAND_TABLE}`);
+      expect(collapse(read.sql)).toContain(`WHERE ${BRAND_ID} = ?`);
+      expect(read.params).toEqual(['brand-1']);
+      /* The identifier never reaches the statement text — `?` binds values only. */
+      expect(read.sql).not.toContain('brand-1');
+    });
+
+    it('NET-NEW — hydrates every mapped field from the row it read', async () => {
+      const subject = harness([sqlRows([brandRow()])]);
+
+      const found = await subject.repository.getBrand('brand-1');
+
+      /* The mapper is the replacement for Hibernate hydration, so the fields are asserted rather than
+       * assumed: an adapter that read the row and returned a blank entity would pass a null check. */
+      expect(found?.brandID).toBe('brand-1');
+      expect(found?.brandName).toBe('Acme');
+      expect(found?.urlTitle).toBe('acme');
+      expect(found?.brandWebsite).toBe('https://acme.test');
+      /* And the hydrated entity is NOT transient, which is what routes a later save to the UPDATE arm. */
+      expect(found?.isNew()).toBe(false);
+    });
+
+    it('NET-NEW — answers null for a real read that matched nothing', async () => {
+      const subject = harness([sqlRows([])]);
+
+      const found = await subject.repository.getBrand('absent-brand');
+
+      /* "No such brand" is a legitimate answer, not an error — and it is reached by a real statement,
+       * unlike the empty-identifier case above, which is why both deserve their own case. */
+      expect(found).toBeNull();
+      expect(subject.calls).toHaveLength(1);
+    });
+
+    it('NET-NEW — REFUSES to hydrate when a single-row read matched several, naming the count', async () => {
+      const ambiguous = sqlRows([brandRow(), brandRow({ brandID: 'brand-2' })]);
+      /* Queued outcomes are consumed one per statement, so the SAME answer is queued twice for the two
+       * assertions below. Queuing it once would let the second read fall through to the double's default of
+       * no rows, and the case would then be asserting a refusal against an empty result. */
+      const subject = harness([ambiguous, ambiguous]);
+
+      /*
+       * ⚠️ IT REFUSES RATHER THAN TAKING THE FIRST ROW, AND THAT IS THE SAFE DIRECTION. A read on the
+       * primary key cannot legitimately match twice, so two rows mean the data contradicts the schema.
+       * Silently returning `rows[0]` would hide a corrupt table behind a plausible-looking brand and let
+       * whichever row the engine happened to order first decide the answer.
+       */
+      await expect(subject.repository.getBrand('brand-1')).rejects.toThrow(
+        /matched several, so the result is ambiguous/,
+      );
+
+      const raised = await captureDomainError(subject.repository.getBrand('brand-1'));
+      expect(raised.context?.['table']).toBe(BRAND_TABLE);
+      expect(raised.context?.['rowCount']).toBe(2);
+    });
+  });
+
+  /* =================================================================================================
+   * 3. saveBrand — both arms of the write
+   * ===============================================================================================*/
+
+  describe('NET-NEW — saveBrand, the SwBrand write seam', () => {
+    it('NET-NEW — mints a 32-hex identifier on the INSERT arm and binds it FIRST', async () => {
+      const subject = harness();
+      const { brand } = createManagedBrand({ brandName: 'Acme' });
+
+      expect(brand.isNew()).toBe(true);
+
+      const returned = await subject.repository.saveBrand(brand);
+
+      /* IR-6 — 32 lowercase hexadecimal characters, no dashes, never an auto-increment. */
+      expect(brand.brandID).toMatch(HEX_32);
+      expect(brand.isNew()).toBe(false);
+      /* The SAME instance is returned, so a caller keeps the entity whose findings it is holding. */
+      expect(returned).toBe(brand);
+
+      const insert = soleCall(subject);
+      expect(collapse(insert.sql)).toContain(`INSERT INTO ${BRAND_TABLE}`);
+      expect(insert.params[0]).toBe(brand.brandID);
+    });
+
+    it('NET-NEW — takes the UPDATE arm on a persisted brand and binds the identifier LAST', async () => {
+      const subject = harness();
+      const { brand } = createManagedBrand({ brandID: 'brand-1', brandName: 'Acme' });
+
+      await subject.repository.saveBrand(brand);
+
+      const update = soleCall(subject);
+      /*
+       * ⭐ THE IDENTIFIER MOVES FROM FIRST TO LAST BETWEEN THE ARMS. On the insert it leads the column
+       * list; on the update it is the WHERE predicate rather than a written column. Both positions hold
+       * strings, so a swap between the arms type-checks perfectly and would update the wrong row — or
+       * every row — which is why each arm is pinned separately.
+       */
+      expect(collapse(update.sql)).toContain(`UPDATE ${BRAND_TABLE} SET`);
+      expect(collapse(update.sql)).toContain(`WHERE ${BRAND_ID} = ?`);
+      expect(update.params[update.params.length - 1]).toBe('brand-1');
+      expect(update.sql).not.toContain('INSERT');
+      /* Nothing re-mints an identifier on an update. */
+      expect(brand.brandID).toBe('brand-1');
+    });
+
+    it('NET-NEW — is idempotent across two saves: one INSERT, then one UPDATE', async () => {
+      const subject = harness();
+      const { brand } = createManagedBrand({ brandName: 'Acme' });
+
+      await subject.repository.saveBrand(brand);
+      const mintedOnce = brand.brandID;
+      await subject.repository.saveBrand(brand);
+
+      const [first, second] = subject.calls;
+      expect(collapse(first?.sql ?? '')).toContain('INSERT INTO');
+      expect(collapse(second?.sql ?? '')).toContain('UPDATE');
+      /* A second save must not duplicate the row, and must not re-mint the identifier. */
+      expect(brand.brandID).toBe(mintedOnce);
+    });
+
+    it('NET-NEW — stamps the audit block through the FREE functions, taking one instant on an insert', async () => {
+      const subject = harness();
+      const { brand } = createManagedBrand({ brandName: 'Acme' });
+
+      await subject.repository.saveBrand(brand);
+
+      /*
+       * ⭐ THE FREE-FUNCTION ROUTE IS CORRECT HERE, AND IT IS THE OPPOSITE OF THE PRODUCT-TYPE ADAPTER.
+       * `model/entity/Brand.cfc` does not override `preInsert`/`preUpdate`, so a brand received only the
+       * framework audit block at `org/Hibachi/HibachiEntity.cfc:L598-L649` — which is what
+       * `src/domain/base/AuditableEntity.ts` ports. `model/entity/ProductType.cfc:L305-L313` DOES override
+       * both, which is why `MySqlProductTypeRepository` calls the entity's own hooks instead. Same-looking
+       * adapters, deliberately different mechanisms, and the difference is legacy-faithful.
+       */
+      const insert = soleCall(subject);
+      const columns = insertedColumns(insert.sql);
+      const created = insert.params[columns.indexOf('createdDateTime')];
+      const modified = insert.params[columns.indexOf('modifiedDateTime')];
+
+      expect(created).toBeDefined();
+      expect(created).toEqual(modified);
+      /* The account context was consulted, which is how the actor columns were decided at all. */
+      expect(subject.accountReads()).toBeGreaterThan(0);
+      expect(insert.params[columns.indexOf('createdByAccountID')]).toBe(TEST_ADMIN_ACCOUNT_ID);
+    });
+
+    it('NET-NEW — leaves both account columns unwritten when nobody is authenticated', async () => {
+      const subject = harness([], false);
+      const { brand } = createManagedBrand({ brandName: 'Acme' });
+
+      await subject.repository.saveBrand(brand);
+
+      /* An absent actor is a legitimate state and no system account is substituted (AAP 0.7.3 S9). */
+      const insert = soleCall(subject);
+      const columns = insertedColumns(insert.sql);
+
+      for (const column of ['createdByAccountID', 'modifiedByAccountID']) {
+        const index = columns.indexOf(column);
+        expect(index).toBeGreaterThan(-1);
+        expect(insert.params[index] ?? null).toBeNull();
+      }
+      /* The timestamps still moved, so "no actor" did not become "no audit". */
+      expect(insert.params[columns.indexOf('createdDateTime')]).toBeDefined();
+      /* And the admin identifier appears nowhere, so nothing quietly fell back to it. */
+      expect(insert.params).not.toContain(TEST_ADMIN_ACCOUNT_ID);
+    });
+
+    it('NET-NEW — binds one value per named column on the insert', async () => {
+      const subject = harness();
+
+      await subject.repository.saveBrand(createManagedBrand().brand);
+
+      const insert = soleCall(subject);
+      const columns = insertedColumns(insert.sql);
+      const markers = (/VALUES \(([^)]*)\)/.exec(collapse(insert.sql))?.[1] ?? '').split(', ');
+
+      /* TR-4 — positional, one for one. A count mismatch shifts every later value by one silently. */
+      expect(markers).toHaveLength(columns.length);
+      expect(insert.params).toHaveLength(columns.length);
+      expect(markers.every((marker) => marker === '?')).toBe(true);
+    });
+
+    it('NET-NEW — never lets a quote-bearing brand name reach the statement text', async () => {
+      const subject = harness();
+      const hostile = "Ac'me; DROP TABLE SwBrand; --";
+      const { brand } = createManagedBrand({ brandName: hostile });
+
+      await subject.repository.saveBrand(brand);
+
+      /* D18's value/identifier separation, applied to the brand write path. */
+      const insert = soleCall(subject);
+      expect(insert.sql).not.toContain('DROP TABLE SwBrand;');
+      expect(insert.sql).not.toContain("'");
+      expect(insert.params).toContain(hostile);
+      /* The column name still appears, so the assertion above did not pass by emitting nothing. */
+      expect(insertedColumns(insert.sql)).toContain(BRAND_NAME);
+    });
+
+    it('NET-NEW — opens no transaction of its own, leaving the boundary to the caller', async () => {
+      const subject = harness();
+
+      await subject.repository.saveBrand(createManagedBrand().brand);
+
+      /* `UnitOfWork` owns the boundary; a bare save composes one statement and nothing else. */
+      expect(subject.calls).toHaveLength(1);
+      expect(collapse(soleCall(subject).sql)).not.toContain('BEGIN');
+    });
+  });
+
+  /* =================================================================================================
+   * 4. deleteBrand — the removal path and its affected-row answer
+   * ===============================================================================================*/
+
+  describe('NET-NEW — deleteBrand, the SwBrand removal seam', () => {
+    it('NET-NEW — deletes by bound identifier and reports true when a row went', async () => {
+      const subject = harness([sqlAffectedRows(1)]);
+      const { brand } = createManagedBrand({ brandID: 'brand-1' });
+
+      const removed = await subject.repository.deleteBrand(brand);
+
+      expect(removed).toBe(true);
+      const remove = soleCall(subject);
+      expect(collapse(remove.sql)).toContain(`DELETE FROM ${BRAND_TABLE} WHERE ${BRAND_ID} = ?`);
+      expect(remove.params).toEqual(['brand-1']);
+      expect(remove.sql).not.toContain('brand-1');
+    });
+
+    it('NET-NEW — reports FALSE when the statement removed nothing, rather than raising', async () => {
+      const subject = harness([sqlAffectedRows(0)]);
+      const { brand } = createManagedBrand({ brandID: 'already-gone' });
+
+      const removed = await subject.repository.deleteBrand(brand);
+
+      /*
+       * ⭐ THE BOOLEAN IS DERIVED FROM THE AFFECTED-ROW COUNT, AND BOTH ANSWERS ARE REAL.
+       * `model/service/HibachiService.cfc:L68` returns a flag rather than raising, so a brand that was
+       * already removed reports `false` and is not an error. A single case asserting only the `true` path
+       * would pass against an implementation that returned `true` unconditionally, which is why the zero
+       * case is pinned beside it.
+       */
+      expect(removed).toBe(false);
+      expect(subject.calls).toHaveLength(1);
+    });
+
+    it('NET-NEW — refuses a transient brand and issues NOTHING AT ALL', async () => {
+      const subject = harness();
+      const { brand } = createManagedBrand({ brandName: 'Never Saved' });
+
+      await expect(subject.repository.deleteBrand(brand)).rejects.toThrow(
+        /never been persisted was handed to the removal path/,
+      );
+
+      /*
+       * ⚠️ THE REFUSAL IS ONLY HALF THE CONTRACT. A guard that raised AFTER issuing the DELETE would
+       * satisfy a `rejects` assertion having already run `WHERE brandID = ''` against the table. The
+       * load-bearing half is that nothing ran — which the adapter's own message asserts too, so the
+       * statement count is what proves the message honest.
+       */
+      expect(subject.calls).toEqual([]);
+    });
+
+    it('NET-NEW — names the class in the refusal, since a transient brand has no identifier', async () => {
+      const subject = harness();
+      const { brand } = createManagedBrand({ brandName: 'Never Saved' });
+
+      const raised = await captureDomainError(subject.repository.deleteBrand(brand));
+      expect(raised.context?.['brandID']).toBe('');
+      expect(raised.context?.['className']).toBe('Brand');
+    });
+  });
+
+  /* =================================================================================================
+   * 5. isUrlTitleAvailable — the member whose polarity is easiest to invert
+   * ===============================================================================================*/
+
+  describe('NET-NEW — isUrlTitleAvailable, and the polarity it must keep', () => {
+    it('NET-NEW — reports TRUE when NO row holds the title, which is what "available" means', async () => {
+      const subject = harness([sqlRows([])]);
+
+      const available = await subject.repository.isUrlTitleAvailable('acme');
+
+      /*
+       * ⭐ THE POLARITY IS THE WHOLE POINT OF THIS BLOCK, AND IT RUNS OPPOSITE TO THE ROW COUNT.
+       * The statement asks whether the title is TAKEN; the member answers whether it is FREE. So an empty
+       * result means available, and `return rows.length === 0` is correct rather than a bug. Inverting it
+       * would compile, would return a boolean, and would break IR-5's application-side uniqueness check in
+       * the most confusing possible direction: every FREE title would be reported as taken, so
+       * `BrandService.saveBrand` would append `-2`, `-3`, `-4` … to titles nobody was using, and the
+       * defect would look like a URL-slug bug rather than a predicate inversion. Both directions are
+       * therefore asserted, because either one alone is satisfied by a constant.
+       */
+      expect(available).toBe(true);
+    });
+
+    it('NET-NEW — reports FALSE when a row already holds the title', async () => {
+      const subject = harness([sqlRows([{ 1: 1 }])]);
+
+      const available = await subject.repository.isUrlTitleAvailable('acme');
+
+      expect(available).toBe(false);
+    });
+
+    it('NET-NEW — probes for existence only: SELECT 1 with LIMIT 1, and no column list', async () => {
+      const subject = harness([sqlRows([])]);
+
+      await subject.repository.isUrlTitleAvailable('acme');
+
+      const probe = soleCall(subject);
+      /*
+       * One row is complete evidence for an existence question, and the projection is a literal rather
+       * than a column list because nothing about the matching brand is read. Hydrating a whole row to
+       * answer a boolean would also make the ambiguity guard of `getBrand` relevant here, which it is not.
+       */
+      expect(collapse(probe.sql)).toBe(
+        `SELECT 1 FROM ${BRAND_TABLE} WHERE ${BRAND_URL_TITLE} = ? LIMIT 1`,
+      );
+      expect(probe.params).toEqual(['acme']);
+    });
+
+    it('NET-NEW — binds a quote-bearing title as a value, so a title cannot alter the probe', async () => {
+      const subject = harness([sqlRows([])]);
+      const hostile = "acme' OR '1'='1";
+
+      await subject.repository.isUrlTitleAvailable(hostile);
+
+      /*
+       * The classic always-true injection, aimed at the one predicate whose answer decides whether a
+       * uniqueness check passes. Bound as a value it can only ever be a title nobody owns.
+       */
+      const probe = soleCall(subject);
+      expect(probe.sql).not.toContain("OR '1'='1");
+      expect(probe.sql).not.toContain("'");
+      expect(probe.params).toEqual([hostile]);
+    });
+
+    it('NET-NEW — treats the EMPTY title as a real question rather than short-circuiting it', async () => {
+      const subject = harness([sqlRows([])]);
+
+      const available = await subject.repository.isUrlTitleAvailable('');
+
+      /*
+       * ⚠️ DELIBERATELY UNLIKE `getBrand`, WHICH DOES SHORT-CIRCUIT ITS EMPTY ARGUMENT. There the empty
+       * string is the transient sentinel and can match nothing by construction; here it is an ordinary
+       * candidate value that a row could genuinely hold, so refusing to ask would invent an answer. The
+       * asymmetry between the two members is intentional and is asserted so it cannot be "tidied".
+       */
+      expect(available).toBe(true);
+      expect(subject.calls).toHaveLength(1);
+      expect(soleCall(subject).params).toEqual(['']);
+    });
+  });
+
+  /* =================================================================================================
+   * 6. withExecutor — the rebind seam, and the port surface as a whole
+   * ===============================================================================================*/
+
+  describe('NET-NEW — withExecutor, the rebind seam UnitOfWork uses', () => {
+    it('NET-NEW — returns a DIFFERENT instance and issues the work on the NEW executor', async () => {
+      const subject = harness();
+      const second = createSqlExecutorDouble({ outcomes: [sqlRows([])] });
+
+      const rebound = subject.repository.withExecutor(second.executor);
+
+      /*
+       * ⭐ THE IDENTITY ASSERTION IS THE SAFETY PROPERTY, NOT A STYLE PREFERENCE. The composition root
+       * builds ONE adapter and shares it; `UnitOfWork` rebinds a transaction-scoped executor per boundary.
+       * Were the rebind to mutate in place and return `this`, two concurrent boundaries would fight over
+       * one executor field and statements would cross transactions — a fault that appears only under
+       * concurrency and never in a single-threaded test of either path alone.
+       */
+      expect(rebound).not.toBe(subject.repository);
+
+      await rebound.isUrlTitleAvailable('acme');
+
+      expect(second.calls).toHaveLength(1);
+      /* And the original saw nothing, so the rebind leaked nothing back onto it. */
+      expect(subject.calls).toEqual([]);
+    });
+
+    it('NET-NEW — leaves the original bound to its own executor', async () => {
+      const subject = harness([sqlRows([])]);
+      const second = createSqlExecutorDouble({ outcomes: [sqlRows([])] });
+
+      await subject.repository.withExecutor(second.executor).isUrlTitleAvailable('rebound-title');
+      await subject.repository.isUrlTitleAvailable('original-title');
+
+      /* Asserted from both sides, with the parameters proving which statement went where. A leak would
+       * put both on one double, and a count alone could not say which. */
+      expect(second.calls).toHaveLength(1);
+      expect(second.calls[0]?.params).toEqual(['rebound-title']);
+      expect(subject.calls).toHaveLength(1);
+      expect(subject.calls[0]?.params).toEqual(['original-title']);
+    });
+
+    it('NET-NEW — carries the ACCOUNT CONTEXT across the rebind, so audit survives a transaction', async () => {
+      const subject = harness();
+      const second = createSqlExecutorDouble({});
+
+      const { brand } = createManagedBrand({ brandName: 'Acme' });
+      await subject.repository.withExecutor(second.executor).saveBrand(brand);
+
+      /*
+       * ⭐ THE REBIND TAKES A NEW EXECUTOR AND MUST KEEP EVERYTHING ELSE. The account context is the other
+       * constructor argument, and it is the one a rebind could plausibly drop — the signature only mentions
+       * the executor. Dropping it would compile only if something were substituted for it, and the
+       * observable consequence would be an audit block written with no actor INSIDE a transaction while
+       * the same save outside one recorded the actor correctly. Asserted on the rebound instance's own
+       * statement rather than on the original's.
+       */
+      const [insert] = second.calls;
+      expect(insert).toBeDefined();
+      const columns = insertedColumns(insert?.sql ?? '');
+      expect(insert?.params[columns.indexOf('createdByAccountID')]).toBe(TEST_ADMIN_ACCOUNT_ID);
+    });
+
+    it('NET-NEW — satisfies the BrandRepository port across ALL SIX declared members', () => {
+      const asPort: BrandRepository = harness().repository;
+
+      /*
+       * Keyed off the port's own member set, so a sixth method breaks compilation here until it is named.
+       * `withExecutor` is deliberately absent: the port is what a service depends on, and a service never
+       * rebinds, so the seam is asserted on the concrete adapter in the cases above instead.
+       */
+      const everyPortMember: Record<keyof BrandRepository, true> = {
+        newBrand: true,
+        getBrand: true,
+        saveBrand: true,
+        deleteBrand: true,
+        isUrlTitleAvailable: true,
+        /* F9 — the sixth member: `model/entity/Brand.cfc:L61`'s lazy collection load, written down. */
+        findProductIdentifiersByBrand: true,
+      };
+
+      const declared = Object.keys(everyPortMember) as readonly (keyof BrandRepository)[];
+
+      expect(declared).toHaveLength(6);
+      for (const member of declared) {
+        expect(typeof asPort[member]).toBe('function');
+      }
+
+      expect(typeof harness().repository.withExecutor).toBe('function');
+    });
+  });
+
+  /* =================================================================================================
+   * F9 — THE LIVE PRODUCTS READ THE BRAND DELETE GUARD PERFORMS
+   *
+   * `model/validation/Brand.json:L6` gates deletion on a `maxCollection` of ZERO over `products`, and
+   * `model/entity/Brand.cfc:L61` declares that collection `fieldtype="one-to-many" fkcolumn="brandID"
+   * inverse="true"` with no `lazy` attribute — so in the legacy the rule's read of `getProducts()` made
+   * Hibernate issue `SELECT ... FROM SwProduct WHERE brandID = ?`. This member is that read, written down.
+   *
+   * ⚠️ THE RELATIONSHIP LIVES ENTIRELY ON THE PRODUCT SIDE, which is why a BRAND adapter names the product
+   * table: there is no link table and no column of `SwBrand` involved. Keeping the read here rather than
+   * delegating to the product adapter is what lets it run on the brand delete boundary's own executor (M6).
+   * ============================================================================================== */
+
+  describe('MySqlBrandRepository — the products read behind the F9 delete guard', () => {
+    const OWNED = 'aaaa1111bbbb2222cccc3333dddd4444';
+
+    it('NET-NEW — projects productID from SwProduct and binds the brand identifier as a VALUE', async () => {
+      const subject = harness([sqlRows([{ productID: OWNED }])]);
+
+      const owned = await subject.repository.findProductIdentifiersByBrand('brand-1');
+
+      const read = soleCall(subject);
+      expect(collapse(read.sql)).toBe('SELECT productID FROM SwProduct WHERE brandID = ?');
+      expect(read.params).toEqual(['brand-1']);
+      /* The identifier never reaches the statement text — `?` binds values only (TR-4). */
+      expect(read.sql).not.toContain('brand-1');
+      expect(owned).toEqual([OWNED]);
+    });
+
+    it('NET-NEW — issues no ORDER BY and no LIMIT, because a lazy collection load has neither', async () => {
+      // ⛔ The guard refuses at one row exactly as it refuses at ten thousand, so a ceiling would change
+      // nothing it can observe while inventing a bound the legacy has nowhere (AAP §0.7.3 S9).
+      const subject = harness([sqlRows([{ productID: OWNED }])]);
+
+      await subject.repository.findProductIdentifiersByBrand('brand-1');
+
+      const sql = collapse(soleCall(subject).sql).toUpperCase();
+      expect(sql).not.toContain('ORDER BY');
+      expect(sql).not.toContain('LIMIT');
+      expect(sql).not.toContain('COUNT(');
+    });
+
+    it('NET-NEW — answers one identifier per owned row, in server order', async () => {
+      const second = 'aaaa1111bbbb2222cccc3333dddd5555';
+      const subject = harness([sqlRows([{ productID: OWNED }, { productID: second }])]);
+
+      await expect(subject.repository.findProductIdentifiersByBrand('brand-1')).resolves.toEqual([
+        OWNED,
+        second,
+      ]);
+    });
+
+    it('NET-NEW — a brand owning nothing answers an empty array, which is the only state the ceiling passes', async () => {
+      const subject = harness([sqlRows([])]);
+
+      await expect(subject.repository.findProductIdentifiersByBrand('brand-1')).resolves.toEqual(
+        [],
+      );
+    });
+
+    it('NET-NEW — an UNSAVED brand issues no statement at all', async () => {
+      // Hibernate does not query a collection of a transient instance, so probing here would issue a
+      // statement the legacy's lazy load never issued either.
+      const subject = harness();
+
+      await expect(subject.repository.findProductIdentifiersByBrand('')).resolves.toEqual([]);
+
+      expect(subject.calls).toEqual([]);
+    });
+
+    it('NET-NEW — a row with an unusable productID is a REFUSAL, not a silent skip', async () => {
+      // ⚠️ DROPPING IT WOULD UNDERCOUNT THE COLLECTION, and an undercount here is precisely the failure
+      // F9 reported: the ceiling of zero would pass and the brand would be deleted out from under its
+      // products. `productID` is the primary key and cannot be null, so this state means the projection
+      // or the schema is not what the member believes.
+      const subject = harness([sqlRows([{ productID: OWNED }, { productID: null }])]);
+
+      await expect(subject.repository.findProductIdentifiersByBrand('brand-1')).rejects.toThrow(
+        DomainError,
+      );
+    });
+
+    it('NET-NEW — the read follows a re-bound executor, so it can run on a transaction (M6)', async () => {
+      // The brand delete boundary constructs its own repository over `scope.executor`; this asserts the
+      // seam that makes an equivalent re-binding observable — the statement follows the NEW executor.
+      const original = harness([sqlRows([])]);
+      const adopted = harness([sqlRows([{ productID: OWNED }])]);
+
+      const rebound = original.repository.withExecutor(adopted.executor);
+      await expect(rebound.findProductIdentifiersByBrand('brand-1')).resolves.toEqual([OWNED]);
+
+      expect(original.calls).toEqual([]);
+      expect(adopted.calls).toHaveLength(1);
+    });
   });
 });

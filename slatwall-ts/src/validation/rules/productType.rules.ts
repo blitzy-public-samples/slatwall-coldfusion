@@ -586,10 +586,10 @@ export const urlTitleUniqueConstraint = {
  * This is recorded as a plain observation, NOT as a parity annotation and NOT as a new defect
  * identifier: it is faithfully reproduced legacy behaviour rather than a carried defect, and no entry
  * may be invented for it. For the same reason it is not a new execution-model mismatch either, and this
- * file carries none of them — the register is stated canonically, and only once, in the header of
- * `src/ports/repositories/SkuRepository.ts` (AAP 0.6.7's frozen source range D1-D21, plus the
- * source extension D22 and the three contract corrections D23, D24 and D25, with no D26 or beyond;
- * and AAP 0.6.6's M1-M8 plus M9, with no M10 or beyond).
+ * file carries none of them — the two registers are stated canonically, and only once, in the header of
+ * `src/ports/repositories/SkuRepository.ts`, and BOTH ARE FROZEN AT THE AAP's OWN BOUNDS — AAP
+ * 0.6.7's D1-D21 and AAP 0.6.6's M1-M8. Nothing in this port mints an identifier beyond either
+ * range; a further source observation is recorded by its `path:Lnnn` locator instead.
  *
  * =============================================================================================
  * THE `lazy="extra"` OBSERVATION (guideline 6)
@@ -850,9 +850,7 @@ export const systemCodeMaxLengthConstraint = {
  * omission: a parity annotation marks a carried DEFECT, and this is faithfully reproduced legacy
  * behaviour that the port reproduces exactly, and no entry may be invented for it — the register is
  * stated canonically, and only once, in the header of `src/ports/repositories/SkuRepository.ts`
- * (AAP 0.6.7's frozen source range D1-D21, plus the source extension D22 and the three contract
- * corrections D23, D24 and D25, with no D26 or beyond; and AAP 0.6.6's M1-M8 plus M9, with no M10
- * or beyond). For completeness, the one defect that genuinely touches this entity — the unfiltered
+ * (BOTH FROZEN AT THE AAP's OWN BOUNDS — AAP 0.6.7's D1-D21 and AAP 0.6.6's M1-M8. Nothing in this port mints an identifier beyond either range; a further source observation is recorded by its `path:Lnnn` locator instead). For completeness, the one defect that genuinely touches this entity — the unfiltered
  * inherited attribute-set assignment at `model/entity/ProductType.cfc:L92-L99`, whose own Todo sits
  * at `:L93` — is PROVEN UNREACHABLE FROM THIS FILE: this document constrains six properties and not
  * one of them is the attribute-set collection that method reads, nor does any other of the seven

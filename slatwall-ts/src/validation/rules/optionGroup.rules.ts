@@ -491,20 +491,19 @@ export const optionGroupCodeRequiredConstraint = Object.freeze({
  * on application-side checking for code uniqueness. That makes AAP IR-5 binding here in its strongest
  * form: "Application-side uniqueness checking is required in addition to database constraints."
  *
- * ⭐ SEC-HARDENING (D18-CLASS) — HOW STRONG THIS RULE ACTUALLY IS UNDER CONCURRENCY. Review finding F6
- * (CWE-367) named this rule and its `Option.optionCode` twin precisely because they are the two with no
- * column behind them. The check is a read followed by a write, so two concurrent saves could both be told
- * the same code was free. What changed: `../../adapters/mysql/UniquePropertyChecker.ts` now takes a
- * LOCKING read when it has been re-bound to a transaction boundary, so a check and the write that follows
- * it inside that boundary are serialized against a concurrent boundary asking the same question. That
- * orders transactions and changes no verdict — the same statement, the same rows, the same answer — which
- * is what puts it on the D18 footing (AAP §0.6.7.7) rather than in reach of AAP §0.8.2 Guideline 4.
+ * ⛔ TODO(parity) — HOW WEAK THIS RULE IS UNDER CONCURRENCY, AND NOTHING STRENGTHENS IT (CWE-367). This
+ * rule and its `Option.optionCode` twin are the two with no `unique="true"` column behind them. The check
+ * is a read followed by a write, so two concurrent saves can both be told the same code was free, and
+ * there is no database constraint on `SwOptionGroup.optionGroupCode` to refuse the second write.
  *
- * ⚠️ WHAT IS STILL OPEN, AND WHY IT CANNOT BE CLOSED FROM HERE. A save issued OUTSIDE any boundary is
- * serialized by nothing, and there is no database constraint on `SwOptionGroup.optionGroupCode` to refuse
- * the second write. Adding one is forbidden rather than forgotten: AAP §0.2.2.5 places schema migration
- * outside this refactoring, so the `Sw*` tables are read and written as they are. Flagged, not claimed
- * closed (AAP §0.7.3 S8); the same residue is recorded on `../../ports/UniquePropertyPort.ts`.
+ * ⛔ A REVISION TOOK A LOCKING READ IN `../../adapters/mysql/UniquePropertyChecker.ts` — `FOR UPDATE`, on
+ * a boundary-scoped instance only — and licensed it on the D18 footing on the ground that it orders
+ * transactions and changes no verdict. THAT IS WITHDRAWN, on the COUNT rather than the merits: AAP
+ * §0.6.7.7 authorises exactly ONE departure from behavioural preservation in this port, D18, and AAP
+ * §0.8.2 Guideline 4 admits no proportionality test. Adding the missing index is forbidden rather than
+ * forgotten: AAP §0.2.2.5 places schema migration outside this refactoring, so the `Sw*` tables are read
+ * and written as they are. Flagged, not claimed closed (AAP §0.7.3 S8); the same residue is recorded on
+ * `../../ports/UniquePropertyPort.ts`.
  *
  * See DECISION D-2 AND "THE SEVEN" in `../Validator` for the pinned polarity, for why the self-exclusion
  * term is a no-op on insert, and for all seven uniqueness locators. One entity-specific detail belongs

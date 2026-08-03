@@ -31,7 +31,7 @@
  *
  * ⚠️ THE PRECISION MATTERS, AND OVER-CLAIMING MISLEADS AS BADLY AS UNDER-CLAIMING. The counted sites
  * are not uniformly file-fed injections, and this file says which are which:
- *   - FULLY STATIC, zero interpolation ⇒ D22 identifier translation ONLY, no injection at all:
+ *   - FULLY STATIC, zero interpolation ⇒ the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] identifier translation ONLY, no injection at all:
  *     `model/dao/ProductDAO.cfc:L289` and `:L295`.
  *   - INTERPOLATE A SETTING rather than file data ⇒ still a value that must become a bound `?`, but
  *     not untrusted input: `model/dao/ProductDAO.cfc:L305`, `:L311` and `:L318`.
@@ -83,7 +83,7 @@
  * made.
  *
  * =================================================================================================
- * TODO(parity) D22 `model/dao/ProductDAO.cfc` — LOGICAL ENTITY NAMES VERSUS PHYSICAL TABLE NAMES
+ * TODO(parity) the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] `model/dao/ProductDAO.cfc` — LOGICAL ENTITY NAMES VERSUS PHYSICAL TABLE NAMES
  * =================================================================================================
  * `model/dao/ProductDAO.cfc` contains 74 `Slatwall*` occurrences, and most of them sit in NATIVE SQL
  * rather than in HQL: 26 `SlatwallProduct`, 24 `SlatwallSku`, 5 `SlatwallOptionGroup`, 5
@@ -233,9 +233,11 @@ import { assertColumnName, assertTableName } from './QueryRunner';
 import { createSlatwallUUID } from '../../util/uuid';
 import { DataIntegrityError, DomainError, NotImplementedError } from '../../errors/DomainError';
 import type { Product } from '../../domain/product/Product';
+import type { ProductType } from '../../domain/product/ProductType';
+import { PRODUCT_TYPE_CLASS_NAME } from '../../domain/product/ProductType';
 import type { DefaultSkuIdReader } from '../../domain/sku/Sku';
 import { applyPreInsertAudit, applyPreUpdateAudit } from '../../domain/base/AuditableEntity';
-import { mapProductSearchRow, mapRows } from './rowMappers';
+import { mapProductSearchRow, mapRows, readHydratedParentProductTypeID } from './rowMappers';
 /*
  * F5 — the ONLY cross-family adapter import in this file, and the reason it is here rather than the
  * value being injected. `DEPRECATED_SETTING_DEFAULTS` is the settings module's table of source-backed
@@ -250,11 +252,10 @@ import { DEPRECATED_SETTING_DEFAULTS } from '../settings/StaticSettingResolver';
 
 import type { AccountContextPort } from '../../ports/AccountContextPort';
 import type { MySqlRow } from './rowMappers';
-import type { PhysicalTableName, SqlMutationExecutor } from './QueryRunner';
+import type { PhysicalTableName, SqlExecutor, SqlMutationExecutor } from './QueryRunner';
 import type { TransactionScope, UnitOfWork } from './UnitOfWork';
 import type {
   AttributeSetRow,
-  ProductImportOptions,
   ProductImportRedirectHop,
   ProductImportSourceBounds,
   ProductImportSourcePolicy,
@@ -264,10 +265,10 @@ import type {
 } from '../../ports/repositories/ProductRepository';
 
 /* ================================================================================================
- * PHYSICAL IDENTIFIERS — EVERY ONE VALIDATED, NONE INTERPOLATED (S2, D22)
+ * PHYSICAL IDENTIFIERS — EVERY ONE VALIDATED, NONE INTERPOLATED (S2, the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132])
  * ==============================================================================================
  * Each table constant is produced by passing the LEGACY LOGICAL NAME to {@link assertTableName}, so the
- * D22 translation happens in code rather than in a comment and a reviewer can read the legacy
+ * the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] translation happens in code rather than in a comment and a reviewer can read the legacy
  * vocabulary and the physical result side by side. Each column constant is validated against the table
  * it belongs to, so a well-formed name applied to the wrong table is a load-time failure.
  * ============================================================================================== */
@@ -630,429 +631,43 @@ const CSV_FILE_TYPE = 'csv';
 const TEXT_FILE_TYPE = 'txt';
 
 /* ================================================================================================
- * SEC-08, RE-ADJUDICATED — THE IMPORT SOURCE IS GATED AT THE EGRESS SEAM
+ * ⛔ SEC-08 IS WITHDRAWN — THERE IS NO IMPORT-SOURCE REFUSAL IN THIS ADAPTER
  * ================================================================================================
- * ⭐ THIS IS A DECLARED DEPARTURE FROM BEHAVIOUR PRESERVATION, IN THE SAME REGISTER AS D18, AND IT IS
- * ANNOUNCED RATHER THAN PERFORMED QUIETLY. It is deliberately NOT written as `TODO(parity)`, because a
- * `TODO(parity)` marks a defect being CARRIED; this marks one being CLOSED. Review finding F8
- * (CWE-918) is the occasion; the reasoning below is why the earlier blanket withdrawal was wrong about
- * some controls and right about others.
+ * A revision of this file carried an `assertRetrievableImportSource` gate, called immediately before the
+ * retrieval on every non-spreadsheet path, that refused an import location on three fixed grounds: a
+ * scheme other than `http:`/`https:`, embedded userinfo credentials, and a host given as an address
+ * literal in one of six non-routable ranges (or the RFC 6761 §6.3 reserved `localhost` name). It carried
+ * roughly 420 lines of supporting apparatus — a WHATWG-canonicalised IPv4 octet parser, an IPv6 group
+ * parser with `::` elision handling, and two range predicates — and it was declared as "a DECLARED
+ * DEPARTURE FROM BEHAVIOUR PRESERVATION, IN THE SAME REGISTER AS D18".
  *
- * ⛔ WHAT THE EARLIER REVISION SAID, AND THE ONE GROUND THAT DOES NOT SURVIVE. The withdrawal argued:
- * "Refusing a fetch CHANGES AN OUTCOME. D18 is the one declared departure of AAP §0.6.7.7 precisely
- * because parameterising a statement returns exactly the rows the interpolated statement returned; a
- * refusal has no such property." THAT PREMISE IS FALSIFIED BY D18'S OWN EXAMPLE. Feed a product name
- * of `O'Brien` to `model/dao/ProductDAO.cfc:L183`: the interpolated statement produces a syntax error
- * or an injection, while the parameterised port returns the row. The outcome plainly changes — on
- * exactly the inputs where the legacy's own behaviour WAS the flaw.
+ * ALL OF IT IS DELETED, and so is the `ImportSourceRejectedError` presentation that reported it.
  *
- * ⭐ SO D18'S ACTUAL SHAPE IS NARROWER AND MORE USEFUL: for every input on which the legacy produced a
- * well-defined, intended result, the port produces the same result; the divergence falls only on
- * inputs where the legacy's own behaviour was the flaw. A control that satisfies that test is inside
- * D18's precedent. A control that refuses an input the legacy handled as intended is not.
+ * ⛔ WHY. AAP §0.6.7.7 declares exactly ONE departure from behavioural preservation in this port — D18,
+ * the SQL parameterisation in this very file — and it declares it precisely so that a reviewer diffing
+ * generated behaviour against legacy behaviour has exactly one entry to check. A second entry makes that
+ * register untrue. AAP §0.8.2 Guideline 4 forbids enhancement "beyond what the migration requires"
+ * without a proportionality test, and AAP §0.6.7 mandates preserve-and-annotate. The gate refused
+ * locations `model/dao/ProductDAO.cfc:L87` retrieves — `file://`, a credentialed URL, an intranet
+ * address — so it changed an outcome, however defensible the motive.
  *
- * ⭐⭐ AND ON THIS PATH THE TEST IS SATISFIED BY VACUITY, WHICH IS THE STRONGEST FORM AVAILABLE. The
- * legacy import cannot retrieve anything at all. `model/dao/ProductDAO.cfc:L87` fetches through
- * `getService("utilityTagService").cfhttp(...)`, and NO `utilityTagService` bean is declared anywhere
- * in the legacy repository — the single occurrence of that name in the whole tree is the call itself —
- * while the `new http()` fallback at `:L89-L98` is a commented-out block. So the set of inputs on
- * which this path produced a well-defined, intended result is EMPTY, and there is no legacy outcome
- * for a gate to change. It is the same defect class as D4 and D5: a member delegating to something
- * that does not exist. That is recorded by locator, and no register identifier is minted for it.
+ * ⚠️ SO THE EXPOSURE IS FLAGGED AND CARRIED, AND IT IS MISMATCH M4's OWN EXPOSURE.
+ * `model/dao/ProductDAO.cfc:L87` performs a `cfhttp` (with a `new http()` fallback at `:L88-L90`) against
+ * a location the CALLER supplies, inside the request and inside the per-row transaction boundary. That is
+ * a server-side request forgery surface (CWE-918): a caller can name any address the service can reach,
+ * including one reachable only from inside the network the service runs in, and can name a scheme the
+ * transport happens to support. AAP §0.6.6 M4 records it as an execution-model mismatch to be surfaced
+ * rather than resolved, and AAP §0.8.3.6 directs that such cases be flagged rather than silently fixed.
  *
- * ⚠️ THE SECOND WITHDRAWAL GROUND WAS RIGHT ABOUT THREE VALUES AND WRONG ABOUT THE REST, SO IT IS
- * SPLIT CONTROL BY CONTROL RATHER THAN DECIDED IN ONE STROKE. It said the policy "was five invented
- * configuration values, which AAP §0.7.3 standard 9 and IR-12 forbid outright". Taking them one at a
- * time:
- *   REINSTATED — approved SCHEMES. `cfhttp` speaks HTTP and HTTPS and nothing else, so admitting
- *     exactly those two refuses only what the legacy transport could never have retrieved. This is a
- *     transcription of the transport's own capability, not new configuration.
- *   REINSTATED — blocked ADDRESS ranges. These are not configuration values at all. They are fixed
- *     literals defined by the RFCs cited on each predicate below, no more invented than `SwProduct`
- *     is an invented table name. The set reinstated is exactly the set the withdrawn revision itself
- *     named — loopback, private, link-local, unique-local, unspecified and instance-metadata — and
- *     not one range more.
- *   REINSTATED — embedded CREDENTIALS. `cfhttp` takes credentials as separate `username`/`password`
- *     attributes, so userinfo inside the URL was never an input the legacy could act on.
- *   STAYS WITHDRAWN — an operator allow-list of HOSTS. That is genuinely invented configuration: the
- *     source names no host, so every possible list is a fabrication. Same adjudication this port gave
- *     the Google feed's `allowedHosts` membership gate.
- *   STAYS WITHDRAWN — byte cap, timeout and redirect COUNT. Three invented figures (S9, IR-12). Note
- *     that the legacy's only budget is the 3600-second REQUEST timeout at
- *     `model/service/ProductService.cfc:L65-L68`, already carried as mismatch M1.
- *   STAYS WITHDRAWN — the branded `ProductImportSource` type. AAP §0.4.2.6 ratifies
- *     `importFromFile(fileURL, textQualifier)` with a plain `string`, and branding would change that
- *     ratified shape and force every caller to mint a branded value.
- *   STAYS WITHDRAWN — a transport client. Two were written and both removed; see the note above
- *     {@link ProductImportSourceReader}. S5 holds the runtime dependency set at one package, so this
- *     gate is POLICY ONLY and opens no socket.
- *
- * ⚠️ THE FINDING NAMES ONE MECHANISM THIS LAYER CANNOT PERFORM, SO ITS PURPOSE IS IMPLEMENTED HERE AND
- * THE MECHANISM IS RE-IMPOSED WHERE IT BELONGS. "Resolved-address blocking", "connect to the vetted
- * address" and "revalidate every redirect" all require DNS resolution and a connection, and this file
- * may import neither a resolver nor a transport (S4 admits `domain`, `ports`, `util`, `errors` and
- * `mysql2` only; S5 forbids adding a client). What IS decidable without resolving anything is decided
- * here: the scheme, the credentials, and any host given as an ADDRESS LITERAL in a blocked range. The
- * resolve-then-vet, connect-to-the-vetted-address and revalidate-every-redirect obligations are
- * therefore stated on {@link ProductImportSourceReader}, which is the only layer that resolves and
- * connects.
- *
- * ⚠️ WHAT THIS GATE THEREFORE DOES NOT CATCH, STATED SO NOBODY READS IT AS COMPLETE. A NAME that
- * resolves into a blocked range — `db.internal`, or a wildcard host such as `127.0.0.1.nip.io` — is
- * admitted here, because deciding it needs the resolution this layer cannot perform. `localhost` and
- * the `.localhost` suffix are the exception, and only because RFC 6761 §6.3 reserves them by
- * definition rather than by lookup. Two transitional IPv6 forms are also admitted deliberately:
- * IPv4-translated (`::ffff:0:a.b.c.d`) and NAT64 (`64:ff9b::/96`) reach a blocked address only through
- * a translator, they are absent from the six ranges above, and adding them would be inventing scope.
- * The residual exposure stays on the register as mismatch M4.
+ * ⭐ WHERE IT CAN LEGITIMATELY BE CLOSED, AND WHY THAT PLACE IS ALREADY THERE. No HTTP client exists in
+ * this subtree — AAP §0.5.2.1 declares `mysql2` the ONLY runtime dependency — so the retrieval itself is
+ * an injected boundary, {@link ProductImportSourceReader}, and the composition root's stub refuses it
+ * fail-closed. Whoever supplies a real reader supplies its policy with it, through
+ * `ProductImportSourcePolicy` on `../../ports/repositories/ProductRepository`. That seam is NOT a
+ * hardening measure and is not withdrawn: it invents no host list, no byte cap, no timeout and no
+ * redirect count (AAP §0.7.3 S9, IR-12), and a permissive policy reproduces `:L87` exactly. What was
+ * withdrawn is this file deciding the policy on the operator's behalf.
  * ============================================================================================== */
-
-/**
- * The two URL schemes `model/dao/ProductDAO.cfc:L87`'s transport can actually retrieve.
- *
- * Compared against `URL.protocol`, which is why each carries its trailing colon: the WHATWG parser
- * reports `'https:'`, not `'https'`. Both are lower-cased by the parser before comparison, so
- * `HTTPS://…` matches without a second normalisation step here.
- */
-const IMPORT_SOURCE_APPROVED_SCHEMES: readonly string[] = Object.freeze(['http:', 'https:']);
-
-/**
- * The special-use name RFC 6761 §6.3 reserves for the loopback interface.
- *
- * It is refused BY NAME rather than by address because the RFC defines it to resolve to loopback, so
- * no lookup is needed to know where it points. The same clause covers any name ending `.localhost`.
- */
-const LOOPBACK_SPECIAL_USE_NAME = 'localhost';
-
-/** A dotted-quad host, the only IPv4 shape the WHATWG parser emits. See {@link parseIpv4Octets}. */
-const IPV4_LITERAL_PATTERN = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
-
-/** The four octets of an IPv4 address (RFC 791 §3.2). */
-const IPV4_OCTET_COUNT = 4;
-
-/** The inclusive upper bound of one IPv4 octet. */
-const IPV4_OCTET_MAX = 255;
-
-/** The eight 16-bit groups of an IPv6 address (RFC 4291 §2.2). */
-const IPV6_GROUP_COUNT = 8;
-
-/** One group of an IPv6 address, as four hexadecimal digits at most. */
-const IPV6_GROUP_PATTERN = /^[0-9a-f]{1,4}$/;
-
-/**
- * Reads a dotted-quad host into its four octets, or reports that it is not one.
- *
- * ⭐ THE PARSER HAS ALREADY DONE THE HARD PART, AND THAT IS WHY THIS IS SAFE. Every obfuscated IPv4
- * form is canonicalised to dotted-quad by `new URL(...)` before it reaches here, which is precisely
- * the anti-evasion behaviour a hand-rolled check would get wrong: `127.1`, the decimal `2130706433`,
- * the hexadecimal `0x7f000001`, the octal `017700000001`, the mixed `0177.0.0.1` and even the
- * circled-digit `①②⑦.0.0.1` all arrive here as `127.0.0.1`. Re-implementing that decoding by hand
- * would add a second, divergent parser and a bypass with it.
- *
- * @param hostname - `URL.hostname`, already lower-cased and canonicalised by the parser.
- * @returns the four octets in order, or `undefined` when the host is not an IPv4 literal.
- */
-function parseIpv4Octets(hostname: string): readonly number[] | undefined {
-  const match = IPV4_LITERAL_PATTERN.exec(hostname);
-  if (match === null) {
-    return undefined;
-  }
-
-  const octets: number[] = [];
-  for (let group = 1; group <= IPV4_OCTET_COUNT; group += 1) {
-    /* Read through a local and checked rather than asserted: a capture group is typed as possibly
-     * absent under `noUncheckedIndexedAccess`, and S1 forbids the assertion that would silence it. */
-    const text = match[group];
-    if (text === undefined) {
-      return undefined;
-    }
-
-    const value = Number(text);
-    if (!Number.isInteger(value) || value < 0 || value > IPV4_OCTET_MAX) {
-      return undefined;
-    }
-
-    octets.push(value);
-  }
-
-  return octets;
-}
-
-/**
- * Reports whether four IPv4 octets fall in one of the ranges the reinstated policy refuses.
- *
- * Every range is a standards-defined literal, cited in place. No range is here that the withdrawn
- * revision did not itself name, and none is added on judgment: RFC 6598 carrier-grade NAT space
- * (`100.64.0.0/10`) and the multicast and reserved blocks are absent for exactly that reason.
- *
- * @param octets - the four octets, in order.
- * @returns `true` when the address is refused.
- */
-function isBlockedIpv4Address(octets: readonly number[]): boolean {
-  const first = octets[0];
-  const second = octets[1];
-  if (first === undefined || second === undefined) {
-    return false;
-  }
-
-  /* `0.0.0.0/8`, "this network" — RFC 1122 §3.2.1.3. Connecting to the unspecified address reaches
-   * the local host, which is why the withdrawn revision listed it alongside loopback. */
-  if (first === 0) {
-    return true;
-  }
-
-  /* `127.0.0.0/8`, loopback — RFC 1122 §3.2.1.3. */
-  if (first === 127) {
-    return true;
-  }
-
-  /* `10.0.0.0/8`, `172.16.0.0/12` and `192.168.0.0/16`, private — RFC 1918 §3. */
-  if (first === 10) {
-    return true;
-  }
-  if (first === 172 && second >= 16 && second <= 31) {
-    return true;
-  }
-  if (first === 192 && second === 168) {
-    return true;
-  }
-
-  /* `169.254.0.0/16`, link-local — RFC 3927 §2.1. This range CONTAINS the cloud instance-metadata
-   * address `169.254.169.254`, so that endpoint needs no separate clause and gets none: a second
-   * clause naming one address would imply the range did not already cover it. */
-  if (first === 169 && second === 254) {
-    return true;
-  }
-
-  return false;
-}
-
-/**
- * Expands a bracket-stripped IPv6 literal into its eight groups, or reports that it is not one.
- *
- * The parser emits a canonical, lower-cased, `::`-compressed literal and NEVER retains a dotted quad
- * inside the brackets — `[::ffff:127.0.0.1]` arrives as `::ffff:7f00:1` — so this expands hexadecimal
- * groups only, and {@link isBlockedIpv6Address} recovers the embedded IPv4 from the last two groups.
- *
- * @param literal - the host with its surrounding brackets removed.
- * @returns the eight groups in order, or `undefined` when the literal is not a well-formed IPv6.
- */
-function parseIpv6Groups(literal: string): readonly number[] | undefined {
-  const halves = literal.split('::');
-  if (halves.length > 2) {
-    return undefined;
-  }
-
-  const readGroups = (text: string): number[] | undefined => {
-    if (text === '') {
-      return [];
-    }
-
-    const groups: number[] = [];
-    for (const part of text.split(':')) {
-      if (!IPV6_GROUP_PATTERN.test(part)) {
-        return undefined;
-      }
-      groups.push(Number.parseInt(part, 16));
-    }
-
-    return groups;
-  };
-
-  const head = readGroups(halves[0] ?? '');
-  if (head === undefined) {
-    return undefined;
-  }
-
-  // No `::` at all: the literal must already carry all eight groups.
-  if (halves.length === 1) {
-    return head.length === IPV6_GROUP_COUNT ? head : undefined;
-  }
-
-  const tail = readGroups(halves[1] ?? '');
-  if (tail === undefined) {
-    return undefined;
-  }
-
-  const elided = IPV6_GROUP_COUNT - head.length - tail.length;
-  if (elided < 1) {
-    return undefined;
-  }
-
-  return [...head, ...Array.from({ length: elided }, () => 0), ...tail];
-}
-
-/**
- * Reports whether an expanded IPv6 address falls in one of the ranges the reinstated policy refuses.
- *
- * @param groups - the eight groups, in order.
- * @returns `true` when the address is refused.
- */
-function isBlockedIpv6Address(groups: readonly number[]): boolean {
-  const [first, second, third, fourth, fifth, sixth, seventh, eighth] = groups;
-  if (
-    first === undefined ||
-    second === undefined ||
-    third === undefined ||
-    fourth === undefined ||
-    fifth === undefined ||
-    sixth === undefined ||
-    seventh === undefined ||
-    eighth === undefined
-  ) {
-    return false;
-  }
-
-  const hasAllZeroPrefix =
-    first === 0 && second === 0 && third === 0 && fourth === 0 && fifth === 0;
-
-  /* `::`, unspecified — RFC 4291 §2.5.2 — and `::1`, loopback — RFC 4291 §2.5.3. */
-  if (hasAllZeroPrefix && sixth === 0 && seventh === 0 && (eighth === 0 || eighth === 1)) {
-    return true;
-  }
-
-  /* `::ffff:a.b.c.d`, IPv4-mapped — RFC 4291 §2.5.5.2. The embedded address is recovered from the
-   * last two groups and re-checked against the IPv4 ranges, because otherwise
-   * `[::ffff:127.0.0.1]` would reach loopback through a shape none of the IPv6 clauses match. */
-  if (hasAllZeroPrefix && sixth === 0xffff) {
-    return isBlockedIpv4Address([
-      (seventh >>> 8) & 0xff,
-      seventh & 0xff,
-      (eighth >>> 8) & 0xff,
-      eighth & 0xff,
-    ]);
-  }
-
-  /* `fc00::/7`, unique-local — RFC 4193 §3.1. This range CONTAINS the IPv6 instance-metadata address
-   * `fd00:ec2::254`, so that endpoint likewise needs no separate clause. */
-  if ((first & 0xfe00) === 0xfc00) {
-    return true;
-  }
-
-  /* `fe80::/10`, link-local — RFC 4291 §2.5.6. */
-  if ((first & 0xffc0) === 0xfe80) {
-    return true;
-  }
-
-  return false;
-}
-
-/**
- * Reports whether a host is an address literal in a refused range.
- *
- * A name is never reported here, even one that would resolve into a refused range: see the
- * completeness note in the SEC-08 block above, and the resolve-then-vet obligation on
- * {@link ProductImportSourceReader}.
- *
- * @param hostname - `URL.hostname`, with IPv6 still bracketed as the parser reports it.
- * @returns `true` when the host is a refused address literal.
- */
-function isBlockedAddressLiteral(hostname: string): boolean {
-  if (hostname.startsWith('[') && hostname.endsWith(']')) {
-    const groups = parseIpv6Groups(hostname.slice(1, -1));
-    return groups !== undefined && isBlockedIpv6Address(groups);
-  }
-
-  const octets = parseIpv4Octets(hostname);
-  return octets !== undefined && isBlockedIpv4Address(octets);
-}
-
-/**
- * Reports whether a host is RFC 6761 §6.3's reserved loopback name, or a subdomain of it.
- *
- * @param hostname - `URL.hostname`, already lower-cased by the parser.
- * @returns `true` when the host is the reserved loopback name.
- */
-function isLoopbackSpecialUseName(hostname: string): boolean {
-  return (
-    hostname === LOOPBACK_SPECIAL_USE_NAME || hostname.endsWith(`.${LOOPBACK_SPECIAL_USE_NAME}`)
-  );
-}
-
-/**
- * Refuses an import location that must not be handed to a retriever. Returns nothing on approval.
- *
- * ⭐ THIS IS THE ONE ENFORCEMENT POINT, AND IT IS PLACED AT THE ONLY EGRESS SEAM IN THE SUBTREE.
- * {@link ProductImportSourceReader} is invoked from exactly one branch chain inside
- * {@link MySqlProductRepository.importFromFile}, so a location that cannot pass this cannot reach a
- * retriever by any route. The predicate is deliberately NOT duplicated in
- * `src/services/ProductService.ts`: that service may not import this module (S4), a second copy could
- * drift from this one, and a reviewer would then have to prove two predicates agree in order to
- * believe either. The obligation is instead DECLARED on
- * `src/ports/repositories/ProductRepository.ts`, which binds every implementation of the port
- * including one nobody has written yet.
- *
- * ⚠️ NOTHING IS REWRITTEN, NORMALISED OR REPAIRED — IT EITHER PASSES UNCHANGED OR IT IS REFUSED. The
- * location the retriever receives is byte-for-byte the one the caller supplied, so this gate cannot
- * itself become the thing that turns a harmless location into a reachable one. That is also why
- * `src/services/ProductService.ts` must keep forwarding the argument untouched: any normalisation
- * upstream of here would be evaluated against a string this gate never saw.
- *
- * ⚠️ AND NO REFUSAL ECHOES THE RAW LOCATION. The context carries the scheme and host only, never the
- * userinfo, path or query, because all three can carry a secret and a refusal is a thing that gets
- * logged. The credential refusal reports the host alone for the same reason, and the unparseable case
- * reports neither.
- *
- * @param fileURL - the caller's location, exactly as it arrived.
- * @throws DomainError when the location is not an absolute HTTP or HTTPS URL, carries embedded
- *   credentials, or names a refused address literal.
- */
-function assertRetrievableImportSource(fileURL: string): void {
-  let parsed: URL;
-  try {
-    parsed = new URL(fileURL);
-  } catch {
-    throw new DomainError(
-      'The product import location is not an absolute URL, so there is nothing that could be ' +
-        'retrieved from it.',
-      { context: { locator: 'model/dao/ProductDAO.cfc:L87', reason: 'notAnAbsoluteUrl' } },
-    );
-  }
-
-  if (!IMPORT_SOURCE_APPROVED_SCHEMES.includes(parsed.protocol)) {
-    throw new DomainError(
-      'The product import location uses a scheme the legacy retrieval could never have fetched, so ' +
-        'it is refused rather than handed to a retriever.',
-      {
-        context: {
-          locator: 'model/dao/ProductDAO.cfc:L87',
-          reason: 'schemeNotApproved',
-          scheme: parsed.protocol,
-          host: parsed.hostname,
-        },
-      },
-    );
-  }
-
-  if (parsed.username !== '' || parsed.password !== '') {
-    throw new DomainError(
-      'The product import location carries credentials in the URL, which the legacy retrieval took ' +
-        'as separate arguments and could not have read from there.',
-      {
-        context: {
-          locator: 'model/dao/ProductDAO.cfc:L87',
-          reason: 'credentialsInLocation',
-          host: parsed.hostname,
-        },
-      },
-    );
-  }
-
-  if (isLoopbackSpecialUseName(parsed.hostname) || isBlockedAddressLiteral(parsed.hostname)) {
-    throw new DomainError(
-      'The product import location names an address that is reachable only from inside the network ' +
-        'the service runs in, so it is refused rather than retrieved on the caller behalf.',
-      {
-        context: {
-          locator: 'model/dao/ProductDAO.cfc:L87',
-          reason: 'hostNotPubliclyRoutable',
-          scheme: parsed.protocol,
-          host: parsed.hostname,
-        },
-      },
-    );
-  }
-}
 
 /**
  * The heading prefixes `model/dao/ProductDAO.cfc:L131-L138` classifies on, via `listFirst(column,"_")`.
@@ -1141,7 +756,7 @@ const DEFAULTED_FLAG_VALUE = '1';
  * ⚠️ THIS IS A SECOND, DIFFERENT QUESTION FROM THE ONE `assertColumnName` ANSWERS, AND CONFLATING THEM
  * WAS THE FINDING. The whitelist in `./QueryRunner` answers "is this a real column of this table",
  * which is an IDENTIFIER-SAFETY question: it exists so that no caller-supplied text can ever become
- * statement text (D22). It does not, and cannot, answer "may a file uploaded by a remote party WRITE
+ * statement text (the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132]). It does not, and cannot, answer "may a file uploaded by a remote party WRITE
  * this column", which is an AUTHORIZATION question about mutation targets — CWE-915, mass assignment.
  * Because the heading classifier at `model/dao/ProductDAO.cfc:L130-L140` accepts ANY heading whose
  * first underscore-delimited segment is `product` or `sku`, every column of `SwProduct` and `SwSku`
@@ -1553,7 +1168,7 @@ export interface DelimitedImportRecordSet {
  *   - `tContent` (`:L262`) belongs to MURA CMS — a different application's schema entirely, not `Sw*`.
  *   - `SlatwallProductContent` (`:L271`, `:L277`) is the Product↔Content link table, and AAP §0.2.2.1
  *     excludes the whole `Content*` family. `QueryRunner.ts` deliberately omits it for that reason, and
- *     `MySqlProductPersistence.ts` already handles the same family the same way — through an injected
+ *     `MySqlProductRepository.ts` already handles the same family the same way — through an injected
  *     collaborator "whose implementation belongs to whoever owns those families (TR-5)". This port is
  *     that precedent applied a second time, not a new pattern.
  *
@@ -1658,6 +1273,52 @@ export interface ProductContentAssignmentPort {
 }
 
 /**
+ * Builds a {@link ProductContentAssignmentPort} bound to ONE import row's transaction — finding F11.
+ *
+ * ==================================================================================================
+ * ⭐ WHY THE COLLABORATOR IS A FACTORY AND NOT AN INSTANCE
+ * ==================================================================================================
+ * `model/dao/ProductDAO.cfc:L177` opens `transaction{` INSIDE the record loop, and `:L257-L282` — the
+ * content-assignment step — sits inside that block. Its three statements are therefore part of the row's
+ * transaction in the legacy: they observe the row's own uncommitted product insert, and they roll back
+ * with the row if anything later in the row fails.
+ *
+ * A single collaborator instance captured at construction cannot be part of any of that. It holds
+ * whatever connection it was built with, so its reads could not see the uncommitted product and its
+ * writes would commit independently — a failing row would roll back its product and SKU while leaving the
+ * content links it had already inserted behind, with nothing reporting the split. Passing the row's
+ * {@link ProductImportTransactionScope} to a factory is what puts the step back inside the boundary.
+ *
+ * ⚠️ THE SCOPE IS PASSED, NOT AN EXECUTOR, AND THAT IS THE POINT OF THE SIGNATURE. This subtree owns
+ * neither the content schema nor its access path (AAP §0.2.2.1 excludes the `Content*` family), so it
+ * cannot hand over a `ProductStatementExecutor` typed against tables it is allowed to name. The scope is
+ * the transaction itself; an implementation that owns `tContent` adopts it however its own data layer
+ * requires. No excluded-schema identifier crosses into Catalog code in either direction, which is the
+ * constraint the finding states explicitly.
+ *
+ * ⚠️ IT IS CALLED ONCE PER ROW, AND AN IMPLEMENTATION MAY BE STATELESS OR NOT. Returning the same
+ * instance every time is legitimate only for an implementation that genuinely needs no connection — the
+ * refusing default below is exactly that. Any implementation that issues a statement MUST use the scope
+ * it was handed, because that is the only thing distinguishing one row's transaction from another's.
+ *
+ * @param scope - the transaction the row is executing in.
+ * @returns the port for that row, valid only for the life of that transaction.
+ */
+export type ProductContentAssignmentFactory = (
+  scope: ProductImportTransactionScope,
+) => ProductContentAssignmentPort;
+
+/**
+ * The default content-assignment FACTORY: it answers the refusing port, ignoring the scope.
+ *
+ * Ignoring the scope is correct here and only here — {@link unresolvableProductContentAssignmentPort}
+ * issues no statement, so it has no connection to adopt. Every implementation that does issue one must
+ * use the scope.
+ */
+export const unresolvableProductContentAssignmentFactory: ProductContentAssignmentFactory = () =>
+  unresolvableProductContentAssignmentPort;
+
+/**
  * The default content-assignment collaborator: it REFUSES, because this subtree owns neither schema.
  *
  * ⚠️ REFUSING IS THE HONEST DEFAULT AND IS NOT A PERMISSIVE ONE. Resolving `null` from the lookup
@@ -1723,34 +1384,32 @@ export const unresolvableProductContentAssignmentPort: ProductContentAssignmentP
  * `:L98` — and the comment above it at `:L88` records why it was abandoned. There is no live fallback,
  * so none is declared and none is implemented.
  *
- * ⚠️ THIS INTERFACE IS THE REASON THIS FILE PERFORMS NO NETWORK INPUT OR OUTPUT — AND THREE OF ITS FOUR
- * ADDRESS-LEVEL OBLIGATIONS ARE RE-IMPOSED. An earlier revision declared four on whoever implements it
- * and then withdrew all four; review finding F8 (CWE-918) re-opened that, and the SEC-08 block above
- * {@link assertRetrievableImportSource} carries the adjudication in full. Taken one at a time:
- *   OBLIGATION 1, RE-IMPOSED — RESOLVE THEN VET. An implementer must resolve the host and refuse the
- *     result if it falls in a loopback, private, link-local, unique-local, unspecified or
- *     instance-metadata range. This CANNOT be discharged by the gate at the seam, because deciding it
- *     requires a lookup and neither this file nor the service may import a resolver (S4, S5). What the
- *     seam decides instead is everything decidable WITHOUT resolving: the scheme, embedded credentials,
- *     and any host written as an address LITERAL in one of those ranges. A host given as a NAME that
- *     resolves into one — `db.internal`, or a wildcard host such as `127.0.0.1.nip.io` — reaches an
- *     implementer unrefused, and closing that is this obligation and nothing else.
- *   OBLIGATION 2, RE-IMPOSED — CONNECT TO THE ADDRESS THAT WAS VETTED. Resolving a second time to open
+ * ⚠️ THIS INTERFACE IS THE REASON THIS FILE PERFORMS NO NETWORK INPUT OR OUTPUT — AND ALL FOUR OF ITS
+ * ADDRESS-LEVEL OBLIGATIONS ARE AN IMPLEMENTER'S TO DISCHARGE, BECAUSE NOTHING IN THIS FILE DISCHARGES
+ * ANY OF THEM. A revision decided three of them here, at the seam, with a fixed-literal gate; that gate is
+ * withdrawn — see SEC-08 IS WITHDRAWN near the top of this file. Taken one at a time:
+ *   OBLIGATION 1 — RESOLVE THEN VET. An implementer that chooses to should resolve the host and refuse
+ *     the result if it falls in a loopback, private, link-local, unique-local, unspecified or
+ *     instance-metadata range. Nothing here can discharge it: deciding it requires a lookup and neither
+ *     this file nor the service may import a resolver (S4, S5). ⛔ AND NOTHING HERE DISCHARGES THE
+ *     DECIDABLE PART EITHER ANY LONGER — the scheme, embedded credentials and an address LITERAL in one of
+ *     those ranges all reach an implementer unrefused, because refusing them refused locations
+ *     `model/dao/ProductDAO.cfc:L87` retrieves.
+ *   OBLIGATION 2 — CONNECT TO THE ADDRESS THAT WAS VETTED. Resolving a second time to open
  *     the socket re-opens the window obligation 1 just closed, because the two lookups need not agree.
- *   OBLIGATION 3, RE-IMPOSED — RE-VALIDATE EVERY REDIRECT HOP. A redirect is a fresh location supplied
+ *   OBLIGATION 3 — RE-VALIDATE EVERY REDIRECT HOP. A redirect is a fresh location supplied
  *     by the remote side, so obligations 1 and 2 apply to each hop and not merely to the first.
- *   OBLIGATION 4, STAYS WITHDRAWN — BYTE AND TIME BOUNDS. Every possible value of a byte cap, a timeout
+ *   OBLIGATION 4 — BYTE AND TIME BOUNDS, WHICH THIS PORT WILL NOT PRESCRIBE. Every possible value of a byte cap, a timeout
  *     or a redirect count is a figure the source does not state, and S9/IR-12 forbid minting one. An
  *     implementer applies whatever bounds its operator has chosen; NO figure is prescribed here, and the
  *     legacy's only budget is the 3600-second REQUEST timeout at
  *     `model/service/ProductService.cfc:L65-L68`, already carried as mismatch M1.
- * The residual CWE-918 exposure — a host that only a lookup could convict — remains on the register as
- * mismatch M4, "remote file fetch inside the request", and it is what obligation 1 exists to close (S8).
+ * The WHOLE CWE-918 exposure — not merely the part a lookup could convict — remains on the register as
+ * mismatch M4, "remote file fetch inside the request", and obligation 1 is where an operator closes it.
  *
- * ⛔ NO TRANSPORT IMPLEMENTATION SHIPS, AND THE THREE RE-IMPOSED OBLIGATIONS ARE THE STATEMENT OF A
- * CONTRACT AN OPERATOR-SUPPLIED READER MUST MEET — NOT A DESCRIPTION OF SOMETHING IN THIS SUBTREE. The
- * gate at the seam runs whatever reader is bound, so the checks it CAN make are made for every
- * implementer; the three obligations above are the ones only an implementer can discharge. The only
+ * ⛔ NO TRANSPORT IMPLEMENTATION SHIPS, AND THE FOUR OBLIGATIONS ARE THE STATEMENT OF WHAT AN
+ * OPERATOR-SUPPLIED READER SHOULD CONSIDER — NOT A DESCRIPTION OF SOMETHING IN THIS SUBTREE, AND NOT A
+ * REFUSAL THIS PORT PERFORMS. The only
  * implementation delivered here is {@link unresolvableProductImportSourceReader} below, which REFUSES,
  * and it refuses for a reason stronger than caution: `model/dao/ProductDAO.cfc:L87` retrieves through
  * `getService("utilityTagService").cfhttp(...)` and NO `utilityTagService` bean is declared anywhere in
@@ -1759,21 +1418,16 @@ export const unresolvableProductContentAssignmentPort: ProductContentAssignmentP
  * import has therefore never been able to retrieve a file at all, so a working retrieval client would
  * ADD a capability the system being ported does not have, which is what §0.8.2 guideline 4 forbids.
  *
- * ⭐ AND THE POLICY IS REQUIRED STRUCTURALLY, NOT MERELY ASKED FOR IN PROSE. Two earlier revisions laid
- * the four obligations on implementers in PROSE and then withdrew them, and both left the same hole: a
- * CONFORMING reader could still forward a caller-supplied location untouched. That hole is closed by the
- * shape of this interface rather than by exhortation — {@link ProductImportSourceReader.sourcePolicy} is a
- * REQUIRED member, and the read members accept only a {@link ValidatedProductImportSource}, which cannot
- * be produced except by passing through {@link ProductImportSourcePolicy.validateSource}. An operator can
- * therefore no longer omit the control by accident; CHOOSING its values remains S8, and
- * {@link ProductImportSourcePolicy.readBounds} is a method rather than a property precisely so
- * {@link unresolvableProductImportSourceReader} can DECLINE instead of fabricating the three figures
- * obligation 4 rules out. `src/ports/repositories/ProductRepository.ts` carries the full account.
- *
- * ⭐ AND THAT SAME FACT IS WHY THE GATE AT THE SEAM IS INSIDE D18'S PRECEDENT RATHER THAN OUTSIDE IT.
- * If no input ever produced a well-defined, intended retrieval, then no refusal can change a
- * well-defined, intended outcome. The SEC-08 block above {@link assertRetrievableImportSource} works
- * that argument through; it is recorded here too so this declaration stands on its own.
+ * ⭐ THE POLICY SEAM IS STRUCTURAL, AND IT IS NOT A HARDENING MEASURE. An implementer's own policy is
+ * reached through {@link ProductImportSourceReader.sourcePolicy}, a REQUIRED member, and the read members
+ * accept only a {@link ValidatedProductImportSource}, which cannot be produced except by passing through
+ * {@link ProductImportSourcePolicy.validateSource}. That is a WIRING shape rather than a refusal: a
+ * permissive policy admits every location and reproduces `model/dao/ProductDAO.cfc:L87` exactly, so
+ * nothing about it changes an outcome, and it invents no host, no figure and no ceiling (S9, IR-12).
+ * CHOOSING any value remains S8, and {@link ProductImportSourcePolicy.readBounds} is a method rather than
+ * a property precisely so {@link unresolvableProductImportSourceReader} can DECLINE instead of fabricating
+ * the three figures obligation 4 rules out. `src/ports/repositories/ProductRepository.ts` carries the full
+ * account.
  *
  * ⚠️ A CONCRETE READER WAS WRITTEN — TWICE — AND BOTH COPIES ARE REMOVED, WHICH F8 DOES NOT CHANGE.
  * `src/adapters/http/` briefly held two modules, each exporting a class named
@@ -1804,8 +1458,10 @@ export interface ProductImportSourceReader {
    * stated in prose — which two earlier revisions attempted, in opposite directions — left a conforming
    * reader free to ignore it.
    *
-   * ⚠️ THE POLICY'S VALUES ARE NOT THIS SUBTREE'S TO CHOOSE. Every scheme, host, address range and
-   * numeric bound inside it is the operator's; see "SEC-08, RE-ADJUDICATED" in the port module.
+   * ⚠️ THE POLICY'S VALUES ARE NOT THIS SUBTREE'S TO CHOOSE, AND REQUIRING THE MEMBER IS NOT A REFUSAL.
+   * Every scheme, host, address range and numeric bound inside it is the operator's, and a permissive
+   * implementation reproduces `model/dao/ProductDAO.cfc:L87` exactly; see "SEC-08, WITHDRAWN" in the port
+   * module for the adjudication and for the CWE-918 surface that is consequently carried.
    */
   readonly sourcePolicy: ProductImportSourcePolicy;
 
@@ -1816,11 +1472,10 @@ export interface ProductImportSourceReader {
    * order. The first row of the file is its heading row, as the abandoned block at `:L95` states
    * explicitly.
    *
-   * @param fileURL - the caller's location, BYTE-FOR-BYTE as the caller supplied it. It has already
-   *   passed {@link assertRetrievableImportSource}, so its scheme is HTTP or HTTPS, it carries no
-   *   embedded credentials, and its host is not an address literal in a refused range — but it is
-   *   unmodified, not rewritten, and a host given as a NAME has NOT been resolved or vetted. Obligations
-   *   1 to 3 above are what an implementer still owes.
+   * @param fileURL - the caller's location, BYTE-FOR-BYTE as the caller supplied it and UNVETTED. ⛔ NO
+   *   gate in this file has judged its scheme, its userinfo component or its host: a revision had one and
+   *   it is withdrawn (see SEC-08 IS WITHDRAWN near the top of this file). All four obligations above are
+   *   what an implementer owes, and the CWE-918 exposure is carried as mismatch M4.
    * @param delimiter - the field delimiter resolved from the file type, `''` for an unrecognised type.
    * @param textQualifier - the text qualifier, `''` by default per `model/dao/ProductDAO.cfc:L73`.
    * @returns the parsed record set.
@@ -1856,10 +1511,11 @@ export interface ProductImportSourceReader {
    * Records must be yielded in file order, once each, because the row number the importer reports is
    * derived from their position (`:L176`) and because M3 commits them in that order.
    *
-   * ⚠️ AND ABANDONMENT MUST BE CLEAN. The importer stops consuming at the first failing row (M3) and, if
-   * a cancellation signal is supplied, at the next row boundary after it aborts. A generator implementing
-   * this member therefore has its `return()` invoked without having been exhausted, and must release its
-   * connection, handle or buffer in a `finally` rather than only on normal completion.
+   * ⚠️ AND ABANDONMENT MUST BE CLEAN. The importer stops consuming at the first failing row (M3), so a
+   * generator implementing this member can have its `return()` invoked without having been exhausted, and
+   * must release its connection, handle or buffer in a `finally` rather than only on normal completion.
+   * (This sentence also covered a caller-supplied cancellation signal; that control is withdrawn under
+   * review finding F4, and first-failure abandonment is reason enough on its own.)
    *
    * @param source - the location, already validated, exactly as the materialising member receives it.
    * @param delimiter - the field delimiter resolved from the file type, `''` for an unrecognised type.
@@ -2134,14 +1790,20 @@ export interface MySqlProductRepositoryDependencies {
   readonly sourceReader: ProductImportSourceReader;
 
   /**
-   * The content-assignment collaborator — `model/dao/ProductDAO.cfc:L257-L282`.
+   * The content-assignment collaborator FACTORY — `model/dao/ProductDAO.cfc:L257-L282`.
    *
    * ⛔ REQUIRED, NOT OPTIONAL, AND THAT IS DELIBERATE. An optional member with a silent fallback would
    * let a composition root omit it and produce imports that drop every requested content assignment
    * while reporting success — undetectable, because `importFromFile` returns nothing. Supply
-   * {@link unresolvableProductContentAssignmentPort} to state explicitly that the schema is not owned.
+   * {@link unresolvableProductContentAssignmentFactory} to state explicitly that the schema is not owned.
+   *
+   * ⭐ A FACTORY RATHER THAN AN INSTANCE, PER REVIEW FINDING F11. It is invoked once per row with that
+   * row's {@link ProductImportTransactionScope}, so the step's three statements belong to the row's
+   * transaction exactly as `:L257-L282` belongs to the `transaction{` block `:L177` opens. A captured
+   * instance could neither observe the row's uncommitted product nor roll back with a failing row. See
+   * {@link ProductContentAssignmentFactory}.
    */
-  readonly contentAssignment: ProductContentAssignmentPort;
+  readonly contentAssignment: ProductContentAssignmentFactory;
 
   /**
    * The current-account context, replacing `getSlatwallScope().getCurrentAccount().getAccountID()` at
@@ -2459,25 +2121,15 @@ interface NormalisedImportData {
   readonly rows: AsyncIterable<NormalisedImportRow>;
 }
 
-/**
- * The four moments at which `importFromFile` observes a caller's cancellation signal.
- *
- * Naming them as a closed union rather than passing a bare `string` is what keeps the committed-row
- * arithmetic in `throwIfCancelled` compile-checked: a checkpoint added later cannot be introduced as a
- * bare literal and silently acquire the row-boundary derivation, because the union is checked by the
- * compiler at every call site. The names themselves are observable — they travel to the caller in the
- * thrown error's context — so they are fixed here in one place rather than repeated as literals at each
- * checkpoint.
- *
- * ⭐ ONLY `'row'` CARRIES A ROW NUMBER, AND THAT IS WHAT MAKES THE ARITHMETIC HONEST. The three
- * pre-loop checkpoints are reached before any record has been read, so they pass no `rowNumber` and the
- * context they throw carries no `committedRows` at all. At a `'row'` boundary every earlier row has
- * committed in its own transaction (M3), so `rowNumber - 1` is exactly the number durably written.
- * There is therefore no checkpoint at which a position-derived count could over-report, and no phase
- * needs to be special-cased out of the derivation.
- */
-type ProductImportCancellationPhase =
-  'beforeRetrieval' | 'afterSourceValidation' | 'afterRetrieval' | 'row';
+/* ⛔ A CANCELLATION-PHASE UNION STOOD HERE AND IS WITHDRAWN WITH THE SIGNAL IT DESCRIBED (review
+ * finding F4). It named the four moments at which `importFromFile` observed a caller's `AbortSignal` —
+ * `'beforeRetrieval'`, `'afterSourceValidation'`, `'afterRetrieval'` and `'row'` — and existed so the
+ * committed-row arithmetic in the abort path stayed compile-checked. `model/dao/ProductDAO.cfc:L73`
+ * declares no such control and the legacy importer runs to completion or dies with its request, so the
+ * signal, its phases and its error context are all removed rather than merely defaulted off: AAP §0.6.7.7
+ * admits one behavioural exception (D18), §0.8.2 Guideline 4 forbids the rest, and §0.7.3 S9 / IR-12
+ * forbid inventing runtime controls. Mismatch M1 remains FLAGGED, on the port and at
+ * `../../services/ProductService`, rather than answered by a control the legacy cannot express. */
 
 /**
  * Normalises ONE record, at the moment it is about to be imported.
@@ -2858,7 +2510,7 @@ const ATTRIBUTE_VALUE_INSERT_STATEMENT = `INSERT INTO ${OUT_OF_SCOPE_TABLE.attri
 /**
  * BACK-FILL 1 — the default-SKU statement, the translation of `model/dao/ProductDAO.cfc:L288-L302`.
  *
- * ⚠️ FULLY STATIC IN THE LEGACY, SO THIS IS D22 ONLY AND NOT D18. `:L289` and `:L295` interpolate
+ * ⚠️ FULLY STATIC IN THE LEGACY, SO THIS IS the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] ONLY AND NOT D18. `:L289` and `:L295` interpolate
  * NOTHING; the only change here is the logical-to-physical identifier translation. `:L302` executes it
  * with zero parameters and so does this port. Claiming these two as injection sites would over-state
  * D18, which misleads as badly as under-stating it.
@@ -3334,97 +2986,61 @@ interface ImportPlan {
   readonly timeStamp: Date;
   /** `:L153` — ONE account identifier for the whole import. */
   readonly administratorID: string;
-  /**
-   * The import's own resolution memory for the three per-row lookups whose answers cannot change
-   * underneath it. See {@link ImportLookupMemory} for the proof, key by key.
+  /*
+   * ⛔ A `lookups` FIELD WAS DECLARED HERE AND HAS BEEN REMOVED (review finding F12). It carried an
+   * import-scoped memory of resolved brand, product-type and option identifiers. The withdrawal, and the
+   * argument that was made for it, are recorded in the block below this interface.
    */
-  readonly lookups: ImportLookupMemory;
 }
 
-/**
- * The import's memory of lookups it has already resolved, live for exactly one call.
+/* ================================================================================================
+ * ⛔ THE IMPORT LOOKUP MEMORY IS WITHDRAWN — REVIEW FINDING F12
+ * ================================================================================================
+ * An `ImportLookupMemory` interface, an `optionMemoryKey` composite-key helper and a
+ * `resolveRememberedLookup` member used to live here. They remembered every RESOLVED brand identifier,
+ * product-type identifier and (group, code) option identifier for the duration of one import, so a
+ * thousand rows sharing one brand issued ONE brand statement instead of a thousand.
  *
- * ⭐ WHY IT EXISTS. `model/dao/ProductDAO.cfc:L179-L186` re-runs the brand lookup and the product-type
- * lookup FOR EVERY ROW, and `:L212-L215` re-runs the option lookup for every row × every surviving
- * option group. A catalog file of a thousand rows sharing one brand and one product type issues a
- * thousand identical brand statements and a thousand identical product-type statements, and a file with
- * three option columns issues three thousand option statements for perhaps a dozen distinct options.
- * Nothing about any of those repetitions is load-bearing.
+ * THE ARGUMENT THAT WAS MADE FOR IT, PRESERVED IN FULL SO THE ROUND TRIP IS NOT REPEATED:
+ *   • `model/dao/ProductDAO.cfc:L179-L186` re-runs the brand and product-type lookups for every row and
+ *     `:L212-L215` re-runs the option lookup for every row × every surviving option group, so the
+ *     repetition is real and large.
+ *   • ONLY POSITIVE resolutions were remembered, so a MISS re-probed on every row exactly as the legacy
+ *     does — meaning a row created concurrently mid-import was still seen, on the row the legacy would
+ *     first have seen it.
+ *   • None of the three statements declares an `ORDER BY` (`:L180`, `:L184`, `:L213`) and each reader
+ *     takes the FIRST row, so where two rows share a name the legacy's own answer is already whichever
+ *     row the engine yielded first — and may differ between two probes in the same import. Returning a
+ *     remembered first answer therefore returned a value the legacy could itself have returned.
+ *   • It was import-scoped rather than instance-scoped, so it could not leak across warm invocations (M7).
  *
- * ⚠️⚠️ ONLY POSITIVE RESOLUTIONS ARE REMEMBERED, AND THAT ASYMMETRY IS THE WHOLE CORRECTNESS ARGUMENT.
- * A miss is NEVER recorded, so a row whose brand, product type or option was absent re-probes exactly as
- * the legacy does — which means a row created concurrently between two rows of the import is still seen,
- * on exactly the row the legacy would first have seen it. What a positive entry asserts is far narrower:
- * that an identifier already observed for a given name does not become a DIFFERENT identifier later in
- * the same import. The importer never deletes a brand, a product type or an option, and a row's primary
- * key does not change, so within one import the only way a remembered answer could go stale is a
- * concurrent DELETE-and-recreate of the same name — narrower than the "any concurrent insert" window a
- * naive whole-answer cache would open, and narrower still than it looks, because:
+ * ⚠️ AND IT IS WITHDRAWN ANYWAY, BECAUSE "NARROWER" IS NOT "ABSENT". The argument above reduces the
+ * divergence to one window and does not close it: a rename, or a delete-and-recreate, of a brand,
+ * product type or option DURING the import is visible to the legacy on its next row and is hidden by a
+ * remembered identifier here. AAP §0.8.2 guideline 4 forbids optimising business logic beyond what the
+ * migration requires, and IR-9 requires that behaviour be carried rather than improved; a per-row read
+ * count is behaviour of the importer, not an implementation detail beneath it. The review conditioned
+ * the memory on "an existing source-backed immutability guarantee", and there is none: nothing in
+ * `model/dao/ProductDAO.cfc` asserts that these names resolve stably for the life of an import.
  *
- * ⚠️ THE LEGACY IS ALREADY NON-DETERMINISTIC ON THESE READS. Each lookup projects one identifier and the
- * reader takes the FIRST row (`readFirstRowText`), while none of the three statements declares an
- * `ORDER BY` — `:L180`, `:L184` and `:L213` order nothing. Where two rows share a name, which identifier
- * the legacy returns is whatever the engine yields first, and it may differ between two probes in the
- * same import. Remembering the first observed answer therefore returns a value the legacy could itself
- * have returned on every row; it cannot return one the legacy could not.
+ * ⚠️ THIS IS THE SAME ADJUDICATION F4 MADE FIVE TIMES OVER, AND IT LANDS THE SAME WAY. A control can be
+ * well-argued, narrow, and answer-preserving in every case anyone can name, and still be withdrawn —
+ * because sharing D18's SHAPE is not the same as BEING D18, and D18 (§0.6.7.7) remains the single
+ * declared behaviour-hardening exception in this port.
  *
- * ⚠️ AN OPTION THE IMPORT ITSELF CREATES IS RECORDED, AND THAT IS SAFE BECAUSE OF FIRST-FAILURE. The
- * insert at `:L222-L227` happens inside a row's transaction, so a rolled-back row could in principle
- * leave a remembered identifier that no longer exists. It cannot happen here: the per-row boundary stops
- * at the FIRST failure (M3), so no later row runs after the row whose transaction rolled back, and no
- * later row can read the entry. This is not defence in depth — it is the reason the entry is admissible
- * at all, and if the boundary ever gained a continue-on-error mode this recording would have to go.
- *
- * ⚠️ WHAT IS DELIBERATELY *NOT* REMEMBERED, AND WHY EACH WOULD BE WRONG:
- *   • THE SKU-OPTION LINK PROBE (`:L218-L220`). Its key includes the SKU identifier, which is resolved
- *     per row, and two file rows CAN resolve to the same SKU — the generated code at `:L200-L203` is
- *     derived from cell values, so duplicate rows collide. The second such row must observe the link the
- *     first row inserted, which is precisely the same-connection read-back M6 requires. Remembering it
- *     would substitute a stale answer for the one read that has to be live.
- *   • THE PRODUCT/SKU EXISTENCE LOOKUP (`:L385-L387`). Same reason, more sharply: it is the read that
- *     decides UPDATE versus INSERT, and two rows sharing a product code must have the second see the
- *     first's insert. Remembering it would turn a re-import into a duplicate insert.
- *   • THE CUSTOM-ATTRIBUTE UPDATE COUNT (`:L245-L247`). Not a lookup at all — it is an affected-row
- *     count off a mutation, and the mutation must run for its effect.
- *
- * ⚠️ AND IT IS IMPORT-SCOPED, NEVER INSTANCE-SCOPED (M7). It is created inside
- * {@link MySqlProductRepository.buildImportPlan} and reachable only through the {@link ImportPlan} that
- * call returns, so it dies with the import. A field on the repository would let a warm container serve
- * one caller's catalog identifiers to the next caller's import — the exact hazard M7 names.
- */
-interface ImportLookupMemory {
-  /** Brand name cell → brand identifier, for names already resolved. `:L179-L182`. */
-  readonly brandIdsByName: Map<string, string>;
-  /** Product-type name cell → product-type identifier. `:L183-L186`. */
-  readonly productTypeIdsByName: Map<string, string>;
-  /**
-   * `optionGroupID` + `\u0000` + option code → option identifier. `:L212-L215`, plus the identifier of
-   * an option this import created at `:L222-L227`.
-   *
-   * The key is composite because the legacy statement matches on BOTH the code and the group, and it is
-   * joined on a NUL rather than a printable separator so no pair of real values can collide by
-   * concatenation — an option code is file content and may contain any printable character.
-   */
-  readonly optionIdsByGroupAndCode: Map<string, string>;
-}
-
-/**
- * Compose the composite key {@link ImportLookupMemory.optionIdsByGroupAndCode} is keyed by.
- *
- * @param optionGroupID - the group the option belongs to, as the pre-pass resolved it.
- * @param optionCode - the option code cell, verbatim and case-sensitive.
- * @returns the composite key.
- */
-function optionMemoryKey(optionGroupID: string, optionCode: string): string {
-  return `${optionGroupID}\u0000${optionCode}`;
-}
+ * ⭐ WHAT THE REMOVAL MEANS CONCRETELY, so a reader does not look for a replacement: every row now
+ * issues its own brand statement, its own product-type statement and its own option statement per
+ * surviving option group, in file order, exactly as `:L179-L186` and `:L209-L235` do. The option
+ * creation path at `:L222-L227` is reached whenever the per-row lookup finds nothing, which is the only
+ * condition `:L217` tests. No count, no window and no ceiling replaces the memory.
+ * ============================================================================================== */
 
 /*
  * ⛔ `PRODUCT_MANY_TO_MANY_FIELDS` AND `clearProductManyToManyCollections` WERE REMOVED FROM THIS MODULE.
  * They existed only to serve a second `removeProduct` implementation that has itself been removed; the
  * full account, including why the many-to-many concern is NOT lost, sits with the surviving pair at
  * {@link MySqlProductRepository.saveProduct}. The authority the helper ported,
- * `org/Hibachi/HibachiService.cfc:L61`, is honoured in `./MySqlProductPersistence.ts`, which draws the
+ * `org/Hibachi/HibachiService.cfc:L61`, is honoured in `./MySqlProductRepository.ts`, which draws the
  * scope split between statement-removable link tables and the excluded-family ones its declared
  * `ProductDependencyCleanup` collaborator covers.
  */
@@ -3473,7 +3089,7 @@ export class MySqlProductRepository implements ProductRepository {
    * silently drop every content assignment. `unresolvableProductContentAssignmentPort` is the value to
    * supply when the operator does not own the content schema, and it refuses loudly.
    */
-  private readonly contentAssignment: ProductContentAssignmentPort;
+  private readonly contentAssignment: ProductContentAssignmentFactory;
 
   /** The current-account context, replacing the scope walk at `:L153` and `:L341`. */
   private readonly accountContext: AccountContextPort;
@@ -3687,22 +3303,15 @@ export class MySqlProductRepository implements ProductRepository {
    * here, no chunking is introduced and no queue is created: the mismatch belongs to the handler layer
    * and is flagged rather than silently resolved (S8, S9).
    *
-   * @param fileURL - the caller's location, forwarded to the retriever unmodified but NOT unchecked. It
-   *   is gated by {@link assertRetrievableImportSource} immediately before the retrieval, on every path
-   *   that retrieves — review finding F8, CWE-918. `model/dao/ProductDAO.cfc:L73-L87` vets nothing, and
-   *   the SEC-08 block above the gate declares why closing this is inside D18's precedent rather than a
-   *   silent divergence. The part a lookup alone could decide stays with the reader as obligations 1 to 3
-   *   and on the register as mismatch M4. See {@link ProductImportSourceReader}.
+   * @param fileURL - the caller's location, forwarded to the retriever unmodified AND UNCHECKED, exactly
+   *   as `model/dao/ProductDAO.cfc:L73-L87` forwards it. A gate stood here for one revision and is
+   *   withdrawn (SEC-08 IS WITHDRAWN, near the top of this file), so the whole CWE-918 exposure — scheme,
+   *   credentials, address and name alike — stays with the injected reader's own policy and on the
+   *   register as mismatch M4. See {@link ProductImportSourceReader}.
    * @param textQualifier - the text qualifier, defaulting to `''` exactly as `:L73` declares.
-   * @param options - optional invocation-scoped controls. Neither field alters what is imported or in
-   *   what order; see {@link ProductImportOptions}.
    * @returns nothing. See the note above: the void return is preserved deliberately.
    */
-  public async importFromFile(
-    fileURL: string,
-    textQualifier?: string,
-    options?: ProductImportOptions,
-  ): Promise<void> {
+  public async importFromFile(fileURL: string, textQualifier?: string): Promise<void> {
     // `:L74` — the file type is the last dot-delimited segment of the location, with NO validation and
     // NO extraction from a URL path. A query string travels with it, exactly as it does in the legacy,
     // which is one reason an unrecognised type is a silent no-delimiter case rather than an error.
@@ -3717,62 +3326,26 @@ export class MySqlProductRepository implements ProductRepository {
     const resolvedTextQualifier = textQualifier ?? '';
 
     /*
-     * ⭐ P17 — CANCELLATION IS OBSERVED, AND NOTHING ABOUT IT IS INVENTED. The signal is supplied by the
-     * caller or it is absent; this member creates none, derives none from a deadline and imposes no
-     * timeout of its own, because AAP §0.6.6 M1 records that the legacy's own budget is a 3600-second
-     * REQUEST TIMEOUT owned by `model/service/ProductService.cfc:L65-L68` and S9 forbids minting a
-     * substitute. When no signal is supplied this is a no-op closure and the import behaves exactly as it
-     * did before.
+     * ⛔ NO CANCELLATION IS OBSERVED, AND THE REMOVAL IS REVIEW FINDING F4's. A closure stood here that
+     * read a caller-supplied `AbortSignal` at four checkpoints — before the retrieval, after the source
+     * gate, after the retrieval and at each row boundary between transactions — and threw a `DomainError`
+     * naming the phase, the row number and the count of rows already committed. It invented no timeout and
+     * defaulted to legacy behaviour when no signal was supplied, and it was still a control
+     * `model/dao/ProductDAO.cfc:L73` cannot express: the legacy importer runs to completion or dies with
+     * its request. AAP §0.6.7.7 admits exactly one behavioural exception (D18) and §0.8.2 Guideline 4
+     * forbids the rest, so it is gone rather than merely optional.
      *
-     * IT IS CHECKED ONLY WHERE THE LEGACY ALREADY HAD A BOUNDARY: before the retrieval, after it, and at
-     * each row boundary BETWEEN transactions. Never inside a transaction, never between two statements of
-     * the same row, and never mid-statement — aborting there could leave a row half-written in an open
-     * boundary, whereas aborting between rows produces exactly the M3 partial-import shape a mid-file
-     * failure already produces, with earlier rows committed and no later row attempted.
+     * ⚠️ AND MISMATCH M1 IS THEREFORE STILL OPEN, WHICH IS THE HONEST OUTCOME AAP §0.8.3.6 ASKS FOR. A
+     * 3600-second budget (`model/service/ProductService.cfc:L65-L68`) has no representation in one
+     * invocation of the target runtime, and the answer is an out-of-band model at the handler layer (AAP
+     * §0.4.1.9) — not a control smuggled into this member's contract.
      */
-    const cancellation = options?.signal;
-    const throwIfCancelled = (phase: ProductImportCancellationPhase, rowNumber?: number): void => {
-      if (cancellation?.aborted === true) {
-        /*
-         * ⭐ THE COMMITTED COUNT IS REPORTED ONLY WHERE IT CAN BE DERIVED HONESTLY, WHICH IS THE ROW
-         * BOUNDARY AND NOWHERE ELSE. At a `'row'` boundary every earlier row has committed in its own
-         * transaction (M3), so `rowNumber - 1` is exactly the number durably written. The three pre-loop
-         * checkpoints run before any record has been read and before the first transaction is opened, so
-         * they pass no `rowNumber` and the context below omits `committedRows` entirely rather than
-         * reporting a zero that a caller could mistake for a measurement. Reporting a position-derived
-         * count at a checkpoint that has written nothing would tell a cancelling caller that rows it can
-         * go and look for are already in the catalogue when they are not, which is precisely the question
-         * this context exists to answer. `ProductImportCancellationPhase` keeps that invariant
-         * compile-checked: a new checkpoint cannot be added as a bare literal.
-         */
-        const committedRows = (rowNumber ?? 0) - 1;
-        throw new DomainError('The product import was cancelled before it completed.', {
-          context:
-            rowNumber === undefined
-              ? { fileURL, phase }
-              : { fileURL, phase, rowNumber, committedRows },
-        });
-      }
-    };
 
-    throwIfCancelled('beforeRetrieval');
-
-    /*
-     * ⭐ SEC-08 — THE IMPORT-SOURCE GATE, AT THE ONLY POINT IN THE SUBTREE WHERE A RETRIEVER IS REACHED.
-     * Review finding F8 (CWE-918). The full adjudication — which controls are reinstated, which stay
-     * withdrawn, and why the "a refusal changes an outcome" ground does not survive contact with D18's
-     * own example — is in the SEC-08 block above {@link assertRetrievableImportSource}.
-     *
-     * ⚠️ IT IS GUARDED ON THE FILE TYPE, AND THE GUARD IS LOAD-BEARING RATHER THAN TIDINESS. The
-     * spreadsheet branch below performs NO retrieval at all — `model/dao/ProductDAO.cfc:L83-L85` is an
-     * empty branch — yet it still falls through to the two bulk back-fills at `:L288-L325`. Gating
-     * before this check would therefore refuse a `.xls` location that the legacy processes without ever
-     * opening a socket, changing an outcome on a path that has no egress to protect. Every other path
-     * retrieves, so this covers exactly the retrieving ones.
-     */
-    if (fileType !== SPREADSHEET_FILE_TYPE) {
-      assertRetrievableImportSource(fileURL);
-    }
+    /* ⛔ NO IMPORT-SOURCE GATE RUNS HERE. One did, guarded on the file type so the non-retrieving
+     * spreadsheet branch was exempt, and it is withdrawn — see SEC-08 IS WITHDRAWN near the top of this
+     * file for the authority and for the CWE-918 exposure that is consequently carried as mismatch M4.
+     * The location travels to the injected reader exactly as the caller supplied it, which is what
+     * `model/dao/ProductDAO.cfc:L87` does with it. */
 
     // `:L82` — `queryNew("")`, the empty set the spreadsheet branch leaves in place.
     let recordSet: DelimitedImportRecordSet = EMPTY_RECORD_SET;
@@ -3801,8 +3374,6 @@ export class MySqlProductRepository implements ProductRepository {
      * to "may this location be fetched" independent of the file extension.
      */
     const validatedSource = await this.sourceReader.sourcePolicy.validateSource(fileURL);
-
-    throwIfCancelled('afterSourceValidation');
 
     if (fileType === SPREADSHEET_FILE_TYPE) {
       /*
@@ -3838,8 +3409,6 @@ export class MySqlProductRepository implements ProductRepository {
       // `:L87` — the single retrieval, delegated, in its materialising form. See M4 above.
       recordSet = await this.sourceReader.read(validatedSource, delimiter, resolvedTextQualifier);
     }
-
-    throwIfCancelled('afterRetrieval');
 
     /*
      * The two retrieval shapes converge here, and they converge on the LAZY one: a materialised record
@@ -3887,38 +3456,29 @@ export class MySqlProductRepository implements ProductRepository {
      * same first-failure semantics, same partial commits.
      */
     await this.transactions.runPerItemWithoutResults(data.rows, async (row, scope) => {
-      /*
-       * P17: checked at the row boundary, BEFORE this row's first statement. Throwing here aborts the
-       * row's own transaction — nothing of it has been written yet — and, by the boundary's first-failure
-       * rule, attempts no later row. Rows already committed stay committed, which is the same partial
-       * outcome a mid-file data failure produces (M3).
-       */
-      throwIfCancelled('row', row.rowNumber);
-
-      await this.importRow(scope.executor, row, plan);
+      /* ⭐ THE WHOLE SCOPE, NOT JUST ITS EXECUTOR (review finding F11). The row body needs the executor for
+       * its own statements AND the scope itself for the content-assignment step, whose collaborator is
+       * built per row from that scope so its statements join this row's transaction. */
+      await this.importRow(scope, row, plan);
     });
 
     /*
      * `:L287-L325` — the two bulk back-fills, outside every boundary, after the last row commits.
      *
-     * ⭐ P16 — WHETHER THEY RUN HERE IS THE CALLER'S DECISION, AND THE DEFAULT IS THE LEGACY'S BEHAVIOUR.
-     * `:L288` and `:L304` sit past the closing braces of both the transaction and the loop, unguarded by
-     * record count or file type, so running them by default preserves the observable end-to-end shape
-     * exactly — including for an empty file and for the `.xls` no-op. What the option adds is the ability
-     * for the out-of-band M1 workflow to import a catalog in several invocations and run the two
-     * whole-catalog statements ONCE at the end rather than once per invocation, which is a change to
-     * WORKFLOW COMPOSITION and not to either statement.
+     * ⛔ THEY RUN UNCONDITIONALLY, AND THE BRANCH THAT ONCE MADE THAT A CALLER'S DECISION IS WITHDRAWN
+     * (review finding F4). `:L288` and `:L304` sit past the closing braces of BOTH the transaction and the
+     * loop, unguarded by record count or file type, so the legacy runs them for an empty file and for the
+     * `.xls` no-op too — and so does this. A `deferBackfills` flag previously allowed an out-of-band M1
+     * workflow to suppress them per invocation and run them once per logical import; that flag had no
+     * legacy origin, and the port member it was paired with is withdrawn from
+     * `../../ports/repositories/ProductRepository` with it.
      *
-     * ⚠️ WHAT IS DELIBERATELY NOT DONE HERE. Neither statement is guarded on the record count, neither is
-     * restricted to the identifiers this import touched, neither gains a `LIMIT`, and their order is
-     * unchanged. Any of those would narrow which rows are updated — a semantic change Guideline 4 forbids,
-     * and one the review explicitly conditions on a parity exception that is not claimed. The finding is
-     * resolved by letting the caller run the pass once per logical import instead of once per invocation,
-     * not by making the pass touch fewer rows.
+     * ⚠️ WHAT IS DELIBERATELY NOT DONE HERE, AND NEVER WAS. Neither statement is guarded on the record
+     * count, neither is restricted to the identifiers this import touched, neither gains a `LIMIT`, and
+     * their order is unchanged. Any of those would narrow which rows are updated — a semantic change
+     * Guideline 4 forbids.
      */
-    if (options?.deferBackfills !== true) {
-      await this.backfillImportDerivedColumns();
-    }
+    await this.backfillImportDerivedColumns();
   }
 
   /* ==============================================================================================
@@ -3964,7 +3524,7 @@ export class MySqlProductRepository implements ProductRepository {
    * `removeProduct` called a module helper that emptied the ten many-to-many collections
    * `model/entity/Product.cfc:L79-L90` declares, porting
    * `org/Hibachi/HibachiService.cfc:L61` `removeAllManyToManyRelationships()`. That concern is ALREADY
-   * decided in this folder, one layer over, and decided the other way: `./MySqlProductPersistence.ts`
+   * decided in this folder, one layer over, and decided the other way: `./MySqlProductRepository.ts`
    * carries the judgment call in full and splits it on SCOPE — the in-scope link tables are removed with
    * STATEMENTS, while the nine excluded-family link tables and the three excluded-family cascade
    * children go behind the declared `ProductDependencyCleanup` collaborator and are FLAGGED, which is
@@ -4095,18 +3655,8 @@ export class MySqlProductRepository implements ProductRepository {
       productLookupColumn,
       timeStamp,
       administratorID,
-      /*
-       * Created empty, HERE, so it lives exactly as long as this plan does — one import, never the
-       * instance (M7). Nothing pre-populates it: a pre-fetch of every distinct brand name would need the
-       * whole file up front, which is precisely what this import no longer holds, and it would issue reads
-       * for names no row ever reaches. Filling it on first use costs one statement per distinct value and
-       * zero for names that never appear.
-       */
-      lookups: {
-        brandIdsByName: new Map<string, string>(),
-        productTypeIdsByName: new Map<string, string>(),
-        optionIdsByGroupAndCode: new Map<string, string>(),
-      },
+      /* ⛔ NO `lookups` MEMORY IS BUILT (F12). Nothing replaces it: each row issues its own statements,
+       * which is what `model/dao/ProductDAO.cfc:L179-L186` and `:L209-L235` do. */
     };
   }
 
@@ -4193,41 +3743,41 @@ export class MySqlProductRepository implements ProductRepository {
    * row body needs nothing beyond its own row and the shared plan. Keeping an unused parameter would
    * advertise a dependency this member does not have.
    *
-   * @param executor - the transaction-scoped execution surface for this row alone.
+   * @param scope - the transaction this row alone executes in. Its executor carries every statement
+   *   below, and the scope itself builds the row's content-assignment collaborator (F11).
    * @param row - the row being imported, carrying its one-based number for error context.
    * @param plan - the per-import plan.
    */
   private async importRow(
-    executor: ProductStatementExecutor,
+    scope: ProductImportTransactionScope,
     row: NormalisedImportRow,
     plan: ImportPlan,
   ): Promise<void> {
+    const { executor } = scope;
     /*
      * `:L179-L182` — the brand lookup, and `:L183-L186` — the product-type lookup. The reads are GUARDED
      * here and were not there; see `readFirstRowText`.
      *
-     * ⭐ RESOLVED THROUGH THE IMPORT'S OWN MEMORY, so a thousand rows sharing one brand issue ONE brand
-     * statement rather than a thousand identical ones. {@link ImportLookupMemory} carries the proof that
-     * this is answer-preserving; the two facts that do the work are that only POSITIVE resolutions are
-     * remembered — an absent brand re-probes on every row, exactly as the legacy does — and that neither
-     * statement declares an `ORDER BY`, so the legacy's own answer for a duplicated name is already
-     * whichever row the engine yielded first.
+     * ⛔ BOTH LOOKUPS ARE RE-ISSUED ON EVERY ROW (review finding F12). An import-scoped memory of
+     * resolved identifiers used to sit in front of these two statements, so a thousand rows sharing one
+     * brand issued ONE brand statement. It is WITHDRAWN; the argument that was made for it is preserved in
+     * full at the withdrawal block above {@link ImportPlan}. `:L179-L186` re-runs both lookups per row, so
+     * this does too — which means a rename, or a delete-and-recreate, of a brand or product type DURING
+     * the import is visible on the next row here exactly as it is there.
      *
-     * ⚠️ THE READS STAY ON THE ROW'S OWN TRANSACTION EXECUTOR. A memory miss issues its statement inside
-     * this row's boundary, not on the pool, because that is where the legacy issues it (M6). Moving the
-     * probe to the pool would be a second connection and a different snapshot.
+     * ⚠️ THE READS STAY ON THE ROW'S OWN TRANSACTION EXECUTOR. Each statement is issued inside this
+     * row's boundary, not on the pool, because that is where the legacy issues it (M6). Moving the probe to
+     * the pool would be a second connection and a different snapshot.
      */
-    const brandID = await this.resolveRememberedLookup(
+    const brandID = await this.resolveImportLookup(
       executor,
-      plan.lookups.brandIdsByName,
       readCell(row, REQUIRED_HEADING.brandName),
       BRAND_LOOKUP_STATEMENT,
       BRAND_ID_COLUMN,
     );
 
-    const productTypeID = await this.resolveRememberedLookup(
+    const productTypeID = await this.resolveImportLookup(
       executor,
-      plan.lookups.productTypeIdsByName,
       readCell(row, REQUIRED_HEADING.productTypeName),
       PRODUCT_TYPE_LOOKUP_STATEMENT,
       PRODUCT_TYPE_ID_COLUMN,
@@ -4336,7 +3886,7 @@ export class MySqlProductRepository implements ProductRepository {
      * outcome a mid-file data failure produces in the legacy, and exactly what M3 records. That is the
      * legacy's own failure shape, not one this port introduced.
      */
-    await this.assignRequestedContentPages(row, productID, plan);
+    await this.assignRequestedContentPages(scope, row, productID, plan);
   }
 
   /**
@@ -4371,33 +3921,16 @@ export class MySqlProductRepository implements ProductRepository {
     }
 
     /*
-     * ⭐ THE IMPORT'S MEMORY IS CONSULTED BEFORE THE STATEMENT, so a file with three option columns over a
-     * thousand rows issues one statement per DISTINCT (group, code) pair instead of three thousand. On a
-     * hit the whole block below is skipped: the option is known to exist, so `:L217`'s non-empty branch is
-     * the one the legacy would take, and `:L222-L227` — the creation path — must not run.
+     * ⛔ NO MEMORY IS CONSULTED BEFORE THE STATEMENT (review finding F12). A composite-keyed memory of
+     * resolved (group, code) pairs used to short-circuit this whole block, so a file with three option
+     * columns over a thousand rows issued one statement per DISTINCT pair instead of three thousand. It is
+     * WITHDRAWN, along with the recording that used to follow the creation path; the argument that was made
+     * for both is preserved at the withdrawal block above {@link ImportPlan}.
      *
-     * ⚠️ THE LINK PROBE IS STILL ISSUED ON EVERY HIT, and that is not an oversight. Its key includes the
-     * SKU identifier, which is per-row, and two file rows can resolve to the SAME SKU because the code at
-     * `:L200-L203` is derived from cell values. The second such row must see the link the first inserted,
-     * which is the same-connection read-back M6 requires. Only the OPTION resolution is remembered; the
-     * link question is asked afresh every time, exactly as the legacy asks it.
+     * `:L212-L215` re-runs this lookup for every row × every surviving option group, so this does too, and
+     * `:L217`'s branch is decided by THIS row's answer rather than by an earlier row's. An option renamed
+     * or recreated mid-import is therefore seen here on the same row the legacy sees it.
      */
-    const rememberedOptionKey = optionMemoryKey(optionGroupID, optionCode);
-    const rememberedOptionID = plan.lookups.optionIdsByGroupAndCode.get(rememberedOptionKey);
-
-    if (rememberedOptionID !== undefined) {
-      // `:L218-L221` then `:L230-L234`, with `:L217` known to take its non-empty branch.
-      const knownLink = await executor.execute(SKU_OPTION_EXISTENCE_STATEMENT, [
-        rememberedOptionID,
-        skuID,
-      ]);
-
-      if (knownLink.length === 0) {
-        await executor.executeMutation(SKU_OPTION_INSERT_STATEMENT, [rememberedOptionID, skuID]);
-      }
-
-      return;
-    }
 
     // `:L212-L215` — the outer join that returns a row for the group even when the option is absent.
     const lookupRows = await executor.execute(OPTION_LOOKUP_STATEMENT, [optionCode, optionGroupID]);
@@ -4450,24 +3983,13 @@ export class MySqlProductRepository implements ProductRepository {
     }
 
     /*
-     * Remember the resolution, whether it was found at `:L216` or created at `:L223`.
-     *
-     * ⚠️ RECORDING A CREATED OPTION IS SAFE BECAUSE OF FIRST-FAILURE, NOT BECAUSE THE INSERT IS COMMITTED.
-     * The insert above sits inside this row's transaction and is not durable yet. If this row later fails,
-     * its transaction rolls back and the entry would name an option that does not exist — but no later row
-     * can read it, because the per-row boundary stops at the FIRST failure and attempts no further row
-     * (M3). The entry cannot outlive its own transaction's success. {@link ImportLookupMemory} states the
-     * same thing as a standing obligation: were the boundary ever to gain a continue-on-error mode, this
-     * recording would have to be removed with it.
-     *
-     * ⚠️ AND AN EMPTY IDENTIFIER IS NEVER RECORDED. `optionID` is `''` only when `:L216` found no row AND
-     * the creation path did not run — which cannot happen here, since `:L217`'s empty branch always
-     * creates — but the guard is kept so the memory's positive-only invariant is enforced at the write
-     * rather than merely argued at the read.
+     * ⛔ THE RESOLUTION IS NOT RECORDED ANYWHERE (F12). A `set` on the import memory used to sit here,
+     * covering both the option found at `:L216` and the one created at `:L223`. Its own justification was
+     * conditional — it was admissible only because the per-row boundary stops at the FIRST failure (M3), so
+     * a rolled-back row's created option could never be read by a later row, and it carried a standing
+     * obligation to be removed if that boundary ever gained a continue-on-error mode. The withdrawal
+     * discharges that obligation outright, and the condition no longer has to be maintained.
      */
-    if (optionID !== '') {
-      plan.lookups.optionIdsByGroupAndCode.set(rememberedOptionKey, optionID);
-    }
 
     // `:L230-L234`.
     if (!linkExists) {
@@ -4580,6 +4102,7 @@ export class MySqlProductRepository implements ProductRepository {
    * @param plan - carries {@link ImportPlan.assignsContentPages}, the heading test decided once per file.
    */
   private async assignRequestedContentPages(
+    scope: ProductImportTransactionScope,
     row: NormalisedImportRow,
     productId: string,
     plan: ImportPlan,
@@ -4596,6 +4119,29 @@ export class MySqlProductRepository implements ProductRepository {
      * no-op the legacy has and it stays a no-op here. */
     const pageFileNames = listToArray(readCell(row, CONTENT_PAGE_COLUMN), LIST_DELIMITER);
 
+    /*
+     * ⭐ F11 — THE COLLABORATOR IS BUILT FROM THIS ROW'S TRANSACTION, AND BUILT ONLY ONCE PER ROW.
+     * Every statement it issues below therefore belongs to the same transaction as the product and SKU
+     * writes above, exactly as `:L257-L282` belongs to the `transaction{` block `:L177` opens. Two
+     * consequences, both of them the legacy's:
+     *   • THE READS SEE THIS ROW'S UNCOMMITTED PRODUCT. The existence probe at `:L271` filters on the
+     *     `productID` the product save has just written and not yet committed; on any other connection it
+     *     would not find it, and the step would insert a duplicate link on a re-import.
+     *   • A LATER FAILURE IN THIS ROW UNDOES THESE WRITES. Previously a captured instance committed its
+     *     links independently, so a row that failed after this point rolled back its product and SKU while
+     *     leaving the content links behind — an orphaned link row pointing at a product that never landed,
+     *     with nothing reporting the split.
+     *
+     * ⚠️ BUILT AFTER THE TWO NO-OP GUARDS ABOVE, so an ordinary import — which returns at the heading
+     * test — never calls the factory at all, and a row with an empty content cell builds nothing either.
+     * An implementation is therefore not invoked for rows that have no page to assign.
+     */
+    if (pageFileNames.length === 0) {
+      return;
+    }
+
+    const contentAssignment = this.contentAssignment(scope);
+
     /* `:L260` — one page at a time, IN FILE ORDER, sequentially.
      *
      * ⛔ NOT PARALLELISED, DELIBERATELY. Two pages of the same row can resolve to the SAME content
@@ -4606,7 +4152,7 @@ export class MySqlProductRepository implements ProductRepository {
       /* `:L262-L266` — resolve the page in the content application. The two extra predicates the legacy
        * carries (`subtype = 'slatwallproductlisting'` and `active = 1`) belong to the collaborator's
        * contract, so a page of another subtype or an inactive one resolves to nothing. */
-      const resolved = await this.contentAssignment.findProductListingContent(pageFileName);
+      const resolved = await contentAssignment.findProductListingContent(pageFileName);
 
       if (resolved === null) {
         /* `:L269` — `if(lookupResult.recordcount)`. An unresolved page is SILENTLY SKIPPED: no error, no
@@ -4622,7 +4168,7 @@ export class MySqlProductRepository implements ProductRepository {
 
       /* `:L270-L273` — the existence probe. One of D18's interpolated statements on the legacy side; the
        * collaborator binds it. */
-      const alreadyAssigned = await this.contentAssignment.hasContentAssignment(
+      const alreadyAssigned = await contentAssignment.hasContentAssignment(
         productId,
         resolved.contentId,
       );
@@ -4639,7 +4185,7 @@ export class MySqlProductRepository implements ProductRepository {
 
       /* `:L276-L279` — the insert, with the content path DENORMALISED alongside the identifier exactly as
        * the legacy denormalises it. */
-      await this.contentAssignment.insertContentAssignment({
+      await contentAssignment.insertContentAssignment({
         productContentId,
         contentId: resolved.contentId,
         contentPath: resolved.contentPath,
@@ -4709,7 +4255,7 @@ export class MySqlProductRepository implements ProductRepository {
     executor: ProductStatementExecutor,
     row: NormalisedImportRow,
     request: {
-      /** `:L328` `tableName` — already validated, so a logical name cannot reach a statement (D22). */
+      /** `:L328` `tableName` — already validated, so a logical name cannot reach a statement (the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132]). */
       readonly table: PhysicalTableName;
       /** `:L328` `columnList` — the classified headings for this table only. See the note above. */
       readonly columnList: readonly string[];
@@ -4761,7 +4307,7 @@ export class MySqlProductRepository implements ProductRepository {
      *
      * ⚠️ SEC-14 — TWO CHECKS PER HEADING, ASKING TWO DIFFERENT QUESTIONS, IN THIS ORDER. `assertColumnName`
      * answers "is this a real column of this table", which is what makes the identifier safe to place in
-     * statement text (D22). {@link assertImportableColumn} answers "may an imported file WRITE it", which
+     * statement text (the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132]). {@link assertImportableColumn} answers "may an imported file WRITE it", which
      * is the mass-assignment question the identifier check cannot answer. Schema first, so a heading
      * naming nothing is still reported as a schema fault rather than as an authorization one.
      *
@@ -4968,51 +4514,44 @@ export class MySqlProductRepository implements ProductRepository {
   }
 
   /**
-   * Resolve a single-value lookup through the import's memory, issuing the statement only on a miss.
+   * Resolve a single-value lookup by issuing its statement — once per call, on every call.
    *
    * The shared body of the brand lookup at `model/dao/ProductDAO.cfc:L179-L182` and the product-type
    * lookup at `:L183-L186`. Both have the identical shape — one bound cell value, one projected
    * identifier, first row wins, empty string when nothing matched — so they share one implementation
-   * rather than two copies of the same memory discipline.
+   * rather than two copies of the same read.
    *
-   * ⚠️ A MISS IS NOT REMEMBERED, WHICH IS WHAT KEEPS THIS FAITHFUL. Returning `''` records nothing, so
-   * the next row carrying the same absent name issues the statement again — and therefore observes a row
-   * created concurrently in between, on exactly the row the legacy would first have observed it. Only a
-   * resolved identifier is remembered, and {@link ImportLookupMemory} carries the argument for why that
-   * cannot change within one import.
+   * ⛔ THIS MEMBER USED TO CONSULT AN IMPORT-SCOPED MEMORY AND WAS NAMED `resolveRememberedLookup`
+   * (review finding F12). It took the memory as a parameter, returned a remembered identifier without
+   * issuing anything, and recorded every POSITIVE resolution. Both halves are withdrawn; the argument
+   * that was made for them is preserved at the withdrawal block above {@link ImportPlan}. There is no
+   * cache parameter left to pass and no branch left to take: the statement is issued, and its answer is
+   * this row's answer.
    *
    * ⚠️ THE EMPTY NAME IS NOT SPECIAL-CASED. `:L180` and `:L184` bind the cell whatever it contains,
    * including the empty string, and the legacy neither guards nor short-circuits it. So neither does this:
    * an empty cell issues the statement, and if it happens to match a row with an empty name it resolves,
-   * exactly as the legacy would.
+   * exactly as the legacy would. Skipping the read for an empty cell would be a saving the legacy does not
+   * make, and it would change the answer for a catalogue that genuinely holds a blank name.
    *
-   * @param executor - the row's transaction-scoped executor. Never the pool-bound one (M6).
-   * @param memory - the import-scoped map for this lookup, mutated in place on a resolution.
+   * ⚠️ IT READS ON THE ROW'S OWN TRANSACTION EXECUTOR, never the pool-bound one (M6), because that is
+   * where the legacy issues it — inside the `transaction{` block `:L177` opens per row.
+   *
+   * @param executor - the row's transaction-scoped executor.
    * @param value - the cell value to bind, verbatim.
    * @param statement - the lookup statement, whose sole placeholder takes `value`.
    * @param identifierColumn - the column the statement projects.
    * @returns the resolved identifier, or `''` when nothing matched — the legacy's own empty-set value.
    */
-  private async resolveRememberedLookup(
+  private async resolveImportLookup(
     executor: ProductStatementExecutor,
-    memory: Map<string, string>,
     value: string,
     statement: string,
     identifierColumn: string,
   ): Promise<string> {
-    const remembered = memory.get(value);
-    if (remembered !== undefined) {
-      return remembered;
-    }
-
     const rows = await executor.execute(statement, [value]);
-    const resolved = readFirstRowText(rows, identifierColumn);
 
-    if (resolved !== '') {
-      memory.set(value, resolved);
-    }
-
-    return resolved;
+    return readFirstRowText(rows, identifierColumn);
   }
 
   /**
@@ -5029,19 +4568,19 @@ export class MySqlProductRepository implements ProductRepository {
    * spreadsheet upload that imported nothing still executes both, and so does an empty file. See the note
    * on {@link MySqlProductRepository.importFromFile}.
    *
-   * ⭐ AND THAT IS WHY THIS MEMBER IS PUBLIC. It was private, invoked only from the tail of the import,
-   * which meant a whole-catalog pass for every invocation of an out-of-band workflow that necessarily
-   * spans several. Exposing it lets the workflow pass `deferBackfills` on its chunks and invoke this once
-   * at the end, executing exactly the same two statements, in the same order, over the same rows — once
-   * per logical import instead of once per invocation. The import still invokes it by default, so nothing
-   * a pre-existing caller observes changes.
+   * ⛔ AND THAT IS WHY THIS MEMBER IS PRIVATE AGAIN. It was made PUBLIC, and declared on the repository
+   * port, so an out-of-band M1 workflow could pass `deferBackfills` on its chunks and invoke this once at
+   * the end rather than once per invocation. Review finding F4 withdrew that flag, and this member's only
+   * stated justification went with it — so the exposure is surplus public surface and the member returns to
+   * the shape it had: private, invoked from exactly one place, the tail of the import, unconditionally.
    *
-   * ⚠️ EXPOSING IT ADDS NO BEHAVIOUR AND NARROWS NOTHING. No record-count guard, no restriction to the
+   * ⚠️ NEITHER THE EXPOSURE NOR ITS REMOVAL ADDS OR NARROWS ANY BEHAVIOUR. No record-count guard, no
+   * restriction to the
    * identifiers an import touched, no `LIMIT`, no reordering. Narrowing any of that would change which
    * rows are updated, which Guideline 4 forbids and which the review conditions on a parity exception that
    * is deliberately not claimed.
    *
-   * ⚠️ BOTH ARE D22 SITES AND NEITHER IS AN INJECTION SITE. `:L289` and `:L295` interpolate nothing at
+   * ⚠️ BOTH ARE the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] SITES AND NEITHER IS AN INJECTION SITE. `:L289` and `:L295` interpolate nothing at
    * all; `:L305`, `:L311` and `:L318` interpolate a SETTING, not file content. The only change to the
    * first is the logical-to-physical identifier translation, and the only change to the second is that
    * the setting travels as a bound value. Claiming either as a D18 injection would over-state the
@@ -5052,7 +4591,7 @@ export class MySqlProductRepository implements ProductRepository {
    * in sequence is the faithful shape. Their order is not incidental: the first assigns default SKUs and
    * the second derives image file names, and both read rows the row loop has already committed.
    */
-  public async backfillImportDerivedColumns(): Promise<void> {
+  private async backfillImportDerivedColumns(): Promise<void> {
     await this.transactions.runWithoutTransaction(async (executor) => {
       // `:L288-L302` — back-fill 1. Zero parameters, exactly as `:L302` executes it.
       await executor.executeMutation(DEFAULT_SKU_BACKFILL_STATEMENT, []);
@@ -5305,5 +4844,1013 @@ export class MySqlProductRepository implements ProductRepository {
       `DELETE FROM ${PRODUCT_TABLE} WHERE ${PRODUCT_ID_COLUMN} = ?`,
       [productIdentifier],
     );
+  }
+}
+
+/* ================================================================================================
+ * THE PRODUCT AND PRODUCT-TYPE WRITE SURFACE — `SwProduct` AND `SwProductType`
+ * ------------------------------------------------------------------------------------------------
+ * The production write surface for `SwProduct` and `SwProductType`.
+ *
+ * ⭐ WHY THIS FILE EXISTS, STATED AS THE GAP IT CLOSES.
+ *
+ * `src/services/ProductService.ts` declares three narrow persistence seams and implements every one of
+ * its fifteen members against them, but until now NOTHING in `src/` supplied a production
+ * implementation of any of them. A repository-wide search for `new BaseService` returned zero hits and
+ * a search for `EntityRemover` returned only its own declaration. The consequence was concrete rather
+ * than theoretical: a composition root could not have wired a working product flow at all, and the only
+ * way to make one work would have been to invent SQL at the wiring site — which is the layer least able
+ * to state what `model/entity/Product.cfc` declares. This file supplies the four capabilities so the
+ * wiring site has nothing left to invent.
+ *
+ * The four, each named with the seam it fills:
+ *
+ *   {@link MySqlProductPersistence.saveProduct}       -> `ProductService.persistProduct`, and the
+ *                                                       `persist` collaborator of the product base service
+ *   {@link MySqlProductPersistence.deleteProduct}     -> the `remove` collaborator of the product base
+ *                                                       service, which `ProductService.deleteProduct`
+ *                                                       reaches through `ProductBaseService`
+ *   {@link MySqlProductPersistence.saveProductType}   -> the `persist` collaborator of the product-type
+ *                                                       base service, which `ProductService.saveProductType`
+ *                                                       reaches through `ProductTypeBaseService`
+ *   {@link MySqlProductPersistence.deleteProductType} -> the `remove` collaborator of the same
+ *
+ * ⚠️ STRUCTURALLY — AND ONLY STRUCTURALLY — THE FOUR MEMBERS SATISFY THOSE SEAMS. `EntityPersister` and
+ * `EntityRemover` are declared in `src/services/BaseService.ts`, and this file imports NEITHER: an
+ * adapter that reached up into the service layer's type surface would invert the dependency direction the
+ * whole hexagonal separation exists to fix (AAP §0.7.3 S4). Structural compatibility is sufficient, and
+ * `MySqlBrandRepository.ts` records the same decision for the same reason about the URL-title probe. The
+ * assignability is nonetheless PROVEN rather than asserted: `test/adapters/MySqlProductPersistence.test.ts`
+ * imports both function types and binds all four members to them, so a signature drift is a compile error
+ * in the suite rather than a run-time surprise at the wiring site.
+ *
+ * ⚠️ THE FOURTH IS REQUIRED TO CONSTRUCT AND UNREACHABLE THROUGH THE SEAM, AND THAT IS RECORDED RATHER
+ * THAN HIDDEN. `src/services/ProductService.ts` narrows its product-type collaborator to
+ * `Pick<BaseService<ProductType, …>, 'save'>`, so nothing in that service can call a product-type
+ * removal. But `BaseServiceCollaborators` declares `remove` REQUIRED, so a `BaseService<ProductType, …>`
+ * cannot be constructed without one. The member is therefore implemented properly instead of being
+ * stubbed or cast away: `model/validation/ProductType.json` declares four delete guards, so the
+ * capability is real legacy behaviour even though this slice's service surface does not reach it.
+ *
+ * --------------------------------------------------------------------------------------------------
+ * WHAT THIS FILE IS NOT — THE SERVICE/PERSISTENCE SPLIT
+ * --------------------------------------------------------------------------------------------------
+ * By the time control arrives, the entity is populated and validated. So there is no population here,
+ * no URL-title derivation, no validation dispatch and no delete-guard evaluation:
+ *
+ *   • population is `src/domain/base/populate.ts`, driven from `model/entity/HibachiEntity.cfc:L56`;
+ *   • the URL title is `src/util/urlTitle.ts`, the port of `model/service/DataService.cfc:L53-L71`;
+ *   • the save-context and delete-context rules are `src/validation/rules/product.rules.ts` and
+ *     `src/validation/rules/productType.rules.ts`, evaluated ABOVE this boundary exactly as
+ *     `model/service/HibachiService.cfc:L68-L73` gates its own removal on the outcome. Importing
+ *     `src/validation/**` from an adapter is forbidden outright (AAP §0.7.3 S4), so the boundary is
+ *     recorded here and not crossed.
+ *
+ * A blocked removal never reaches this file. That is why the two removal members answer `void` — the
+ * boolean verdict is the base service's to compute, at `org/Hibachi/HibachiService.cfc:L71` and `:L79`.
+ *
+ * --------------------------------------------------------------------------------------------------
+ * TWO NAMES FOR ONE THING — `SwProduct` IS PHYSICAL, `SlatwallProduct` IS THE ORM NAME
+ * --------------------------------------------------------------------------------------------------
+ * `model/entity/Product.cfc:L49` declares `entityname="SlatwallProduct" table="SwProduct"` and
+ * `model/entity/ProductType.cfc:L49` declares `entityname="SlatwallProductType" table="SwProductType"`.
+ * Every statement in this file is native, so every statement names the physical form, resolved through
+ * `assertTableName` so the identifier came from a validated whitelist rather than from a literal at the
+ * call site (AAP §0.7.3 S2). The standing warning is carried verbatim: never "fix" a logical entity
+ * name to `Sw*`, and never assume a logical name works in native SQL.
+ *
+ * --------------------------------------------------------------------------------------------------
+ * ⭐ THE SCOPE BOUNDARY OF THE REMOVAL PATH — THE ONE JUDGMENT CALL IN THIS FILE
+ * --------------------------------------------------------------------------------------------------
+ * `org/Hibachi/HibachiService.cfc:L61` calls `removeAllManyToManyRelationships()` before the delete,
+ * and `org/Hibachi/HibachiEntity.cfc:L271-L283` implements it: loop every property, skip any
+ * many-to-many whose `cascade` lists `all-delete-orphan`, `delete` or `delete-orphan`, and remove each
+ * element of every other. The source comment states the reason outright — "so that it doesn't violate
+ * fkconstrint". The mapping layer's own `delete()` then cascades the one-to-many collections declared
+ * `cascade="all-delete-orphan"` and the `defaultSku` declared `cascade="delete"`.
+ *
+ * `model/entity/Product.cfc:L79-L90` declares TEN many-to-many collections and NONE of them carries a
+ * `cascade` attribute, so the legacy clears all ten. Exactly one of the ten has an in-scope far side:
+ *
+ *   `:L81`  `relatedProducts`  linktable `SwRelatedProduct`  cfc `Product`     <- IN SCOPE
+ *   `:L79`  `listingPages`     linktable `SwProductListingPage`  cfc `Content`
+ *   `:L80`  `categories`       linktable `SwProductCategory`     cfc `Category`
+ *   `:L84`  `promotionRewards`            linktable `SwPromoRewardProduct`
+ *   `:L85`  `promotionRewardExclusions`   linktable `SwPromoRewardExclProduct`
+ *   `:L86`  `promotionQualifiers`         linktable `SwPromoQualProduct`
+ *   `:L87`  `promotionQualifierExclusions` linktable `SwPromoQualExclProduct`
+ *   `:L88`  `priceGroupRates`  linktable `SwPriceGroupRateProduct`  cfc `PriceGroupRate`
+ *   `:L89`  `vendors`          linktable `SwVendorProduct`          cfc `Vendor`
+ *   `:L90`  `physicals`        linktable `SwPhysicalProduct`        cfc `Physical`
+ *
+ * `Content*`, `Category`, `Promotion*`, `PriceGroup*`, `Vendor*` and `Physical*` are excluded families
+ * (AAP §0.2.2.1), and `src/domain/product/Product.ts` types those nine collections with a DELIBERATELY
+ * OPAQUE element type for precisely that reason — nothing in the port ever loads or traverses them.
+ * `model/entity/Product.cfc:L74-L76` adds three more excluded-family cascade children: `productImages`
+ * (`Image`), `attributeValues` (`Attribute*`) and `productReviews` (`ProductReview`).
+ *
+ * So the removal splits, and the split is drawn on scope rather than on convenience:
+ *
+ *   IN THIS FILE, AS STATEMENTS — every table squarely inside the extracted slice: `SwRelatedProduct`,
+ *   the four SKU link tables `model/entity/Sku.cfc:L76-L79` declares, `SwSku` itself, and `SwProduct`.
+ *
+ *   BEHIND {@link ProductDependencyCleanup}, FLAGGED — the nine excluded-family link tables and the
+ *   three excluded-family cascade children. TR-5 is explicit that this is the mechanism: "Cross the
+ *   scope boundary only through a declared port. Where an in-scope member depends on an out-of-scope
+ *   collaborator, the port interface is declared, the member is implemented against it, and the gap is
+ *   flagged. The member is never quietly dropped from the interface." Writing those twelve statements
+ *   here instead would mean declaring twelve excluded-family tables in a whitelist whose own header
+ *   calls itself the extracted Catalog schema, which is the scope creep AAP §0.8.2 Guideline 3 forbids.
+ *
+ * The collaborator is declared HERE rather than as a new file under `src/ports/` because AAP §0.4.1.6
+ * closes that inventory at thirteen files; `src/services/BaseService.ts` sets the same precedent for
+ * `EntitySettingCleanupPort` and `EntityCommentCleanupPort`, which are declared in the module that
+ * consumes them. And it is REQUIRED rather than optional for the reason AAP-4 gives on those two: an
+ * optional collaborator lets a wiring site omit it and silently restores exactly the reported
+ * behaviour, with nothing anywhere reporting the omission.
+ *
+ * --------------------------------------------------------------------------------------------------
+ * ASSOCIATION IDENTITY — WHY THE THREE PRODUCT FOREIGN KEYS ARE READ THREE DIFFERENT WAYS
+ * --------------------------------------------------------------------------------------------------
+ * `rowMappers.ts` RULE 3 resolves no many-to-one to a LOADED entity, and its rule 3a fills each slot
+ * with an IDENTIFIER-ONLY reference instead — so a hydrated product carries no foreign-key scalar to copy
+ * back out: there is no `product.brandID` field anywhere in the domain. The write path therefore reads
+ * each key off the association object, which is what "preserve association identity" means in practice —
+ * a stale scalar cannot drift out of step with the object graph because no stale scalar exists.
+ *
+ * ⚠️ AND THE REFERENCE IS WHY THAT READ FINDS ANYTHING AT ALL ON A HYDRATED PRODUCT. Rule 3a exists
+ * precisely because these three writes read those three fields back: with the slots left genuinely
+ * absent, hydrating a row and writing it again NULLED all three foreign keys. The reference answers its
+ * identifier and REFUSES every other read, so nothing here can mistake it for a loaded entity.
+ *
+ *   `brandID`        <- `product.brand?.brandID`                     [model/entity/Product.cfc:L68]
+ *   `productTypeID`  <- `product.productType?.productTypeID`         [`:L69`]
+ *   `defaultSkuID`   <- an INJECTED READER over `product.defaultSku` [`:L70`]
+ *
+ * ⚠️ THE THIRD IS NOT AN INCONSISTENCY. `src/domain/product/Product.ts` types `defaultSku` as a
+ * DELEGATE, not as a `Sku`, and `src/domain/sku/Sku.ts` records why in its own mismatch register: the
+ * delegate wants nine synchronous argument-free readers while the entity's equivalents are asynchronous
+ * and port-parameterised, so `Sku` is deliberately NOT assignable to it and the value in that slot is a
+ * wrapper closing over a SKU. Nothing on the delegate exposes an identifier. `src/domain/sku/Sku.ts`
+ * already faced this exact question for the mirror-image direction and already exports the answer,
+ * `DefaultSkuIdReader`; the same exported type is reused here rather than a second one being declared,
+ * exactly as `src/services/ProductService.ts` reuses it for `defaultSkuIdReader`.
+ *
+ * --------------------------------------------------------------------------------------------------
+ * NO DEFECT IS CARRIED HERE, AND NO NEW IDENTIFIER IS MINTED
+ * --------------------------------------------------------------------------------------------------
+ * There is no legacy data-access component for either entity: `model/dao/ProductDAO.cfc` declares three
+ * business queries — attribute sets, the file import and the product-type search — and no save or
+ * delete, and `model/dao/ProductTypeDAO.cfc` declares one tree query and nothing else. Both entities
+ * were saved and deleted through the synthesized surface `org/Hibachi/HibachiService.cfc:L255-L281`
+ * fabricated by prefix, over the inherited primitives at `org/Hibachi/HibachiDAO.cfc:L48-L67` and
+ * `:L69-L77` (IR-1). So there is no legacy statement for these tables to carry a defect FROM.
+ *
+ * Stated as the identifiers a reviewer will look for: THERE IS NO D18 SITE HERE — that is the single
+ * declared hardening exception of the whole port and it is exclusive to `MySqlProductRepository.ts`,
+ * which translates the importer's twenty-one value-interpolating statements — and THERE IS NO the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] SITE
+ * HERE, because with no legacy statement there is no logical-versus-physical naming mistake to carry.
+ * The defect and mismatch registers are CLOSED and nothing in the legacy tree is corrected (TR-6).
+ *
+ * --------------------------------------------------------------------------------------------------
+ * EXECUTION-MODEL POSTURE (AAP §0.7.3 S8)
+ * --------------------------------------------------------------------------------------------------
+ * M5 — CITED, NOT OWNED. Nothing here begins, commits or rolls back a transaction and no autocommit
+ * setting is touched. The legacy commit is implicit at request end and error-conditional; its owner in
+ * the target is `src/adapters/mysql/UnitOfWork.ts`. Every member runs inside whatever boundary the
+ * caller already established, which is why the removal path's several statements are safe to issue in
+ * sequence: a caller that wants them atomic supplies a transaction-scoped executor.
+ *
+ * M6 — APPLIES TRANSITIVELY, WHICH IS WHY THERE IS EXACTLY ONE INJECTED EXECUTOR. The removal path
+ * READS the SKU identifiers it is about to remove, and that read must observe rows the same transaction
+ * has written and not yet committed. An executor that reached past the injected one to a pool would miss
+ * a SKU inserted moments earlier in the same unit of work and leave its link rows behind.
+ *
+ * M7 — OWNED AS A PROHIBITION. No module-scope mutable state, no instance cache, no memoized read.
+ *
+ * M1, M2, M3, M4 and M8 are cited elsewhere and owned elsewhere. Nothing here adds a timeout, a
+ * row-count cap, a batch size, a retry, a backoff or an index hint (AAP §0.7.3 S9), and no statement
+ * carries a row-restricting or row-skipping clause, because no legacy statement for these tables had
+ * one.
+ * ============================================================================================== */
+
+/* ------------------------------------------------------------------------------------------------
+ * ⭐ WHY THIS SECTION IS IN THIS FILE — REVIEW FINDING F5
+ * ------------------------------------------------------------------------------------------------
+ * It stood in `src/adapters/mysql/MySqlProductPersistence.ts`, which is not one of the files AAP §0.3.1
+ * enumerates, and finding F5 required the production graph to consist only of AAP-listed files. AAP
+ * §0.4.1.7 names `slatwall-ts/src/adapters/mysql/MySqlProductRepository.ts` as the product adapter, so
+ * this is that file and the product write surface belongs in it.
+ *
+ * ⚠️ EIGHT DECLARATIONS WERE DROPPED ON THE WAY IN, EACH BECAUSE AN IDENTICAL ONE ALREADY EXISTS ABOVE,
+ * AND NOTHING ELSE CHANGED. `PRODUCT_TABLE`, `PRODUCT_TYPE_TABLE`, `SKU_TABLE`, `SKU_OPTION_TABLE`,
+ * `SKU_ID_COLUMN`, `SKU_PRODUCT_ID_COLUMN`, `PRODUCT_WRITABLE_COLUMNS` and `BIND_PLACEHOLDER` were each
+ * declared twice after the move. The two spellings of the four table names differ — the importer half
+ * above writes `assertTableName('SlatwallProduct')` and this half wrote `assertTableName('SwProduct')` —
+ * and BOTH resolve through the SAME whitelist to the SAME physical name, which is exactly the point
+ * {@link assertTableName} exists to make and the reason the deduplication is behaviour-neutral. The two
+ * `PRODUCT_WRITABLE_COLUMNS` lists were compared column by column before either was removed: the same
+ * nineteen columns in the same order. Every other declaration, comment and statement is carried across
+ * verbatim — including `PRODUCT_COLUMN`, `PRODUCT_TYPE_COLUMN`, `PRODUCT_TYPE_WRITABLE_COLUMNS`,
+ * `RELATED_PRODUCT_TABLE`, `SKU_LINK_TABLES` and `CLAUSE_JOINER`, none of which collided.
+ * ---------------------------------------------------------------------------------------------- */
+
+/* ==================================================================================================
+ * VALIDATED IDENTIFIERS (AAP §0.7.3 S2)
+ *
+ * A `?` placeholder binds a VALUE and cannot substitute an identifier, so every table and column name
+ * below is resolved ONCE, at module load, through the whitelist in `QueryRunner.ts`. Both helpers raise
+ * when a name is not declared for the extracted Catalog schema, so a typo here fails at import time
+ * rather than at the first statement — and no caller-supplied string can reach an identifier position,
+ * because no member of this file accepts one.
+ * ============================================================================================== */
+
+/** `SwRelatedProduct` — the one in-scope product link table, `model/entity/Product.cfc:L81`. */
+const RELATED_PRODUCT_TABLE = assertTableName('SwRelatedProduct');
+
+/** `SwSkuAccessContent` — `model/entity/Sku.cfc:L77`. */
+const SKU_ACCESS_CONTENT_TABLE = assertTableName('SwSkuAccessContent');
+
+/** `SwSkuSubsBenefit` — `model/entity/Sku.cfc:L78`. The table name is abbreviated; the column is not. */
+const SKU_SUBSCRIPTION_BENEFIT_TABLE = assertTableName('SwSkuSubsBenefit');
+
+/** `SwSkuRenewalSubsBenefit` — `model/entity/Sku.cfc:L79`. */
+const SKU_RENEWAL_SUBSCRIPTION_BENEFIT_TABLE = assertTableName('SwSkuRenewalSubsBenefit');
+
+/**
+ * The four link tables `model/entity/Sku.cfc:L76-L79` declares, each paired with its own SKU column, in
+ * declaration order.
+ *
+ * Reached only by the product removal's SKU cascade. The FAR column differs per table and is
+ * deliberately NOT named here, because the cascade removes every row a SKU owns rather than a particular
+ * relationship — `DELETE … WHERE skuID IN (…)` needs the near column alone. `MySqlSkuRepository.ts`
+ * names both columns of all four because it SYNCHRONISES them; this file only clears them.
+ *
+ * ⚠️ ALL FOUR, NOT JUST THE OPTION ONE. Leaving three out would leave orphan link rows behind after a
+ * product removal — rows pointing at a `skuID` that no longer exists, which no error would report.
+ */
+const SKU_LINK_TABLES: readonly { readonly table: string; readonly skuID: string }[] =
+  Object.freeze([
+    Object.freeze({
+      table: SKU_OPTION_TABLE,
+      skuID: assertColumnName(SKU_OPTION_TABLE, 'skuID'),
+    }),
+    Object.freeze({
+      table: SKU_ACCESS_CONTENT_TABLE,
+      skuID: assertColumnName(SKU_ACCESS_CONTENT_TABLE, 'skuID'),
+    }),
+    Object.freeze({
+      table: SKU_SUBSCRIPTION_BENEFIT_TABLE,
+      skuID: assertColumnName(SKU_SUBSCRIPTION_BENEFIT_TABLE, 'skuID'),
+    }),
+    Object.freeze({
+      table: SKU_RENEWAL_SUBSCRIPTION_BENEFIT_TABLE,
+      skuID: assertColumnName(SKU_RENEWAL_SUBSCRIPTION_BENEFIT_TABLE, 'skuID'),
+    }),
+  ]);
+
+/**
+ * Every `SwProduct` column this file names — `model/entity/Product.cfc:L52-L99`.
+ *
+ * The set is the entity's PERSISTENT surface and deliberately not its whole property surface:
+ * `model/entity/Product.cfc:L102-L123` declares twenty non-persistent properties and none of them is a
+ * column, so none appears here. The four members under the legacy "Calculated Properties" comment at
+ * `:L62-L65` ARE columns and DO appear, which is the distinction that makes this list readable against
+ * the source rather than against a naming convention.
+ *
+ * ⚠️ THE TWO ACCOUNT KEYS ARE THE ONE PLACE COLUMN AND FIELD NAMES DIVERGE. The columns are
+ * `createdByAccountID` and `modifiedByAccountID` — `fkcolumn` on the many-to-one declarations at
+ * `:L97` and `:L99` — while the domain fields they carry are named `createdByAccount` and
+ * `modifiedByAccount`. `rowMappers.ts` reads them in exactly that crossed pairing and the write path
+ * below binds them the same way round. Getting the pairing wrong is silent in both directions: the
+ * whitelist would reject `createdByAccount` as a column, but nothing would reject binding the WRONG
+ * FIELD to the right column.
+ */
+const PRODUCT_COLUMN = Object.freeze({
+  /** `fieldtype="id" generator="uuid" ormtype="string" length="32" unsavedvalue=""` — `:L52` (IR-6). */
+  productID: assertColumnName(PRODUCT_TABLE, 'productID'),
+  /** `:L53`. */
+  activeFlag: assertColumnName(PRODUCT_TABLE, 'activeFlag'),
+  /** `unique="true"` — `:L54`. One of the five unique columns in this slice. */
+  urlTitle: assertColumnName(PRODUCT_TABLE, 'urlTitle'),
+  /** `notNull="true"` — `:L55`. */
+  productName: assertColumnName(PRODUCT_TABLE, 'productName'),
+  /** `unique="true"` — `:L56`. */
+  productCode: assertColumnName(PRODUCT_TABLE, 'productCode'),
+  /** `length="4000"` — `:L57`. */
+  productDescription: assertColumnName(PRODUCT_TABLE, 'productDescription'),
+  /** `default="false"` — `:L58`. */
+  publishedFlag: assertColumnName(PRODUCT_TABLE, 'publishedFlag'),
+  /** `:L59`. */
+  sortOrder: assertColumnName(PRODUCT_TABLE, 'sortOrder'),
+  /** Calculated but PERSISTED, `ormtype="big_decimal"` — `:L62`. */
+  calculatedSalePrice: assertColumnName(PRODUCT_TABLE, 'calculatedSalePrice'),
+  /** Calculated but PERSISTED — `:L63`. */
+  calculatedQATS: assertColumnName(PRODUCT_TABLE, 'calculatedQATS'),
+  /** Calculated but PERSISTED — `:L64`. */
+  calculatedAllowBackorderFlag: assertColumnName(PRODUCT_TABLE, 'calculatedAllowBackorderFlag'),
+  /** Calculated but PERSISTED — `:L65`. Read by the Google feed as the item title. */
+  calculatedTitle: assertColumnName(PRODUCT_TABLE, 'calculatedTitle'),
+  /** Many-to-one foreign key, `fkcolumn="brandID"` — `:L68`. */
+  brandID: assertColumnName(PRODUCT_TABLE, 'brandID'),
+  /** Many-to-one foreign key, `fkcolumn="productTypeID"` — `:L69`. */
+  productTypeID: assertColumnName(PRODUCT_TABLE, 'productTypeID'),
+  /** Many-to-one foreign key, `fkcolumn="defaultSkuID" cascade="delete"` — `:L70`. */
+  defaultSkuID: assertColumnName(PRODUCT_TABLE, 'defaultSkuID'),
+  /** `:L93`. */
+  remoteID: assertColumnName(PRODUCT_TABLE, 'remoteID'),
+  /** Audit timestamp — `:L96`. */
+  createdDateTime: assertColumnName(PRODUCT_TABLE, 'createdDateTime'),
+  /** Audit foreign key carrying the `createdByAccount` FIELD — `:L97`. */
+  createdByAccountID: assertColumnName(PRODUCT_TABLE, 'createdByAccountID'),
+  /** Audit timestamp — `:L98`. */
+  modifiedDateTime: assertColumnName(PRODUCT_TABLE, 'modifiedDateTime'),
+  /** Audit foreign key carrying the `modifiedByAccount` FIELD — `:L99`. */
+  modifiedByAccountID: assertColumnName(PRODUCT_TABLE, 'modifiedByAccountID'),
+});
+
+/**
+ * Every `SwProductType` column this file names — `model/entity/ProductType.cfc:L52-L86`.
+ *
+ * Same reading rules as {@link PRODUCT_COLUMN}: persistent properties only, the self-referencing
+ * many-to-one contributing its `fkcolumn`, and the crossed audit pairing preserved.
+ */
+const PRODUCT_TYPE_COLUMN = Object.freeze({
+  /** `fieldtype="id" generator="uuid" ormtype="string" length="32" unsavedvalue=""` — `:L52`. */
+  productTypeID: assertColumnName(PRODUCT_TYPE_TABLE, 'productTypeID'),
+  /** `length="4000"` — `:L53`. The materialised ancestor path the base-type walk reads. */
+  productTypeIDPath: assertColumnName(PRODUCT_TYPE_TABLE, 'productTypeIDPath'),
+  /** `:L54`. */
+  activeFlag: assertColumnName(PRODUCT_TYPE_TABLE, 'activeFlag'),
+  /** `:L55`. */
+  publishedFlag: assertColumnName(PRODUCT_TYPE_TABLE, 'publishedFlag'),
+  /** `unique="true"` — `:L56`. */
+  urlTitle: assertColumnName(PRODUCT_TYPE_TABLE, 'urlTitle'),
+  /** `:L57`. Required for the save context by `model/validation/ProductType.json`. */
+  productTypeName: assertColumnName(PRODUCT_TYPE_TABLE, 'productTypeName'),
+  /** `length="4000"` — `:L58`. The Google feed's description fallback reads this. */
+  productTypeDescription: assertColumnName(PRODUCT_TYPE_TABLE, 'productTypeDescription'),
+  /** `:L59`. The three seeded discriminators live here (IR-7), and the delete guard bounds it. */
+  systemCode: assertColumnName(PRODUCT_TYPE_TABLE, 'systemCode'),
+  /** Self-referencing many-to-one, `fkcolumn="parentProductTypeID"` — `:L62`. */
+  parentProductTypeID: assertColumnName(PRODUCT_TYPE_TABLE, 'parentProductTypeID'),
+  /** `:L80`. */
+  remoteID: assertColumnName(PRODUCT_TYPE_TABLE, 'remoteID'),
+  /** Audit timestamp — `:L83`. */
+  createdDateTime: assertColumnName(PRODUCT_TYPE_TABLE, 'createdDateTime'),
+  /** Audit foreign key carrying the `createdByAccount` FIELD — `:L84`. */
+  createdByAccountID: assertColumnName(PRODUCT_TYPE_TABLE, 'createdByAccountID'),
+  /** Audit timestamp — `:L85`. */
+  modifiedDateTime: assertColumnName(PRODUCT_TYPE_TABLE, 'modifiedDateTime'),
+  /** Audit foreign key carrying the `modifiedByAccount` FIELD — `:L86`. */
+  modifiedByAccountID: assertColumnName(PRODUCT_TYPE_TABLE, 'modifiedByAccountID'),
+});
+
+/** `SwRelatedProduct.productID` — the OWNER-side column, `model/entity/Product.cfc:L81`. */
+const RELATED_PRODUCT_OWNER_COLUMN = assertColumnName(RELATED_PRODUCT_TABLE, 'productID');
+
+/** The `SwProductType` counterpart of {@link PRODUCT_WRITABLE_COLUMNS}, on the same terms. */
+const PRODUCT_TYPE_WRITABLE_COLUMNS: readonly string[] = Object.freeze([
+  PRODUCT_TYPE_COLUMN.productTypeIDPath,
+  PRODUCT_TYPE_COLUMN.activeFlag,
+  PRODUCT_TYPE_COLUMN.publishedFlag,
+  PRODUCT_TYPE_COLUMN.urlTitle,
+  PRODUCT_TYPE_COLUMN.productTypeName,
+  PRODUCT_TYPE_COLUMN.productTypeDescription,
+  PRODUCT_TYPE_COLUMN.systemCode,
+  PRODUCT_TYPE_COLUMN.parentProductTypeID,
+  PRODUCT_TYPE_COLUMN.remoteID,
+  PRODUCT_TYPE_COLUMN.createdDateTime,
+  PRODUCT_TYPE_COLUMN.createdByAccountID,
+  PRODUCT_TYPE_COLUMN.modifiedDateTime,
+  PRODUCT_TYPE_COLUMN.modifiedByAccountID,
+]);
+
+/** The separator between projected columns, between column assignments and between placeholders. */
+const CLAUSE_JOINER = ', ';
+
+/** The `SwProduct` insert's column list: primary key first, then the writable columns in order. */
+const PRODUCT_COLUMN_LIST = [PRODUCT_COLUMN.productID, ...PRODUCT_WRITABLE_COLUMNS].join(
+  CLAUSE_JOINER,
+);
+
+/** The `SwProductType` counterpart of {@link PRODUCT_COLUMN_LIST}. */
+const PRODUCT_TYPE_COLUMN_LIST = [
+  PRODUCT_TYPE_COLUMN.productTypeID,
+  ...PRODUCT_TYPE_WRITABLE_COLUMNS,
+].join(CLAUSE_JOINER);
+
+/* ==================================================================================================
+ * INJECTED SEAMS (AAP §0.7.3 S3, S6)
+ * ============================================================================================== */
+
+/**
+ * The statement-execution surface this adapter needs.
+ *
+ * `SqlExecutor` from `QueryRunner.ts` is deliberately ONE member wide so a test can satisfy it with a
+ * plain object literal, and that width is preserved: this interface EXTENDS it rather than replacing
+ * it, adding exactly one member. The addition is forced rather than chosen — an adapter that both reads
+ * and writes must name both members. `MySqlSkuRepository.ts` and `MySqlBrandRepository.ts` declare the
+ * same shape for the same reason, and `QueryRunner` satisfies all three structurally, so the
+ * composition root injects ONE instance and every statement runs on the SAME connection. See the M6
+ * discussion in the module header for why that matters here.
+ *
+ * @example
+ * ```ts
+ * // A complete double: no mocking library, no database, no inheritance.
+ * const calls: { sql: string; params: readonly unknown[] }[] = [];
+ * const executor: ProductPersistenceExecutor = {
+ *   execute: (sql, params) => { calls.push({ sql, params }); return Promise.resolve([]); },
+ *   executeMutation: (sql, params) => { calls.push({ sql, params }); return Promise.resolve(1); },
+ * };
+ * ```
+ */
+export interface ProductPersistenceExecutor extends SqlExecutor {
+  /**
+   * Runs a data-modifying statement and returns the number of rows it AFFECTED.
+   *
+   * Matches `QueryRunner.executeMutation`, the port of the legacy `save()` and `delete()` primitives at
+   * `org/Hibachi/HibachiDAO.cfc:L48-L67` and `:L69-L77`.
+   *
+   * ⚠️ THE COUNT MEANS DIFFERENT THINGS FOR DIFFERENT STATEMENTS, so the members below read it
+   * differently — or, on every save path, not at all. For an update it is rows MATCHED when the
+   * connection carries the driver's default capability set and rows CHANGED when `CLIENT_FOUND_ROWS` is
+   * withdrawn: the same statement over the same data answers 1 in the first case and 0 in the second.
+   * `src/config/database.ts` pins no capability flags, so neither figure may become control flow.
+   *
+   * @param sql - the statement text, with every value position a `?` placeholder.
+   * @param params - the values to bind, positionally.
+   * @returns the affected-row count the driver reported.
+   */
+  executeMutation(sql: string, params: readonly unknown[]): Promise<number>;
+}
+
+/**
+ * The link and child rows a product or product-type removal must clear that belong to EXCLUDED
+ * families — declared here, implemented outside this subtree, and flagged (TR-5).
+ *
+ * ⚠️ THIS IS NOT A CONVENIENCE HOOK AND IT IS NOT OPTIONAL. `org/Hibachi/HibachiEntity.cfc:L271-L283`
+ * clears the many-to-many link rows before the delete precisely "so that it doesn't violate
+ * fkconstrint", and the mapping layer's own cascade removes the one-to-many children. A removal that
+ * skipped this work would fail against a schema with the constraints the legacy mapping generates, or —
+ * worse, on a schema without them — would succeed and leave orphan rows pointing at an identifier that
+ * no longer exists. Declaring it REQUIRED makes an omission a compile error at the wiring site instead
+ * of a silent data fault at run time, exactly as AAP-4 argues for the two cleanup ports in
+ * `src/services/BaseService.ts`.
+ *
+ * WHY NOT STATEMENTS IN THIS FILE. Each table named below belongs to a family AAP §0.2.2.1 excludes
+ * outright, and `src/domain/product/Product.ts` types the corresponding collections with a deliberately
+ * opaque element type because nothing in the port loads or traverses them. Naming their tables in
+ * `QueryRunner.ts`'s whitelist would widen "the extracted Catalog schema" by twelve tables drawn from
+ * six excluded families, which is the scope creep AAP §0.8.2 Guideline 3 forbids.
+ *
+ * WHY ONE COLLABORATOR WITH TWO MEMBERS rather than one per table. Every implementation of this
+ * contract clears rows keyed on a single identifier in a single owning table, so the twelve statements
+ * differ only in the table they name. Twelve injected functions would put the same decision in twelve
+ * places; two members put it in two, one per entity, which is the granularity the legacy has.
+ */
+export interface ProductDependencyCleanup {
+  /**
+   * Clears every excluded-family row that references one product, before its own row is removed.
+   *
+   * The implementation OWES, and this list is the contract:
+   *
+   *   the nine many-to-many link tables of `model/entity/Product.cfc:L79-L90` whose far side is
+   *   excluded — `SwProductListingPage` (`:L79`, `Content`), `SwProductCategory` (`:L80`, `Category`),
+   *   `SwPromoRewardProduct` (`:L84`), `SwPromoRewardExclProduct` (`:L85`), `SwPromoQualProduct`
+   *   (`:L86`), `SwPromoQualExclProduct` (`:L87`), `SwPriceGroupRateProduct` (`:L88`),
+   *   `SwVendorProduct` (`:L89`) and `SwPhysicalProduct` (`:L90`) — every one keyed on `productID`;
+   *
+   *   and the three `cascade="all-delete-orphan"` children of `:L74-L76` whose entities are excluded —
+   *   the product's images (`:L74`), its attribute values (`:L75`) and its reviews (`:L76`), likewise
+   *   keyed on `productID`.
+   *
+   * ⚠️ `relatedProducts` (`:L81`) IS DELIBERATELY NOT IN THAT LIST. Its far side is `Product` itself, so
+   * it is in scope and {@link MySqlProductPersistence.deleteProduct} clears it directly. The `skus`
+   * collection (`:L73`) is likewise handled directly, because `SwSku` is the centre of this slice.
+   *
+   * @param productID - the 32-character identifier of the product being removed. Never empty: the
+   *   caller refuses a transient entity before reaching here.
+   */
+  removeProductDependencies(productID: string): Promise<void>;
+
+  /**
+   * Clears every excluded-family row that references one product type, before its own row is removed.
+   *
+   * The implementation OWES the eight many-to-many link tables of `model/entity/ProductType.cfc:L69-L76`
+   * — `SwPromoRewardProductType`, `SwPromoRewardExclProductType`, `SwPromoQualProductType`,
+   * `SwPromoQualExclProductType`, `SwPriceGroupRateProductType`, `SwPriceGrpRateExclProductType`,
+   * `SwAttributeSetProductType` and `SwPhysicalProductType`, every one keyed on `productTypeID` — plus
+   * the `cascade="all-delete-orphan"` attribute values of `:L67`. All nine belong to excluded families.
+   *
+   * ⚠️ THE TWO `cascade="all"` COLLECTIONS ARE NOT IN THAT LIST, AND THE REASON IS A VALIDATION FACT
+   * RATHER THAN AN OMISSION. `model/entity/ProductType.cfc:L65` declares `childProductTypes` and `:L66`
+   * declares `products`, both `cascade="all"`, so the mapping layer would have cascaded a delete into
+   * them. But `model/validation/ProductType.json` bounds BOTH at `maxCollection 0` for the delete
+   * context, so a product type carrying either is REFUSED before any removal is attempted and the
+   * cascade is unreachable. Implementing it would add behaviour the legacy cannot reach.
+   *
+   * @param productTypeID - the 32-character identifier of the product type being removed. Never empty.
+   */
+  removeProductTypeDependencies(productTypeID: string): Promise<void>;
+}
+
+/* ==================================================================================================
+ * THE ADAPTER
+ * ============================================================================================== */
+
+/**
+ * The MySQL implementation of the product and product-type write surface.
+ *
+ * Every member is bound into `src/services/ProductService.ts`'s existing seams by the composition root;
+ * none of them widens `src/ports/repositories/ProductRepository.ts`, which declares the three business
+ * queries `model/dao/ProductDAO.cfc` declares and nothing else. Adding a generic `save` there would
+ * turn a business-query port into a CRUD port to serve one call site, which is exactly the reasoning
+ * `ProductService` records on its `persistProduct` field.
+ */
+export class MySqlProductPersistence {
+  /**
+   * @param executor - The statement executor. Injected, never constructed, and never bypassed: when
+   *   `src/adapters/mysql/UnitOfWork.ts` supplies a transaction-scoped executor every statement here
+   *   runs inside that boundary and the removal path's read observes the same transaction's writes (M6).
+   * @param dependencyCleanup - The excluded-family removal work, per {@link ProductDependencyCleanup}.
+   *   Required; see that contract for why an optional one would be unsafe.
+   * @param readDefaultSkuId - Reads the identifier of the delegate held in `Product.defaultSku`. See
+   *   the association-identity note in the module header for why a plain field read is impossible here.
+   */
+  public constructor(
+    private readonly executor: ProductPersistenceExecutor,
+    private readonly dependencyCleanup: ProductDependencyCleanup,
+    private readonly readDefaultSkuId: DefaultSkuIdReader,
+  ) {}
+
+  /**
+   * Persists an already-populated, already-validated product, inserting or updating as its identity
+   * requires.
+   *
+   * This is the port of `getHibachiDAO().save( target=arguments.product )` at
+   * `model/service/ProductService.cfc:L287` — the DATA-ACCESS save, called DIRECTLY rather than through
+   * `super.save()`. `src/services/ProductService.ts` records at length why that bypass is load-bearing;
+   * from this side the consequence is simply that this member is reached by two different routes, the
+   * service's own `persistProduct` seam and the product base service's `persist` collaborator, and
+   * behaves identically down both.
+   *
+   * ⚠️ THE INSERT-OR-UPDATE DECISION IS THE ENTITY'S OWN, NOT A PROBE'S. `Product.isNew()` tests
+   * `productID === ''`, which is exactly the `unsavedvalue=""` declared at
+   * `model/entity/Product.cfc:L52`; the mapping layer made the same distinction from the same value. A
+   * pre-flight existence read would be a second, competing source of truth for an answer the entity
+   * already holds, and it would issue a statement the legacy path never issued.
+   *
+   * ⚠️ THE IDENTIFIER IS MINTED HERE AND ONLY HERE (IR-6). On the insert path the value comes from
+   * `createSlatwallUUID()` in `src/util/uuid.ts` — the port of `createSlatwallUUID()`
+   * [`model/dao/HibachiDAO.cfc:L51-L53`] and, through its delegation, of `createHibachiUUID()`
+   * [`org/Hibachi/HibachiObject.cfc:L144-L146`], whose body lower-cases a generated identifier and
+   * strips every dash. The result is 32 lowercase hexadecimal characters, which is what
+   * `ormtype="string" length="32"` requires. Never an auto-increment, never a dashed form, never upper
+   * case. It is assigned to the entity BEFORE the statement is composed, so the product this member
+   * resolves carries the identifier the row was written with — and so `Product.isNew()` answers false
+   * afterwards, which is what makes `saveProduct`'s fourth step a one-time gate.
+   *
+   * ⚠️ THE AUDIT COLUMNS ARE WRITTEN AS THE ENTITY HOLDS THEM AND ARE NOT SET HERE. The legacy values
+   * are applied by the mapping layer's lifecycle hooks, whose port is
+   * `src/domain/base/AuditableEntity.ts` and whose stamping members `Product.preInsert` and
+   * `Product.preUpdate` already expose. Stamping them here would put the same decision in two places.
+   *
+   * ⚠️ THE AFFECTED-ROW COUNT IS DELIBERATELY NOT INSPECTED ON THE UPDATE PATH, because on that path it
+   * describes the CONNECTION rather than the ROW — see {@link ProductPersistenceExecutor.executeMutation}.
+   * The legacy behaviour points the same way independently: the mapping layer issued no statement at all
+   * when nothing was dirty, so a no-op save was never an error there either.
+   *
+   * ⚠️ NOTHING IS COMMITTED HERE (M5).
+   *
+   * TEST PROVENANCE: NET-NEW. `meta/tests/unit/IssuesTest.cfc:L51-L71` (`issue_1097`) exercises the
+   * legacy save-then-delete path end to end and is TRACEABLE for the behaviour, but no legacy test
+   * asserts a statement, because no legacy statement for this table exists.
+   *
+   * @param product - The fully populated, already-validated product to persist.
+   * @returns The same product instance, carrying its identifier. Never null.
+   */
+  public async saveProduct(product: Product): Promise<Product> {
+    const isInsert = product.isNew();
+
+    if (isInsert) {
+      product.productID = createSlatwallUUID();
+    }
+
+    const writableValues = this.collectProductValues(product);
+
+    if (isInsert) {
+      const placeholders = [PRODUCT_COLUMN.productID, ...PRODUCT_WRITABLE_COLUMNS]
+        .map(() => BIND_PLACEHOLDER)
+        .join(CLAUSE_JOINER);
+
+      await this.executor.executeMutation(
+        `INSERT INTO ${PRODUCT_TABLE} (${PRODUCT_COLUMN_LIST}) VALUES (${placeholders})`,
+        [product.productID, ...writableValues],
+      );
+
+      return product;
+    }
+
+    const assignments = PRODUCT_WRITABLE_COLUMNS.map(
+      (column) => `${column} = ${BIND_PLACEHOLDER}`,
+    ).join(CLAUSE_JOINER);
+
+    await this.executor.executeMutation(
+      `UPDATE ${PRODUCT_TABLE} SET ${assignments} ` +
+        `WHERE ${PRODUCT_COLUMN.productID} = ${BIND_PLACEHOLDER}`,
+      [...writableValues, product.productID],
+    );
+
+    return product;
+  }
+
+  /**
+   * Removes a product, its SKUs and every link row either of them owns.
+   *
+   * The port of the two lines `org/Hibachi/HibachiService.cfc:L61` and `:L64`, plus the cascade the
+   * mapping layer performed inside the second of them. The delete guards of
+   * `model/validation/Product.json` — `transactionExistsFlag` `eq false` and `physicalCounts`
+   * `maxCollection 0` — run ABOVE this boundary, so a blocked removal never arrives and the member
+   * answers `void` rather than a verdict.
+   *
+   * ==============================================================================================
+   * THE SIX STEPS, IN ORDER, AND WHY THE ORDER IS THE ONLY WORKABLE ONE
+   * ==============================================================================================
+   *   1. REFUSE A TRANSIENT PRODUCT. An entity that reports itself new carries the empty identifier
+   *      from `model/entity/Product.cfc:L52`, so every statement below would be keyed on `''` — a
+   *      predicate that matches nothing in a sound table and an arbitrary row in an unsound one. The
+   *      mapping layer would have raised on the same input, since a transient instance has no
+   *      persistent identity to remove.
+   *
+   *   2. BREAK THE `defaultSkuID` SELF-REFERENCE, WITH ITS OWN UPDATE. `SwProduct.defaultSkuID`
+   *      references `SwSku` and `SwSku.productID` references `SwProduct`, so neither row can go while
+   *      both point at each other. `model/service/ProductService.cfc:L320-L323` stashes the default SKU
+   *      and clears the relationship for exactly this reason, its own comment saying "Remove the default
+   *      sku so that we can delete this entity" — and `src/services/ProductService.ts` reproduces that
+   *      in memory. ⚠️ THE IN-MEMORY CLEAR IS NOT ENOUGH HERE, and that is the whole reason this step
+   *      exists: under CFML the cleared relationship reached the row because Hibernate flushed the dirty
+   *      entity, and this port has no flush. Without the explicit statement the stored column would
+   *      still name a SKU that step 4 is about to remove.
+   *
+   *   3. CLEAR THE EXCLUDED-FAMILY ROWS through {@link ProductDependencyCleanup}. Before the product
+   *      row, exactly as `org/Hibachi/HibachiService.cfc:L61` precedes `:L64`.
+   *
+   *   4. CLEAR `SwRelatedProduct`, the one in-scope link table. ⚠️ OWNER SIDE ONLY, and the asymmetry is
+   *      reproduced rather than tidied: `model/entity/Product.cfc:L81` carries NO `inverse="true"`, so
+   *      this product owns the rows whose `productID` is its own and does NOT own the rows whose
+   *      `relatedProductID` is — those belong to other products' collections, and
+   *      `org/Hibachi/HibachiEntity.cfc:L277` iterates only this entity's own collection, so the legacy
+   *      left them too. Widening the predicate to either column would remove rows the legacy keeps.
+   *
+   *   5. CASCADE THE SKUs — `model/entity/Product.cfc:L73` declares `cascade="all-delete-orphan"`, and
+   *      `:L70` declares `cascade="delete"` on the default SKU, which is one of the same rows. The SKU
+   *      identifiers are READ first so each of the four link tables `model/entity/Sku.cfc:L76-L79`
+   *      declares can be cleared before the SKU rows themselves; a product with no SKUs issues no
+   *      statement for any of the five, because `IN ()` is not legal SQL.
+   *
+   *   6. REMOVE THE PRODUCT ROW.
+   *
+   * ⚠️ THE STEPS ARE AWAITED SEQUENTIALLY AND `Promise.all` APPEARS NOWHERE. Each step's statements
+   * depend on the previous step's having completed — step 5 cannot precede step 2, and step 6 cannot
+   * precede either. Running them concurrently would make the outcome depend on scheduling.
+   *
+   * ⚠️ NOTHING IS COMMITTED HERE (M5). A caller that wants the six steps atomic supplies a
+   * transaction-scoped executor; that boundary belongs to `src/adapters/mysql/UnitOfWork.ts`.
+   *
+   * TEST PROVENANCE: NET-NEW.
+   *
+   * @param product - The already-validated product to remove.
+   * @throws {DataIntegrityError} When the product was never persisted and therefore has no row.
+   */
+  public async deleteProduct(product: Product): Promise<void> {
+    /* STEP 1. */
+    if (product.isNew()) {
+      throw new DataIntegrityError(
+        'A product that has never been persisted was handed to the removal path, so there is no row ' +
+          'to identify and no statement was issued.',
+        { context: { productID: product.productID, className: product.getClassName() } },
+      );
+    }
+
+    const productID = product.productID;
+
+    /* STEP 2 — the stored column, not just the in-memory relationship. */
+    await this.executor.executeMutation(
+      `UPDATE ${PRODUCT_TABLE} SET ${PRODUCT_COLUMN.defaultSkuID} = NULL ` +
+        `WHERE ${PRODUCT_COLUMN.productID} = ${BIND_PLACEHOLDER}`,
+      [productID],
+    );
+
+    /* STEP 3 — the excluded families, before the product row. */
+    await this.dependencyCleanup.removeProductDependencies(productID);
+
+    /* STEP 4 — the owner side of the self-referencing link table, and only the owner side. */
+    await this.executor.executeMutation(
+      `DELETE FROM ${RELATED_PRODUCT_TABLE} ` +
+        `WHERE ${RELATED_PRODUCT_OWNER_COLUMN} = ${BIND_PLACEHOLDER}`,
+      [productID],
+    );
+
+    /* STEP 5 — the SKU cascade, link rows first. */
+    await this.removeSkusOfProduct(productID);
+
+    /* STEP 6. */
+    await this.executor.executeMutation(
+      `DELETE FROM ${PRODUCT_TABLE} WHERE ${PRODUCT_COLUMN.productID} = ${BIND_PLACEHOLDER}`,
+      [productID],
+    );
+  }
+
+  /**
+   * Persists an already-populated, already-validated product type.
+   *
+   * The port of the persistence step inside `super.save()` at `model/service/ProductService.cfc:L303`,
+   * which resolves to the LOCAL override at `model/service/HibachiService.cfc:L86` (IR-8) and reaches
+   * `org/Hibachi/HibachiDAO.cfc:L48-L67` beneath it. Everything the local override adds around that step
+   * — the activeFlag handling and the settings-cache post-processing — belongs to
+   * `src/services/BaseService.ts` and its two cleanup collaborators, not here.
+   *
+   * Identical in shape to {@link MySqlProductPersistence.saveProduct}, and identical for the same
+   * reasons: the entity's own `isNew()` decides, the identifier is minted on the insert path only, the
+   * audit columns are written as held, and the update path does not read the affected-row count. The one
+   * association is the SELF-REFERENCING parent at `model/entity/ProductType.cfc:L62`, whose identifier
+   * is read off the association object rather than from a scalar the domain does not carry.
+   *
+   * ⚠️ `productTypeIDPath` IS WRITTEN AS THE ENTITY HOLDS IT AND IS NOT DERIVED HERE. `:L53` declares it
+   * a plain persistent column, `src/domain/product/ProductType.ts` owns the walk that reads it, and
+   * `model/service/ProductService.cfc:L294-L310` never recomputes it on save. Deriving it at this
+   * boundary would add behaviour the legacy save path does not have (AAP §0.7.3 S9).
+   *
+   * TEST PROVENANCE: NET-NEW, with `meta/tests/unit/IssuesTest.cfc:L51-L71` TRACEABLE for the
+   * neighbouring nested-product-type population path.
+   *
+   * @param productType - The fully populated, already-validated product type to persist.
+   * @returns The same product-type instance, carrying its identifier. Never null.
+   */
+  public async saveProductType(productType: ProductType): Promise<ProductType> {
+    const isInsert = productType.isNew();
+
+    if (isInsert) {
+      productType.productTypeID = createSlatwallUUID();
+    }
+
+    const writableValues = this.collectProductTypeValues(productType);
+
+    if (isInsert) {
+      const placeholders = [PRODUCT_TYPE_COLUMN.productTypeID, ...PRODUCT_TYPE_WRITABLE_COLUMNS]
+        .map(() => BIND_PLACEHOLDER)
+        .join(CLAUSE_JOINER);
+
+      await this.executor.executeMutation(
+        `INSERT INTO ${PRODUCT_TYPE_TABLE} (${PRODUCT_TYPE_COLUMN_LIST}) VALUES (${placeholders})`,
+        [productType.productTypeID, ...writableValues],
+      );
+
+      return productType;
+    }
+
+    const assignments = PRODUCT_TYPE_WRITABLE_COLUMNS.map(
+      (column) => `${column} = ${BIND_PLACEHOLDER}`,
+    ).join(CLAUSE_JOINER);
+
+    await this.executor.executeMutation(
+      `UPDATE ${PRODUCT_TYPE_TABLE} SET ${assignments} ` +
+        `WHERE ${PRODUCT_TYPE_COLUMN.productTypeID} = ${BIND_PLACEHOLDER}`,
+      [...writableValues, productType.productTypeID],
+    );
+
+    return productType;
+  }
+
+  /**
+   * Removes a product type and the excluded-family rows that reference it.
+   *
+   * ⚠️ REQUIRED TO CONSTRUCT, UNREACHABLE THROUGH THIS SLICE'S SEAM — see the module header. A
+   * `BaseService<ProductType, …>` cannot be built without a `remove` collaborator, while
+   * `src/services/ProductService.ts` narrows its product-type collaborator to `Pick<…, 'save'>`. The
+   * member is implemented properly rather than stubbed because
+   * `model/validation/ProductType.json` declares four real delete guards, so the capability is genuine
+   * legacy behaviour that a later slice's service surface may reach.
+   *
+   * Two steps only, and the reason there is no cascade step is a validation fact rather than an
+   * omission: `model/entity/ProductType.cfc:L65-L66` declares `childProductTypes` and `products` with
+   * `cascade="all"`, but `model/validation/ProductType.json` bounds both at `maxCollection 0` for the
+   * delete context, so a product type carrying either is refused before any removal is attempted. The
+   * remaining child collection, the attribute values of `:L67`, and all eight many-to-many link tables
+   * of `:L69-L76` belong to excluded families and are cleared through
+   * {@link ProductDependencyCleanup.removeProductTypeDependencies}.
+   *
+   * ⚠️ THE SELF-REFERENCING PARENT KEY IS NOT REPOINTED. `:L62` declares `parentProductType` and `:L65`
+   * declares the inverse `childProductTypes`, so a removed type could in principle orphan children —
+   * except the `childProductTypes` delete guard makes that state unreachable. The legacy re-parented
+   * nothing and neither does this member.
+   *
+   * ⚠️ NOTHING IS COMMITTED HERE (M5).
+   *
+   * TEST PROVENANCE: NET-NEW.
+   *
+   * @param productType - The already-validated product type to remove.
+   * @throws {DataIntegrityError} When the product type was never persisted and therefore has no row.
+   */
+  public async deleteProductType(productType: ProductType): Promise<void> {
+    if (productType.isNew()) {
+      throw new DataIntegrityError(
+        'A product type that has never been persisted was handed to the removal path, so there is ' +
+          'no row to identify and no statement was issued.',
+        {
+          context: {
+            productTypeID: productType.productTypeID,
+            /* ⚠️ THE DECLARED CONSTANT, NOT `productType.getClassName()`, AND THE ASYMMETRY WITH THE
+             * PRODUCT SIDE ABOVE IS DELIBERATE. `src/domain/product/Product.ts` DECLARES the seven
+             * managed-entity members as class methods, so the product path can call one. F22 on
+             * `src/domain/product/ProductType.ts` records the opposite decision for THIS entity: the
+             * same seven are attached by composition through `manageEntity` and are deliberately not
+             * methods of the class, so a bare `ProductType` does not carry `getClassName` and calling
+             * it here would not compile. `PRODUCT_TYPE_CLASS_NAME` is derived from the single
+             * `PRODUCT_TYPE_ENTITY_METADATA.className` literal that the composed `getClassName()`
+             * itself returns, so the value is identical and there is no second literal to drift.
+             */
+            className: PRODUCT_TYPE_CLASS_NAME,
+          },
+        },
+      );
+    }
+
+    const productTypeID = productType.productTypeID;
+
+    await this.dependencyCleanup.removeProductTypeDependencies(productTypeID);
+
+    await this.executor.executeMutation(
+      `DELETE FROM ${PRODUCT_TYPE_TABLE} ` +
+        `WHERE ${PRODUCT_TYPE_COLUMN.productTypeID} = ${BIND_PLACEHOLDER}`,
+      [productTypeID],
+    );
+  }
+
+  /**
+   * Removes every SKU of one product, clearing each SKU's four link tables first.
+   *
+   * Private, and deliberately not a public capability: it is the interior of one cascade, not a
+   * removal a caller may request. A SKU removal in its own right would need the SKU delete guards of
+   * `model/validation/Sku.json` — `defaultFlag` and `transactionExistsFlag` — evaluated above it, and
+   * nothing in this slice declares that member. Exposing this would offer an entry point that bypasses
+   * them.
+   *
+   * ⚠️ THE IDENTIFIERS ARE READ BEFORE ANYTHING IS REMOVED, and the read is what makes the link-row
+   * statements possible: a link table names `skuID` and knows nothing about `productID`, so there is no
+   * single predicate that reaches its rows from the product. The read runs on the injected executor so
+   * it observes the same transaction's writes (M6).
+   *
+   * ⚠️ NO STATEMENT IS ISSUED FOR A PRODUCT WITH NO SKUs. An empty identifier list would compose
+   * `IN ()`, which is a syntax error rather than an empty match — the same rule `SmartListQueryBuilder.ts`
+   * records for its loaders.
+   *
+   * @param productID - The owning product's identifier.
+   */
+  private async removeSkusOfProduct(productID: string): Promise<void> {
+    const skuRows = await this.executor.execute(
+      `SELECT ${SKU_ID_COLUMN} FROM ${SKU_TABLE} ` +
+        `WHERE ${SKU_PRODUCT_ID_COLUMN} = ${BIND_PLACEHOLDER}`,
+      [productID],
+    );
+
+    const skuIdentifiers: string[] = [];
+    for (const row of skuRows) {
+      const value = row[SKU_ID_COLUMN];
+
+      /*
+       * ⚠️ AN UNUSABLE IDENTIFIER IS REFUSED, NEVER SKIPPED. `model/entity/Sku.cfc:L52` declares the
+       * primary key `ormtype="string" length="32"`, so a non-text or empty value means the schema is not
+       * what it is declared to be. Skipping the row would leave that SKU's link rows behind AND then fail
+       * the product removal on a foreign-key constraint, with nothing anywhere naming the cause. This
+       * matches the posture `SmartListQueryBuilder.ts` takes on the same class of value.
+       */
+      if (typeof value !== 'string' || value.length === 0) {
+        throw new DataIntegrityError(
+          'A SKU row reached the product removal cascade without a usable primary identifier, so its ' +
+            'link rows could not be keyed and no removal statement was issued.',
+          { context: { table: SKU_TABLE, column: SKU_ID_COLUMN, receivedType: typeof value } },
+        );
+      }
+
+      skuIdentifiers.push(value);
+    }
+
+    if (skuIdentifiers.length === 0) {
+      return;
+    }
+
+    const placeholders = skuIdentifiers.map(() => BIND_PLACEHOLDER).join(CLAUSE_JOINER);
+
+    /* The four link tables `model/entity/Sku.cfc:L76-L79` declares, in declaration order. */
+    for (const link of SKU_LINK_TABLES) {
+      await this.executor.executeMutation(
+        `DELETE FROM ${link.table} WHERE ${link.skuID} IN (${placeholders})`,
+        [...skuIdentifiers],
+      );
+    }
+
+    await this.executor.executeMutation(
+      `DELETE FROM ${SKU_TABLE} WHERE ${SKU_ID_COLUMN} IN (${placeholders})`,
+      [...skuIdentifiers],
+    );
+  }
+
+  /**
+   * Collects the `SwProduct` column values for the write path, in the exact order of
+   * {@link PRODUCT_WRITABLE_COLUMNS}.
+   *
+   * The two lists are read together at both call sites, so they are composed from one ordering and that
+   * ordering is `model/entity/Product.cfc`'s own declaration order. A value and a column that disagreed
+   * on position would bind a product name into a product code with nothing to report it, so the pairing
+   * is stated once, here, rather than at each statement.
+   *
+   * ABSENT MEANS NULL AT THE BOUNDARY, AND THAT IS NOT A CONTRADICTION OF THE DOMAIN CONVENTION. The
+   * domain expresses a legacy null by the ABSENCE of a property — `src/domain/base/populate.ts` deletes
+   * the key rather than assigning `undefined`, and `rowMappers.ts` hydrates a null column into an absent
+   * property for the same reason. A bind position cannot express absence: the driver's parameter list is
+   * positional and every column in the statement needs one value. So absence becomes SQL null exactly at
+   * this seam and nowhere earlier.
+   *
+   * @param product - The product whose values are being written.
+   * @returns One bindable value per writable column, in column order.
+   */
+  private collectProductValues(product: Product): readonly unknown[] {
+    const defaultSku = product.defaultSku;
+
+    return [
+      product.activeFlag ?? null,
+      product.urlTitle ?? null,
+      product.productName ?? null,
+      product.productCode ?? null,
+      product.productDescription ?? null,
+      product.publishedFlag ?? null,
+      product.sortOrder ?? null,
+      product.calculatedSalePrice ?? null,
+      product.calculatedQATS ?? null,
+      product.calculatedAllowBackorderFlag ?? null,
+      product.calculatedTitle ?? null,
+      /* Association identity, `model/entity/Product.cfc:L68` — read off the object, not a scalar. */
+      product.brand?.brandID ?? null,
+      /* `:L69`. */
+      product.productType?.productTypeID ?? null,
+      /* `:L70` — through the injected reader, because the delegate exposes no identifier accessor. */
+      defaultSku === undefined ? null : this.readDefaultSkuId(defaultSku),
+      product.remoteID ?? null,
+      product.createdDateTime ?? null,
+      /* Field `createdByAccount` -> column `createdByAccountID` — `:L97`. */
+      product.createdByAccount ?? null,
+      product.modifiedDateTime ?? null,
+      /* Field `modifiedByAccount` -> column `modifiedByAccountID` — `:L99`. */
+      product.modifiedByAccount ?? null,
+    ];
+  }
+
+  /**
+   * The `SwProductType` counterpart of {@link MySqlProductPersistence.collectProductValues}, on the same
+   * terms and in the order of {@link PRODUCT_TYPE_WRITABLE_COLUMNS}.
+   *
+   * @param productType - The product type whose values are being written.
+   * @returns One bindable value per writable column, in column order.
+   */
+  private collectProductTypeValues(productType: ProductType): readonly unknown[] {
+    return [
+      productType.productTypeIDPath ?? null,
+      productType.activeFlag ?? null,
+      productType.publishedFlag ?? null,
+      productType.urlTitle ?? null,
+      productType.productTypeName ?? null,
+      productType.productTypeDescription ?? null,
+      productType.systemCode ?? null,
+      /* Association identity, `model/entity/ProductType.cfc:L62` — the self-referencing parent, with
+       * the preserved foreign key as its fallback.
+       *
+       * ⭐ THIS KEY HAD A ROUND-TRIP GAP AND IT IS NOW CLOSED. The expression used to end at
+       * `?? null`, so a product type READ through `./rowMappers.ts` — which leaves
+       * `parentProductType` unhydrated on purpose, because an identifier-only parent would make
+       * `ProductType.getSimpleRepresentation` return `undefined` and empty the feed's `g:product_type`
+       * element — was written back with `NULL` and DETACHED from its parent. Rule 3b in
+       * `./rowMappers.ts` preserves the row's key beside the entity, so the association still wins
+       * whenever one is resolved and `NULL` is stored only for a genuine root.
+       *
+       * ⚠️ THIS IS NOT "A SECOND MECHANISM FOR A DECISION ALREADY MADE", which is what an earlier
+       * comment here called any compensating read. The decision rule 3a made was about what the
+       * ASSOCIATION may contain, and it is unchanged — this slot is still never filled with a
+       * reference. Preserving the COLUMN for the write paths is a different question with a different
+       * answer, and both persisters read it through the one exported accessor rather than each
+       * inventing a lookup. `./MySqlProductTypeRepository.ts`'s `collectWritableValues` applies the
+       * identical fallback. */
+      productType.parentProductType?.productTypeID ??
+        readHydratedParentProductTypeID(productType) ??
+        null,
+      productType.remoteID ?? null,
+      productType.createdDateTime ?? null,
+      /* Field `createdByAccount` -> column `createdByAccountID` — `:L84`. */
+      productType.createdByAccount ?? null,
+      productType.modifiedDateTime ?? null,
+      /* Field `modifiedByAccount` -> column `modifiedByAccountID` — `:L86`. */
+      productType.modifiedByAccount ?? null,
+    ];
   }
 }

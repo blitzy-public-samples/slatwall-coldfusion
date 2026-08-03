@@ -92,12 +92,7 @@ import { BRAND_PROPERTY_DESCRIPTORS } from '../../src/domain/product/Brand';
 import { SKU_UNSAVED_ID_VALUE } from '../../src/domain/sku/Sku';
 import { ValidationError } from '../../src/errors/ValidationError';
 import { BaseService } from '../../src/services/BaseService';
-import {
-  VALIDATION_CONTEXTS,
-  Validator,
-  buildValidationMessage,
-  isValidationContext,
-} from '../../src/validation/Validator';
+import { Validator, buildValidationMessage } from '../../src/validation/Validator';
 import {
   brandValidationRules,
   createBrandValidationRules,
@@ -171,7 +166,7 @@ import {
 import type { BrandPropertyName } from '../../src/domain/product/Brand';
 import type { ManagedBrand } from '../../src/services/BrandService';
 import type { UniquePropertyEntity } from '../../src/ports/UniquePropertyPort';
-import type { UniquePropertyValueSeed } from '../support/inMemoryRepositories';
+import type { SqlExecutorDouble, UniquePropertyValueSeed } from '../support/inMemoryRepositories';
 import type { Product } from '../../src/domain/product/Product';
 import type { Sku, SkusBySelectedOptionsLookup } from '../../src/domain/sku/Sku';
 import type { BrandValidationSubject } from '../../src/validation/rules/brand.rules';
@@ -1958,27 +1953,32 @@ describe('NET-NEW — B9. Product context gates: selection only, no process roun
     ['addOptionGrou — a prefix of an element', 'addOptionGrou'],
     ['ption — an infix of an element', 'ption'],
     ['addOptionGroups — a superstring of an element', 'addOptionGroups'],
-  ])(
-    'NET-NEW — %s names no context at all and is REFUSED rather than selecting nothing',
-    async (_label, nearMiss) => {
-      // ⭐ SEC-HARDENING (D18-CLASS). These three strings previously reached the engine and were
-      // asserted to select nothing. They now cannot reach it: the runtime membership guard is a
-      // WHOLE-VALUE test, so a near-miss of a member is not a member. That is a strictly stronger
-      // statement than "selects nothing", because "selects nothing" is also what a disabling context
-      // looked like from the outside.
-      const harness = createValidatorHarness();
-      const subject: ProductValidationSubject = {
-        ...uniqueEntityAccessors('SlatwallProduct', 'productID', 'near-miss-product', {}),
-        getClassName: () => 'Product',
-        hasProperty: (identifier: string) => identifier === 'baseProductType',
-        baseProductType: SUBSCRIPTION_PRODUCT_TYPE.systemCode,
-      };
+  ])('NET-NEW — %s selects no context-scoped rule at all', async (_label, nearMiss) => {
+    // `listFindNoCase` is an ELEMENT search rather than a substring search, so a prefix, an infix and
+    // a superstring of `addOptionGroup` each match nothing at
+    // `org/Hibachi/HibachiValidationService.cfc:L71`. The engine runs, selects only the rules that
+    // declare no `contexts` key, and records nothing for a context-scoped property.
+    //
+    // ⛔ AND IT IS NOT REFUSED. A revision asserted a `TypeError` here, produced by a runtime
+    // membership guard that has since been withdrawn — refusing a context the legacy engine merely
+    // fails to match is a behaviour change, and AAP §0.6.7.7 licenses exactly one (D18). The widening
+    // cast is retained because the value is deliberately outside the closed union.
+    const harness = createValidatorHarness();
+    const subject: ProductValidationSubject = {
+      ...uniqueEntityAccessors('SlatwallProduct', 'productID', 'near-miss-product', {}),
+      getClassName: () => 'Product',
+      hasProperty: (identifier: string) => identifier === 'baseProductType',
+      baseProductType: SUBSCRIPTION_PRODUCT_TYPE.systemCode,
+    };
 
-      await expect(
-        harness.validateDryRun(subject, productValidationRuleSet, nearMiss as never),
-      ).rejects.toThrow(TypeError);
-    },
-  );
+    const errors = await harness.validateDryRun(
+      subject,
+      productValidationRuleSet,
+      nearMiss as never,
+    );
+
+    expect(errors.hasErrors()).toBe(false);
+  });
 });
 
 /* ================================================================================================
@@ -1988,12 +1988,41 @@ describe('NET-NEW — B9. Product context gates: selection only, no process roun
 /**
  * Every member of the closed `ValidationContext` union, so "every context" can be asserted.
  *
- * Taken from the engine's own exported inventory rather than restated here. The engine now enforces
- * membership at runtime, so a locally duplicated list could drift from the enforced one and the drift
- * would show up as a mysterious refusal in an unrelated case rather than as a failure here. Section
- * C1 asserts the inventory's own contents separately, which is what keeps this indirection honest.
+ * Restated here rather than imported, because the engine exports no runtime inventory to import: the
+ * union is a compile-time declaration only, and the membership guard that once backed it with a
+ * runtime list has been withdrawn (see THE RUNTIME CONTEXT-MEMBERSHIP GUARD IS WITHDRAWN in
+ * `src/validation/Validator.ts`). The list cannot drift silently all the same — the annotation is the
+ * union itself, so a tenth member added to the union without being added here leaves the `satisfies`
+ * check below unsatisfied and a member removed from the union makes this list uncompilable.
+ *
+ * The order is the union's own declaration order, with the empty string first because it is the
+ * engine's default at `org/Hibachi/HibachiValidationService.cfc:L153`.
  */
-const EVERY_CONTEXT: readonly ValidationContext[] = VALIDATION_CONTEXTS;
+const EVERY_CONTEXT = [
+  '',
+  'save',
+  'delete',
+  'edit',
+  'process',
+  'addOptionGroup',
+  'addOption',
+  'addSubscriptionTerm',
+  'updateSkus',
+] as const satisfies readonly ValidationContext[];
+
+/**
+ * Proves at COMPILE TIME that {@link EVERY_CONTEXT} covers every member of `ValidationContext`.
+ *
+ * `Exclude` is `never` only when the union is fully covered, and `never` is the only type the
+ * parameter accepts, so an uncovered member is a compile error rather than a silently short list. The
+ * alias is never used as a value.
+ */
+type EveryContextCoverage<
+  TUncovered extends never = Exclude<ValidationContext, (typeof EVERY_CONTEXT)[number]>,
+> = TUncovered;
+
+/** The coverage proof above, referenced once so the alias is not reported as unused. */
+type _AssertEveryContextCovered = EveryContextCoverage;
 
 /**
  * The five values that cast to CFML boolean false, and therefore the five that
@@ -2054,84 +2083,27 @@ describe('NET-NEW — C1. context selection semantics', () => {
     },
   );
 
-  it('NET-NEW — the runtime context inventory is exactly the nine members of the union', () => {
-    // The engine exports the inventory it enforces, and a compile-time assertion inside
-    // `Validator.ts` already proves the inventory covers the union. What that assertion cannot prove
-    // is the CONTENTS, so they are pinned here: nine members, in the union's own declaration order,
-    // with the empty string first because it is the engine's default at
-    // `org/Hibachi/HibachiValidationService.cfc:L153`.
-    expect(VALIDATION_CONTEXTS).toStrictEqual([
-      '',
-      'save',
-      'delete',
-      'edit',
-      'process',
-      'addOptionGroup',
-      'addOption',
-      'addSubscriptionTerm',
-      'updateSkus',
-    ]);
-
-    // The narrowing predicate agrees with the inventory in both directions, including the subtlety
-    // that `''` IS a member.
-    for (const context of VALIDATION_CONTEXTS) {
-      expect(isValidationContext(context)).toBe(true);
-    }
-    expect(isValidationContext('')).toBe(true);
-
-    // CASE-INSENSITIVE, because `org/Hibachi/HibachiValidationService.cfc:L71` compares with
-    // `listFindNoCase` and `:L162` casts with `isBoolean`, so a case variant is a context the legacy
-    // honours. Refusing one would be a behavioural change, not a hardening.
-    for (const accepted of [
-      'Save',
-      'SAVE',
-      'DELETE',
-      'ADDOPTIONGROUP',
-      'AddOption',
-      'UpdateSkus',
-    ]) {
-      expect(isValidationContext(accepted)).toBe(true);
-    }
-
-    // WHOLE-VALUE, and no trimming and no aliasing: each of these is a normalisation the engine
-    // deliberately does not perform on the context argument, so each names no context.
-    for (const rejected of [' save', 'save ', 'save\t', 'saves', 'sav', 'placeOrder', 'unknown']) {
-      expect(isValidationContext(rejected)).toBe(false);
-    }
-    for (const rejected of [undefined, null, 0, 1, false, true, {}, [], ['save']]) {
-      expect(isValidationContext(rejected)).toBe(false);
-    }
-
-    // And the five disabling tokens are refused in EVERY casing, which is the security property the
-    // guard exists for. None of the nine members equals `false` or `no` in any casing, and none is
-    // numeric, so widening the guard to ignore case cost nothing here.
-    for (const [, token] of DISABLING_CONTEXT_TOKENS) {
-      expect(isValidationContext(token)).toBe(false);
-    }
-    for (const token of ['False', 'FALSE', 'No', 'NO', 'nO', '0', '0.0', '-0', 'off']) {
-      expect(isValidationContext(token)).toBe(false);
-    }
-  });
-
   it.each(DISABLING_CONTEXT_TOKENS.map(([label, token]) => [label, token]))(
-    'NET-NEW — %s as the context is REFUSED, and validation is neither skipped nor substituted',
+    'NET-NEW TODO(parity) — %s as the context DISABLES validation entirely, and the bypass is carried',
     async (_label, disablingContext) => {
       // `org/Hibachi/HibachiValidationService.cfc:L162` wraps the whole legacy pass in
       // `if(!isBoolean(arguments.context) || arguments.context)`, so a context that CASTS to boolean
-      // false would disable validation altogether — no rule selected, no collaborator consulted, an
-      // empty bag returned and a caller reading `hasErrors()` as false. CFML's boolean casting accepts
+      // false disables validation altogether — no rule selected, no collaborator consulted, an empty
+      // bag returned and a caller reading `hasErrors()` as false. CFML's boolean casting accepts
       // "false", "no" and 0 as well as the boolean, so all five rows are the same bypass.
       //
-      // ⭐ SEC-HARDENING (D18-CLASS). This case previously ASSERTED that bypass, and asserting it is
-      // what made the suite require insecure behaviour. It now asserts the refusal that
-      // `Validator.validate` performs before anything else. The widening cast below is retained
-      // deliberately: it is the exact shape of the three real crossings the guard exists for — a
-      // parsed request body, an `as ValidationContext` assertion, and a JavaScript consumer of the
-      // emitted bundle — so the test reaches the engine the same way an attacker would.
+      // ⛔ THIS IS ASSERTED AS IT BEHAVES, NOT AS IT SHOULD BEHAVE. A revision of this suite asserted a
+      // `TypeError` here instead, produced by a runtime membership guard in `Validator.validate`. Both
+      // the guard and that expectation are withdrawn: refusing a value `:L162` accepts is a behaviour
+      // change, and AAP §0.6.7.7 declares exactly ONE departure in this port (D18, the importer's
+      // parameterised SQL) while AAP §0.8.2 guideline 4 forbids the rest outright. The defect is
+      // therefore CARRIED and flagged — see THE RUNTIME CONTEXT-MEMBERSHIP GUARD IS WITHDRAWN in
+      // `src/validation/Validator.ts`.
       //
-      // The legacy `:L162` branch itself is NOT removed from the engine (AAP 0.6.7, preserve and
-      // annotate); section C2 below proves it still governs the one member that could be mistaken for
-      // a disabling token, the empty string.
+      // The widening cast is what makes the case reachable at all: `ValidationContext` is a closed
+      // nine-member union, so no compiler-checked caller in this subtree can write a disabling token
+      // down. The cast reproduces the three crossings on which one arrives anyway — a parsed request
+      // body, an `as ValidationContext` assertion, and a JavaScript consumer of the emitted bundle.
       const uniqueProperty = createUniquePropertyDouble([
         {
           entityName: 'SlatwallProduct',
@@ -2150,74 +2122,31 @@ describe('NET-NEW — C1. context selection semantics', () => {
         productCode: 'taken',
       };
 
-      // A caller-supplied bag, so the refusal can be shown to leave it exactly as it was found.
+      // A caller-supplied bag, so the bypass can be shown to hand back that very bag, unmodified.
       const suppliedBag = new ValidationError();
 
-      await expect(
-        validator.validate(subject, productValidationRuleSet, disablingContext as never, {
-          errors: suppliedBag,
-        }),
-      ).rejects.toThrow(TypeError);
+      const returned = await validator.validate(
+        subject,
+        productValidationRuleSet,
+        disablingContext as never,
+        { errors: suppliedBag },
+      );
 
-      // REFUSED, not run under a substituted context: nothing was accumulated into the caller's bag.
+      // The caller's own bag comes back, empty, even though `productCode` is both taken and required.
+      expect(returned).toBe(suppliedBag);
       expect(suppliedBag.hasErrors()).toBe(false);
       expect(Object.keys(suppliedBag.getErrors())).toStrictEqual([]);
-      // And refused BEFORE any collaborator was consulted, so the refusal costs no database work.
+      // And no collaborator was consulted, because the gate returns before the property loop.
       expect(uniqueProperty.calls).toStrictEqual([]);
     },
   );
 
-  it('NET-NEW — the refusal names the rejected context without echoing a payload verbatim', async () => {
-    // The rejected context is the one string in the engine that may be attacker-controlled, so the
-    // raise sanitises it rather than interpolating it raw — CWE-117, the same defence
-    // `src/adapters/mysql/UnitOfWork.ts` applies to an abandoned failure. Control characters become a
-    // single question mark each and the echo is capped, so the message can diagnose a caller mistake
-    // without carrying a log-forging payload.
-    const uniqueProperty = createUniquePropertyDouble([]);
-    const validator = new Validator(uniqueProperty.uniqueProperty);
-    const subject: ProductValidationSubject = {
-      ...uniqueEntityAccessors('SlatwallProduct', 'productID', 'mine', { productCode: 'ok' }),
-      getClassName: () => 'Product',
-      hasProperty: () => true,
-      productCode: 'ok',
-    };
-
-    const forged = `save\n\r\u001b[31mFATAL injected line${'x'.repeat(200)}`;
-    const raised: unknown = await validator
-      .validate(subject, productValidationRuleSet, forged as never)
-      .then(
-        () => undefined,
-        (error: unknown) => error,
-      );
-
-    expect(raised).toBeInstanceOf(TypeError);
-    const message = (raised as TypeError).message;
-    expect(message).toContain('is not one of the nine contexts this engine recognises');
-    // Neither the newline, the carriage return nor the escape byte survives into the message.
-    expect(message).not.toContain('\n');
-    expect(message).not.toContain('\r');
-    expect(message).not.toContain('\u001b');
-    // Each is replaced rather than dropped, so the shape of the input is still visible, and the echo
-    // is capped at 40 characters with an ellipsis marking the truncation.
-    expect(message).toContain("'save???[31mFATAL injected linexxxxxxxxxx…'");
-
-    // A non-string context reports its TYPE and nothing of its value.
-    const objectRaise: unknown = await validator
-      .validate(subject, productValidationRuleSet, { toString: () => 'save' } as never)
-      .then(
-        () => undefined,
-        (error: unknown) => error,
-      );
-    expect((objectRaise as TypeError).message).toContain("'<object>'");
-  });
-
   it.each(DISABLING_CONTEXT_TOKENS.map(([label, token]) => [label, token]))(
-    'NET-NEW — %s is refused by validateProcess too, before either pass runs',
+    'NET-NEW TODO(parity) — %s disables BOTH passes of validateProcess, and neither bag is touched',
     async (_label, disablingContext) => {
       // `validateProcess` forwards one context into two `validate` passes
-      // (`org/Hibachi/HibachiService.cfc:L96` and `:L108`), so the refusal must fire on the first
-      // delegation and leave BOTH supplied bags untouched. Without this row the two-object flow would
-      // be an unguarded second entry point for the same bypass.
+      // (`org/Hibachi/HibachiService.cfc:L96` and `:L108`), so the `:L162` gate suppresses both. This
+      // row exists so the two-object flow is not mistaken for a path that escapes the carried defect.
       const uniqueProperty = createUniquePropertyDouble([]);
       const validator = new Validator(uniqueProperty.uniqueProperty);
       const entity: ProductValidationSubject = {
@@ -2235,20 +2164,19 @@ describe('NET-NEW — C1. context selection semantics', () => {
       const entityErrors = new ValidationError();
       const processObjectErrors = new ValidationError();
 
-      await expect(
-        validator.validateProcess({
-          entity,
-          entityRuleSet: productValidationRuleSet,
-          processContext: disablingContext as never,
-          entityErrors,
-          processObject: {
-            subject: processObject,
-            ruleSet: productUpdateSkusValidationRuleSet,
-            errors: processObjectErrors,
-          },
-        }),
-      ).rejects.toThrow(TypeError);
+      await validator.validateProcess({
+        entity,
+        entityRuleSet: productValidationRuleSet,
+        processContext: disablingContext as never,
+        entityErrors,
+        processObject: {
+          subject: processObject,
+          ruleSet: productUpdateSkusValidationRuleSet,
+          errors: processObjectErrors,
+        },
+      });
 
+      // Both bags are untouched: the required `productCode` and the numeric `price` both go unchecked.
       expect(entityErrors.hasErrors()).toBe(false);
       expect(processObjectErrors.hasErrors()).toBe(false);
       expect(uniqueProperty.calls).toStrictEqual([]);
@@ -4413,11 +4341,10 @@ describe('NET-NEW — F5. `hasOneOptionPerOptionGroup` — the pure in-memory du
   // file mints a defect or mismatch identifier, so this hint receives no additional number here. The
   // register is stated canonically, and only once, in the header of
   // `src/ports/repositories/SkuRepository.ts` (AAP §0.6.7's frozen source range D1-D21, plus the source
-  // extension D22 and the three contract corrections D23, D24 and D25, with no D26 or beyond; and AAP
-  // §0.6.6's M1-M8 plus M9, with no M10 or beyond).
+  // extension the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] and the three contract BOTH FROZEN AT THE AAP's OWN BOUNDS — AAP 0.6.7's D1-D21 and AAP 0.6.6's M1-M8. Nothing in this port mints an identifier beyond either range; a further source observation is recorded by its `path:Lnnn` locator instead).
   //
   // ⛔ AN EARLIER REVISION OF THIS COMMENT READ "AAP §0.6.7 fixes the register at D1-D21 and inventing a
-  // D22 would corrupt it", and it was wrong in both halves. D22 EXISTS — it is the naming-convention
+  // the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] would corrupt it", and it was wrong in both halves. the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] EXISTS — it is the naming-convention
   // defect minted in that same header, where `model/dao/SkuDAO.cfc` mixes logical entity names with
   // physical table names — so the number this comment warned against inventing had already been
   // assigned. And the FROZEN range AAP §0.6.7 fixes is not the LIVE bound: the live one moves whenever
@@ -4872,22 +4799,31 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
   });
 
   /* ==============================================================================================
-   * ⭐ SEC-HARDENING (D18-CLASS) — F6. THE LOCKING READ, AND THE PARITY IT DOES NOT DISTURB
+   * NET-NEW TODO(parity) — F6 WITHDRAWAL. NEITHER PROBE LOCKS, AND THE CWE-367 RACE IS CARRIED
    * ==============================================================================================
-   * Review finding F6 (CWE-367) observed that both probes are the READ half of a check-then-write, so
-   * two concurrent saves can both be told a value is free. Its own guidance names the alternatives:
-   * "database unique indexes/constraints OR EQUIVALENT LOCKING". The constraint half is FORBIDDEN —
-   * AAP §0.2.2.5 places schema migration outside this refactoring — so the locking read is what is
-   * available, and it is licensed on the D18 footing (AAP §0.6.7.7) because `FOR UPDATE` returns the
-   * same rows and therefore the same verdict; it orders concurrent transactions and nothing else.
+   * A revision of this port appended ` FOR UPDATE` to both uniqueness probes whenever the checker had
+   * adopted a boundary's executor, and licensed it on the D18 footing (AAP §0.6.7.7) on the ground that
+   * a locking read returns the same rows and therefore the same verdict. THAT IS WITHDRAWN IN FULL. The
+   * ground was sound as far as it went, but AAP §0.6.7.7 authorises exactly ONE departure from
+   * behavioural preservation in this port — D18, the importer's parameterised SQL — and it does so
+   * precisely so that a reviewer diffing behaviour has exactly one entry to check. Statement text is
+   * observable, a lock-wait is observable under concurrency, and AAP §0.8.2 Guideline 4 admits no
+   * proportionality test. Both probes are therefore byte-identical to `org/Hibachi/HibachiDAO.cfc:L140`
+   * and `model/dao/DataDAO.cfc:L122-L124` on EVERY path, bound or unbound.
    *
-   * ⚠️ WHAT THESE TESTS CAN AND CANNOT PROVE, STATED SO NEITHER IS OVERCLAIMED. They prove the clause
-   * is emitted, that it is emitted ONLY for a boundary-scoped instance, that it is positioned where
-   * MySQL requires, and that the verdict is byte-identical either way. Whether the engine then BLOCKS a
-   * second transaction is a property of MySQL, not of this code, and was verified directly against
-   * MySQL 8.4 during this work rather than simulated here: a second session's locking read over the
-   * same table blocked until the first session committed and then observed its row. Simulating that
-   * blocking in a double would only test the simulation.
+   * ⚠️ THE EXPOSURE THAT IS CARRIED, STATED PLAINLY (CWE-367, TOCTOU). Each probe is the READ half of a
+   * check-then-write. Two concurrent savers can both be told a value is free and both write it. Five of
+   * the seven ported uniqueness rules have a `unique="true"` column behind them, so the database
+   * convicts the second write there; `optionCode` (`model/validation/Option.json:L3`) and
+   * `optionGroupCode` (`model/validation/OptionGroup.json:L3`) do NOT, so on those two the duplicate
+   * simply persists. The repair is a unique index, and AAP §0.2.2.5 places schema migration outside this
+   * refactoring entirely — so it is the operator's decision, arriving as a stated requirement rather
+   * than smuggled in as a statement suffix. The legacy system has the same exposure for the same reason.
+   *
+   * ⭐ `withExecutor` ITSELF IS NOT WITHDRAWN. Adopting a boundary's executor is M6 visibility — it is
+   * what lets a uniqueness probe observe rows the same transaction has already written, which
+   * `SkuService.createSkus` depends on (§0.6.2). It changes WHICH connection runs the statement and
+   * never the statement. The tests below pin exactly that split.
    * ============================================================================================ */
 
   /** Both probe forms, so each assertion below runs against the same instance twice over. */
@@ -4899,13 +4835,7 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
     await checker.isUrlTitleAvailable('SwBrand', 'acme');
   }
 
-  it('NET-NEW — the POOL-BOUND instance emits the ported statement with NO locking clause', async () => {
-    /*
-     * The parity guard, and the reason the hardening is opt-in. A `FOR UPDATE` outside a transaction is
-     * acquired and released at statement end, so on the pool-bound path it would buy no protection while
-     * still altering the text of a ported read. This instance must stay byte-identical to
-     * `org/Hibachi/HibachiDAO.cfc:L140` and `model/dao/DataDAO.cfc:L122-L124`.
-     */
+  it('NET-NEW — the POOL-BOUND instance emits the ported statement, with no clause after the limit', async () => {
     const sql = createSqlExecutorDouble();
 
     await probeBothForms(new UniquePropertyChecker(sql.executor));
@@ -4916,10 +4846,12 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
     ]);
   });
 
-  it('NET-NEW — the BOUNDARY-SCOPED instance appends `FOR UPDATE` to BOTH probes', async () => {
-    // `withExecutor` exists for no purpose other than adopting a boundary's executor, which is exactly
-    // the condition under which serializing a check against a write is meaningful — so it is the member
-    // that carries the clause. Both probes are read-then-write halves, so both take it.
+  it('NET-NEW TODO(parity) — WITHDRAWAL REGRESSION: the BOUNDARY-SCOPED instance emits the SAME text', async () => {
+    /*
+     * The withdrawal, pinned where the hardening used to live. This is the one instance for which a
+     * locking read would have been meaningful, and it is byte-identical to the pool-bound instance —
+     * `withExecutor` changes the connection and nothing else. A re-added suffix fails here first.
+     */
     const sql = createSqlExecutorDouble();
 
     await probeBothForms(
@@ -4927,63 +4859,74 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
     );
 
     expect(sql.calls.map((call) => call.sql)).toStrictEqual([
-      'SELECT 1 FROM SwBrand e WHERE e.urlTitle = ? AND e.brandID != ? LIMIT 1 FOR UPDATE',
-      'SELECT 1 FROM SwBrand WHERE urlTitle = ? LIMIT 1 FOR UPDATE',
+      'SELECT 1 FROM SwBrand e WHERE e.urlTitle = ? AND e.brandID != ? LIMIT 1',
+      'SELECT 1 FROM SwBrand WHERE urlTitle = ? LIMIT 1',
     ]);
   });
 
-  it('NET-NEW — the clause sits AFTER the row limit, which is the only order MySQL accepts', async () => {
-    // Position is behaviour here: `FOR UPDATE LIMIT 1` is a syntax error, so a clause appended during
-    // composition rather than at the end would produce a statement that never runs.
-    const sql = createSqlExecutorDouble();
+  it('NET-NEW TODO(parity) — every probe statement ENDS at the row limit, on both paths', async () => {
+    // Positional rather than textual, so it also catches a suffix appended under a different spelling
+    // (`LOCK IN SHARE MODE`, `FOR SHARE`, a hint comment) rather than only the one that was withdrawn.
+    const pool = createSqlExecutorDouble();
+    const boundary = createSqlExecutorDouble();
 
-    await probeBothForms(new UniquePropertyChecker(sql.executor, { lockingReads: true }));
+    await probeBothForms(new UniquePropertyChecker(pool.executor));
+    await probeBothForms(new UniquePropertyChecker(pool.executor).withExecutor(boundary.executor));
 
-    for (const call of sql.calls) {
-      expect(call.sql.endsWith(' LIMIT 1 FOR UPDATE')).toBe(true);
-      expect(call.sql.indexOf('LIMIT 1')).toBeLessThan(call.sql.indexOf('FOR UPDATE'));
+    for (const call of [...pool.calls, ...boundary.calls]) {
+      expect(call.sql.endsWith(' LIMIT 1')).toBe(true);
+      expect(call.sql).not.toContain('FOR UPDATE');
+      expect(call.sql).not.toContain('FOR SHARE');
+      expect(call.sql).not.toContain('LOCK IN SHARE MODE');
     }
   });
 
-  it('NET-NEW — locking changes NO verdict, for either answer, which is what licenses it', async () => {
+  it('NET-NEW — the verdict is the same on both paths, for either answer', async () => {
     /*
-     * The D18 property itself, asserted rather than argued. The same seeded result set must produce the
-     * same boolean from a locking instance and a non-locking one — for the collision case AND the free
-     * case, because a test that only exercised one would pass under a polarity inversion.
+     * Re-binding must not disturb the boolean, for the collision case AND the free case, because a test
+     * that only exercised one would pass under a polarity inversion. This is the assertion that survived
+     * the withdrawal intact: it was the D18 argument's evidence, and it is now simply the parity
+     * evidence that adopting an executor changes nothing observable but the connection.
      */
     const collision = [{ 1: 1 }];
+    const entity = uniqueEntityAccessors('SlatwallOption', 'optionID', 'option-1', {
+      optionCode: 'RED',
+    });
 
-    for (const lockingReads of [false, true]) {
+    /* Both construction routes onto the SAME recording executor: straight through the constructor, and
+     * adopted from a boundary by `withExecutor` over an unrelated pool. */
+    const routes: readonly ((executor: SqlExecutorDouble['executor']) => UniquePropertyChecker)[] =
+      [
+        (executor) => new UniquePropertyChecker(executor),
+        (executor) =>
+          new UniquePropertyChecker(createSqlExecutorDouble().executor).withExecutor(executor),
+      ];
+
+    for (const route of routes) {
       const taken = createSqlExecutorDouble({ outcomes: [sqlRows(collision), sqlRows(collision)] });
       const free = createSqlExecutorDouble();
-      const options = { lockingReads } as const;
-      const entity = uniqueEntityAccessors('SlatwallOption', 'optionID', 'option-1', {
-        optionCode: 'RED',
-      });
 
-      await expect(
-        new UniquePropertyChecker(taken.executor, options).isUniqueProperty('optionCode', entity),
-      ).resolves.toBe(false);
-      await expect(
-        new UniquePropertyChecker(taken.executor, options).isUrlTitleAvailable('SwBrand', 'acme'),
-      ).resolves.toBe(false);
+      await expect(route(taken.executor).isUniqueProperty('optionCode', entity)).resolves.toBe(
+        false,
+      );
+      await expect(route(taken.executor).isUrlTitleAvailable('SwBrand', 'acme')).resolves.toBe(
+        false,
+      );
 
-      await expect(
-        new UniquePropertyChecker(free.executor, options).isUniqueProperty('optionCode', entity),
-      ).resolves.toBe(true);
-      await expect(
-        new UniquePropertyChecker(free.executor, options).isUrlTitleAvailable('SwBrand', 'acme'),
-      ).resolves.toBe(true);
+      await expect(route(free.executor).isUniqueProperty('optionCode', entity)).resolves.toBe(true);
+      await expect(route(free.executor).isUrlTitleAvailable('SwBrand', 'acme')).resolves.toBe(true);
     }
   });
 
-  it('NET-NEW — locking changes no bound value, no placeholder count and no identifier gate', async () => {
-    // The rest of the statement's contract has to survive the hardening: two placeholders and the legacy
-    // bind order for the self-excluding probe, one for the availability probe, and neither value ever
-    // interpolated (S2, TR-4).
+  it('NET-NEW — bound values, placeholder counts and the identifier gate on the re-bound path', async () => {
+    // The rest of the statement's contract, asserted on the boundary-scoped instance because that is the
+    // path the withdrawn hardening touched: two placeholders and the legacy bind order for the
+    // self-excluding probe, one for the availability probe, and neither value ever interpolated (S2, TR-4).
     const sql = createSqlExecutorDouble();
 
-    await probeBothForms(new UniquePropertyChecker(sql.executor, { lockingReads: true }));
+    await probeBothForms(
+      new UniquePropertyChecker(createSqlExecutorDouble().executor).withExecutor(sql.executor),
+    );
 
     const [selfExcluding, availability] = [first(sql.calls), sql.calls[1]];
     expect(selfExcluding.params).toStrictEqual(['acme', 'brand-1']);
@@ -4993,12 +4936,13 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
     expect(selfExcluding.sql).not.toContain('acme');
   });
 
-  it('NET-NEW — a locking instance still refuses an unapproved identifier WITHOUT executing SQL', async () => {
-    // The whitelist runs before composition, so the locking clause is never appended onto a hostile
-    // table or column name. Order matters: a hardening that moved the gate after composition would
-    // still pass a text assertion while sending the statement.
+  it('NET-NEW — a re-bound instance still refuses an unapproved identifier WITHOUT executing SQL', async () => {
+    // The whitelist runs before composition on the boundary path too. Order matters: a gate that moved
+    // after composition would still pass a text assertion while sending the statement.
     const sql = createSqlExecutorDouble();
-    const checker = new UniquePropertyChecker(sql.executor, { lockingReads: true });
+    const checker = new UniquePropertyChecker(createSqlExecutorDouble().executor).withExecutor(
+      sql.executor,
+    );
 
     await expect(
       checker.isUniqueProperty(
@@ -5012,11 +4956,11 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
     expect(sql.calls).toHaveLength(1);
   });
 
-  it('NET-NEW — re-binding is what carries the lock, so the ORIGINAL instance stays unlocked', async () => {
+  it('NET-NEW — re-binding returns a NEW instance, so a warm container leaks no connection', async () => {
     /*
-     * M7 and the hardening together. `withExecutor` returns a NEW instance rather than mutating, so a
-     * warm container holding one pool-bound checker cannot have its statement text changed by another
-     * invocation's boundary — and the pool-bound instance keeps emitting the parity statement.
+     * M7. `withExecutor` does not mutate, so a module-scope checker held across warm invocations cannot
+     * have another invocation's boundary connection substituted into it — and both instances emit the
+     * identical ported statement, which is the withdrawal restated from the other direction.
      */
     const pool = createSqlExecutorDouble();
     const boundary = createSqlExecutorDouble();
@@ -5028,37 +4972,38 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
     await reBound.isUrlTitleAvailable('SwProduct', 'shirts');
     await poolBound.isUrlTitleAvailable('SwProduct', 'shirts');
 
-    expect(first(boundary.calls).sql).toBe(
-      'SELECT 1 FROM SwProduct WHERE urlTitle = ? LIMIT 1 FOR UPDATE',
-    );
-    expect(first(pool.calls).sql).toBe('SELECT 1 FROM SwProduct WHERE urlTitle = ? LIMIT 1');
+    expect(first(boundary.calls).sql).toBe('SELECT 1 FROM SwProduct WHERE urlTitle = ? LIMIT 1');
+    expect(first(pool.calls).sql).toBe(first(boundary.calls).sql);
   });
 
-  it('NET-NEW — the UNSERIALIZED interleaving F6 describes is reproduced on the pool-bound path', async () => {
+  it('NET-NEW TODO(parity) — the UNSERIALIZED interleaving is carried on EVERY path (CWE-367)', async () => {
     /*
-     * The defect, demonstrated rather than described, so the fix has something concrete to be the fix OF.
-     * Two would-be savers probe the same code against a store that neither has written yet. Both are
-     * told it is free, and for `optionCode` — `model/validation/Option.json:L3`, which per DIVERGENCE 1
-     * has NO `unique="true"` column behind it — nothing downstream refuses the second write.
-     *
-     * ⚠️ THIS TEST ASSERTS THE DEFECT, NOT A BUG. It is the legacy behaviour and it is preserved on the
-     * unbound path deliberately. What the hardening adds is the clause that lets the DATABASE arbitrate
-     * the same interleaving when both savers are inside boundaries — see the block above.
+     * The carried defect, demonstrated rather than described. Two would-be savers probe the same code
+     * against a store that neither has written yet. Both are told it is free, and for `optionCode` —
+     * which per DIVERGENCE 1 has NO `unique="true"` column behind it — nothing downstream refuses the
+     * second write. The boundary-scoped instance behaves identically, which is the whole point of the
+     * withdrawal: the port asks the database to serialize nothing, exactly as the legacy does not.
      */
     const store = createSqlExecutorDouble();
-    const probe = new UniquePropertyChecker(store.executor);
+    const boundary = createSqlExecutorDouble();
     const entity = uniqueEntityAccessors('SlatwallOption', 'optionID', '', { optionCode: 'RED' });
 
-    const [firstSaver, secondSaver] = await Promise.all([
-      probe.isUniqueProperty('optionCode', entity),
-      probe.isUniqueProperty('optionCode', entity),
-    ]);
+    for (const probe of [
+      new UniquePropertyChecker(store.executor),
+      new UniquePropertyChecker(store.executor).withExecutor(boundary.executor),
+    ]) {
+      const [firstSaver, secondSaver] = await Promise.all([
+        probe.isUniqueProperty('optionCode', entity),
+        probe.isUniqueProperty('optionCode', entity),
+      ]);
 
-    expect(firstSaver).toBe(true);
-    expect(secondSaver).toBe(true);
-    // Both probes ran, and neither statement asked the database to serialize them.
-    expect(store.calls).toHaveLength(2);
-    for (const call of store.calls) {
+      expect(firstSaver).toBe(true);
+      expect(secondSaver).toBe(true);
+    }
+
+    // Four probes ran, and not one asked the database to serialize them.
+    expect([...store.calls, ...boundary.calls]).toHaveLength(4);
+    for (const call of [...store.calls, ...boundary.calls]) {
       expect(call.sql).not.toContain('FOR UPDATE');
     }
   });

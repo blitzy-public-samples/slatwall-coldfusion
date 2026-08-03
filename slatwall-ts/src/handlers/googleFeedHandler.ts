@@ -160,8 +160,11 @@
  *   - `../config/env` and `../config/database` — configuration flows one way. THE PROCESS ENVIRONMENT
  *     IS NEVER READ IN THIS FILE; `src/config/env.ts` is the only module in the subtree permitted to
  *     read it, and the configured host arrives here already-resolved through injection.
- *   - `../config/container` — the composition root calls INTO this factory; this factory never
- *     imports it. There is no service locator, no registry, no name lookup and no dynamic dispatch.
+ *   - `../config/container` — the composition root calls INTO this factory; this factory never imports it.
+ *     There is no service locator, no registry, no name lookup and no dynamic dispatch. The LAMBDA ENTRY
+ *     POINT section at the foot of this file requires `../config/container`'s `getFeedSurfaceGraph` instead, which
+ *     composes the two feed collaborators and nothing else; a review pass (PERF-01) measured this
+ *     single-route artifact carrying the whole catalog graph when it reached the container.
  *   - Any HTTP client — see NO LIVE CALL TO GOOGLE below.
  * Every specifier is relative and extensionless, because `tsconfig.json` declares no path aliases and
  * an alias that type-checks can still fail to resolve at bundle time (AAP §0.4.3.5).
@@ -235,6 +238,19 @@
  *     a failure to a status and forwards a mandated legacy message verbatim, misspellings included.
  *     Importing them here would only tempt this file into inspecting, reshaping or re-classifying a
  *     failure, which ./httpResponse explicitly reserves to itself.
+ *   - `../services/SkuService` is NOT imported, and this file composes no selection of its own. See
+ *     judgment (f): the argument-less legacy call is inseparable from the selection it carries, so both
+ *     live in `../integrations/google/ProductFeedQuery`. That file no longer imports the service either —
+ *     it composes the shared SKU selection and executes its one view — which is why nothing on this path
+ *     reaches a service module at all.
+ *   - Neither `../errors/ValidationError` nor `../errors/DomainError` is imported at all: under finding F4
+ *     the image boundary and its refusal both live on the composition root, so this file declares no
+ *     reader and raises nothing. Every error type those modules declare is recognised BY TYPE inside
+ *     {@link errorResponse}, which owns the mapping from a failure to a status and forwards a mandated
+ *     legacy message verbatim, misspellings included, so this file never inspects, reshapes or
+ *     re-classifies a failure and never chooses a status. (`./skuHandler.ts` DOES import one error class,
+ *     for the D4 boundary it declares itself — the difference is which layer owns the boundary, which
+ *     purpose.
  *   - `../services/SkuService` is NOT imported, and this file never calls `getSkuSmartList`. See
  *     judgment (f): the service call is inseparable from the selection it carries, so it lives in
  *     `../integrations/google/ProductFeedQuery` where the selection lives.
@@ -297,14 +313,16 @@
  *     every invocation produces the configured host. That is the whole of the adaptation, and it is not
  *     a control.
  *
- *     ⭐ THE HOST *IS* VALIDATED, AND THAT IS A SEPARATE, DECLARED HARDENING — findings F7 and SEC-06.
- *     {@link validateFeedHostAuthority} runs once at construction (below) and again inside the
- *     serializer's own render, and it refuses a host carrying a character that would MOVE THE ORIGIN of
- *     the five absolute URLs `product.cfm` builds on it. The host sits immediately after `http://` at
- *     every one of those sites, which is the AUTHORITY position, so `good.example@evil.example`
- *     redirects the entire feed — and `@` is not an XML metacharacter, so the serializer's escaping
- *     cannot reach it. Being configuration rather than a request header is exactly what makes a
- *     construction-time check possible: there is one value per container, so it is checked once.
+ *     ⛔ THE HOST IS NOT VALIDATED, AND THE EXPOSURE THAT LEAVES IS THE SHARPEST THIS FILE CARRIES. A
+ *     `validateFeedHostAuthority` deny check ran once at construction (below) and again inside the
+ *     serializer's own render, refusing a host carrying a character that would MOVE THE ORIGIN of the five
+ *     absolute URLs `product.cfm` builds on it. BOTH CALLS ARE WITHDRAWN: `:L14` interpolates
+ *     `CGI.HTTP_HOST` with no test whatsoever, so refusing is a new outcome on input the legacy accepted,
+ *     and AAP §0.6.7.7 authorises exactly one departure from behavioural preservation in this port (D18)
+ *     with AAP §0.8.2 Guideline 4 allowing no proportionality test. The host sits immediately after
+ *     `http://` at every one of those sites, which is the AUTHORITY position, so
+ *     `good.example@evil.example` redirects the entire feed — and no escaping could have reached it
+ *     either, `@` being no XML metacharacter. Carried and flagged (AAP §0.7.3 S8).
  *
  *     ⛔ AN EARLIER REVISION WITHDREW THAT CONTROL ON A MISREADING OF D18, AND THE MISREADING IS WORTH
  *     NAMING. It held that D18 (AAP §0.6.7.7) licenses "only a divergence that removes a flaw class
@@ -351,20 +369,27 @@
  *     `this.anyAdminMethods=""` [:L55] and `this.secureMethods=""` [:L56] are both empty, so no gate
  *     is introduced here.
  *
- * (f) `getSkuSmartList()` IS CALLED WITH NO ARGUMENTS — BY THE FILE THAT OWNS THE SELECTION.
- *     feed.cfc:L63 invokes it with ZERO arguments and then MUTATES the object it gets back, adding
- *     three joins at :L64-L66, three filters at :L68-L70 and one range at :L72; the query does not
- *     run until the view reads the records off the same instance at `product.cfm:L16`. The ported
- *     service returns an ALREADY-EXECUTED, immutable result, so there is no post-hoc mutation step to
- *     hook into and every addition must be declared UP FRONT, inside the value handed to the service.
+ * (f) THE LEGACY SELECTION IS OBTAINED WITH NO ARGUMENTS — BY THE FILE THAT OWNS IT.
+ *     feed.cfc:L63 invokes `getSkuSmartList()` with ZERO arguments and then MUTATES the object it gets
+ *     back, adding three joins at :L64-L66, three filters at :L68-L70 and one range at :L72; the query
+ *     does not run until the view reads the records off the same instance at `product.cfm:L16`. The port
+ *     composes a description and executes it once, so there is no post-hoc mutation step to hook into and
+ *     every addition must be declared UP FRONT, inside the input the selection is composed from.
  *     `../integrations/google/ProductFeedQuery` records that translation as its own decision F-1 and
  *     performs it: the argument-less legacy call and the seven lines of selection it carries are
  *     INSEPARABLE, so they live in one file.
  *
- *     ⛔ CONSEQUENTLY THIS FILE DOES NOT CALL THE SERVICE AND DOES NOT IMPORT IT. Calling
- *     `getSkuSmartList` here would mean composing the selection here, which is precisely what the
- *     three-way split forbids. This handler delegates to {@link ProductFeedRecordSource}, and the
- *     argument-less fact is recorded here so it is not lost by being discharged one layer down.
+ *     ⛔ CONSEQUENTLY THIS FILE DOES NOT COMPOSE THE SELECTION AND DOES NOT IMPORT THE SKU SERVICE.
+ *     Composing it here is precisely what the three-way split forbids. This handler delegates to
+ *     {@link ProductFeedRecordSource}, and the argument-less fact is recorded here so it is not lost by
+ *     being discharged one layer down.
+ *
+ *     ⭐ AND THE FEED READS ONE VIEW, THROUGH ONE STATEMENT. `product.cfm:L16` loops the RECORDS and
+ *     reads no page and no count, so `ProductFeedQuery` executes the description through
+ *     `SmartListQueryPort.executeRecords` rather than through the service's three-view reading — which is
+ *     the count the legacy framework itself issues, since it materialises a view only on first read of it
+ *     [org/Hibachi/HibachiSmartList.cfc:L751-L755, :L771]. Nothing about that choice is visible at this
+ *     layer beyond the collaborator's type, which is why it is recorded there rather than restated here.
  *
  * (g) A `void` CONTROLLER MUTATING `rc` BECOMES A FUNCTION THAT RETURNS THE DOCUMENT. feed.cfc:L58
  *     declares `public void function product(required struct rc)` and its only observable effect is
@@ -380,30 +405,38 @@
  *     CODE THAT IS NOT PORTED. Recorded in full under THE THREE-WAY SPLIT in the module header. The
  *     one seam that division leaves open is the additional-image data, which no in-scope layer can
  *     produce — see {@link ProductFeedImageReader}, where the gap is declared rather than papered
- *     over.
+ *     over, and `../config/container.ts`, whose shipped default REFUSES so an unwired image subsystem
+ *     answers `501` instead of publishing a feed with every image element quietly missing.
  * ============================================================================================== */
 
 /* IMPORTS — three modules, all relative and extensionless.
  *
- * Three values are imported and six names are type-only. The type-only form is not cosmetic: the
- * bundler has no type information, so a value import of the serializer CLASS would add a real module
+ * Two values are imported and the rest of the names are type-only. The type-only form is not cosmetic:
+ * the bundler has no type information, so a value import of the serializer CLASS would add a real module
  * edge for a class this file never constructs. The serializer and the record source arrive as INJECTED
  * INSTANCES (S3), so the class itself stays type-only.
  *
- * ⭐ ONE VALUE IS TAKEN FROM THE SERIALIZER MODULE, AND IT IS THE ONE THIS FILE MUST NOT DECLARE ITSELF.
- * `validateFeedHostAuthority` is reinstated under review findings F7 and SEC-06, and it is imported
- * rather than reimplemented so that the handler and `ProductFeedBuilder.build` enforce ONE rule from ONE
- * declaration — a second copy here would be free to drift from the emission sites it protects. The edge
- * to that module already exists for four types, so nothing new is coupled; it merely stops being
- * type-only. `../../errors/DomainError` is deliberately NOT imported: the error class this file needs
- * travels with the function that raises it (S4).
+ * ⛔ NO VALUE IS TAKEN FROM THE SERIALIZER MODULE, AND AN EARLIER REVISION TOOK ONE. It imported
+ * `validateFeedHostAuthority` and ran a deny check at construction and once per render. That apparatus is
+ * WITHDRAWN — `integrationServices/google/views/feed/product.cfm` performs no authority check of any kind,
+ * so refusing a host the legacy serves is behaviour the migration adds rather than preserves, which AAP
+ * §0.8.2 guideline 4 forbids and §0.6.7.7 licenses for exactly one departure (D18) that is not this one.
+ * The serializer's own THERE IS NO `validateFeedHostAuthority` note records the same withdrawal from its
+ * side.
+ *
+ * ⛔ AND NO NAME IS TAKEN FROM `../errors/DomainError` EITHER, WHICH IS A CONSEQUENCE OF FINDING F4. A
+ * revision imported `NotImplementedError` to raise from an image-boundary reader declared IN THIS FILE.
+ * F4 moved that reader to the composition root and required this file to declare none, so there is nothing
+ * here left to raise: the refusal is the graph's, and this file only passes it along.
+ * `../errors/ValidationError` is deliberately NOT imported either — this file validates nothing, and every
+ * error type it can produce is classified by `./httpResponse` from the type alone (S4).
  *
  * The platform result type comes from ./httpResponse's single re-export site rather than from the
  * typings directly, which is the convention that gives the whole folder's platform coupling exactly
  * one declaration point (AAP §0.5.5).
  */
 import type { CatalogContainer } from '../config/container';
-import { validateFeedHostAuthority } from '../integrations/google/ProductFeedBuilder';
+import type { AnonymousMaterialisationGate } from '../adapters/mysql/SmartListQueryBuilder';
 import type {
   ProductFeedBuilder,
   ProductFeedImage,
@@ -499,17 +532,23 @@ export interface GoogleFeedHostConfiguration {
    * five `CGI.HTTP_HOST` reads at `integrationServices/google/views/feed/product.cfm:L14`, `:L15`,
    * `:L22`, `:L23` and `:L24`.
    *
-   * ⭐ TYPED AS A PLAIN STRING, AND VALIDATED ANYWAY. The type must stay `string` so that
-   * `config.googleFeed` satisfies this interface structurally — a brand would break that (S4) — so the
-   * CHECK is the contract rather than the type. {@link createGoogleFeedHandler} passes the value through
-   * {@link validateFeedHostAuthority} at construction, and the serializer repeats the check per render;
-   * findings F7 and SEC-06 reinstated it. `src/config/env.ts` still checks presence and non-blankness,
-   * which is a configuration-completeness rule and is not the same thing.
+   * ⛔ TYPED AS A PLAIN STRING, AND NOT VALIDATED. The type must stay `string` so that `config.googleFeed`
+   * satisfies this interface structurally — a brand would break that (S4). A revision put the value through
+   * a `validateFeedHostAuthority` deny check at construction AND once per render; both are WITHDRAWN,
+   * because `integrationServices/google/views/feed/product.cfm:L14` interpolates `CGI.HTTP_HOST` with no
+   * test of any kind and AAP §0.6.7.7 authorises exactly one behavioural departure in this port (D18).
    *
-   * ⛔ WHAT THE CHECK IS NOT. It is not the withdrawn RFC 1035 label grammar and not the withdrawn
-   * `allowedHosts` membership gate; both refuse values that are legitimate authorities and both stay
-   * withdrawn. It refuses only characters that would move the origin of the five absolute URLs
-   * `product.cfm` builds on this value, and it normalises nothing. See judgment (c).
+   * ⭐ `src/config/env.ts` STILL CHECKS PRESENCE AND NON-BLANKNESS, which is a configuration-completeness
+   * rule and is deliberately not the same thing: the legacy has no environment variable to leave empty, so
+   * refusing an absent one diverges from nothing. Judging the SYNTAX of a value the operator did supply is
+   * what is withdrawn.
+   *
+   * ⚠️ SO THE HOST REACHES ALL FIVE ABSOLUTE URLS UNJUDGED, AND THE EXPOSURE IS CARRIED. A host of
+   * `good.example@evil.example` moves the origin of every one of them; `#` collapses them onto one page;
+   * `&`, `<` or `>` leaves the two CHANNEL text nodes unparseable. The withdrawn RFC 1035 label grammar
+   * and the withdrawn `allowedHosts` membership gate stay withdrawn on their own, stronger grounds — both
+   * refuse values that are legitimate authorities. See judgment (c) and
+   * `../integrations/google/ProductFeedBuilder`'s THERE IS NO `validateFeedHostAuthority` note.
    */
   readonly host: string;
 }
@@ -533,12 +572,33 @@ export interface GoogleFeedHostConfiguration {
  * why that type documents "whoever produces the records is the layer that can produce the images
  * too". This file is that layer, and this is the seam through which it does it.
  *
+ * ⛔ AN IMPLEMENTATION MAY ANSWER `[]` ONLY FOR A PRODUCT THAT GENUINELY HAS NO IMAGES — REVIEW
+ * FINDING F4. `[]` is a VALID feed outcome, not an absence: `product.cfm:L24` emits one element per
+ * entry, so an empty collection emits nothing. That is precisely why returning it for a product that
+ * DOES carry images is indistinguishable from the truthful answer and is the one thing this contract
+ * forbids. An implementation that cannot resolve a carried image's path must RAISE — the container's
+ * default does, through its declared fail-closed boundary — so that the failure is visible rather than
+ * published as data. A constant `() => []` satisfies the type and violates the contract; the shipped
+ * factory below used to wire exactly that, and no longer does.
+ *
  * TODO(boundary): the rightful owner is the image subsystem behind `../ports/ImagePathPort`, which is
- * outside this slice. A deployment that has no implementation to supply returns an empty list, which
- * emits no additional-image elements — the same output `product.cfm:L24` produces for a product with
- * no images. That consequence is stated here rather than hidden: it is a boundary being crossed
- * honestly, not a field being dropped. No defect number is minted for it (S7 — AAP §0.6.7 is frozen at
- * D1-D21 and none of its entries covers this; `src/ports/repositories/SkuRepository.ts` states the live bound).
+ * outside this slice. A deployment that has no implementation to supply gets a REFUSAL — the shipped
+ * default on `../config/container.ts` raises a `NotImplementedError`, published as `501` — rather than an
+ * empty list. An earlier revision returned empty and called that "the same output `product.cfm:L24`
+ * produces for a product with no images"; a code review classified it as a MAJOR integration-contract
+ * defect, because an empty answer makes an image-less catalog and an unwired boundary indistinguishable
+ * and publishes an incomplete document as a success. No defect number is minted for it (S7 — AAP §0.6.7
+ * is frozen at D1-D21 and none of its entries covers this; `src/ports/repositories/SkuRepository.ts`
+ * states the live bound).
+ * outside this slice. This seam is how a deployment that DOES own that subsystem supplies it — see
+ * {@link GoogleFeedHandlerOverrides} — and a deployment that supplies nothing gets
+ * {@link refuseProductImages}, which raises and is answered as `501`. It deliberately does NOT return
+ * an empty list: an empty list would report "this product has no additional images", which is a
+ * DIFFERENT FACT from "this service cannot read images", and the feed would publish the second as the
+ * first for every product in the catalogue. The consequence is therefore reported rather than rendered
+ * — a boundary crossed honestly, and not a field silently dropped. No defect number is minted for it
+ * (S7 — AAP §0.6.7 is frozen at D1-D21 and none of its entries covers this;
+ * `src/ports/repositories/SkuRepository.ts` states the live bound).
  *
  * ⛔ SYNCHRONOUS, MATCHING THE LEGACY TRAVERSAL. `product.cfm:L24` reads the collection inline while
  * rendering; nothing there awaits anything. Declaring this asynchronous would invent an I/O boundary
@@ -637,16 +697,37 @@ export interface GoogleFeedHandlerCollaborators {
   readonly feedSerializer: ProductFeedSerializer;
 
   /**
-   * The configured feed host. Checked for authority safety at construction, never normalised. See
-   * {@link GoogleFeedHostConfiguration} and judgment (c).
+   * The configured feed host. NOT checked for anything and never normalised — every syntax rule that
+   * once stood on it is withdrawn. See {@link GoogleFeedHostConfiguration} and judgment (c).
    */
   readonly hostConfiguration: GoogleFeedHostConfiguration;
 
-  /** Reads a SKU's product images. See {@link ProductFeedImageReader} — a declared boundary gap. */
+  /**
+   * Reads a SKU's product images — a declared boundary gap, bound by the container rather than by this
+   * file. See {@link ProductFeedImageReader} for the contract, including the rule that `[]` is
+   * answerable ONLY for a product that genuinely has no images (review finding F4).
+   */
   readonly readProductImages: ProductFeedImageReader;
 
   /** Supplies the two ambient render values. See {@link ProductFeedRenderClock}. */
   readonly clock: ProductFeedRenderClock;
+
+  /**
+   * The bound check this ANONYMOUS route runs before it materialises anything — review finding SEC-1.
+   *
+   * ⭐ WHY IT IS A COLLABORATOR AND NOT A CHECK WRITTEN HERE. This route is the only one in the service
+   * reachable with NO PRINCIPAL — `integrationServices/google/controllers/feed.cfc:L54-L56` declares
+   * `this.publicMethods="product"` — so it is the one route where an unbounded selection is an
+   * unauthenticated denial-of-service surface rather than an authenticated caller's own problem. Whether a
+   * bound was wired is a fact only the composition root holds, and the error class travels with the function
+   * that raises it (S4), so the root supplies the gate and this file calls it without importing either.
+   *
+   * ⚠️ IT IS REQUIRED RATHER THAN OPTIONAL, DELIBERATELY. An optional gate would let a caller compose this
+   * handler and silently skip the check, which is the shape of the CQ-4 defect one seam over: a default that
+   * makes an unwired boundary indistinguishable from a satisfied one. A caller that genuinely wants no gate
+   * passes one that returns, and that choice is then visible at the call site.
+   */
+  readonly assertMaterialisationBounded: AnonymousMaterialisationGate;
 }
 
 /**
@@ -699,21 +780,19 @@ export interface GoogleFeedHandler {
 /**
  * Binds the feed collaborators to the one platform-facing operation they back.
  *
- * ⭐ THE HOST IS VALIDATED HERE, ONCE, WHILE THE CONTAINER IS INITIALISING — findings F7 and SEC-06.
- * {@link validateFeedHostAuthority} refuses a configured host carrying a character that would move the
- * origin of the five absolute URLs `product.cfm:L14`, `:L15`, `:L22`, `:L23` and `:L24` build on it. The
- * check belongs here as well as in the serializer for a reason specific to this layer: the value is
- * CONFIGURATION, identical for every invocation of the container, so a bad one is a deployment fault and
- * a deployment fault should be visible at deployment rather than on the first request. It is imported
- * from the serializer rather than restated, so there is one rule with one declaration.
+ * ⛔ THE HOST IS NOT VALIDATED HERE, AND NOTHING VALIDATES IT ANYWHERE. Three controls have stood on this
+ * value across successive revisions and all three are withdrawn: an RFC 1035 label grammar with a
+ * 63-octet ceiling plus an `allowedHosts` membership list the serializer refused renders against; a
+ * threat-shaped deny check over the characters that terminate or redirect an authority, imported from the
+ * serializer and run here at construction; and an RFC 3986 §3.2.2 transcription in `src/config/env.ts`.
+ * The first pair fail two tests — they refuse hosts that are legitimate authorities AND invent a closed set
+ * (AAP §0.7.3 S9). The other two fail one: they refuse where `product.cfm:L14` refuses nothing, and AAP
+ * §0.6.7.7 authorises exactly ONE departure from behavioural preservation in this port (D18).
  *
- * ⛔ IT IS NOT THE WITHDRAWN GATE, AND THE DIFFERENCE IS THE JUSTIFICATION. The control that used to run
- * here was an RFC 1035 label grammar, and this file also supplied an `allowedHosts` membership list the
- * serializer refused renders against. BOTH STAY WITHDRAWN: each refuses hosts that are legitimate
- * authorities, which is the outcome change AAP §0.8.2 guideline 4 forbids. What runs now is a deny set of
- * the characters that terminate or redirect an authority — nothing a deployment could have published to
- * its own origin. `src/config/env.ts`'s presence-and-non-blankness check is unchanged and remains a
- * configuration-completeness rule rather than a security control. See judgment (c).
+ * ⭐ `src/config/env.ts`'s PRESENCE-AND-NON-BLANKNESS CHECK IS UNCHANGED, and it was never a security
+ * control: the legacy has no environment variable to leave empty, so refusing an absent one diverges from
+ * nothing. See judgment (c), and the serializer's THERE IS NO `validateFeedHostAuthority` note for the
+ * carried origin-rebasing exposure.
  *
  * ⭐ WHAT IS CAPTURED IS CONFIGURATION, WHICH M7 PERMITS — AND THE DISTINCTION MATTERS. The one
  * value read below is derived purely from deployment configuration, identical for every
@@ -731,10 +810,10 @@ export interface GoogleFeedHandler {
  *   {@link GoogleFeedHandlerCollaborators}
  * @returns the one routed operation, frozen
  *
- * @throws {DataIntegrityError} when the configured host is blank or carries a character that would move
- *   the origin of the document's absolute URLs — see {@link validateFeedHostAuthority} and judgment (c).
- *   This is the factory's ONLY failure mode: it performs no probe and no I/O at construction time, and it
- *   reads nothing but the one configured string.
+ * ⛔ THIS FACTORY HAS NO FAILURE MODE. It performs no probe, no I/O and no validation at construction time,
+ *   and reads nothing but the one configured string. A `DataIntegrityError` for a blank or origin-moving
+ *   host was documented here for one revision; both the check and the throw are withdrawn — see
+ *   judgment (c).
  *
  * @example
  * ```ts
@@ -758,39 +837,35 @@ export interface GoogleFeedHandler {
 export function createGoogleFeedHandler(
   collaborators: GoogleFeedHandlerCollaborators,
 ): GoogleFeedHandler {
-  const { feedQuery, feedSerializer, hostConfiguration, readProductImages, clock } = collaborators;
+  const {
+    feedQuery,
+    feedSerializer,
+    hostConfiguration,
+    readProductImages,
+    clock,
+    assertMaterialisationBounded,
+  } = collaborators;
 
-  /* Judgment (c). CHECKED once, then read once and passed to the render context UNMODIFIED — not
-   * branded, not trimmed, not case-folded, not punycoded, not stripped of a default port and not upgraded
-   * to a secure scheme. The gate refuses or it does nothing; it never rewrites. It is bound here rather
-   * than inside the operation because it cannot vary between invocations of one container (M7), and
-   * because binding it once means the `http://<host>` text is sourced from exactly one place.
+  /* Judgment (c). READ ONCE and passed to the render context UNMODIFIED — not branded, not trimmed, not
+   * case-folded, not punycoded, not stripped of a default port and not upgraded to a secure scheme. It is
+   * bound here rather than inside the operation because it cannot vary between invocations of one container
+   * (M7), and because binding it once means the `http://<host>` text is sourced from exactly one place.
    *
-   * ⭐ THE CHECK RUNS BEFORE THE HANDLER EXISTS, SO A BAD HOST NEVER REACHES AN INVOCATION.
-   * `createGoogleFeedHandler` raises and returns no handler at all, rather than returning one that fails
-   * on every call. `ProductFeedBuilder.build` repeats the check per render, which is not redundant: it
-   * covers callers that construct the serializer without this factory, including its own test suite.
+   * ⛔ AND IT IS NOT CHECKED. A `validateFeedHostAuthority(host)` deny check stood on the next line and
+   * `ProductFeedBuilder.build` repeated it per render; a third rule, `requireHostAuthorityValue`,
+   * transcribed RFC 3986 §3.2.2's `host` production over `GOOGLE_FEED_HOST` in `../config/env.ts`. ALL
+   * THREE ARE WITHDRAWN. Each had a real argument — a value outside the `Host` field's production could
+   * never have reached `CGI.HTTP_HOST`, so refusing it forecloses no legacy outcome — and the argument is
+   * not what decides it: AAP §0.6.7.7 authorises exactly ONE departure from behavioural preservation in
+   * this port (D18) and AAP §0.8.2 Guideline 4 admits no proportionality test. What survives in `env.ts`
+   * is the non-blank presence read alone.
    *
-   * ⭐ AND A THIRD, EARLIER RULE ALREADY RAN IN `../config/env.ts`, WHICH IS WORTH NAMING SO THE THREE
-   * ARE NOT MISTAKEN FOR ONE CONTROL REPEATED. `requireHostAuthorityValue` refuses a GOOGLE_FEED_HOST
-   * outside RFC 3986 §3.2.2's `host` production, with §3.2.3's optional port, at configuration load —
-   * `CGI.HTTP_HOST` is the HTTP `Host` field value and RFC 9110 §7.2 defines that field as exactly that
-   * production, so a value outside it could never have reached the legacy view and refusing it forecloses
-   * no legacy outcome. That is a transcribed GRAMMAR over the configured variable; the gate applied here
-   * is a threat-shaped DENY set over the value actually handed to the serializer. They are concordant by
-   * construction — both refuse userinfo, both admit the RFC 3986 sub-delimiters — so no value is accepted
-   * by one and rejected by another, and none of the three rewrites the host.
+   * ⚠️ THE MEMBER IS STILL READ EXACTLY ONCE, and a test asserts it: M7 turns a repeated configuration
+   * read into a per-invocation one the moment anything moves inside the operation.
    *
-   * ⚠️ THE MEMBER IS READ EXACTLY ONCE, AND THE ORDER OF THESE TWO LINES IS THE REASON. Validating
-   * `hostConfiguration.host` directly would read the property a second time, and a test asserts the
-   * single read because M7 turns a repeated configuration read into a per-invocation one the moment
-   * anything moves inside the operation. The local is bound first and the CHECK is applied to the local,
-   * which is the same value by construction and costs no second read.
-   *
-   * ⛔ THE `allowedHosts` MEMBERSHIP GATE THAT USED TO BE COMPUTED IMMEDIATELY BELOW STAYS WITHDRAWN AND
-   * IS NOT REINSTATED HERE. See judgment (c) for why the two controls are different decisions. */
+   * ⛔ THE `allowedHosts` MEMBERSHIP GATE THAT USED TO BE COMPUTED IMMEDIATELY BELOW STAYS WITHDRAWN TOO,
+   * on its own and stronger ground: it refused values that are legitimate authorities. */
   const host = hostConfiguration.host;
-  validateFeedHostAuthority(host);
 
   /**
    * Renders and returns the Google product feed — the port of `product(rc)` at feed.cfc:L58.
@@ -846,6 +921,26 @@ export function createGoogleFeedHandler(
        */
       const cancellation = options?.signal;
 
+      /*
+       * ⭐ STEP 0 — SEC-1 (CWE-400). THE BOUND IS CHECKED BEFORE ANY WORK, AND INSIDE THE `try`, WHICH ARE
+       * two separate decisions and both matter.
+       *
+       * BEFORE ANY WORK: the selection is the unbounded materialisation SEC-1 is about, so a refusal that
+       * arrived after `getFeedSkus` had already hydrated the catalog would report the problem without having
+       * prevented it.
+       *
+       * INSIDE THE `try`: the gate raises a classified error, and the single catch below is what turns any
+       * classified error into a response. Raising outside it would escape as an unhandled rejection rather
+       * than the 500 this file's error contract promises. This module still inspects no error and constructs
+       * none — see judgment (b).
+       *
+       * ⚠️ AND IT IS CHECKED PER INVOCATION RATHER THAN AT CONSTRUCTION, which is not a weaker placement.
+       * `createGoogleFeedHandlerFromContainer` runs at MODULE LOAD in `./router.ts`, so raising at
+       * construction would take all 34 routes down over a bound only this one needs. Deferring it confines
+       * the failure to the route that has the exposure.
+       */
+      assertMaterialisationBounded();
+
       /* Step 1 — judgment (c). Read per invocation, and read from the injected clock so this module
        * contains no clock access of its own. Both values are taken BEFORE any work begins, so the two
        * endpoints of the sale-price effective-date range are computed against one instant and one
@@ -872,7 +967,15 @@ export function createGoogleFeedHandler(
        * SKU's product images from the declared boundary seam. A SKU carrying no product is NOT
        * rejected here: the serializer raises for it, reproducing the legacy null dereference at
        * `product.cfm:L18`, and duplicating that guard would put the same rule on both sides of a layer
-       * boundary. */
+       * boundary.
+       *
+       * ⚠️ THE READER MAY RAISE, AND THAT IS THE FIX FOR REVIEW FINDING F4 RATHER THAN A HAZARD. The
+       * container's default refuses a product that CARRIES images, because their paths come from an
+       * entity AAP §0.2.1.2 excludes; the refusal reaches the one catch below and answers as a boundary
+       * refusal. Its predecessor answered `[]` for that product instead — a valid-looking document that
+       * silently dropped every image — which is exactly the outcome the finding forbade. This line is
+       * therefore where the whole render fails closed, and it fails closed BEFORE any byte is emitted
+       * because the document is built whole or not at all. */
       const records: readonly ProductFeedRecord[] = selection.map((sku) => ({
         sku,
         productImages: readProductImages(sku),
@@ -914,21 +1017,27 @@ export function createGoogleFeedHandler(
        * literal first bytes exactly as at `product.cfm:L1`. The content type, the reason no charset
        * parameter is attached, and the status all belong to ./httpResponse.
        *
-       * ⚠️ "VERBATIM" IS A STATEMENT ABOUT THIS LAYER, NOT ABOUT THE DOCUMENT BEING UNCHECKED. Every
-       * escaping guarantee the body carries is established INSIDE the serializer, at the point where each
-       * dynamic value is emitted: the four legacy `htmlEditFormat` substitutions reach EVERY dynamic text
-       * node in the document — not only the six the legacy view escaped — and the three URL fields
-       * additionally have their data-derived PATH percent-encoded per segment first, so a stored path
-       * cannot introduce a URL authority. Those are character-level rules about a value's provenance and
-       * its element, so they belong where the value is written and nowhere else.
+       * ⚠️ "VERBATIM" IS A STATEMENT ABOUT THIS LAYER, AND THE DOCUMENT IT PUBLISHES IS AT LEGACY PARITY
+       * RATHER THAN HARDENED. Whatever escaping the body carries is established INSIDE the serializer, at
+       * the point where each dynamic value is emitted, and it is exactly the legacy's own: the four
+       * `htmlEditFormat` substitutions at the SIX fields
+       * `integrationServices/google/views/feed/product.cfm` escapes (`:L17`, `:L18`, `:L19`, `:L21`, `:L32`,
+       * `:L39`) and nothing at the NINE it leaves raw. An earlier revision escaped all fifteen dynamic
+       * nodes and percent-encoded the data-derived PATH of the three URL fields; the current review's
+       * finding F4 withdraws both, because D18 (AAP §0.6.7.7) authorises the importer's SQL parameter
+       * binding and nothing else and AAP §0.1.2.1 forbids extending it by analogy.
        *
-       * ⚠️ AND ONE EXPOSURE IS CARRIED RATHER THAN CLOSED, WHICH THIS LAYER ALSO DOES NOT COMPENSATE
-       * FOR. A code point XML 1.0 forbids outright — a C0 control other than tab, line feed or carriage
-       * return, an unpaired surrogate, U+FFFE or U+FFFF — has no spelling in any conforming document, so
-       * it can be neither escaped nor emitted safely. An earlier revision of the serializer REFUSED such
-       * a value; that gate is withdrawn as an unapproved behaviour addition, and the value now reaches
-       * the document exactly as it reaches `product.cfm`. Compensating here would mean altering stored
-       * catalog data on its way out, which is no more this layer's to do than the serializer's.
+       * ⚠️ SO TWO EXPOSURES ARE CARRIED RATHER THAN CLOSED, AND THIS LAYER COMPENSATES FOR NEITHER.
+       * First, an XML-significant character in any of the nine raw sinks — the configured host, a stored
+       * `urlTitle`, an image path, a settings value, the UTC-hour-offset label — reaches the document as
+       * markup, leaving it with no defined parse, and a stored path can still move the authority of the
+       * three absolute URLs. Second, a code point XML 1.0 forbids outright — a C0 control other than tab,
+       * line feed or carriage return, an unpaired surrogate, U+FFFE or U+FFFF — has no spelling in any
+       * conforming document, so it can be neither escaped nor emitted safely; an earlier revision of the
+       * serializer REFUSED such a value and that gate is withdrawn as an unapproved behaviour addition.
+       * Both now reach the document exactly as they reach `product.cfm` (AAP §0.7.3 S8). Compensating here
+       * would mean altering stored catalog data on its way out, which is no more this layer's to do than
+       * the serializer's.
        *
        * ⛔ WHICH IS EXACTLY WHY THIS LAYER ADDS NO ENCODING, RE-ENCODING OR SANITISING STEP, AND MUST
        * NOT. A second pass here would double-escape every entity the serializer already emitted, and
@@ -1057,44 +1166,240 @@ const FEED_RENDER_CLOCK: ProductFeedRenderClock = Object.freeze({
     String(Math.trunc(new Date().getTimezoneOffset() / MINUTES_PER_HOUR)),
 });
 
+/* ================================================================================================
+ * ⛔ THERE IS NO `readNoProductImages` IN THIS FILE — REVIEW FINDING F4
+ *
+ * One stood here, and shipping it WAS the defect. It answered an EMPTY LIST on every call, and `createGoogleFeedHandlerFromContainer` wired it into
+ * production — so every rendered feed silently omitted every `g:additional_image_link` element while
+ * still answering `200`. Its own docblock defended that as "a boundary crossed honestly rather than a
+ * field silently removed", on the ground that an empty list is what `product.cfm:L24` emits for a product
+ * with NO images. That defence does not hold: the legacy emits nothing for a product with no images, and
+ * emits an element per image for a product that HAS them — a reader that answers empty for both cases
+ * cannot distinguish them, and a consumer cannot tell an image-less catalog from an unwired boundary.
+ *
+ * A code review classified it as a MAJOR integration-contract defect and directed the remedy: "inject a
+ * real typed image reader; if unavailable, return explicit 501 rather than incomplete data". The seam now
+ * lives on the composition root as `CatalogContainer.productFeedImages`, whose shipped default RAISES a
+ * `NotImplementedError` — published as `501` by {@link errorResponse}, which is the honest answer for a
+ * document this deployment cannot render completely. A deployment whose image subsystem can answer
+ * supplies its reader through `createCatalogContainer({ productFeedImages })` and gets the legacy's own
+ * output, per-image elements included.
+ *
+ * ⚠️ THE REFUSAL IS PER RECORD, SO AN EMPTY CATALOG STILL RENDERS. The reader is consulted while pairing
+ * each selected SKU with its images; a selection with no records consults it zero times and answers `200`
+ * with an empty channel, exactly as the legacy does. Only a feed that HAS something to say about images
+ * refuses — which is precisely the case that used to be published incomplete.
+ *
+ * ⛔ AND NO IMAGE IS FABRICATED ANYWHERE. A placeholder path, a default image or a derived filename would
+ * put invented data into a published merchant feed (S9), which is materially worse than refusing.
+ * ============================================================================================== */
 /**
- * The feed's product-image reader, which answers an empty list.
+ * The default product-image reader, which REFUSES rather than answering an empty list.
  *
- * ⚠️ A DECLARED BOUNDARY, NOT A DROPPED FIELD (TR-5). The additional-image finding recorded above owns
- * the reasoning: `model/entity/Image.cfc` is not one of the six in-scope entities of AAP §0.2.1.2,
- * AAP §0.2.2.4 excludes `model/validation/ProductImage.json`, and the ported `Product` exposes only its
- * image-ownership mutators, so no path member exists to read. Forcing one with an assertion or a cast is
- * forbidden outright by S1. An empty list emits no additional-image elements, which is the same output
- * `product.cfm:L24` produces for a product that has no images — a boundary crossed honestly rather than a
- * field silently removed.
+ * ⚠️ WHY THIS RAISES INSTEAD OF RETURNING `[]`, WHICH IS A CORRECTION OF AN EARLIER DECISION AND IS
+ * WORTH STATING AS ONE. An earlier revision wired a reader that returned an empty list on every call,
+ * on the reasoning that emitting no additional-image element is the same output `product.cfm:L24`
+ * produces for a product that genuinely has no images. That reasoning is what makes it wrong: the two
+ * cases are NOT the same fact, and the feed had no way to distinguish them. A merchant consuming the
+ * delivered `google:feed.product` route would read "this product has no additional images" for every
+ * product in the catalogue, including products that have several — an out-of-scope collaborator's
+ * absence presented as data. That is precisely the substitution AAP §0.3.3's stub rule forbids and that
+ * `../config/container.ts` refuses for every other unwired port: "a stub that answered `null`,
+ * `undefined`, `''`, `0` or a fabricated price would be an invented behaviour (S9) and would be
+ * indistinguishable from data at the call site."
  *
- * ⛔ NO IMAGE IS FABRICATED. A placeholder path, a default image or a derived filename would put invented
- * data into a published merchant feed (S9), which is materially worse than emitting nothing. The
+ * So the default now behaves exactly as every other unwired boundary in this subtree behaves. It raises
+ * {@link NotImplementedError}, which `./httpResponse` classifies as **501**, naming the collaborator
+ * that owns the real behaviour. The refusal cannot be mistaken for data, and it is the same answer the
+ * feed already gives for the PRIMARY image, which reaches the equally unwired `../ports/ImagePathPort`
+ * one layer down in the serializer.
+ *
+ * ⛔ WHAT DOES NOT CHANGE, MEASURED RATHER THAN ASSUMED. The reader is consulted once per selected
+ * record, so an empty selection never reaches it and the feed still answers `200 application/xml` with
+ * an empty channel. A selection with even one qualifying SKU already answered `501` through
+ * `ImagePathPort`; it still answers `501`. The delivered route's observable status is therefore
+ * unchanged in both directions — what changes is that the additional-image gap is now REPORTED instead
+ * of being rendered as an absence of images.
+ *
+ * ⛔ AND NO IMAGE IS FABRICATED, WHICH WAS RIGHT BEFORE AND STAYS RIGHT. A placeholder path, a default
+ * image or a derived filename would put invented data into a published merchant feed (S9). The
  * parameter is not declared, because it is not consulted.
  *
- * @returns an empty image list, on every call
+ * @throws NotImplementedError always — the image subsystem is out of scope for this slice
+/* ⛔ A LOCAL `refuseProductImages` READER STOOD HERE AND IS SUPERSEDED, NOT REVERSED. It was introduced
+ * to close a real defect: production wiring hard-coded a reader that answered `[]` on every call, so
+ * `google:feed.product` could never emit `g:additional_image_link` and reported "this product has no
+ * additional images" for products that have several. Refusing with a `NotImplementedError` — answered as
+ * `501` — was the honest replacement, because `model/entity/Image.cfc` is not one of the six in-scope
+ * entities of AAP §0.2.1.2 and §0.2.2.4 excludes `model/validation/ProductImage.json`, so no in-scope
+ * layer can read the images `integrationServices/google/views/feed/product.cfm:L24` loops.
+ *
+ * ⭐ WHAT REPLACED IT IS STRICTLY MORE FAITHFUL, WHICH IS WHY THE BLANKET REFUSAL WENT. A sibling review
+ * split the verdict on the one fact the ported domain CAN answer — the image COUNT. Its
+ * `productFeedImagesFromDomain`, declared in `../config/container.ts` and published as a container
+ * member, answers `[]` for a product with ZERO images and raises for one or more. The empty answer is not
+ * a fabrication: `product.cfm:L24` emits one element per entry, so an empty collection emits nothing, and
+ * that is the ONLY input for which `[]` is the legacy output. A blanket refusal was therefore wrong for
+ * exactly that input, and both findings are satisfied by taking the narrower default.
+ *
+ * The reader still arrives from the composition root rather than being decided here, and the
+ * `overrides.readProductImages` slot below still lets a deployment that HAS the image subsystem supply
+ * one — which, with `ImagePathPort`, is the whole of what emitting the field requires. */
+
+/**
+ * Substitutions a deployment may supply when it HAS an implementation for a declared boundary.
+ *
+ * ⭐ THIS IS THE SEAM THAT MAKES THE ADDITIONAL-IMAGE FIELD REACHABLE, AND IT EXISTS SO THAT THE
+ * BOUNDARY IS A CONFIGURATION FACT RATHER THAN A HARDWIRED ONE. `product.cfm:L24` emits one repeated
+ * additional-image element per entry of `sku.getProduct().getProductImages()`, and
+ * `../integrations/google/ProductFeedBuilder.ts` carries that mapping in full and is covered for it. The
+ * builder's capability was never the gap; the gap was that the production wiring below could not be
+ * given a reader at all, so the capability was unreachable outside a test. A deployment that owns the
+ * image subsystem now supplies `readProductImages` here and the field is emitted; a deployment that does
+ * not supplies nothing and gets {@link refuseProductImages}, which reports the boundary instead of
+ * misreporting the data.
+ *
+ * ⛔ IT INTRODUCES NO DEFAULT AND NO POLICY. Every member is optional, and an omitted member falls back
+ * to the declared production collaborator rather than to a value chosen here — the same rule
+ * `../config/container.ts` applies to `CatalogContainerOverrides`. Nothing in this type invents a path,
+ * a size, a count, a bound or a budget.
  */
-const readNoProductImages: ProductFeedImageReader = () => [];
+export interface GoogleFeedHandlerOverrides {
+  /**
+   * A reader for a SKU's product images. Omit it to keep the declared out-of-scope boundary, which
+   * refuses with `501` rather than reporting an empty image list.
+   */
+  readonly readProductImages?: ProductFeedImageReader;
+}
+
+/**
+ * The container members the feed's wiring actually reads — five of them, two carrying a boundary.
+ *
+ * ⭐ NARROWED FOR THE SAME REASON EVERY COLLABORATOR ABOVE IS NARROWED, and the narrowing is what makes
+ * the production wiring ASSERTABLE. The factory below never touched more than these three members, but
+ * declaring the whole {@link CatalogContainer} as its parameter meant the only way to exercise it was to
+ * build the entire object graph — so the one thing a reviewer most needs proven about it, that the
+ * additional-image boundary is wired the way this file says it is, could not be covered by a test at
+ * all. Naming exactly what is read closes that gap without widening anything: a real container is
+ * structurally assignable to this type, so `./router.ts` passes one unchanged.
+ *
+ * ⛔ IT IS NOT AN ALTERNATIVE CONTAINER, AND NOTHING CONSTRUCTS ONE HERE. It is a read-only view over
+ * the graph the composition root owns. This file still calls no constructor, resolves no name and holds
+ * no state (S3).
+ */
+export interface GoogleFeedContainerSlice {
+  /** The record source the container owns. See {@link ProductFeedRecordSource}. */
+  readonly productFeedQuery: ProductFeedRecordSource;
+
+  /** The serializer the container owns. See {@link ProductFeedSerializer}. */
+  readonly productFeedBuilder: ProductFeedSerializer;
+
+  /** Only the feed's own configuration section is read; nothing else in `config` is touched. */
+  readonly config: { readonly googleFeed: GoogleFeedHostConfiguration };
+
+  /**
+   * Refuses an unbounded ANONYMOUS materialisation — review finding SEC-1 (CWE-400).
+   *
+   * ⭐ REQUIRED, DELIBERATELY, BECAUSE THIS IS THE ROUTE THE BOUND EXISTS FOR. The feed is the one
+   * anonymous address in the slice [`integrationServices/google/controllers/feed.cfc:L54-L56`], so a
+   * wiring path that reached this factory without a gate would be exactly the bypass SEC-1 reported.
+   * Making it required means `tsc` rejects such a path instead of it being discovered from behaviour.
+   * The gate itself authors no figure: it refuses only when NO operator-stated ceiling exists.
+   */
+  readonly assertAnonymousMaterialisationBounded: AnonymousMaterialisationGate;
+
+  /**
+   * The container's product-image reader — review findings F4 and F24.
+   *
+   * ⭐ REQUIRED, AND THE COMPOSITION ROOT IS ITS ONLY SOURCE. This file declares no reader of its own: a
+   * module-scope `const readNoProductImages: ProductFeedImageReader = () => []` used to stand here, and
+   * shipping it WAS the defect — the route could never emit `g:additional_image_link` and reported "this
+   * product has no additional images" for products that had several, which is a different fact presented
+   * as data. Requiring the member means the answer always comes from the graph, where exactly one
+   * behaviour is declared: `[]` for a product whose image collection is genuinely empty (as
+   * `product.cfm:L24` emits nothing for such a product), and a refusal for one that CARRIES images, whose
+   * paths come from the out-of-scope `model/entity/Image.cfc:L79-L81`.
+   */
+  readonly productFeedImages: ProductFeedImageReader;
+}
+
+/**
+ * Compile-time proof that the real graph still satisfies the narrowing above.
+ *
+ * If a future edit renames a container member, changes its type or moves the feed's configuration
+ * section, this alias fails `tsc` — so the narrowing can never silently drift away from the object
+ * `./router.ts` actually passes. It is the same device `./router.ts` uses to prove its own handler
+ * satisfies the platform contract, and it costs nothing at run time because a type alias is erased.
+ */
+type AssertAssignable<TActual extends TExpected, TExpected> = TActual;
+
+type _CatalogContainerSatisfiesFeedSlice = AssertAssignable<
+  CatalogContainer,
+  GoogleFeedContainerSlice
+>;
 
 /**
  * Builds the feed handler from the composition root.
  *
  * The wiring lives here rather than in `./router.ts` because this file is what knows which collaborators
- * the feed needs: the record source and serializer the container owns, the validated host from
- * configuration, and the two ambient values above that no layer below the edge can supply.
+ * the feed needs: the record source and serializer the container owns, the host from configuration, the
+ * product-image reader the container binds, and the two ambient values above that no layer below the
+ * edge can supply.
  *
- * @param container the memoized service graph
+ * ⭐ THE IMAGE READER IS TAKEN FROM THE CONTAINER, WHICH IS THE FIX FOR REVIEW FINDING F4. This factory
+ * used to hard-wire a reader that answered `[]` for every product, so a deployment holding an image
+ * subsystem had nowhere to plug it in and a product's images could never reach the document. Reading
+ * `container.productFeedImages` gives the graph one substitution point
+ * (`CatalogContainerOverrides.productFeedImages`) and gives the default the container's fail-closed
+ * behaviour rather than a silent empty answer. See the withdrawal block immediately above.
+ *
+ * ⚠️ THE PARAMETER IS NARROWED TO THE MEMBERS THIS SURFACE READS, AND THE NARROWING IS LOAD-BEARING.
+ * It used to be the whole `CatalogContainer`, which meant only the aggregate graph could satisfy it — and
+ * the aggregate graph is every collaborator of the slice. Asking for just these members lets BOTH the
+ * aggregate root (`../config/container.ts`, which `./router.ts` passes) and this entry's own narrow graph
+ * (`../config/container.ts`'s `getFeedSurfaceGraph`) satisfy it, which is what keeps this factory
+ * exercisable with an object literal instead of a whole graph (PERF-01). The type import of the container
+ * stays: a `type` position is erased at emit, so it adds no load-time edge.
+ *
+ * ⚠️ WHAT THE NARROWING NO LONGER BUYS, STATED SO THE CLAIM MATCHES THE TREE. An earlier revision put the
+ * narrow graph in its own module, `src/config/surfaces/feedSurface.ts`, and this note said the narrowing
+ * removed this artifact's module EDGE to collaborators no route here can reach. AAP §0.3.1 enumerates 102
+ * files and that module was not among them, so it is folded into the composition root: requiring the root
+ * now reaches the whole of it, and the bundler can no longer drop the unreached half per artifact. That is a
+ * package-SIZE consequence and nothing more — the finding itself labelled the figure a disclosure rather
+ * than a budget, and IR-12 forbids restating it as a threshold. What survives is the load-bearing half: the
+ * accessor still composes and memoises only this surface's collaborators, so a warm invocation constructs
+ * exactly what this entry can reach, and this parameter still accepts a literal.
+ *
+ * ⚠️ AS SHIPPED, `overrides` IS OMITTED BY `./router.ts`, SO THE ADDITIONAL-IMAGE BOUNDARY IS ACTIVE AND
+ * THE ROUTE REPORTS IT. That is the honest default for a slice that does not convert the image
+ * subsystem, and it is stated here rather than left to be discovered from behaviour. Supplying
+ * `readProductImages` is the whole of what a deployment needs to do to emit the field.
+ *
+ * @param container the memoized service graph, read through {@link GoogleFeedContainerSlice}
+ * @param overrides optional substitutions for a declared boundary; omit it for the shipped wiring
  * @returns the feed's single routed operation
  */
 export function createGoogleFeedHandlerFromContainer(
-  container: CatalogContainer,
+  container: GoogleFeedContainerSlice,
+  overrides?: GoogleFeedHandlerOverrides,
 ): GoogleFeedHandler {
   return createGoogleFeedHandler({
     feedQuery: container.productFeedQuery,
     feedSerializer: container.productFeedBuilder,
     hostConfiguration: container.config.googleFeed,
-    readProductImages: readNoProductImages,
+    /* ⭐ FROM THE GRAPH, NOT FROM A DEFAULT DECLARED HERE. The composition root owns the reader and the
+     * refusal that stands in for it, so there is exactly one place a deployment injects an image
+     * subsystem and exactly one behaviour when it does not. This file used to declare its own
+     * empty-list reader and wire it, which is how a silently incomplete feed came to be the shipped
+     * default. */
+    readProductImages: overrides?.readProductImages ?? container.productFeedImages,
     clock: FEED_RENDER_CLOCK,
+    /* ⭐ SEC-1. Taken from the graph, already built from the EFFECTIVE bounds — not from
+     * `container.config.resourceBounds`, which disagrees with them exactly when a caller has overridden the
+     * section, and not from a factory imported here, which would reinstate the load-time edge to the
+     * composition root this file exists to avoid. */
+    assertMaterialisationBounded: container.assertAnonymousMaterialisationBounded,
   });
 }
 
@@ -1137,12 +1442,20 @@ export function createGoogleFeedRoutes(
 let dispatchGoogleFeedAction: ActionRoute | undefined;
 
 /**
- * The shape `../config/container` publishes, used to type the deferred require inside {@link handler}.
+ * The shape `../config/container`'s `getFeedSurfaceGraph` publishes, used to type the deferred require inside
+ * {@link handler}.
  *
  * `typeof import(...)` is a TYPE position only. It is erased at emit, so it adds no load-time edge from
  * this file to the composition root — which is the entire point of resolving the graph lazily.
+ *
+ * ⭐ IT NAMES THIS SURFACE, NOT THE AGGREGATE ROOT, AND THAT ONE SPECIFIER IS THE WHOLE OF PERF-01 ON THIS
+ * ENTRY. `../config/container.ts` names all thirty-one collaborators of the slice, so a `require` of it
+ * made every one of them reachable from this artifact and constructed every one of them on the first
+ * invocation. `../config/container.ts`'s folded feed-surface section composes only what these routes can reach — and it does so
+ * by calling the SAME `compose*Surface` function the aggregate root calls, so the two cannot diverge on how
+ * any service is assembled.
  */
-type CatalogContainerModule = typeof import('../config/container');
+type FeedSurfaceModule = typeof import('../config/container');
 
 /**
  * The Lambda entry point for the Google product feed.
@@ -1193,9 +1506,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
        * invocation. M2 is likewise untouched: this line decides how the graph is reached, not how long
        * the render may take.
        */
-      // eslint-disable-next-line @typescript-eslint/no-require-imports -- deliberate; see above
-      const { getCatalogContainer } = require('../config/container') as CatalogContainerModule;
-      const container = getCatalogContainer();
+      const { getFeedSurfaceGraph } =
+        // eslint-disable-next-line @typescript-eslint/no-require-imports -- deliberate; see above
+        require('../config/container') as FeedSurfaceModule;
+      const container = getFeedSurfaceGraph();
 
       dispatchGoogleFeedAction = createActionDispatcher<GoogleFeedRouteKey>({
         routes: createGoogleFeedRoutes(createGoogleFeedHandlerFromContainer(container)),

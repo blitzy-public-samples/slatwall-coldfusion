@@ -352,12 +352,12 @@
  * legacy call site selects it, and {@link legacyContextDisablesValidation} for the preserved
  * predicate itself.
  *
- * THE UNION IS ALSO CHECKED AT RUNTIME. A TypeScript union is erased when the bundle is emitted, so
- * the declaration alone binds only the callers the compiler checks. {@link Validator.validate}
- * therefore refuses any context outside {@link VALIDATION_CONTEXTS} before it does anything else,
- * which closes the same bypass on the three paths a type cannot reach — a parsed request body, an
- * `as ValidationContext` assertion, and a JavaScript consumer of the bundle. The refusal is licensed
- * on the D18 precedent and is argued in full at {@link VALIDATION_CONTEXTS}.
+ * THE UNION IS NOT ALSO CHECKED AT RUNTIME, AND THAT IS A DELIBERATE WITHDRAWAL. A TypeScript union
+ * is erased when the bundle is emitted, so the declaration binds only the callers the compiler checks.
+ * A revision of this file added a runtime membership refusal here; it is gone, because refusing a
+ * value that `:L162` accepts is a behaviour change and AAP 0.6.7.7 licenses exactly one. The residual
+ * bypass is flagged rather than closed — see THE RUNTIME CONTEXT-MEMBERSHIP GUARD IS WITHDRAWN below
+ * {@link ValidationContext}.
  *
  * Under any runtime-only context the L71 rule still governs: only rules WITHOUT a `contexts` key
  * fire, which across these seven documents means only the two rules of
@@ -578,11 +578,12 @@ function toCfBoolean(value: unknown): boolean | undefined {
  * handler, router or service to forward that could switch validation off. Requirement V-1 records
  * the enumeration proving no legacy call site selects it either.
  *
- * AND THE UNION IS NOW ENFORCED AT RUNTIME, not only declared. {@link Validator.validate} refuses any
- * context outside {@link VALIDATION_CONTEXTS} as its first statement, so this predicate can no longer
- * be reached with a boolean-castable-false value even by a caller that asserted past the type or that
- * has no types at all. The per-member proof above therefore describes a branch that is unreachable in
- * FACT; it is retained, present and documented, exactly as before.
+ * AND THE UNION IS *NOT* ENFORCED AT RUNTIME, so the per-member proof above holds only for callers the
+ * compiler checks. A caller that asserted past the type, parsed a context out of JSON, or consumed the
+ * emitted bundle from JavaScript can still reach this predicate with a boolean-castable-false value and
+ * switch validation off. That is the live `:L162` bypass, carried and flagged rather than repaired —
+ * see THE RUNTIME CONTEXT-MEMBERSHIP GUARD IS WITHDRAWN below {@link ValidationContext} for the
+ * withdrawal and its authority.
  */
 function legacyContextDisablesValidation(context: ValidationContext): boolean {
   return toCfBoolean(context) === false;
@@ -735,31 +736,26 @@ function cfStructCount(value: object): number {
  * approximation in this file. Every other predicate here is a transcription of CFML source or of
  * documented CFML operator semantics.
  *
- * ⭐ THIS IS THE ONLY URL PREDICATE IN THE SUBTREE. All six protocols are honoured
- * unconditionally, exactly as `:L259` does, and there is no policy split — see THE SIX-PROTOCOL URL
- * CHECK IS STILL THE WHOLE CHECK below for what SEC-15 attempted, which half of it stays withdrawn,
- * and which two syntactic rules are reinstated here.
+ * ⭐ THIS IS THE ONLY URL PREDICATE IN THE SUBTREE, AND THE SIX-PROTOCOL CHECK IS THE WHOLE CHECK.
+ * All six protocols are honoured unconditionally, exactly as `:L259` does, and nothing else is
+ * judged — see THE SIX-PROTOCOL URL CHECK IS STILL THE WHOLE CHECK below for the two policies that
+ * were attempted here and are both withdrawn.
  *
- * ⭐ SEC-HARDENING (D18-CLASS) — TWO SYNTACTIC RULES, NEITHER OF THEM A PROTOCOL NARROWING. A value
- * carrying an ASCII control character is refused (a parity CORRECTION, argued at
- * {@link containsAsciiControlCharacter}), and an authority component carrying userinfo credentials is
- * refused (a narrow DECLARED hardening, argued at {@link hasEmbeddedUserinfo}). Every one of the six
- * protocols still passes, which is exactly what distinguishes these two rules from the withdrawn
- * SEC-15 policy that rejected four whole protocols.
+ * ⛔ NO SYNTACTIC RULE IS LAYERED ON TOP OF THE SIX PROTOCOLS, AND TWO THAT WERE HAVE BEEN
+ * WITHDRAWN. A revision of this predicate refused a value carrying an ASCII control character and a
+ * value whose authority component carried userinfo credentials. Both are gone. Each rejected values
+ * that `org/Hibachi/HibachiValidationService.cfc:L259` accepts and stored — `https://acme.test\n`
+ * and `https://user@acme.test/` among them — so each was a behaviour change, and AAP §0.6.7.7
+ * licenses exactly ONE declared departure in this port (D18, the importer's parameterised SQL).
+ * AAP §0.8.2 guideline 4 forbids the rest outright: a legacy defect is carried and annotated, never
+ * repaired. The residual exposure is therefore FLAGGED rather than closed — a stored
+ * `brandWebsite` may carry a raw control character (CWE-113 / CWE-117 for a consumer that puts it in
+ * a header or a log line) or a deceptive `user@host` authority (CWE-601) exactly as the legacy
+ * permits, and closing either is a separately authorised piece of work rather than something this
+ * extraction may smuggle in.
  */
 function isCfUrlAnyProtocol(value: unknown): boolean {
   if (typeof value !== 'string') {
-    return false;
-  }
-
-  /*
-   * SEC-HARDENING (D18-CLASS) — evaluated on the RAW value, BEFORE the trim below, and that ordering
-   * is the point. `String.prototype.trim` strips tab, newline, carriage return, vertical tab and form
-   * feed, so a check placed after it would let a leading or trailing CR-LF pair through and the value
-   * would be stored carrying it. See {@link containsAsciiControlCharacter} for why refusing is the
-   * faithful reading of `isValid("url", …)` rather than a narrowing of it.
-   */
-  if (containsAsciiControlCharacter(value)) {
     return false;
   }
 
@@ -767,132 +763,8 @@ function isCfUrlAnyProtocol(value: unknown): boolean {
   if (candidate.length === 0 || /\s/.test(candidate)) {
     return false;
   }
-  if (!/^(?:(?:https?|ftp|file):\/\/|(?:mailto|news):)[^\s]+$/i.test(candidate)) {
-    return false;
-  }
 
-  /*
-   * SEC-HARDENING (D18-CLASS) — applied LAST, so it is reached only by a value that is otherwise a
-   * well-formed URL in one of the six protocols. Scoped to the authority component of the four
-   * authority-bearing schemes, so `mailto:hello@acme.test` is untouched.
-   */
-  return !hasEmbeddedUserinfo(candidate);
-}
-
-/**
- * Whether a string carries any ASCII control character — U+0000 to U+001F, or U+007F.
- *
- * =============================================================================================
- * ⭐ SEC-HARDENING (D18-CLASS) — A PARITY CORRECTION, NOT A NARROWING
- * =============================================================================================
- * THE FLAW THIS CLOSES. `isCfUrlAnyProtocol` trims the candidate and then rejects any remaining
- * whitespace, which catches every character JavaScript calls whitespace and NOTHING ELSE. The C0
- * control range is not whitespace apart from tab, LF, VT, FF and CR, so before this check
- * `https://acme.test/\u0000etc`, `https://acme.test\u0007`, `https://acme.test\u007f` and
- * `https://acme.test\r\nX-Injected: 1` all validated CLEAN and were stored verbatim. A stored value
- * carrying a raw CR or LF is a header-injection and log-injection payload the moment any consumer
- * puts it in a header or a log line (CWE-113, CWE-117); one carrying a NUL is a truncation payload for
- * any consumer that passes it to a C-string boundary (CWE-158). This is the CWE-20 half of the
- * finding, and it is a defect in the APPROXIMATION rather than a property of the legacy.
- *
- * WHY THIS IS A CORRECTION AND NOT A DIVERGENCE. `org/Hibachi/HibachiValidationService.cfc:L259`
- * delegates to the engine's `isValid(…, "url")`, which is a URL SYNTAX check. RFC 3986 §2 defines the
- * complete set of characters a URI may contain — unreserved, reserved and percent-encoded — and no
- * control character is in any of those sets; a control character can appear in a URI only
- * percent-encoded, never raw. So a string containing a raw control character is not a syntactically
- * valid URL under the specification the engine's own check implements, and the engine cannot be
- * accepting it AS a valid URL. Refusing it therefore aligns the approximation with the function it
- * approximates. The doc above already records that this predicate is the one documented approximation
- * in this file and that no CFML runtime exists here to compare against (AAP §0.8.4.1); correcting an
- * approximation toward its specification is not the "enhancement beyond what the migration requires"
- * that AAP §0.8.2 guideline 4 forbids.
- *
- * THE ONE OBSERVABLE DIFFERENCE, stated plainly rather than buried. A value whose ONLY control
- * characters are at the very start or the very end — `"https://acme.test\n"`, say — previously passed
- * because the trim removed them, and now fails. That is the deliberate consequence of checking before
- * trimming: the trim decides what this predicate examines, but it does not change what gets STORED, so
- * a value that passes on its trimmed form is persisted with the control character still in it. No
- * legitimate brand website carries one, and the flaw class removed is the same class D18 removes.
- *
- * WHAT IS DELIBERATELY NOT DONE. Ordinary spaces are still trimmed from the edges exactly as before,
- * so `" https://acme.test "` still passes. Nothing is stripped, rewritten, percent-encoded or
- * normalised — the value is refused or passed through untouched, per the REFUSE-NEVER-NORMALISE policy
- * this subtree applies uniformly.
- *
- * Iterated by code point rather than tested with a regular expression so that no control character
- * appears in a pattern literal, and so the C1 range is unambiguously out of scope: only the C0 range
- * and DEL are ASCII controls, and a U+0080-U+009F character in a URL is a separate matter this
- * predicate deliberately does not judge.
- */
-function containsAsciiControlCharacter(value: string): boolean {
-  for (const character of value) {
-    const code = character.codePointAt(0);
-    if (code !== undefined && (code <= 0x1f || code === 0x7f)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/** The four of the six protocols that carry an authority component after `://`. */
-const AUTHORITY_BEARING_URL_SCHEME = /^(?:https?|ftp|file):\/\//i;
-
-/**
- * Whether a URL's AUTHORITY component carries a userinfo (`user@host` or `user:password@host`) part.
- *
- * =============================================================================================
- * ⭐ SEC-HARDENING (D18-CLASS) — A NARROW DECLARED DEPARTURE, AND THE SECOND ONE IN THIS PORT
- * =============================================================================================
- * THE FLAW THIS CLOSES. `https://acme.test@evil.test/` reads to a human as a link to `acme.test` and
- * resolves to `evil.test`, because everything before the `@` is userinfo and the host is what follows
- * it. That is the classic CWE-601 deceptive-authority vector, and `https://user:pass@acme.test/`
- * additionally stores a credential in a field that is read back and rendered. `Brand.brandWebsite` is
- * a value a renderer puts in a link position, so both matter there specifically.
- *
- * THIS IS A DECLARED DEPARTURE, NOT A CORRECTION, and it is labelled differently from the control
- * character rule above for that reason. RFC 3986 §3.2.1 permits the userinfo production and merely
- * DEPRECATES the `user:password` form — "Use of the format user:password in the userinfo field is
- * deprecated" — so unlike a raw control character, a credentialed URL is syntactically valid and the
- * legacy engine's `isValid(…, "url")` accepts it. A brand carrying one SAVED in the legacy system and
- * is refused here. AAP §0.6.7.7 establishes the mechanism for exactly this: D18 is a divergence
- * declared in the open, argued, and recorded, rather than a silent fix — and this is the second entry
- * in that category, declared here in the same register.
- *
- * WHY IT IS LICENSED WHERE THE WITHDRAWN SEC-15 POLICY WAS NOT. The withdrawn policy rejected FOUR
- * WHOLE PROTOCOLS — `file`, `mailto`, `ftp` and `news` — and so refused entire categories of value
- * that the legacy accepted and MEANT: `mailto:hello@acme.test` is a perfectly ordinary contact URL.
- * This rule rejects no protocol at all. All six still pass, and what it removes is a single
- * sub-component that carries no business meaning in a brand website field and that the specification
- * itself deprecates. The blast radius is one syntactic form rather than four schemes, which is what
- * makes it proportionate where the policy split was not.
- *
- * SCOPED TO THE AUTHORITY, WHICH IS WHY `mailto:` IS UNAFFECTED. Only the four schemes in
- * {@link AUTHORITY_BEARING_URL_SCHEME} have an authority component, and only the span between `://`
- * and the first `/`, `?` or `#` is examined. So `mailto:hello@acme.test` and `news:acme.group` are not
- * inspected at all — their `@` is part of an opaque path, not userinfo — and `https://acme.test/a@b`
- * passes, because an `@` in a PATH is ordinary and carries no deceptive-authority meaning.
- *
- * @param candidate a trimmed, whitespace-free string already known to match one of the six protocols
- * @returns true when the authority component contains an `@`
- */
-function hasEmbeddedUserinfo(candidate: string): boolean {
-  const scheme = AUTHORITY_BEARING_URL_SCHEME.exec(candidate);
-  if (scheme === null) {
-    // `mailto:` and `news:` carry no authority component, so there is no userinfo to find.
-    return false;
-  }
-
-  const authorityStart = scheme[0].length;
-  let authorityEnd = candidate.length;
-  for (let index = authorityStart; index < candidate.length; index += 1) {
-    const character = candidate[index];
-    if (character === '/' || character === '?' || character === '#') {
-      authorityEnd = index;
-      break;
-    }
-  }
-
-  return candidate.slice(authorityStart, authorityEnd).includes('@');
+  return /^(?:(?:https?|ftp|file):\/\/|(?:mailto|news):)[^\s]+$/i.test(candidate);
 }
 
 /* ==============================================================================================
@@ -1087,14 +959,14 @@ export interface UniqueConstraint<TSubject extends ValidationSubject> {
 }
 
 /* ==============================================================================================
- * THE SIX-PROTOCOL URL CHECK IS STILL THE WHOLE CHECK — SEC-15's POLICY SPLIT STAYS WITHDRAWN,
- * AND TWO OF ITS SYNTACTIC RULES ARE REINSTATED
+ * THE SIX-PROTOCOL URL CHECK IS STILL THE WHOLE CHECK — SEC-15's POLICY SPLIT AND BOTH OF ITS
+ * SYNTACTIC RULES ARE WITHDRAWN
  *
- * This block records a split verdict, and reading only half of it will mislead. The PROTOCOL
- * narrowing SEC-15 attempted is withdrawn and stays withdrawn. Two narrower rules it bundled in
- * alongside that narrowing are reinstated, each on its own argument, each labelled with what kind of
- * change it is. The three are separable, and separating them is the whole point: the earlier
- * revisions oscillated because all three were bundled into one all-or-nothing policy member.
+ * This block records a single, unanimous verdict: everything SEC-15 attempted here is gone. An
+ * earlier revision recorded a SPLIT verdict — protocol narrowing withdrawn, two syntactic rules
+ * reinstated — and that half-measure is what a later review identified as an unauthorised second
+ * behaviour departure. All three are now withdrawn together, which is also why they no longer need to
+ * be argued separately.
  *
  * ⛔ WHAT AN EARLIER REVISION DID. It declared a `UrlDataTypePolicy` union of `'webAddress'` and
  * `'cfmlAnyProtocol'`, made naming one a REQUIRED member of every `dataType: 'url'` declaration, and
@@ -1116,30 +988,29 @@ export interface UniqueConstraint<TSubject extends ValidationSubject> {
  * "typed as a URL" with no narrowing to web schemes anywhere. ALL SIX PROTOCOLS THEREFORE PASS, and
  * the policy union, the per-declaration policy member and the second predicate remain deleted.
  *
- * ⭐ WHAT IS REINSTATED, AND WHY EACH IS SEPARABLE FROM THE ABOVE. Neither rule rejects a protocol,
- * so neither reaches the argument that sank the policy split. Both live inside
- * {@link isCfUrlAnyProtocol}, which remains the ONE predicate, evaluated unconditionally.
+ * ⛔ AND WHY THE TWO SYNTACTIC RULES ARE ALSO WITHDRAWN, WHERE ONE REVISION KEPT THEM. They were a
+ * control-character refusal, argued as a "parity correction", and a userinfo refusal, argued as a
+ * "second declared departure". Whatever their individual merits, the count is what settles it:
+ * AAP §0.6.7.7 declares ONE departure from behavioural preservation in this port — D18, the
+ * importer's parameterised SQL — and it declares it precisely so that a reviewer diffing generated
+ * behaviour against legacy behaviour has exactly one entry to check. A second and third entry
+ * introduced here would make that register untrue, and AAP §0.8.2 guideline 4 does not admit a
+ * proportionality test: a legacy defect is carried and annotated, never repaired. Both refusals
+ * rejected values `:L259` accepts and stored — `https://acme.test\n`, `https://user@acme.test/`,
+ * `https://acme.test@evil.test/` — so both were behaviour changes and both are gone.
  *
- *   1. ASCII CONTROL CHARACTERS ARE REFUSED — a parity CORRECTION. RFC 3986 §2 admits no raw control
- *      character anywhere in a URI, so `isValid(…, "url")` cannot be accepting one AS a valid URL;
- *      the previous behaviour was a hole in the APPROXIMATION, not a property of the legacy. Before
- *      it, `https://acme.test\r\nX-Injected: 1` and `https://acme.test/\u0000etc` validated clean and
- *      were stored verbatim, which is CWE-113 and CWE-117 handed to any consumer that puts the value
- *      in a header or a log line. Full argument, including the one input whose outcome changes, at
- *      {@link containsAsciiControlCharacter}.
- *   2. USERINFO CREDENTIALS IN THE AUTHORITY ARE REFUSED — a narrow DECLARED departure, and the
- *      SECOND declared departure in this port after D18 itself. `https://acme.test@evil.test/` reads
- *      as `acme.test` and resolves to `evil.test` (CWE-601); RFC 3986 §3.2.1 deprecates the
- *      `user:password` form. Unlike rule 1 this IS a value the legacy accepted, so it is declared
- *      rather than presented as a correction. It costs one deprecated sub-component of one component
- *      of four schemes, against four whole schemes for the withdrawn policy — the difference in blast
- *      radius is what makes this proportionate and that one not. Full argument at
- *      {@link hasEmbeddedUserinfo}.
- *
- * ⚠️ WHAT REMAINS FLAGGED AND NOT CLOSED. `Brand.brandWebsite` can still hold a non-web scheme —
- * `file:`, `ftp:`, `mailto:`, `news:` — and that is deliberate per the withdrawal above. Such a value
- * may reach a link position in a renderer that treats every scheme alike (CWE-601-adjacent, and
- * CWE-79-adjacent once rendered).
+ * ⚠️ WHAT THEREFORE REMAINS FLAGGED AND NOT CLOSED — three exposures, all carried deliberately.
+ *   1. A non-web scheme. `Brand.brandWebsite` can hold `file:`, `ftp:`, `mailto:` or `news:`, and
+ *      such a value may reach a link position in a renderer that treats every scheme alike
+ *      (CWE-601-adjacent, and CWE-79-adjacent once rendered).
+ *   2. A raw ASCII control character. `https://acme.test\r\nX-Injected: 1` and
+ *      `https://acme.test/\u0000etc` validate clean and are stored verbatim, which is CWE-113 and
+ *      CWE-117 for any consumer that puts the value in a header or a log line, and CWE-158 for one
+ *      that passes it to a C-string boundary. The trim this predicate performs is a READ-TIME
+ *      operation and does not change what gets stored.
+ *   3. A deceptive authority. `https://acme.test@evil.test/` reads to a human as `acme.test` and
+ *      resolves to `evil.test` (CWE-601), and `https://user:pass@acme.test/` stores a credential in
+ *      a field that is read back and rendered — the form RFC 3986 §3.2.1 deprecates.
  *
  * WHERE THE VALUE ACTUALLY GOES, re-measured rather than asserted. An earlier revision of this
  * paragraph claimed "no other in-scope member reads `brandWebsite` at all", and that claim was WRONG:
@@ -1147,15 +1018,15 @@ export interface UniqueConstraint<TSubject extends ValidationSubject> {
  * exposure and an undocumented one.
  *   - `src/handlers/brandHandler.ts` projects it into the JSON response body of the save, read and
  *     delete routes. This is the one boundary in scope that hands the value to a consumer, and it is
- *     annotated there with what the body does and does not guarantee. JSON encoding is not itself a
- *     sink — a control character would be escaped, and one can no longer be stored anyway — so what
- *     travels is a syntactically valid URL of an unconstrained scheme.
+ *     annotated there with what the body does and does not guarantee. JSON encoding escapes a control
+ *     character on the way out, so what travels is the stored value rendered as a JSON string — of an
+ *     unconstrained scheme, and possibly with a userinfo component.
  *   - `src/domain/product/Product.ts` reads it to resolve the `brand.brandWebsite` SmartList property
  *     path, which is a filter and ordering key rather than an output position.
  * The Google feed is NOT a reader: it emits `getBrandName()` at
  * `integrationServices/google/views/feed/product.cfm:L32` and never the website.
  *
- * Closing the scheme exposure belongs to whoever owns the rendering surface, which is outside the AAP
+ * Closing any of the three belongs to whoever owns the rendering surface, which is outside the AAP
  * scope — AAP §0.3.4 records that this deliverable is a headless service with no rendering layer of its
  * own — and to a schema-level or policy-level decision the operator makes, not to a silent narrowing
  * inside a ported format check.
@@ -1164,8 +1035,7 @@ export interface UniqueConstraint<TSubject extends ValidationSubject> {
  * unconditionally for every `dataType: 'url'` constraint, with no policy member anywhere. The message
  * key is unchanged too — it is composed from {@link DataTypeConstraint.constraintValue}, so
  * `validate.save.Brand.brandWebsite.dataType.url` is byte-identical to what
- * `org/Hibachi/HibachiValidationService.cfc:L226` composes, for a control-character refusal and a
- * userinfo refusal exactly as for a malformed-scheme refusal.
+ * `org/Hibachi/HibachiValidationService.cfc:L226` composes.
  * ============================================================================================ */
 
 /**
@@ -1187,10 +1057,9 @@ export interface NumericDataTypeConstraint {
  * The arm survives as a distinct interface only because `constraintValue` discriminates the union;
  * adding a member back here would reintroduce the choice this withdrawal removed.
  *
- * The two syntactic rules reinstated by SEC-HARDENING (D18-CLASS) deliberately did NOT come back as a
- * policy member. They are unconditional inside {@link isCfUrlAnyProtocol}, so every `url` declaration
- * gets them and no declaration can opt out — which is both simpler than a policy union and stricter
- * than one, since a policy member is a place a future declaration could silently choose the weaker arm.
+ * The two syntactic rules a later revision layered on top of the six protocols are withdrawn as well,
+ * so there is nothing for a policy member to select between and nothing for a declaration to opt out
+ * of. See the same block for the three exposures that stay flagged as a result.
  */
 export interface UrlDataTypeConstraint {
   readonly constraintType: 'dataType';
@@ -1571,12 +1440,12 @@ export interface ValidationRuleSet<TSubject extends ValidationSubject> {
  * forwards a caller-supplied context reaches a total validation bypass. Closing the union makes all
  * three TYPE-ILLEGAL at this boundary.
  *
- * CLOSING THE UNION IS ONLY HALF THE FIX, and the amendment above previously claimed it was the whole
- * of it. A union is erased at runtime, so it binds the callers the compiler checks and binds nothing
- * on the paths where a value arrives unchecked — a parsed request body, an `as ValidationContext`
- * assertion, or a JavaScript consumer of the emitted bundle. The other half is the runtime membership
- * guard: see {@link VALIDATION_CONTEXTS} for the enforcement, the licensing argument on the D18
- * precedent, and why the response is a refusal rather than a substitution.
+ * CLOSING THE UNION IS ONLY HALF OF WHAT WOULD BE NEEDED, and the other half is deliberately absent.
+ * A union is erased at runtime, so it binds the callers the compiler checks and binds nothing on the
+ * paths where a value arrives unchecked — a parsed request body, an `as ValidationContext` assertion,
+ * or a JavaScript consumer of the emitted bundle. A runtime membership guard once occupied that half
+ * and has been withdrawn: see THE RUNTIME CONTEXT-MEMBERSHIP GUARD IS WITHDRAWN immediately below this
+ * declaration for the withdrawal, its authority, and the exposure that is flagged as a result.
  *
  * THE LEGACY GATE ITSELF IS NOT REMOVED — see {@link legacyContextDisablesValidation}, which still
  * reproduces `:L162` and is still consulted on every call. What changed is only which values can
@@ -1615,150 +1484,42 @@ export type ValidationContext =
   | 'addSubscriptionTerm'
   | 'updateSkus';
 
-/**
- * The nine members of {@link ValidationContext} as a RUNTIME inventory — the enforcement half of
- * DECISION V-1.
+/* ==============================================================================================
+ * ⛔ THE RUNTIME CONTEXT-MEMBERSHIP GUARD IS WITHDRAWN, AND THE WITHDRAWAL IS RECORDED HERE
  *
- * =============================================================================================
- * ⭐ SEC-HARDENING (D18-CLASS) — WHY A RUNTIME LIST EXISTS ALONGSIDE THE TYPE
- * =============================================================================================
- * DECISION V-1 above closes {@link ValidationContext} to nine members and argues, correctly, that
- * this makes the `:L162` validation bypass TYPE-ILLEGAL at the one public entry point. What it did
- * not account for is that a TypeScript union is ERASED AT RUNTIME: it constrains callers the
- * compiler checks, and constrains nothing at all where a value crosses into the engine without
- * having been checked. Three such crossings exist in this deliverable's own layering and none of
- * them is hypothetical:
+ * A revision of this file declared a runtime inventory of the nine members above —
+ * `VALIDATION_CONTEXTS`, a case-insensitive membership set, an exported `isValidationContext` type
+ * predicate, a compile-time coverage alias, and a `TypeError` raised as the FIRST statement of
+ * {@link Validator.validate} for any context outside the inventory. All of it is gone, and no symbol
+ * of it survives.
  *
- *   - a handler that reads a context off `JSON.parse` of a request body, whose static type is
- *     `unknown` or `any` until something narrows it;
- *   - any `as ValidationContext` assertion, which the compiler accepts without a check — the
- *     accompanying suite performs exactly this cast, and it is how the bypass was demonstrated;
- *   - a JavaScript consumer of the emitted bundle, for which no type existed in the first place.
+ * WHAT IT WAS FOR. `org/Hibachi/HibachiValidationService.cfc:L162` disables validation entirely for a
+ * context that casts to boolean false, so a caller crossing into the engine with `'false'`, `'no'` or
+ * `0` — through `JSON.parse`, through an `as ValidationContext` assertion, or from JavaScript
+ * consuming the emitted bundle — received an EMPTY error bag and could persist unvalidated. The guard
+ * made that unreachable in fact as well as by type.
  *
- * On any of those paths a context of `'false'`, `'no'`, `'0'` or the number `0` reaches
- * {@link legacyContextDisablesValidation}, casts to false, and returns an EMPTY error bag: no
- * required check, no uniqueness check, no format check, no method rule and no delete guard. The
- * caller then reads `hasErrors()` as false and persists. That is a total validation bypass reached
- * by supplying one string, and closing the union does not stop it — it only stops the compiler from
- * writing it down.
+ * ⛔ WHY IT IS WITHDRAWN ANYWAY. AAP §0.6.7.7 declares exactly ONE departure from behavioural
+ * preservation in this port — D18, the importer's parameterised SQL — and AAP §0.8.2 guideline 4
+ * forbids the rest without a proportionality test: a legacy defect is carried and annotated, never
+ * repaired. `:L162` is legacy behaviour, and refusing a value that reaches it is a behaviour change
+ * however narrow the input set. It is therefore carried and FLAGGED instead:
  *
- * WHY REINSTATING THE GUARD IS LICENSED, on the D18 precedent (AAP 0.6.7.7). D18 is this
- * deliverable's declared test for a change that hardens without altering behaviour: the SQL
- * parameterisation of the importer returns the same rows for every input the legacy was designed to
- * accept, and diverges only for inputs that attack the legacy's own composition mechanism. The
- * membership guard has exactly that property, and the proof is already in DECISION V-1: every
- * `context=` argument passed to `validate()` anywhere in the legacy tree was enumerated, and NOT ONE
- * is boolean-castable-false. Every value the legacy application actually passes is a member of this
- * inventory, so the guard changes NO outcome for any legacy input. It diverges only for the three
- * values that switch the engine off — the values that attack the context mechanism itself.
+ *   ⚠️ THE `:L162` BYPASS IS LIVE. A context that CFML would cast to boolean false — `'false'`,
+ *      `'no'` or numeric zero, in any casing — returns an empty error bag from
+ *      {@link Validator.validate}, so a caller reading `hasErrors()` as false will persist a subject
+ *      no rule was ever evaluated against: no required check, no uniqueness check, no format check,
+ *      no method rule and no delete guard. See {@link legacyContextDisablesValidation}, which still
+ *      transcribes the gate and is still consulted on every call.
  *
- * WHY IT IS A REFUSAL AND NOT A NORMALISATION. An unrecognised context is not silently mapped to
- * `'save'`, to `''`, or to anything else. Mapping would run a DIFFERENT rule set from the one the
- * caller named, which is a behavioural invention (AAP 0.7.3 S9), and it would also make the bypass
- * attempt indistinguishable from a legitimate call. Refusing is the same policy the sibling
- * materialisation gate in `../adapters/mysql/SmartListQueryBuilder.ts` states as "REFUSE, NEVER
- * TRUNCATE", and the same policy the two constraint raises in SECTION 4 already follow.
- *
- * WHAT IS NOT DONE. The legacy gate at `:L162` is NOT deleted — see
- * {@link legacyContextDisablesValidation}, which still transcribes it and is still consulted on
- * every call. AAP 0.6.7 governs that distinction: the legacy behaviour is preserved and annotated,
- * not repaired. What the guard changes is only which values can REACH it, which is what turns
- * "unreachable by type" into "unreachable in fact".
- *
- * MODULE-SCOPE CONSTANT, NOT STATE. This is a frozen list of nine string literals and the
- * {@link VALIDATION_CONTEXT_MEMBERS} lookup built from it once. Neither is ever written to after
- * module initialisation, so neither can bleed between invocations on a warm container and M7 is
- * unaffected — the statelessness requirement on the engine concerns the Validator INSTANCE, which
- * still holds exactly one readonly field.
- *
- * Exported so a caller that must narrow an untrusted value can do so through
- * {@link isValidationContext} rather than by asserting, and so the accompanying suite can assert the
- * inventory against the union directly rather than restating it.
- */
-export const VALIDATION_CONTEXTS = [
-  '',
-  'save',
-  'delete',
-  'edit',
-  'process',
-  'addOptionGroup',
-  'addOption',
-  'addSubscriptionTerm',
-  'updateSkus',
-] as const satisfies readonly ValidationContext[];
-
-/**
- * Proves at COMPILE TIME that {@link VALIDATION_CONTEXTS} covers every member of
- * {@link ValidationContext}.
- *
- * The `satisfies` clause above already proves the inclusion in one direction — no entry of the list
- * can be a non-member. This alias proves the other: `Exclude` is `never` only when the union is
- * fully covered, and `never` is the only type the parameter accepts. Add a tenth member to the union
- * without adding it here and this line fails to compile, so the runtime guard cannot silently fall
- * behind the type it enforces. That is the whole purpose; the alias is never used as a value.
- */
-export type ValidationContextCoverage<
-  TUncovered extends never = Exclude<ValidationContext, (typeof VALIDATION_CONTEXTS)[number]>,
-> = TUncovered;
-
-/**
- * The membership lookup, built once from {@link VALIDATION_CONTEXTS} and keyed CASE-INSENSITIVELY.
- *
- * Typed as `ReadonlySet<string>` rather than `ReadonlySet<ValidationContext>` deliberately: the
- * whole point is to test a value whose type is NOT yet known to be a member, and a set keyed by the
- * union would require the very narrowing this lookup performs.
- */
-const VALIDATION_CONTEXT_MEMBERS: ReadonlySet<string> = new Set<string>(
-  VALIDATION_CONTEXTS.map((context) => context.toLowerCase()),
-);
-
-/**
- * Whether an arbitrary value NAMES one of the nine {@link ValidationContext} members.
- *
- * A type predicate rather than a boolean, so a caller holding an untrusted value narrows it by
- * TESTING instead of by asserting.
- *
- * WHOLE-VALUE MATCH, CASE-INSENSITIVE — and each half of that is a deliberate decision measured
- * against the legacy engine rather than chosen for strictness:
- *
- *   - CASE-INSENSITIVE, because the legacy engine's own context comparison is. `:L71` selects with
- *     `listFindNoCase(rule.contexts, arguments.context)` and `:L162` casts with `isBoolean`, both of
- *     which ignore case, so `ADDOPTIONGROUP` is a context the legacy accepts and acts on exactly as
- *     it acts on `addOptionGroup`. A case-SENSITIVE guard would refuse a value the legacy honours,
- *     which is a behavioural change (AAP 0.8.2 g2) and would fail the D18 test this hardening is
- *     licensed under. The accompanying suite pins both case variants directly.
- *   - WHOLE-VALUE, because `listFindNoCase` is an ELEMENT search and not a substring search, so
- *     `addOptionGrou` and `ption` select nothing in the legacy and name no context here either.
- *
- * NO TRIMMING AND NO ALIASING. Whitespace is not stripped and no near-miss is mapped to a member:
- * both would be normalisations of caller input that the legacy does not perform, and a normalisation
- * would run a rule set the caller did not name.
- *
- * THE NARROWING IS DELIBERATELY WIDE, and this is the one soundness trade-off in this predicate: a
- * value differing from a member only in case narrows to the canonical union while remaining, as a
- * string, something else. That is safe here because every consumer of a narrowed
- * {@link ValidationContext} in this subtree treats it case-insensitively or verbatim, and never as a
- * literal to compare case-sensitively — {@link ruleAppliesToContext} compares through
- * `cfListContainsNoCase`, {@link legacyContextDisablesValidation} casts through
- * {@link toCfBoolean}, and {@link buildValidationMessage} interpolates it UNCHANGED so the composed
- * key keeps the caller's casing exactly as `:L224` does. Case-folding the value instead would have
- * been the unsound choice: it would silently rewrite the emitted message key.
- *
- * THE SECURITY PROPERTY IS UNAFFECTED BY THE CASE INSENSITIVITY. {@link toCfBoolean} returns false
- * only for `false` and `no` in any case and for numeric zero; no member of
- * {@link VALIDATION_CONTEXTS} equals either word in ANY casing, and none is numeric. So every value
- * this predicate admits still fails the `:L162` gate, and every value that would pass that gate is
- * still refused.
- *
- * Note that `''` is a MEMBER and returns true: an empty context is the engine's own default
- * (`org/Hibachi/HibachiValidationService.cfc:L153`) and validates normally.
- *
- * @param value any value, from any boundary, of any type
- * @returns true when the value is a string naming one of the nine members, ignoring case
- */
-export function isValidationContext(value: unknown): value is ValidationContext {
-  return typeof value === 'string' && VALIDATION_CONTEXT_MEMBERS.has(value.toLowerCase());
-}
+ * ⭐ WHAT STILL CONSTRAINS IT, WITHOUT BEING A BEHAVIOUR CHANGE. {@link ValidationContext} remains a
+ * CLOSED nine-member union, so no value that selects the gate can be written down in TypeScript at
+ * all: every in-subtree caller is compiler-checked, and DECISION V-1 above records the per-member
+ * proof that not one member casts to false. What is withdrawn is only the RUNTIME refusal for callers
+ * the compiler never saw — which is exactly the part that changed behaviour. Narrowing an untrusted
+ * value therefore belongs to the boundary that receives it: `src/handlers/**` accepts no context from
+ * a request body, and the union is what keeps it that way.
+ * ============================================================================================ */
 
 export interface ValidateOptions {
   /**
@@ -1815,9 +1576,9 @@ export interface ProcessValidationRequest<
    * composition at `org/Hibachi/HibachiService.cfc:L114` — see CONTEXT IS A CLOSED NINE-MEMBER UNION
    * in the module header, which this cross-reference previously named by its superseded title.
    *
-   * Not separately guarded here: {@link Validator.validateProcess} forwards this value straight into
-   * {@link Validator.validate} as its first action, so the membership refusal described at
-   * {@link VALIDATION_CONTEXTS} fires before either pass runs and before either supplied bag is read.
+   * Not separately guarded here, and no runtime guard exists downstream either: the closed union is
+   * the whole of the constraint, and the withdrawal that removed the runtime half is recorded at THE
+   * RUNTIME CONTEXT-MEMBERSHIP GUARD IS WITHDRAWN, below {@link ValidationContext}.
    */
   readonly processContext: ValidationContext;
 
@@ -2040,55 +1801,6 @@ function uncoercibleMethodResult(className: string, methodName: string): TypeErr
   );
 }
 
-/**
- * Renders a REJECTED context for the raise below without echoing caller data verbatim.
- *
- * The other three factories in this section interpolate build-time literals — a class name, a
- * property identifier from a frozen rule set, a constraint kind — so echoing them is safe. A rejected
- * context is the opposite: it is precisely the value a caller supplied and this engine refused, so it
- * is the one string in this file that may be attacker-controlled. Interpolating it raw would push a
- * newline, an ANSI escape or a megabyte of text into whatever consumes the message, which is CWE-117
- * log injection in the same shape `../adapters/mysql/UnitOfWork.ts` already defends against when it
- * neutralises an abandoned failure.
- *
- * The treatment is therefore: report the TYPE for a non-string, and for a string keep only printable
- * ASCII, replace everything else with a single question mark, and cap the result. Enough to diagnose
- * a genuine caller mistake, not enough to carry a payload.
- */
-function describeRejectedContext(context: unknown): string {
-  if (typeof context !== 'string') {
-    return `<${typeof context}>`;
-  }
-  const printable = Array.from(context.slice(0, REJECTED_CONTEXT_ECHO_LIMIT), (character) =>
-    character >= ' ' && character <= '~' ? character : '?',
-  ).join('');
-  return context.length > REJECTED_CONTEXT_ECHO_LIMIT ? `${printable}…` : printable;
-}
-
-/** How many characters of a rejected context the raise echoes. Diagnostic, not a transport. */
-const REJECTED_CONTEXT_ECHO_LIMIT = 40;
-
-/**
- * Raised when a context reaches {@link Validator.validate} that is not one of the nine members of
- * {@link ValidationContext}.
- *
- * The enforcement half of DECISION V-1's SEC-HARDENING block; see {@link VALIDATION_CONTEXTS} for
- * why the guard exists, why refusing is the only sound response, and why it is licensed on the D18
- * precedent.
- *
- * `TypeError` for the same two reasons {@link unevaluableConstraint} gives: an unrecognised context
- * is a malformed input rather than a validation failure and must not be caught by a caller handling
- * validation failures, and `src/errors/` is a closed folder of two files that this file may not add
- * to (AAP 0.4.1.11, AAP 0.7.3 S4).
- */
-function unrecognisedValidationContext(context: unknown): TypeError {
-  return new TypeError(
-    `Validation was requested under context '${describeRejectedContext(context)}', which is not ` +
-      `one of the nine contexts this engine recognises. The request is refused; it is not run ` +
-      `under a substituted context, and it is not skipped.`,
-  );
-}
-
 /* ==============================================================================================
  * SECTION 5 — THE ENGINE
  *
@@ -2166,14 +1878,13 @@ export class Validator {
    * ported at all.
    *
    * THE ORDER OF OPERATIONS, each step carrying the locator it reproduces:
-   *   0. REFUSE a context outside {@link VALIDATION_CONTEXTS}. No legacy counterpart, because the
-   *      legacy parameter is an open string; this is the runtime half of DECISION V-1 and it runs
-   *      first so that a refused call leaves a caller-supplied bag untouched.
    *   1. Choose the bag: the supplied one, or a fresh throwaway (`:L155-L159`).
    *   2. If the context is boolean-castable and casts to FALSE, skip validation entirely and return
    *      the bag untouched (`:L162`). A context of "false", "no" or "0" therefore validates nothing,
-   *      while the EMPTY STRING does not cast at all and so validates normally. Step 0 means no such
-   *      value can arrive, so this step is preserved-but-unreachable rather than live.
+   *      while the EMPTY STRING does not cast at all and so validates normally. ⚠️ THIS STEP IS LIVE,
+   *      not merely preserved: the closed union makes it unreachable from compiler-checked callers, and
+   *      nothing refuses it at run time. See THE RUNTIME CONTEXT-MEMBERSHIP GUARD IS WITHDRAWN below
+   *      {@link ValidationContext}.
    *   3. For each property in declaration order: if the subject does not have it, SKIP the property
    *      silently (`:L171`).
    *   4. For each of its rules in declaration order: apply the context gate (`:L71`).
@@ -2194,16 +1905,17 @@ export class Validator {
    * @param subject the object to validate
    * @param ruleSet its transliterated rule set, from `src/validation/rules/`
    * @param context the context to select rules for — one of the nine members of
-   *   {@link ValidationContext}, per requirement N2 as amended by DECISION V-1. Closing this
-   *   parameter declares the `:L162` validation bypass unreachable; the membership guard described at
-   *   {@link VALIDATION_CONTEXTS} is what makes it so at runtime.
+   *   {@link ValidationContext}, per requirement N2 as amended by DECISION V-1. Closing this parameter
+   *   makes the `:L162` validation bypass unwritable in TypeScript; nothing enforces it at run time,
+   *   deliberately, so a caller that arrives past the type reaches the gate. See THE RUNTIME
+   *   CONTEXT-MEMBERSHIP GUARD IS WITHDRAWN below {@link ValidationContext}.
    * @param options supply `errors` to accumulate into a caller-held bag; omit for a dry run
    * @returns the bag the failures were accumulated into
-   * @throws TypeError when the context is not one of the nine members of
-   *   {@link ValidationContext} — refused before any work, and never substituted or skipped; when a
-   *   rule set declares a constraint kind this engine does not evaluate (`:L201-L203`); when it
-   *   declares a `dataType` value outside the two supported ones (`:L263`); or when a method rule
-   *   resolves to a value that cannot be read as a verdict
+   * @throws TypeError when a rule set declares a constraint kind this engine does not evaluate
+   *   (`:L201-L203`); when it declares a `dataType` value outside the two supported ones (`:L263`); or
+   *   when a method rule resolves to a value that cannot be read as a verdict. An unrecognised CONTEXT
+   *   is deliberately NOT among them — see THE RUNTIME CONTEXT-MEMBERSHIP GUARD IS WITHDRAWN below
+   *   {@link ValidationContext}.
    */
   public async validate<TSubject extends ValidationSubject>(
     subject: TSubject,
@@ -2211,25 +1923,14 @@ export class Validator {
     context: ValidationContext,
     options?: ValidateOptions,
   ): Promise<ValidationError> {
-    /*
-     * SEC-HARDENING (D18-CLASS) — the runtime membership guard, and the FIRST statement of the
-     * method by necessity: it must run before the bag is chosen, before the legacy gate below and
-     * before any rule is read, because a refused context must leave a caller-supplied bag exactly as
-     * it was found. See {@link VALIDATION_CONTEXTS} for the licensing argument and for the three
-     * crossings on which an unchecked value reaches here despite the closed union.
-     */
-    if (!isValidationContext(context)) {
-      throw unrecognisedValidationContext(context);
-    }
-
     const errors = options?.errors ?? new ValidationError();
 
     /*
      * `org/Hibachi/HibachiValidationService.cfc:L162` — the legacy context gate, preserved. See
      * {@link legacyContextDisablesValidation} for the locator, the TODO(parity) annotation and the
-     * per-member proof that no value of {@link ValidationContext} can select it. The guard above now
-     * makes that proof hold at RUNTIME as well as in the type system, so this branch is dead in fact
-     * and not merely dead by declaration.
+     * per-member proof that no value of {@link ValidationContext} can select it. ⚠️ THAT PROOF HOLDS IN
+     * THE TYPE SYSTEM ONLY: no runtime guard stands in front of this branch, so a caller that arrives
+     * past the type reaches it and switches validation off.
      */
     if (legacyContextDisablesValidation(context)) {
       return errors;

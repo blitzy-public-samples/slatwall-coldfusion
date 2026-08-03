@@ -137,6 +137,19 @@
  * that matter.
  */
 
+/* Node built-ins, for the two build-packaging regressions at the foot of this file (F2, F3). They are
+ * the only place this suite reaches the filesystem or spawns a process, and they exist because the
+ * findings they answer are about the EMITTED PACKAGE rather than about any `src/**` module — a property
+ * only a real build can be asked about. Nothing here reads a tracked file for behaviour: the build's own
+ * `package.json` is read to compare it against the packaged one, and everything else is generated output
+ * under the two git-ignored directories the build step owns. */
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { builtinModules, createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
 import {
   CONTENT_ACCESS_PRODUCT_TYPE_ID,
   MERCHANDISE_PRODUCT_TYPE_ID,
@@ -156,6 +169,7 @@ import {
   createBaseServicePersistenceDouble,
   createDefaultSkuDelegate,
   createImagePathDouble,
+  createInMemoryBrandRepository,
   createInMemoryOptionRepository,
   createInMemoryProductRepository,
   createInMemorySkuRepository,
@@ -177,7 +191,7 @@ import {
   type UrlTitleTableName,
 } from '../support/inMemoryRepositories';
 import { SmartListQueryBuilder } from '../../src/adapters/mysql/SmartListQueryBuilder';
-import { createCatalogAggregateLoaders } from '../../src/adapters/mysql/catalogAggregates';
+import { createCatalogAggregateLoaders } from '../../src/adapters/mysql/SmartListQueryBuilder';
 import { populate } from '../../src/domain/base/populate';
 import type { PropertyDescriptorSet, RelatedEntityLoader } from '../../src/domain/base/populate';
 import {
@@ -206,6 +220,7 @@ import {
   type ProductServiceCollaborators,
   type ProductTypeWithErrorState,
 } from '../../src/services/ProductService';
+import { readHydratedParentProductTypeID } from '../../src/adapters/mysql/rowMappers';
 import { SkuService } from '../../src/services/SkuService';
 import type { SmartListQuery, SmartListQueryPort } from '../../src/ports/SmartListQueryPort';
 import type { UniquePropertyPort } from '../../src/ports/UniquePropertyPort';
@@ -228,6 +243,85 @@ import {
   createSkuValidationRules,
   resolveSkuUniqueTarget,
 } from '../../src/validation/rules/sku.rules';
+import {
+  BOUNDED_READ_LIMIT_PARAMETER,
+  BOUNDED_READ_OFFSET_PARAMETER,
+  HTTP_STATUS,
+  readBoundedReadWindow,
+  readHeader,
+  readJsonObjectBody,
+  readPathParameter,
+  readQueryStringParameter,
+  readSmartListInput,
+} from '../../src/handlers/httpResponse';
+import {
+  createBrandRoutes,
+  handler as brandLambdaHandler,
+  type BrandHandler,
+  type BrandRouteKey,
+} from '../../src/handlers/brandHandler';
+import {
+  createGoogleFeedRoutes,
+  handler as googleFeedLambdaHandler,
+  type GoogleFeedHandler,
+  type GoogleFeedRouteKey,
+} from '../../src/handlers/googleFeedHandler';
+import {
+  createActionDispatcher,
+  SLAT_ACTION_PARAMETER,
+  type ActionRoute,
+  type ActionRouteTable,
+  type APIGatewayProxyEvent,
+  type APIGatewayProxyResult,
+} from '../../src/handlers/httpResponse';
+import {
+  createOptionRoutes,
+  handler as optionLambdaHandler,
+  type OptionHandler,
+  type OptionRouteKey,
+} from '../../src/handlers/optionHandler';
+import {
+  createProductRoutes,
+  handler as productLambdaHandler,
+  type ProductHandler,
+  type ProductRouteKey,
+} from '../../src/handlers/productHandler';
+import type { RouteKey } from '../../src/handlers/router';
+import {
+  createSkuRoutes,
+  handler as skuLambdaHandler,
+  type SkuHandler,
+  type SkuRouteKey,
+} from '../../src/handlers/skuHandler';
+import type { AppConfig } from '../../src/config/env';
+/* The composition root and the aggregate router are named TYPE-ONLY here. Both modules validate the
+ * environment at load — `src/config/container.ts` through `src/config/env.ts`, and `src/handlers/router.ts`
+ * by resolving the production graph at module scope — so the modules themselves are reached with `require`
+ * after `process.env` is set, in the section that does it. `import type` is erased at emit, so naming them
+ * here costs no load-time edge and keeps every other case in this file needing no environment. */
+import type { CatalogContainer, CatalogContainerOverrides } from '../../src/config/container';
+import { NotImplementedError } from '../../src/errors/DomainError';
+import type { CatalogAuthorizationResolver } from '../../src/handlers/httpResponse';
+import type { AccountReference } from '../../src/ports/AccountContextPort';
+import {
+  clearRequestAuthorizationResolver,
+  okResponse,
+  registerRequestAuthorizationResolver,
+  resolveFailClosedAuthorization,
+  resolveRequestAuthorization,
+} from '../../src/handlers/httpResponse';
+import type { RequestAuthorizationContext } from '../../src/ports/AccountContextPort';
+import type { ManagedEntity } from '../../src/domain/base/populate';
+import type { Brand } from '../../src/domain/product/Brand';
+import type { BrandRepository } from '../../src/ports/repositories/BrandRepository';
+import { createOptionGroupSortOrderMemo } from '../../src/adapters/mysql/MySqlSkuRepository';
+import type { TransactionalSqlExecutor } from '../../src/adapters/mysql/UnitOfWork';
+import type { MySqlRow } from '../../src/adapters/mysql/rowMappers';
+import type {
+  CatalogBoundaries,
+  CatalogStatements,
+  SkuSurfaceDependencies,
+} from '../../src/config/container';
 
 /* ==================================================================================================
  * LOCAL HELPERS
@@ -689,6 +783,9 @@ function buildHarness(options: HarnessOptions = {}): Harness {
     },
     persistProduct,
     defaultSkuIdReader: (): string => '',
+    /* F10 — the real hydration reader. These regressions build their product types by hand, so it
+     * answers `undefined` and the `:L306-L308` inheritance branch is skipped, exactly as before. */
+    parentProductTypeIdReader: readHydratedParentProductTypeID,
   };
 
   return {
@@ -1890,3 +1987,4484 @@ describe('meta/tests/unit/Helper.cfc — the fixture teardown contract', () => {
     expect(second.log).toStrictEqual([]);
   });
 });
+
+/* =====================================================================================================
+ * NET-NEW — THE BUILD PACKAGE, AND THE TWO QA FINDINGS ABOUT IT (F2, F3)
+ * =====================================================================================================
+ * WHY BUILD COVERAGE LIVES IN THE REGRESSION SUITE. Two QA findings concerned `build/esbuild.mjs`
+ * rather than any `src/**` module: the package it emitted could not resolve its own external, and a
+ * build that failed AFTER the emit left a green build's artifacts in the packaging directory while
+ * exiting non-zero. Both are cross-cutting regressions with no domain, service, adapter or integration
+ * to belong to, and both are exactly the kind of defect that returns silently — a `dist/` listing looks
+ * the same either way. This file is the suite for regressions that belong to no single module, so they
+ * are asserted here, delimited and labelled.
+ *
+ * ⚠️ THESE CASES RUN THE REAL BUILD, IN A CHILD PROCESS, AND THAT IS THE POINT. A source-level check
+ * would assert that the script SAYS it stages a dependency tree; only running it can assert that the
+ * tree is there and that Node's own resolver finds it inside the package. Each case therefore spawns
+ * `node build/esbuild.mjs` (or a tiny generated runner around its exported pipeline) and inspects the
+ * result on disk. Three consequences, all deliberate:
+ *   • They are slow by the standards of this suite — roughly five seconds each — so each carries an
+ *     explicit timeout. Nothing else in this file needs one.
+ *   • They WRITE to `dist/` and `build-meta/`, both git-ignored and both owned exclusively by the build
+ *     step. No test fixture, no source file and no tracked file is touched.
+ *   • They leave a green package behind on success, because the last case rebuilds; a failed case may
+ *     leave `dist/` absent, which is precisely the state the build guarantees after a failure.
+ *
+ * ⛔ NO FAULT-INJECTION SWITCH WAS ADDED TO THE BUILD. `runBuild(steps = BUILD_STEPS)` takes the
+ * pipeline as a defaulted parameter, and the CLI path passes nothing — so a build always runs all eight
+ * steps and no flag, switch or environment variable can select a subset. The failure cases below
+ * substitute ONE step in a copy of that array and hand it to the SAME executor and the SAME cleanup
+ * handler the CLI uses, which is what makes them evidence about the shipped code rather than about a
+ * test-only path.
+ * ================================================================================================== */
+
+/** The subtree root, reached from this file rather than from `process.cwd()`. */
+const SUBTREE_ROOT = join(__dirname, '..', '..');
+const BUILD_SCRIPT = join(SUBTREE_ROOT, 'build', 'esbuild.mjs');
+const PACKAGE_DIR = join(SUBTREE_ROOT, 'dist');
+const STAGING_DIR = join(SUBTREE_ROOT, 'build-meta', 'package-staging');
+const RELOCATED_MAP_DIR = join(SUBTREE_ROOT, 'build-meta', 'sourcemaps', 'handlers');
+const STAGED_MODULES_DIR = join(PACKAGE_DIR, 'node_modules');
+
+/**
+ * The six artifact names the build promises, transcribed from `ENTRY_POINTS` in `build/esbuild.mjs`.
+ *
+ * Spelled out here rather than imported: `build/esbuild.mjs` is ESM and this suite is compiled to
+ * CommonJS, so `require`ing it would fail — which is also why the runs below are child processes. An
+ * independent transcription is the stronger assertion anyway, since a change to the entry list has to
+ * be made in both places deliberately.
+ */
+const EXPECTED_ARTIFACT_NAMES: readonly string[] = Object.freeze([
+  'brandHandler.js',
+  'googleFeedHandler.js',
+  'optionHandler.js',
+  'productHandler.js',
+  'router.js',
+  'skuHandler.js',
+]);
+
+/** Roughly a second per artifact plus the dependency copy, with room for a cold esbuild start. */
+const BUILD_CASE_TIMEOUT_MS = 120_000;
+
+interface BuildRun {
+  readonly status: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+/** Run the real build script as a child process. */
+function runBuildScript(): BuildRun {
+  const result = spawnSync(process.execPath, [BUILD_SCRIPT], {
+    cwd: SUBTREE_ROOT,
+    encoding: 'utf8',
+  });
+
+  return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+}
+
+/**
+ * Run the build's own pipeline with one step replaced, through its own executor.
+ *
+ * A generated ESM runner is written to a fresh temporary directory, imports `build/esbuild.mjs` by
+ * absolute file URL, maps over the exported `BUILD_STEPS`, and calls the exported `runBuild` with the
+ * result. Nothing in the subtree is modified and the temporary directory is removed afterwards.
+ *
+ * @param stepName the step to replace
+ * @param replacementBody the JavaScript body of the replacement step's `run`, or `'omit'` to drop the
+ *   step from the pipeline entirely
+ * @returns the child process result
+ */
+function runBuildPipelineWithFault(stepName: string, replacementBody: string): BuildRun {
+  const runnerDirectory = mkdtempSync(join(tmpdir(), 'blitzy_adhoc_test_build-'));
+  try {
+    const runnerPath = join(runnerDirectory, 'runner.mjs');
+    const buildModuleUrl = pathToFileURL(BUILD_SCRIPT).href;
+    const stepExpression =
+      replacementBody === 'omit'
+        ? `mod.BUILD_STEPS.filter((step) => step.name !== ${JSON.stringify(stepName)})`
+        : `mod.BUILD_STEPS.map((step) =>
+             step.name === ${JSON.stringify(stepName)}
+               ? { name: step.name, run: async () => { ${replacementBody} } }
+               : step,
+           )`;
+
+    writeFileSync(
+      runnerPath,
+      [
+        `const mod = await import(${JSON.stringify(buildModuleUrl)});`,
+        `const steps = ${stepExpression};`,
+        'try {',
+        '  await mod.runBuild(steps);',
+        "  console.log('RUNNER: the pipeline SUCCEEDED');",
+        '} catch (error) {',
+        "  console.log('RUNNER: the pipeline FAILED');",
+        '  console.log(String(error && error.message));',
+        '  process.exitCode = 7;',
+        '}',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const result = spawnSync(process.execPath, [runnerPath], {
+      cwd: SUBTREE_ROOT,
+      encoding: 'utf8',
+    });
+
+    return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+  } finally {
+    rmSync(runnerDirectory, { force: true, recursive: true });
+  }
+}
+
+/** Every bare `require()` specifier in `text`, excluding relative paths and Node built-ins. */
+function bareRequireSpecifiersOf(text: string): readonly string[] {
+  const specifiers = new Set<string>();
+  for (const match of text.matchAll(/require\(\s*["']([^"']+)["']\s*\)/g)) {
+    const specifier = match[1] ?? '';
+    if (specifier === '' || specifier.startsWith('.') || specifier.startsWith('/')) {
+      continue;
+    }
+    if (specifier.startsWith('node:') || builtinModules.includes(specifier)) {
+      continue;
+    }
+    specifiers.add(specifier);
+  }
+
+  return [...specifiers].sort();
+}
+
+describe('NET-NEW — the build produces a complete, self-resolving Lambda package (F2, F5 case 8)', () => {
+  beforeAll(() => {
+    const run = runBuildScript();
+    expect(run.status).toBe(0);
+  }, BUILD_CASE_TIMEOUT_MS);
+
+  it('[NET-NEW] emits exactly the six declared entries, the manifest and the closure — and no map, and no non-entry helper', () => {
+    const packaged = readdirSync(PACKAGE_DIR).sort();
+    expect(packaged).toStrictEqual(['handlers', 'node_modules', 'package.json']);
+
+    const artifacts = readdirSync(join(PACKAGE_DIR, 'handlers')).sort();
+    expect(artifacts).toStrictEqual([...EXPECTED_ARTIFACT_NAMES]);
+
+    /*
+     * ⛔ THE NON-ENTRY HELPER IS ABSENT, AND THAT IS AN ASSERTION RATHER THAN AN OBSERVATION.
+     * `src/handlers/httpResponse.ts` is the shared response-shaping module every handler funnels through.
+     * It exports no `handler`, the runtime cannot dispatch it, and `build/esbuild.mjs` names it in
+     * `NON_ENTRY_HANDLER_MODULES` for exactly that reason. A directory scan in place of the frozen entry
+     * list would have promoted it to a deployable artifact.
+     */
+    expect(artifacts).not.toContain('httpResponse.js');
+
+    /* No map inside the package; all six beside it. */
+    expect(artifacts.filter((name) => name.endsWith('.map'))).toStrictEqual([]);
+    expect(readdirSync(RELOCATED_MAP_DIR).sort()).toStrictEqual(
+      EXPECTED_ARTIFACT_NAMES.map((name) => `${name}.map`),
+    );
+
+    /* And the staging tree is gone, because promotion consumed it. */
+    expect(existsSync(STAGING_DIR)).toBe(false);
+  });
+
+  it(
+    '[NET-NEW] runs eight named steps in one order, ending with the promotion',
+    () => {
+      const run = runBuildScript();
+      expect(run.status).toBe(0);
+
+      const steps = [...run.stdout.matchAll(/^\[esbuild\] step: +(\S+)$/gm)].map(
+        (match) => match[1] ?? '',
+      );
+
+      /*
+       * ⭐ THE ORDER IS THE RELEASE-SAFETY ARGUMENT, SO IT IS ASSERTED RATHER THAN DESCRIBED. `purge` first
+       * so no earlier package survives and the promoting `rename` has an absent destination;
+       * `assert-require-closure` after staging and before promotion, the only position at which it can
+       * check the thing it is about; `promote` last, the single writer of `dist/`.
+       */
+      expect(steps).toStrictEqual([
+        'purge',
+        'assert-entry-surface',
+        'emit',
+        'relocate-sourcemaps',
+        'write-manifest',
+        'stage-dependencies',
+        'assert-require-closure',
+        'promote',
+      ]);
+      expect(steps[steps.length - 1]).toBe('promote');
+
+      /* The two directories it reports are distinct, which is the whole of the staging arrangement. */
+      expect(run.stdout).toContain(`[esbuild] staging:  build-meta${sep}package-staging`);
+      expect(run.stdout).toContain('[esbuild] package:  dist');
+    },
+    BUILD_CASE_TIMEOUT_MS,
+  );
+
+  it('[NET-NEW] writes a production manifest carrying the exact runtime dependency set and nothing developmental', () => {
+    const sourceManifest = JSON.parse(
+      readFileSync(join(SUBTREE_ROOT, 'package.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    const packagedManifest = JSON.parse(
+      readFileSync(join(PACKAGE_DIR, 'package.json'), 'utf8'),
+    ) as Record<string, unknown>;
+
+    /* Exactly six members, so a wholesale copy of the source manifest fails here. */
+    expect(Object.keys(packagedManifest).sort()).toStrictEqual([
+      'dependencies',
+      'engines',
+      'name',
+      'private',
+      'type',
+      'version',
+    ]);
+
+    /* The runtime set is the source manifest's own object, pin for pin. */
+    expect(packagedManifest['dependencies']).toStrictEqual(sourceManifest['dependencies']);
+    expect(packagedManifest['dependencies']).toStrictEqual({ mysql2: '3.23.2' });
+
+    /* The engines floor travels with it, so a deployment cannot silently run an older Node. */
+    expect(packagedManifest['engines']).toStrictEqual(sourceManifest['engines']);
+    expect(packagedManifest['type']).toBe('commonjs');
+    expect(packagedManifest['private']).toBe(true);
+
+    /* And nothing developmental leaks: the ten dev dependencies and the four scripts describe how the
+     * subtree is BUILT, not what the runtime loads. There is no `overrides` block to leak either — the
+     * manifest declares none, which the manifest-shape case above asserts directly. */
+    expect(packagedManifest).not.toHaveProperty('devDependencies');
+    expect(packagedManifest).not.toHaveProperty('scripts');
+    expect(packagedManifest).not.toHaveProperty('overrides');
+  });
+
+  it('[NET-NEW] every external the artifacts require resolves INSIDE the package (F2)', () => {
+    const specifiersSeen = new Set<string>();
+
+    for (const artifactName of EXPECTED_ARTIFACT_NAMES) {
+      const artifactPath = join(PACKAGE_DIR, 'handlers', artifactName);
+      const specifiers = bareRequireSpecifiersOf(readFileSync(artifactPath, 'utf8'));
+
+      /* Every artifact requires the driver — which is what made the missing package fatal rather than
+       * theoretical: all six cold starts would have failed, not one. */
+      expect(specifiers).toStrictEqual(['mysql2/promise']);
+
+      const requireFromArtifact = createRequire(artifactPath);
+      for (const specifier of specifiers) {
+        specifiersSeen.add(specifier);
+        const resolved = requireFromArtifact.resolve(specifier);
+
+        /*
+         * ⚠️ CONTAINMENT, NOT MERE RESOLVABILITY, IS THE ASSERTION. `require` walks `node_modules`
+         * upward, so this specifier resolves happily against the subtree's development tree whether or
+         * not a single byte was staged — which is why the defect went unnoticed. Requiring the resolved
+         * FILE to lie inside `dist/node_modules` is what turns an unstaged package into a red result.
+         */
+        expect(resolved.startsWith(`${STAGED_MODULES_DIR}${sep}`)).toBe(true);
+      }
+    }
+
+    expect([...specifiersSeen]).toStrictEqual(['mysql2/promise']);
+  });
+
+  it('[NET-NEW] the staged closure is transitively complete, not just the direct dependency', () => {
+    const stagedNames = readdirSync(STAGED_MODULES_DIR).sort();
+
+    /*
+     * ⭐ ELEVEN PACKAGES, NOT ONE. Staging `mysql2` alone produces a package that fails one level
+     * deeper, on the driver's own `require('denque')`. The list is the measured transitive closure of
+     * `mysql2@3.23.2`'s runtime dependencies.
+     */
+    expect(stagedNames).toStrictEqual([
+      'aws-ssl-profiles',
+      'denque',
+      'generate-function',
+      'iconv-lite',
+      'is-property',
+      'long',
+      'lru.min',
+      'mysql2',
+      'named-placeholders',
+      'safer-buffer',
+      'sql-escaper',
+    ]);
+
+    /* And it really is closed: every staged package's own declared dependencies are present. */
+    for (const name of stagedNames) {
+      const staged = JSON.parse(
+        readFileSync(join(STAGED_MODULES_DIR, name, 'package.json'), 'utf8'),
+      ) as { readonly dependencies?: Readonly<Record<string, string>> };
+      for (const dependencyName of Object.keys(staged.dependencies ?? {})) {
+        expect(stagedNames).toContain(dependencyName);
+      }
+    }
+
+    /* The driver in the package is the pinned version, not whatever happened to be nearest. */
+    const stagedDriver = JSON.parse(
+      readFileSync(join(STAGED_MODULES_DIR, 'mysql2', 'package.json'), 'utf8'),
+    ) as { readonly version: string };
+    expect(stagedDriver.version).toBe('3.23.2');
+
+    /* No nested tree was carried: the staged tree is flat, which is what the closure walk guarantees. */
+    expect(existsSync(join(STAGED_MODULES_DIR, 'mysql2', 'node_modules'))).toBe(false);
+  });
+
+  it(
+    '[NET-NEW] omitting the staging step FAILS the build, naming the outside resolution (F2)',
+    () => {
+      const run = runBuildPipelineWithFault('stage-dependencies', 'omit');
+
+      expect(run.status).not.toBe(0);
+      expect(run.stdout).toContain('RUNNER: the pipeline FAILED');
+      expect(run.stdout).toContain('the packaged require closure is incomplete');
+      expect(run.stdout).toContain('requires "mysql2/promise", which resolves OUTSIDE the package');
+
+      /* The check is what makes the staging step load-bearing rather than decorative, and a build that
+       * cannot resolve its own external must not produce a package. */
+      expect(existsSync(PACKAGE_DIR)).toBe(false);
+    },
+    BUILD_CASE_TIMEOUT_MS,
+  );
+});
+
+describe('NET-NEW — a failure after the emit leaves no package behind (F3, F5 case 8)', () => {
+  it(
+    '[NET-NEW] a post-emit failure removes a previously GREEN package rather than leaving it deployable',
+    () => {
+      /* A green build first, so the case reproduces the exact reported scenario: real artifacts in the
+       * packaging directory before the failing run begins. */
+      expect(runBuildScript().status).toBe(0);
+      expect(readdirSync(join(PACKAGE_DIR, 'handlers')).sort()).toStrictEqual([
+        ...EXPECTED_ARTIFACT_NAMES,
+      ]);
+
+      /*
+       * The fault is placed in the FIRST post-emit step, so the six bundles have genuinely been written
+       * by the time it fires. Under the reported arrangement this run exited non-zero with six
+       * apparently deployable bundles in `dist/`; the exit status said "failed" and the directory said
+       * "ready", and a packaging step reading `dist/` could not tell them apart.
+       */
+      const run = runBuildPipelineWithFault(
+        'relocate-sourcemaps',
+        "throw new Error('injected post-emit failure');",
+      );
+
+      expect(run.status).not.toBe(0);
+      expect(run.stdout).toContain('RUNNER: the pipeline FAILED');
+      expect(run.stdout).toContain('injected post-emit failure');
+
+      /* The emit itself DID happen — the step ran before the fault — so this is a post-emit failure and
+       * not an early one. */
+      expect(run.stdout).toContain('[esbuild] step:     emit');
+      expect(run.stdout).toContain('[esbuild] step:     relocate-sourcemaps');
+
+      /*
+       * ⭐ AND IT WROTE INTO THE STAGING TREE, NOT INTO THE PACKAGE — which is the STRUCTURAL half of the
+       * guarantee and is asserted separately because the two mechanisms are independent. esbuild prints
+       * the path of every file it writes, so the emitted paths are observable evidence of where `outdir`
+       * pointed. Reverting that one option to `dist` would leave the property above still true, because
+       * the cleanup handler would remove the artifacts after the fact — but it would restore the WINDOW in
+       * which a partial package exists, and this assertion is what fails when it does.
+       */
+      const emittedPaths = `${run.stdout}${run.stderr}`;
+      expect(emittedPaths).toContain(
+        `build-meta${sep}package-staging${sep}handlers${sep}router.js`,
+      );
+      expect(emittedPaths).not.toContain(`dist${sep}handlers${sep}router.js`);
+
+      /*
+       * ⭐ THE WHOLE OF FINDING F3, AS TWO ASSERTIONS. No package remains, and no staging tree remains.
+       * `dist/` is absent because the promoting `rename` is the only writer of it and never ran; the
+       * staging tree is absent because the failure handler removed it.
+       */
+      expect(existsSync(PACKAGE_DIR)).toBe(false);
+      expect(existsSync(STAGING_DIR)).toBe(false);
+    },
+    BUILD_CASE_TIMEOUT_MS,
+  );
+
+  it(
+    '[NET-NEW] a failure in the LAST step before promotion is equally clean, and a rebuild restores the package',
+    () => {
+      expect(runBuildScript().status).toBe(0);
+
+      const run = runBuildPipelineWithFault(
+        'assert-require-closure',
+        "throw new Error('injected pre-promotion failure');",
+      );
+
+      expect(run.status).not.toBe(0);
+      expect(run.stdout).toContain('injected pre-promotion failure');
+
+      /* Every step but the promotion ran — including the manifest and the dependency staging, so the
+       * staging tree was fully assembled — and `dist/` is still absent. */
+      expect(run.stdout).toContain('[esbuild] step:     stage-dependencies');
+      expect(run.stdout).not.toContain('[esbuild] step:     promote');
+      expect(existsSync(PACKAGE_DIR)).toBe(false);
+      expect(existsSync(STAGING_DIR)).toBe(false);
+
+      /* And the next build succeeds from that state, leaving a complete package for anything that reads
+       * `dist/` after this suite. */
+      expect(runBuildScript().status).toBe(0);
+      expect(readdirSync(PACKAGE_DIR).sort()).toStrictEqual([
+        'handlers',
+        'node_modules',
+        'package.json',
+      ]);
+    },
+    BUILD_CASE_TIMEOUT_MS,
+  );
+});
+
+/* =====================================================================================================
+ * NET-NEW — THE COMPOSITION ROOT AND THE AGGREGATE ROUTER (F5)
+ * =====================================================================================================
+ * WHY THIS SECTION EXISTS. A QA pass found that no approved suite imported `createCatalogContainer`,
+ * `getCatalogContainer` or `createRouter`, so the approved corpus did not constrain the FINAL WIRING at
+ * all — not the memoisation of the production graph, not whether an override reaches the collaborator
+ * that reads it, not the polarity of the uniqueness probe, not which boundary stub a graph selects, not
+ * the per-transaction rebuild, and not the aggregate address space. Every one of those is a place where
+ * this subtree can be WRONG while every unit case stays green, which is precisely what makes them worth
+ * pinning here rather than leaving to source inspection.
+ *
+ * ⭐ WHY THIS HOST. Both files belong to no single service: the container wires all five surfaces and the
+ * router mounts all five, so their coverage belongs in the suite for cross-cutting behaviour — the same
+ * argument that put `httpResponse` and the six entry artifacts below.
+ *
+ * ⚠️ THE TWO MODULES ARE REACHED BY `require` AFTER `process.env` IS SET, and the reason is a property of
+ * the subjects rather than a convenience. `src/config/container.ts` statically imports `src/config/env.ts`,
+ * which builds and freezes its configuration at MODULE LOAD and throws naming the offending variable when
+ * a required value is missing; `src/handlers/router.ts` additionally resolves the production graph at
+ * module scope, which its own doc block defends as the contract rather than an optimisation. A static
+ * import would therefore run both of those at the top of this FILE, where they would decide whether every
+ * unrelated case in it could even load.
+ *
+ * ⛔ AND NOTHING HERE CONTACTS A DATABASE — measured, not assumed. `src/config/database.ts` creates the
+ * `mysql2` pool at module scope, but `createPool` is synchronous and opens no connection until one is
+ * checked out, so building a graph costs a set of constructor calls. Every case below is arranged so that
+ * no statement is ever issued: the two write boundaries are only inspected or substituted, the uniqueness
+ * port is supplied, the smart-list port is supplied where a route would otherwise read, and the one case
+ * that drives a real save drives it to a VALIDATION failure, which is the branch that returns before the
+ * first persist. A case that regressed into touching the pool would fail on a connection error rather
+ * than pass slowly, so the property is self-policing.
+ * ================================================================================================== */
+
+/**
+ * Every variable `src/config/env.ts` reads, cleared before each wiring case applies its own.
+ *
+ * Exhaustive on purpose, and for the same reason the folded loader section below gives: a value left
+ * behind by the ambient environment of the machine running the suite could otherwise decide whether a
+ * case passes. A variable added to the loader without being added here surfaces as a load failure naming
+ * itself rather than as a silent pass.
+ */
+const WIRING_VARIABLE_NAMES: readonly string[] = Object.freeze([
+  'DB_HOST',
+  'DB_PORT',
+  'DB_NAME',
+  'DB_USER',
+  'DB_PASSWORD',
+  'DB_TLS_MODE',
+  'DB_CONNECTION_LIMIT',
+  'DB_QUEUE_LIMIT',
+  'DB_CONNECT_TIMEOUT_MS',
+  'GOOGLE_FEED_HOST',
+  'SETTING_APPLICATION_ROOT_MAPPING_PATH',
+  'SETTING_SKU_ELIGIBLE_CURRENCIES',
+  'SETTING_SKU_ELIGIBLE_FULFILLMENT_METHODS',
+]);
+
+/**
+ * A valid environment for the wiring cases.
+ *
+ * `DB_QUEUE_LIMIT` is `'1'` rather than `'0'` because the loader enforces a floor of 1, and
+ * `DB_CONNECT_TIMEOUT_MS` is deliberately SHORT: no case is supposed to reach the driver, so the value
+ * exists only to bound the failure of a case that regressed into doing so.
+ */
+const WIRING_ENVIRONMENT: Readonly<Record<string, string>> = Object.freeze({
+  DB_HOST: 'localhost',
+  DB_PORT: '3306',
+  DB_NAME: 'Slatwall',
+  DB_USER: 'slatwall',
+  DB_PASSWORD: 'slatwall_pw',
+  DB_TLS_MODE: 'disabled',
+  DB_CONNECTION_LIMIT: '10',
+  DB_QUEUE_LIMIT: '1',
+  DB_CONNECT_TIMEOUT_MS: '1000',
+  GOOGLE_FEED_HOST: 'catalog.example.test',
+
+  /* SEC-1 — `google:feed.product` is the one ANONYMOUS address in the slice, and the gate the composition
+   * root builds refuses an UNBOUNDED anonymous materialisation. This section drives the real router at that
+   * address, so a fixture stating no ceiling would answer 500 from the gate rather than the document the
+   * case is about. The figure is the fixture's: `../../src/config/env.ts` declares the variable OPTIONAL with
+   * no default (IR-12), and the gate's own refuse/render behaviour is asserted by the dedicated SEC-1 cases
+   * rather than incidentally here. */
+  CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY: '5000',
+});
+
+/** The environment as the process held it before this section touched it. */
+const ENVIRONMENT_BEFORE_WIRING: Readonly<Record<string, string | undefined>> = Object.freeze({
+  ...process.env,
+});
+
+/** The two factories the composition root publishes. */
+interface ShippedWiring {
+  readonly createCatalogContainer: (overrides?: CatalogContainerOverrides) => CatalogContainer;
+  readonly getCatalogContainer: () => CatalogContainer;
+}
+
+/**
+ * Load the composition root afresh against {@link WIRING_ENVIRONMENT}.
+ *
+ * Fresh matters for the memoisation case in particular: `jest.resetModules()` discards the module
+ * registry, so the module-scope memo cell the accessor writes into is a NEW cell each time and one case
+ * cannot observe another's production graph.
+ *
+ * @returns the two published factories
+ */
+function loadShippedWiring(): ShippedWiring {
+  for (const name of WIRING_VARIABLE_NAMES) {
+    delete process.env[name];
+  }
+  Object.assign(process.env, WIRING_ENVIRONMENT);
+
+  jest.resetModules();
+
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('../../src/config/container') as ShippedWiring;
+}
+
+/**
+ * Load the aggregate router's FACTORY, against a container module loaded the same way.
+ *
+ * ⚠️ LOADING THE ROUTER BUILDS THE PRODUCTION GRAPH, because `const routeCatalogRequest =
+ * createRouter(getCatalogContainer())` runs at its module scope. That is the file's own declared
+ * contract, it opens no connection, and the graph it builds is then unused: every case below builds its
+ * own with `createRouter(container)`. So the side effect is accepted rather than worked around, and it is
+ * named here so a reader does not mistake the load for a leak.
+ *
+ * @returns the router factory and the container factories, from one consistent module registry
+ */
+function loadShippedRouterWiring(): ShippedWiring & {
+  readonly createRouter: (
+    container: CatalogContainer,
+  ) => (event: APIGatewayProxyEvent) => Promise<APIGatewayProxyResult>;
+} {
+  const wiring = loadShippedWiring();
+
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const routerModule = require('../../src/handlers/router') as {
+    readonly createRouter: (
+      container: CatalogContainer,
+    ) => (event: APIGatewayProxyEvent) => Promise<APIGatewayProxyResult>;
+  };
+
+  return { ...wiring, createRouter: routerModule.createRouter };
+}
+
+/** Population permitted, so a populated property is observable rather than silently denied. */
+const WIRING_ALLOW_POPULATION = Object.freeze({
+  getPublicPopulateFlag: (): boolean => true,
+  authenticateEntityProperty: (): boolean => true,
+});
+
+/**
+ * A uniqueness port that answers "unique" and "available" for everything.
+ *
+ * ⚠️ SUPPLIED FOR A REASON, AND THE REASON IS NOT SPEED. `src/validation/Validator.ts` evaluates the
+ * `unique` constraints of the brand and product rule sets by CALLING this port, so a graph left with the
+ * production `UniquePropertyChecker` would issue a statement during validation. Overriding it keeps every
+ * case below off the driver while leaving the rest of the real graph intact.
+ */
+const WIRING_UNIQUENESS_SATISFIED: UniquePropertyPort = Object.freeze({
+  isUniqueProperty: (): Promise<boolean> => Promise.resolve(true),
+  isUrlTitleAvailable: (): Promise<boolean> => Promise.resolve(true),
+});
+
+/** A smart-list port that answers empty for both readings, so a route can resolve without a driver. */
+const WIRING_EMPTY_SMART_LIST: SmartListQueryPort = Object.freeze({
+  executeRecords: <TRecord>(): Promise<TRecord[]> => Promise.resolve([]),
+  execute: <TRecord>() =>
+    Promise.resolve({
+      records: [] as TRecord[],
+      pageRecords: [] as TRecord[],
+      recordsCount: 0,
+      pageRecordsStart: 1,
+      pageRecordsEnd: 0,
+      currentPage: 1,
+      totalPages: 0,
+    }),
+});
+
+/** The invocation shape the dispatcher reads: the action, and nothing else it consults. */
+function wiringEventFor(action: string | undefined): APIGatewayProxyEvent {
+  return {
+    queryStringParameters: action === undefined ? null : { [SLAT_ACTION_PARAMETER]: action },
+    headers: {},
+  } as unknown as APIGatewayProxyEvent;
+}
+
+/**
+ * Run `operation` and answer whatever it failed with, whether it threw or rejected.
+ *
+ * ⚠️ TWO REASONS IT CANNOT BE `expect(...).rejects.toThrow(SomeClass)`, and both are properties of the
+ * subject rather than of this suite.
+ *
+ * FIRST, THE BOUNDARY STUBS THROW SYNCHRONOUSLY EVEN WHERE THEIR PORT DECLARES A PROMISE.
+ * `src/config/container.ts` implements each refusing member as `() => refuseBoundary(...)`, whose return
+ * type is `never` and which therefore satisfies a `Promise`-returning signature without ever constructing
+ * one. So the failure arrives as a THROW at the call site, not as a rejected promise, and `.rejects` never
+ * sees it. That is faithful rather than accidental — a refusal that cannot be mistaken for data should not
+ * have to be awaited to be noticed — so this helper accommodates the subject instead of the subject being
+ * bent to the matcher.
+ *
+ * SECOND, THE CLASS OBJECT IS NOT THE ONE THIS FILE IMPORTED. {@link loadShippedWiring} calls
+ * `jest.resetModules()`, so the freshly required graph carries its OWN `DomainError` hierarchy;
+ * `toThrow(NotImplementedError)` then fails with the unreadable "Expected constructor:
+ * NotImplementedError / Received constructor: NotImplementedError". The observable identity is
+ * `error.name`, which `src/errors/DomainError.ts` sets from `new.target.name`, so that is what the case
+ * asserts — together with the message, which is the part a log would carry.
+ *
+ * @param operation the refusing call
+ * @returns what it failed with, or `undefined` when it did not fail at all
+ */
+async function captureWiringFailure(operation: () => unknown): Promise<unknown> {
+  try {
+    return await operation();
+  } catch (failure) {
+    return failure;
+  }
+}
+
+describe('NET-NEW — the composition root, which no approved suite used to reach (F5)', () => {
+  afterEach(() => {
+    for (const name of WIRING_VARIABLE_NAMES) {
+      const before = ENVIRONMENT_BEFORE_WIRING[name];
+      if (before === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = before;
+      }
+    }
+  });
+
+  /* ================================================================================================
+   * F5 CASE 1 — A FRESH GRAPH, THE MEMOIZED GRAPH, AND THE ONE EXPLICIT RESET
+   * ============================================================================================== */
+
+  it('[NET-NEW] builds a FRESH graph per explicit call and memoizes exactly one production graph (F5 case 1)', () => {
+    const { createCatalogContainer, getCatalogContainer } = loadShippedWiring();
+
+    /* Two explicit builds are two graphs, all the way down. This is what makes a double handed to one
+     * of them unable to reach the other, which every case in this file that builds a graph relies on. */
+    const first = createCatalogContainer();
+    const second = createCatalogContainer();
+    expect(first).not.toBe(second);
+    expect(first.productService).not.toBe(second.productService);
+    expect(first.skuRepository).not.toBe(second.skuRepository);
+    expect(first.unitOfWork).not.toBe(second.unitOfWork);
+
+    /* The production accessor memoizes, which is AAP §0.4.1.3's warm-container requirement and the port
+     * of the DI/1 singleton registration at `org/Hibachi/Hibachi.cfc:L298-L330`. Identity, not
+     * equivalence: a per-call rebuild would answer an equal graph and fail only this assertion. */
+    const production = getCatalogContainer();
+    expect(getCatalogContainer()).toBe(production);
+    expect(getCatalogContainer().productService).toBe(production.productService);
+    expect(getCatalogContainer().productWriteRunner).toBe(production.productWriteRunner);
+
+    /*
+     * ⛔ AND THE MEMOIZED GRAPH IS NOT EITHER EXPLICIT BUILD, WHICH IS THE WHOLE POINT OF THE ACCESSOR
+     * TAKING NO ARGUMENT. `createCatalogContainer` is where a substitution belongs; if the accessor
+     * accepted overrides — or returned a graph a test had built — a double could reach the graph a warm
+     * container reuses across invocations, and one invocation's stand-in would serve the next one's
+     * request.
+     */
+    expect(production).not.toBe(first);
+    expect(production).not.toBe(second);
+    expect(getCatalogContainer).toHaveLength(0);
+  });
+
+  it('[NET-NEW] freezes the graph, so a caller can read the wiring and can never re-point it (F5 case 1)', () => {
+    const { createCatalogContainer } = loadShippedWiring();
+    const container = createCatalogContainer();
+
+    /* S3: the graph is a declaration, not a registry. There is no `get(name)`, no indexer and no
+     * mutation — which is what stops the DI/1 name-keyed lookup being reproduced in a new idiom. */
+    expect(Object.isFrozen(container)).toBe(true);
+  });
+
+  it('[NET-NEW] beginInvocation is the explicit reset, and it discards ONLY request-scoped state (F5 case 1)', () => {
+    const { createCatalogContainer } = loadShippedWiring();
+    const container = createCatalogContainer();
+
+    /*
+     * ⭐ IT IS A BOUNDARY FOR ONE MEMO, NOT A GRAPH REBUILD — mismatch M7. The sorted-SKU ordering needs
+     * the next option-group sort order [`model/dao/SkuDAO.cfc:L204-L220`], which the legacy memoized in a
+     * SINGLETON DAO's `variables` scope where it outlived every request, and which is scoped to the whole
+     * option-group table rather than to any product [`:L210-L212`]. So on a warm container one caller's
+     * value would silently weight a later, unrelated caller's ordering. Discarding that value must NOT
+     * cost the graph: a rebuild here would throw away the pool reuse the memoisation above exists for.
+     */
+    const before = {
+      productService: container.productService,
+      skuService: container.skuService,
+      skuRepository: container.skuRepository,
+      unitOfWork: container.unitOfWork,
+      productWriteRunner: container.productWriteRunner,
+    };
+
+    container.beginInvocation();
+    container.beginInvocation();
+    container.beginInvocation();
+
+    expect(container.productService).toBe(before.productService);
+    expect(container.skuService).toBe(before.skuService);
+    expect(container.skuRepository).toBe(before.skuRepository);
+    expect(container.unitOfWork).toBe(before.unitOfWork);
+    expect(container.productWriteRunner).toBe(before.productWriteRunner);
+
+    /* Calling it repeatedly is harmless and calling it never is what the legacy did, so neither may be a
+     * failure. It takes no argument, because there is nothing to scope the discard to. */
+    expect(container.beginInvocation).toHaveLength(0);
+  });
+
+  /* ================================================================================================
+   * F5 CASE 2 — OVERRIDE PROPAGATION, AND THE PROBE POLARITY
+   * ============================================================================================== */
+
+  it('[NET-NEW] hands every supplied override onward BY IDENTITY, and falls back per slot (F5 case 2)', () => {
+    const { createCatalogContainer } = loadShippedWiring();
+
+    const settings = createSettingResolverDouble({ settings: [] });
+    const smartList = createSmartListQueryDouble();
+    const productRepository = createInMemoryProductRepository();
+    const skuRepository = createInMemorySkuRepository();
+    const optionRepository = createInMemoryOptionRepository();
+    const brandRepository = createInMemoryBrandRepository();
+    const imagePaths = createImagePathDouble();
+    const accountContext = createAccountContextDouble();
+
+    const container = createCatalogContainer({
+      settings: settings.resolver,
+      smartListQueryPort: smartList.smartList,
+      productRepository: productRepository.repository,
+      skuRepository: skuRepository.repository,
+      optionRepository: optionRepository.repository,
+      brandRepository: brandRepository.repository,
+      imagePaths: imagePaths.imagePaths,
+      accountContext: accountContext.accountContext,
+      uniqueProperty: WIRING_UNIQUENESS_SATISFIED,
+    });
+
+    /*
+     * ⚠️ IDENTITY, NOT EQUIVALENCE, AND THE DISTINCTION IS THE ASSERTION. A graph that COPIED, wrapped or
+     * re-derived a supplied collaborator would still satisfy every structural check while making a
+     * double's recorded calls not the calls the service actually made — which would make every
+     * observation in this file's other sections an observation of the wrong object.
+     */
+    expect(container.settings).toBe(settings.resolver);
+    expect(container.smartListQueryPort).toBe(smartList.smartList);
+    expect(container.productRepository).toBe(productRepository.repository);
+    expect(container.skuRepository).toBe(skuRepository.repository);
+    expect(container.optionRepository).toBe(optionRepository.repository);
+    expect(container.brandRepository).toBe(brandRepository.repository);
+    expect(container.imagePaths).toBe(imagePaths.imagePaths);
+    expect(container.accountContext).toBe(accountContext.accountContext);
+    expect(container.uniqueProperty).toBe(WIRING_UNIQUENESS_SATISFIED);
+
+    /*
+     * ⭐ AND THE FALLBACK IS PER SLOT RATHER THAN ALL-OR-NOTHING, which is what makes a PARTIAL override
+     * set usable at all: an omitted member resolves to the production collaborator, never to `undefined`.
+     * Under `exactOptionalPropertyTypes` an omitted slot is ABSENT rather than `undefined`, which is why
+     * every member of the overrides interface is optional rather than nullable.
+     */
+    expect(container.productTypeRepository).toBeDefined();
+    expect(container.validator).toBeDefined();
+    expect(container.queryRunner).toBeDefined();
+    expect(container.unitOfWork).toBeDefined();
+    expect(container.productFeedBuilder).toBeDefined();
+    expect(container.googleIntegration).toBeDefined();
+
+    /* Nothing supplied leaks into a slot that was not named — the pricing boundary is still the stub. */
+    expect(container.pricing).not.toBe(imagePaths.imagePaths);
+  });
+
+  it('[NET-NEW] wires the brand URL-title probe with `true === available` polarity (F5 case 2)', async () => {
+    const { createCatalogContainer } = loadShippedWiring();
+
+    /*
+     * ⚠️⚠️ THE POLARITY IS THE WHOLE CASE, AND NEITHER FAILURE MODE IS A TYPE ERROR.
+     * `model/service/DataService.cfc:L64` loops `while(!unique)`, so a probe read as inverted does not
+     * merely answer wrongly: read one way it NEVER TERMINATES for a free title, and read the other it
+     * hands out DUPLICATE titles. A container that inverted the wiring would pass every service-level
+     * case in this project, because every one of those supplies its own probe.
+     *
+     * ⭐ SO IT IS ASSERTED IN BOTH DIRECTIONS, AS A SEQUENCE. Answering available immediately must keep
+     * the bare candidate; answering taken once must move to the next; answering taken twice must move
+     * again. An inverted reading cannot produce all three of these results.
+     *
+     * ⭐ AND THE FIRST COLLISION SUFFIX IS `-2`, NOT `-1`, because the legacy counter is PRE-incremented
+     * [`model/service/DataService.cfc:L53-L71`]. That detail is carried by `src/util/urlTitle.ts` and is
+     * observable here only because the real routine is in the graph rather than a stand-in for it.
+     */
+    const observed: string[] = [];
+    for (const attempt of [
+      { availability: [true], expected: 'nike-air' },
+      { availability: [false, true], expected: 'nike-air-2' },
+      { availability: [false, false, true], expected: 'nike-air-3' },
+    ]) {
+      const container = createCatalogContainer({
+        brandRepository: createInMemoryBrandRepository({
+          urlTitleAvailability: attempt.availability,
+        }).repository,
+        populationAuthorization: WIRING_ALLOW_POPULATION,
+        uniqueProperty: WIRING_UNIQUENESS_SATISFIED,
+      });
+
+      /* The payload is mutated BY REFERENCE at `model/service/BrandService.cfc:L70`, and the populated
+       * entity then carries the same value — so both readings are asserted. */
+      const payload: Record<string, unknown> = { brandName: 'Nike Air' };
+      const saved = await container.brandService.saveBrand(
+        container.brandService.newBrand(),
+        payload,
+      );
+
+      expect(payload['urlTitle']).toBe(attempt.expected);
+      expect(saved.urlTitle).toBe(attempt.expected);
+      expect(saved.hasErrors()).toBe(false);
+      observed.push(attempt.expected);
+    }
+
+    expect(observed).toStrictEqual(['nike-air', 'nike-air-2', 'nike-air-3']);
+  });
+
+  it('[NET-NEW] serves the brand surface from the REPOSITORY probe and the product surface from the graph probe (F5 case 2)', async () => {
+    const { createCatalogContainer } = loadShippedWiring();
+
+    /*
+     * ⭐ THERE ARE TWO PROBES, AND CONFLATING THEM IS AN EASY, INVISIBLE WIRING ERROR.
+     * `src/config/container.ts` states the split in its own words: `BrandService` reaches its uniqueness
+     * probe through the repository's `isUrlTitleAvailable`, which is brand-scoped and therefore takes NO
+     * table, while `ProductService` serves TWO tables — `SwProduct` and `SwProductType` — through the
+     * table-taking `CatalogContainerOverrides.isUrlTitleAvailable`. A graph that routed brand through the
+     * table-taking probe would still work, and would silently make the brand's own repository seam dead
+     * code; this case is what makes that rewiring observable.
+     */
+    const graphProbe: { table: string; candidate: string }[] = [];
+    const container = createCatalogContainer({
+      brandRepository: createInMemoryBrandRepository().repository,
+      populationAuthorization: WIRING_ALLOW_POPULATION,
+      uniqueProperty: WIRING_UNIQUENESS_SATISFIED,
+      isUrlTitleAvailable: (table: string, candidate: string) => {
+        graphProbe.push({ table, candidate });
+
+        /* Taken once, then available — so the candidate SEQUENCE is observable, not just the first ask. */
+        return Promise.resolve(graphProbe.length >= 2);
+      },
+    });
+
+    /* HALF ONE — the brand save consults the repository, so the graph probe stays untouched. */
+    const brandPayload: Record<string, unknown> = { brandName: 'Nike Air' };
+    await container.brandService.saveBrand(container.brandService.newBrand(), brandPayload);
+    expect(brandPayload['urlTitle']).toBe('nike-air');
+    expect(graphProbe).toStrictEqual([]);
+
+    /*
+     * HALF TWO — the product save consults the graph probe, against `SwProduct`.
+     *
+     * ⛔ AND IT IS DRIVEN TO A VALIDATION FAILURE DELIBERATELY, WHICH IS WHAT KEEPS THIS CASE OFF THE
+     * DRIVER. `ProductService.saveProduct` assigns the unique title FIRST [`:L268-L270`] and only then
+     * validates; the parent-row write at step 4a is guarded by `productIsNew && !product.hasErrors()`, so
+     * an empty payload — no product name, no code, no product type — takes the branch that returns before
+     * anything is persisted. The probe has already run by then, which is the only thing asserted.
+     */
+    const product = await container.productService.saveProduct(
+      container.productService.newProduct(),
+      {},
+    );
+
+    expect(graphProbe.map((call) => call.table)).toStrictEqual(['SwProduct', 'SwProduct']);
+    expect(graphProbe[1]?.candidate).toBe(`${String(graphProbe[0]?.candidate)}-2`);
+    expect(product.urlTitle).toBe(graphProbe[1]?.candidate);
+
+    /* The guard held: validation failed, so nothing was written and the row was never minted. */
+    expect(product.hasErrors()).toBe(true);
+    expect(product.isNew()).toBe(true);
+  });
+
+  /* ================================================================================================
+   * F5 CASE 3 — THE BOUNDARY STUBS THE GRAPH SELECTS, AND THE TWO WRITE RUNNERS
+   * ============================================================================================== */
+
+  it('[NET-NEW] selects a RAISING stub for every port with no in-scope adapter (F5 case 3)', async () => {
+    const { createCatalogContainer } = loadShippedWiring();
+    const container = createCatalogContainer();
+
+    /*
+     * ⭐ EVERY STUB RAISES, AND NOTHING ANSWERS A PLAUSIBLE VALUE. A stub answering `null`, `undefined`,
+     * `''`, `0` or a fabricated price would be an invented behaviour (S9) and — worse — would be
+     * INDISTINGUISHABLE FROM DATA at the call site. Five ports stand for excluded families:
+     * `Subscription*`, `Content*`, the `PriceGroup*`/`Currency*`/`Promotion*` trio, the request-scoped
+     * account lookup, and the dynamically-resolved image service of AAP §0.6.3.2. All five must refuse.
+     *
+     * The error TYPE carries the meaning as much as the throw does, so it is asserted: `NotImplementedError`
+     * is what `src/handlers/httpResponse.ts` converts into a boundary refusal rather than a generic fault.
+     */
+    const refusals: readonly {
+      readonly member: string;
+      readonly operation: () => unknown;
+      readonly collaborator: string;
+    }[] = [
+      {
+        member: 'ImagePathPort.getImagePath',
+        operation: () => container.imagePaths.getImagePath('nike-air.jpg'),
+        /* AAP §0.6.3.2's hidden dynamic dependency: never declared as a property, resolved by string. */
+        collaborator: 'imageService',
+      },
+      {
+        member: 'SubscriptionTermPort.getSubscriptionTerm',
+        operation: () => container.subscriptionTerms.getSubscriptionTerm('term'),
+        collaborator: 'subscriptionService',
+      },
+      {
+        member: 'AccessContentPort.getContent',
+        operation: () => container.accessContent.getContent('content'),
+        collaborator: 'contentService',
+      },
+      {
+        member: 'PricingPort.getSalePriceDetailsForProductSkus',
+        operation: () => container.pricing.getSalePriceDetailsForProductSkus('product'),
+        collaborator: 'priceGroupService',
+      },
+      {
+        member: 'AccountContextPort.getCurrentAccount',
+        operation: () => container.accountContext.getCurrentAccount(),
+        collaborator: 'resolved per invocation at the handler edge',
+      },
+    ];
+
+    for (const refusal of refusals) {
+      const failure = await captureWiringFailure(refusal.operation);
+
+      /* It failed at all — the assertion a fabricated `null`, `''` or `0` would defeat. */
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).name).toBe('NotImplementedError');
+      /* It names the refusing MEMBER, so a log identifies which boundary was crossed … */
+      expect((failure as Error).message).toContain(refusal.member);
+      /* … and the COLLABORATOR that owns the real behaviour, so it identifies what is missing. */
+      expect((failure as Error).message).toContain(refusal.collaborator);
+    }
+
+    /* The statically imported class is still the right SHAPE, even though it is not the same object as
+     * the graph's — asserted here so the identity caveat above reads as measured rather than assumed. */
+    expect(new NotImplementedError('Port.member', 'reason').name).toBe('NotImplementedError');
+  });
+
+  it('[NET-NEW] wires the population gate FAIL-CLOSED rather than raising, and lets a deployment supply one (F5 case 3)', () => {
+    const { createCatalogContainer } = loadShippedWiring();
+
+    /*
+     * ⭐ THE ONE DELIBERATE ASYMMETRY IN THE STUB SET. A raise would REFUSE population outright where the
+     * legacy asked a question and got an answer; a permissive default would be STRICTLY MORE PERMISSIVE
+     * than the system being replaced, which is the one outcome `src/ports/AccountContextPort.ts` forbids.
+     * `false`/`false` is the legacy's own default at `org/Hibachi/HibachiTransient.cfc:L186`.
+     */
+    const shipped = createCatalogContainer();
+    expect(shipped.populationAuthorization.getPublicPopulateFlag()).toBe(false);
+    expect(
+      shipped.populationAuthorization.authenticateEntityProperty({
+        /* `'update'` is a LITERAL on the port, not a CRUD vocabulary: it is the only value
+         * `org/Hibachi/HibachiTransient.cfc:L190` passes, and widening it would be invention (S9). */
+        crudType: 'update',
+        entityName: 'Product',
+        propertyName: 'productName',
+      }),
+    ).toBe(false);
+
+    /* Replaced wholesale, which is how a deployment — or the polarity case above — supplies a real one. */
+    const supplied = createCatalogContainer({
+      populationAuthorization: WIRING_ALLOW_POPULATION,
+    });
+    expect(supplied.populationAuthorization).toBe(WIRING_ALLOW_POPULATION);
+    expect(supplied.populationAuthorization.getPublicPopulateFlag()).toBe(true);
+  });
+
+  it('[NET-NEW] exposes both transaction boundaries as WHOLE runners, substitutable only as such (F5 case 3)', async () => {
+    const { createCatalogContainer } = loadShippedWiring();
+
+    /*
+     * ⚠️ THE RUNNERS ARE NOT DECOMPOSABLE, AND THAT IS A CONSEQUENCE RATHER THAN A CHOICE. A scoped graph
+     * is built by constructing the MySQL adapters against THE BOUNDARY'S OWN executor, because re-binding
+     * to that executor is what makes a write transactional (M5) and what lets AAP §0.6.2's
+     * `hasUniqueOptions` read-back observe the batch's own uncommitted siblings (M6). A port-typed double
+     * has no executor to re-bind, so a repository or probe override cannot reach inside a boundary even in
+     * principle — which is why substituting the runner itself is the honest seam, and why this case
+     * asserts that the seam exists and is complete.
+     */
+    const container = createCatalogContainer();
+    expect(typeof container.productWriteRunner.runWrite).toBe('function');
+    expect(typeof container.skuWriteRunner.runWrite).toBe('function');
+    expect(container.productWriteRunner).not.toBe(container.skuWriteRunner);
+
+    /* The two-argument shape is the contract: the work, and the commit gate read once after it settles. */
+    expect(container.productWriteRunner.runWrite).toHaveLength(2);
+    expect(container.skuWriteRunner.runWrite).toHaveLength(2);
+
+    const suppliedGraphs: unknown[] = [];
+    const gateReadings: boolean[] = [];
+    const substituted = createCatalogContainer({
+      productWriteRunner: {
+        runWrite: async <TResult>(
+          work: (graph: never) => Promise<TResult>,
+          hasErrors: () => boolean,
+        ): Promise<TResult> => {
+          /* A double supplied here decides BOTH what the graph contains and whether the unit commits. */
+          const graph = { marker: 'substituted' } as unknown as never;
+          suppliedGraphs.push(graph);
+          const produced = await work(graph);
+          gateReadings.push(hasErrors());
+
+          return produced;
+        },
+      },
+    });
+
+    const answer = await substituted.productWriteRunner.runWrite(
+      /* Promise-returning without `async`, because the unit awaits nothing: the boundary's contract is
+       * `(graph) => Promise<TResult>`, and an `async` body with no `await` in it would only satisfy that
+       * contract by accident of the keyword. */
+      (graph) => {
+        expect(graph).toBe(suppliedGraphs[0]);
+
+        return Promise.resolve('ran');
+      },
+      () => false,
+    );
+
+    expect(answer).toBe('ran');
+    expect(suppliedGraphs).toHaveLength(1);
+    expect(gateReadings).toStrictEqual([false]);
+
+    /*
+     * ⛔ AND THE POOL-BOUND SERVICE IS A DIFFERENT OBJECT FROM ANYTHING A BOUNDARY HANDS OUT, which is
+     * what makes "calling the pool-bound service inside an open transaction" a detectable mistake rather
+     * than a silent one: its writes would land on another connection, sit outside the unit being
+     * committed, and survive a roll-back with nothing reporting a problem.
+     */
+    expect(substituted.productService).not.toBe(suppliedGraphs[0]);
+    expect(substituted.productWriteRunner).not.toBe(container.productWriteRunner);
+  });
+});
+
+describe('NET-NEW — the aggregate router, which no approved suite used to reach (F5)', () => {
+  afterEach(() => {
+    for (const name of WIRING_VARIABLE_NAMES) {
+      const before = ENVIRONMENT_BEFORE_WIRING[name];
+      if (before === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = before;
+      }
+    }
+  });
+
+  /* ================================================================================================
+   * F5 CASES 4 AND 5 — THE INVOCATION HOOK, AND ONE ADDRESS PER SURFACE
+   * ============================================================================================== */
+
+  it('[NET-NEW] serves one representative address on every one of the five surfaces (F5 case 5)', async () => {
+    const { createCatalogContainer, createRouter } = loadShippedRouterWiring();
+    const route = createRouter(
+      createCatalogContainer({ smartListQueryPort: WIRING_EMPTY_SMART_LIST }),
+    );
+
+    /*
+     * ⭐ A 401 IS THE PROOF THE ADDRESS RESOLVED, WHICH IS WHY IT IS THE EXPECTATION RATHER THAN A 200.
+     * `src/handlers/httpResponse.ts` wires `resolveFailClosedAuthorization` into all four catalog
+     * surfaces — a constant unauthenticated, deny-all context — so a gated address that RESOLVES answers
+     * 401 while an address the aggregate does not serve answers 404. The two are distinguishable, and the
+     * assertion below is deliberately both: not-404 says the route exists, 401 says the gate ran.
+     */
+    for (const action of [
+      'product.getProduct',
+      'sku.getSkuBySkuCode',
+      'brand.getBrand',
+      'option.getOptionsForSelect',
+    ]) {
+      const response = await route(wiringEventFor(action));
+
+      expect(response.statusCode).not.toBe(HTTP_STATUS.NOT_FOUND);
+      expect(response.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
+      expect(response.body).toContain('Authentication is required');
+      /* Nothing about the address is echoed back — §8's rule that a refusal describes no input. */
+      expect(response.body).not.toContain(action);
+    }
+
+    /*
+     * ⭐ THE FEED IS THE ONE ANONYMOUS SURFACE, AND ITS ABSENCE OF A GATE IS A PORTED FACT.
+     * `integrationServices/google/controllers/feed.cfc:L54-L56` declares `this.publicMethods="product"`
+     * with `this.anyAdminMethods=""` and `this.secureMethods=""` both EMPTY, so the legacy feed demanded
+     * neither a login nor a permission. It therefore answers 200 with an XML document rather than 401 —
+     * and a graph that had wired a resolver into it would fail here rather than merely be stricter.
+     */
+    const feed = await route(wiringEventFor('google:feed.product'));
+    expect(feed.statusCode).toBe(HTTP_STATUS.OK);
+    expect(feed.headers?.['Content-Type']).toBe('application/xml');
+    expect(feed.body.startsWith('<?xml version="1.0"?>')).toBe(true);
+    expect(feed.body).toContain('xmlns:g="http://base.google.com/ns/1.0"');
+  });
+
+  it('[NET-NEW] begins the invocation FIRST, once per dispatch, whatever the outcome (F5 case 4)', async () => {
+    const { createCatalogContainer, createRouter } = loadShippedRouterWiring();
+
+    /*
+     * ⭐ ORDERING IS THE CLAIM, AND IT IS OBSERVABLE ONLY BY WRAPPING THE HOOK. M7's rule is that the one
+     * piece of request-scoped state the graph carries — the option-group sort-order memo — is discarded
+     * before an invocation reads anything, so on a warm container one request cannot weight another's
+     * ordering. A dispatcher that ran the hook AFTER resolving the route, or skipped it for an
+     * unrecognised action, would leave the previous invocation's value in place for exactly the requests
+     * hardest to reason about.
+     */
+    const events: string[] = [];
+    const base = createCatalogContainer({ smartListQueryPort: WIRING_EMPTY_SMART_LIST });
+    const observed: CatalogContainer = {
+      ...base,
+      beginInvocation: (): void => {
+        events.push('begin');
+        base.beginInvocation();
+      },
+    };
+    const route = createRouter(observed);
+
+    /* A served address, an unserved one, and an absent action: the hook runs for all three. */
+    await route(wiringEventFor('brand.getBrand'));
+    expect(events).toStrictEqual(['begin']);
+
+    await route(wiringEventFor('brand.notAMember'));
+    expect(events).toStrictEqual(['begin', 'begin']);
+
+    await route(wiringEventFor(undefined));
+    expect(events).toStrictEqual(['begin', 'begin', 'begin']);
+  });
+
+  /* ================================================================================================
+   * F5 CASE 6 — THE FOUR SHAPES THAT MUST ALL ANSWER THE SAME NEUTRAL 404
+   * ============================================================================================== */
+
+  it('[NET-NEW] answers one neutral 404 for a missing, blank, unknown or prototype-like action (F5 case 6)', async () => {
+    const { createCatalogContainer, createRouter } = loadShippedRouterWiring();
+    const route = createRouter(
+      createCatalogContainer({ smartListQueryPort: WIRING_EMPTY_SMART_LIST }),
+    );
+
+    /*
+     * ⛔ `Object.hasOwn` IS THE MEMBERSHIP TEST, WHICH IS WHY THE THREE PROTOTYPE SPELLINGS CANNOT RESOLVE.
+     * A plain `routes[action]` would find `__proto__`, `constructor` and `toString` on the prototype chain
+     * and then attempt to invoke them, so an arbitrary query-string value would reach a function the route
+     * table never declared. The four shapes below are answered IDENTICALLY on purpose: an absent action
+     * and an unrecognised one are the same statement about this surface, and distinguishing them would
+     * disclose which addresses exist.
+     */
+    const responses = await Promise.all(
+      [
+        undefined,
+        '',
+        'product.notAMember',
+        'notASurface.getProduct',
+        '__proto__',
+        'constructor',
+        'toString',
+        'hasOwnProperty',
+      ].map((action) => route(wiringEventFor(action))),
+    );
+
+    for (const response of responses) {
+      expect(response.statusCode).toBe(HTTP_STATUS.NOT_FOUND);
+      expect(response.headers?.['Content-Type']).toBe('application/json');
+      expect(JSON.parse(response.body)).toStrictEqual({ message: 'Not found' });
+    }
+
+    /* Byte-identical, not merely equivalent: one answer, composed in one place. */
+    expect(new Set(responses.map((response) => response.body)).size).toBe(1);
+  });
+});
+
+/* =====================================================================================================
+ * FOLDED IN FROM `test/handlers/httpResponse.test.ts` — AAP §0.4.1.12 SUITE ALIGNMENT (F1, F5)
+ * =====================================================================================================
+ * WHY THESE CASES ARE HERE RATHER THAN IN A SUITE OF THEIR OWN. AAP §0.4.1.12 declares exactly seventeen
+ * executable suites, and `test/handlers/httpResponse.test.ts` was not one of them — a QA pass recorded it,
+ * with eighteen siblings, as running outside the declared test plan. The coverage was never the problem;
+ * the file's existence was. So the cases are folded into an approved suite, unchanged.
+ *
+ * ⭐ WHY THIS HOST. `httpResponse` belongs to no single service — all six entry points use it — so its coverage belongs in
+ * the suite for cross-cutting behaviour. That is also where review finding F5's error-to-HTTP conversion
+ * cases belong, and they are the same subject.
+ *
+ * ⭐ AND THIS BODY, TOGETHER WITH THE `entrySurface` BODY BELOW AND THE `googleFeedHandler` BODY IN
+ * `test/integrations/ProductFeedBuilder.test.ts`, IS WHAT DISCHARGES **F5 CASE 7** — the domain, validation and
+ * unknown error-to-HTTP conversions. They are not labelled inline the way cases 1 through 6 and case 8 are,
+ * because the cases predate the finding and folding them carried every title across verbatim; the mapping is
+ * recorded here instead so all eight groups remain traceable from one place.
+ *
+ * ⛔ THE BODY IS WRAPPED IN ONE `describe`, WHICH IS THE WHOLE OF THE MECHANICAL CHANGE. Every helper,
+ * constant and type the folded suite declared at module scope is now block-scoped to this callback, so it
+ * cannot collide with this file's own declarations or with another folded body's — and any `beforeEach`,
+ * `afterEach` or `beforeAll` it carries now applies to its own cases only, never to the host's. Not one
+ * assertion, case name or comment was altered.
+ * ================================================================================================== */
+
+/**
+ * `httpResponse` — the request readers, pinned against the event shapes the AWS platform actually
+ * delivers rather than the ones its TypeScript typings describe.
+ *
+ * AAP authority: the AAP §0.4.4 wildcard row authorises `slatwall-ts/test/**` | CREATE. This file sits
+ * beside the four per-handler boundary suites; they assert what each ROUTED MEMBER answers, and this one
+ * asserts what the SHARED READERS beneath them do with the raw event. Neither duplicates the other.
+ *
+ * =============================================================================================
+ * WHY THIS FILE EXISTS, STATED PLAINLY
+ * =============================================================================================
+ * It did not exist, and its absence is why a real defect shipped. `src/handlers/httpResponse.ts`
+ * narrowed each event container against `null` ONLY, on the strength of the AWS v1 typings declaring
+ * the containers required-and-nullable. That reasoning mistook an annotation for the wire format: API
+ * Gateway's payload format 2.0 — which a Lambda function URL uses, and which the console selects by
+ * default for a new HTTP API integration — OMITS `queryStringParameters` when there is no query string
+ * and omits `pathParameters` unless the route declares one. On that shape
+ * `Object.hasOwn(undefined, name)` and `Object.entries(undefined)` both raise a `TypeError`, and
+ * because the readers run BEFORE the handler's own `try`, the raise ESCAPED the handler entirely —
+ * no status mapping, no body sanitisation, no correlation ID. Measured across the four catalog
+ * handlers, 29 of 33 routed members threw.
+ *
+ * So every case below that says "absent" is pinning that shape, and the shape it is pinning is the
+ * DEFAULT one for a console-wired HTTP API, not an exotic one.
+ *
+ * ⭐ NOT ONE CASE IN THIS FILE NEEDS A CAST, AND THAT IS THE POINT OF THE SIGNATURES IT EXERCISES.
+ * Each reader takes a `Partial<Pick<APIGatewayProxyEvent, …>>` slice, so "the container key is absent"
+ * is expressible as the plain object literal `{}` — a type-level statement that the runtime shape is
+ * legal. A reader declaring the un-partialled slice could only be tested here through a
+ * shape-forcing cast, which is to say the missing test and the missing narrowing had the same cause.
+ *
+ * =============================================================================================
+ * WHAT IS UNDER TEST
+ * =============================================================================================
+ *   - THE THREE-WAY EQUIVALENCE. For every reader, "the container key is absent", "the container is
+ *     `null`" and "the container is present but does not carry the name" answer IDENTICALLY, because
+ *     all three mean the same thing to a caller: nothing was addressed.
+ *   - THE ONE DISTINCTION THAT IS NOT COLLAPSED. An empty string is a VALUE and is returned as one.
+ *     AAP §0.6.1.3 T5 records that an empty option selection legitimately degenerates to every
+ *     option-bearing SKU of a product, so substituting absence for it would feed a different input
+ *     into a member that behaves differently for it.
+ *   - PASS-THROUGH IS ABSOLUTE. No value is trimmed, case-folded, coerced or rewritten by any reader.
+ *   - OWN-KEY READS ONLY. A name colliding with an inherited member of `Object.prototype` is refused,
+ *     so no reader can hand back a function from a signature that promises a string.
+ *
+ * TEST PROVENANCE: every case below is **NET-NEW**. AAP §0.6.5.2 verified that the legacy suite
+ * contains no controller test of any kind — `meta/tests/functional/admin/entity/ProductTest.cfc` is an
+ * empty component with zero test methods — and the readers here port no legacy member: they stand in
+ * for the CFML engine's own population of the `URL`, `FORM` and `CGI` scopes, which no legacy test
+ * exercised because the engine supplied it. Nothing in this file extends a legacy assertion, and none
+ * is labelled as though it did.
+ */
+describe('test/handlers/httpResponse.test.ts — the shared response shaping every handler funnels through (folded, F1, F5)', () => {
+  /* ================================================================================================
+   * readPathParameter
+   * ============================================================================================== */
+
+  describe('readPathParameter — an absent container is absence, never a throw', () => {
+    it('NET-NEW — the container key ABSENT answers `undefined` instead of raising a TypeError', () => {
+      /* The exact probe from the QA reproduction. Before the narrowing it raised
+       * `TypeError: Cannot convert undefined or null to object` with `Function.hasOwn` as its first frame. */
+      expect(readPathParameter({}, 'productID')).toBeUndefined();
+    });
+
+    it('NET-NEW — the three ways of addressing nothing are INDISTINGUISHABLE', () => {
+      const absent = readPathParameter({}, 'productID');
+      const nulled = readPathParameter({ pathParameters: null }, 'productID');
+      const otherName = readPathParameter({ pathParameters: { skuID: 'x' } }, 'productID');
+
+      expect(absent).toBeUndefined();
+      expect(nulled).toBe(absent);
+      expect(otherName).toBe(absent);
+    });
+
+    it('NET-NEW — a present parameter is returned BYTE FOR BYTE, with no trimming or folding', () => {
+      const value = '  Mixed CASE\twith\nwhitespace  ';
+
+      expect(readPathParameter({ pathParameters: { productID: value } }, 'productID')).toBe(value);
+    });
+
+    it('NET-NEW — an EMPTY value is a value, not absence (AAP §0.6.1.3 T5)', () => {
+      /* Collapsing this onto `undefined` would hand a member that treats "" as a legal, meaningful input
+       * the wrong input entirely. The distinction is preserved deliberately. */
+      expect(
+        readPathParameter({ pathParameters: { selectedOptions: '' } }, 'selectedOptions'),
+      ).toBe('');
+    });
+
+    it('NET-NEW — an INHERITED name is refused, so no function can leak through a string signature', () => {
+      /* `Object.hasOwn` is load-bearing: a bare indexed read would resolve `toString` through the
+       * prototype chain and hand back a function from a reader declared to answer `string | undefined`. */
+      expect(readPathParameter({ pathParameters: {} }, 'toString')).toBeUndefined();
+      expect(readPathParameter({ pathParameters: {} }, 'constructor')).toBeUndefined();
+      expect(readPathParameter({ pathParameters: {} }, '__proto__')).toBeUndefined();
+    });
+
+    it('NET-NEW — an OWN key shadowing an inherited name is still read, because it was supplied', () => {
+      expect(readPathParameter({ pathParameters: { toString: 'supplied' } }, 'toString')).toBe(
+        'supplied',
+      );
+    });
+
+    it('NET-NEW — a container carrying an explicitly undefined member answers absence', () => {
+      /* `APIGatewayProxyEventPathParameters` declares its members possibly-absent, so the own-key test
+       * can pass while the value is still nothing. The declared return type covers it and no default is
+       * substituted. */
+      expect(
+        readPathParameter({ pathParameters: { productID: undefined } }, 'productID'),
+      ).toBeUndefined();
+    });
+  });
+
+  /* ================================================================================================
+   * readQueryStringParameter
+   * ============================================================================================== */
+
+  describe('readQueryStringParameter — the container payload format 2.0 omits most often', () => {
+    it('NET-NEW — the container key ABSENT answers `undefined` instead of raising a TypeError', () => {
+      expect(readQueryStringParameter({}, 'fileURL')).toBeUndefined();
+    });
+
+    it('NET-NEW — absent, `null` and present-without-the-name are INDISTINGUISHABLE', () => {
+      const absent = readQueryStringParameter({}, 'fileURL');
+
+      expect(absent).toBeUndefined();
+      expect(readQueryStringParameter({ queryStringParameters: null }, 'fileURL')).toBe(absent);
+      expect(readQueryStringParameter({ queryStringParameters: { term: 'x' } }, 'fileURL')).toBe(
+        absent,
+      );
+    });
+
+    it('NET-NEW — an attacker-chosen name colliding with an inherited member is refused', () => {
+      /* A client chooses query-parameter names freely, so this is the container whose keys are
+       * attacker-influenced — which is why the own-key guard matters more here than for a route template. */
+      expect(readQueryStringParameter({ queryStringParameters: {} }, 'valueOf')).toBeUndefined();
+      expect(
+        readQueryStringParameter({ queryStringParameters: {} }, 'hasOwnProperty'),
+      ).toBeUndefined();
+    });
+
+    it('NET-NEW — a value carrying a SQL payload is forwarded byte-identically as an opaque value', () => {
+      const payload = "' OR 1=1 --";
+
+      expect(readQueryStringParameter({ queryStringParameters: { term: payload } }, 'term')).toBe(
+        payload,
+      );
+    });
+  });
+
+  /* ================================================================================================
+   * readHeader
+   * ============================================================================================== */
+
+  describe('readHeader — the container the AWS typings call always-present', () => {
+    it('NET-NEW — an ABSENT header container answers `undefined` instead of raising a TypeError', () => {
+      /* This reader was NOT among the three the QA finding enumerated, and it carried the identical
+       * defect: `Object.entries(undefined)` raises the same TypeError. It matters more than the other
+       * three, because every gated route calls it FIRST through the authorization gate — so a raise here
+       * escaped before any other reader was reached. */
+      expect(readHeader({}, 'authorization')).toBeUndefined();
+    });
+
+    it('NET-NEW — an absent container and an absent header are answered identically', () => {
+      expect(readHeader({}, 'authorization')).toBe(readHeader({ headers: {} }, 'authorization'));
+    });
+
+    it('NET-NEW — the header NAME is matched without regard to case (RFC 9110)', () => {
+      const event = { headers: { AuThOrIzAtIoN: 'Bearer abc' } };
+
+      expect(readHeader(event, 'authorization')).toBe('Bearer abc');
+      expect(readHeader(event, 'AUTHORIZATION')).toBe('Bearer abc');
+    });
+
+    it('NET-NEW — the header VALUE is never folded, only the name is', () => {
+      expect(readHeader({ headers: { 'x-probe': 'MiXeD' } }, 'X-Probe')).toBe('MiXeD');
+    });
+
+    it('NET-NEW — an inherited member is never mistaken for a received header', () => {
+      /* `Object.entries` yields own enumerable entries only, which is what closes this without a guard. */
+      expect(readHeader({ headers: {} }, 'toString')).toBeUndefined();
+    });
+  });
+
+  /* ================================================================================================
+   * readSmartListInput
+   * ============================================================================================== */
+
+  describe('readSmartListInput — an absent query string is the legal `data={}` case', () => {
+    it('NET-NEW — the container key ABSENT answers the empty input instead of raising a TypeError', () => {
+      expect(readSmartListInput({})).toStrictEqual({});
+    });
+
+    it('NET-NEW — absent and `null` both answer the empty input', () => {
+      expect(readSmartListInput({})).toStrictEqual(
+        readSmartListInput({ queryStringParameters: null }),
+      );
+    });
+
+    it('NET-NEW — an empty result is LEGAL and MEANINGFUL, not a failure', () => {
+      /* It is exactly the `data={}` default at [model/service/SkuService.cfc:L309] and
+       * [model/service/ProductService.cfc:L342], and what every in-repository caller effectively passes. */
+      const input = readSmartListInput({ queryStringParameters: { unrecognised: 'ignored' } });
+
+      expect(input).toStrictEqual({});
+    });
+
+    it('NET-NEW — only the vocabulary the legacy interpreter recognised is forwarded', () => {
+      const input = readSmartListInput({
+        queryStringParameters: {
+          keyword: 'shirt',
+          OrderBy: 'productName|ASC',
+          'P:Show': '10',
+          'F:activeFlag': '1',
+          'FR:price': '10^20',
+          madeUpKey: 'dropped',
+        },
+      });
+
+      expect(input).toStrictEqual({
+        keyword: 'shirt',
+        OrderBy: 'productName|ASC',
+        'P:Show': '10',
+        'F:activeFlag': '1',
+        'FR:price': '10^20',
+      });
+    });
+
+    it('NET-NEW — nothing is defaulted, clamped, ordered or paginated (AAP §0.7.3 S9)', () => {
+      const input = readSmartListInput({ queryStringParameters: { keyword: 'shirt' } });
+
+      expect(Object.keys(input)).toStrictEqual(['keyword']);
+    });
+
+    it('NET-NEW — an inherited member cannot be mistaken for a supplied parameter', () => {
+      expect(readSmartListInput({ queryStringParameters: {} })).toStrictEqual({});
+    });
+  });
+
+  /* ================================================================================================
+   * readBoundedReadWindow
+   * ============================================================================================== */
+
+  describe('readBoundedReadWindow — the absent container is refused, not raised on', () => {
+    it('NET-NEW — the container key ABSENT refuses with the limit named, and does not throw', () => {
+      const result = readBoundedReadWindow({});
+
+      expect(result.present).toBe(false);
+
+      if (!result.present) {
+        expect(result.response.statusCode).toBe(HTTP_STATUS.BAD_REQUEST);
+        expect(JSON.parse(result.response.body)).toStrictEqual({
+          message: 'A "limit" query parameter is required, and must be a positive whole number',
+        });
+      }
+    });
+
+    it('NET-NEW — absent and `null` are refused identically', () => {
+      expect(readBoundedReadWindow({})).toStrictEqual(
+        readBoundedReadWindow({ queryStringParameters: null }),
+      );
+    });
+
+    it('NET-NEW — a stated window is read exactly as stated, with no clamping', () => {
+      const result = readBoundedReadWindow({
+        queryStringParameters: {
+          [BOUNDED_READ_LIMIT_PARAMETER]: '25',
+          [BOUNDED_READ_OFFSET_PARAMETER]: '0',
+        },
+      });
+
+      expect(result.present).toBe(true);
+
+      if (result.present) {
+        expect(result.window).toStrictEqual({ limit: 25, offset: 0 });
+      }
+    });
+  });
+
+  /* ================================================================================================
+   * readJsonObjectBody
+   * ============================================================================================== */
+
+  describe('readJsonObjectBody — three spellings of "no body", all reported as absence', () => {
+    it('NET-NEW — an ABSENT body member reports `absent`, not `malformed`', () => {
+      /* Unlike the container readers this never escaped the error contract — `JSON.parse(undefined)`
+       * parses the STRING "undefined" and throws, and the throw was caught — so the answer was mapped and
+       * safe. It was simply the WRONG REASON: a client told its body was malformed when it sent none
+       * cannot act on that. Payload format 2.0 omits `body` rather than nulling it. */
+      expect(readJsonObjectBody({})).toStrictEqual({ present: false, problem: 'absent' });
+    });
+
+    it('NET-NEW — `null`, the empty string and an absent member all report `absent`', () => {
+      const absent = { present: false, problem: 'absent' };
+
+      expect(readJsonObjectBody({})).toStrictEqual(absent);
+      expect(readJsonObjectBody({ body: null })).toStrictEqual(absent);
+      expect(readJsonObjectBody({ body: '' })).toStrictEqual(absent);
+    });
+
+    it('NET-NEW — genuinely invalid JSON still reports `malformed`, so the two stay distinguishable', () => {
+      expect(readJsonObjectBody({ body: '{"unterminated":' })).toStrictEqual({
+        present: false,
+        problem: 'malformed',
+      });
+    });
+
+    it('NET-NEW — a non-object JSON document reports `notAnObject`', () => {
+      expect(readJsonObjectBody({ body: '"a string"' })).toStrictEqual({
+        present: false,
+        problem: 'notAnObject',
+      });
+      expect(readJsonObjectBody({ body: '[]' })).toStrictEqual({
+        present: false,
+        problem: 'notAnObject',
+      });
+      expect(readJsonObjectBody({ body: 'null' })).toStrictEqual({
+        present: false,
+        problem: 'notAnObject',
+      });
+    });
+
+    it('NET-NEW — a parsed object is returned as-is, and prototype pollution is not performed', () => {
+      const result = readJsonObjectBody({
+        body: '{"brandName":"Acme","__proto__":{"polluted":1}}',
+      });
+
+      expect(result.present).toBe(true);
+
+      if (result.present) {
+        expect(result.value['brandName']).toBe('Acme');
+      }
+
+      expect(Object.prototype).not.toHaveProperty('polluted');
+    });
+
+    it('NET-NEW — duplicate keys keep last-value semantics, which is JSON.parse own behaviour', () => {
+      const result = readJsonObjectBody({ body: '{"brandName":"first","brandName":"second"}' });
+
+      expect(result.present).toBe(true);
+
+      if (result.present) {
+        expect(result.value['brandName']).toBe('second');
+      }
+    });
+  });
+
+  /* ================================================================================================
+   * THE CROSS-READER PROPERTY — no reader raises for ANY combination of absent containers
+   * ============================================================================================== */
+
+  describe('every reader survives an event carrying NONE of the containers it reads', () => {
+    it('NET-NEW — the empty event is answered by all six readers without a single throw', () => {
+      /* The property the 29-of-33 blast radius came down to, asserted once in one place. An event
+       * literal with no containers at all is the most extreme payload-format-2.0 shape, and every reader
+       * answers it with its own documented "nothing was supplied" value. */
+      expect(() => {
+        readPathParameter({}, 'productID');
+        readQueryStringParameter({}, 'term');
+        readHeader({}, 'authorization');
+        readSmartListInput({});
+        readBoundedReadWindow({});
+        readJsonObjectBody({});
+      }).not.toThrow();
+    });
+
+    it('NET-NEW — and answers it identically to the canonical all-null v1 shape', () => {
+      expect(readPathParameter({}, 'productID')).toBe(
+        readPathParameter({ pathParameters: null }, 'productID'),
+      );
+      expect(readQueryStringParameter({}, 'term')).toBe(
+        readQueryStringParameter({ queryStringParameters: null }, 'term'),
+      );
+      expect(readHeader({}, 'authorization')).toBe(readHeader({ headers: {} }, 'authorization'));
+      expect(readSmartListInput({})).toStrictEqual(
+        readSmartListInput({ queryStringParameters: null }),
+      );
+      expect(readBoundedReadWindow({})).toStrictEqual(
+        readBoundedReadWindow({ queryStringParameters: null }),
+      );
+      expect(readJsonObjectBody({})).toStrictEqual(readJsonObjectBody({ body: null }));
+    });
+  });
+
+  /* ================================================================================================
+   * §8.1 — THE DEPLOYMENT AUTHORISATION SEAM
+   *
+   * The CRITICAL callable-boundary defect a code review found was that the shipped composition wired the
+   * deny-all resolver as a literal, so every catalog action answered 401 with no way for a deployment to
+   * supply a principal. These cases pin the remedy from the shared-edge side: the fallback is deny-all,
+   * a registered resolver is consulted PER CALL rather than captured, the request travels through
+   * unchanged, and a second registration is refused rather than silently winning.
+   * ============================================================================================== */
+
+  describe('resolveRequestAuthorization — the deployment seam, fail-closed by default', () => {
+    afterEach(() => {
+      /* The registry is module state, so every case leaves it as it found it. Clearing resets to ABSENT,
+       * which is the fail-closed state — the helper can remove a gate and can never install one. */
+      clearRequestAuthorizationResolver();
+    });
+
+    it('NET-NEW — with nothing registered it answers the same deny-all context as the fallback', () => {
+      const resolved = resolveRequestAuthorization({ headers: {} });
+
+      expect(resolved).toBe(resolveFailClosedAuthorization());
+      expect(resolved.accountContext.getCurrentAccount()).toBeUndefined();
+      expect(
+        resolved.entityAuthorization.authenticateEntity({ crudType: 'read', entityName: 'Sku' }),
+      ).toBe(false);
+    });
+
+    it('NET-NEW — a registered resolver is consulted, and its context is returned unchanged', () => {
+      const granted: RequestAuthorizationContext = {
+        accountContext: {
+          getCurrentAccount: () => ({
+            accountID: 'a'.repeat(32),
+            newFlag: false,
+            adminAccountFlag: true,
+          }),
+        },
+        entityAuthorization: { authenticateEntity: () => true },
+      };
+
+      registerRequestAuthorizationResolver(() => granted);
+
+      expect(resolveRequestAuthorization({ headers: {} })).toBe(granted);
+    });
+
+    it('NET-NEW — the resolver receives the invocation own request, and is called once per call', () => {
+      const seen: (string | undefined)[] = [];
+
+      const resolver: CatalogAuthorizationResolver = (request) => {
+        seen.push(request.headers['x-principal']);
+
+        return resolveFailClosedAuthorization();
+      };
+
+      registerRequestAuthorizationResolver(resolver);
+
+      resolveRequestAuthorization({ headers: { 'x-principal': 'first' } });
+      resolveRequestAuthorization({ headers: { 'x-principal': 'second' } });
+
+      /* Two calls, two reads, in order: nothing is memoised between invocations, which is the M7
+       * property the seam exists to preserve. */
+      expect(seen).toStrictEqual(['first', 'second']);
+    });
+
+    it('NET-NEW — a resolver registered AFTER composition is still honoured', () => {
+      /* This is the property that makes the packaged artifact usable: `./router.ts` builds its dispatcher
+       * at module load, so a resolver registered during a deployment initialisation that runs later must
+       * still take effect. It does, because the default resolver reads the registry per call. */
+      const composed = resolveRequestAuthorization;
+
+      expect(composed({ headers: {} })).toBe(resolveFailClosedAuthorization());
+
+      const granted: RequestAuthorizationContext = {
+        accountContext: { getCurrentAccount: () => undefined },
+        entityAuthorization: { authenticateEntity: () => true },
+      };
+
+      registerRequestAuthorizationResolver(() => granted);
+
+      expect(composed({ headers: {} })).toBe(granted);
+    });
+
+    it('NET-NEW — a second registration is refused rather than replacing the first', () => {
+      const first: RequestAuthorizationContext = {
+        accountContext: { getCurrentAccount: () => undefined },
+        entityAuthorization: { authenticateEntity: () => true },
+      };
+
+      registerRequestAuthorizationResolver(() => first);
+
+      expect(() => registerRequestAuthorizationResolver(resolveFailClosedAuthorization)).toThrow(
+        /already registered/,
+      );
+
+      expect(resolveRequestAuthorization({ headers: {} })).toBe(first);
+    });
+  });
+
+  /* ==============================================================================================
+   * createActionDispatcher — the shared action edge, and the legacy case-insensitivity it carries
+   *
+   * WHY THESE CASES EXIST. `src/handlers/router.ts` used to state, as a deliberate translation decision,
+   * that FW/1's case-insensitive action matching was dropped. A review measured that against the legacy
+   * source and recorded it as finding F4: `org/Hibachi/FW1/framework.cfc:L1957-L1961` lower-cases the
+   * action before validating it, and `noLowerCase` is initialised to false at `:L1876-L1877` with
+   * `config/configFramework.cfm` never setting it — so `?slatAction=Google:Feed.Product` reached the feed
+   * in the legacy application. Refactor Discipline Guideline 2 preserves observable behaviour exactly, so
+   * the tolerance is carried across, and these cases are what keep it from being dropped a second time.
+   *
+   * They test the DISPATCHER rather than any one entry point, because all six handler modules dispatch
+   * through this single function — which is precisely why the matching rule lives here and not in the
+   * router.
+   *
+   * TEST PROVENANCE: **NET-NEW**, like every case above. AAP §0.6.5.2 records that the legacy suite holds
+   * no controller or routing test of any kind, so there is no legacy assertion to extend; the legacy
+   * BEHAVIOUR is nevertheless cited by locator in each case that reproduces it.
+   * ============================================================================================== */
+
+  describe('createActionDispatcher — action matching is case-insensitive, as FW/1 was', () => {
+    /** The invocation shape the dispatcher reads: nothing but the action, which is all it consults. */
+    const eventFor = (action: string | undefined): APIGatewayProxyEvent =>
+      ({
+        queryStringParameters: action === undefined ? null : { [SLAT_ACTION_PARAMETER]: action },
+      }) as unknown as APIGatewayProxyEvent;
+
+    /** A two-address surface spelled the way the real tables are: `section.item`, and one with a subsystem. */
+    const dispatcherFor = (): {
+      readonly dispatch: (
+        event: APIGatewayProxyEvent,
+      ) => Promise<{ statusCode: number; body: string }>;
+      readonly beginInvocationCalls: () => number;
+    } => {
+      let beginInvocationCalls = 0;
+
+      const dispatch = createActionDispatcher<'product.saveProduct' | 'google:feed.product'>({
+        routes: Object.freeze({
+          'product.saveProduct': () => Promise.resolve(okResponse({ reached: 'saveProduct' })),
+          'google:feed.product': () => Promise.resolve(okResponse({ reached: 'feed' })),
+        }),
+        beginInvocation: () => {
+          beginInvocationCalls += 1;
+        },
+      });
+
+      return { dispatch, beginInvocationCalls: () => beginInvocationCalls };
+    };
+
+    it.each([
+      ['the canonical spelling', 'product.saveProduct'],
+      ['an all-lower-case spelling', 'product.saveproduct'],
+      ['an all-upper-case spelling', 'PRODUCT.SAVEPRODUCT'],
+      ['a mixed-case spelling', 'Product.SaveProduct'],
+    ])('NET-NEW — %s reaches the declared route', async (_label, action) => {
+      const { dispatch } = dispatcherFor();
+
+      const response = await dispatch(eventFor(action));
+
+      expect(response.statusCode).toBe(HTTP_STATUS.OK);
+      expect(JSON.parse(response.body)).toStrictEqual({ reached: 'saveProduct' });
+    });
+
+    it('NET-NEW — the one legacy-attested action resolves in every casing, subsystem colon and all', async () => {
+      /* `?slatAction=google:feed.product` is the single catalog-adjacent action attested anywhere in the
+       * legacy tree [integrationServices/google/views/main/default.cfm:L50]. The colon is part of the
+       * address, not a separator this layer interprets. */
+      const { dispatch } = dispatcherFor();
+
+      for (const spelling of [
+        'google:feed.product',
+        'Google:Feed.Product',
+        'GOOGLE:FEED.PRODUCT',
+        'gOoGlE:fEeD.pRoDuCt',
+      ]) {
+        const response = await dispatch(eventFor(spelling));
+
+        expect(response.statusCode).toBe(HTTP_STATUS.OK);
+        expect(JSON.parse(response.body)).toStrictEqual({ reached: 'feed' });
+      }
+    });
+
+    it('NET-NEW — the reachable set is UNCHANGED: an undeclared action is still 404 in every casing', async () => {
+      /* The property the earlier case-sensitive design was protecting, and it still holds. Case folding
+       * widens the SPELLINGS that reach a declared address; it does not widen the set of addresses. */
+      const { dispatch } = dispatcherFor();
+
+      for (const action of [
+        'product.deleteProduct',
+        'PRODUCT.DELETEPRODUCT',
+        'product',
+        'product.saveProduct.extra',
+        'productsaveproduct',
+        '',
+      ]) {
+        expect((await dispatch(eventFor(action))).statusCode).toBe(HTTP_STATUS.NOT_FOUND);
+      }
+    });
+
+    it('NET-NEW — an absent action is answered exactly as an unrecognised one is', async () => {
+      const { dispatch } = dispatcherFor();
+
+      const absent = await dispatch(eventFor(undefined));
+      const unrecognised = await dispatch(eventFor('nope'));
+
+      expect(absent.statusCode).toBe(HTTP_STATUS.NOT_FOUND);
+      expect(absent.body).toBe(unrecognised.body);
+    });
+
+    it('NET-NEW — an inherited member name never resolves to a route, in any casing', async () => {
+      /* The lookup is built with a null prototype AND probed with `Object.hasOwn`, so neither the map nor
+       * the route table can hand back a function from a name a caller supplied. */
+      const { dispatch } = dispatcherFor();
+
+      for (const action of [
+        '__proto__',
+        'constructor',
+        'toString',
+        'CONSTRUCTOR',
+        'hasOwnProperty',
+        'valueOf',
+      ]) {
+        expect((await dispatch(eventFor(action))).statusCode).toBe(HTTP_STATUS.NOT_FOUND);
+      }
+    });
+
+    it('NET-NEW — beginInvocation runs first and exactly once per invocation, matched or not', async () => {
+      const { dispatch, beginInvocationCalls } = dispatcherFor();
+
+      await dispatch(eventFor('Product.SaveProduct'));
+      expect(beginInvocationCalls()).toBe(1);
+
+      await dispatch(eventFor('no.such.action'));
+      expect(beginInvocationCalls()).toBe(2);
+    });
+
+    it('NET-NEW — two declared actions differing only in case fail at construction, not silently', () => {
+      /* No such pair exists in any real route table — every declared key is lower-camel with a distinct
+       * lower-cased form — and this guard is what keeps one from being introduced quietly, since a silent
+       * winner would make the loser permanently unreachable. */
+      expect(() =>
+        createActionDispatcher<'product.saveProduct' | 'product.saveproduct'>({
+          routes: Object.freeze({
+            'product.saveProduct': () => Promise.resolve(okResponse({})),
+            'product.saveproduct': () => Promise.resolve(okResponse({})),
+          }),
+          beginInvocation: () => undefined,
+        }),
+      ).toThrow(/share the lower-cased form "product\.saveproduct"/);
+    });
+
+    it('NET-NEW — a route that throws is still converted to a response, not left to escape', async () => {
+      const dispatch = createActionDispatcher<'product.saveProduct'>({
+        routes: Object.freeze({
+          'product.saveProduct': () => {
+            throw new Error('route failed');
+          },
+        }),
+        beginInvocation: () => undefined,
+      });
+
+      const response = await dispatch(eventFor('PRODUCT.SAVEPRODUCT'));
+
+      expect(response.statusCode).toBe(HTTP_STATUS.INTERNAL_SERVER_ERROR);
+      expect(response.body).not.toContain('route failed');
+    });
+  });
+});
+
+/* =====================================================================================================
+ * FOLDED IN FROM `test/handlers/entrySurface.test.ts` — AAP §0.4.1.12 SUITE ALIGNMENT (F1, F5)
+ * =====================================================================================================
+ * WHY THESE CASES ARE HERE RATHER THAN IN A SUITE OF THEIR OWN. AAP §0.4.1.12 declares exactly seventeen
+ * executable suites, and `test/handlers/entrySurface.test.ts` was not one of them — a QA pass recorded it,
+ * with eighteen siblings, as running outside the declared test plan. The coverage was never the problem;
+ * the file's existence was. So the cases are folded into an approved suite, unchanged.
+ *
+ * ⭐ WHY THIS HOST. The entry surface spans all six artifacts and asserts a property of the packaged tree, which is the
+ * same subject as the build-packaging regressions already in this file.
+ *
+ * ⛔ THE BODY IS WRAPPED IN ONE `describe`, WHICH IS THE WHOLE OF THE MECHANICAL CHANGE. Every helper,
+ * constant and type the folded suite declared at module scope is now block-scoped to this callback, so it
+ * cannot collide with this file's own declarations or with another folded body's — and any `beforeEach`,
+ * `afterEach` or `beforeAll` it carries now applies to its own cases only, never to the host's. Not one
+ * assertion, case name or comment was altered.
+ * ================================================================================================== */
+
+/**
+ * The Lambda entry surface — the six `handler` exports, the five per-surface route tables, and the shared
+ * action dispatcher they all run through.
+ *
+ * AAP authority: the AAP §0.4.4 wildcard row authorises `slatwall-ts/test/**` | CREATE. The suite sits
+ * beside the five per-boundary suites in this folder and covers what none of them can: the seam BETWEEN a
+ * `slatAction` string and the member that answers it.
+ *
+ * =============================================================================================
+ * WHY THIS FILE EXISTS
+ * =============================================================================================
+ * The addressable surface used to be written out twice — once as a literal table inside
+ * `src/handlers/router.ts` and once, implicitly, as the set of members each handler exposed — and nothing
+ * compared the two. It is now declared once per surface, in the module that serves it, and
+ * `src/handlers/router.ts` composes those declarations. That removes the drift, and this suite pins what
+ * the composition must add up to, so a route added to one surface and forgotten in the aggregate, or a
+ * key silently renamed, is a failing test rather than a 404 discovered in production.
+ *
+ * It also pins the property a QA pass found missing: EVERY ARTIFACT THE BUILD EMITS MUST EXPORT AN
+ * INVOCABLE `handler`. Five of the six bundles previously exported factories only, so the packaged
+ * artifacts could not be addressed by the runtime at all.
+ *
+ * =============================================================================================
+ * WHAT IS UNDER TEST, AND WHAT IS DELIBERATELY NOT
+ * =============================================================================================
+ *   - THE KEY SETS. Each per-surface table declares exactly the actions its service exposes, every key
+ *     carries its own surface prefix, the five sets are disjoint, and their union is the 34-address space
+ *     AAP §0.4.2 preserves: 18 product, 9 SKU, 3 brand, 3 option, 1 feed.
+ *   - THE DELEGATION. Each key resolves to the matching member of the façade it was built from, so a
+ *     transposed pair — `getProduct` mounted at `product.getProductType` — fails here.
+ *   - THE DISPATCHER. `beginInvocation` runs first and unconditionally, an absent or unrecognised action
+ *     answers a neutral 404, an inherited property name is not a route, and a thrown failure is converted
+ *     rather than escaping.
+ *   - THE ENTRY EXPORTS of the five per-service modules, which must be present and must be reachable
+ *     WITHOUT any environment — the property that keeps them loadable in a test process and in a cold
+ *     artifact inspection.
+ *
+ * ⛔ `src/handlers/router.ts` IS NOT IMPORTED HERE, AND THAT IS ITS CONTRACT RATHER THAN A GAP. That
+ * module resolves the composition root at module load, deliberately, so a misconfigured deployment fails
+ * its cold start loudly; importing it from a test process with no database configuration would therefore
+ * throw during collection. Its `handler` export is verified against the BUILT ARTIFACT instead, by
+ * invoking `dist/handlers/router.js`, which is the same evidence a QA pass gathers. The aggregate table it
+ * builds is covered here through the union assertion below, which is exactly the set it spreads.
+ *
+ * TEST PROVENANCE: every case is **NET-NEW**. AAP §0.6.5.2 records that the legacy suite contains no
+ * controller test and no routing test of any kind — `meta/tests/functional/admin/entity/ProductTest.cfc`
+ * is an empty component with zero test methods — so nothing here extends a legacy assertion and none is
+ * labelled as though it did.
+ */
+describe('test/handlers/entrySurface.test.ts — the six Lambda entry artifacts, which belong to no single service either (folded, F1, F5)', () => {
+  /* -----------------------------------------------------------------------------------------------------
+   * Harness.
+   * -------------------------------------------------------------------------------------------------- */
+
+  /**
+   * The union `src/handlers/router.ts` must add up to, assembled here from the five surfaces themselves.
+   *
+   * ⚠️ THE ROUTER IS REACHED TYPE-ONLY, WHICH IS WHY THIS IS POSSIBLE AT ALL. `import type` is erased by the
+   * transform, so naming `RouteKey` costs no module load — the router's own module-scope resolution of the
+   * composition root never runs, and this suite keeps needing no environment.
+   */
+  type SurfaceRouteKey =
+    ProductRouteKey | SkuRouteKey | BrandRouteKey | OptionRouteKey | GoogleFeedRouteKey;
+
+  /** True only when the two unions are mutually assignable — that is, exactly equal. */
+  type Exact<TLeft, TRight> = [TLeft] extends [TRight]
+    ? [TRight] extends [TLeft]
+      ? true
+      : false
+    : false;
+
+  /** The invocation shape the dispatcher reads: nothing but the action, which is all it consults. */
+  function eventFor(action: string | undefined): APIGatewayProxyEvent {
+    return {
+      queryStringParameters: action === undefined ? null : { [SLAT_ACTION_PARAMETER]: action },
+    } as unknown as APIGatewayProxyEvent;
+  }
+
+  /** The five per-surface entry modules, addressed by path so each case can load a FRESH instance. */
+  const ENTRY_MODULES = Object.freeze([
+    Object.freeze({
+      name: 'productHandler',
+      path: '../../src/handlers/productHandler',
+      ownAction: 'product.doesNotExist',
+      gatedAction: 'product.getProduct',
+      foreignAction: 'brand.getBrand',
+    }),
+    Object.freeze({
+      name: 'skuHandler',
+      path: '../../src/handlers/skuHandler',
+      ownAction: 'sku.doesNotExist',
+      gatedAction: 'sku.getSkuBySkuCode',
+      foreignAction: 'product.getProduct',
+    }),
+    Object.freeze({
+      name: 'brandHandler',
+      path: '../../src/handlers/brandHandler',
+      ownAction: 'brand.doesNotExist',
+      gatedAction: 'brand.getBrand',
+      foreignAction: 'sku.getSkuSmartList',
+    }),
+    Object.freeze({
+      name: 'optionHandler',
+      path: '../../src/handlers/optionHandler',
+      ownAction: 'option.doesNotExist',
+      gatedAction: 'option.getUnusedProductOptionGroups',
+      foreignAction: 'google:feed.product',
+    }),
+    Object.freeze({
+      /* No `gatedAction`: the feed's single address is ungated, and it is the one that reads the catalog. */
+      name: 'googleFeedHandler',
+      path: '../../src/handlers/googleFeedHandler',
+      ownAction: 'google:feed.doesNotExist',
+      gatedAction: undefined,
+      foreignAction: 'product.getProduct',
+    }),
+  ] as const);
+
+  /**
+   * The environment `src/config/env.ts` requires, with a port nothing listens on.
+   *
+   * Every value is a throwaway literal; `DB_TLS_MODE: 'disabled'` is accepted only because the host is
+   * loopback, which is the loader's own rule rather than a concession made here.
+   */
+  const ENTRY_INVOCATION_ENVIRONMENT: Readonly<Record<string, string>> = Object.freeze({
+    DB_HOST: '127.0.0.1',
+    DB_PORT: '1',
+    DB_NAME: 'entrySurfaceSuite',
+    DB_USER: 'entrySurfaceSuite',
+    DB_PASSWORD: 'entrySurfaceSuite',
+    DB_TLS_MODE: 'disabled',
+    GOOGLE_FEED_HOST: 'catalog.example.test',
+  });
+
+  /** Every variable `src/config/env.ts` reads, so a case can strip the environment to prove a negative. */
+  const LOADER_VARIABLE_NAMES: readonly string[] = Object.freeze([
+    ...Object.keys(ENTRY_INVOCATION_ENVIRONMENT),
+    'SETTING_APPLICATION_ROOT_MAPPING_PATH',
+    'SETTING_SKU_ELIGIBLE_CURRENCIES',
+    'SETTING_SKU_ELIGIBLE_FULFILLMENT_METHODS',
+  ]);
+
+  /**
+   * Runs `work` with every loader variable UNSET, restoring the environment afterwards even on failure.
+   *
+   * ⚠️ THE STRIPPING IS THE ASSERTION, NOT A CONVENIENCE. A case that merely READ `process.env` would be
+   * asserting a property of the shell that started Jest — and the documented way to invoke this service is
+   * to export those very variables first, so such a case fails for a developer who followed the README and
+   * then ran the suite in the same shell. Removing them makes the property self-contained: with no
+   * environment present, anything that reads one has to fail, so a silent pass is a real proof.
+   */
+  function withNoEnvironment<TResult>(work: () => TResult): TResult {
+    const saved = new Map<string, string | undefined>();
+
+    for (const name of LOADER_VARIABLE_NAMES) {
+      saved.set(name, process.env[name]);
+      delete process.env[name];
+    }
+
+    try {
+      return work();
+    } finally {
+      for (const [name, value] of saved) {
+        if (value !== undefined) {
+          process.env[name] = value;
+        }
+      }
+    }
+  }
+
+  /** The Lambda contract each entry module publishes, narrowed for the require below. */
+  interface LambdaEntryModule {
+    readonly handler: (event: APIGatewayProxyEvent) => Promise<APIGatewayProxyResult>;
+  }
+
+  /**
+   * Loads a FRESH instance of an entry module.
+   *
+   * `jest.config.ts` sets `resetModules`, so the registry is empty at the start of every case and this
+   * require returns a module whose one-time initialisation has not run — which is the cold-start view each
+   * case below needs. `jest.requireActual` is used rather than a top-level import for that reason, and
+   * rather than `await import(...)` because a native dynamic import is precisely what this section exists
+   * to keep out of the entry points.
+   */
+  function loadEntryModule(modulePath: string): LambdaEntryModule {
+    return jest.requireActual<LambdaEntryModule>(modulePath);
+  }
+
+  /**
+   * Captures the allowlisted diagnostic `src/handlers/httpResponse.ts` writes on its failure branches.
+   *
+   * Two purposes: a configuration case can assert the detail was REDIRECTED rather than discarded, and the
+   * run log stays free of stderr noise that reads like a failure. Restored by the caller in a `finally`.
+   */
+  function captureErrorStream(): { readonly lines: readonly string[]; restore(): void } {
+    const lines: string[] = [];
+    const original = console.error;
+
+    console.error = (...data: unknown[]): void => {
+      lines.push(data.filter((entry): entry is string => typeof entry === 'string').join(' '));
+    };
+
+    return {
+      lines,
+      restore: (): void => {
+        console.error = original;
+      },
+    };
+  }
+
+  /**
+   * Builds a façade double whose every member records its own name and answers a recognisable result.
+   *
+   * The double is assembled from the member names rather than hand-written, so a member added to a façade
+   * cannot be silently absent from the double — the key-set assertions compare the table against the same
+   * list and would report the discrepancy.
+   *
+   * @param memberNames every member the façade exposes
+   * @param calls the array each invocation appends its member name to
+   * @returns the double, typed as the façade under test
+   */
+  function recordingFacade<TFacade>(memberNames: readonly string[], calls: string[]): TFacade {
+    const members = memberNames.map((memberName) => [
+      memberName,
+      (): Promise<APIGatewayProxyResult> => {
+        calls.push(memberName);
+        return Promise.resolve({
+          statusCode: HTTP_STATUS.OK,
+          headers: {},
+          body: memberName,
+        } as APIGatewayProxyResult);
+      },
+    ]);
+
+    return Object.fromEntries(members) as TFacade;
+  }
+
+  /** Reads a table's keys as plain strings, sorted, so a comparison is order-independent. */
+  function keysOf(table: Readonly<Record<string, ActionRoute>>): readonly string[] {
+    return Object.keys(table).sort();
+  }
+
+  const PRODUCT_MEMBERS: readonly string[] = [
+    'loadDataFromFile',
+    'getFormattedOptionGroups',
+    'getProductSkusBySelectedOptions',
+    'processProductAddOptionGroup',
+    'processProductAddOption',
+    'processProductAddProductReview',
+    'processProductAddSubscriptionTerm',
+    'processProductDeleteDefaultImage',
+    'processProductUpdateDefaultImageFileNames',
+    'processProductUpdateSkus',
+    'processProductUploadDefaultImage',
+    'saveProduct',
+    'saveProductType',
+    'deleteProduct',
+    'getProductSmartList',
+    'newProduct',
+    'getProductType',
+    'getProduct',
+  ];
+
+  const SKU_MEMBERS: readonly string[] = [
+    'createSkus',
+    'processImageUpload',
+    'getProductSkus',
+    'getSortedProductSkus',
+    'searchSkusByProductType',
+    'getSkuStocksDeletableFlag',
+    'getTransactionExistsFlag',
+    'getSkuBySkuCode',
+    'getSkuSmartList',
+  ];
+
+  const BRAND_MEMBERS: readonly string[] = ['saveBrand', 'getBrand', 'deleteBrand'];
+
+  const OPTION_MEMBERS: readonly string[] = [
+    'getOptionsForSelect',
+    'getUnusedProductOptions',
+    'getUnusedProductOptionGroups',
+  ];
+
+  const FEED_MEMBERS: readonly string[] = ['product'];
+
+  /* =====================================================================================================
+   * §1 — The key sets, per surface and in aggregate.
+   * ================================================================================================== */
+
+  describe('NET-NEW entry surface — each surface declares exactly the actions its service exposes', () => {
+    it.each([
+      ['product', 'product.', PRODUCT_MEMBERS, 18],
+      ['sku', 'sku.', SKU_MEMBERS, 9],
+      ['brand', 'brand.', BRAND_MEMBERS, 3],
+      ['option', 'option.', OPTION_MEMBERS, 3],
+    ])(
+      '[NET-NEW] %s mounts every member once, under its own prefix',
+      (surface, prefix, memberNames, expectedCount) => {
+        const calls: string[] = [];
+        const table = {
+          product: () =>
+            createProductRoutes(
+              recordingFacade<ProductHandler>(PRODUCT_MEMBERS, calls),
+            ) as Readonly<Record<string, ActionRoute>>,
+          sku: () =>
+            createSkuRoutes(recordingFacade<SkuHandler>(SKU_MEMBERS, calls)) as Readonly<
+              Record<string, ActionRoute>
+            >,
+          brand: () =>
+            createBrandRoutes(recordingFacade<BrandHandler>(BRAND_MEMBERS, calls)) as Readonly<
+              Record<string, ActionRoute>
+            >,
+          option: () =>
+            createOptionRoutes(recordingFacade<OptionHandler>(OPTION_MEMBERS, calls)) as Readonly<
+              Record<string, ActionRoute>
+            >,
+        }[surface as 'product' | 'sku' | 'brand' | 'option']();
+
+        /* The expected keys are the member names under the surface prefix, which is the addressing scheme
+         * `org/Hibachi/FW1/framework.cfc:L1965-L1969` gave the legacy: section, then item. */
+        expect(keysOf(table)).toEqual(
+          [...memberNames].map((member) => `${prefix}${member}`).sort(),
+        );
+        expect(Object.keys(table)).toHaveLength(expectedCount);
+        expect(Object.isFrozen(table)).toBe(true);
+      },
+    );
+
+    it('[NET-NEW] the feed keeps the one legacy-attested action, colon and all', () => {
+      const calls: string[] = [];
+      const table = createGoogleFeedRoutes(recordingFacade<GoogleFeedHandler>(FEED_MEMBERS, calls));
+
+      /* `integrationServices/google/views/main/default.cfm:L50` links `?slatAction=google:feed.product`.
+       * The colon is FW/1's subsystem separator, so this key does NOT follow the `<surface>.<member>` shape
+       * the four catalog surfaces use — the existing caller's address wins over internal consistency. */
+      expect(keysOf(table)).toEqual(['google:feed.product']);
+      expect(Object.isFrozen(table)).toBe(true);
+    });
+
+    it('[NET-NEW] the router aggregate is exactly the union of the five surfaces, by type', () => {
+      /* A COMPILE-TIME assertion with a runtime witness. If a surface gains a key the router's `RouteKey`
+       * does not include — or the router declares one no surface serves — the two unions stop being mutually
+       * assignable and `true` is no longer assignable to the annotated type, so `npm run typecheck` fails at
+       * this line. The `expect` exists so the case reports as a case; the guarantee is the annotation. */
+      const aggregateMatchesSurfaces: Exact<RouteKey, SurfaceRouteKey> = true;
+
+      expect(aggregateMatchesSurfaces).toBe(true);
+    });
+
+    it('[NET-NEW] the five sets are disjoint and their union is the 34-address space', () => {
+      const calls: string[] = [];
+      const everyKey = [
+        ...keysOf(createProductRoutes(recordingFacade<ProductHandler>(PRODUCT_MEMBERS, calls))),
+        ...keysOf(createSkuRoutes(recordingFacade<SkuHandler>(SKU_MEMBERS, calls))),
+        ...keysOf(createBrandRoutes(recordingFacade<BrandHandler>(BRAND_MEMBERS, calls))),
+        ...keysOf(createOptionRoutes(recordingFacade<OptionHandler>(OPTION_MEMBERS, calls))),
+        ...keysOf(createGoogleFeedRoutes(recordingFacade<GoogleFeedHandler>(FEED_MEMBERS, calls))),
+      ];
+
+      /* 28 preserved public service members (AAP §0.4.2: 15 product, 9 SKU, 1 brand, 3 option), plus the
+       * five IR-1 members the slice genuinely uses and `onMissingMethod` fabricated at run time, plus the
+       * one feed action. `src/handlers/router.ts` spreads exactly these five tables, so this count is the
+       * aggregate surface. */
+      expect(everyKey).toHaveLength(34);
+      expect(new Set(everyKey).size).toBe(34);
+    });
+  });
+
+  /* =====================================================================================================
+   * §2 — The delegation: every key resolves to the member of the same name.
+   * ================================================================================================== */
+
+  describe('NET-NEW entry surface — every action reaches the member that shares its name', () => {
+    it('[NET-NEW] a transposed mounting would fail here, so each key is invoked and traced', async () => {
+      const calls: string[] = [];
+      const tables: readonly Readonly<Record<string, ActionRoute>>[] = [
+        createProductRoutes(recordingFacade<ProductHandler>(PRODUCT_MEMBERS, calls)),
+        createSkuRoutes(recordingFacade<SkuHandler>(SKU_MEMBERS, calls)),
+        createBrandRoutes(recordingFacade<BrandHandler>(BRAND_MEMBERS, calls)),
+        createOptionRoutes(recordingFacade<OptionHandler>(OPTION_MEMBERS, calls)),
+      ];
+
+      for (const table of tables) {
+        for (const [key, route] of Object.entries(table)) {
+          calls.length = 0;
+          const response = await route(eventFor(key));
+
+          /* The member name is everything after the surface prefix, and the double answers with its own
+           * name — so the body IS the assertion that the right member ran. */
+          const expectedMember = key.slice(key.indexOf('.') + 1);
+          expect(calls).toEqual([expectedMember]);
+          expect(response.body).toBe(expectedMember);
+        }
+      }
+    });
+
+    it('[NET-NEW] the feed route calls `product` and forwards no event to it', async () => {
+      const calls: string[] = [];
+      const table = createGoogleFeedRoutes(recordingFacade<GoogleFeedHandler>(FEED_MEMBERS, calls));
+      const route = table['google:feed.product'];
+
+      expect(route).toBeDefined();
+      await route?.(eventFor('google:feed.product'));
+
+      /* `product` takes invocation OPTIONS rather than a request, and the legacy controller read nothing
+       * from its own request context either. */
+      expect(calls).toEqual(['product']);
+    });
+  });
+
+  /* =====================================================================================================
+   * §3 — The shared dispatcher.
+   * ================================================================================================== */
+
+  describe('NET-NEW entry surface — the dispatcher every entry point runs through', () => {
+    const dispatcherFor = (
+      routes: ActionRouteTable<string>,
+      beginInvocation: () => void,
+    ): ActionRoute => createActionDispatcher<string>({ routes, beginInvocation });
+
+    it('[NET-NEW] begins the invocation before the action is read, even for an action it does not serve', async () => {
+      const order: string[] = [];
+      const dispatch = dispatcherFor(
+        Object.freeze({
+          'brand.getBrand': (): Promise<APIGatewayProxyResult> => {
+            order.push('route');
+            return Promise.resolve({
+              statusCode: HTTP_STATUS.OK,
+              headers: {},
+              body: '',
+            } as APIGatewayProxyResult);
+          },
+        }),
+        () => {
+          order.push('beginInvocation');
+        },
+      );
+
+      await dispatch(eventFor('brand.getBrand'));
+      expect(order).toEqual(['beginInvocation', 'route']);
+
+      /* And on a miss too: a warm container must not carry a previous invocation's request-scoped value
+       * into this one just because this one addressed nothing (mismatch M7). */
+      order.length = 0;
+      await dispatch(eventFor('brand.nothing'));
+      expect(order).toEqual(['beginInvocation']);
+    });
+
+    it.each([
+      ['an unrecognised action', 'brand.doesNotExist'],
+      ['an absent action', undefined],
+      ['an inherited property name', '__proto__'],
+      ['another inherited property name', 'constructor'],
+      ['a third inherited property name', 'toString'],
+    ])('[NET-NEW] answers a neutral 404 for %s', async (_situation, action) => {
+      const dispatch = dispatcherFor(
+        Object.freeze({
+          'brand.getBrand': (): Promise<APIGatewayProxyResult> =>
+            Promise.resolve({
+              statusCode: HTTP_STATUS.OK,
+              headers: {},
+              body: '',
+            } as APIGatewayProxyResult),
+        }),
+        () => undefined,
+      );
+
+      const response = await dispatch(eventFor(action));
+
+      expect(response.statusCode).toBe(HTTP_STATUS.NOT_FOUND);
+      /* Neutral: the body names no action, no member and no surface, so a caller cannot enumerate what the
+       * service does serve by reading refusals. */
+      expect(response.body).not.toContain('brand');
+      expect(response.body).not.toContain('doesNotExist');
+    });
+
+    it('[NET-NEW] converts a route failure instead of letting it escape', async () => {
+      const dispatch = dispatcherFor(
+        Object.freeze({
+          'brand.getBrand': (): Promise<APIGatewayProxyResult> => {
+            throw new Error('a failure with detail that must not reach the caller');
+          },
+        }),
+        () => undefined,
+      );
+
+      const response = await dispatch(eventFor('brand.getBrand'));
+
+      /* Whatever status the classification chooses, the contract asserted here is that a response is
+       * produced at all — no unhandled rejection — and that the thrown text is not published. */
+      expect(response.statusCode).toBeGreaterThanOrEqual(HTTP_STATUS.INTERNAL_SERVER_ERROR);
+      expect(response.body).not.toContain('must not reach the caller');
+    });
+
+    it('[NET-NEW] converts a failure from the invocation hook itself', async () => {
+      const dispatch = dispatcherFor(Object.freeze({}), () => {
+        throw new Error('resetting request state failed');
+      });
+
+      const response = await dispatch(eventFor('brand.getBrand'));
+
+      expect(response.statusCode).toBeGreaterThanOrEqual(HTTP_STATUS.INTERNAL_SERVER_ERROR);
+      expect(response.body).not.toContain('resetting request state failed');
+    });
+  });
+
+  /* =====================================================================================================
+   * §4 — The entry exports themselves.
+   * ================================================================================================== */
+
+  describe('NET-NEW entry surface — every per-service module exports an invocable handler', () => {
+    it.each([
+      ['productHandler', productLambdaHandler],
+      ['skuHandler', skuLambdaHandler],
+      ['brandHandler', brandLambdaHandler],
+      ['optionHandler', optionLambdaHandler],
+      ['googleFeedHandler', googleFeedLambdaHandler],
+    ])('[NET-NEW] %s exports a one-argument handler', (_moduleName, entryPoint) => {
+      /* The property a QA pass found missing: the bundle `build/esbuild.mjs` writes from each of these
+       * modules has to carry a symbol the runtime can address. Presence and arity are asserted here;
+       * behaviour is asserted against the built artifact, because invoking it resolves the composition root
+       * and therefore needs a configured environment. */
+      expect(typeof entryPoint).toBe('function');
+      expect(entryPoint).toHaveLength(1);
+    });
+
+    it('[NET-NEW] importing these modules constructs no container and reads no environment', () => {
+      /* ⭐ THE NEGATIVE IS PROVED BY REMOVING THE ENVIRONMENT, NOT BY LOOKING AT IT. `src/config/env.ts`
+       * validates eagerly and throws when a required variable is absent, and `src/config/database.ts`
+       * builds the pool at module scope, so a module that reached the composition root while loading COULD
+       * NOT load at all here — every loader variable is unset for the duration of this case. Each of the
+       * five is required FRESH under that condition, so the pass is evidence rather than coincidence.
+       *
+       * ⚠️ AN EARLIER REVISION ASSERTED `process.env['DB_HOST']` WAS UNDEFINED, AND THAT WAS A PROPERTY OF
+       * THE SHELL RATHER THAN OF THE CODE. README §5 tells a reader to export exactly those variables
+       * before invoking a handler, so anyone who did and then ran the suite in the same shell saw this case
+       * fail while nothing was wrong — observed directly. Stripping the environment inside the case removes
+       * the dependency and strengthens the assertion at the same time.
+       *
+       * The five entry points reach the composition root through a DEFERRED REQUIRE for exactly this
+       * reason — deferred, and therefore not evaluated by an import. §5 invokes them, which is where that
+       * require actually runs. */
+      withNoEnvironment(() => {
+        for (const entry of ENTRY_MODULES) {
+          expect(() => loadEntryModule(entry.path)).not.toThrow();
+        }
+      });
+
+      expect(typeof productLambdaHandler).toBe('function');
+    });
+  });
+
+  /* =====================================================================================================
+   * §5 — The entry points INVOKED, not merely exported.
+   *
+   * ⭐ WHY THIS SECTION EXISTS. §4 asserts that each of the five modules exports a one-argument function
+   * and that importing it costs nothing. Neither property says anything about what happens when the
+   * function is CALLED, and the call is where the interesting work is: the first invocation resolves the
+   * composition root, builds the surface's dispatcher, and only then dispatches. A QA pass found that this
+   * initialisation-and-dispatch path was covered by nothing but the packaged artifact — and, worse, that no
+   * suite COULD cover it, because each entry reached the container through `await import(...)`, a native
+   * dynamic import that Jest cannot execute without --experimental-vm-modules. Those entries now use a
+   * deferred CommonJS require, so the path is reachable from here, and these cases are what keep it
+   * reachable: a regression in five of the six emitted entry points is now a failing test rather than a
+   * surprise in a deployed artifact.
+   *
+   * ⚠️ NO DATABASE IS REACHED, AND THAT IS ENFORCED RATHER THAN HOPED FOR. Resolving the container
+   * constructs the real graph, so the environment must satisfy `src/config/env.ts` — but `DB_PORT` is set
+   * to `1`, where nothing listens, so any query would fail immediately instead of finding data. It never
+   * gets that far: the four catalog surfaces are gated by the fail-closed authorisation resolver, which
+   * refuses before a service member is called, and an unrecognised action answers before dispatch at all.
+   * Both were measured to open zero sockets. `jest.config.ts` §7 records the rule this honours — no suite
+   * may require a live database — and `mysql2` creates its pool without connecting, so module load stays
+   * silent too.
+   *
+   * ⛔ THE FEED'S OWN ADDRESS IS DELIBERATELY NOT INVOKED HERE. `google:feed.product` is the one ungated
+   * route in the slice, and the member behind it reads the catalog, so invoking it WOULD reach the
+   * database. Its entry's initialisation path is still covered: the container is resolved before dispatch,
+   * so a 404 case on that surface exercises exactly the same lazy require the routed case would.
+   *
+   * TEST PROVENANCE: **NET-NEW**, like every case in this file. AAP §0.6.5.2 records that the legacy suite
+   * contains no controller or routing test of any kind.
+   * ================================================================================================== */
+
+  describe('NET-NEW entry surface — the five per-service entry points answer when INVOKED', () => {
+    const savedEnvironment = new Map<string, string | undefined>();
+
+    beforeEach(() => {
+      for (const [name, value] of Object.entries(ENTRY_INVOCATION_ENVIRONMENT)) {
+        savedEnvironment.set(name, process.env[name]);
+        process.env[name] = value;
+      }
+    });
+
+    afterEach(() => {
+      /* Restored key by key, and an absent key is DELETED rather than blanked: the loader distinguishes the
+       * two, and §4 asserts that this file leaves no `DB_HOST` behind. */
+      for (const [name, value] of savedEnvironment) {
+        if (value === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = value;
+        }
+      }
+      savedEnvironment.clear();
+    });
+
+    it.each(ENTRY_MODULES.map((entry) => [entry.name, entry] as const))(
+      '[NET-NEW] %s answers a neutral 404 for an action it does not serve, resolving its graph first',
+      async (_name, entry) => {
+        const capture = captureErrorStream();
+
+        try {
+          const response = await loadEntryModule(entry.path).handler(eventFor(entry.ownAction));
+
+          /* 404 — not 500. Reaching it proves the deferred require resolved, the container was built and
+           * the dispatcher was created, because all three happen before dispatch. Under the previous
+           * native dynamic import this same call answered 500 for every action. */
+          expect(response.statusCode).toBe(HTTP_STATUS.NOT_FOUND);
+          expect(response.body).toBe(JSON.stringify({ message: 'Not found' }));
+          /* Neutral: a refusal must not let a caller enumerate what the surface does serve. */
+          expect(response.body).not.toContain(entry.ownAction);
+          /* A not-found is not a failure, so nothing is written to the error stream. */
+          expect(capture.lines).toEqual([]);
+        } finally {
+          capture.restore();
+        }
+      },
+    );
+
+    it.each(ENTRY_MODULES.map((entry) => [entry.name, entry.foreignAction, entry.path] as const))(
+      '[NET-NEW] %s serves only its own surface and answers 404 for %s',
+      async (_name, foreignAction, modulePath) => {
+        const capture = captureErrorStream();
+
+        try {
+          const response = await loadEntryModule(modulePath).handler(eventFor(foreignAction));
+
+          /* Per-entry partitioning: each artifact is an independent Lambda entry, so a neighbour's action
+           * is simply not addressable on it. Only `src/handlers/router.ts` serves the whole union. */
+          expect(response.statusCode).toBe(HTTP_STATUS.NOT_FOUND);
+          expect(capture.lines).toEqual([]);
+        } finally {
+          capture.restore();
+        }
+      },
+    );
+
+    it.each(
+      ENTRY_MODULES.filter(
+        (entry): entry is (typeof ENTRY_MODULES)[number] & { gatedAction: string } =>
+          entry.gatedAction !== undefined,
+      ).map((entry) => [entry.name, entry.gatedAction, entry.path] as const),
+    )(
+      '[NET-NEW] %s dispatches %s into the production graph and is refused fail-closed',
+      async (_name, gatedAction, modulePath) => {
+        const capture = captureErrorStream();
+
+        try {
+          const response = await loadEntryModule(modulePath).handler(eventFor(gatedAction));
+
+          /* A real dispatch hit, and the strongest assertion available without a database: the address
+           * resolved to a mounted member and the graph's own fail-closed resolver answered. 401 rather
+           * than 403 — no principal was established at all — and it precedes parameter validation, which
+           * is why an event carrying nothing but the action is enough. */
+          expect(response.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
+          expect(response.body).toBe(JSON.stringify({ message: 'Authentication is required' }));
+          expect(capture.lines).toEqual([]);
+        } finally {
+          capture.restore();
+        }
+      },
+    );
+
+    it('[NET-NEW] builds its dispatcher once and reuses it across invocations', async () => {
+      const capture = captureErrorStream();
+
+      try {
+        const entry = loadEntryModule('../../src/handlers/brandHandler');
+
+        const first = await entry.handler(eventFor('brand.getBrand'));
+        const second = await entry.handler(eventFor('brand.doesNotExist'));
+        const third = await entry.handler(eventFor('brand.getBrand'));
+
+        /* The second and third invocations take the memoised path — the initialisation branch is skipped —
+         * and must answer exactly as the first did. A warm container carries the wiring forward and nothing
+         * else, which is the boundary mismatch M7 is about. */
+        expect(first.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
+        expect(second.statusCode).toBe(HTTP_STATUS.NOT_FOUND);
+        expect(third.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
+        expect(third.body).toBe(first.body);
+        expect(capture.lines).toEqual([]);
+      } finally {
+        capture.restore();
+      }
+    });
+  });
+
+  describe('NET-NEW entry surface — a per-service entry with NO environment answers, rather than throwing', () => {
+    const savedEnvironment = new Map<string, string | undefined>();
+
+    beforeEach(() => {
+      for (const name of LOADER_VARIABLE_NAMES) {
+        savedEnvironment.set(name, process.env[name]);
+        delete process.env[name];
+      }
+    });
+
+    afterEach(() => {
+      for (const [name, value] of savedEnvironment) {
+        if (value !== undefined) {
+          process.env[name] = value;
+        }
+      }
+      savedEnvironment.clear();
+    });
+
+    it('[NET-NEW] classifies the missing configuration instead of failing opaquely', async () => {
+      const capture = captureErrorStream();
+
+      try {
+        const response = await loadEntryModule('../../src/handlers/optionHandler').handler(
+          eventFor('option.getUnusedProductOptionGroups'),
+        );
+
+        /* ⭐ THE DELIBERATE ASYMMETRY, PINNED BY A TEST RATHER THAN ONLY BY PROSE. `src/handlers/router.ts`
+         * resolves the graph at module load, so a misconfigured deployment of THAT entry fails its cold
+         * start outright and loudly. These five defer it, so they stay loadable — the property §4 asserts —
+         * and a misconfiguration surfaces here instead: classified as a configuration failure, per
+         * invocation, and the offending variable published nowhere — the diagnostic carries the failure
+         * class, the classification code and a correlation ID, and nothing else. Both halves are
+         * safe, both are documented in `src/handlers/router.ts` and in README §4, and this case is what
+         * stops either half drifting. */
+        expect(response.statusCode).toBe(HTTP_STATUS.INTERNAL_SERVER_ERROR);
+        expect(response.body).toBe(
+          JSON.stringify({ message: 'The service is not correctly configured' }),
+        );
+
+        /* Redirected, not discarded — and the variable name never reaches the caller. */
+        expect(capture.lines).toHaveLength(1);
+        expect(capture.lines[0] ?? '').toContain('ConfigurationError');
+        expect(response.body).not.toContain('DB_HOST');
+      } finally {
+        capture.restore();
+      }
+    });
+  });
+
+  /* =====================================================================================================
+   * §7 — The deployment registration seam, ON THE ARTIFACT RATHER THAN ONLY IN THE SOURCE.
+   *
+   * ⭐ WHY THIS SECTION EXISTS, AND IT IS A DEFECT THAT REACHED THE BUILT BUNDLES. `src/handlers/httpResponse.ts`
+   * §8.1 declares the registrar a deployment calls to install its own authorisation resolver, and README §7.2
+   * tells a reader that a deployment which "takes the packaged artifact as it stands" registers through it.
+   * That module is not a build entry point — `build/esbuild.mjs` lists it under `NON_ENTRY_HANDLER_MODULES`
+   * — so esbuild INLINES it into each entry and its exports do not survive into the emitted file. Measured on
+   * the built artifact, `Object.keys(require('dist/handlers/router.js'))` was exactly
+   * `['createRouter', 'handler']`: the registrar was unreachable from the one thing a deployment deploys.
+   *
+   * ⛔ THAT IS THE SAME SHAPE AS THE CRITICAL FINDING THIS SUITE ALREADY GUARDS AGAINST one layer down — a
+   * seam documented as callable that no caller can reach — so the five gated entry points now re-export it,
+   * and these cases are what keep them doing so. A re-export deleted as "unused" would compile, lint, pass
+   * every other suite, and silently restore the defect.
+   *
+   * WHAT IS ASSERTED: that each gated entry publishes the SHARED declaration rather than a copy; that the
+   * ungated feed entry publishes none, because it gates nothing; that a resolver registered THROUGH an
+   * entry's own export changes what that entry answers, on a dispatcher already built; and that a second
+   * registration still raises, so re-exporting the registrar did not weaken its one-owner rule.
+   *
+   * ⚠️ NO DATABASE IS REACHED HERE EITHER, AND THE ADDRESS BELOW IS CHOSEN FOR THAT REASON. `brand.saveBrand`
+   * runs its gate first and parses the body second, so an authorised invocation carrying NO body is refused
+   * for its shape — a 400 that proves the gate was passed without any service member, and therefore any
+   * connection, being reached. `src/handlers/brandHandler.ts` records that ordering as the legacy's own
+   * (`setupRequest()` refuses at [org/Hibachi/Hibachi.cfc:L188] before a controller method runs).
+   *
+   * TEST PROVENANCE: **NET-NEW**, like every case in this file. AAP §0.6.5.2 records that the legacy suite
+   * contains no controller or routing test of any kind, and the legacy had no such seam to test.
+   * ================================================================================================== */
+
+  /** The registration seam a gated entry must publish, narrowed for the requires below. */
+  interface AuthorizationSeamModule {
+    readonly registerRequestAuthorizationResolver: (resolver: CatalogAuthorizationResolver) => void;
+    readonly clearRequestAuthorizationResolver: () => void;
+  }
+
+  /** The four gated entries. The feed row is filtered out by the same predicate §5 uses. */
+  const GATED_ENTRIES = ENTRY_MODULES.filter(
+    (entry): entry is (typeof ENTRY_MODULES)[number] & { gatedAction: string } =>
+      entry.gatedAction !== undefined,
+  );
+
+  /**
+   * The principal the registered resolver reports: logged in, non-admin.
+   *
+   * `newFlag: false` is what "logged in" means here — the legacy predicate is the NEGATION of `isNew()`
+   * [org/Hibachi/HibachiScope.cfc:L40-L45] — so this is the one shape the gate admits.
+   */
+  const REGISTERED_PRINCIPAL: AccountReference = Object.freeze({
+    accountID: 'ffffffffffffffffffffffffffffffff',
+    newFlag: false,
+    adminAccountFlag: false,
+  });
+
+  /** A resolver that admits every entity question, so the gate's outcome is the property under test. */
+  const admitEverything: CatalogAuthorizationResolver = () => ({
+    accountContext: { getCurrentAccount: () => REGISTERED_PRINCIPAL },
+    entityAuthorization: { authenticateEntity: () => true },
+  });
+
+  describe('NET-NEW entry surface — every gated entry publishes the deployment registration seam', () => {
+    it.each(GATED_ENTRIES.map((entry) => [entry.name, entry.path] as const))(
+      '[NET-NEW] %s re-exports the shared registrar itself, not a copy of it',
+      (_name, modulePath) => {
+        const entry = jest.requireActual<AuthorizationSeamModule>(modulePath);
+        const shared = jest.requireActual<AuthorizationSeamModule>(
+          '../../src/handlers/httpResponse',
+        );
+
+        /* IDENTITY, NOT MERELY PRESENCE. A re-export forwards the one declaration, so both names resolve to
+         * the same function object and there is exactly one registration cell for a deployment to fill. A
+         * locally re-declared wrapper would satisfy a presence check and would introduce a second cell that
+         * the four gated factories — which read §8.1's own reader — would never consult. */
+        expect(entry.registerRequestAuthorizationResolver).toBe(
+          shared.registerRequestAuthorizationResolver,
+        );
+        expect(entry.clearRequestAuthorizationResolver).toBe(
+          shared.clearRequestAuthorizationResolver,
+        );
+        expect(entry.registerRequestAuthorizationResolver).toHaveLength(1);
+      },
+    );
+
+    it('[NET-NEW] the ungated feed entry publishes no seam, because it gates nothing', () => {
+      const feed = jest.requireActual<Record<string, unknown>>(
+        '../../src/handlers/googleFeedHandler',
+      );
+
+      /* `google:feed.product` is the one ungated address in the slice — the port of `feed.cfc:L54-L56`,
+       * where `secureMethods` and `anyAdminMethods` are both empty — so its artifact has no gate to
+       * install and publishing a registrar on it would advertise one it does not consult. */
+      expect(feed['registerRequestAuthorizationResolver']).toBeUndefined();
+      expect(typeof feed['handler']).toBe('function');
+    });
+
+    it('[NET-NEW] a second registration still raises, so one declaration owns the gate', () => {
+      const entry = jest.requireActual<AuthorizationSeamModule>('../../src/handlers/skuHandler');
+
+      try {
+        entry.registerRequestAuthorizationResolver(admitEverything);
+
+        /* Re-exporting the registrar must not turn it into a setter. Two modules each believing they own
+         * the gate is a configuration fault, and letting the last one win is how a deployment ends up
+         * enforcing a resolver it did not intend — §8.1's reasoning, unchanged by the re-export. */
+        expect(() => {
+          entry.registerRequestAuthorizationResolver(admitEverything);
+        }).toThrow(/already registered/);
+      } finally {
+        entry.clearRequestAuthorizationResolver();
+      }
+    });
+  });
+
+  describe('NET-NEW entry surface — a resolver registered THROUGH an artifact gates that artifact', () => {
+    const savedEnvironment = new Map<string, string | undefined>();
+
+    beforeEach(() => {
+      for (const [name, value] of Object.entries(ENTRY_INVOCATION_ENVIRONMENT)) {
+        savedEnvironment.set(name, process.env[name]);
+        process.env[name] = value;
+      }
+    });
+
+    afterEach(() => {
+      for (const [name, value] of savedEnvironment) {
+        if (value === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = value;
+        }
+      }
+      savedEnvironment.clear();
+    });
+
+    it('[NET-NEW] brandHandler answers 401 before registration and passes its gate after', async () => {
+      const capture = captureErrorStream();
+      const entry = jest.requireActual<LambdaEntryModule & AuthorizationSeamModule>(
+        '../../src/handlers/brandHandler',
+      );
+
+      try {
+        /* Fail-closed first, from the artifact's own default resolver — the state every deployment starts
+         * in and the state this port ships in. */
+        const refused = await entry.handler(eventFor('brand.saveBrand'));
+
+        expect(refused.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
+        expect(refused.body).toBe(JSON.stringify({ message: 'Authentication is required' }));
+
+        entry.registerRequestAuthorizationResolver(admitEverything);
+
+        /* ⭐ THE SAME MEMOISED DISPATCHER, A DIFFERENT ANSWER — which is the whole point of §8.1 reading its
+         * cell INSIDE the call. The first invocation above built the graph and the dispatcher; registration
+         * happened afterwards and is still honoured, so a deployment may register during initialisation
+         * without racing module load, and no principal is captured when the graph is composed. */
+        const admitted = await entry.handler(eventFor('brand.saveBrand'));
+
+        /* 400, not 401: the gate was passed and the invocation was then refused for its SHAPE, one step
+         * later. No service member ran, so no connection was opened — the strongest positive evidence
+         * available without a database. */
+        expect(admitted.statusCode).toBe(HTTP_STATUS.BAD_REQUEST);
+        expect(admitted.body).toBe(JSON.stringify({ message: 'A request body is required' }));
+
+        /* Neither answer is a failure, so nothing is written to the error stream. */
+        expect(capture.lines).toEqual([]);
+      } finally {
+        entry.clearRequestAuthorizationResolver();
+        capture.restore();
+      }
+    });
+
+    it('[NET-NEW] clearing through the artifact restores the fail-closed answer', async () => {
+      const capture = captureErrorStream();
+      const entry = jest.requireActual<LambdaEntryModule & AuthorizationSeamModule>(
+        '../../src/handlers/brandHandler',
+      );
+
+      try {
+        entry.registerRequestAuthorizationResolver(admitEverything);
+        expect((await entry.handler(eventFor('brand.saveBrand'))).statusCode).toBe(
+          HTTP_STATUS.BAD_REQUEST,
+        );
+
+        entry.clearRequestAuthorizationResolver();
+
+        /* The only thing clearing can do is take the gate AWAY: the cell returns to absent, which is the
+         * fail-closed state, so it can never be used to install a principal or relax a refusal. */
+        expect((await entry.handler(eventFor('brand.saveBrand'))).statusCode).toBe(
+          HTTP_STATUS.UNAUTHORIZED,
+        );
+        expect(capture.lines).toEqual([]);
+      } finally {
+        entry.clearRequestAuthorizationResolver();
+        capture.restore();
+      }
+    });
+  });
+});
+
+/* =====================================================================================================
+ * FOLDED IN FROM `test/config/env.test.ts` — AAP §0.4.1.12 SUITE ALIGNMENT (F1, F5)
+ * =====================================================================================================
+ * WHY THESE CASES ARE HERE RATHER THAN IN A SUITE OF THEIR OWN. AAP §0.4.1.12 declares exactly seventeen
+ * executable suites, and `test/config/env.test.ts` was not one of them — a QA pass recorded it,
+ * with eighteen siblings, as running outside the declared test plan. The coverage was never the problem;
+ * the file's existence was. So the cases are folded into an approved suite, unchanged.
+ *
+ * ⭐ WHY THIS HOST. `src/config/env.ts` is the only reader of `process.env` and is loaded by every entry point, so its
+ * coverage belongs with the other cross-cutting cases rather than beside any one module. It also shares
+ * this file's `jest.resetModules()` idiom, and the reason that idiom is necessary.
+ *
+ * ⛔ THE BODY IS WRAPPED IN ONE `describe`, WHICH IS THE WHOLE OF THE MECHANICAL CHANGE. Every helper,
+ * constant and type the folded suite declared at module scope is now block-scoped to this callback, so it
+ * cannot collide with this file's own declarations or with another folded body's — and any `beforeEach`,
+ * `afterEach` or `beforeAll` it carries now applies to its own cases only, never to the host's. Not one
+ * assertion, case name or comment was altered.
+ * ================================================================================================== */
+
+/* =====================================================================================================
+ * src/config/env.ts — the configuration loader, exercised through the real module-load path.
+ *
+ * WHY THIS FILE EXISTS AT ALL. Before it, `GOOGLE_FEED_HOST` appeared NOWHERE under test/ — a grep for
+ * the name returned nothing — so the variable that composes every absolute URL in the anonymous public
+ * Google feed had no coverage of any kind, and `.env.example` described a trust boundary no code enforced.
+ * The suite outlived the rule it was written for, and that is the point of keeping it: it is now what pins
+ * the ABSENCE of the rule, in both directions, so the document and the loader cannot drift apart again.
+ *
+ * ⛔ WHAT THE RULE WAS, AND WHY IT IS GONE. A `requireHostAuthorityValue` reader transcribed RFC 3986
+ * §3.2.2's `host` production with §3.2.3's optional `port` — RFC 9110 §7.2 defines the HTTP `Host` field
+ * as exactly that, and the legacy view composed its URLs from `CGI.HTTP_HOST`, so a value outside the
+ * production could never have been the input the legacy was designed to accept. The transcription was
+ * accurate and its citations check out. It is WITHDRAWN all the same, because AAP §0.6.7.7 authorises
+ * exactly ONE departure from behavioural preservation in this port — D18, the importer's parameterised
+ * SQL — and names it so that a reviewer diffing behaviour has exactly one entry to check; AAP §0.7.1
+ * records the plan as FROZEN and AAP §0.8.2 Guideline 4 admits no proportionality test. The current review
+ * names feed "host rejection" among the unauthorised changes and directs its removal.
+ *
+ * ⭐ WHAT THIS SUITE NOW ASSERTS ABOUT THAT VARIABLE. Presence and non-blankness are still required — a
+ * configuration-COMPLETENESS rule, and the legacy has no environment variable to leave empty, so it
+ * diverges from nothing. Everything else is accepted and stored VERBATIM, and §2 asserts that for the
+ * exact fourteen shapes the withdrawn grammar used to refuse, so a reinstatement fails loudly here.
+ *
+ * ⭐ AND `DB_HOST` IS DIFFERENT, WHICH §4 PINS. It stands in for the `Slatwall` datasource DEFINITION at
+ * `config/configApplication.cfm:L2` rather than for a value the legacy emitted, and a host outside the
+ * production cannot be connected to under either system — so refusing it at load forecloses no successful
+ * legacy outcome and its grammar survives.
+ *
+ * ⛔ WHAT THIS SUITE DOES NOT ASSERT. That the configured feed host is the RIGHT host, or a legal one. The
+ * whole origin-rebasing and XML-corruption exposure is carried and flagged at
+ * `src/integrations/google/ProductFeedBuilder.ts`'s THERE IS NO `validateFeedHostAuthority` note.
+ *
+ * HOW THE MODULE IS REACHED. `src/config/env.ts` exports one value — `config` — and builds it as a
+ * MODULE-LOAD SIDE EFFECT, with no reload, override or reset entry point. That is deliberate in the
+ * source, so the suite does not add one: it mutates `process.env`, resets the module registry and
+ * `require`s the module inside a `try`/`catch`. Every acceptance and every refusal below is therefore
+ * observed through the same path a cold Lambda container takes, not through an exported helper written
+ * for the test's convenience.
+ *
+ * ⚠️ THE TYPE IMPORT MUST STAY TYPE-ONLY. A value import of this module would execute `loadConfig()` at
+ * suite load, before any variable is set, and every case in the file would fail on the same error. Only
+ * `import type` is used, and it is erased by the transform.
+ *
+ * PROVENANCE: every case is NET-NEW. AAP §0.6.5.2 records that no legacy test covers configuration
+ * loading, and the legacy has no configuration loader to cover — the datasource name is a literal in
+ * `config/configApplication.cfm:L2` and the ORM dialect is probed at runtime in `config/configORM.cfm`.
+ * ================================================================================================== */
+describe('test/config/env.test.ts — the configuration loader, which every layer depends on and none owns (folded, F1, F5)', () => {
+  /* -----------------------------------------------------------------------------------------------------
+   * Harness.
+   * -------------------------------------------------------------------------------------------------- */
+
+  /** Resolved relative to this file so the suite is invocation-directory independent. */
+  const ENV_MODULE_PATH = '../../src/config/env';
+
+  /** `.env.example` is the operator-facing document review finding F13 is about. */
+  const ENV_EXAMPLE_PATH = join(__dirname, '..', '..', '.env.example');
+
+  /**
+   * Every variable the loader reads, required and optional alike.
+   *
+   * The list is exhaustive on purpose: each case clears ALL of them before applying its own base, so a
+   * value left behind by an earlier case cannot make a later one pass. It is also the reason a variable
+   * added to the loader without being added here would show up as a surprising cross-case dependency
+   * rather than as a silent pass.
+   */
+  const LOADER_VARIABLE_NAMES: readonly string[] = [
+    'DB_HOST',
+    'DB_PORT',
+    'DB_NAME',
+    'DB_USER',
+    'DB_PASSWORD',
+    'DB_TLS_MODE',
+    'DB_CONNECTION_LIMIT',
+    'DB_QUEUE_LIMIT',
+    'DB_CONNECT_TIMEOUT_MS',
+    'GOOGLE_FEED_HOST',
+    'SETTING_APPLICATION_ROOT_MAPPING_PATH',
+    'SETTING_SKU_ELIGIBLE_CURRENCIES',
+    'SETTING_SKU_ELIGIBLE_FULFILLMENT_METHODS',
+    /* The three finite resource bounds of DECISION H, added by review finding SEC-1 (CWE-400). They belong in
+     * this list for the same reason as every other name: `loadConfigWith` deletes each one before applying a
+     * case's overrides, so a value left in the ambient environment cannot leak between cases. */
+    'CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY',
+    'CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST',
+    'CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION',
+  ];
+
+  /**
+   * A base that satisfies every OTHER required variable, so a failure can only be the one under test.
+   *
+   * `DB_QUEUE_LIMIT` is `'1'` rather than `'0'`: the loader enforces a floor of 1, and `mysql2` reads `0`
+   * as its own "no limit" sentinel, so the driver's sentinel is deliberately not expressible. A first draft
+   * of this harness used `'0'` and every acceptance case failed on that variable instead of the host — the
+   * kind of harness bug that reads as a source bug, which is why the value is called out here.
+   */
+  const REQUIRED_BASE_ENVIRONMENT: Readonly<Record<string, string>> = Object.freeze({
+    DB_HOST: 'localhost',
+    DB_PORT: '3306',
+    DB_NAME: 'Slatwall',
+    DB_USER: 'slatwall',
+    DB_PASSWORD: 'slatwall_pw',
+    DB_TLS_MODE: 'disabled',
+    DB_CONNECTION_LIMIT: '10',
+    DB_QUEUE_LIMIT: '1',
+    DB_CONNECT_TIMEOUT_MS: '10000',
+    GOOGLE_FEED_HOST: 'catalog.example.test',
+  });
+
+  const ORIGINAL_ENVIRONMENT: Readonly<Record<string, string | undefined>> = Object.freeze({
+    ...process.env,
+  });
+
+  /**
+   * Load `src/config/env.ts` afresh with `overrides` applied over the valid base.
+   *
+   * @param overrides values to set; an explicit `undefined` UNSETS the variable rather than blanking it,
+   *   which is the distinction the loader's absent-versus-empty handling turns on
+   * @returns the freshly built configuration
+   * @throws whatever the loader throws, unchanged, so each case can assert on it directly
+   */
+  function loadConfigWith(overrides: Readonly<Record<string, string | undefined>> = {}): AppConfig {
+    for (const name of LOADER_VARIABLE_NAMES) {
+      delete process.env[name];
+    }
+    Object.assign(process.env, REQUIRED_BASE_ENVIRONMENT);
+    for (const [name, value] of Object.entries(overrides)) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+
+    jest.resetModules();
+
+    /*
+     * The module builds `config` as a load-time side effect and exposes no reload entry point, so a fresh
+     * `require` after `jest.resetModules()` is the only way to observe a different environment. A static
+     * import would bind one snapshot for the whole file, which is precisely the property this suite has to
+     * defeat. The rule is disabled for this one expression and nowhere else.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const loaded = require(ENV_MODULE_PATH) as { readonly config: AppConfig };
+    return loaded.config;
+  }
+
+  /** The rejection a case produced, or `undefined` when the loader accepted the value. */
+  function captureLoadFailure(overrides: Readonly<Record<string, string | undefined>>): unknown {
+    try {
+      loadConfigWith(overrides);
+      return undefined;
+    } catch (failure: unknown) {
+      return failure;
+    }
+  }
+
+  /**
+   * Assert a rejection is the loader's own typed failure, naming the variable.
+   *
+   * `instanceof ConfigurationError` is deliberately NOT used. `jest.resetModules()` gives the re-required
+   * module a fresh registry, so the class the loader throws is a DIFFERENT class object from one this file
+   * could import — an identity check would fail for a reason that has nothing to do with the rule. The
+   * `name` and `context` assertions carry the same information without that trap.
+   *
+   * ⭐ THE NAME IS `ConfigurationError` AND THAT IS ITSELF THE ASSERTION. `../../src/errors/DomainError.ts`
+   * declares `ConfigurationError` for this category and presents it as `SERVICE_CONFIGURATION`, while the
+   * base `DomainError` presents as `SERVICE_FAULT`; `../../src/handlers/httpResponse.ts` reads the
+   * difference. The loader used to throw the base class, which classified the CANONICAL configuration
+   * failures as generic faults while `StaticSettingResolver` already threw the specific one for the
+   * analogous failure. Pinning the name here is what stops that drifting back.
+   */
+  function expectVariableRejection(failure: unknown, variableName: string): void {
+    expect(failure).toBeInstanceOf(Error);
+    const error = failure as Error & { readonly context?: Readonly<Record<string, unknown>> };
+    expect(error.name).toBe('ConfigurationError');
+    expect(error.message).toContain(variableName);
+    expect(error.context).toMatchObject({ variable: variableName });
+  }
+
+  beforeEach(() => {
+    jest.resetModules();
+  });
+
+  afterAll(() => {
+    for (const name of LOADER_VARIABLE_NAMES) {
+      delete process.env[name];
+    }
+    for (const [name, value] of Object.entries(ORIGINAL_ENVIRONMENT)) {
+      if (value !== undefined) {
+        process.env[name] = value;
+      }
+    }
+    jest.resetModules();
+  });
+
+  /* =====================================================================================================
+   * §1 — Values inside the RFC 3986 §3.2.2 production are accepted, VERBATIM.
+   * ================================================================================================== */
+
+  describe('NET-NEW env — GOOGLE_FEED_HOST accepts the host production', () => {
+    it.each([
+      ['a registered name', 'store.example.com'],
+      ['a registered name with a port', 'store.example.com:8080'],
+      ['an IPv4 literal', '192.0.2.10'],
+      ['an IPv4 literal with a port', '192.0.2.10:80'],
+      ['a bracketed IPv6 loopback', '[::1]'],
+      ['a bracketed IPv6 literal with a port', '[2001:db8::1]:8443'],
+      ['a fully expanded bracketed IPv6 literal', '[0:0:0:0:0:0:0:1]'],
+      ['a single-label name', 'localhost'],
+      ['an IDNA A-label', 'xn--bcher-kva.example'],
+      ['a percent-encoded octet', 'store%20a.example'],
+      ['sub-delimiters a reg-name admits', "a&b'c.example"],
+    ])('[NET-NEW] accepts %s and stores it unchanged', (_description: string, host: string) => {
+      /*
+       * ⭐ STORED UNCHANGED IS PART OF THE CONTRACT, NOT AN INCIDENTAL DETAIL.
+       *
+       * No trim, no lowercase, no bracket stripping and no percent-decoding. The value is composed
+       * verbatim into `http://<host>` by `src/integrations/google/ProductFeedBuilder.ts`, so any
+       * normalisation here would silently change every URL the feed publishes. Whitespace does not need
+       * trimming because space is outside `reg-name` and is refused in §2 instead.
+       */
+      expect(loadConfigWith({ GOOGLE_FEED_HOST: host }).googleFeed.host).toBe(host);
+    });
+
+    it('[NET-NEW] accepts sub-delimiters here precisely because the serializer encodes them', () => {
+      /*
+       * ⭐ THE TWO-LAYER SPLIT, ASSERTED RATHER THAN DESCRIBED.
+       *
+       * `&` and `'` are legal in an RFC 3986 `reg-name`, so refusing them here would reject a CONFORMING
+       * host — an invented policy. They are also XML metacharacters, so emitting them raw would break the
+       * document. Both facts are true at once, and the resolution is that GRAMMAR is owned here while
+       * ENCODING is owned by the serializer. This case pins the first half; the second half is pinned by
+       * `test/integrations/ProductFeedBuilder.test.ts`'s hostile-host block, which renders this exact value
+       * and requires it escaped at all five sites that compose it.
+       */
+      expect(loadConfigWith({ GOOGLE_FEED_HOST: "a&b'c.example" }).googleFeed.host).toBe(
+        "a&b'c.example",
+      );
+    });
+  });
+
+  /* =====================================================================================================
+   * ⛔ §2 AND §3 STOOD HERE AS A HOST GRAMMAR AND ARE WITHDRAWN — ONLY THE COMPLETENESS RULE SURVIVES
+   *
+   * WHAT THEY ASSERTED. Twenty-three cases required `loadConfig` to REFUSE `GOOGLE_FEED_HOST` values outside
+   * RFC 3986 §3.2.2's `reg-name` production plus §3.2.3's `port`: a scheme prefix, a path, userinfo, a
+   * query, a fragment, embedded whitespace or markup, leading and trailing whitespace, an unbracketed or
+   * unterminated IPv6 literal, trailing text after a bracket, a truncated percent-encoding, an RFC 6874
+   * zone identifier, a NUL byte, and seven malformed ports. They drove `requireHostAuthorityValue`.
+   *
+   * WHO WITHDREW IT AND ON WHAT AUTHORITY. `../../src/config/env.ts` carries the adjudication at its own
+   * THERE IS NO `requireHostAuthorityValue` note. In brief: `GOOGLE_FEED_HOST` stands in for
+   * `CGI.HTTP_HOST`, which `integrationServices/google/views/feed/product.cfm:L14` interpolates with NO
+   * validation of any kind, so refusing a value the legacy served is an outcome change rather than a
+   * preserved behaviour. AAP §0.6.7.7 licenses EXACTLY ONE such departure (D18, the importer's
+   * parameterised SQL) and §0.8.2 guideline 4 admits no proportionality test.
+   *
+   * ⭐ WHAT STILL HOLDS, AND IT IS NOT NOTHING. The loader still reads `GOOGLE_FEED_HOST` as REQUIRED and
+   * NON-BLANK — a configuration-COMPLETENESS rule rather than a grammar, and one the legacy has an
+   * equivalent of, since a deployment with no host cannot compose a URL at all. That rule is asserted by
+   * the case kept below, and a legal host still passes through byte-for-byte, asserted by the accepting
+   * cases kept with it. Downstream, SEC-2's XML-representability gate still refuses a host carrying `<`,
+   * `&` or `]]>` at a raw sink, because those make the document unparseable; and the residual exposure — a
+   * host carrying `/`, `@`, `?` or `#` — is asserted as a CARRIED DEFECT by the
+   * `TODO(parity) — WITHDRAWAL REGRESSION` case in `../integrations/ProductFeedBuilder.test.ts`.
+   * ================================================================================================== */
+
+  describe('NET-NEW env — GOOGLE_FEED_HOST is required, non-blank, and otherwise unmodified', () => {
+    it.each([
+      ['a plain registered name', 'store.example.com'],
+      ['a name with the lowest addressable port', 'store.example.com:1'],
+      ['a name with the highest addressable port', 'store.example.com:65535'],
+      ['a bracketed IPv6 literal', '[fe80::1]'],
+    ])(
+      '[NET-NEW] accepts %s and answers it byte-for-byte',
+      (_description: string, host: string) => {
+        /* No trimming, no case folding, no punycode, no default-port stripping: the configured bytes are the
+         * bytes every absolute URL in the feed is composed from. */
+        expect(loadConfigWith({ GOOGLE_FEED_HOST: host }).googleFeed.host).toBe(host);
+      },
+    );
+
+    it('[NET-NEW] refuses an absent variable and a blank one, separately', () => {
+      /* Absent and empty are distinct states, and the loader must refuse both — an empty host would
+       * compose `http://` followed by nothing and publish a feed of unusable links. This is the
+       * completeness rule that survives the grammar's withdrawal. */
+      expectVariableRejection(
+        captureLoadFailure({ GOOGLE_FEED_HOST: undefined }),
+        'GOOGLE_FEED_HOST',
+      );
+      expectVariableRejection(captureLoadFailure({ GOOGLE_FEED_HOST: '' }), 'GOOGLE_FEED_HOST');
+      expectVariableRejection(captureLoadFailure({ GOOGLE_FEED_HOST: '   ' }), 'GOOGLE_FEED_HOST');
+    });
+  });
+
+  /* =====================================================================================================
+   * §4 — A platform fact worth recording, and the rule's blast radius.
+   * ================================================================================================== */
+
+  describe('NET-NEW env — platform behaviour and blast radius', () => {
+    /* ------------------------------------------------------------------------------------------------
+     * ⛔ A NUL-BYTE / C0-CONTROL REFUSAL CASE STOOD HERE AND IS WITHDRAWN WITH THE GRAMMAR IT TESTED.
+     *
+     * It required `loadConfig` to refuse `GOOGLE_FEED_HOST` values containing any of six C0 controls, on the
+     * ground that they lie outside `reg-name`. With `requireHostAuthorityValue` withdrawn there is no
+     * character-class test to exercise — see the §2/§3 withdrawal record above for the authority.
+     *
+     * ⭐ THE PLATFORM FINDING IT CARRIED IS WORTH KEEPING EVEN SO, because it was measured and it is
+     * counter-intuitive: on a real Node runtime `process.env` is libuv-backed and COERCES on assignment, so
+     * `'store\u0000.example.com'` is stored as `'store'` — length 5. Under Jest `process.env` is an ordinary
+     * object inside the module sandbox and the NUL SURVIVES at full length. Both were verified by direct
+     * probe. Any future case that asserts anything about control characters in an environment variable must
+     * therefore state which of the two environments it is pinning, or it will pin the harness rather than
+     * the rule. `DB_HOST` below still has its own grammar and still refuses controls, so the class of defect
+     * is not untested — only this variable no longer has a rule to test.
+     * ---------------------------------------------------------------------------------------------- */
+
+    it('[NET-NEW] DB_HOST is held to its own MySQL-host grammar, which differs in three stated ways', () => {
+      /*
+       * ⭐ WHY THIS CASE CHANGED. It used to assert the OPPOSITE — that `DB_HOST` was read through
+       * `requireNonBlankValue` and that applying a grammar to it "would be an invented policy with no
+       * defect behind it". A QA pass then demonstrated the defect: `mysql://10.0.0.1`,
+       * `user:pw@10.0.0.1`, a trailing newline and a non-ASCII name all LOADED, in the one module whose
+       * purpose is typed validation with descriptive errors, and surfaced later as an opaque driver
+       * connect failure. The grammar is now applied, and the two shapes the old rationale correctly
+       * identified as legitimate are both still accepted — one of them by an explicit branch written for
+       * it.
+       *
+       * `DB_TLS_MODE` is set to `verified` wherever the host is not a loopback literal, because the
+       * loader refuses cleartext to a non-loopback host — an unrelated rule that would otherwise mask
+       * this one.
+       */
+
+      /* (1) A registered name, which is the ordinary case. */
+      expect(
+        loadConfigWith({ DB_HOST: 'db.internal.example', DB_TLS_MODE: 'verified' }).database.host,
+      ).toBe('db.internal.example');
+
+      /* (2) A BARE, bracket-free IPv6 address — a legitimate `mysql2` host, outside RFC 3986 §3.2.2, and
+       * accepted here by the explicit `isIPv6` branch. Refusing it would break the loopback transport
+       * rule for `::1`, which is the one arrangement that rule exists to serve. */
+      expect(loadConfigWith({ DB_HOST: '::1', DB_TLS_MODE: 'disabled' }).database.host).toBe('::1');
+      expect(
+        loadConfigWith({ DB_HOST: '2001:db8::1', DB_TLS_MODE: 'verified' }).database.host,
+      ).toBe('2001:db8::1');
+
+      /* (3) And the bracketed form, so an operator who writes the URI-style literal is not penalised. */
+      expect(loadConfigWith({ DB_HOST: '[::1]', DB_TLS_MODE: 'disabled' }).database.host).toBe(
+        '[::1]',
+      );
+    });
+
+    it.each([
+      ['a scheme prefix', 'mysql://10.255.255.1'],
+      ['a userinfo prefix', 'user:pw@10.255.255.1'],
+      ['a port suffix, which belongs in DB_PORT', 'db.internal.example:3306'],
+      ['a trailing newline', '10.255.255.1\n'],
+      ['a leading space', ' 10.255.255.1'],
+      ['a non-ASCII registered name', 'dörterbank.qa000.invalid'],
+      ['a path', 'db.internal.example/schema'],
+      ['a filesystem socket path', '/var/run/mysqld/mysqld.sock'],
+      ['embedded markup', 'db<script>.example'],
+    ])('[NET-NEW] DB_HOST refuses %s', (_situation, host) => {
+      /* Every one of the first four and the sixth was accepted before the rule existed; the QA pass that
+       * found them lists the first, second, fourth and sixth by name. The socket path is refused with a
+       * message that explains why: `src/config/database.ts` configures no socket option, so a path would
+       * be resolved as a hostname and fail to connect — it could never have worked. */
+      expectVariableRejection(
+        captureLoadFailure({ DB_HOST: host, DB_TLS_MODE: 'verified' }),
+        'DB_HOST',
+      );
+    });
+
+    it('[NET-NEW] the six TLS-guard bypass shapes are still refused, grammar or no grammar', () => {
+      /* A QA pass probed each of these against the loopback exemption and found no path to an unencrypted
+       * non-loopback session. The new host grammar must not open one: `0.0.0.0` and `127.0.0.999` are
+       * syntactically fine registered names and are refused by the LOOPBACK rule instead, while
+       * `127.0.0.1@evil.invalid` is now refused by the grammar. Either refusal is acceptable; being
+       * accepted is not. */
+      for (const host of [
+        '0.0.0.0',
+        '127.0.0.1.evil.invalid',
+        '127.0.0.1@evil.invalid',
+        'localhost.evil.invalid',
+        '127.0.0.999',
+        '127.1',
+      ]) {
+        expect(captureLoadFailure({ DB_HOST: host, DB_TLS_MODE: 'disabled' })).toBeInstanceOf(
+          Error,
+        );
+      }
+
+      /* And the genuine loopback literals still pass, which is the other half of the same guarantee. */
+      for (const host of ['127.0.0.1', 'localhost', '::1', '[::1]']) {
+        expect(loadConfigWith({ DB_HOST: host, DB_TLS_MODE: 'disabled' }).database.host).toBe(host);
+      }
+    });
+
+    it('[NET-NEW] a valid environment yields a frozen configuration with the feed host in place', () => {
+      const config = loadConfigWith();
+
+      expect(config.googleFeed.host).toBe('catalog.example.test');
+      expect(Object.isFrozen(config)).toBe(true);
+      expect(Object.isFrozen(config.googleFeed)).toBe(true);
+    });
+
+    it('[NET-NEW] DB_NAME is bounded by the MySQL identifier limit, the other half of the same finding', () => {
+      /*
+       * ⭐ THE SAME QA EDGE CASE THAT PRODUCED THE DB_HOST GRAMMAR ABOVE ALSO RECORDED A `DB_NAME` OF 4096
+       * CHARACTERS AS ACCEPTED. Both halves came from one root cause — this module validated the feed host
+       * carefully and its neighbouring connection coordinates barely at all — so both are pinned here.
+       *
+       * MySQL documents 64 characters as the maximum length of a database identifier, so a longer value
+       * cannot name a schema on ANY server. The bound is therefore the server's, not one chosen here: it
+       * refuses only values that provably cannot be what they claim to be, which is what keeps it clear of
+       * IR-12. Accepting them instead deferred the failure to the first query, where the driver reports an
+       * unknown-database error naming neither this variable nor the environment.
+       */
+      const atTheLimit = 'a'.repeat(64);
+      expect(loadConfigWith({ DB_NAME: atTheLimit }).database.database).toBe(atTheLimit);
+
+      /* One character past it is refused, and the message names DB_NAME rather than the value. */
+      expectVariableRejection(captureLoadFailure({ DB_NAME: 'a'.repeat(65) }), 'DB_NAME');
+      expectVariableRejection(captureLoadFailure({ DB_NAME: 'a'.repeat(4096) }), 'DB_NAME');
+
+      /*
+       * ⛔ AND THE CHECK IS LENGTH-ONLY, DELIBERATELY. The `Sw*` schema is the fixed contract both systems
+       * share and this port neither creates nor migrates it, while MySQL permits a wide character range in
+       * a quoted identifier — so a name that genuinely exists must still load, however unusual it looks.
+       * Screening characters here would risk refusing a real schema, which is the worse failure.
+       */
+      for (const unusualButLegal of [
+        'slatwall-prod',
+        'slatwall.v2',
+        'Slatwall 3',
+        '_slatwall',
+        'sw$1',
+      ]) {
+        expect(loadConfigWith({ DB_NAME: unusualButLegal }).database.database).toBe(
+          unusualButLegal,
+        );
+      }
+
+      /* The pre-existing non-blank rule is unchanged: absence and blankness still fail on their own terms. */
+      expectVariableRejection(captureLoadFailure({ DB_NAME: undefined }), 'DB_NAME');
+      expectVariableRejection(captureLoadFailure({ DB_NAME: '   ' }), 'DB_NAME');
+    });
+  });
+
+  /* =====================================================================================================
+   * §4a — The boot contract: five variables required, four optional with stated fallbacks.
+   *
+   * A QA pass found the loader requiring NINE `DB_*` variables where AAP §0.4.1.3 documents five and says
+   * pool settings are "not carried over", so a deployment configured exactly to the plan failed closed at
+   * cold start. These cases pin the contract as it now stands, in both directions: the five that must be
+   * supplied, and the four whose absence resolves to something safe rather than to a boot failure.
+   * ================================================================================================== */
+
+  describe('NET-NEW env — the five-variable boot contract', () => {
+    /** Exactly the keys AAP §0.4.1.3 documents, and nothing else. */
+    const FIVE_KEY_ENVIRONMENT: Readonly<Record<string, string | undefined>> = Object.freeze({
+      DB_TLS_MODE: undefined,
+      DB_CONNECTION_LIMIT: undefined,
+      DB_QUEUE_LIMIT: undefined,
+      DB_CONNECT_TIMEOUT_MS: undefined,
+    });
+
+    it('[NET-NEW] loads with only DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD and the feed host', () => {
+      const config = loadConfigWith(FIVE_KEY_ENVIRONMENT);
+
+      /* The five stated values arrive verbatim — nothing is defaulted for a connection target or an
+       * identity, which is the half of the contract that must NOT relax. */
+      expect(config.database.host).toBe('localhost');
+      expect(config.database.port).toBe(3306);
+      expect(config.database.database).toBe('Slatwall');
+      expect(config.database.user).toBe('slatwall');
+      expect(config.database.password).toBe('slatwall_pw');
+    });
+
+    it('[NET-NEW] an unset transport mode resolves to the verified one, never to cleartext', () => {
+      /* The fail-safe direction. `localhost` IS a loopback literal, so `disabled` would have been legal
+       * here — the point is that absence does not choose it. */
+      expect(loadConfigWith(FIVE_KEY_ENVIRONMENT).database.tlsMode).toBe('verified');
+
+      /* And for a remote host, where cleartext is refused outright, absence is still `verified` rather
+       * than a boot failure. */
+      expect(
+        loadConfigWith({ ...FIVE_KEY_ENVIRONMENT, DB_HOST: 'db.internal.example' }).database
+          .tlsMode,
+      ).toBe('verified');
+    });
+
+    it('[NET-NEW] an unset queue bound resolves to the declared floor, never to the unbounded sentinel', () => {
+      /* This is the one bound that cannot be delegated: `mysql2` reads zero as "no limit" AND zero is its
+       * default, so omitting the option would select an unbounded queue of waiting requests. The fallback
+       * is the floor the loader already enforces for a supplied value — no new figure. */
+      expect(loadConfigWith(FIVE_KEY_ENVIRONMENT).database.queueLimit).toBe(1);
+      expect(loadConfigWith(FIVE_KEY_ENVIRONMENT).database.queueLimit).not.toBe(0);
+    });
+
+    it('[NET-NEW] an unset connection limit and connect timeout are OMITTED, not defaulted', () => {
+      const database = loadConfigWith(FIVE_KEY_ENVIRONMENT).database;
+
+      /* Absent members, not members holding `undefined`: `src/config/database.ts` spreads them, so an
+       * absent member means the driver option is left off entirely and the driver's own bounded default
+       * applies. That is what lets this port state no number at all (IR-12). */
+      expect(Object.hasOwn(database, 'connectionLimit')).toBe(false);
+      expect(Object.hasOwn(database, 'connectTimeoutMs')).toBe(false);
+    });
+
+    it('[NET-NEW] a supplied optional value is still honoured verbatim and still validated', () => {
+      const database = loadConfigWith({
+        DB_CONNECTION_LIMIT: '7',
+        DB_QUEUE_LIMIT: '9',
+        DB_CONNECT_TIMEOUT_MS: '4321',
+        DB_TLS_MODE: 'disabled',
+      }).database;
+
+      expect(database.connectionLimit).toBe(7);
+      expect(database.queueLimit).toBe(9);
+      expect(database.connectTimeoutMs).toBe(4321);
+      expect(database.tlsMode).toBe('disabled');
+
+      /* Optional does not mean lenient: a present-but-bad value is still refused, and the zero sentinel is
+       * still rejected rather than quietly replaced by the floor. */
+      expectVariableRejection(captureLoadFailure({ DB_QUEUE_LIMIT: '0' }), 'DB_QUEUE_LIMIT');
+      expectVariableRejection(
+        captureLoadFailure({ DB_CONNECTION_LIMIT: 'ten' }),
+        'DB_CONNECTION_LIMIT',
+      );
+      expectVariableRejection(captureLoadFailure({ DB_TLS_MODE: 'require' }), 'DB_TLS_MODE');
+      /* Blank is a misconfiguration rather than a way to say "unset", for an optional key as much as a
+       * required one. */
+      expectVariableRejection(
+        captureLoadFailure({ DB_CONNECT_TIMEOUT_MS: '   ' }),
+        'DB_CONNECT_TIMEOUT_MS',
+      );
+    });
+
+    it.each([
+      ['DB_HOST'],
+      ['DB_PORT'],
+      ['DB_NAME'],
+      ['DB_USER'],
+      ['DB_PASSWORD'],
+      ['GOOGLE_FEED_HOST'],
+    ])('[NET-NEW] %s is still required, and its absence names it', (variableName) => {
+      /* The other half of the contract. Relaxing the four optional keys must not relax these six, and each
+       * failure still names the variable and leaks no value. */
+      expectVariableRejection(
+        captureLoadFailure({ ...FIVE_KEY_ENVIRONMENT, [variableName]: undefined }),
+        variableName,
+      );
+    });
+
+    it('[NET-NEW] no configuration failure leaks a supplied value into message, context or stack', () => {
+      const failure = captureLoadFailure({
+        ...FIVE_KEY_ENVIRONMENT,
+        DB_PASSWORD: undefined,
+        DB_USER: 'sentinel-user-value',
+        DB_NAME: 'sentinel-schema-value',
+      }) as Error & { readonly context?: unknown };
+
+      const surface = `${failure.message} ${JSON.stringify(failure.context)} ${String(failure.stack)}`;
+
+      expect(surface).toContain('DB_PASSWORD');
+      expect(surface).not.toContain('sentinel-user-value');
+      expect(surface).not.toContain('sentinel-schema-value');
+      expect(surface).not.toContain('slatwall_pw');
+    });
+  });
+
+  /* =====================================================================================================
+   * §5 — Documentation parity — the operator-facing half of review finding F13.
+   *
+   * Finding F13 is a DOCUMENTATION defect: `.env.example` asserted a trust boundary the code did not
+   * enforce, and the review's AAP requirement 7 ("security translation documentation must match
+   * implementation") failed on it. Fixing the prose is not enough on its own, because prose drifts back.
+   * These cases make the agreement machine-checked, in both directions: the document must cite the rule
+   * that now exists, and must no longer carry the two claims that were false.
+   * ================================================================================================== */
+
+  describe('NET-NEW env — .env.example matches what GOOGLE_FEED_HOST actually enforces', () => {
+    /*
+     * ⚠️ THE DOCUMENT IS READ INSIDE EACH CASE, NEVER AT DESCRIBE-REGISTRATION SCOPE.
+     *
+     * An earlier revision bound `readFileSync(ENV_EXAMPLE_PATH, 'utf8')` to a constant right here, in the
+     * describe factory body. Jest evaluates that body during COLLECTION, before any case runs, so a missing
+     * or unreadable `.env.example` — a checkout without dotfiles, a rename, a packaging step that drops
+     * them — surfaced as `Test suite failed to run` and took EVERY case in this file down with it, including
+     * the thirty-odd that never touch the filesystem and could not have been affected. The blast radius of a
+     * documentation-file problem was the whole loader suite.
+     *
+     * Reading lazily narrows that to the three cases that genuinely depend on the document: they fail with
+     * the real ENOENT, and every other case in the file still reports its own verdict. This is also the
+     * corpus convention rather than a local invention — `ProductFeedBuilder.test.ts`,
+     * `IntegrationContract.test.ts`, `googleFeedHandler.test.ts` and `MySqlProductRepository.test.ts` all
+     * read their reference files inside the test body already, and this suite was the lone deviation.
+     */
+    const readEnvExample = (): string => readFileSync(ENV_EXAMPLE_PATH, 'utf8');
+
+    it('[NET-NEW] states the enforced grammar and where it runs', () => {
+      const envExample = readEnvExample();
+
+      expect(envExample).toContain('GOOGLE_FEED_HOST');
+      /* The published productions the rule transcribes, named so an operator can check it. */
+      expect(envExample).toContain('RFC 3986');
+      expect(envExample).toContain('3.2.2');
+      expect(envExample).toContain('3.2.3');
+      /* And where it runs, which is module load rather than the render path. */
+      expect(envExample).toContain('src/config/env.ts');
+    });
+
+    it('[NET-NEW] no longer claims the feed builder validates the host', () => {
+      /*
+       * The two false claims review finding F13 quotes. The first attributed a validator to the builder
+       * that does not exist there; the second cited a withdrawn decision block as the authority for a
+       * refusal nothing performed. Neither may reappear.
+       */
+      const envExample = readEnvExample();
+
+      expect(envExample).not.toContain('validator refuses');
+      expect(envExample).not.toContain('DECISION G-1');
+    });
+
+    it('[NET-NEW] still says plainly that host IDENTITY is not checked anywhere', () => {
+      /*
+       * ⚠️ The residual exposure must stay documented. A rule that checks SHAPE is not a rule that checks
+       * WHICH host, and an operator who reads the new grammar paragraph as "the host is verified" would be
+       * misled in the opposite direction from the original defect. Overclaiming is the same class of
+       * documentation failure as underclaiming.
+       */
+      const envExample = readEnvExample();
+
+      expect(envExample).toContain('NOT ENFORCED');
+    });
+  });
+
+  describe('NET-NEW env — DECISION H: the three finite resource bounds (SEC-1)', () => {
+    /*
+     * WHY THESE NAMES EXIST AT ALL, GIVEN THAT SEVEN OTHERS WERE REMOVED FROM THIS LOADER.
+     *
+     * Review finding SEC-1 (CWE-400) found that the three bounds already present in the code —
+     * `SmartListMaterialisationBudget`, `SkuCombinationBudget` and `UrlTitleProbeBudget` — were UNREACHABLE,
+     * because `src/config/container.ts` supplied none of them in either graph. The three names below are the
+     * route from an operator's own measurement into the composition root.
+     *
+     * ⭐ THE DISTINCTION THAT KEEPS THEM INSIDE THE EARLIER DECISION IS OPTIONALITY. The withdrawn loaders
+     * made a deployment supply a figure before this module would build AT ALL, so the figure had to be
+     * invented by somebody; these three are optional and default to nothing. Every case below asserts that
+     * ABSENT stays absent — no substitution, no floor promoted to a default, no suggested value (AAP §0.7.3
+     * S9, IR-12).
+     */
+
+    it('[NET-NEW] SEC-1 omits every bound when none is set, rather than defaulting one', () => {
+      const config = loadConfigWith({
+        CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY: undefined,
+        CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST: undefined,
+        CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION: undefined,
+      });
+
+      /*
+       * ⭐ THE SECTION IS ALWAYS PRESENT AND ALWAYS FROZEN; ITS MEMBERS MAY ALL BE ABSENT. The container reads
+       * `config.resourceBounds` unconditionally, so an absent section would be a load-time crash rather than
+       * an unbounded graph.
+       */
+      expect(config.resourceBounds).toStrictEqual({});
+      expect(Object.isFrozen(config.resourceBounds)).toBe(true);
+
+      /*
+       * ⭐ THE KEY IS OMITTED, NOT WRITTEN AS `undefined`, and under `exactOptionalPropertyTypes` that is a
+       * real distinction rather than a stylistic one: the collaborators declare their budget arguments as
+       * optional members, and a key present holding `undefined` is not assignable to one. `toStrictEqual({})`
+       * above already fails on a present-but-undefined key, and this states the same property directly.
+       */
+      expect(Object.keys(config.resourceBounds)).toStrictEqual([]);
+    });
+
+    it('[NET-NEW] SEC-1 carries each stated bound through as a number, independently', () => {
+      /*
+       * INDEPENDENTLY IS THE POINT. Each bound guards a different path — materialisation, SKU enumeration,
+       * URL-title probing — so a deployment that has measured one must not be obliged to state the other two.
+       */
+      expect(
+        loadConfigWith({ CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY: '5000' }).resourceBounds,
+      ).toStrictEqual({ smartListMaximumRecordsPerQuery: 5000 });
+
+      expect(
+        loadConfigWith({ CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST: '1' }).resourceBounds,
+      ).toStrictEqual({ skuMaximumCombinationsPerRequest: 1 });
+
+      expect(
+        loadConfigWith({ CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION: '25' }).resourceBounds,
+      ).toStrictEqual({ urlTitleMaximumProbesPerDerivation: 25 });
+
+      /* And all three together, so the conditional spreads cannot drop one when its siblings are present. */
+      expect(
+        loadConfigWith({
+          CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY: '5000',
+          CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST: '64',
+          CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION: '25',
+        }).resourceBounds,
+      ).toStrictEqual({
+        smartListMaximumRecordsPerQuery: 5000,
+        skuMaximumCombinationsPerRequest: 64,
+        urlTitleMaximumProbesPerDerivation: 25,
+      });
+    });
+
+    it('[NET-NEW] SEC-1 refuses an unusable bound at load, naming the variable', () => {
+      /*
+       * ⭐ ZERO IS THE DANGEROUS ONE TO ADMIT SILENTLY, which is why the floor is enforced here rather than
+       * left to the collaborator: a bound of zero would refuse EVERY query rather than bounding it, so it
+       * would present as a total outage that looks like a code defect. Blank is refused for the same reason
+       * the setting names are — a name typed and left empty looks like working configuration.
+       */
+      const unusable = ['0', '-1', '1.5', 'NaN', 'Infinity', '', ' ', 'many', '1e3', '0x10'];
+
+      for (const value of unusable) {
+        const failure = captureLoadFailure({
+          CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY: value,
+        });
+
+        expect(failure).toBeInstanceOf(Error);
+        expect(failure instanceof Error ? failure.message : '').toContain(
+          'CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY',
+        );
+      }
+
+      /* The same rule reaches the other two names, so no bound is validated more loosely than its siblings. */
+      for (const name of [
+        'CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST',
+        'CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION',
+      ]) {
+        const failure = captureLoadFailure({ [name]: '0' });
+
+        expect(failure).toBeInstanceOf(Error);
+        expect(failure instanceof Error ? failure.message : '').toContain(name);
+      }
+    });
+
+    it('[NET-NEW] SEC-1 leaves every bound absent from .env.example, names and all', () => {
+      /*
+       * THE FILE MUST DECLARE THE NAMES AND COMMIT NO VALUE, which is the same contract every other name in
+       * it holds. The three are COMMENTED OUT rather than left as bare empty assignments, because for these an
+       * empty assignment is an error while omission is correct — exactly as for the three setting names.
+       */
+      const example = readFileSync(ENV_EXAMPLE_PATH, 'utf8');
+
+      for (const name of [
+        'CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY',
+        'CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST',
+        'CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION',
+      ]) {
+        expect(example).toContain(`# ${name}=`);
+        /* No uncommented assignment, and therefore no committed value. */
+        expect(example).not.toMatch(new RegExp(`^${name}=`, 'mu'));
+      }
+    });
+  });
+});
+
+/* ================================================================================================
+ * FOLDED IN FROM `test/config/container.test.ts` — AAP §0.4.1.12 SUITE ALIGNMENT (F1)
+ * ------------------------------------------------------------------------------------------------
+ * The only coverage anywhere of `createCatalogContainer` reached through the real module-load path, and
+ * the direct evidence for the two delete-subject resolvers (findings F8 and F9) and the hydration-keyed
+ * parent product-type reader (F10). AAP §0.3.1 declares exactly seventeen suites and a container suite is
+ * not one of them, so the file's existence was the breach and never its coverage. This regression suite is
+ * the approved host a sibling review already designated for composition-root and router wiring cases, so
+ * the body moves here unchanged, wrapped in one `describe` so its environment harness becomes
+ * block-scoped.
+ * ============================================================================================== */
+
+describe('test/config/container.test.ts — the PRODUCTION composition root: the two delete-subject resolvers and the parent product-type reader (folded, F1, F8, F9, F10)', () => {
+  /**
+   * The module under test, reached by path rather than by static import.
+   *
+   * ⚠️ A STATIC VALUE IMPORT WOULD EXECUTE `./env`'s loader AT SUITE LOAD, before any variable is set, and
+   * every case here would fail on the same configuration error. Only `import type` is used above, and it is
+   * erased by the transform.
+   */
+  const CONTAINER_MODULE_PATH = '../../src/config/container';
+
+  /** The product identifier every case here deletes. A 32-character hex string, per AAP IR-6. */
+  const PRODUCT_ID = 'aaaa1111bbbb2222cccc3333dddd4444';
+
+  /** A configuration the loader accepts, matching `test/config/env.test.ts`'s own base. */
+  const REQUIRED_BASE_ENVIRONMENT: Readonly<Record<string, string>> = Object.freeze({
+    DB_HOST: 'localhost',
+    DB_PORT: '3306',
+    DB_NAME: 'Slatwall',
+    DB_USER: 'slatwall',
+    DB_PASSWORD: 'slatwall_pw',
+    DB_TLS_MODE: 'disabled',
+    DB_CONNECTION_LIMIT: '10',
+    DB_QUEUE_LIMIT: '1',
+    DB_CONNECT_TIMEOUT_MS: '10000',
+    GOOGLE_FEED_HOST: 'catalog.example.test',
+  });
+
+  const ORIGINAL_ENVIRONMENT: Readonly<Record<string, string | undefined>> = Object.freeze({
+    ...process.env,
+  });
+
+  afterEach(() => {
+    for (const name of Object.keys(process.env)) {
+      if (!(name in ORIGINAL_ENVIRONMENT)) {
+        delete process.env[name];
+      }
+    }
+    Object.assign(process.env, ORIGINAL_ENVIRONMENT);
+    jest.resetModules();
+  });
+
+  /** One recorded call to the SKU repository's transaction-existence member. */
+  interface RecordedExistenceCall {
+    readonly productID: string | undefined;
+    readonly skuID: string | undefined;
+  }
+
+  /**
+   * Build the REAL production graph, overriding only the SKU repository.
+   *
+   * `skuRepository` is the one collaborator the delete-subject resolver reads through, so overriding it —
+   * and nothing else — leaves every other decision in the graph to the real code: the real `BaseService`,
+   * the real `Validator`, the real `productValidationRuleSet` and the real `ProductService.deleteProduct`
+   * with its default-SKU null dance.
+   *
+   * @param transactionExists what the stand-in repository answers.
+   * @returns the container plus the call log the resolver produced.
+   */
+  function buildContainerWithExistenceProbe(transactionExists: boolean): {
+    readonly container: CatalogContainer;
+    readonly existenceCalls: readonly RecordedExistenceCall[];
+  } {
+    Object.assign(process.env, REQUIRED_BASE_ENVIRONMENT);
+    jest.resetModules();
+
+    const existenceCalls: RecordedExistenceCall[] = [];
+
+    const skuRepository = {
+      transactionExists: (productID?: string, skuID?: string): Promise<boolean> => {
+        existenceCalls.push({ productID, skuID });
+        return Promise.resolve(transactionExists);
+      },
+    } as Pick<SkuRepository, 'transactionExists'> as SkuRepository;
+
+    const overrides: CatalogContainerOverrides = { skuRepository };
+
+    /*
+     * The module builds nothing lazily that this suite needs, but it DOES read `process.env` at load, so a
+     * fresh `require` after `jest.resetModules()` is the only way to observe the environment set above.
+     * The rule is disabled for this one expression and nowhere else.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const loaded = require(CONTAINER_MODULE_PATH) as {
+      readonly createCatalogContainer: (overrides?: CatalogContainerOverrides) => CatalogContainer;
+    };
+
+    return { container: loaded.createCatalogContainer(overrides), existenceCalls };
+  }
+
+  /**
+   * A product in the state a ROW produces, which is the state the defect was invisible in.
+   *
+   * Built through the real `mapProductRow`, because that is the whole point: a hand-built product could
+   * carry `transactionExistsFlag` itself and the missing resolver would never show. The mapper assigns it
+   * nowhere, so the property is absent unless the graph resolves it.
+   *
+   * @returns a managed product carrying only persisted column values.
+   */
+  function hydratedProduct(): Product {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const rowMappers = require('../../src/adapters/mysql/rowMappers') as {
+      readonly mapProductRow: (row: Record<string, unknown>) => Product;
+    };
+
+    return rowMappers.mapProductRow({
+      productID: PRODUCT_ID,
+      productName: 'Feed Product',
+      productCode: 'FP-1',
+      urlTitle: 'feed-product',
+      activeFlag: 1,
+      publishedFlag: 1,
+    });
+  }
+
+  describe('createCatalogContainer — the Product delete guard is wired (finding F8)', () => {
+    it('NET-NEW — a delete RESOLVES the transaction-existence flag through the graph', async () => {
+      // ⚠️ THE ASSERTION THE FINDING TURNS ON. Before the fix this call log was EMPTY: nothing in either
+      // production graph ever asked the question, so the guard had no answer to read.
+      const { container, existenceCalls } = buildContainerWithExistenceProbe(true);
+      const product = hydratedProduct();
+
+      await expect(container.productService.deleteProduct(product)).resolves.toBe(false);
+
+      expect(existenceCalls).toHaveLength(1);
+      expect(product.transactionExistsFlag).toBe(true);
+    });
+
+    it('NET-NEW — the identifier crosses into the DAO argument order the legacy declares', async () => {
+      // `createTransactionExistenceChecker` documents the crossing: the caller's slot 1 is `skuID` and the
+      // DAO's slot 1 is `productID` [`model/dao/SkuDAO.cfc:L53`]. A product delete supplies the PRODUCT
+      // identifier, so it must arrive in slot 1 with the SKU slot empty — reading it the other way round
+      // would silently probe a SKU whose identifier happens to be a product's.
+      const { container, existenceCalls } = buildContainerWithExistenceProbe(true);
+
+      await container.productService.deleteProduct(hydratedProduct());
+
+      expect(existenceCalls[0]?.productID).toBe(PRODUCT_ID);
+      expect(existenceCalls[0]?.skuID ?? undefined).toBeUndefined();
+    });
+
+    it('NET-NEW — a guarded delete answers false and restores nothing it did not clear', async () => {
+      // `model/service/ProductService.cfc:L329-L333` restores the default SKU ON FAILURE ONLY, and only
+      // when there was something to restore. A hydrated product with no default SKU has nothing, so the
+      // refusal must not invent one.
+      const { container } = buildContainerWithExistenceProbe(true);
+      const product = hydratedProduct();
+
+      await expect(container.productService.deleteProduct(product)).resolves.toBe(false);
+
+      expect(product.defaultSku).toBeUndefined();
+    });
+
+    it('NET-NEW — the resolver populates the transaction flag ALONE, not the inert physicalCounts', async () => {
+      // ⛔ `model/validation/Product.json:L7` declares a `physicalCounts` maxCollection of 0, and the
+      // property is declared NOWHERE in `model/entity/Product.cfc`, so the legacy existence gate at
+      // `org/Hibachi/HibachiValidationService.cfc:L171` skips the rule entirely. Resolving it here would
+      // activate a guard the legacy never fires — the enhancement AAP §0.8.2 guideline 4 forbids.
+      //
+      // ⚠️ DRIVEN THROUGH THE REFUSING CASE ON PURPOSE. A passing guard would carry the graph into
+      // `MySqlProductPersistence` and onto the live pool, which this suite may not do; the refusing case
+      // exercises the very same resolver and reaches the very same assertion without any I/O.
+      const { container } = buildContainerWithExistenceProbe(true);
+      const product = hydratedProduct();
+
+      await expect(container.productService.deleteProduct(product)).resolves.toBe(false);
+
+      // Exactly one property was resolved onto the subject.
+      expect(product.transactionExistsFlag).toBe(true);
+      expect(Object.hasOwn(product, 'physicalCounts')).toBe(false);
+    });
+  });
+
+  /* ================================================================================================
+   * F9 — THE BRAND DELETE GUARD IS WIRED
+   *
+   * ⭐ WHAT WAS BROKEN. `model/validation/Brand.json:L6` gates deletion on a `maxCollection` of ZERO over
+   * `products`, and `model/entity/Brand.cfc:L61` declares that collection LAZY with its foreign key on the
+   * PRODUCT side. In the legacy the rule's read of `getProducts()` made Hibernate issue
+   * `SELECT ... FROM SwProduct WHERE brandID = ?` and count the result.
+   *
+   * Here `mapBrandRow` maps columns only and `src/domain/product/Brand.ts` initialises `products` to an
+   * EMPTY ARRAY, so a brand loaded from a row reached delete validation with a length of zero, the ceiling
+   * PASSED, and the brand row was deleted while every `SwProduct.brandID` naming it was left pointing at
+   * nothing. `:L61` declares NO cascade, so nothing cleaned those up and nothing reported a problem — the
+   * guard that exists precisely to prevent that was inert.
+   *
+   * ⚠️ THE BRAND REPOSITORY IS THE ONE OVERRIDE, exactly as the SKU repository is for F8 above. Everything
+   * that decides the outcome — the real `BaseService`, the real `Validator`, the real
+   * `brandValidationRules`, the real `BrandService` — is the production object, and the refusal path
+   * reaches no write, so no connection is opened.
+   * ============================================================================================== */
+
+  describe('createCatalogContainer — the Brand products delete guard is wired (finding F9)', () => {
+    /** The brand every case here deletes. A 32-character hex string, per AAP IR-6. */
+    const BRAND_ID = 'eeee5555ffff6666aaaa7777bbbb8888';
+    /** A product that brand still owns. */
+    const OWNED_PRODUCT_ID = 'aaaa1111bbbb2222cccc3333dddd5555';
+
+    /** One recorded call to the products read the guard performs. */
+    interface RecordedProductsRead {
+      readonly brandID: string;
+    }
+
+    /**
+     * Build the REAL production graph, overriding only the brand repository.
+     *
+     * @param ownedProductIDs what the stand-in read answers for any brand.
+     * @returns the container, the call log, and the brands the repository was asked to remove.
+     */
+    function buildContainerWithProductsProbe(
+      ownedProductIDs: readonly string[],
+      options: { readonly workingCleanup?: boolean } = {},
+    ): {
+      readonly container: CatalogContainer;
+      readonly productsReads: readonly RecordedProductsRead[];
+      readonly removed: readonly string[];
+    } {
+      Object.assign(process.env, REQUIRED_BASE_ENVIRONMENT);
+      jest.resetModules();
+
+      const productsReads: RecordedProductsRead[] = [];
+      const removed: string[] = [];
+
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const rowMappers = require('../../src/adapters/mysql/rowMappers') as {
+        readonly mapBrandRow: (row: Record<string, unknown>) => ManagedEntity<Brand>;
+      };
+
+      const brandRepository = {
+        newBrand: (): ManagedEntity<Brand> =>
+          rowMappers.mapBrandRow({ brandID: '', brandName: 'Transient' }),
+        getBrand: (brandID: string): Promise<ManagedEntity<Brand> | null> =>
+          Promise.resolve(
+            rowMappers.mapBrandRow({
+              brandID,
+              brandName: 'ACME Widgets',
+              urlTitle: 'acme-widgets',
+              brandWebsite: 'https://acme.example.com',
+            }),
+          ),
+        saveBrand: (brand: ManagedEntity<Brand>): Promise<ManagedEntity<Brand>> =>
+          Promise.resolve(brand),
+        deleteBrand: (brand: ManagedEntity<Brand>): Promise<boolean> => {
+          removed.push(brand.brandID);
+          return Promise.resolve(true);
+        },
+        isUrlTitleAvailable: (): Promise<boolean> => Promise.resolve(true),
+        findProductIdentifiersByBrand: (brandID: string): Promise<string[]> => {
+          productsReads.push({ brandID });
+          return Promise.resolve([...ownedProductIDs]);
+        },
+      } as BrandRepository;
+
+      /*
+       * ⚠️ THE CLEANUP PORTS ARE OVERRIDDEN ONLY WHERE A CASE NEEDS THE SUCCESS PATH TO COMPLETE. Their
+       * production defaults are NOT-IMPLEMENTED stubs that RAISE — `settingService` and `commentService`
+       * are out of scope (AAP §0.2.2.1) — and `BaseService.delete` reaches both AFTER it has removed the
+       * row. The case below that leaves them at their defaults is not fighting the harness: it is pinning
+       * the exact F1 exposure, and it is the reason a brand boundary has to exist.
+       */
+      const cleanupOverrides: CatalogContainerOverrides =
+        options.workingCleanup === true
+          ? {
+              settingCleanup: {
+                removeAllEntityRelatedSettings: (): Promise<void> => Promise.resolve(),
+                /* Answers a ROW COUNT, not void — `model/service/HibachiService.cfc:L77` reads it. */
+                updateAllSettingValuesToRemoveSpecificID: (): Promise<number> => Promise.resolve(0),
+                clearAllSettingsCache: (): Promise<void> => Promise.resolve(),
+              },
+              commentCleanup: {
+                removeAllEntityRelatedComments: (): Promise<void> => Promise.resolve(),
+              },
+            }
+          : {};
+
+      const overrides: CatalogContainerOverrides = { brandRepository, ...cleanupOverrides };
+
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const loaded = require(CONTAINER_MODULE_PATH) as {
+        readonly createCatalogContainer: (
+          overrides?: CatalogContainerOverrides,
+        ) => CatalogContainer;
+      };
+
+      return { container: loaded.createCatalogContainer(overrides), productsReads, removed };
+    }
+
+    /** A brand as a ROW produces it: `products` is an empty live array, exactly as the defect found it. */
+    function hydratedBrand(container: CatalogContainer): Promise<ManagedEntity<Brand> | null> {
+      return container.brandService.getBrand(BRAND_ID);
+    }
+
+    it('NET-NEW — a brand that STILL OWNS products is refused, and no row is deleted', async () => {
+      const probe = buildContainerWithProductsProbe([OWNED_PRODUCT_ID]);
+      const brand = await hydratedBrand(probe.container);
+      expect(brand).not.toBeNull();
+
+      // The hydrated collection really is empty — this is the state the ceiling of zero passed on.
+      expect(brand?.getProducts()).toStrictEqual([]);
+
+      // ⚠️ THE ASSERTION THE FINDING TURNS ON.
+      await expect(
+        probe.container.brandService.deleteBrand(brand as ManagedEntity<Brand>),
+      ).resolves.toBe(false);
+
+      // The guard READ, with the brand's own identifier bound.
+      expect(probe.productsReads).toStrictEqual([{ brandID: BRAND_ID }]);
+      // And nothing was removed, so no `SwProduct.brandID` was orphaned.
+      expect(probe.removed).toStrictEqual([]);
+    });
+
+    it('NET-NEW — the resolver fills the collection the rule counts, one element per owned row', async () => {
+      // The rule reads a LENGTH off the subject [`org/Hibachi/HibachiValidationService.cfc:L309-L315`], so
+      // the collection it reads has to hold one element per owned product. Two rows, two elements.
+      const second = 'aaaa1111bbbb2222cccc3333dddd6666';
+      const probe = buildContainerWithProductsProbe([OWNED_PRODUCT_ID, second]);
+      const brand = (await hydratedBrand(probe.container)) as ManagedEntity<Brand>;
+
+      await probe.container.brandService.deleteBrand(brand);
+
+      expect(brand.getProducts().map((product) => product.productID)).toStrictEqual([
+        OWNED_PRODUCT_ID,
+        second,
+      ]);
+    });
+
+    it('NET-NEW — a brand that owns NOTHING still deletes (the guard is a guard, not a block)', async () => {
+      const probe = buildContainerWithProductsProbe([], { workingCleanup: true });
+      const brand = (await hydratedBrand(probe.container)) as ManagedEntity<Brand>;
+
+      await expect(probe.container.brandService.deleteBrand(brand)).resolves.toBe(true);
+
+      expect(probe.productsReads).toStrictEqual([{ brandID: BRAND_ID }]);
+      expect(probe.removed).toStrictEqual([BRAND_ID]);
+      expect(brand.getProducts()).toStrictEqual([]);
+    });
+
+    it('NET-NEW — F1, PINNED: on the POOL-bound graph the row is REMOVED and the caller still gets an error', async () => {
+      /*
+       * =============================================================================================
+       * ⭐ THIS IS FINDING F1, MADE OBSERVABLE THROUGH THE REAL PRODUCTION GRAPH.
+       * =============================================================================================
+       * `BaseService.delete` removes the row and THEN runs `settingCleanup` and `commentCleanup`
+       * [`model/service/HibachiService.cfc:L76`, `:L79`], both of which are out-of-scope stubs that raise.
+       * Reached through `container.brandService` — the POOL-bound graph — each statement auto-commits on
+       * its own connection, so the removal is DURABLE by the time the cleanup fails. The caller is handed
+       * an error about a brand that no longer exists, and there is nothing to undo it with.
+       *
+       * ⚠️ THE FIX IS NOT TO MAKE THE CLEANUP SUCCEED — it is out of scope and stays a stub. The fix is
+       * that no ROUTE reaches this graph for a mutation: `src/handlers/brandHandler.ts` runs both writes
+       * through `container.brandWriteRunner`, whose transaction rolls the removal back when a later step
+       * raises. `test/handlers/brandHandler.test.ts` asserts that routing; this case asserts why it is
+       * needed, so the two together say the whole thing.
+       */
+      const probe = buildContainerWithProductsProbe([]);
+      const brand = (await hydratedBrand(probe.container)) as ManagedEntity<Brand>;
+
+      await expect(probe.container.brandService.deleteBrand(brand)).rejects.toThrow(
+        /removeAllEntityRelatedSettings is not implemented/,
+      );
+
+      // ⛔ THE ROW WAS ALREADY GONE WHEN THAT RAISED — the whole of the finding, in one assertion.
+      expect(probe.removed).toStrictEqual([BRAND_ID]);
+    });
+
+    it('NET-NEW — the write runner the brand routes now use is exposed by the container (F1)', async () => {
+      // The boundary is only a fix if a route can reach it. `createBrandHandlerFromContainer` reads this
+      // member, so its absence would be a compile error there — but a runner that was never CONSTRUCTED
+      // would still type-check as long as the field existed, so its presence is asserted here.
+      const probe = buildContainerWithProductsProbe([], { workingCleanup: true });
+
+      expect(typeof probe.container.brandWriteRunner.runWrite).toBe('function');
+
+      // And it is a REAL runner over the unit of work, not the pool-bound service in disguise: the graph
+      // it hands out is a different object from `container.brandService`.
+      const handed = await probe.container.brandWriteRunner
+        .runWrite(
+          (graph) => Promise.resolve(graph),
+          () => true /* roll back — nothing was written, and this opens no connection */,
+        )
+        .catch((): null => null);
+
+      expect(handed).not.toBe(probe.container.brandService);
+    });
+
+    it('NET-NEW — resolving twice does not double the count it reports', async () => {
+      // ⛔ THE COLLECTION IS REPLACED, NOT APPENDED TO. A resolver that pushed onto whatever was already
+      // there would report 2 for a brand owning 1 on its second run — and would then refuse a delete that
+      // a first, successful-but-rolled-back attempt had left behind.
+      const probe = buildContainerWithProductsProbe([OWNED_PRODUCT_ID]);
+      const brand = (await hydratedBrand(probe.container)) as ManagedEntity<Brand>;
+
+      await probe.container.brandService.deleteBrand(brand);
+      await probe.container.brandService.deleteBrand(brand);
+
+      expect(brand.getProducts()).toHaveLength(1);
+      expect(probe.productsReads).toHaveLength(2);
+    });
+  });
+});
+
+/* ================================================================================================
+ * FOLDED IN FROM `test/config/writeBoundaryRebuild.test.ts` — AAP §0.4.1.12 SUITE ALIGNMENT (F1)
+ * ------------------------------------------------------------------------------------------------
+ * The only coverage of the AAP §0.6.6 M5/M6/M7 write-boundary rebuild: it points the module-scope pool at
+ * a port nothing listens on and hands the rebuild a recording executor, so a single collaborator left
+ * bound to the pool fails with a connection refusal rather than passing silently. That gap pre-dated the
+ * refactor that produced this suite, and no type check can close it. AAP §0.3.1 does not enumerate a
+ * write-boundary suite, so the body is folded into the approved regression suite unchanged; its type
+ * imports that named the now-folded composition tiers are re-pointed at `src/config/container.ts`, which
+ * declares them after those tiers were folded back into the composition root.
+ * ============================================================================================== */
+
+describe('test/config/writeBoundaryRebuild.test.ts — the M5/M6/M7 write-boundary rebuild: every collaborator re-bound to the boundary connection (folded, F1)', () => {
+  /* -----------------------------------------------------------------------------------------------------
+   * Harness.
+   * -------------------------------------------------------------------------------------------------- */
+
+  /**
+   * The environment `src/config/env.ts` requires, with a port nothing listens on.
+   *
+   * ⚠️ `DB_PORT: '1'` IS THE POISON, NOT AN ARBITRARY PLACEHOLDER. It is what turns "a collaborator was left
+   * pool-bound" from an invisible mistake into a rejected promise. `DB_TLS_MODE: 'disabled'` is accepted only
+   * because the host is loopback, which is the loader's own rule rather than a concession made here.
+   */
+  const POISONED_POOL_ENVIRONMENT: Readonly<Record<string, string>> = Object.freeze({
+    DB_HOST: '127.0.0.1',
+    DB_PORT: '1',
+    DB_NAME: 'writeBoundarySuite',
+    DB_USER: 'writeBoundarySuite',
+    DB_PASSWORD: 'writeBoundarySuite',
+    DB_TLS_MODE: 'disabled',
+    GOOGLE_FEED_HOST: 'catalog.example.test',
+  });
+
+  /** One statement as the recording executor saw it. */
+  interface RecordedStatement {
+    readonly sql: string;
+    readonly params: readonly unknown[];
+  }
+
+  /**
+   * An executor that records every statement and answers rows the caller chose.
+   *
+   * It satisfies `TransactionScope['executor']` — the pair a transaction-scoped adapter is written against,
+   * a read member and a mutation member — so the rebuild accepts it exactly as it accepts `UnitOfWork`'s own.
+   * The mutation member records too and reports one affected row, which no case below depends on: every case
+   * exercises a READ, because a read is what M6's uniqueness read-back is about.
+   */
+  interface RecordingExecutor extends TransactionalSqlExecutor {
+    readonly statements: RecordedStatement[];
+  }
+
+  /**
+   * Builds the executor a transaction scope would hand the rebuild.
+   *
+   * It answers EMPTY by default, which every member exercised below tolerates — an empty result is a
+   * legitimate answer to each of them, so no case depends on fabricated row shapes.
+   *
+   * @param rows the rows to answer, in order; the last is repeated once exhausted
+   * @returns the executor plus its recording
+   */
+  function createRecordingExecutor(rows: readonly MySqlRow[][] = []): RecordingExecutor {
+    const statements: RecordedStatement[] = [];
+    let call = 0;
+
+    return {
+      statements,
+      execute: (sql: string, params: readonly unknown[]): Promise<MySqlRow[]> => {
+        statements.push({ sql, params });
+        const answer = rows[Math.min(call, rows.length - 1)] ?? [];
+        call += 1;
+
+        return Promise.resolve(answer);
+      },
+      executeMutation: (sql: string, params: readonly unknown[]): Promise<number> => {
+        statements.push({ sql, params });
+
+        return Promise.resolve(1);
+      },
+    };
+  }
+
+  /** The two config modules, loaded fresh under the poisoned environment. */
+  interface LoadedComposition {
+    readonly dependencies: SkuSurfaceDependencies;
+    readonly buildSkuBoundaryParts: (typeof import('../../src/config/container'))['buildSkuBoundaryParts'];
+    readonly buildProductBoundaryGraph: (typeof import('../../src/config/container'))['buildProductBoundaryGraph'];
+  }
+
+  /**
+   * Loads the composition modules and assembles the pool-bound dependency set the rebuild reuses.
+   *
+   * `jest.config.ts` sets `resetModules`, so each case gets its own module registry and therefore its own
+   * pool object — which never opens a connection, because building the graph performs no I/O. The
+   * environment is applied and removed by the caller.
+   *
+   * ⚠️ EVERY COLLABORATOR HERE IS THE REAL ONE. No repository, service, validator or checker is doubled: the
+   * only substitution in the whole file is the scope's executor, because that is the variable under test.
+   */
+  function loadComposition(): LoadedComposition {
+    const boundariesModule = jest.requireActual<typeof import('../../src/config/container')>(
+      '../../src/config/container',
+    );
+    const statementsModule = jest.requireActual<typeof import('../../src/config/container')>(
+      '../../src/config/container',
+    );
+    const readsModule = jest.requireActual<typeof import('../../src/config/container')>(
+      '../../src/config/container',
+    );
+    const skuModule = jest.requireActual<typeof import('../../src/config/container')>(
+      '../../src/config/container',
+    );
+    const productModule = jest.requireActual<typeof import('../../src/config/container')>(
+      '../../src/config/container',
+    );
+
+    const boundaries: CatalogBoundaries = boundariesModule.resolveCatalogBoundaries();
+    const statements: CatalogStatements = statementsModule.createCatalogStatements();
+    const bindDefaultSkuDelegate = boundariesModule.createDefaultSkuDelegateBinder(
+      boundaries.settings,
+    );
+    const smartListQueryPort = readsModule.createSmartListQueryPort(statements.queryRunner, {
+      bindDefaultSkuDelegate,
+    });
+
+    return {
+      buildSkuBoundaryParts: skuModule.buildSkuBoundaryParts,
+      buildProductBoundaryGraph: productModule.buildProductBoundaryGraph,
+      dependencies: {
+        boundaries,
+        statements,
+        smartListQueryPort,
+        productTypeRootResolver: readsModule.createProductTypeRootResolver(smartListQueryPort),
+        bindDefaultSkuDelegate,
+        optionGroupSortOrderMemo: createOptionGroupSortOrderMemo(),
+      },
+    };
+  }
+
+  /**
+   * Applies the poisoned environment for the duration of `work`, restoring it afterwards even on failure.
+   */
+  async function withPoisonedPool(
+    work: (loaded: LoadedComposition) => Promise<void>,
+  ): Promise<void> {
+    const saved = new Map<string, string | undefined>();
+
+    for (const [name, value] of Object.entries(POISONED_POOL_ENVIRONMENT)) {
+      saved.set(name, process.env[name]);
+      process.env[name] = value;
+    }
+
+    try {
+      await work(loadComposition());
+    } finally {
+      for (const [name, value] of saved) {
+        if (value === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = value;
+        }
+      }
+    }
+  }
+
+  /* -----------------------------------------------------------------------------------------------------
+   * 1. The harness is genuinely poisoned — asserted first, because every case below leans on it.
+   * -------------------------------------------------------------------------------------------------- */
+
+  describe('the pool the graph is built over refuses every statement', () => {
+    it('[NET-NEW] a POOL-BOUND read fails, which is what makes the cases below meaningful', async () => {
+      await withPoisonedPool(async ({ dependencies }) => {
+        /* The pool-bound query port is the collaborator a partial rebuild would leave in place. If this
+         * expectation ever stopped holding, every "arrived at the recorder" assertion below would become
+         * vacuous, so the poison is proven before it is relied on. */
+        await expect(
+          dependencies.smartListQueryPort.executeRecords({
+            entityName: 'SlatwallProduct',
+            whereGroups: [{ filters: [{ propertyIdentifier: 'productID', value: 'anything' }] }],
+          }),
+        ).rejects.toThrow();
+      });
+    }, 20000);
+  });
+
+  /* -----------------------------------------------------------------------------------------------------
+   * 2. The SKU rebuild.
+   * -------------------------------------------------------------------------------------------------- */
+
+  describe('buildSkuBoundaryParts rebuilds every SKU collaborator against the scope executor', () => {
+    it('[NET-NEW] the aggregate read runs on the boundary connection (M6)', async () => {
+      await withPoisonedPool(async ({ buildSkuBoundaryParts, dependencies }) => {
+        const executor = createRecordingExecutor();
+        const parts = buildSkuBoundaryParts(dependencies, { executor });
+
+        await expect(parts.resolveProduct('44444444444444444444444444444444')).resolves.toBeNull();
+        expect(executor.statements.length).toBeGreaterThan(0);
+        expect(executor.statements[0]?.params).toContain('44444444444444444444444444444444');
+      });
+    }, 20000);
+
+    it('[NET-NEW] the SKU repository runs on the boundary connection', async () => {
+      await withPoisonedPool(async ({ buildSkuBoundaryParts, dependencies }) => {
+        const executor = createRecordingExecutor();
+        const parts = buildSkuBoundaryParts(dependencies, { executor });
+
+        await expect(parts.skuRepository.findBySkuCode('TESTPRODUCTXXX')).resolves.toBeNull();
+        expect(executor.statements).toHaveLength(1);
+        expect(executor.statements[0]?.params).toContain('TESTPRODUCTXXX');
+      });
+    }, 20000);
+
+    it('[NET-NEW] the SKU SERVICE reaches the database only through that repository', async () => {
+      await withPoisonedPool(async ({ buildSkuBoundaryParts, dependencies }) => {
+        const executor = createRecordingExecutor();
+        const parts = buildSkuBoundaryParts(dependencies, { executor });
+
+        /* `getSkuBySkuCode` is one of the nine declared members and delegates straight to the repository —
+         * the shortest path from the service surface to a statement. */
+        await expect(parts.skuService.getSkuBySkuCode('TESTPRODUCTXXX')).resolves.toBeNull();
+        expect(executor.statements).toHaveLength(1);
+      });
+    }, 20000);
+
+    it('[NET-NEW] the OPTION service and its repository run on the boundary connection', async () => {
+      await withPoisonedPool(async ({ buildSkuBoundaryParts, dependencies }) => {
+        const executor = createRecordingExecutor();
+        const parts = buildSkuBoundaryParts(dependencies, { executor });
+
+        await expect(parts.optionService.getUnusedProductOptionGroups('')).resolves.toStrictEqual(
+          [],
+        );
+        expect(executor.statements).toHaveLength(1);
+      });
+    }, 20000);
+
+    it('[NET-NEW] the boundary option service is NOT the pool-bound one, even when one was supplied', async () => {
+      await withPoisonedPool(async ({ buildSkuBoundaryParts, dependencies }) => {
+        const poolBound = createPoolBoundOptionService(dependencies);
+        const executor = createRecordingExecutor();
+        const parts = buildSkuBoundaryParts(
+          { ...dependencies, optionService: poolBound },
+          { executor },
+        );
+
+        /* The `optionService` slot exists so the AGGREGATE graph holds one option service rather than two —
+         * `optionService` is a DI/1 singleton at `org/Hibachi/Hibachi.cfc:L298-L330`. It must be IGNORED
+         * inside a boundary, because a pool-bound service in an open transaction reads the wrong connection.
+         * The decisive assertion is behavioural rather than an identity check: had the slot been honoured,
+         * this call would have gone to the poisoned pool and rejected. */
+        expect(parts.optionService).not.toBe(poolBound);
+        await expect(parts.optionService.getUnusedProductOptionGroups('')).resolves.toStrictEqual(
+          [],
+        );
+        expect(executor.statements).toHaveLength(1);
+
+        /* And the supplied one is genuinely pool-bound, so the case cannot pass by both being the same. */
+        await expect(poolBound.getUnusedProductOptionGroups('')).rejects.toThrow();
+      });
+    }, 20000);
+
+    it('[NET-NEW] the product-type ancestry resolver runs on the boundary connection', async () => {
+      await withPoisonedPool(async ({ buildSkuBoundaryParts, dependencies }) => {
+        const executor = createRecordingExecutor();
+        const parts = buildSkuBoundaryParts(dependencies, { executor });
+
+        await expect(
+          parts.productTypeRootResolver.getProductType('444df2f7ea9c87e60051f3cd87b435a1'),
+        ).resolves.toBeUndefined();
+        expect(executor.statements).toHaveLength(1);
+      });
+    }, 20000);
+
+    it('[NET-NEW] the uniqueness gate is re-bound to the boundary, and takes no lock', async () => {
+      await withPoisonedPool(async ({ buildSkuBoundaryParts, dependencies }) => {
+        const executor = createRecordingExecutor([[]]);
+        const parts = buildSkuBoundaryParts(dependencies, { executor });
+
+        await expect(
+          parts.statements.uniqueProperty.isUrlTitleAvailable('SwBrand', 'a-title'),
+        ).resolves.toBe(true);
+        expect(executor.statements).toHaveLength(1);
+
+        /*
+         * ⭐ THE RE-BIND IS THE ASSERTION, AND IT IS M6 RATHER THAN HARDENING. `withExecutor` returns a
+         * checker bound to the boundary's own executor, which is what makes a uniqueness check performed
+         * mid-save observe the siblings that save has already written — the thing the legacy ORM session
+         * did through its own flush (AAP §0.6.2). Without it a SKU batch would be judged against a table
+         * that does not yet contain its own siblings, a silently different answer.
+         *
+         * ⛔ AND IT TAKES NO LOCK, WHICH IS A WITHDRAWAL THIS CASE USED TO ASSERT THE OPPOSITE OF. A
+         * revision appended `FOR UPDATE` to the boundary-scoped probe and this case required it. That is
+         * withdrawn — `src/adapters/mysql/UniquePropertyChecker.ts` carries the adjudication, and its
+         * WHAT IS *NOT* WITHDRAWN note draws exactly this line: the re-bind stays because it is parity,
+         * the lock goes because AAP §0.6.7.7 licenses only D18. The absence is asserted rather than merely
+         * unmentioned, so a reinstatement fails here instead of passing quietly, and it matches the
+         * pool-bound parity case below — the two instances now differ ONLY in their executor.
+         */
+        expect(executor.statements[0]?.sql).not.toContain('FOR UPDATE');
+      });
+    }, 20000);
+
+    it('[NET-NEW] the validator is rebuilt, not shared with the pool-bound graph', async () => {
+      await withPoisonedPool(({ buildSkuBoundaryParts, dependencies }) => {
+        const parts = buildSkuBoundaryParts(dependencies, { executor: createRecordingExecutor() });
+
+        /* A validator consults the uniqueness port it was constructed with, so sharing the pool-bound one
+         * would defeat the re-bind above without changing any type. This case awaits nothing on purpose:
+         * the property is a wiring identity, observable without issuing a statement. */
+        expect(parts.statements.validator).not.toBe(dependencies.statements.validator);
+
+        return Promise.resolve();
+      });
+    }, 20000);
+
+    it('[NET-NEW] the pool-bound instance keeps exact legacy parity — no FOR UPDATE outside a boundary', async () => {
+      await withPoisonedPool(async ({ dependencies }) => {
+        /* The counterpart of the locking assertion: the pool-bound checker's statement text is unchanged,
+         * so a ported read is not silently altered for every caller. Read from the failure, because the
+         * poisoned pool never answers — the statement is composed before the connection is attempted. */
+        await expect(
+          dependencies.statements.isUrlTitleAvailable('SwBrand', 'a-title'),
+        ).rejects.toThrow();
+      });
+    }, 20000);
+
+    it('[NET-NEW] the request-scoped sort-order memo is SHARED with the pool-bound graph (M7)', async () => {
+      await withPoisonedPool(async ({ buildSkuBoundaryParts, dependencies }) => {
+        const executor = createRecordingExecutor();
+        const parts = buildSkuBoundaryParts(dependencies, { executor });
+
+        /* Pre-setting the memo is how sharing becomes observable: a boundary that minted its own cell would
+         * have to resolve the next sort order first, issuing an extra statement, and the ordering inside a
+         * transaction would then differ from the ordering outside it. */
+        dependencies.optionGroupSortOrderMemo.value = 7;
+
+        await expect(
+          parts.skuRepository.findSortedSkuIdsByProduct('44444444444444444444444444444444'),
+        ).resolves.toStrictEqual([]);
+
+        expect(executor.statements).toHaveLength(1);
+        expect(executor.statements[0]?.params).toStrictEqual([
+          '44444444444444444444444444444444',
+          7,
+        ]);
+      });
+    }, 20000);
+  });
+
+  /**
+   * Builds a pool-bound option service the way the aggregate root does, for the slot-ignored case above.
+   *
+   * Declared as a helper rather than inline so the case reads as one assertion; it deliberately uses the
+   * REAL service over the REAL pool-bound repository, because the point is that a boundary must not adopt it.
+   */
+  function createPoolBoundOptionService(
+    dependencies: SkuSurfaceDependencies,
+  ): NonNullable<SkuSurfaceDependencies['optionService']> {
+    const { OptionService } = jest.requireActual<typeof import('../../src/services/OptionService')>(
+      '../../src/services/OptionService',
+    );
+    const { MySqlOptionRepository } = jest.requireActual<
+      typeof import('../../src/adapters/mysql/MySqlOptionRepository')
+    >('../../src/adapters/mysql/MySqlOptionRepository');
+
+    return new OptionService(
+      new MySqlOptionRepository(dependencies.statements.queryRunner),
+      dependencies.smartListQueryPort,
+    );
+  }
+
+  /* -----------------------------------------------------------------------------------------------------
+   * 3. The PRODUCT rebuild, which adds the write surface on top of the SKU half.
+   * -------------------------------------------------------------------------------------------------- */
+
+  describe('buildProductBoundaryGraph rebuilds the product half against the same executor', () => {
+    it('[NET-NEW] the product service reads on the boundary connection', async () => {
+      await withPoisonedPool(async ({ buildProductBoundaryGraph, dependencies }) => {
+        const executor = createRecordingExecutor();
+        const productService = buildProductBoundaryGraph({ sku: dependencies }, { executor });
+
+        await expect(
+          productService.getProduct('44444444444444444444444444444444'),
+        ).resolves.toBeNull();
+        expect(executor.statements).toHaveLength(1);
+        expect(executor.statements[0]?.params).toContain('44444444444444444444444444444444');
+      });
+    }, 20000);
+
+    it('[NET-NEW] its product-type read runs there too, not on the pool', async () => {
+      await withPoisonedPool(async ({ buildProductBoundaryGraph, dependencies }) => {
+        const executor = createRecordingExecutor();
+        const productService = buildProductBoundaryGraph({ sku: dependencies }, { executor });
+
+        await expect(
+          productService.getProductType('444df2f7ea9c87e60051f3cd87b435a1'),
+        ).resolves.toBeNull();
+        expect(executor.statements).toHaveLength(1);
+      });
+    }, 20000);
+
+    it('[NET-NEW] its SKU smart list runs there, proving the SKU half was rebuilt with it', async () => {
+      await withPoisonedPool(async ({ buildProductBoundaryGraph, dependencies }) => {
+        const executor = createRecordingExecutor();
+        const productService = buildProductBoundaryGraph({ sku: dependencies }, { executor });
+
+        /* `getProductSkusBySelectedOptions` is the option-resolution chain of AAP §0.6.1 — the deepest read
+         * the product surface performs, and the one whose conjunctive EXISTS clauses the SKU repository
+         * composes. Reaching the recorder proves the product service holds the BOUNDARY SKU repository. */
+        await expect(
+          productService.getProductSkusBySelectedOptions('', '44444444444444444444444444444444'),
+        ).resolves.toStrictEqual([]);
+        expect(executor.statements).toHaveLength(1);
+      });
+    }, 20000);
+  });
+});
+
+/* ================================================================================================
+ * ⛔ `test/config/surfaceReachability.test.ts` WAS WITHDRAWN RATHER THAN FOLDED, AND THIS IS THE RECORD
+ * ------------------------------------------------------------------------------------------------
+ * It held 31 cases and every one of them asserted a MODULE-GRAPH property: that no per-surface Lambda
+ * entry reached `src/config/container.ts`, that each entry's transitive value-import closure held only its
+ * own surface's tier, and that `src/config/{catalogBoundaries,catalogStatements,catalogReads}.ts` reached
+ * no service, no repository and no root. Those three tier modules and the five
+ * `src/config/surfaces/*Surface.ts` modules are not among the 102 files AAP §0.3.1 enumerates, and a code
+ * review classified the surplus as a CRITICAL project-inventory breach with the direction to fold
+ * unplanned modules into the approved file whose subject they share. Folded back into the composition
+ * root, the separation the suite measured no longer exists to be measured — so adapting the cases would
+ * have meant asserting the opposite of what they were written to assert, and keeping them would have meant
+ * a suite that fails by construction.
+ *
+ * ⭐ THE HALF OF THE FINDING THAT SURVIVES IS STILL ASSERTED, IN THIS FILE. The load-bearing property was
+ * never the module graph for its own sake — it was that a narrow entry must not CONSTRUCT the whole
+ * 31-collaborator graph. That is preserved: the five `compose*Surface` / `get*SurfaceGraph` functions came
+ * across verbatim and still memoize one narrow graph per surface, every handler still takes a
+ * `Pick<CatalogContainer, …>` parameter that a narrow graph satisfies, and the folded
+ * `test/handlers/entrySurface.test.ts` cases above assert the run-time consequences directly — importing
+ * an entry constructs no graph and reads no environment, and the graph is resolved only on first
+ * invocation through a deferred `require`. What is given up is the bundler's ability to DROP the unreached
+ * modules from each artifact, which is a package-size disclosure that the finding itself recorded as
+ * "disclosure rather than a budget" and which AAP IR-12 forbids restating as a threshold.
+ *
+ * The transitive value-import walker the suite carried — which correctly ignored `import type` and
+ * `typeof import(...)` — is not preserved either, because it had nothing left to walk.
+ * ============================================================================================== */

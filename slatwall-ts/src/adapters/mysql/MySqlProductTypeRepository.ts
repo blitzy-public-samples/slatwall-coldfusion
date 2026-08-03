@@ -30,7 +30,7 @@
  * No handler-layer type appears, because AWS coupling is confined to `src/handlers/**`.
  *
  * ------------------------------------------------------------------------------------------------
- * TODO(parity) D22 `model/dao/ProductTypeDAO.cfc:L54-L62` — THE LEGACY STATEMENT NAMES ITS TABLES
+ * TODO(parity) the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] `model/dao/ProductTypeDAO.cfc:L54-L62` — THE LEGACY STATEMENT NAMES ITS TABLES
  * WITH LOGICAL ENTITY NAMES, INSIDE NATIVE SQL
  * ------------------------------------------------------------------------------------------------
  * Every table reference in the legacy statement — at `:L55`, `:L56`, `:L57`, `:L59`, `:L60` and
@@ -191,7 +191,7 @@
  * substitute in the first place, because the member takes no argument. It is stated positively here
  * so that the absence reads as a verified property rather than an omission.
  *
- * REGISTER DISCIPLINE. This file MINTS NO defect or mismatch identifier. It cites D22, defined in
+ * REGISTER DISCIPLINE. This file MINTS NO defect or mismatch identifier. It cites the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132], defined in
  * `src/ports/repositories/SkuRepository.ts`, which is the single place that records the plan's frozen
  * D1-D21 range and every entry the port minted beyond it. It also
  * cites M7. Every other finding above is recorded by `path:Lnnn` locator alone, which is the only
@@ -399,7 +399,7 @@ const SELF_REFERENCE_ALIAS = 'spt';
  * Composes the product-type tree statement once, from identifiers the schema whitelist has approved.
  *
  * This is the translation of `model/dao/ProductTypeDAO.cfc:L54-L62` — the legacy text with its
- * logical entity names replaced by the physical ones per the D22 annotation in the file header, and
+ * logical entity names replaced by the physical ones per the the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] annotation in the file header, and
  * with nothing else changed. What the legacy statement does, this statement does:
  *
  *   - THE WILDCARD IS PRESERVED AS A WILDCARD, and the decision not to enumerate columns is
@@ -466,7 +466,7 @@ const SELF_REFERENCE_ALIAS = 'spt';
 function composeProductTypeTreeStatement(): string {
   /*
    * The physical form is passed rather than the legacy logical form. The whitelist would normalise
-   * either — see the D22 annotation in the file header for why the emitted form is written here.
+   * either — see the the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] annotation in the file header for why the emitted form is written here.
    */
   const productTypeTable = assertTableName('SwProductType');
   const productTable = assertTableName('SwProduct');
@@ -486,7 +486,7 @@ function composeProductTypeTreeStatement(): string {
   /*
    * `model/dao/ProductTypeDAO.cfc:L55-L57` — the assigned-product count, as a CORRELATED SCALAR
    * SUBQUERY. The counted column, the scanned table and the correlation predicate are all the legacy's,
-   * with only the two table names translated to their physical form per the D22 annotation. The
+   * with only the two table names translated to their physical form per the the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] annotation. The
    * predicate reaches OUT to the outer query's product-type identifier, which is what makes it
    * correlated and what makes it evaluate once per outer row.
    */
@@ -578,7 +578,7 @@ export const PRODUCT_TYPE_TREE_BOUND_VALUES: readonly unknown[] = Object.freeze(
  * They ported `org/Hibachi/HibachiService.cfc:L61` `removeAllManyToManyRelationships()` as an in-memory
  * sweep, and nothing called either of them — `removeProductType` below issues its DELETE and does not.
  *
- * ✅ THE CONCERN IS OWNED, AND OWNED ONE LAYER OVER. `./MySqlProductPersistence.ts` carries the judgment
+ * ✅ THE CONCERN IS OWNED, AND OWNED ONE LAYER OVER. `./MySqlProductRepository.ts` carries the judgment
  * call for this exact question and splits it on SCOPE rather than on convenience: link tables inside the
  * extracted slice are removed with STATEMENTS, while every excluded-family link table and cascade child
  * goes behind that module's declared `ProductDependencyCleanup` collaborator and is FLAGGED, which is what
@@ -834,7 +834,7 @@ export class MySqlProductTypeRepository implements ProductTypeRepository {
        * association still wins whenever one is resolved and the column is nulled only when there is
        * genuinely no parent to record. A caller that means to detach a hydrated child calls
        * `forgetHydratedParentProductTypeID` first; the same fallback is applied by
-       * `./MySqlProductPersistence.ts`'s `collectProductTypeValues`, and both sites are named at the
+       * `./MySqlProductRepository.ts`'s `collectProductTypeValues`, and both sites are named at the
        * rule 3b discussion. */
       productType.parentProductType?.productTypeID ??
         readHydratedParentProductTypeID(productType) ??

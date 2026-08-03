@@ -308,25 +308,33 @@ const REQUEST_BUDGET_PRESENTATION: PublicErrorPresentation = Object.freeze({
 });
 
 /*
- * ⭐ THE THIRD REQUEST REJECTION (review finding F9, CWE-918), AND ITS DISCLOSURE POSTURE IS THE
- * STRICTEST OF THE THREE. The caller named a location this deployment will not retrieve from. That is
- * again a fact about the REQUEST — the caller can name a permitted location — so 400 is the honest
- * status and 500 would report a broken service that is working exactly as configured.
+ * ⛔ THERE IS NO THIRD REQUEST REJECTION. A revision of this file declared an `ImportSourceRejectedError`
+ * with its own neutral presentation, raised by an import-source allow-list in
+ * `../adapters/mysql/MySqlProductRepository.ts` that refused non-`http`/`https` schemes and loopback,
+ * link-local and private-range addresses before any retrieval was attempted. THE GATE AND THE ERROR ARE
+ * BOTH WITHDRAWN, together with this constant pair.
  *
- * ⛔ THE TEXT NAMES NEITHER THE LOCATION NOR THE POLICY, AND THAT IS THE WHOLE OF ITS DESIGN. An
- * import-source policy is an allow-list, and an allow-list is precisely what a server-side-request-forgery
- * prober wants to enumerate: a message reading "scheme file: is not permitted" or "host 10.0.0.5 is not
- * on the list" turns each refusal into one bit of a map of the deployment's internal network. Nor is the
- * caller's own location echoed back, because reflecting it makes this response a probe oracle for
- * whatever the caller wrote. Which clause refused, what the location was and what the policy permits all
- * stay in the internal account (see the class).
+ * ⛔ WHY, GIVEN THAT THE ARGUMENT FOR THEM WAS A CAREFUL ONE. The gate was licensed on the D18 footing
+ * (AAP §0.6.7.7) on the ground that the legacy retrieval at `model/dao/ProductDAO.cfc:L87` runs through
+ * `getService("utilityTagService")` — a bean declared nowhere in the legacy repository — with the
+ * `new http()` fallback at `:L89-L98` commented out, so the set of locations the legacy would actually
+ * fetch is empty and refusing one alters no legacy outcome. That reasoning is sound as far as it goes.
+ * It is withdrawn on the COUNT rather than on the merits: AAP §0.6.7.7 authorises exactly ONE departure
+ * from behavioural preservation in this port — D18, the importer's parameterised SQL — and it does so
+ * precisely so that a reviewer diffing behaviour has exactly one entry to check. A refusal that raises
+ * where the legacy raises nothing is observable behaviour, and AAP §0.8.2 Guideline 4 admits no
+ * proportionality test.
+ *
+ * ⚠️ THE CWE-918 SURFACE IS THEREFORE CARRIED, AND IT IS RECORDED AS MISMATCH M4 RATHER THAN CLOSED. The
+ * importer takes a location from its caller and would retrieve it server-side with no scheme, host or
+ * resolved-address test anywhere on the path from `model/service/ProductService.cfc:L65`. What remains in
+ * the port is a WIRING shape and not a refusal: `ProductImportSourcePolicy` on
+ * `../ports/repositories/ProductRepository` is a REQUIRED member of any retrieving reader, so an operator
+ * who supplies retrieval must supply a policy with it, and the only reader this subtree ships retrieves
+ * nothing and declines every member with a `NotImplementedError`. A policy that refuses raises whatever
+ * error the operator's implementation chooses; `../handlers/httpResponse.ts` classifies by
+ * `getPublicError().code` on the {@link DomainError} base and needs no per-refusal class to do it.
  */
-const IMPORT_SOURCE_PUBLIC_MESSAGE = 'The requested import location is not permitted';
-
-const IMPORT_SOURCE_PRESENTATION: PublicErrorPresentation = Object.freeze({
-  code: PUBLIC_ERROR_CODE.CATALOG_REQUEST_REJECTED,
-  message: IMPORT_SOURCE_PUBLIC_MESSAGE,
-});
 
 /**
  * Optional construction payload shared by {@link DomainError} and every subclass of it.
@@ -508,18 +516,26 @@ export class DataIntegrityError extends DomainError {
  * ------------------------------------------------------------------------------------------------
  * Uniqueness in this slice is decided by an application-side existence probe — `isUniqueProperty` at
  * `org/Hibachi/HibachiDAO.cfc:L130-L146`, ported in `../adapters/mysql/UniquePropertyChecker.ts` — and
- * that probe is a READ followed later by a WRITE. Whatever serialization is applied to it, the
- * database remains the last authority: five of the seven in-scope uniqueness rules stand on a
+ * that probe is a READ followed later by a WRITE, serialized by nothing on any path — the legacy takes no
+ * lock there, and neither does the port. The database is therefore the ONLY remaining authority: five of
+ * the seven in-scope uniqueness rules stand on a
  * `unique="true"` column (`model/entity/Product.cfc:L54` and `:L56`, `model/entity/Sku.cfc:L54`,
  * `model/entity/ProductType.cfc:L56`, `model/entity/Brand.cfc:L55`), and a write that loses a race
  * against one of those columns comes back as MySQL error 1062 rather than as a validation verdict.
  *
  * WITHOUT THIS CLASS THAT OUTCOME WAS INDISTINGUISHABLE FROM A SERVICE FAULT. The driver's own error
  * reached the caller unclassified, so a collision — a fact about the caller's data — was reported with
- * the same neutral 500-class presentation as a blank statement or an unbindable parameter. Review
- * finding F6 (CWE-367) names that reporting gap alongside the race itself, and both halves of its
- * guidance — "handle duplicate-key errors" — are discharged here and at the two execution boundaries
- * that translate into it.
+ * the same neutral 500-class presentation as a blank statement or an unbindable parameter. Closing that
+ * REPORTING gap is what this class does, here and at the two execution boundaries that translate into it.
+ *
+ * ⛔ THE OTHER HALF — SERIALIZING THE CHECK AGAINST THE WRITE — IS NOT CLOSED, AND WAS DELIBERATELY
+ * WITHDRAWN. An earlier revision had `../adapters/mysql/UniquePropertyChecker.ts` take a `FOR UPDATE` when
+ * it was transaction-scoped; the current review's finding F4 removes it as an extension of the single
+ * declared D18 exception by analogy, which AAP §0.1.2.1 excludes. So the race is CARRIED (AAP IR-9), and
+ * this class is the report of its LOSS rather than a means of preventing it. The distinction matters for
+ * the two properties with no `unique="true"` column at all — `Option.optionCode` and
+ * `OptionGroup.optionGroupCode` — where nothing raises 1062 and therefore nothing raises this: see
+ * `../ports/UniquePropertyPort.ts`, which flags that gap rather than claiming it closed.
  *
  * ⭐ WHY THIS IS A CLASSIFICATION CHANGE AND NOT A BEHAVIOUR CHANGE, WHICH IS WHAT LICENSES IT.
  * AAP §0.8.2 Guideline 4 forbids enhancing behaviour beyond what the migration requires, and AAP
@@ -559,36 +575,32 @@ export class UniqueConstraintViolationError extends DomainError {
 /**
  * Raised when a request exceeds a budget for the work one operation may perform.
  *
- * ⭐ SEC-HARDENING (D18-CLASS) — review findings F3 and F5 (both CWE-400). Three refusals in this
- * subtree raise it, and they fall into two kinds:
+ * ⚠️ EXACTLY ONE SITE RAISES IT TODAY, AND THREE ONCE DID. `../adapters/mysql/SmartListQueryBuilder.ts`
+ * refuses a materialisation above its optional `SmartListMaterialisationBudget`. The other two —
+ * `../services/SkuService.ts`'s merchandise combination ceiling and a URL-title probe ceiling in a
+ * `../util/urlTitleProbeBudget.ts` that no longer exists — are WITHDRAWN, because AAP §0.6.7.7 declares
+ * exactly ONE departure from behavioural preservation in this port (D18, the importer's parameterised
+ * SQL) and AAP §0.8.2 Guideline 4 admits no proportionality test. Their withdrawal blocks live beside
+ * the code that used to enforce them.
  *
- * 1. AN OPERATOR-STATED BUDGET WAS EXHAUSTED. `../services/SkuService.ts` refuses a merchandise
- *    combination count above an optional `SkuCombinationBudget`, and `../util/urlTitleProbeBudget.ts`
- *    refuses a URL-title derivation that would issue more uniqueness probes than an optional
- *    `UrlTitleProbeBudget` permits. Both collaborators are OPTIONAL and carry NO DEFAULT: a deployment
- *    that states no figure has no ceiling and behaves exactly as `model/service/SkuService.cfc:L85-L89`
- *    and `model/service/DataService.cfc:L64` do, so nothing is invented (AAP §0.7.3 S9, IR-12).
- * 2. THE RUNTIME'S OWN COUNTING RANGE WAS EXCEEDED, which nobody configured and no deployment can
- *    raise. `../services/SkuService.ts` refuses a combination product above `Number.MAX_SAFE_INTEGER`,
- *    beyond which IEEE-754 doubles no longer represent consecutive integers and the legacy loop at
- *    `model/service/SkuService.cfc:L89` cannot terminate at all.
+ * THE SURVIVING BUDGET IS OPTIONAL AND CARRIES NO DEFAULT, which is why it stands: a deployment that
+ * states no figure has no ceiling, so nothing is invented (AAP §0.7.3 S9, IR-12), and the refusal
+ * happens BEFORE any row is materialised so no partial result is ever observed.
  *
- * ⚠️ WHY RAISING IS PERMITTED HERE AT ALL, GIVEN AAP §0.8.2 GUIDELINE 4. Kind 2 changes the outcome
- * of no run the legacy could complete — there is no terminating legacy run above the threshold to
- * preserve. Kind 1 is inert unless a deployment opts in, so the DEFAULT behaviour of this port is the
- * legacy's on every input. Neither refusal alters which entities a completing run produces, and both
- * refuse BEFORE anything is written, so no partial batch becomes durable (mismatch M3's shape).
+ * ⛔ AND THE CLASS IS RETAINED RATHER THAN DELETED WITH THE TWO WITHDRAWALS. It is the presentation
+ * contract for "the request asks for more work than one operation may perform", `httpResponse` maps it
+ * to 400 by `instanceof`, and the surviving site needs exactly that. Folding it back into the base type
+ * would report a rejected request as a broken service on the 5xx rate.
  *
  * WHAT THE INTERNAL ACCOUNT SHOULD CARRY, since none of it is disclosed: the budget that was
  * exhausted, the figure it was set to, what the request asked for, and the legacy locator of the
- * unbounded construct being bounded. See the throwing sites for what each one attaches.
+ * unbounded construct being bounded. See the throwing site for what it attaches.
  *
  * @example
  * ```ts
  * throw new RequestBudgetExhaustedError(
- *   'The title collided more times than this deployment permits probing, so no URL title was ' +
- *     'derived and nothing was written.',
- *   { context: { tableName, maximumProbesPerDerivation, probes } },
+ *   'The smart list matched more records than this deployment permits materialising in one request.',
+ *   { context: { maximumRecordsPerRequest, matched } },
  * );
  * ```
  */
@@ -600,54 +612,6 @@ export class RequestBudgetExhaustedError extends DomainError {
    */
   public override getPublicError(): PublicErrorPresentation {
     return REQUEST_BUDGET_PRESENTATION;
-  }
-}
-
-/**
- * Raised when a caller-supplied product-import location is one this deployment does not permit.
- *
- * ⭐ SEC-HARDENING (D18-CLASS) — review finding F9 (CWE-918, server-side request forgery). The legacy
- * importer takes a location from its caller and retrieves it SERVER-SIDE — `model/dao/ProductDAO.cfc:L87`
- * — with no scheme test, no host test and no address check anywhere on the path from
- * `model/service/ProductService.cfc:L65`. Inside a VPC that shape reaches internal services, a loopback
- * admin port or an instance-metadata endpoint, and the response is then parsed and written into the
- * catalog.
- *
- * ⚠️ WHY RAISING IS PERMITTED HERE AT ALL, GIVEN AAP §0.8.2 GUIDELINE 4 — AND THE MEASUREMENT THAT
- * SETTLES IT. An earlier revision withdrew this refusal on the ground that "refusing a fetch changes an
- * outcome". That ground does not hold, and the file that stated it also records why: the legacy
- * retrieval at `:L87` runs through `getService("utilityTagService")`, NO `utilityTagService` bean exists
- * anywhere in the legacy repository, and the `new http()` fallback at `:L88-L97` is commented out. The
- * set of locations the legacy would actually have fetched is therefore EMPTY, so no legacy outcome is
- * altered by refusing one: before and after, an import from any location whatsoever fails.
- *
- * ⚠️ AND NO FIGURE IS INVENTED. The policy this refusal enforces is OPTIONAL and carries NO DEFAULT, so
- * a deployment that states no policy is gated by nothing and behaves exactly as it did — the same shape
- * as the two budgets above (AAP §0.7.3 S9, IR-12). What it may state is an allow-list of schemes and,
- * optionally, of hosts: values a deployment knows and this port does not. Byte caps, timeouts, redirect
- * limits and resolved-address policy stay OUT of it, because those are properties of a retrieval client,
- * and the obligations on any such client are stated at the reader seam instead.
- *
- * WHAT THE INTERNAL ACCOUNT SHOULD CARRY, since none of it is disclosed: which clause refused, the
- * location as supplied, and what the policy permits. See the throwing site.
- *
- * @example
- * ```ts
- * throw new ImportSourceRejectedError(
- *   'The import location\'s scheme is not one this deployment permits retrieving from, so no ' +
- *     'retrieval was attempted.',
- *   { context: { fileURL, scheme, allowedSchemes } },
- * );
- * ```
- */
-export class ImportSourceRejectedError extends DomainError {
-  /**
-   * Reports a rejected import location. The location and the policy both stay internal.
-   *
-   * @returns the neutral import-location presentation
-   */
-  public override getPublicError(): PublicErrorPresentation {
-    return IMPORT_SOURCE_PRESENTATION;
   }
 }
 

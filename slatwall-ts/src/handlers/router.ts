@@ -4,7 +4,15 @@
  * The FW/1 `slatAction` convention, re-expressed as an explicit, statically-typed route-to-handler
  * mapping in front of five per-service Lambda handlers. This is the file AAP §0.1.2.1 describes as
  * "Lambda handlers behind a thin router; all AWS coupling confined to the handler layer", and it is the
- * only module in the subtree that exports a Lambda `handler` symbol.
+ * AGGREGATE Lambda entry point: the one module that mounts the whole address space.
+ *
+ * ⚠️ IT IS NOT THE ONLY MODULE THAT EXPORTS A `handler`, AND THIS HEADER USED TO SAY IT WAS. All SIX
+ * modules named in `build/esbuild.mjs`'s entry list export one — this file plus `./productHandler`,
+ * `./skuHandler`, `./brandHandler`, `./optionHandler` and `./googleFeedHandler` — because each is
+ * independently deployable, serving only its own addresses. A review measured the old claim as false and
+ * recorded it as finding **F8**. The distinction that IS true, and the one the rest of this header turns
+ * on, is aggregate versus per-surface: this file answers all 34 addresses, each sibling answers its own
+ * subset and 404s the rest, and (e) below records the one behavioural difference between them.
  *
  * TEST PROVENANCE: NET-NEW, WITHOUT QUALIFICATION. AAP §0.6.5.2 records that no legacy controller test
  * and no legacy routing test of any kind exists — `meta/tests/functional/admin/entity/ProductTest.cfc`
@@ -42,8 +50,9 @@
  * WHAT CHANGED, AND WHY IT IS A CHANGE OF IDIOM RATHER THAN OF BEHAVIOUR. FW/1 resolved an action by
  * CONVENTION: it split the string, derived a controller path and a method name, and invoked whatever it
  * found. TR-3 requires that every such runtime-synthesized resolution become "an explicit,
- * compile-checked declaration", so the split-and-invoke is replaced by {@link CATALOG_ROUTES} — a frozen
- * record whose keys are a closed literal union. A route that is not declared cannot be reached, a
+ * compile-checked declaration", so the split-and-invoke is replaced by the frozen record
+ * {@link createRouteTable} builds, whose keys are the closed literal union {@link RouteKey}. A route
+ * that is not declared cannot be reached, a
  * declared route that names no handler member is a compile error, and a member added to a handler
  * without a route is visible as an omission rather than silently reachable. AAP §0.8.1 authorises
  * exactly this: minimal in functional scope, explicitly NOT minimal in idiom.
@@ -72,10 +81,10 @@
  * `index.cfm` deserves to learn from the file itself that there was nothing in it to port.
  *
  * ------------------------------------------------------------------------------------------------
- * (c) TRANSLATION DECISION — FW/1's CASE-INSENSITIVITY IS DELIBERATELY LOST (G6, TR-3)
+ * (c) BEHAVIOUR PRESERVED — FW/1's CASE-INSENSITIVITY IS CARRIED ACROSS (G2, G6)
  * ------------------------------------------------------------------------------------------------
  * The legacy matched actions case-INSENSITIVELY, and it did so on the default path. Verbatim from
- * `org/Hibachi/FW1/framework.cfc:L1957-L1960`:
+ * `org/Hibachi/FW1/framework.cfc:L1957-L1961`:
  *
  *     if ( variables.framework.noLowerCase ) {
  *         request.action = validateAction( request.context[variables.framework.action] );
@@ -83,20 +92,40 @@
  *         request.action = validateAction( lCase(request.context[variables.framework.action]) );
  *     }
  *
- * `noLowerCase` is false by default, so the DEFAULT branch lower-cases the action before validating it.
- * The same tolerance existed one layer down: `org/Hibachi/HibachiService.cfc:L256` opens
- * `onMissingMethod` with `var lCaseMissingMethodName = lCase( missingMethodName );`, and DI/1's
- * `getService("name")` lookup was itself case-insensitive — AAP §0.4.3.2 records the legacy exploiting
- * that inconsistently, with both `getService("productService")` and `getService("ProductService")`
- * appearing inside the in-scope entities.
+ * `noLowerCase` is false by default (`framework.cfc:L1876-L1877` initialises it) and
+ * `config/configFramework.cfm` never sets it, so the DEFAULT branch — the one that lower-cases the action
+ * before validating it — is the branch Slatwall ran. The same tolerance existed one layer down:
+ * `org/Hibachi/HibachiService.cfc:L256` opens `onMissingMethod` with
+ * `var lCaseMissingMethodName = lCase( missingMethodName );`, and DI/1's `getService("name")` lookup was
+ * itself case-insensitive — AAP §0.4.3.2 records the legacy exploiting that inconsistently, with both
+ * `getService("productService")` and `getService("ProductService")` appearing inside the in-scope entities.
  *
- * A static table keyed by a literal union is CASE-SENSITIVE. `product.saveProduct` matches;
- * `Product.SaveProduct` does not, and returns a not-found. That tightening is an intentional decision
- * under TR-3, not an oversight: the alternative is to lower-case the incoming action and key the table in
- * lower case, which would re-admit the very fuzziness the port exists to retire and would make the route
- * keys stop spelling the preserved member names exactly — the property that makes §0.4.2's
- * interface-parity claim checkable member by member. Recording the loss is the honest treatment; hiding
- * it behind a normalising step is not.
+ * ⚠️ AN EARLIER REVISION OF THIS FILE DROPPED THAT TOLERANCE ON PURPOSE AND ARGUED FOR THE DROP HERE.
+ * The argument was that a static table keyed by a literal union is naturally case-sensitive, that
+ * lower-casing would "re-admit the very fuzziness the port exists to retire", and that the loss was the
+ * honest treatment. A review rejected it and recorded finding **F4**, and the review is right on the
+ * governing rule: AAP §0.8.1 licenses the IDIOM to change and Refactor Discipline Guideline 2 requires
+ * observable behaviour to be preserved exactly. `?slatAction=Google:Feed.Product` reached the feed in the
+ * legacy; a port that answers 404 for it has changed behaviour, not idiom, and no AAP exception covers it.
+ *
+ * SO THE TOLERANCE IS BACK, AND THE TABLE IS STILL CLOSED. `./httpResponse.ts`'s
+ * `createCanonicalActionLookup` builds one frozen, null-prototype map from THIS FILE'S OWN DECLARED KEYS —
+ * each key's lower-cased form to the key itself — once, at dispatcher construction. An incoming action is
+ * lower-cased, looked up there, and only the canonical key it yields is ever used to index
+ * {@link CATALOG_ROUTES}. Three consequences, because they are what the earlier argument was worried about:
+ *
+ *   * NO FUZZINESS IS RE-ADMITTED. The reachable set is unchanged — exactly the declared 34 addresses. The
+ *     lookup's members ARE the table's keys, so nothing that was unreachable becomes reachable, and no
+ *     prefix, no partial match and no heuristic is involved. TR-3 asked for resolution by explicit
+ *     compile-checked declaration and that is still what happens: `CATALOG_ROUTES` is the declaration.
+ *   * THE ROUTE KEYS STILL SPELL THE PRESERVED MEMBER NAMES EXACTLY. `product.saveProduct` remains
+ *     `product.saveProduct` in the declaration, so §0.4.2's interface-parity claim is still readable
+ *     straight off the table. Lower-casing happens to the incoming string, never to the keys.
+ *   * TWO KEYS DIFFERING ONLY IN CASE ARE A CONSTRUCTION-TIME ERROR, not a silent winner. No such pair
+ *     exists, and the guard makes sure one cannot be added quietly.
+ *
+ * The rule for a reader: this file declares the address space in canonical spelling; the shared dispatcher
+ * owns how an incoming spelling is matched against it.
  *
  * ------------------------------------------------------------------------------------------------
  * (d) TRANSLATION DECISION — `this.publicMethods` BECAME ROUTE-TABLE MEMBERSHIP (G6)
@@ -109,7 +138,7 @@
  *     this.secureMethods="";
  *
  * `publicMethods` is a ROUTING concern, so it belongs here, and it is expressed as membership of
- * {@link CATALOG_ROUTES}: a member reachable from outside is a member with a route, and nothing else is.
+ * {@link RouteKey}: a member reachable from outside is a member with a route, and nothing else is.
  * The controller declared exactly one — `product` — and exactly one feed route exists below.
  *
  * ⛔ NO AUTHENTICATION OR AUTHORIZATION IS INTRODUCED, AND THE EMPTY SIBLINGS ARE THE EVIDENCE.
@@ -122,12 +151,29 @@
  * ------------------------------------------------------------------------------------------------
  * (e) M7 — REQUEST-SCOPED, NEVER MODULE-SCOPE (AAP §0.6.6, S8)
  * ------------------------------------------------------------------------------------------------
- * ⚠️ THE RULE, STATED SO IT IS NOT LOST: ANY MEMOISATION IN THE HANDLER LAYER IS REQUEST-SCOPED. AAP
- * §0.6.6 M7 is explicit that nothing survives between Lambda invocations except module-scope state, and
- * that memoisation must therefore be scoped to the request "to avoid cross-tenant bleed on a warm
- * container". THE ONLY MODULE-SCOPE MUTABLE STATE PERMITTED ANYWHERE IN `slatwall-ts/src/**` IS THE
- * `mysql2` POOL IN `src/config/database.ts`. Do not add a warm-container cache here — not a route hit
- * counter, not a memoised principal, not a cached feed, not a "last event" reference.
+ * ⚠️ THE RULE, STATED SO IT IS NOT LOST: NO REQUEST-DERIVED STATE IS EVER HELD ACROSS INVOCATIONS, AND
+ * ANY MEMOISATION OF SUCH STATE IN THE HANDLER LAYER IS REQUEST-SCOPED. AAP §0.6.6 M7 is explicit that
+ * nothing survives between Lambda invocations except module-scope state, and that memoisation must
+ * therefore be scoped to the request "to avoid cross-tenant bleed on a warm container". Do not add a
+ * warm-container cache here — not a route hit counter, not a memoised principal, not a cached feed, not
+ * a "last event" reference.
+ *
+ * ⭐ WHAT IS SHARED AT MODULE SCOPE IS DELIBERATE AND ENUMERATED, AND AN EARLIER REVISION OF THIS NOTE
+ * UNDERSTATED IT BY NAMING ONLY THE POOL. Four things live at module scope across the subtree, and what
+ * they have in common is that NONE derives from an event, a caller or a tenant — which is exactly why
+ * sharing them is safe and why warm reuse is the point of them:
+ *   1. the `mysql2` pool in `src/config/database.ts` — created outside any handler so a warm container
+ *      reuses one pool rather than one per invocation;
+ *   2. the validated immutable configuration in `src/config/env.ts` — built once at load, with no
+ *      reload, override or reset entry point;
+ *   3. the memo cell in `src/config/container.ts` holding the one wired service graph — mutable exactly
+ *      once, on first resolution, and never keyed by anything;
+ *   4. the dispatcher each of the five PER-SURFACE handler modules memoises over that graph — a single
+ *      `let dispatch<Surface>Action` populated on first invocation, because those modules defer their
+ *      graph rather than resolving it at load. This file does not need one: it resolves the graph at
+ *      load and binds its dispatcher into an immutable `const`.
+ * The distinction is REQUEST-DERIVED versus not, not module-scope versus not. A cached principal fails
+ * that test; a connection pool does not.
  *
  * THIS FILE HOLDS NO STATE OF ITS OWN. It declares three module-level bindings and all three are
  * immutable: the frozen route table, the frozen fail-closed authorisation context, and the graph
@@ -201,10 +247,14 @@
  *     throw('You have called a method #arguments.missingMethodName#() which does not exists in the #getClassName()# entity.');
  *
  * An unmatched route here returns {@link notFoundResponse} instead. ⛔ THERE IS NO FALLBACK OF ANY OTHER
- * KIND: no reflective invocation, no prefix guessing, no "closest match" heuristic, no retry against a
- * lower-cased key, no default route. Prefix synthesis is precisely what IR-1 retires, and reproducing it
- * in a router would re-create `onMissingMethod` in a new idiom while the rest of the port was declaring
- * its way out of it.
+ * KIND: no reflective invocation, no prefix guessing, no "closest match" heuristic, no default route.
+ * Prefix synthesis is precisely what IR-1 retires, and reproducing it in a router would re-create
+ * `onMissingMethod` in a new idiom while the rest of the port was declaring its way out of it.
+ *
+ * ⚠️ CASE-INSENSITIVE MATCHING IS NOT A FALLBACK AND IS NOT IN THAT LIST. It is one deterministic lookup
+ * over the declared keys, performed BEFORE the recognition test rather than after a failed one, and it is
+ * carried across from `framework.cfc:L1957-L1961` — see (c). Nothing is retried, and an action that is not
+ * a declared address in any casing still lands here.
  *
  * ------------------------------------------------------------------------------------------------
  * (h) ALL SEVEN BOUNDARY-STUBBED MEMBERS REMAIN ROUTABLE BY DESIGN (TR-5, G6)
@@ -282,7 +332,10 @@
  *
  *   `./productHandler`, `./skuHandler`, `./brandHandler`, `./optionHandler` and `./googleFeedHandler`
  *   defer the graph to their first invocation, so importing one of them constructs no container and reads
- *   no environment. That property is not an accident of implementation: it is asserted by
+ *   no environment. Each also resolves a NARROWER graph than this file does — through its own
+ *   `get*SurfaceGraph` accessor on the composition root, composing what its own routes can reach, after a
+ *   review pass (PERF-01) measured all six artifacts constructing the whole catalog. That changes WHAT they
+ *   construct, not when they require it: both properties below are unaffected, and both are still asserted. That property is not an accident of implementation: it is asserted by
  *   `test/handlers/entrySurface.test.ts`, it is what lets those modules be loaded by their own unit
  *   suites and by any reader inspecting an artifact, and it is why the emitted per-surface bundles can be
  *   required with an empty environment at all. The cost is that a misconfigured deployment of one of
@@ -335,6 +388,7 @@ import {
   type APIGatewayProxyEvent,
   type APIGatewayProxyHandler,
   type APIGatewayProxyResult,
+  type CatalogAuthorizationResolver,
 } from './httpResponse';
 
 /* ================================================================================================
@@ -348,7 +402,10 @@ import {
  *   `SLAT_ACTION_PARAMETER` and `resolveFailClosedAuthorization` now live in `./httpResponse.ts`, §7
  *   and §8, together with `createActionDispatcher` — the shared edge module every handler in this
  *   folder already imports. Their full reasoning travelled with them: the `config/configFramework.cfm:L2`
- *   locator for the parameter name, and the deny-all remainder argument for the principal.
+ *   locator for the parameter name, and the deny-all remainder argument for the principal. §8.1 of that
+ *   module additionally owns the DEPLOYMENT SEAM — the registration cell and the per-invocation reader
+ *   this file's `resolveAuthorization` parameter falls back to — because all six entry points need it and
+ *   none of them may hold a second copy of the fallback rule.
  *
  *   `FEED_RENDER_CLOCK` and the empty image reader now live in `./googleFeedHandler.ts`, in its own
  *   entry-point section, because that file owns the feed and is what knows which collaborators the feed
@@ -479,20 +536,34 @@ interface CatalogHandlers {
  * `src/handlers/skuHandler.ts` declares that member on its write graph as well as accepting a resolver.
  * Supplying the pool-bound resolver here is correct precisely because the write path does not use it.
  *
+ * ⭐ THE AUTHORISATION RESOLVER TRAVELS THROUGH HERE, AND AN EARLIER REVISION GAVE IT NOWHERE TO ENTER.
+ * Each per-surface factory hard-wired the deny-all resolver and this function accepted none, so the
+ * aggregate router — the natural single-function deployment — could not supply a principal by any means,
+ * and all thirty-three catalog actions answered `401` permanently while README claimed a seam existed. A
+ * code review classified that as a CRITICAL callable-boundary defect. The parameter below is the
+ * aggregate half of the remedy: the four gated surfaces receive whatever this router was given, and what
+ * they receive when it was given nothing is `./httpResponse.ts` §8.1's registered-resolver reader, which
+ * is evaluated per invocation and is fail-closed until a deployment registers.
+ *
  * @param container the wired graph, from the composition root
+ * @param resolveAuthorization the per-invocation resolver for the four gated surfaces; omitted means
+ *   each surface applies its own fail-closed default
  * @returns the five façades, ready to mount
  */
-function createCatalogHandlers(container: CatalogContainer): CatalogHandlers {
+function createCatalogHandlers(
+  container: CatalogContainer,
+  resolveAuthorization?: CatalogAuthorizationResolver,
+): CatalogHandlers {
   return {
     /* ⭐ EACH FAÇADE IS BUILT BY THE MODULE THAT OWNS IT, from the same graph this function received.
      * The wiring used to be written out here — which service, which resolver, which runner, per surface —
      * and each per-service module then had to repeat it for its own entry point. Asking each module for a
      * wired handler instead leaves exactly one place per surface that knows what that surface needs, and
      * this function is left doing what a router should: naming the five surfaces it mounts. */
-    product: createProductHandlerFromContainer(container),
-    sku: createSkuHandlerFromContainer(container),
-    brand: createBrandHandlerFromContainer(container),
-    option: createOptionHandlerFromContainer(container),
+    product: createProductHandlerFromContainer(container, resolveAuthorization),
+    sku: createSkuHandlerFromContainer(container, resolveAuthorization),
+    brand: createBrandHandlerFromContainer(container, resolveAuthorization),
+    option: createOptionHandlerFromContainer(container, resolveAuthorization),
 
     /* ⛔ NO AUTHORISATION RESOLVER REACHES THE FEED, AND ITS ABSENCE IS THE PORT OF `feed.cfc:L54-L56`.
      * The legacy feed controller declared `this.publicMethods="product";` with `this.anyAdminMethods=""`
@@ -572,7 +643,7 @@ function createRouteTable(handlers: CatalogHandlers): Readonly<Record<RouteKey, 
  * `test/handlers/` entry for a router, so there is no test file to write; what there is instead is a
  * router that needs no bootstrap to exercise. AAP §0.4.3.6 records the contrast: legacy tests booted the
  * entire FW/1 application and resolved services through DI/1 at run time
- * (`meta/tests/unit/SlatwallUnitTestBase.cfc:L49-L84`), and the legacy repository vendored no mocking
+ * (`meta/tests/unit/SlatwallUnitTestBase.cfc:L49-L79`), and the legacy repository vendored no mocking
  * library at all. Because the graph arrives as an argument, every route here is reachable with an object
  * literal — no database, no network call, no AWS runtime and no fake timers, since even the feed's clock
  * is injected one layer down.
@@ -581,11 +652,22 @@ function createRouteTable(handlers: CatalogHandlers): Readonly<Record<RouteKey, 
  * route table — and nothing accumulates across calls. M7's rule is that any memoisation in this layer is
  * request-scoped, never module-scope; the way this file honours it is by memoising nothing whatsoever.
  *
+ * ⭐ IT ACCEPTS THE DEPLOYMENT'S AUTHORISATION RESOLVER, WHICH IS WHAT MAKES THE AGGREGATE SURFACE
+ * CALLABLE. A deployment that builds its own entry module — `createRouter(getCatalogContainer(), myResolver)`
+ * — gates every catalog route on its own principal without touching this file, and a deployment that
+ * takes the packaged artifact as it stands registers the same resolver through
+ * `./httpResponse.ts`'s `registerRequestAuthorizationResolver` instead. Both routes end at the
+ * same per-invocation call; neither captures a context (AAP §0.6.6 M7). Supplying nothing keeps the
+ * deny-all answer, which is the only thing this port decides about identity.
+ *
  * @param container the wired graph, from the composition root
+ * @param resolveAuthorization the deployment's per-invocation resolver for the four gated surfaces;
+ *   omitted means fail-closed until one is registered
  * @returns a dispatcher that answers one invocation
  */
 export function createRouter(
   container: CatalogContainer,
+  resolveAuthorization?: CatalogAuthorizationResolver,
 ): (event: APIGatewayProxyEvent) => Promise<APIGatewayProxyResult> {
   /*
    * ⭐ THE DISPATCH MECHANICS ARE SHARED, AND SHARING THEM IS THE POINT. `./httpResponse.ts` §7 owns the
@@ -603,7 +685,7 @@ export function createRouter(
    * one service.
    */
   return createActionDispatcher<RouteKey>({
-    routes: createRouteTable(createCatalogHandlers(container)),
+    routes: createRouteTable(createCatalogHandlers(container, resolveAuthorization)),
     beginInvocation: () => {
       container.beginInvocation();
     },
@@ -671,3 +753,56 @@ type AssertAssignable<TActual extends TExpected, TExpected> = TActual;
  * the AWS typings directly, so the coupling keeps its single declaration site in the subtree.
  */
 type _HandlerSatisfiesLambdaContract = AssertAssignable<typeof handler, APIGatewayProxyHandler>;
+
+/* ================================================================================================
+ * THE DEPLOYMENT REGISTRATION SEAM, RE-EXPORTED SO IT IS REACHABLE FROM THE PACKAGED ARTIFACT
+ * ============================================================================================== */
+
+/*
+ * ⭐ THIS IS THE AGGREGATE ARTIFACT, SO IT IS THE ONE A SINGLE-FUNCTION DEPLOYMENT HOLDS. `handler` above
+ * serves all thirty-four addresses, four of whose surfaces are gated; a deployment that mounts only this
+ * module needs the registration seam here or it has no way to reach it at all.
+ */
+/*
+ * ⛔ WHY A RE-EXPORT IS NECESSARY AND NOT MERELY TIDY. `registerRequestAuthorizationResolver` is declared
+ * in `./httpResponse.ts` §8.1, which is NOT a build entry point — `build/esbuild.mjs` lists it under
+ * `NON_ENTRY_HANDLER_MODULES` precisely because it is a shared helper. esbuild therefore INLINES it into
+ * every entry it bundles, and an inlined module's exports do not survive: a deployment that requires the
+ * emitted artifact sees only what the ENTRY module exports. Measured before this block existed,
+ * `Object.keys(require('./dist/handlers/router.js'))` was exactly `['createRouter', 'handler']`, and the
+ * registration function appeared nowhere in any of the five gated bundles.
+ *
+ * ⛔ THAT IS THE SAME DEFECT SHAPE THE REVIEW RAISED, ONE LAYER OUT. CQ-1's first remedy — the optional
+ * `resolveAuthorization` parameter this module already accepts — serves a deployment that compiles its own
+ * entry module against the SOURCE. It does nothing for one that takes a packaged bundle as it stands, and
+ * `README.md` §7.2 promises that second route in as many words. A seam documented as callable that no
+ * caller can reach is what CQ-1 was about; leaving the registrar unexported would have reproduced it.
+ *
+ * ⭐ WHAT THE RE-EXPORT MAKES REACHABLE IS A REGISTRAR, NOT A PRINCIPAL. §8.1 holds one module-scope cell
+ * containing the deployment's resolver FUNCTION, read inside every invocation's call rather than when the
+ * graph was composed, so nothing is memoized across invocations and AAP §0.6.6 M7 is untouched. The four
+ * gated factories already default their resolver to §8.1's `resolveRequestAuthorization`, which is the
+ * reader of that cell — so a resolver registered during initialisation is honoured by this artifact even
+ * though its dispatcher was built at module load.
+ *
+ * ⚠️ AND IT CHANGES NO ANSWER BY ITSELF. Nothing in this subtree calls either function, so a graph built
+ * by this port alone still resolves no principal and every gated route still answers `401`. Re-exporting a
+ * registrar is not registering one, and this module still parses no header, decodes no token and verifies
+ * no signature — AAP §0.2.2.3 excludes the legacy authentication adapters and §0.8.3.2 forbids carrying
+ * `org/Hibachi/**` forward, so the identity itself remains the deployment's to supply.
+ *
+ * `clearRequestAuthorizationResolver` travels with it because the only thing it can do is take a gate
+ * AWAY: it resets the cell to absent, which is the fail-closed state, so exposing it cannot relax
+ * anything. A deployment able to register must be able to unwind that registration — in a harness, or
+ * between two configuration attempts — without discarding the module registry.
+ *
+ * The two types are re-exported for the same reason the functions are: a deployment writing a resolver
+ * against a packaged artifact needs the shape it must satisfy, and `CatalogAuthorizationRequest` is the
+ * one request slice — `Pick<APIGatewayProxyEvent, 'headers'>` — that serves all four gated surfaces.
+ */
+export {
+  clearRequestAuthorizationResolver,
+  registerRequestAuthorizationResolver,
+} from './httpResponse';
+
+export type { CatalogAuthorizationRequest, CatalogAuthorizationResolver } from './httpResponse';

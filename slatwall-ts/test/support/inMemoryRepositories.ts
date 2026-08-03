@@ -85,19 +85,14 @@ import { createTransactionExistenceChecker as createProductionTransactionExisten
 import type { MySqlRow } from '../../src/adapters/mysql/rowMappers';
 import type { PhysicalTableName, SqlExecutor } from '../../src/adapters/mysql/QueryRunner';
 /*
- * ⚠️ THE TWO BOUNDED-READ HELPERS ARE IMPORTED FROM THE ADAPTER LAYER ON PURPOSE, AND THAT IS THE ONE
- * PLACE THIS FILE REACHES FOR ADAPTER BEHAVIOUR RATHER THAN REPLACING IT.
- *
- * Neither helper touches a database, composes statement text or knows what a row is:
- * `prepareBoundedRead` validates a window and derives `limit + 1`, and `settleBoundedRead` splits a
- * probe result into rows plus a `hasMore` verdict. Re-deriving them here would let a double accept a
- * window the real adapter refuses, or report `hasMore` from a full window instead of from an observed
- * extra row — and a test asserting either would be asserting fiction. Sharing the two functions makes
- * the window semantics of every double identical to production by construction.
- *
- * Everything else about these doubles remains a substitute for the adapter, not a wrapper over it.
+ * ⛔ TWO BOUNDED-READ HELPERS WERE IMPORTED HERE FROM THE ADAPTER LAYER — `prepareBoundedRead` and
+ * `settleBoundedRead` — so that the windowed doubles below validated a window and derived `hasMore`
+ * exactly as production did. Both helpers, and every double that used them, are gone: the four
+ * explicitly bounded repository members they served have been withdrawn for having no production
+ * caller, and `src/adapters/mysql/QueryRunner.ts` records the removal of the mechanics from its own
+ * side. This file therefore reaches for NO adapter behaviour at all now — every double here is a
+ * substitute for an adapter rather than a wrapper over one.
  */
-import { prepareBoundedRead, settleBoundedRead } from '../../src/adapters/mysql/QueryRunner';
 import type {
   PerItemSource,
   TransactionalSqlExecutor,
@@ -136,14 +131,9 @@ import type {
 } from '../../src/ports/PricingPort';
 import type {
   AttributeSetRow,
-  ProductImportOptions,
   ProductRepository,
   ProductSearchRow,
 } from '../../src/ports/repositories/ProductRepository';
-import type {
-  BoundedReadResult,
-  BoundedReadWindow,
-} from '../../src/ports/repositories/BoundedRead';
 import type { BrandRepository, ManagedBrand } from '../../src/ports/repositories/BrandRepository';
 import type {
   OptionRepository,
@@ -706,7 +696,8 @@ export function createFanningSqlExecutorDouble(
   /**
    * Slice a window off a row set, reading the bound limit and offset from the statement's parameters.
    *
-   * The builder binds both as DIGIT STRINGS — `['10', '0']`, per `src/util/smartListInput.ts` — so they
+   * The builder binds both as DIGIT STRINGS — `['10', '0']`, per the caller-struct translation section of `src/ports/SmartListQueryPort.ts` — so they
+   * The builder binds both as DIGIT STRINGS — `['10', '0']`, per `src/ports/SmartListQueryPort.ts` — so they
    * are read through `Number` rather than assumed numeric. They are the LAST two parameters because the
    * page statement is the record statement plus `LIMIT ? OFFSET ?`, so the filter binds come first.
    */
@@ -1350,12 +1341,6 @@ export type SkuRepositoryCall =
       readonly term: string | undefined;
       readonly productTypeID: string | undefined;
     }
-  | {
-      readonly member: 'searchByProductTypeBounded';
-      readonly window: BoundedReadWindow;
-      readonly term: string | undefined;
-      readonly productTypeID: string | undefined;
-    }
   | { readonly member: 'findByProduct'; readonly productID: string; readonly fetchOptions: boolean }
   | { readonly member: 'findSortedSkuIdsByProduct'; readonly productID: string }
   | { readonly member: 'clearOptionGroupSortOrderCache' }
@@ -1477,7 +1462,7 @@ export function createInMemorySkuRepository(
 
   const repository: SkuRepository = {
     /*
-     * X12 / D23 — `model/dao/SkuDAO.cfc:L53-L98`.
+     * X12 / the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] — `model/dao/SkuDAO.cfc:L53-L98`.
      *
      * The two branches are MUTUALLY EXCLUSIVE and `skuID` wins: the DAO tests
      * `structKeyExists(arguments,"skuID") && !isNull(arguments.skuID)` first and only falls through to
@@ -1573,7 +1558,7 @@ export function createInMemorySkuRepository(
      *    would hide defect D19.
      *
      * Result order is first-seen insertion order. The legacy HQL has no ORDER BY, so row order is
-     * formally unspecified; a deterministic insertion order is the honest choice and matches M9.
+     * formally unspecified; a deterministic insertion order is the honest choice and matches the production translation.
      */
     findSkusBySelectedOptions: (optionIds: string[], productId: string): Promise<SkuRow[]> => {
       calls.push(
@@ -1651,36 +1636,6 @@ export function createInMemorySkuRepository(
     },
 
     /*
-     * The windowed form. It DELEGATES to the unbounded member above rather than re-filtering, so the two
-     * cannot disagree about the match set — a double whose bounded answer is not a slice of its own
-     * unbounded answer would be worse than no double at all.
-     *
-     * The window is then applied with the SAME two helpers the real adapter uses, so an unusable window
-     * is refused here exactly as it is there, and `hasMore` is derived from an observed extra row rather
-     * than from a full window.
-     *
-     * The unbounded delegate records its own call, so `calls` shows BOTH members: the bounded entry
-     * first, then the unbounded one it used. That is a property of the double, not of production, and a
-     * test asserting call sequence should expect it.
-     */
-    searchByProductTypeBounded: async (
-      window: BoundedReadWindow,
-      term?: string,
-      productTypeID?: string,
-    ): Promise<BoundedReadResult<SkuSearchRow>> => {
-      calls.push(
-        Object.freeze({ member: 'searchByProductTypeBounded', window, term, productTypeID }),
-      );
-      const bound = prepareBoundedRead(window, 'InMemorySkuRepository.searchByProductTypeBounded');
-      const all = await repository.searchByProductType(term, productTypeID);
-
-      return settleBoundedRead(
-        all.slice(bound.offset, bound.offset + bound.probeLimit),
-        bound.limit,
-      );
-    },
-
-    /*
      * `model/dao/SkuDAO.cfc:L150-L168`.
      *
      * D9, carried not repaired: the DAO declares `fetchOptions` as `required any` at `:L150` and then
@@ -1744,7 +1699,7 @@ export function createInMemorySkuRepository(
      *    NULL, and SQL's `SUM` skips NULL terms — so the term simply does not contribute. An option with
      *    no option group is dropped by the INNER JOIN entirely, and a SKU whose every option lacks a
      *    group drops out of the result. Adding a zero default would change the ordering.
-     * 3. TIES KEEP FIRST-SEEN ORDER (M9). The legacy has no secondary sort key, so ties are formally
+     * 3. TIES KEEP FIRST-SEEN ORDER. The legacy has no secondary sort key, so ties are formally
      *    unspecified; insertion order is deterministic and is never re-sorted for tidiness.
      *
      * TODO(parity) D8 — `model/dao/SkuDAO.cfc:L177` carries a TODO doubting the statement on engines
@@ -1926,7 +1881,7 @@ export function createTransactionExistenceChecker(
  * Both members answer with the port's own `{name, value}` projection rows, and `OptionService` returns
  * them straight through without mapping, so the label format is this repository's responsibility.
  *
- * D25 — `model/service/ProductService.cfc:L70-L80`: the neighbouring formatted-groups member builds a
+ * TODO(parity) `model/service/ProductService.cfc:L70-L80`: the neighbouring formatted-groups member builds a
  * plain CFML structure keyed by option-group NAME, so two groups sharing a name overwrite each other and
  * the earlier one is lost. The port answers `FormattedOptionGroup[]` per AAP §0.4.2.1 and preserves that
  * collapse by accumulating through a `Map`; the element type is declared in `src/services/ProductService`
@@ -1942,18 +1897,7 @@ export type OptionRepositoryCall =
       readonly productID: string;
       readonly existingOptionGroupIDList: string;
     }
-  | { readonly member: 'findUnusedOptionGroups'; readonly existingOptionGroupIDList: string }
-  | {
-      readonly member: 'findUnusedOptionsBounded';
-      readonly window: BoundedReadWindow;
-      readonly productID: string;
-      readonly existingOptionGroupIDList: string;
-    }
-  | {
-      readonly member: 'findUnusedOptionGroupsBounded';
-      readonly window: BoundedReadWindow;
-      readonly existingOptionGroupIDList: string;
-    };
+  | { readonly member: 'findUnusedOptionGroups'; readonly existingOptionGroupIDList: string };
 
 /** Seed configuration for {@link createInMemoryOptionRepository}. */
 export interface InMemoryOptionRepositoryOptions {
@@ -2014,7 +1958,7 @@ export function createInMemoryOptionRepository(
    * `ORDER BY optionGroupName, optionName` and `ORDER BY optionGroupName`. An absent name is compared as
    * the empty string: MySQL orders NULL before every non-NULL value in an ascending sort, and the empty
    * string collates first among strings, so the two agree here. `Array.prototype.sort` is stable, which
-   * preserves first-seen order among equal keys (M9) without a synthetic tiebreak.
+   * preserves first-seen order among equal keys without a synthetic tiebreak.
    */
   const byName = (left: string | undefined, right: string | undefined): number =>
     (left ?? '').localeCompare(right ?? '');
@@ -2073,33 +2017,6 @@ export function createInMemoryOptionRepository(
     },
 
     /*
-     * The windowed form, delegating to the unbounded member so the IN polarity, the correlated usage
-     * exclusion, the label format and the two-term ordering are decided in exactly one place. The window
-     * is applied with the production helpers, so validation and the `hasMore` verdict match the adapter.
-     */
-    findUnusedOptionsBounded: async (
-      window: BoundedReadWindow,
-      productID: string,
-      existingOptionGroupIDList: string,
-    ): Promise<BoundedReadResult<UnusedOptionRow>> => {
-      calls.push(
-        Object.freeze({
-          member: 'findUnusedOptionsBounded',
-          window,
-          productID,
-          existingOptionGroupIDList,
-        }),
-      );
-      const bound = prepareBoundedRead(window, 'InMemoryOptionRepository.findUnusedOptionsBounded');
-      const all = await repository.findUnusedOptions(productID, existingOptionGroupIDList);
-
-      return settleBoundedRead(
-        all.slice(bound.offset, bound.offset + bound.probeLimit),
-        bound.limit,
-      );
-    },
-
-    /*
      * `model/dao/OptionDAO.cfc:L93-L116`. `optionGroupID` NOT IN the supplied list, ordered by name, and
      * the label is the BARE group name — no prefix, no separator. The row type is kept distinct from
      * {@link UnusedOptionRow} even though the two are structurally identical, because the port declares
@@ -2121,36 +2038,6 @@ export function createInMemoryOptionRepository(
         }),
       );
       return Promise.resolve(rows);
-    },
-
-    /*
-     * The windowed form, delegating to the unbounded member so the NOT-IN polarity stays decided in one
-     * place. This is the pair's asymmetric case: for an empty list the unbounded member yields EVERY
-     * group, so a window here returns the first page of the whole table and reports `hasMore` — which is
-     * exactly the behaviour a caller needs, and exactly what capping the unbounded member would have
-     * hidden.
-     */
-    findUnusedOptionGroupsBounded: async (
-      window: BoundedReadWindow,
-      existingOptionGroupIDList: string,
-    ): Promise<BoundedReadResult<UnusedOptionGroupRow>> => {
-      calls.push(
-        Object.freeze({
-          member: 'findUnusedOptionGroupsBounded',
-          window,
-          existingOptionGroupIDList,
-        }),
-      );
-      const bound = prepareBoundedRead(
-        window,
-        'InMemoryOptionRepository.findUnusedOptionGroupsBounded',
-      );
-      const all = await repository.findUnusedOptionGroups(existingOptionGroupIDList);
-
-      return settleBoundedRead(
-        all.slice(bound.offset, bound.offset + bound.probeLimit),
-        bound.limit,
-      );
     },
   };
 
@@ -2218,12 +2105,6 @@ export type ProductRepositoryCall =
        */
       readonly fileURL: string;
       readonly textQualifier: string | undefined;
-      /** The invocation-scoped controls the caller supplied, recorded verbatim and never interpreted. */
-      readonly options: ProductImportOptions | undefined;
-    }
-  | {
-      /** The two whole-catalog back-fills, invoked as their own step rather than as the import's tail. */
-      readonly member: 'backfillImportDerivedColumns';
     }
   | {
       readonly member: 'searchByProductType';
@@ -2253,7 +2134,6 @@ export type ProductRepositoryCall =
 export type ProductImportHandler = (
   fileURL: string,
   textQualifier: string | undefined,
-  options: ProductImportOptions | undefined,
 ) => Promise<void>;
 
 /** Seed configuration for {@link createInMemoryProductRepository}. */
@@ -2345,39 +2225,24 @@ export function createInMemoryProductRepository(
       return Promise.resolve([...attributeSets]);
     },
 
-    importFromFile: (
-      fileURL: string,
-      textQualifier?: string,
-      options?: ProductImportOptions,
-    ): Promise<void> => {
-      calls.push(Object.freeze({ member: 'importFromFile', fileURL, textQualifier, options }));
+    importFromFile: (fileURL: string, textQualifier?: string): Promise<void> => {
+      calls.push(Object.freeze({ member: 'importFromFile', fileURL, textQualifier }));
       /*
        * The port returns `Promise<void>` and reports nothing about what it imported, so this double
        * reports nothing either. Everything a test wants to observe about the import lives in the handler
        * it supplied and in the UnitOfWork double the handler drives.
        *
-       * The options object is RECORDED AND FORWARDED, never interpreted. Whether a caller cancelled or
-       * deferred the back-fills is exactly the kind of thing a handler test needs to assert on, and
-       * deciding it here instead would make the double the authority on a contract the adapter owns.
+       * ⛔ THERE IS NO THIRD ARGUMENT TO RECORD. An `options` object once travelled here, carrying a
+       * cancellation signal and a back-fill deferral flag, and this double recorded it verbatim without
+       * interpreting it. Review findings F2 and F4 removed the parameter and the whole interface:
+       * `model/dao/ProductDAO.cfc:L73` declares exactly two arguments, and AAP §0.6.7.7 admits one
+       * behavioural exception (D18). The `backfillImportDerivedColumns` member that flag was paired with is
+       * withdrawn from the port too, so this double no longer answers it either.
        */
       if (onImport === undefined) {
         return Promise.resolve();
       }
-      return onImport(fileURL, textQualifier, options);
-    },
-
-    /*
-     * The two whole-catalog back-fills, as their own invocable step.
-     *
-     * It records the call and does nothing else, deliberately: the statements it stands for are
-     * `model/dao/ProductDAO.cfc:L288-L302` and `:L304-L325`, both UNTRANSACTED bulk `UPDATE`s over the
-     * entire catalog, and this double holds no catalog to update. What a test can assert is exactly what
-     * matters for the finding it resolves — that a deferring workflow invoked it once, at the end, rather
-     * than once per chunk.
-     */
-    backfillImportDerivedColumns: (): Promise<void> => {
-      calls.push(Object.freeze({ member: 'backfillImportDerivedColumns' }));
-      return Promise.resolve();
+      return onImport(fileURL, textQualifier);
     },
 
     searchByProductType: (term?: string, productTypeIDs?: string): Promise<ProductSearchRow[]> => {
@@ -2417,8 +2282,15 @@ export function createInMemoryProductRepository(
      * bounded product search: it had no caller in any service, handler or integration, and AAP §0.4.2.1
      * fixes `ProductService` at fifteen members with no product search among them, so it could not
      * acquire one without adding an unratified sixteenth. The full reasoning lives at the site of the
-     * removed declaration. The SKU-side and option-side bounded members are unaffected and are still
-     * implemented on their own doubles below.
+     * removed declaration.
+     *
+     * ⭐ AND THE OTHER THREE HAVE NOW FOLLOWED IT, so this file declares no windowed double at all.
+     * `SkuRepository.searchByProductTypeBounded` and both `OptionRepository` windowed listings were
+     * withdrawn on the same ground — no production caller once the service members that would have
+     * called them were restored to their ratified counts — and the doubles that mirrored them went with
+     * them, together with the two adapter helpers this file used to import to keep their window
+     * semantics identical to production. Every double in this file is now a substitute for a member some
+     * routed path can actually reach.
      */
 
     /*
@@ -2806,7 +2678,8 @@ export type BrandRepositoryCall =
   | { readonly member: 'getBrand'; readonly brandID: string }
   | { readonly member: 'saveBrand'; readonly brand: ManagedBrand }
   | { readonly member: 'deleteBrand'; readonly brand: ManagedBrand }
-  | { readonly member: 'isUrlTitleAvailable'; readonly urlTitle: string };
+  | { readonly member: 'isUrlTitleAvailable'; readonly urlTitle: string }
+  | { readonly member: 'findProductIdentifiersByBrand'; readonly brandID: string };
 
 /** Seed configuration for {@link createInMemoryBrandRepository}. */
 export interface InMemoryBrandRepositoryOptions {
@@ -2842,6 +2715,14 @@ export interface InMemoryBrandRepository {
   addBrand(brand: ManagedBrand): void;
   /** Mark a URL title as held, so the next probe for it answers `false`. */
   takeUrlTitle(urlTitle: string): void;
+  /**
+   * Record that a brand still owns a product, so the F9 delete guard's live read finds it.
+   *
+   * The seeded identifiers are what `findProductIdentifiersByBrand` answers. Nothing here builds a
+   * `Product`: the guard reads a LENGTH, so an identifier per owned row is the whole of what the
+   * production read projects too.
+   */
+  ownProduct(brandID: string, productID: string): void;
 }
 
 /**
@@ -2876,6 +2757,8 @@ export function createInMemoryBrandRepository(
   const availabilityQueue: boolean[] =
     options.urlTitleAvailability === undefined ? [] : [...options.urlTitleAvailability];
   const calls: BrandRepositoryCall[] = [];
+  /** F9 — owned product identifiers per brand, seeded through `ownProduct`. */
+  const ownedProductIdsByBrand = new Map<string, string[]>();
 
   const repository: BrandRepository = {
     newBrand: (): ManagedBrand => {
@@ -2940,6 +2823,16 @@ export function createInMemoryBrandRepository(
       }
       return Promise.resolve(!takenUrlTitles.has(urlTitle));
     },
+
+    /*
+     * F9 — the lazy products load, in memory. Answers only what was explicitly seeded through
+     * `ownProduct`, so a brand nothing seeded owns nothing and the guard's ceiling of zero passes —
+     * which is the behaviour of a brand that genuinely owns no product, not a stub shortcut.
+     */
+    findProductIdentifiersByBrand: (brandID: string): Promise<string[]> => {
+      calls.push(Object.freeze({ member: 'findProductIdentifiersByBrand', brandID }));
+      return Promise.resolve([...(ownedProductIdsByBrand.get(brandID) ?? [])]);
+    },
   };
 
   return {
@@ -2951,6 +2844,14 @@ export function createInMemoryBrandRepository(
     },
     takeUrlTitle: (urlTitle: string): void => {
       takenUrlTitles.add(urlTitle);
+    },
+    ownProduct: (brandID: string, productID: string): void => {
+      const owned = ownedProductIdsByBrand.get(brandID);
+      if (owned === undefined) {
+        ownedProductIdsByBrand.set(brandID, [productID]);
+        return;
+      }
+      owned.push(productID);
     },
   };
 }
@@ -3404,7 +3305,7 @@ export function createSettingResolverDouble(
  * `jpg,jpeg,png,gif` list the upload seam carries — this double records the list it is handed so a test
  * can assert the order survived, and supplies none of its own.
  *
- * TODO(parity) D24 — `model/service/SkuService.cfc:L210-L218`: `processImageUpload` is named and shaped
+ * TODO(parity) the image-verdict divergence [model/service/SkuService.cfc:L213-L217] — `model/service/SkuService.cfc:L210-L218`: `processImageUpload` is named and shaped
  * like the other `process*` members, every one of which returns its entity, but this one returns whatever
  * the dynamically resolved image service returned — a BOOLEAN. `saveImageFile` here answers `boolean`
  * because that is the PORT's contract and the legacy's own verdict; the SERVICE member answers with the
@@ -3441,9 +3342,10 @@ export const TEST_IMAGE_BASE_URL = '/assets/images';
  * `toImageStorageRoot` helper and wired it into `SkuService` as an eleventh constructor parameter, so
  * that writes could be required to land beneath it. Both are withdrawn: the legacy never checks
  * containment and had no such value to derive, so the root and its enforcement were invented
- * configuration (AAP §0.7.3 S9, IR-12). The write-side rule that IS the legacy's — one dot, a sanitised
- * stem and an allowed extension — is enforced by `isWritableSkuImageFileName` in
- * `src/services/SkuService.ts`. This constant survives only as the base for composing expected paths.
+ * configuration (AAP §0.7.3 S9, IR-12). Nor is a narrower name gate enforced anywhere — the write-side
+ * predicate that briefly stood in `src/services/SkuService.ts` is withdrawn under review finding F4,
+ * because it refused input `model/service/SkuService.cfc:L212` accepts. This constant survives only as the
+ * base for composing expected paths.
  */
 export const TEST_IMAGE_STORAGE_ROOT = `${TEST_IMAGE_BASE_URL}${SKU_IMAGE_PATH_SEGMENT}`;
 

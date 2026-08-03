@@ -52,8 +52,8 @@ export default tseslint.config(
   /* ------------------------------------------------------------------------------------------------
    * [1] Ignores.
    *
-   * These mirror the lintable paths of slatwall-ts/.gitignore (`node_modules/`, `dist/`, `coverage/`),
-   * so the three tools agree on what is generated output. Prettier needs no ignore file of its own:
+   * These mirror the lintable paths of slatwall-ts/.gitignore (`node_modules/`, `dist/`, `build-meta/`,
+   * `coverage/`), so the three tools agree on what is generated output. Prettier needs no ignore file of its own:
    * version 3 honours .gitignore directly, which is why that one file is the single declaration of
    * generated output for all three tools. slatwall-ts/.gitignore owns the account of what is ignored,
    * of the .prettierignore that used to exist and no longer does, and of the measurement behind that
@@ -63,10 +63,21 @@ export default tseslint.config(
    *
    * `node_modules/**` is redundant with ESLint's built-in default and is listed anyway, because an
    * explicit list is auditable against .gitignore line by line whereas an implicit default is not.
+   *
+   * ⭐ `build-meta/**` WAS MISSING AND IS NOW PRESENT, AND THE GAP WAS MEASURED RATHER THAN SUSPECTED.
+   * .gitignore has carried `build-meta/` since the source maps were moved out of the packaged tree, but
+   * this list did not, and while that directory held only `.map` files it was inert — no config object
+   * here names that extension, so nothing was ever linted. build/esbuild.mjs now assembles the package
+   * in `build-meta/package-staging/` before promoting it, which puts bundled JAVASCRIPT there for the
+   * duration of a build. A deliberately mis-written probe placed at that path was reported by
+   * `npx eslint .` with two errors, so the exposure was real: a build interrupted hard enough to leave
+   * the staging tree behind would have made the next lint run fail on generated output. The entry closes
+   * that, and it also restores the property this note claims — that the list is auditable against
+   * .gitignore line by line, which it was not while one of the four patterns was absent.
    * ---------------------------------------------------------------------------------------------- */
   {
     name: 'slatwall-ts/ignores',
-    ignores: ['node_modules/**', 'dist/**', 'coverage/**'],
+    ignores: ['node_modules/**', 'dist/**', 'build-meta/**', 'coverage/**'],
   },
 
   /* ------------------------------------------------------------------------------------------------

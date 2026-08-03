@@ -55,7 +55,7 @@
  *    `SwSku.productID` (`model/entity/Sku.cfc:L65`).
  *
  * =================================================================================================
- * TODO(parity) D22 — ONE LEGACY COMPONENT, TWO NAMING CONVENTIONS
+ * TODO(parity) `model/dao/SkuDAO.cfc:L132` — ONE LEGACY COMPONENT, TWO NAMING CONVENTIONS
  * =================================================================================================
  * `model/dao/SkuDAO.cfc:L132` and `model/dao/SkuDAO.cfc:L135` place MAPPING-LAYER entity names
  * inside a NATIVE statement, while `model/dao/SkuDAO.cfc:L179-L211` correctly uses PHYSICAL table
@@ -63,7 +63,7 @@
  * is carried verbatim: never "fix" HQL entity names to `Sw*`, and never assume a logical name works
  * in native SQL. Every statement this adapter emits therefore names PHYSICAL tables, resolved
  * through the whitelist rather than transformed by a prefix rule. This annotation mints no register
- * identifier: D22's register home is `../../ports/repositories/SkuRepository`, which is where it is
+ * identifier: the canonical annotation lives in `../../ports/repositories/SkuRepository`, which is where it is
  * DEFINED, and this file is where it is DISCHARGED (AAP §0.7.3 S7). Neither register is extended
  * here.
  *
@@ -131,20 +131,25 @@ import type { Product, ProductTransactionExistenceChecker } from '../../domain/p
 import type { Sku, SkuTransactionExistenceChecker } from '../../domain/sku/Sku';
 import { SKU_UNSAVED_ID_VALUE } from '../../domain/sku/Sku';
 import { DataIntegrityError, DomainError } from '../../errors/DomainError';
-import type { BoundedReadResult, BoundedReadWindow } from '../../ports/repositories/BoundedRead';
+/* No `../../ports/repositories/BoundedRead` import and no bounded-read helper import remain: the one
+ * windowed member this adapter implemented has been withdrawn, and the port no longer declares it. */
 import type { SkuRepository, SkuRow, SkuSearchRow } from '../../ports/repositories/SkuRepository';
 import type { PhysicalTableName, SqlMutationExecutor } from './QueryRunner';
-import {
-  assertColumnName,
-  assertTableName,
-  prepareBoundedRead,
-  settleBoundedRead,
-} from './QueryRunner';
-import { attachFetchedSkuAssociations } from './catalogAggregates';
+import { assertColumnName, assertTableName } from './QueryRunner';
+import { attachFetchedSkuAssociations } from './SmartListQueryBuilder';
 import { applyPreInsertAudit, applyPreUpdateAudit } from '../../domain/base/AuditableEntity';
 import type { AccountContextPort } from '../../ports/AccountContextPort';
 import type { MySqlRow } from './rowMappers';
-import { mapOptionGroupRow, mapOptionRow, mapRows, mapSkuRow, mapSkuSearchRow } from './rowMappers';
+import type { SkuOwnedLinkCollection } from './rowMappers';
+import {
+  isSkuOwnedLinkAuthoritative,
+  mapOptionGroupRow,
+  mapOptionRow,
+  mapRows,
+  mapSkuRow,
+  mapSkuSearchRow,
+  readHydratedSkuSubscriptionTermID,
+} from './rowMappers';
 
 /* ================================================================================================
  * IN-SCOPE PHYSICAL IDENTIFIERS — RESOLVED THROUGH THE WHITELIST, NEVER WRITTEN AS BARE TEXT
@@ -540,7 +545,7 @@ export type TransactionExistenceChecker = SkuTransactionExistenceChecker &
 /**
  * Adapt {@link SkuRepository.transactionExists} to the caller-ordered checker the two entities take.
  *
- * ⭐ D23 — THIS IS THE ARGUMENT CROSSING, AND IT EXISTS BECAUSE THE TWO LAYERS ARE ORDERED
+ * ⭐ `model/service/SkuService.cfc:L285-L287` — THIS IS THE ARGUMENT CROSSING, AND IT EXISTS BECAUSE THE TWO LAYERS ARE ORDERED
  * DIFFERENTLY ON PURPOSE. The entity-level contract is CALLER-ordered, `(skuID?, productID?)`, because
  * that is the order the legacy call sites read in — `model/entity/Sku.cfc:L594` names `skuID=` and
  * `model/entity/Product.cfc:L626` names `productID=`. The repository member is DAO-ordered,
@@ -761,14 +766,14 @@ const TRANSACTION_EXISTS_ALIAS = 'transactionExists';
  * Composes the SKU-code search statement and its bound values — the whole of
  * `model/dao/SkuDAO.cfc:L130-L148` except the execution and the row mapping.
  *
- * EXTRACTED SO THE UNBOUNDED AND BOUNDED MEMBERS SHARE ONE TRANSLATION. Both
- * {@link MySqlSkuRepository.searchByProductType} and
- * {@link MySqlSkuRepository.searchByProductTypeBounded} must apply the same predicate, the same
- * wildcard wrapping, the same list splitting, the same two differently-strict guards and the same bind
- * order. Two copies would be two chances for the pair to diverge — and a divergence here is silent,
- * because both members return the same row type and neither would fail to compile. Everything below is
- * the original translation, moved verbatim rather than rewritten; the bounded member appends its
- * window to the returned text and its two values to the returned array, and touches nothing else.
+ * IT WAS EXTRACTED SO THE UNBOUNDED AND WINDOWED MEMBERS COULD SHARE ONE TRANSLATION, AND IT STAYS
+ * EXTRACTED THOUGH ONLY ONE CALLER SURVIVES. {@link MySqlSkuRepository.searchByProductType} is now the
+ * sole caller: the windowed companion has been withdrawn for having no production caller of its own,
+ * and the block where it stood records why. The function is left here rather than folded back into that
+ * member because it is the single statement of a translation that carries five separable decisions —
+ * the predicate, the wildcard wrapping, the list splitting, two differently-strict guards and the bind
+ * order — and inlining it would bury each of them in a member body instead of naming them once.
+ * Everything below is the original translation, unchanged by the withdrawal.
  *
  * @param term - the bare search fragment. Optional in the signature and read unguarded by the legacy.
  * @param productTypeID - comma-delimited product-type identifiers, despite the singular legacy name.
@@ -1019,7 +1024,7 @@ export class MySqlSkuRepository implements SkuRepository {
    * `noUncheckedIndexedAccess` types the read as possibly absent and the honest response to that is a
    * narrowing check, not a non-null assertion. The behaviour on the normal path is identical.
    *
-   * Discrepancy 4, resolved one layer up as carried defect D23 and recorded here because this member
+   * Discrepancy 4, resolved one layer up as the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] and recorded here because this member
    * is the thing that raises. `model/service/SkuService.cfc:L285` declares the SERVICE member with NO
    * arguments at all, while its real callers pass one by name — `model/entity/Sku.cfc:L594` passes the
    * SKU identifier and `model/entity/Product.cfc:L626` passes the product identifier — and CFML's
@@ -1341,8 +1346,8 @@ export class MySqlSkuRepository implements SkuRepository {
    * Ports `model/dao/SkuDAO.cfc:L130-L148`. Discrepancy 3: BOTH arguments are optional in the legacy
    * declaration, and the port keeps them optional — but only one of them is actually safe to omit.
    *
-   * ⚠️ TODO(parity) D22 — `model/dao/SkuDAO.cfc:L132` AND `model/dao/SkuDAO.cfc:L135` PUT
-   * MAPPING-LAYER ENTITY NAMES INSIDE A NATIVE STATEMENT. These two lines are the only D22 sites in
+   * ⚠️ TODO(parity) `model/dao/SkuDAO.cfc:L132` AND `model/dao/SkuDAO.cfc:L135` PUT
+   * MAPPING-LAYER ENTITY NAMES INSIDE A NATIVE STATEMENT. These two lines are the only such sites in
    * the component; thirty lines further on, `model/dao/SkuDAO.cfc:L179-L211` uses PHYSICAL table names
    * in an equally native statement. One file, two conventions. The conclusion is carried verbatim:
    * never "fix" HQL entity names to `Sw*`, and never assume a logical name works in native SQL. This
@@ -1398,47 +1403,23 @@ export class MySqlSkuRepository implements SkuRepository {
     return mapRows(rows, mapSkuSearchRow);
   }
 
-  /**
-   * The windowed form of {@link MySqlSkuRepository.searchByProductType}.
+  /*
+   * ⛔ THE WINDOWED FORM OF `searchByProductType` STOOD HERE AND HAS BEEN WITHDRAWN. It validated a
+   * caller's window, appended `limit ? offset ?` to {@link composeSkuSearch}'s statement with both
+   * numbers BOUND rather than interpolated, and settled the probe row after mapping.
    *
-   * The predicate, the wildcard wrapping, the list splitting, both guards and the bind order are not
-   * re-implemented: {@link composeSkuSearch} composes them ONCE for both members, so the two cannot
-   * drift into answering different questions. Everything this member adds is appended after that.
+   * ⭐ IT WAS REMOVED FOR HAVING NO PRODUCTION CALLER, and a method is the one shape of dead code that
+   * a bundler cannot remove for us: `../../config/**` instantiates this class in every artifact, so an
+   * unreachable method travelled in all six bundles. `../../ports/repositories/SkuRepository.ts`
+   * records the port-side withdrawal and the chain behind it — the service member that would have
+   * called this one was itself withdrawn to keep `SkuService` at the nine members AAP §0.4.2.2
+   * tabulates, which left this implementation reachable only from its own tests.
    *
-   * ⚠️ THE PROBE IS BOUND, NOT INTERPOLATED. `LIMIT ? OFFSET ?` carries two more placeholders, bound
-   * LAST — after the term and after any product-type identifiers — so the legacy bind order (TR-4) is
-   * untouched and the window occupies positions the legacy statement never used. Writing the numbers
-   * into the statement text would put caller-supplied values in the text, which S2 forbids even when
-   * they have been validated.
-   *
-   * ⚠️ THE ROWS ARE MAPPED BEFORE THE WINDOW IS SETTLED, and the order matters. The probe row is
-   * discarded by {@link settleBoundedRead} after mapping, which costs one extra row's hydration and
-   * buys a guarantee: {@link mapSkuSearchRow} refuses a row whose projection has drifted, so the probe
-   * row is validated exactly like every other row rather than being trusted because it is about to be
-   * dropped. Discarding first would let a malformed final row through unnoticed.
-   *
-   * @param window - the caller's ceiling and zero-based offset; validated, never defaulted.
-   * @param term - bare SKU-code fragment. Omitting it raises, exactly as on the unbounded member.
-   * @param productTypeID - comma-delimited product-type identifiers, despite the singular name.
-   * @returns the window's rows and whether a further match lies past it.
-   * @throws {DomainError} for an unusable window, an omitted term, or a product-type list with
-   *   segments that all vanish under list splitting.
+   * ⚠️ {@link composeSkuSearch} SURVIVES AND IS UNCHANGED, because the unbounded member still uses it.
+   * That is also why removing this one is safe in the way that matters: the predicate, the wildcard
+   * wrapping, the list splitting, both guards and the bind order were never duplicated here, so nothing
+   * about the surviving search moved. No `ORDER BY` was ever added and none was removed.
    */
-  public async searchByProductTypeBounded(
-    window: BoundedReadWindow,
-    term?: string,
-    productTypeID?: string,
-  ): Promise<BoundedReadResult<SkuSearchRow>> {
-    const bound = prepareBoundedRead(window, 'MySqlSkuRepository.searchByProductTypeBounded');
-    const { sql, params } = composeSkuSearch(term, productTypeID);
-
-    const rows = await this.executor.execute(`${sql} limit ? offset ?`, [
-      ...params,
-      ...bound.boundValues,
-    ]);
-
-    return settleBoundedRead(mapRows(rows, mapSkuSearchRow), bound.limit);
-  }
 
   /**
    * Return a product's SKUs, optionally restricted to those that carry the structure its base
@@ -1860,7 +1841,7 @@ export class MySqlSkuRepository implements SkuRepository {
    *
    * ⚠️ NOTE THE NAMING CONTRAST WITHIN THE LEGACY COMPONENT. This statement correctly uses PHYSICAL
    * table names [`model/dao/SkuDAO.cfc:L179-L211`] while the search member thirty lines earlier uses
-   * mapping-layer names in an equally native statement [`:L132`, `:L135`]. That contrast IS D22, and it
+   * mapping-layer names in an equally native statement [`:L132`, `:L135`]. That contrast IS the divergence, and it
    * is why every identifier in this file is resolved through the whitelist rather than derived by
    * transforming the legacy text.
    *
@@ -2157,9 +2138,20 @@ export class MySqlSkuRepository implements SkuRepository {
       sku.userDefinedPriceFlag,
       sku.calculatedQATS ?? null,
       /* The foreign keys are read from the associations, mirroring the mapping declarations at
-       * `model/entity/Sku.cfc:L65` and `:L66`. */
+       * `model/entity/Sku.cfc:L65` and `:L66`.
+       *
+       * ⭐ F7 — THE SUBSCRIPTION TERM FALLS BACK TO THE PRESERVED KEY, AND THE ORDER IS THE WHOLE FIX. A
+       * resolved association still wins, so a caller that attaches or replaces a term writes what it
+       * attached. What changed is the second arm: `SubscriptionTerm` is out of scope (AAP §0.2.2.1) so
+       * `mapSkuRow` never fills the slot, and this expression previously collapsed to `null` for EVERY
+       * database-loaded SKU — silently detaching the term on any save reached through
+       * `processProductUpdateSkus` or `processProductUpdateDefaultImageFileNames`. RULE 3c in
+       * `./rowMappers` preserves the row's own value beside the entity, and reading it here reproduces
+       * what Hibernate did for free: a many-to-one nobody dereferenced kept its column. A caller that
+       * MEANS null calls `forgetHydratedSkuSubscriptionTermID` — absence alone cannot mean it, because
+       * absence is also what "never loaded" looks like. */
       sku.product?.productID ?? null,
-      sku.subscriptionTerm?.subscriptionTermID ?? null,
+      sku.subscriptionTerm?.subscriptionTermID ?? readHydratedSkuSubscriptionTermID(sku) ?? null,
       sku.remoteID ?? null,
       sku.createdDateTime ?? null,
       sku.createdByAccount ?? null,
@@ -2212,6 +2204,8 @@ export class MySqlSkuRepository implements SkuRepository {
      * handles all three unconditionally rather than inferring which branch produced the SKU.
      */
     await this.replaceSkuLinkRows(
+      sku,
+      'options',
       SKU_OPTION_TABLE,
       SKU_LINK_COLUMN.option,
       skuIdentifier,
@@ -2220,6 +2214,8 @@ export class MySqlSkuRepository implements SkuRepository {
     );
 
     await this.replaceSkuLinkRows(
+      sku,
+      'accessContents',
       SKU_ACCESS_CONTENT_TABLE,
       SKU_LINK_COLUMN.accessContent,
       skuIdentifier,
@@ -2228,6 +2224,8 @@ export class MySqlSkuRepository implements SkuRepository {
     );
 
     await this.replaceSkuLinkRows(
+      sku,
+      'subscriptionBenefits',
       SKU_SUBSCRIPTION_BENEFIT_TABLE,
       SKU_LINK_COLUMN.subscriptionBenefit,
       skuIdentifier,
@@ -2236,6 +2234,8 @@ export class MySqlSkuRepository implements SkuRepository {
     );
 
     await this.replaceSkuLinkRows(
+      sku,
+      'renewalSubscriptionBenefits',
       SKU_RENEWAL_SUBSCRIPTION_BENEFIT_TABLE,
       SKU_LINK_COLUMN.renewalSubscriptionBenefit,
       skuIdentifier,
@@ -2258,25 +2258,67 @@ export class MySqlSkuRepository implements SkuRepository {
    * ⚠️ NO DEDUPLICATION, DELIBERATELY. A repeated far identifier is a data fault the link table's own key
    * is entitled to reject, and collapsing it here would hide that fault from the caller that created it.
    *
-   * ⚠️ AN EMPTY COLLECTION ON A PRE-EXISTING SKU STILL ISSUES THE DELETE, and that is the whole meaning
-   * of replacement. Removing every benefit from a SKU and saving it must clear the rows; skipping the
-   * delete for an empty collection would make removal impossible.
+   * ⚠️ AN EMPTY *AUTHORITATIVE* COLLECTION ON A PRE-EXISTING SKU STILL ISSUES THE DELETE, and that is
+   * the whole meaning of replacement. Removing every benefit from a loaded SKU and saving it must clear
+   * the rows; skipping the delete for an empty collection would make removal impossible. What the F7 gate
+   * below adds is the distinction between that case and an empty collection nobody ever populated — see
+   * the next block.
+   *
+   * ⭐ F7 — THE LOAD-STATE GATE, AND WHY IT IS A PRESERVATION RATHER THAN A NEW BEHAVIOUR. RULE 3c in
+   * `./rowMappers` records that a hydrated SKU's owned link collections have NOT been read. For such a
+   * collection the in-memory array describes nothing, so replacing rows from it destroyed relationships
+   * the caller never mentioned: every save of a database-loaded SKU deleted its `SwSkuOption`,
+   * `SwSkuAccessContent`, `SwSkuSubsBenefit` and `SwSkuRenewalSubsBenefit` rows. Hibernate never did
+   * that — an unloaded lazy collection produced no statement at flush and its rows simply stayed — so the
+   * gate restores the legacy outcome instead of adding a control (AAP §0.8.2 guideline 2). Three service
+   * members reached this write on an existing SKU: `processProductAddOptionGroup`,
+   * `processProductAddOption` and `processProductUpdateSkus`.
+   *
+   * ⛔ AND A MUTATED UNLOADED COLLECTION RAISES RATHER THAN GUESSING. If the collection was never read
+   * and is nevertheless non-empty, the entity holds SOME of the intended rows and the adapter cannot know
+   * which of the stored ones the caller meant to keep. Writing only what it holds deletes the rest;
+   * writing nothing discards the addition. Both are silent data outcomes, so neither is chosen: the write
+   * fails with the collection named, and the caller's transaction rolls back (M5). Reaching it requires
+   * mutating a collection without loading it, which every in-scope path now avoids —
+   * `attachSkuOptions` promotes `options` to loaded before `processProductAddOptionGroup` touches it.
    *
    * ⚠️ NOTHING IS COMMITTED HERE (M5). The boundary belongs to `src/adapters/mysql/UnitOfWork.ts`.
    *
+   * @param sku - the owning entity, consulted ONLY for its RULE 3c load state.
+   * @param collection - which of the four owned collections this call writes, by the entity's own
+   *   property name at `model/entity/Sku.cfc:L76-L79`.
    * @param table - the link table, already whitelisted.
    * @param columns - its owning and far column names, already whitelisted.
    * @param skuIdentifier - the owning SKU's 32-character identifier.
    * @param skuRowAlreadyExists - whether the SKU row pre-existed this save, which decides the delete.
    * @param farIdentifiers - the far-side identifiers, in the order the entity holds them, undeduplicated.
+   * @throws {DomainError} When an unloaded collection carries entries, so no faithful write exists.
    */
   private async replaceSkuLinkRows(
+    sku: Sku,
+    collection: SkuOwnedLinkCollection,
     table: PhysicalTableName,
     columns: { readonly skuID: string; readonly far: string },
     skuIdentifier: string,
     skuRowAlreadyExists: boolean,
     farIdentifiers: readonly string[],
   ): Promise<void> {
+    if (!isSkuOwnedLinkAuthoritative(sku, collection)) {
+      if (farIdentifiers.length > 0) {
+        throw new DomainError(
+          `The SKU's ${collection} collection was modified without having been loaded, ` +
+            'so its stored links cannot be replaced without discarding rows this save never read.',
+          {
+            context: { skuID: skuIdentifier, collection, table, entryCount: farIdentifiers.length },
+          },
+        );
+      }
+
+      /* Never read and still empty: the stored rows are the truth, and this save has nothing to say
+       * about them. No statement is emitted — exactly what an unloaded lazy collection produced. */
+      return;
+    }
+
     if (skuRowAlreadyExists) {
       await this.executor.executeMutation(`DELETE FROM ${table} WHERE ${columns.skuID} = ?`, [
         skuIdentifier,

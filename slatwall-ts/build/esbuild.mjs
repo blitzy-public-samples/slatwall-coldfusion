@@ -52,8 +52,9 @@
  * ==================================================================================================
  */
 import { build } from 'esbuild';
-import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
-import { basename, dirname, join, relative, resolve } from 'node:path';
+import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { builtinModules, createRequire } from 'node:module';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /* --------------------------------------------------------------------------------------------------
@@ -111,6 +112,62 @@ const outputDir = join(projectRoot, 'dist');
  * from `build/`, which holds this script and is tracked.
  */
 const sourcemapDir = join(projectRoot, 'build-meta', 'sourcemaps');
+
+/**
+ * Where the package is ASSEMBLED, and the reason `dist/` is never written to incrementally.
+ *
+ * ⭐ THIS IS THE WHOLE OF THE ATOMICITY ARGUMENT, AND IT REPLACES A WEAKER ONE. A QA pass recorded
+ * that purging owned outputs BEFORE the bundler runs protects only the pre-emit half of the build: if
+ * esbuild wrote all six artifacts and a POST-EMIT step then failed, the process exited non-zero while
+ * `dist/` still held six apparently deployable bundles. The exit status said "failed", the packaging
+ * directory said "ready", and a packaging step reading `dist/` could not tell the two apart — which is
+ * exactly the outcome the purge existed to prevent, reached by the other route.
+ *
+ * ⭐ SO THE PROPERTY IS NOW STRUCTURAL RATHER THAN HANDLER-DEPENDENT. Every artifact — the six
+ * bundles, the production manifest and the staged dependency tree — is written HERE, and `dist/` is
+ * created by exactly ONE operation: a single `rename` of this directory onto it, performed only after
+ * every step has succeeded. A failure at ANY step therefore leaves `dist/` ABSENT, not stale and not
+ * partial, and it does so because there is no code path that can populate `dist/` any other way — not
+ * because a cleanup handler remembered to run. The handler still runs, and removes this directory, so
+ * nothing is left behind anywhere; but the invariant does not depend on it.
+ *
+ * ⚠️ IT LIVES UNDER `build-meta/` FOR A CONCRETE REASON, NOT FOR TIDINESS. `rename` is atomic only
+ * within one filesystem, and it is a metadata operation only when source and destination share one —
+ * so the staging directory has to be a sibling of `dist/` inside the subtree rather than in a system
+ * temporary directory, which on this platform is a different mount. `build-meta/` is already
+ * git-ignored (so nothing here can ever be committed) and already Prettier-ignored through that same
+ * file, and `eslint.config.mjs` ignores it too so a hard crash that left this tree behind cannot make
+ * `npx eslint .` lint a bundled artifact. The name is distinct from `build/`, which holds this script
+ * and IS tracked.
+ */
+const stagingDir = join(projectRoot, 'build-meta', 'package-staging');
+
+/**
+ * The production manifest's filename, inside the package.
+ *
+ * ⭐ WHY THE PACKAGE NEEDS ONE AT ALL. `mysql2` is marked external, so every emitted artifact carries a
+ * literal `require("mysql2/promise")` and resolves it from `node_modules` at run time. A QA pass
+ * followed that through and found the gap: the build placed neither a manifest nor the driver beside
+ * the artifacts, so deploying `dist/handlers/router.js` as documented would have failed at cold start
+ * while resolving `mysql2/promise`. A package that cannot resolve its own externals is not a
+ * Lambda-compatible artifact, whatever its exit status said.
+ *
+ * ⛔ IT IS DERIVED FIELD BY FIELD FROM THE SUBTREE'S OWN package.json, NEVER HAND-WRITTEN AND NEVER
+ * COPIED WHOLESALE. See {@link buildProductionManifest}: the runtime dependency set is the `dependencies`
+ * object exactly as the source manifest declares it, so the packaged version can never drift from the
+ * resolved one, while `scripts`, `devDependencies`, `overrides` and the two `//` rationale members are
+ * omitted because none of them describes the runtime.
+ */
+const PRODUCTION_MANIFEST_NAME = 'package.json';
+
+/**
+ * The directory the runtime dependency closure is staged into, inside the package.
+ *
+ * `node_modules` and nothing else: it is the ONE directory name Node's `require` algorithm walks for a
+ * bare specifier, so a package that spells it differently is a package whose externals do not resolve.
+ * The name is therefore a fact about the resolver rather than a choice this script makes.
+ */
+const STAGED_MODULES_DIRECTORY = 'node_modules';
 
 /**
  * The bundler target.
@@ -226,8 +283,11 @@ function ownedArtifacts() {
     const relativeDirectory = relative(sourceRoot, dirname(join(projectRoot, entryPoint)));
 
     return {
-      bundle: join(outputDir, relativeDirectory, bundleName),
-      map: join(outputDir, relativeDirectory, `${bundleName}.map`),
+      /* Where the bundler writes it, and the only place it is ever written. */
+      stagedBundle: join(stagingDir, relativeDirectory, bundleName),
+      stagedMap: join(stagingDir, relativeDirectory, `${bundleName}.map`),
+      /* Where it lands after the single promoting `rename`. Not written to at any point. */
+      packagedBundle: join(outputDir, relativeDirectory, bundleName),
       relocatedMap: join(sourcemapDir, relativeDirectory, `${bundleName}.map`),
       relocatedMapDirectory: join(sourcemapDir, relativeDirectory),
     };
@@ -235,7 +295,7 @@ function ownedArtifacts() {
 }
 
 /**
- * Removes exactly the artifacts this script owns, before anything is asserted or emitted.
+ * Removes every path this script owns, so nothing survives from an earlier run.
  *
  * ⭐ WHY THIS EXISTS, AND WHY IT IS THE FIRST THING THE BUILD DOES. Without it, a build that FAILS
  * leaves the previous run's bundles sitting in the packaging directory, where they are
@@ -245,21 +305,92 @@ function ownedArtifacts() {
  * this deliverable's entire acceptance criterion (AAP 0.8.3.10), a red build must leave nothing
  * behind that could be mistaken for one.
  *
- * ⚠️ IT IS A TARGETED REMOVAL, NOT A RECURSIVE DELETE, AND THAT DISTINCTION IS THE WHOLE DESIGN.
- * This file's own requirements say the build step "does not clean", and the reason given is sound:
- * a recursive delete inside a build script is a hazard in a repository whose other files must not be
- * touched. Both concerns are satisfied by removing an ENUMERATED set of paths — the bundles and maps
- * named by {@link ownedArtifacts}, every one of them computed from the literal entry list and every
- * one of them under `dist/` or `build-meta/`. Nothing is globbed, no directory is removed
- * recursively, and a file this script did not write is never a candidate for removal. `force: true`
- * only means "a path that is already absent is not an error", which is the normal case on a first
- * build.
+ * ⚠️ TWO OF THE THREE REMOVALS ARE NOW RECURSIVE, AND THAT IS A DELIBERATE, ARGUED CHANGE RATHER THAN
+ * A RELAXATION. The earlier form removed an enumerated list of FILES — six bundles, six maps, six
+ * relocated maps — and its own note said "no directory is removed recursively". Two things forced the
+ * change and both are consequences of the package being complete rather than of any loosening of the
+ * rule:
+ *
+ *   1. A DEPENDENCY TREE IS A DIRECTORY. {@link stageRuntimeClosure} writes a package per closure
+ *      member, each with its own files; there is no file list to enumerate that does not amount to
+ *      walking the tree. Enumerating only the CURRENT closure would also be wrong in the one way that
+ *      matters: a package that has since LEFT the closure would survive beside the artifacts, which is
+ *      the stale-output hazard this function exists to prevent, reproduced one level down.
+ *
+ *   2. THE PROMOTING `rename` REQUIRES AN ABSENT DESTINATION. `dist/` cannot be partially cleared and
+ *      then renamed onto; it has to not exist. That is the price of atomicity and it is worth paying.
+ *
+ * ⛔ WHAT DID NOT CHANGE IS THE PART THE RULE WAS ABOUT: NOTHING IS GLOBBED, AND NO PATH IS DISCOVERED.
+ * The two recursive removals name {@link outputDir} and {@link stagingDir} — two module constants, both
+ * inside the subtree, both git-ignored, and both written by nothing but this script and
+ * `tsc -p tsconfig.build.json`, whose `outDir` is the same `dist`. A file this script did not write is
+ * still never a candidate for removal, because no path outside those two directories is passed to `rm`
+ * except the six relocated maps, which remain an enumerated file list. `force: true` only means "a path
+ * that is already absent is not an error", which is the normal case on a first build.
+ *
+ * ⚠️ ONE CONSEQUENCE, STATED RATHER THAN DISCOVERED. `dist/` is now owned WHOLESALE by whichever emit
+ * ran last: a `tsc -p tsconfig.build.json` emit sitting there is removed by the next `npm run build`,
+ * where previously the two could coexist. That coexistence was never a feature — a packaging directory
+ * holding a bundle set AND a plain transpile of the same modules is precisely the ambiguity a reader
+ * cannot resolve from the directory listing — so taking exclusive ownership is the honest arrangement.
  */
 async function purgeOwnedArtifacts() {
+  /* ⚠️ EVERY PATH IS ATTEMPTED AND THE FAILURES ARE COLLECTED, RATHER THAN ABORTING ON THE FIRST. `rm`'s
+   * `force` suppresses only `ENOENT`, so any other error — a permission fault, a path that is a directory
+   * where a file was expected — would propagate out of the loop and leave EVERY REMAINING PATH untouched.
+   * On the purge step that is the worst possible failure mode: it is the one step whose whole job is that
+   * no previous run's package survives, and aborting half way through leaves exactly the stale, deployable
+   * artifacts it exists to remove. A code review found that on the earlier purge-based pipeline and proved
+   * it by fault injection; the finding is honoured here even though this pipeline's release-safety
+   * invariant is structural (`dist/` is created only by the promoting `rename`), because a partial purge
+   * would still break `rename`'s requirement that the destination be absent — and it would break it with a
+   * diagnostic about the wrong path. All failures are reported together, so one unremovable path cannot
+   * hide another. */
+  const failures = [];
+  const attempt = async (path, options) => {
+    try {
+      await rm(path, options);
+    } catch (error) {
+      failures.push({ path, error });
+    }
+  };
+
   for (const artifact of ownedArtifacts()) {
-    await rm(artifact.bundle, { force: true });
-    await rm(artifact.map, { force: true });
-    await rm(artifact.relocatedMap, { force: true });
+    await attempt(artifact.relocatedMap, { force: true });
+  }
+  await attempt(stagingDir, { force: true, recursive: true });
+  await attempt(outputDir, { force: true, recursive: true });
+
+  if (failures.length > 0) {
+    const account = failures
+      .map(({ path, error }) => `  ${relative(projectRoot, path)} — ${String(error)}`)
+      .join('\n');
+    throw new Error(
+      `[esbuild] the purge step could not remove ${failures.length} path(s), so a previous package may ` +
+        `still be present and the promoting rename cannot proceed:\n${account}`,
+    );
+  }
+}
+
+/**
+ * Removes whatever a failed run had produced, so a red build leaves nothing behind anywhere.
+ *
+ * ⚠️ IT IS A BELT RATHER THAN THE INVARIANT, AND THE DISTINCTION IS THE POINT. The invariant is
+ * structural: `dist/` is created by the single promoting `rename` and by nothing else, so a failure
+ * before that point leaves it absent whether or not this function runs. What this function adds is the
+ * removal of the STAGING tree, which a failed run may well have half-written — a matter of leaving no
+ * debris in the subtree rather than of release safety.
+ *
+ * ⛔ IT NEVER MASKS THE ORIGINAL FAILURE. The removal is wrapped so that a cleanup error is reported and
+ * then discarded: the caller re-throws whatever actually went wrong, because a diagnostic about a
+ * leftover directory replacing the diagnostic about the build is the worst possible trade.
+ */
+async function discardIncompleteOutputs() {
+  try {
+    await purgeOwnedArtifacts();
+  } catch (cleanupError) {
+    console.error('[esbuild] WARNING  the post-failure cleanup did not complete:');
+    console.error(cleanupError);
   }
 }
 
@@ -337,19 +468,433 @@ async function assertEntrySurface() {
 }
 
 /**
- * Moves each emitted map out of the packaged tree and into {@link sourcemapDir}.
+ * Moves each emitted map out of the staged package and into {@link sourcemapDir}.
  *
- * Run after a successful build and only then: a red build has no maps to move, and its outputs were
- * already removed before it started. The move mirrors the path `outbase` produced, so
- * `dist/handlers/router.js.map` becomes `build-meta/sourcemaps/handlers/router.js.map` and a reader
- * can find a map from its bundle's name without a lookup table. `rename` within the same subtree is
- * a metadata operation, so nothing is copied and no partially written map can be observed.
+ * Run after a successful emit and only then: a red build has no maps to move. The move mirrors the path
+ * `outbase` produced, so the staged `handlers/router.js.map` becomes
+ * `build-meta/sourcemaps/handlers/router.js.map` and a reader can find a map from its bundle's name
+ * without a lookup table. `rename` within the same subtree is a metadata operation, so nothing is
+ * copied and no partially written map can be observed.
+ *
+ * ⭐ IT NOW MOVES THEM OUT OF THE STAGING TREE RATHER THAN OUT OF `dist/`, which is the same intent
+ * expressed one step earlier: the maps leave before the package is promoted, so the promoted tree holds
+ * exactly one artifact per entry point, the production manifest and the dependency closure — and never a
+ * map. Removing this step would put several megabytes of debugging data into every deployment.
  */
 async function relocateSourcemaps() {
   for (const artifact of ownedArtifacts()) {
     await mkdir(artifact.relocatedMapDirectory, { recursive: true });
-    await rename(artifact.map, artifact.relocatedMap);
+    await rename(artifact.stagedMap, artifact.relocatedMap);
   }
+}
+
+/**
+ * Reads the subtree's own manifest, which is the single source of every packaged version fact.
+ *
+ * @returns the parsed package.json of the subtree root
+ */
+async function readProjectManifest() {
+  return JSON.parse(await readFile(join(projectRoot, 'package.json'), 'utf8'));
+}
+
+/**
+ * Derives the PRODUCTION manifest from the development one, field by field.
+ *
+ * ⭐ SIX FIELDS, EACH CARRIED FOR A STATED REASON, AND NOTHING ELSE — the omissions are the design.
+ * `scripts` describes how to develop the subtree and names binaries that are not in the package.
+ * `devDependencies` is eleven packages the runtime never loads, and copying them would invite an
+ * `npm install` in a deployment to fetch a compiler, a linter and a test runner. `overrides` is a
+ * dev-time security remediation for the Jest toolchain, documented in the source manifest, and it
+ * constrains a graph that does not exist here. The two `//` rationale members are prose for a reader of
+ * that file. A wholesale copy would have carried all of it.
+ *
+ * ⭐ `dependencies` IS COPIED AS THE OBJECT THE SOURCE MANIFEST DECLARES, WHICH IS WHAT MAKES THE
+ * PACKAGE EXACT. It is the same object `npm ci` resolved from the committed lockfile and the same object
+ * {@link collectRuntimeClosure} walks to decide what to stage, so the manifest a deployment reads, the
+ * tree beside it and the lockfile can never disagree — there is one statement of the runtime dependency
+ * set and three consumers of it, rather than three statements.
+ *
+ * ⛔ NO VERSION IS RELAXED, RANGED, WIDENED OR NORMALISED. `mysql2` is pinned exactly in the source
+ * manifest and appears here with the identical string, because a package that pinned one version and
+ * shipped a tree containing another would be worse than one that shipped no manifest at all.
+ *
+ * `private: true` is asserted rather than copied: the package is an artifact, never a publishable one,
+ * and asserting it here means an accidental `npm publish` from the package directory is refused.
+ *
+ * @param manifest the parsed source manifest
+ * @returns the production manifest object
+ * @throws {Error} when a required field is missing, so a manifest change cannot silently produce an
+ *   incomplete package
+ */
+function buildProductionManifest(manifest) {
+  const missing = ['name', 'version', 'type', 'engines', 'dependencies'].filter(
+    (field) => manifest[field] === undefined,
+  );
+  if (missing.length > 0) {
+    throw new Error(
+      `the subtree manifest is missing ${missing.join(', ')}, so no production manifest can be derived`,
+    );
+  }
+
+  return {
+    name: manifest.name,
+    version: manifest.version,
+    private: true,
+    type: manifest.type,
+    engines: manifest.engines,
+    dependencies: manifest.dependencies,
+  };
+}
+
+/**
+ * Writes the production manifest into the staged package.
+ *
+ * @param manifest the parsed source manifest
+ */
+async function writeProductionManifest(manifest) {
+  const production = buildProductionManifest(manifest);
+  await mkdir(stagingDir, { recursive: true });
+  await writeFile(
+    join(stagingDir, PRODUCTION_MANIFEST_NAME),
+    `${JSON.stringify(production, null, 2)}\n`,
+    'utf8',
+  );
+  const dependencyNames = Object.keys(production.dependencies);
+  console.log(
+    `[esbuild] manifest: ${PRODUCTION_MANIFEST_NAME} declaring ${dependencyNames.length} runtime dependency(ies): ${dependencyNames.join(', ')}`,
+  );
+}
+
+/**
+ * Finds an installed package's directory by walking the `node_modules` chain upward from `fromDirectory`.
+ *
+ * ⭐ IT REPRODUCES THE LOOKUP HALF OF NODE'S ALGORITHM AND NOTHING MORE, deliberately. What is needed
+ * here is which DIRECTORY holds a package, so that it can be copied whole; that is a directory walk. The
+ * FILE half — `exports` maps, conditions, extensions, index resolution — is not reimplemented anywhere
+ * in this file, because reimplementing it is how a packaging step comes to disagree with the runtime.
+ * {@link assertPackageRequireClosure} uses the REAL resolver for that half instead.
+ *
+ * @param name the package name, scoped or plain
+ * @param fromDirectory the directory to begin the upward walk from
+ * @returns the package's directory, or `undefined` when no ancestor holds it
+ */
+async function resolvePackageDirectory(name, fromDirectory) {
+  let directory = fromDirectory;
+
+  for (;;) {
+    const candidate = join(directory, STAGED_MODULES_DIRECTORY, name);
+    try {
+      const manifestStat = await stat(join(candidate, 'package.json'));
+      if (manifestStat.isFile()) {
+        return candidate;
+      }
+    } catch {
+      /* Not here; keep walking. An unreadable candidate is treated as absent, exactly as the
+       * resolver treats it. */
+    }
+
+    const parent = dirname(directory);
+    if (parent === directory) {
+      return undefined;
+    }
+    directory = parent;
+  }
+}
+
+/**
+ * Collects the TRANSITIVE runtime dependency closure of the declared production dependencies.
+ *
+ * ⭐ THE CLOSURE, NOT THE DIRECT SET, AND THE DIFFERENCE IS THE WHOLE POINT. Staging `mysql2` alone
+ * produces a package that fails at cold start one level deeper: the driver's own `require('denque')`
+ * has nothing to resolve. The walk therefore follows each package's own `dependencies` until the set
+ * closes — measured at eleven packages for `mysql2` 3.23.2 — and {@link assertPackageRequireClosure}
+ * then proves the result closed rather than assuming it.
+ *
+ * ⛔ `devDependencies`, `peerDependencies` AND `optionalDependencies` ARE NOT FOLLOWED, each for its own
+ * reason. Development dependencies are by definition absent at run time. Peer dependencies are the
+ * HOST's to supply and following them would pull a package the host may deliberately not have. Optional
+ * dependencies are optional precisely because the package works without them; a missing optional
+ * dependency is not a broken package, and the closure assertion is the check that decides whether
+ * anything is actually missing — so a genuinely required module cannot slip through this omission
+ * unnoticed.
+ *
+ * ⚠️ A NAME RESOLVING TO TWO DIFFERENT DIRECTORIES IS A HARD FAILURE, NOT A SILENT PICK. npm nests a
+ * package when two dependents need incompatible versions, and a FLAT staged tree cannot represent that:
+ * one copy would overwrite the other and the package would ship a version some dependent cannot use.
+ * Rather than choose, or invent a nesting scheme for a case this dependency graph does not currently
+ * produce, the build stops and names both directories. The measured graph is conflict-free, so this
+ * path is unreached today and is written for the day it is not.
+ *
+ * @param manifest the parsed source manifest
+ * @returns a map from package name to the source directory holding it
+ * @throws {Error} when a declared dependency is not installed, or a name resolves two ways
+ */
+async function collectRuntimeClosure(manifest) {
+  const closure = new Map();
+  const problems = [];
+  const pending = Object.keys(manifest.dependencies).map((name) => ({
+    name,
+    fromDirectory: projectRoot,
+    requiredBy: 'package.json',
+  }));
+
+  while (pending.length > 0) {
+    const request = pending.shift();
+    const directory = await resolvePackageDirectory(request.name, request.fromDirectory);
+
+    if (directory === undefined) {
+      problems.push(
+        `runtime dependency "${request.name}" (required by ${request.requiredBy}) is not installed — ` +
+          'run `npm ci` before building',
+      );
+      continue;
+    }
+
+    const already = closure.get(request.name);
+    if (already !== undefined) {
+      if (already !== directory) {
+        problems.push(
+          `runtime dependency "${request.name}" resolves two ways — ${relative(projectRoot, already)} ` +
+            `and ${relative(projectRoot, directory)} — which a flat staged tree cannot represent`,
+        );
+      }
+      continue;
+    }
+
+    closure.set(request.name, directory);
+
+    const dependencyManifest = JSON.parse(await readFile(join(directory, 'package.json'), 'utf8'));
+    for (const dependencyName of Object.keys(dependencyManifest.dependencies ?? {})) {
+      pending.push({
+        name: dependencyName,
+        fromDirectory: directory,
+        requiredBy: `${request.name}/package.json`,
+      });
+    }
+  }
+
+  if (problems.length > 0) {
+    const detail = problems.map((problem) => `  - ${problem}`).join('\n');
+    throw new Error(`the runtime dependency closure could not be resolved:\n${detail}`);
+  }
+
+  return closure;
+}
+
+/**
+ * Copies one directory tree, excluding any nested `node_modules`.
+ *
+ * ⭐ THE EXCLUSION IS SAFE BECAUSE THE CLOSURE WALK ALREADY PROVED THE GRAPH FLAT. A nested
+ * `node_modules` exists only where npm had to nest a conflicting version, and
+ * {@link collectRuntimeClosure} fails loudly on exactly that condition — so if this line is reached, no
+ * dependent needs a nested copy and carrying one would duplicate a package the staged tree already
+ * holds at the top level. Skipping it is what keeps the staged tree flat and its size the closure's own.
+ *
+ * ⛔ WRITTEN OUT RATHER THAN DELEGATED TO `fs.cp`. That API is still flagged experimental on the pinned
+ * Node line, and an experimental warning printed on every build is noise a reader learns to ignore —
+ * which is the last thing a build step whose stderr also carries the runtime-lifecycle notice can
+ * afford. The walk below uses only long-stable primitives.
+ *
+ * Symbolic links are copied as the files they point at rather than as links, because a link into the
+ * development tree would resolve to nothing once the package is deployed.
+ *
+ * @param from the source directory
+ * @param to the destination directory
+ */
+async function copyDirectory(from, to) {
+  await mkdir(to, { recursive: true });
+
+  for (const entry of await readdir(from, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (entry.name === STAGED_MODULES_DIRECTORY) {
+        continue;
+      }
+      await copyDirectory(join(from, entry.name), join(to, entry.name));
+      continue;
+    }
+
+    /* `isFile()` is false for a symlink, so following it explicitly is what copies the target's bytes:
+     * `copyFile` dereferences, and the entry test is the only place the distinction is visible. */
+    if (entry.isFile() || entry.isSymbolicLink()) {
+      await copyFile(join(from, entry.name), join(to, entry.name));
+    }
+  }
+}
+
+/**
+ * Stages the runtime dependency closure into the package.
+ *
+ * ⚠️ THE PACKAGE CONTAINS THE TREE; THE BUNDLE STILL DOES NOT. Marking `mysql2` external is unchanged
+ * and deliberate — the emitted artifacts stay thin CommonJS files that `require` the driver rather than
+ * inlining it, which is the form the build was proved in and the form AAP 0.3.2 describes. What changes
+ * is that the thing they require is now BESIDE them. Those are different decisions about different
+ * artifacts, and conflating them is what produced a package that could not start.
+ *
+ * A DEPLOYMENT MAY STILL PREFER A LAYER, and nothing here prevents it: `node_modules/` inside the
+ * package and a layer contributing the same tree are alternative placements of the identical closure,
+ * and the manifest written beside it states what that closure is either way. No layer is authored here,
+ * because a layer is an infrastructure artifact and infrastructure as code is out of scope (AAP 0.2.2.5).
+ *
+ * @param closure the map {@link collectRuntimeClosure} produced
+ */
+async function stageRuntimeClosure(closure) {
+  const stagedModules = join(stagingDir, STAGED_MODULES_DIRECTORY);
+  await mkdir(stagedModules, { recursive: true });
+
+  for (const [name, sourceDirectory] of closure) {
+    await copyDirectory(sourceDirectory, join(stagedModules, name));
+  }
+
+  console.log(
+    `[esbuild] staged:   ${closure.size} runtime package(s) into ${STAGED_MODULES_DIRECTORY}/: ${[...closure.keys()].sort().join(', ')}`,
+  );
+}
+
+/** Whether `candidate` is inside `directory`, by path containment rather than by string prefix. */
+function isInside(directory, candidate) {
+  const relativePath = relative(directory, candidate);
+
+  return (
+    relativePath !== '' && !relativePath.startsWith('..') && !relativePath.startsWith(`${sep}`)
+  );
+}
+
+/**
+ * Every bare `require()` specifier appearing in `text`, de-duplicated.
+ *
+ * Relative specifiers are excluded because they resolve within the artifact, and built-ins are excluded
+ * because the runtime supplies them — `node:crypto` and `node:net` are the two the measured bundles use,
+ * and both arrive through the `node:` prefix that {@link builtinModules} also covers unprefixed.
+ *
+ * @param text the artifact's source
+ * @returns the bare specifiers, in first-seen order
+ */
+function bareRequireSpecifiers(text) {
+  const specifiers = [];
+  const builtins = new Set(builtinModules);
+
+  for (const match of text.matchAll(/require\(\s*["']([^"']+)["']\s*\)/g)) {
+    const specifier = match[1];
+    if (specifier.startsWith('.') || specifier.startsWith('/')) {
+      continue;
+    }
+    if (specifier.startsWith('node:') || builtins.has(specifier)) {
+      continue;
+    }
+    if (!specifiers.includes(specifier)) {
+      specifiers.push(specifier);
+    }
+  }
+
+  return specifiers;
+}
+
+/**
+ * Fails the build unless every external the FINAL PACKAGE requires resolves from inside that package.
+ *
+ * ⭐ THIS IS THE CHECK A QA PASS ASKED FOR, AND THE "FINAL PACKAGE" PART IS THE WHOLE OF IT. Reading the
+ * TypeScript sources for imports would have proved nothing here: the sources were always correct, and the
+ * defect was that the emitted artifact's `require("mysql2/promise")` had nothing to resolve to. So the
+ * subject is the EMITTED TEXT of each artifact, scanned for bare specifiers, and the question asked of
+ * each one is answered by Node's OWN resolver rather than by a reimplementation of it.
+ *
+ * ⚠️ RESOLUTION ALONE WOULD PASS EVEN WITH THE PACKAGE EMPTY, WHICH IS WHY CONTAINMENT IS ASSERTED
+ * TOO — and this is the subtlety the check turns on. `require`'s lookup walks `node_modules` UPWARD, so a
+ * resolver rooted at the staged artifact finds the subtree's own development `node_modules` as a
+ * fallback: `mysql2/promise` resolves happily whether or not a single file was staged. The check
+ * therefore resolves the specifier and then requires the resolved FILE to lie inside the staged
+ * `node_modules`. Delete the staging step and every specifier still resolves — to a path outside the
+ * package — and this assertion is what turns that into a red build.
+ *
+ * ⭐ THE CLOSURE IS CHECKED AS WELL AS THE ENTRY REQUIRES. Each staged package's own declared
+ * `dependencies` must be present in the staged tree, so a closure that is one level short fails here
+ * rather than at a deployment's cold start. Optional and peer dependencies are deliberately not followed
+ * when the closure is COLLECTED; this is the check that would notice if that omission ever mattered.
+ *
+ * Every problem found is collected and reported together: a package missing three dependencies should
+ * name three, not stop at the first.
+ *
+ * @param closure the map {@link collectRuntimeClosure} produced
+ * @throws {Error} when any specifier resolves outside the package, or fails to resolve at all
+ */
+async function assertPackageRequireClosure(closure) {
+  const stagedModules = join(stagingDir, STAGED_MODULES_DIRECTORY);
+  const problems = [];
+  let checkedSpecifiers = 0;
+
+  for (const artifact of ownedArtifacts()) {
+    const text = await readFile(artifact.stagedBundle, 'utf8');
+    const specifiers = bareRequireSpecifiers(text);
+    const artifactName = relative(stagingDir, artifact.stagedBundle);
+    const requireFromArtifact = createRequire(artifact.stagedBundle);
+
+    for (const specifier of specifiers) {
+      checkedSpecifiers += 1;
+      let resolved;
+      try {
+        resolved = requireFromArtifact.resolve(specifier);
+      } catch (resolutionError) {
+        problems.push(
+          `${artifactName} requires "${specifier}", which does not resolve at all: ${resolutionError.message}`,
+        );
+        continue;
+      }
+
+      if (!isInside(stagedModules, resolved)) {
+        problems.push(
+          `${artifactName} requires "${specifier}", which resolves OUTSIDE the package, to ` +
+            `${relative(projectRoot, resolved)} — the package must carry it`,
+        );
+      }
+    }
+  }
+
+  for (const [name, sourceDirectory] of closure) {
+    const dependencyManifest = JSON.parse(
+      await readFile(join(sourceDirectory, 'package.json'), 'utf8'),
+    );
+    for (const dependencyName of Object.keys(dependencyManifest.dependencies ?? {})) {
+      try {
+        const dependencyStat = await stat(join(stagedModules, dependencyName, 'package.json'));
+        if (!dependencyStat.isFile()) {
+          problems.push(
+            `staged package "${name}" needs "${dependencyName}", which is not a package`,
+          );
+        }
+      } catch {
+        problems.push(
+          `staged package "${name}" needs "${dependencyName}", which is absent from the package`,
+        );
+      }
+    }
+  }
+
+  if (problems.length > 0) {
+    const detail = problems.map((problem) => `  - ${problem}`).join('\n');
+    throw new Error(`the packaged require closure is incomplete:\n${detail}`);
+  }
+
+  console.log(
+    `[esbuild] closure:  ${checkedSpecifiers} external require(s) across ${ENTRY_POINTS.length} artifact(s) resolve inside the package`,
+  );
+}
+
+/**
+ * Promotes the staged package to {@link outputDir}, in ONE operation.
+ *
+ * ⭐ THE LAST STEP, AND THE ONLY WRITER OF `dist/`. Everything before it wrote into the staging tree, so
+ * this single `rename` is the instant at which a package exists — there is no window in which `dist/`
+ * holds part of one. A failure at any earlier step leaves `dist/` absent because nothing had touched it
+ * yet, which is what makes the atomicity structural rather than dependent on a cleanup handler. Moving
+ * this call earlier, or replacing it with a per-file copy, reintroduces exactly the window a QA pass
+ * found.
+ *
+ * `rename` requires an absent destination, which {@link purgeOwnedArtifacts} guarantees as the first
+ * step; both paths are inside the subtree and therefore on one filesystem, so this is a metadata
+ * operation and nothing is copied.
+ */
+async function promotePackage() {
+  await rename(stagingDir, outputDir);
 }
 
 /**
@@ -427,10 +972,13 @@ function announceRuntimeLifecycleGate() {
 }
 
 /**
- * Bundles the six entry points into `dist/`.
+ * Bundles the six entry points into the STAGING tree.
  *
  * The option set below is the whole configuration, and it is exactly the invocation the plan
- * specifies: bundle, platform node, target node20, format cjs, with the driver external.
+ * specifies: bundle, platform node, target node20, format cjs, with the driver external. The one
+ * value a QA pass changed is `outdir`: it names {@link stagingDir} rather than {@link outputDir}, so
+ * this step — the one that writes 9 MB of output — cannot leave a partial package in `dist/`. That is
+ * the single line the atomicity argument rests on, and reverting it reintroduces the window.
  *
  * ⛔ WHAT IS DELIBERATELY ABSENT MATTERS AS MUCH AS WHAT IS PRESENT.
  *
@@ -492,8 +1040,15 @@ function announceRuntimeLifecycleGate() {
  *   third-party import in this file, so `npm run build` needs nothing beyond the pinned dependency
  *   set.
  *
- *   NO archive step and no manifest. This script bundles and packages, and stops there. It does not
- *   zip, version, tag, upload, deploy, watch or serve.
+ *   NO ARCHIVE STEP. This script bundles and packages, and stops there. It does not zip, version, tag,
+ *   upload, deploy, watch or serve.
+ *
+ *   ⚠️ IT DOES NOW WRITE A MANIFEST, AND AN EARLIER FORM OF THIS NOTE SAID IT DID NOT. "No archive step
+ *   and no manifest" was true and was also the defect a QA pass reported: the artifacts require
+ *   `mysql2/promise` at run time, so a package with no manifest and no dependency tree beside them
+ *   could not resolve its own external and would fail at cold start. {@link writeProductionManifest}
+ *   and {@link stageRuntimeClosure} close that, and {@link assertPackageRequireClosure} proves it
+ *   closed. The archive half of the claim stands: nothing here zips or uploads anything.
  *
  *   ⚠️ THE ONE THING IT DOES BEYOND BUNDLING is remove its own previous outputs first, and the
  *   qualification "its own" is the whole of the argument. An earlier revision omitted this on the
@@ -518,36 +1073,12 @@ function announceRuntimeLifecycleGate() {
  * measurements of its own output, not budgets, targets or thresholds asserted by this port — no such
  * figure is set anywhere in this file, and none is checked against.
  */
-async function bundle() {
-  announceRuntimeLifecycleGate();
-
-  console.log(
-    `[esbuild] bundling ${ENTRY_POINTS.length} entry point(s): bundle platform=node target=${NODE_TARGET} format=cjs`,
-  );
-  console.log(`[esbuild] external: ${EXTERNAL_PACKAGES.join(', ')}`);
-  console.log(`[esbuild] outdir:   ${relative(projectRoot, outputDir)}`);
-  console.log(`[esbuild] maps:     ${relative(projectRoot, sourcemapDir)}`);
-  for (const entryPoint of ENTRY_POINTS) {
-    console.log(`[esbuild] entry:    ${entryPoint}`);
-  }
-
-  /*
-   * Order matters, and it is the order the two release-safety properties require.
-   *
-   * The purge runs FIRST so that no outcome of this run — success, assertion failure or bundler
-   * failure — can leave a previous run's artifact in the packaging directory. The assertion runs
-   * SECOND so that a build which cannot produce its promised artifact set says so in the vocabulary
-   * of the entry list, before the bundler is asked to resolve anything. Only then is anything
-   * emitted, and only after a successful emit are the maps moved out of the packaged tree.
-   */
-  await purgeOwnedArtifacts();
-  await assertEntrySurface();
-
+async function emitBundles() {
   await build({
     // Resolved against the subtree root rather than the current working directory, so the entry
     // list means the same thing regardless of where `node` was invoked from.
     entryPoints: ENTRY_POINTS.map((entryPoint) => join(projectRoot, entryPoint)),
-    outdir: outputDir,
+    outdir: stagingDir,
     outbase: sourceRoot,
     bundle: true,
     platform: 'node',
@@ -557,11 +1088,105 @@ async function bundle() {
     sourcemap: 'external',
     logLevel: 'info',
   });
+}
 
-  await relocateSourcemaps();
+/**
+ * The pipeline, as an ordered list of named steps.
+ *
+ * ⭐ WHY IT IS DATA RATHER THAN A SEQUENCE OF STATEMENTS. The order below IS the release-safety
+ * argument, so it is worth being able to read it in one place and to assert it from outside. Each step
+ * is named, the names are printed as the build runs, and {@link runBuild} executes exactly this array —
+ * so there is no second, implicit ordering anywhere in the file that could drift from this one.
+ *
+ * THE ORDER, AND WHY EACH POSITION IS WHERE IT IS:
+ *
+ *   1. `purge` FIRST, so no outcome of this run — success, assertion failure or bundler failure — can
+ *      leave a previous run's package in place. It is also what makes `promote`'s `rename` possible,
+ *      since that operation requires an absent destination.
+ *   2. `assert-entry-surface` SECOND, so a build that cannot produce its promised artifact set says so
+ *      in the vocabulary of the entry list, before the bundler is asked to resolve anything.
+ *   3. `emit` THIRD, into the STAGING tree. Nothing before this point wrote a byte of output.
+ *   4. `relocate-sourcemaps` next, so the maps leave before the package is assembled and the promoted
+ *      tree never contains one.
+ *   5. `write-manifest` and 6. `stage-dependencies`, which are what make the package resolvable: the
+ *      artifacts require `mysql2/promise` at run time, and both the declaration and the tree have to be
+ *      beside them.
+ *   7. `assert-require-closure` AFTER staging and BEFORE promotion, which is the only position at which
+ *      it can check the thing it is about. Earlier there is nothing to check; later the package has
+ *      already been published into `dist/`.
+ *   8. `promote` LAST, the single operation that creates `dist/`.
+ *
+ * ⛔ NO STEP IS CONDITIONAL, SKIPPABLE, RETRIED OR REORDERED AT RUN TIME, and there is no flag, option
+ * or environment variable that selects a subset. A build either performs all eight or fails.
+ */
+export const BUILD_STEPS = Object.freeze([
+  { name: 'purge', run: purgeOwnedArtifacts },
+  { name: 'assert-entry-surface', run: assertEntrySurface },
+  { name: 'emit', run: emitBundles },
+  { name: 'relocate-sourcemaps', run: relocateSourcemaps },
+  {
+    name: 'write-manifest',
+    run: async () => {
+      await writeProductionManifest(await readProjectManifest());
+    },
+  },
+  {
+    name: 'stage-dependencies',
+    run: async () => {
+      await stageRuntimeClosure(await collectRuntimeClosure(await readProjectManifest()));
+    },
+  },
+  {
+    name: 'assert-require-closure',
+    run: async () => {
+      await assertPackageRequireClosure(await collectRuntimeClosure(await readProjectManifest()));
+    },
+  },
+  { name: 'promote', run: promotePackage },
+]);
+
+/**
+ * Runs the pipeline, and leaves nothing behind if any step fails.
+ *
+ * ⚠️ `steps` IS A PARAMETER WITH A DEFAULT, AND IT IS NOT A FEATURE FLAG. The CLI path below calls this
+ * with no argument, so a build always runs {@link BUILD_STEPS} entire; nothing reads an environment
+ * variable, a command-line switch or a configuration file to decide what to run, and there is no way to
+ * ask a build for a subset. What the parameter buys is that the FAILURE PATH can be exercised by a test
+ * that substitutes one step for a throwing one — proving that this executor and this cleanup handler,
+ * the very ones the CLI uses, leave `dist/` absent. The alternative was a fault-injection switch inside
+ * the shipped path, which is strictly worse: it would add a behaviour the build does not otherwise have.
+ *
+ * @param steps the ordered steps to run; defaults to the whole pipeline
+ * @throws whatever a step threw, after the cleanup has run
+ */
+export async function runBuild(steps = BUILD_STEPS) {
+  announceRuntimeLifecycleGate();
 
   console.log(
-    `[esbuild] wrote ${ENTRY_POINTS.length} bundle(s) to ${relative(projectRoot, outputDir)}`,
+    `[esbuild] bundling ${ENTRY_POINTS.length} entry point(s): bundle platform=node target=${NODE_TARGET} format=cjs`,
+  );
+  console.log(`[esbuild] external: ${EXTERNAL_PACKAGES.join(', ')}`);
+  console.log(`[esbuild] staging:  ${relative(projectRoot, stagingDir)}`);
+  console.log(`[esbuild] package:  ${relative(projectRoot, outputDir)}`);
+  console.log(`[esbuild] maps:     ${relative(projectRoot, sourcemapDir)}`);
+  for (const entryPoint of ENTRY_POINTS) {
+    console.log(`[esbuild] entry:    ${entryPoint}`);
+  }
+
+  try {
+    for (const step of steps) {
+      console.log(`[esbuild] step:     ${step.name}`);
+      await step.run();
+    }
+  } catch (error) {
+    /* The invariant is structural — `dist/` is written only by `promote` — so this removes the staging
+     * tree rather than rescuing the package. It never masks the failure it is cleaning up after. */
+    await discardIncompleteOutputs();
+    throw error;
+  }
+
+  console.log(
+    `[esbuild] wrote ${ENTRY_POINTS.length} bundle(s), a production manifest and the runtime dependency closure to ${relative(projectRoot, outputDir)}`,
   );
   console.log('[esbuild] build complete');
 }
@@ -575,16 +1200,34 @@ async function bundle() {
  * above; the error is re-reported here so the reason is adjacent to the failure even when the
  * summary has scrolled away.
  *
+ * ⭐ THE MESSAGE IS NOW TRUE ON EVERY FAILURE PATH, AND IT WAS NOT BEFORE. A QA pass found that it
+ * claimed "no deployable artifact was produced" while six apparently deployable bundles sat in `dist/`,
+ * because the emit had succeeded and a later step had failed. With the package assembled in a staging
+ * tree and `dist/` created by one final `rename`, the claim is a statement about the code's structure
+ * rather than a hope about which handler ran.
+ *
+ * ⛔ THE AUTO-RUN IS GUARDED, WHICH IS WHAT LETS THE FILE BE IMPORTED WITHOUT BUILDING. `runBuild` is
+ * exported so the failure path can be exercised from outside, and an unguarded call here would mean
+ * merely importing this module kicked off a build — including from a test process. The guard compares
+ * the script the process was launched with against this module's own path, which is the standard ESM
+ * spelling of "am I the entry point"; it introduces no flag and changes nothing about `npm run build`.
+ *
  * `process.exitCode` is set rather than calling `process.exit`, so Node exits naturally once stdio
  * has flushed and no diagnostic is truncated on the way out. This is the only interaction with the
- * process object anywhere in this file: nothing here reads `process.env`, because environment
- * variables configure the running service — through src/config/env.ts, the single file permitted to
- * read them — and configure nothing about how it is packaged. `npm run build` therefore succeeds
- * with no variable set, no .env file present, and no database, datasource or credential of any kind
- * available.
+ * process object anywhere in this file beyond that guard: nothing here reads `process.env`, because
+ * environment variables configure the running service — through src/config/env.ts, the single file
+ * permitted to read them — and configure nothing about how it is packaged. `npm run build` therefore
+ * succeeds with no variable set, no .env file present, and no database, datasource or credential of any
+ * kind available.
  */
-bundle().catch((error) => {
-  console.error('[esbuild] build FAILED — no deployable artifact was produced');
-  console.error(error);
-  process.exitCode = 1;
-});
+const launchedScript = process.argv[1];
+const invokedAsScript =
+  launchedScript !== undefined && resolve(launchedScript) === fileURLToPath(import.meta.url);
+
+if (invokedAsScript) {
+  runBuild().catch((error) => {
+    console.error('[esbuild] build FAILED — no deployable artifact was produced');
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

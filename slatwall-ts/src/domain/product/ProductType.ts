@@ -273,6 +273,29 @@ export interface ProductTypeRootResolver {
 }
 
 /**
+ * Reads the `parentProductTypeID` a product type was hydrated with.
+ *
+ * ⭐ WHY AN INJECTED READER RATHER THAN A FIELD — finding F10. `rowMappers.ts` RULE 3b deliberately
+ * leaves the `parentProductType` ASSOCIATION SLOT ABSENT on a hydrated product type, because attaching
+ * an identifier-only parent would empty the Google feed's `g:product_type` (the simple representation
+ * walks the parent chain and would render a parent that carries no name). The row's foreign key is
+ * preserved BESIDE the instance instead. So a caller that needs the parent has to ask for the key, and
+ * this is the shape of that question.
+ *
+ * The precedent is `DefaultSkuIdReader` in `src/domain/sku/Sku.ts`, declared for the mirror-image
+ * problem: a value the entity cannot expose arrives as an explicit function the composition root
+ * supplies. Neither declaration imports the other's module.
+ *
+ * ⚠️ ANSWERS `undefined` FOR A GENUINE ROOT, AND FOR A TRANSIENT ENTITY. A product type this port never
+ * hydrated — one built by a caller, or one just constructed — has no preserved key, which is
+ * indistinguishable from a root and is correctly treated as one: a root has no parent to load.
+ *
+ * @param productType - Any product type instance.
+ * @returns The preserved parent identifier, or `undefined` when there is none.
+ */
+export type ParentProductTypeIdReader = (productType: object) => string | undefined;
+
+/**
  * One attribute-set assignment, as returned by the D21 stub — DELIBERATELY OPAQUE.
  *
  * S9 — INVENT NOTHING. `AttributeSetAssignment` is not a shape that can be read from anywhere: the

@@ -107,22 +107,25 @@ export type UniqueValueProbe = (tableName: string, value: string) => Promise<boo
  * database-side unique constraint the adapter reports, bounds the work without editing the ported
  * member or fabricating a suffix the legacy never produced.
  *
- * ⭐ AND THAT IS EXACTLY WHERE ONE NOW LIVES — SEC-14, REVIEW FINDING F5 (CWE-400). The sentence above
- * was written before the finding was raised and it is what the resolution followed, literally. Every
- * word of this note still holds, because NOTHING IN THIS FILE CHANGED to accommodate it:
+ * ⛔ AND NO BOUND LIVES THERE EITHER, BECAUSE THE ONE THAT DID IS WITHDRAWN. A revision added a sibling
+ * leaf — `urlTitleProbeBudget.ts` — declaring an OPTIONAL probe ceiling and wrapping the caller's probe in
+ * a per-derivation counter, applied by `../services/BrandService.ts` and `../services/ProductService.ts`
+ * when a deployment stated a figure. The file is deleted and both wirings are gone.
  *
- *   • `../util/urlTitleProbeBudget.ts` declares an OPTIONAL `UrlTitleProbeBudget` and wraps the
- *     caller's probe in a per-derivation counter. It is a sibling leaf; this file does not import it,
- *     does not know it exists, and still has NO IMPORTS AT ALL (AAP §0.7.3 S4).
- *   • The refusal arrives through the channel this member's own contract already declares — "whatever
- *     the probe rejects with propagates unchanged" — so `createUniqueURLTitle` keeps its three
- *     parameters, its unbounded `while (!unique)`, its pre-incremented `-2` suffix and its
- *     always-a-string return. There is still no attempt counter, no elapsed-time check, no pause
- *     between probes and no fabricated fallback title anywhere below.
- *   • The budget has NO DEFAULT. A composition root that states nothing wraps nothing, and the loop
- *     probes for as long as `:L64` would — which is why authority 3 above (AAP §0.7.3 S9, invent
- *     nothing) is satisfied rather than circumvented: the invented figure was never the bound, it was
- *     REQUIRING one, and nothing requires one.
+ * The reason is not the one that removed the FIRST bound. An optional collaborator genuinely obliges
+ * nobody to invent a figure, so authority 3 above was satisfied. What it fails is the count:
+ * AAP §0.6.7.7 declares exactly ONE departure from behavioural preservation in this port (D18, the
+ * importer's parameterised SQL), a configurable ceiling is a capability the source does not describe
+ * (AAP §0.7.3 S9, IR-12), and a refused derivation is an outcome the legacy would have produced —
+ * AAP §0.8.2 Guideline 4 admits no proportionality test.
+ *
+ * ⚠️ SO THE EXPOSURE BELOW IS FLAGGED AND CARRIED. One database read per collision, indefinitely
+ * (CWE-400), on a value a caller supplies. Where a bound would legitimately belong is the paragraph
+ * above this one, and it would arrive as a stated requirement with its own authority — not inside a
+ * migration. Nothing in this file changed in either direction: `createUniqueURLTitle` still has NO
+ * IMPORTS AT ALL (AAP §0.7.3 S4), keeps its three parameters, its unbounded `while (!unique)`, its
+ * pre-incremented `-2` suffix and its always-a-string return, and there is still no attempt counter, no
+ * elapsed-time check, no pause between probes and no fabricated fallback title anywhere below.
  *   • Final arbitration is still the database's, as the sentence above says. Findings F6 and F8 put
  *     that in place: a locking uniqueness read in `../adapters/mysql/UniquePropertyChecker.ts` when it
  *     is transaction-scoped, and MySQL error 1062 translated to `UniqueConstraintViolationError` in
@@ -207,9 +210,8 @@ export async function createUniqueURLTitle(
   let unique = await isValueAvailable(tableName, returnTitle);
 
   // `DataService.cfc:L64-L68`, reproduced with NO ceiling — see the unbounded-loop note above the
-  // probe type for why the bound that briefly lived HERE was removed rather than kept, and for where a
-  // bound legitimately lives instead: wrapped around the injected probe by the optional
-  // `./urlTitleProbeBudget` (review finding F5). This loop is unchanged by that and cannot see it.
+  // probe type for why the bound that briefly lived HERE was removed rather than kept, for the later
+  // probe-wrapping bound that was also withdrawn, and for where a bound would legitimately live.
   //
   // The body is the legacy's three statements in the legacy's order: pre-increment the counter
   // [`L65`], build the suffixed candidate [`L66`], probe it [`L67`]. Nothing else belongs in here.

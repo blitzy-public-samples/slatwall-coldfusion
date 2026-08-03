@@ -74,6 +74,12 @@ import {
   MySqlSkuRepository,
 } from '../../src/adapters/mysql/MySqlSkuRepository';
 import { assertColumnName, assertTableName } from '../../src/adapters/mysql/QueryRunner';
+import { attachSkuOptions } from '../../src/adapters/mysql/SmartListQueryBuilder';
+import {
+  forgetHydratedSkuSubscriptionTermID,
+  mapSkuRow,
+  markSkuOwnedLinkLoaded,
+} from '../../src/adapters/mysql/rowMappers';
 import { SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE } from '../../src/domain/BaseProductType';
 import { Product } from '../../src/domain/product/Product';
 import { SKU_UNSAVED_ID_VALUE } from '../../src/domain/sku/Sku';
@@ -104,6 +110,26 @@ import type {
   SqlExecutorOutcome,
   SqlExecutorResponder,
 } from '../support/inMemoryRepositories';
+import { DomainError, UniqueConstraintViolationError } from '../../src/errors/DomainError';
+import {
+  MYSQL_DUPLICATE_ENTRY_ERRNO,
+  QueryRunner,
+  describeDuplicateEntryConstraint,
+  isDuplicateEntryFailure,
+} from '../../src/adapters/mysql/QueryRunner';
+import { UnitOfWork } from '../../src/adapters/mysql/UnitOfWork';
+import { createUnitOfWorkDouble } from '../support/inMemoryRepositories';
+import type {
+  BoundParameterValue,
+  StatementPool,
+  TransactionalStatementRunner,
+} from '../../src/adapters/mysql/QueryRunner';
+import {
+  assertSortOrderAssigned,
+  type SortOrderSeedTarget,
+} from '../../src/adapters/mysql/UnitOfWork';
+import { DataIntegrityError } from '../../src/errors/DomainError';
+import type { MySqlRow } from '../../src/adapters/mysql/rowMappers';
 
 /* ================================================================================================
  * IDENTIFIERS AND SHARED FIXTURES
@@ -145,6 +171,11 @@ const BENEFIT_REFERENCE = 'ffff0000000000000000000000000001';
 /* Distinct from BENEFIT_REFERENCE on purpose: both benefit collections write a column of the SAME name,
  * so only differing VALUES can reveal a crossed write. See the DATA-04 case that says so. */
 const RENEWAL_BENEFIT_REFERENCE = 'ffff0000000000000000000000000002';
+
+/* Two more out-of-scope references, for the F7 cases that pin the preserved subscription-term key.
+ * `SubscriptionTerm` is an excluded family too, so these are identifier values and nothing else. */
+const SUBSCRIPTION_TERM_REFERENCE = 'aaab0000000000000000000000000001';
+const SECOND_SUBSCRIPTION_TERM_REFERENCE = 'aaab0000000000000000000000000002';
 
 /**
  * A value chosen to be hostile to string concatenation: a single quote, a statement terminator and a
@@ -285,6 +316,15 @@ interface HarnessOptions {
 
 interface Harness {
   readonly repository: MySqlSkuRepository;
+  /**
+   * The very executor the repository holds.
+   *
+   * Exposed for the F7 round-trip case, which calls the PRODUCTION option loader against it before the
+   * write. One executor for both halves is the point rather than a convenience: `attachSkuOptions` takes
+   * a `SqlExecutor` precisely so the read shares the caller's transaction (M6), and handing it a second
+   * double would make the case pass while proving nothing about that sharing.
+   */
+  readonly executor: SkuStatementExecutor;
   /** Every statement in issue order, with its bound parameters. A live view of the double's state. */
   readonly calls: readonly SqlExecutorCall[];
   /** Every product-type identifier the base-product-type walk asked for, in order. */
@@ -317,6 +357,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
   const resolverDouble = createProductTypeRootResolverDouble();
 
   return {
+    executor,
     calls: executorDouble.calls,
     enqueue: executorDouble.enqueue,
     requestedProductTypeIds: resolverDouble.requestedProductTypeIds,
@@ -1225,9 +1266,9 @@ describe('NET-NEW transactionExists — a call with neither scope is rejected, f
   });
 });
 
-describe('NET-NEW transactionExists — D23, the caller-order crossing', () => {
+describe('NET-NEW transactionExists — the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287], the caller-order crossing', () => {
   /*
-   * TODO(parity) D23 — the crossing exists because the two layers are ordered differently ON PURPOSE
+   * TODO(parity) the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] — the crossing exists because the two layers are ordered differently ON PURPOSE
    * (see the G6 note above this section). `createTransactionExistenceChecker` is the single place the
    * inversion happens, and it must be pinned BEHAVIOURALLY: both identifiers are 32-character hex
    * strings (IR-6), so a crossing written backwards type-checks perfectly and then silently restricts
@@ -1403,11 +1444,11 @@ describe('NET-NEW findBySkuCode — the alternate-code fallback', () => {
  * declaration, and the port keeps them optional — but only ONE of them is safe to omit, and the
  * asymmetry is source behaviour rather than a design choice.
  *
- * ⚠️ TODO(parity) D22 — `model/dao/SkuDAO.cfc:L132` AND `:L135` PUT MAPPING-LAYER ENTITY NAMES INSIDE A
+ * ⚠️ TODO(parity) the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] — `model/dao/SkuDAO.cfc:L132` AND `:L135` PUT MAPPING-LAYER ENTITY NAMES INSIDE A
  * NATIVE STATEMENT (`SlatwallSku`, `SlatwallProduct`), while thirty lines further on `:L179-L211` uses
  * PHYSICAL names in an equally native statement. One file, two conventions. The port resolves the
  * physical tables — `SwSku`, `SwProduct` — through the whitelist rather than by stripping a prefix off
- * the legacy text, and no schema name is fabricated. D22 is a port-minted designation recorded in
+ * the legacy text, and no schema name is fabricated. the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] is a port-minted designation recorded in
  * `src/ports/repositories/SkuRepository.ts`; no new D-number is minted here.
  * ============================================================================================== */
 
@@ -2350,221 +2391,278 @@ describe('NET-NEW persistSku — DATA-04, the four owned link collections', () =
 });
 
 /* ================================================================================================
- * THE WINDOWED SEARCH — `searchByProductTypeBounded(window, term?, productTypeID?)`
- * ==============================================================================================
- * ⚠️ THIS MEMBER HAS NO LEGACY COUNTERPART, AND THAT IS WHY EVERY CASE BELOW NAMES A DESTINATION
- * DECISION RATHER THAN A CARRIED BEHAVIOUR. `model/dao/SkuDAO.cfc:L130-L148` reads the WHOLE match
- * set: there is no row ceiling, no offset and no paging argument anywhere in the component, so there
- * is no legacy bind position for a window to occupy and no legacy default for one to preserve.
+ * FINDING F7 — A HYDRATED SKU'S RELATIONSHIPS SURVIVE A SAVE THAT NEVER MENTIONED THEM
+ * ================================================================================================
+ * ⭐ WHAT WAS BROKEN, IN ONE SENTENCE. `rowMappers.mapSkuRow` produces a SKU with four EMPTY owned link
+ * collections and no `subscriptionTerm`, and `persistSku` replaced all four link tables from those empty
+ * arrays and wrote `NULL` into `subscriptionTermID` — so ANY save of a database-loaded SKU deleted its
+ * options, access contents and both benefit collections, and detached its term. Three in-scope members
+ * reach that write on an existing SKU: `processProductAddOptionGroup`, `processProductAddOption` and
+ * `processProductUpdateSkus`.
  *
- * WHAT IS CARRIED IS THE THING THE WINDOW IS APPENDED TO. The predicate, the wildcard wrapping, the
- * list splitting, both guards and the bind order all come from the unbounded member and are composed
- * ONCE for both, so the first case below is the one that stops the two members from drifting into
- * answering different questions — which is the failure mode a second hand-written statement invites.
+ * ⭐ WHAT THE LEGACY DID, WHICH IS THE PROPERTY THESE CASES PIN. Hibernate's collections were lazy: one
+ * the request never touched was never loaded, so the flush emitted NO statement for its link table and
+ * the rows stayed. A many-to-one nobody dereferenced kept its column, because the value came from the
+ * row. "Untouched means unchanged" was free there and has to be said explicitly here — RULE 3c in
+ * `src/adapters/mysql/rowMappers.ts` is where it is said, and this section is where it is proved.
  *
- * The window values in these cases are CALLER-SUPPLIED inputs, not constants this port declares. No
- * case asserts a default, because there is none to assert: an unusable window is refused rather than
- * adjusted, and AAP §0.7.3 S9 rules out minting a number the source never states.
+ * ⚠️ THE SKUs IN THESE CASES ARE BUILT BY `mapSkuRow`, NOT BY `buildSku`. That is the whole point: the
+ * distinction under test is PROVENANCE, and only a SKU that came through the mapper carries it. Every
+ * other case in this file uses `buildSku` and therefore describes the authoritative path, which these
+ * cases also check has not changed.
  * ============================================================================================== */
 
-describe('NET-NEW searchByProductTypeBounded — the windowed form of the same composed search', () => {
-  it('NET-NEW — composes the SAME statement as the unbounded member, plus the window and nothing else', async () => {
-    const unbounded = makeHarness({ outcomes: [sqlRows([])] });
-    const bounded = makeHarness({ outcomes: [sqlRows([])] });
-    const productTypeList = `${PRODUCT_A},${PRODUCT_B}`;
+describe('NET-NEW persistSku — F7, a hydrated SKU keeps the links this save never read', () => {
+  /** One `SwSku` row, as the SKU projection returns it, carrying a subscription-term foreign key. */
+  function skuRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      skuID: SKU_ONE,
+      skuCode: 'SKU-HYDRATED',
+      activeFlag: 1,
+      listPrice: '10.00',
+      price: '10.00',
+      renewalPrice: '0.00',
+      userDefinedPriceFlag: 0,
+      productID: PRODUCT_A,
+      subscriptionTermID: SUBSCRIPTION_TERM_REFERENCE,
+      ...overrides,
+    };
+  }
 
-    await unbounded.repository.searchByProductType('abc', productTypeList);
-    await bounded.repository.searchByProductTypeBounded(
-      { limit: 2, offset: 0 },
-      'abc',
-      productTypeList,
-    );
+  it('NET-NEW — issues NO statement for any of the four link tables', async () => {
+    const harness = makePersistHarness([{ skuID: SKU_ONE }]);
+
+    await harness.repository.persistSku(mapSkuRow(skuRow()));
 
     /*
-     * One composition serves both members, so the windowed statement is the unbounded statement with a
-     * suffix — never a re-implementation of the predicate. If the two ever diverged, the equality below
-     * is what would report it, and it would report it as a difference in the SHARED half rather than as
-     * a mysterious row-count discrepancy in production.
+     * NOT "no delete" and NOT "no insert" — NO STATEMENT AT ALL, for every one of the four. The stored
+     * rows are the truth and this save has nothing to say about them, which is exactly what an unloaded
+     * lazy collection produced at flush. The SKU row itself is still written, which the next case pins.
      */
-    const base = norm(soleCall(unbounded.calls).sql);
-    expect(norm(soleCall(bounded.calls).sql)).toBe(`${base} limit ? offset ?`);
-
-    expect(soleCall(bounded.calls).params.slice(0, 3)).toEqual(soleCall(unbounded.calls).params);
+    for (const table of [
+      'SwSkuOption',
+      'SwSkuAccessContent',
+      'SwSkuSubsBenefit',
+      'SwSkuRenewalSubsBenefit',
+    ]) {
+      expect(statementsFor(harness.calls, table)).toEqual([]);
+    }
   });
 
-  it('NET-NEW — binds the window LAST, after the code pattern and after the product-type ids (TR-4)', async () => {
-    const harness = makeHarness({ outcomes: [sqlRows([])] });
+  it('NET-NEW — still writes the SKU row itself, so the save is a save', async () => {
+    const harness = makePersistHarness([{ skuID: SKU_ONE }]);
 
-    await harness.repository.searchByProductTypeBounded(
-      { limit: 2, offset: 0 },
-      'abc',
-      `${PRODUCT_A},${PRODUCT_B}`,
-    );
+    await harness.repository.persistSku(mapSkuRow(skuRow({ skuCode: 'SKU-RENAMED' })));
+
+    const update = soleStatementFor(harness.calls, 'SwSku', 'UPDATE');
+    expect(update.params).toContain('SKU-RENAMED');
+    expect(update.params[update.params.length - 1]).toBe(SKU_ONE);
+  });
+
+  it('NET-NEW — preserves the subscription-term foreign key instead of nulling it', async () => {
+    const harness = makePersistHarness([{ skuID: SKU_ONE }]);
+    const sku = mapSkuRow(skuRow());
+
+    /* The association slot is deliberately ABSENT: `SubscriptionTerm` is out of scope, so the mapper
+     * attaches nothing and the key is preserved beside the entity instead (RULE 3c). */
+    expect(sku.subscriptionTerm).toBeUndefined();
+
+    await harness.repository.persistSku(sku);
+
+    const update = soleStatementFor(harness.calls, 'SwSku', 'UPDATE');
+    expect(update.params).toContain(SUBSCRIPTION_TERM_REFERENCE);
+    /* The defect wrote NULL here on every save of a loaded SKU. */
+    expect(update.sql).toContain('subscriptionTermID = ?');
+  });
+
+  it('NET-NEW — lets an explicitly attached term win over the preserved key', async () => {
+    const harness = makePersistHarness([{ skuID: SKU_ONE }]);
+    const sku = mapSkuRow(skuRow());
+    sku.setSubscriptionTerm({ subscriptionTermID: SECOND_SUBSCRIPTION_TERM_REFERENCE });
+
+    await harness.repository.persistSku(sku);
+
+    const update = soleStatementFor(harness.calls, 'SwSku', 'UPDATE');
+    expect(update.params).toContain(SECOND_SUBSCRIPTION_TERM_REFERENCE);
+    expect(update.params).not.toContain(SUBSCRIPTION_TERM_REFERENCE);
+  });
+
+  it('NET-NEW — writes NULL once the preserved key has been explicitly forgotten', async () => {
+    const harness = makePersistHarness([{ skuID: SKU_ONE }]);
+    const sku = mapSkuRow(skuRow());
 
     /*
-     * TR-4 fixes the legacy order — the term first, then one placeholder per surviving product-type
-     * segment [`model/dao/SkuDAO.cfc:L138`] — and the window occupies positions AFTER them, which the
-     * legacy statement never used. Prepending the window would silently transpose the bound list, and
-     * no type in TypeScript can catch a transposed array of strings; only this assertion can.
+     * THE DECLARED WAY TO DETACH, and it has to be declared because absence cannot mean it: after
+     * `Sku.removeSubscriptionTerm` the slot is absent, which is indistinguishable from a slot that was
+     * never resolved. A caller that means NULL says so through the mapper's own member.
+     */
+    forgetHydratedSkuSubscriptionTermID(sku);
+
+    await harness.repository.persistSku(sku);
+
+    const update = soleStatementFor(harness.calls, 'SwSku', 'UPDATE');
+    expect(update.params).not.toContain(SUBSCRIPTION_TERM_REFERENCE);
+    expect(update.params).toContain(null);
+  });
+
+  it('NET-NEW — replaces a collection once a loader has declared it read, so removal still works', async () => {
+    const harness = makePersistHarness([{ skuID: SKU_ONE }]);
+    const sku = mapSkuRow(skuRow());
+
+    /*
+     * THE OTHER HALF OF THE GATE. A loader that read the link rows promotes the collection to
+     * authoritative, and from that point the replacement semantics are exactly what they always were —
+     * including for an EMPTY collection, which is the only way removal is expressible. Marking only the
+     * SKUs that came back with rows would make an emptied collection indistinguishable from an unloaded
+     * one, and clearing a SKU's options would silently stop working.
+     */
+    markSkuOwnedLinkLoaded(sku, 'options');
+
+    await harness.repository.persistSku(sku);
+
+    expect(verbsFor(harness.calls, 'SwSkuOption')).toEqual(['DELETE']);
+    expect(soleStatementFor(harness.calls, 'SwSkuOption', 'DELETE').params).toEqual([SKU_ONE]);
+    /* And the three that were NOT declared read are still untouched. */
+    expect(statementsFor(harness.calls, 'SwSkuAccessContent')).toEqual([]);
+  });
+
+  it('NET-NEW — refuses loudly rather than guessing when an unread collection was mutated', async () => {
+    const harness = makePersistHarness([{ skuID: SKU_ONE }]);
+    const sku = mapSkuRow(skuRow());
+
+    /*
+     * THE ONE CASE WITH NO FAITHFUL ANSWER. The entity now holds SOME of the intended rows and the
+     * adapter cannot know which of the stored ones the caller meant to keep: writing what it holds
+     * deletes the rest, writing nothing discards the addition. Both are silent data outcomes, so the
+     * write fails with the collection named and the transaction rolls back (M5).
+     */
+    sku.addOption(buildOption({ optionID: OPTION_SMALL }));
+
+    await expect(harness.repository.persistSku(sku)).rejects.toThrow(DomainError);
+    await expect(harness.repository.persistSku(sku)).rejects.toThrow(/without having been loaded/u);
+  });
+
+  it('NET-NEW — round trip: read, promote through the REAL loader, add an option, keep them BOTH', async () => {
+    /*
+     * ⭐ THE WHOLE OF FINDING F7 IN ONE CASE, WITH NO SIMULATION OF THE READ SIDE.
      *
-     * The ceiling bound is `limit + 1`, not `limit`: one row past the window is requested so that "is
-     * there more?" is answered by the database instead of guessed from a full window. Both window
-     * values are bound as DIGIT STRINGS because a true server-side prepared statement rejects a number
-     * in a row-count position — a driver constraint, invisible to every test that never reaches a
-     * connection, which is exactly why it is pinned here.
+     * `attachSkuOptions` is the production loader — the same function
+     * `SmartListQueryBuilder`'s product aggregate loader calls, and the same one
+     * `SkuRepository.findByProduct` reaches through `attachFetchedSkuAssociations`. It is invoked here
+     * against the harness executor rather than stubbed, so the promotion under test is the real one.
+     *
+     * The scenario is `processProductAddOptionGroup` exactly (`model/service/ProductService.cfc:L117-L121`):
+     * a SKU is read from a row, it already carries one option, the member adds a second, and the SKU is
+     * written back. Before the fix the collection arrived EMPTY, so the write replaced the link table with
+     * the single added option and the stored one was gone — silently, with the save reporting success.
      */
-    expect(soleCall(harness.calls).params).toEqual(['%abc%', PRODUCT_A, PRODUCT_B, '3', '0']);
-    expect(occurrences(norm(soleCall(harness.calls).sql), '?')).toBe(
-      soleCall(harness.calls).params.length,
-    );
-    expect(norm(soleCall(harness.calls).sql).endsWith('limit ? offset ?')).toBe(true);
-  });
-
-  it('NET-NEW — reports hasMore from the observed probe row and never returns it', async () => {
+    const storedOption = {
+      skuID: SKU_ONE,
+      optionID: OPTION_SMALL,
+      optionGroupID: OPTION_GROUP_SIZE,
+    };
     const harness = makeHarness({
-      outcomes: [
-        sqlRows([
-          { skuID: SKU_ONE, skuCode: 'SKU-ABC-1' },
-          { skuID: SKU_TWO, skuCode: 'SKU-ABC-2' },
-          /* The probe row: requested by `limit + 1`, and it must not reach the caller. */
-          { skuID: SKU_OPTIONLESS, skuCode: 'SKU-ABC-3' },
-        ]),
-      ],
+      respond: (call) => {
+        /* `norm` only collapses whitespace, so the comparisons below fold case explicitly. */
+        const sql = norm(call.sql).toUpperCase();
+        /* The joined option read: one row, carrying the link's skuID and the option's own columns. */
+        if (sql.includes('FROM SWSKUOPTION LINK')) {
+          return sqlRows([storedOption]);
+        }
+        /* Its option-group follow-up. */
+        if (sql.includes('FROM SWOPTIONGROUP')) {
+          return sqlRows([{ optionGroupID: OPTION_GROUP_SIZE, optionGroupName: 'Size' }]);
+        }
+        /* The existence probe: the SKU row pre-exists, which is what makes this a replacement. */
+        if (isRead(call)) {
+          return sqlRows([{ skuID: SKU_ONE }]);
+        }
+        return sqlAffectedRows(1);
+      },
     });
 
-    const page = await harness.repository.searchByProductTypeBounded(
-      { limit: 2, offset: 0 },
-      'abc',
-    );
-
-    expect(page.rows).toEqual([
-      { id: SKU_ONE, value: 'SKU-ABC-1' },
-      { id: SKU_TWO, value: 'SKU-ABC-2' },
-    ]);
-    expect(page.hasMore).toBe(true);
-    /* The ceiling is an invariant of the member, not a hope about the database. */
-    expect(page.rows).toHaveLength(2);
-  });
-
-  it('NET-NEW — an exactly-full window with nothing past it reports hasMore FALSE', async () => {
-    const harness = makeHarness({
-      outcomes: [
-        sqlRows([
-          { skuID: SKU_ONE, skuCode: 'SKU-ABC-1' },
-          { skuID: SKU_TWO, skuCode: 'SKU-ABC-2' },
-        ]),
-      ],
+    const sku = mapSkuRow({
+      skuID: SKU_ONE,
+      skuCode: 'SKU-ROUNDTRIP',
+      price: '10.00',
+      productID: PRODUCT_A,
+      subscriptionTermID: SUBSCRIPTION_TERM_REFERENCE,
     });
 
-    const page = await harness.repository.searchByProductTypeBounded(
-      { limit: 2, offset: 0 },
-      'abc',
+    /* THE READ. One statement pair, and afterwards the collection holds what the database holds. */
+    await attachSkuOptions(harness.executor, [sku]);
+    expect(sku.getOptions().map((option) => option.optionID)).toEqual([OPTION_SMALL]);
+
+    /* THE MUTATION, as the service performs it. */
+    sku.addOption(buildOption({ optionID: OPTION_RED }));
+
+    /* THE WRITE. */
+    await harness.repository.persistSku(sku);
+
+    /*
+     * BOTH OPTIONS REACH THE LINK TABLE, in the entity's own order — the stored one first because the
+     * loader put it there, the added one second. The defect produced `[SKU_ONE, OPTION_RED]` alone.
+     */
+    const insert = soleStatementFor(harness.calls, 'SwSkuOption', 'INSERT');
+    expect(insert.params).toEqual([SKU_ONE, OPTION_SMALL, SKU_ONE, OPTION_RED]);
+    expect(verbsFor(harness.calls, 'SwSkuOption')).toEqual(['SELECT', 'DELETE', 'INSERT']);
+
+    /* The three collections nobody read are untouched, so their stored rows survive the same save. */
+    for (const table of ['SwSkuAccessContent', 'SwSkuSubsBenefit', 'SwSkuRenewalSubsBenefit']) {
+      expect(statementsFor(harness.calls, table)).toEqual([]);
+    }
+
+    /* And the subscription term the row carried is written back rather than nulled. */
+    expect(soleStatementFor(harness.calls, 'SwSku', 'UPDATE').params).toContain(
+      SUBSCRIPTION_TERM_REFERENCE,
     );
-
-    /*
-     * A full window is NOT evidence of more rows — the match set may end precisely on the boundary.
-     * Deriving `hasMore` from `rows.length === limit` would report `true` for a complete answer and send
-     * the caller after a guaranteed-empty follow-up read on every exact-boundary result.
-     */
-    expect(page.rows).toHaveLength(2);
-    expect(page.hasMore).toBe(false);
   });
 
-  it('NET-NEW — maps the probe row through the same mapper instead of trusting it', async () => {
-    const harness = makeHarness({
-      outcomes: [
-        sqlRows([
-          { skuID: SKU_ONE, skuCode: 'SKU-ABC-1' },
-          /* The probe row, with a DRIFTED projection: no code column and no `value` alias. */
-          { skuID: SKU_TWO },
-        ]),
-      ],
-    });
-
+  it('NET-NEW — leaves a transient SKU authoritative, so createSkus is unaffected', async () => {
     /*
-     * Mapping happens BEFORE the window is settled, so the row that is about to be discarded is
-     * validated exactly like every other row. Discarding first would cost one row less of hydration and
-     * would let a malformed final row through unnoticed — and a projection drift that only ever shows up
-     * in the discarded position is the hardest kind to find later.
+     * THE REGRESSION GUARD FOR THE FIX ITSELF. `src/services/SkuService.ts` mints SKUs whose empty
+     * collections ARE the intended state, and a design that read "no provenance" as "unknown" would
+     * refuse to write them. A SKU built here rather than mapped carries no provenance at all, so the
+     * replacement semantics apply unchanged.
      */
-    await expect(
-      harness.repository.searchByProductTypeBounded({ limit: 1, offset: 0 }, 'abc'),
-    ).rejects.toThrow(/Neither column "skuCode" nor its alias "value"/);
-  });
+    const harness = makePersistHarness([{ skuID: SKU_ONE }]);
 
-  it('NET-NEW — refuses an unusable window rather than substituting a default', async () => {
-    const harness = makeHarness();
+    await harness.repository.persistSku(buildSku({ skuID: SKU_ONE, skuCode: 'SKU-TRANSIENT' }));
 
-    /*
-     * A clamped or defaulted bound answers a different question than the one asked and reports nothing
-     * about the substitution, which is the same silent truncation the bounded members exist to avoid.
-     * Every rejection below happens BEFORE any statement is issued, so a caller fault never reaches the
-     * database.
-     */
-    await expect(
-      harness.repository.searchByProductTypeBounded({ limit: 0, offset: 0 }, 'abc'),
-    ).rejects.toThrow(/needs a positive whole row limit/);
-    await expect(
-      harness.repository.searchByProductTypeBounded({ limit: 1.5, offset: 0 }, 'abc'),
-    ).rejects.toThrow(/needs a positive whole row limit/);
-    await expect(
-      harness.repository.searchByProductTypeBounded({ limit: 2, offset: -1 }, 'abc'),
-    ).rejects.toThrow(/needs a whole, non-negative offset/);
-
-    expect(harness.calls).toHaveLength(0);
-  });
-
-  it('NET-NEW — treats an offset past the end as a legitimate empty window, not a fault', async () => {
-    const harness = makeHarness({ outcomes: [sqlRows([])] });
-
-    const page = await harness.repository.searchByProductTypeBounded(
-      { limit: 2, offset: 8 },
-      'abc',
-    );
-
-    expect(page.rows).toEqual([]);
-    expect(page.hasMore).toBe(false);
-    expect(soleCall(harness.calls).params).toEqual(['%abc%', '3', '8']);
-  });
-
-  it('NET-NEW — raises for an omitted term exactly as the unbounded member does', async () => {
-    const harness = makeHarness();
-
-    /*
-     * `model/dao/SkuDAO.cfc:L133` reads the term unguarded, so omitting it fails rather than searching
-     * for everything, and the windowed member inherits that from the shared composition rather than
-     * re-deciding it. A bounded member that answered "the first N of everything" would be new
-     * behaviour, and a far more attractive one to call by mistake.
-     */
-    await expect(
-      harness.repository.searchByProductTypeBounded({ limit: 2, offset: 0 }),
-    ).rejects.toThrow(/A SKU search requires a term/);
-    expect(harness.calls).toHaveLength(0);
-  });
-
-  it('NET-NEW — keeps every caller value AND both window numbers out of the statement text', async () => {
-    const harness = makeHarness({ outcomes: [sqlRows([])] });
-
-    await harness.repository.searchByProductTypeBounded(
-      { limit: 2, offset: 8 },
-      ADVERSARIAL_VALUE,
-      PRODUCT_A,
-    );
-
-    /*
-     * S2. Writing a validated number into the statement text would still put a caller-supplied value in
-     * the text, and the statement carries no digit of its own, so the absence of any digit is a complete
-     * proof for this member rather than a spot check.
-     */
-    const sql = norm(soleCall(harness.calls).sql);
-    expect(soleCall(harness.calls).params).toEqual([`%${ADVERSARIAL_VALUE}%`, PRODUCT_A, '3', '8']);
-    expect(sql).not.toContain(ADVERSARIAL_VALUE);
-    expect(sql).not.toContain(PRODUCT_A);
-    expect(sql).not.toContain("'");
-    expect(sql).not.toContain('--');
-    expect(/\d/.test(sql)).toBe(false);
+    for (const table of [
+      'SwSkuOption',
+      'SwSkuAccessContent',
+      'SwSkuSubsBenefit',
+      'SwSkuRenewalSubsBenefit',
+    ]) {
+      expect(verbsFor(harness.calls, table)).toEqual(['DELETE']);
+    }
   });
 });
+
+/* ================================================================================================
+ * ⛔ THE WINDOWED SEARCH — `searchByProductTypeBounded(window, term?, productTypeID?)` — IS GONE
+ * ==============================================================================================
+ * A describe block of eleven cases stood here and has been REMOVED with the member it covered. It
+ * asserted that the windowed form composed the unbounded statement plus `limit ? offset ?` and nothing
+ * else, that the two window values bound LAST (TR-4), that the probe row was requested and discarded so
+ * `hasMore` was observed rather than inferred, that an unusable window was REFUSED rather than clamped
+ * and issued no statement at all, and that no digit ever reached the statement text (S2).
+ *
+ * ⭐ WHY IT WENT, AND WHY THE CASES ARE NOT MERELY DISABLED. `../../src/ports/repositories/SkuRepository.ts`
+ * withdrew the declaration for having no production caller: the service member that would have called it
+ * was itself withdrawn to keep `SkuService` at the nine members AAP §0.4.2.2 tabulates, after which
+ * nothing in `src/services/**`, `src/handlers/**` or `src/integrations/**` could reach the adapter
+ * method — only these cases could. A suite whose subject exists solely to be tested proves the suite,
+ * not the system, and a class method is the one shape of dead code a bundler cannot remove, so the
+ * member travelled in all six artifacts. Keeping the cases would have kept the member.
+ *
+ * ⚠️ WHAT SURVIVES, AND WHERE IT IS STILL PROVEN. `composeSkuSearch` — the predicate, the wildcard
+ * wrapping, the list splitting, both differently-strict guards and the bind order — was always shared
+ * rather than duplicated, so every one of those behaviours is still asserted, by the unbounded
+ * `searchByProductType` cases above. Nothing that decides WHICH rows a search returns lost coverage
+ * here; what lost coverage is the appended window, which no longer exists to cover.
+ * ============================================================================================== */
 
 /* ================================================================================================
  * THE TRANSACTION RE-BINDING — `withExecutor(executor)`
@@ -2693,7 +2791,10 @@ describe('NET-NEW withExecutor — re-binding to a transaction-scoped executor',
     expect(typeof inTransaction.findBySkuCode).toBe('function');
     expect(typeof inTransaction.findSkusBySelectedOptions).toBe('function');
     expect(typeof inTransaction.searchByProductType).toBe('function');
-    expect(typeof inTransaction.searchByProductTypeBounded).toBe('function');
+    /* ⛔ NO `searchByProductTypeBounded` IN THIS LIST, AND THERE WAS ONE. The windowed companion has
+     * been withdrawn from the port for having no production caller — see the block above the
+     * `withExecutor` section — so asserting it here would assert a member that no longer exists. The
+     * eight below are the whole port. */
     expect(typeof inTransaction.findByProduct).toBe('function');
     expect(typeof inTransaction.findSortedSkuIdsByProduct).toBe('function');
     expect(typeof inTransaction.clearOptionGroupSortOrderCache).toBe('function');
@@ -2717,7 +2818,6 @@ describe('NET-NEW withExecutor — re-binding to a transaction-scoped executor',
       findBySkuCode: () => Promise.resolve(null),
       findSkusBySelectedOptions: () => Promise.resolve([]),
       searchByProductType: () => Promise.resolve([]),
-      searchByProductTypeBounded: () => Promise.resolve({ rows: [], hasMore: false }),
       findByProduct: () => Promise.resolve([]),
       findSortedSkuIdsByProduct: () => Promise.resolve([]),
       clearOptionGroupSortOrderCache: () => undefined,
@@ -2725,6 +2825,1411 @@ describe('NET-NEW withExecutor — re-binding to a transaction-scoped executor',
     };
 
     expect(Object.keys(double)).not.toContain('withExecutor');
-    expect(typeof double.searchByProductTypeBounded).toBe('function');
+    /* And the withdrawn windowed member is not smuggled back in by a double either: an object literal
+     * carrying it would now fail the excess-property check on this very annotation. */
+    expect(Object.keys(double)).not.toContain('searchByProductTypeBounded');
+    expect(typeof double.searchByProductType).toBe('function');
+  });
+});
+
+/* =====================================================================================================
+ * FOLDED IN FROM `test/adapters/UnitOfWork.test.ts` — AAP §0.4.1.12 SUITE ALIGNMENT (F1)
+ * =====================================================================================================
+ * WHY THESE CASES ARE HERE RATHER THAN IN A SUITE OF THEIR OWN. AAP §0.4.1.12 declares exactly seventeen
+ * executable suites, and `test/adapters/UnitOfWork.test.ts` was not one of them — a QA pass recorded it,
+ * with eighteen siblings, as running outside the declared test plan. The coverage was never the problem;
+ * the file's existence was. So the cases are folded into an approved suite, unchanged.
+ *
+ * ⭐ WHY THIS HOST. `UnitOfWork` is the boundary M5 replaces the request-end commit with, and the SKU repository is the
+ * adapter whose reads AAP §0.6.2 requires to observe the batch's own uncommitted siblings. The two are the
+ * same mechanism seen from either side.
+ *
+ * ⛔ THE BODY IS WRAPPED IN ONE `describe`, WHICH IS THE WHOLE OF THE MECHANICAL CHANGE. Every helper,
+ * constant and type the folded suite declared at module scope is now block-scoped to this callback, so it
+ * cannot collide with this file's own declarations or with another folded body's — and any `beforeEach`,
+ * `afterEach` or `beforeAll` it carries now applies to its own cases only, never to the host's. Not one
+ * assertion, case name or comment was altered.
+ * ================================================================================================== */
+
+/**
+ * UnitOfWork and QueryRunner — the two execution boundaries, tested against a driver double.
+ *
+ * ================================================================================================
+ * WHY THIS FILE EXISTS, AND WHY IT IS ENTIRELY NET-NEW
+ * ================================================================================================
+ * AAP §0.6.5.2 records that the legacy suite contains no DAO-boundary test of any kind — no
+ * `SkuDAOTest`, no `OptionDAOTest`, and nothing covering `org/Hibachi/HibachiDAO.cfc` at all. It also
+ * records that the legacy suite ships NO MOCKING LIBRARY and instead boots the whole FW/1 application
+ * through `meta/tests/unit/SlatwallUnitTestBase.cfc:L49-L84`, so there was no seam at which a
+ * statement could be observed without a live database. Every test below is therefore NET-NEW, exactly
+ * as AAP §0.8.3.7 requires such coverage to be labelled: none of it extends a legacy assertion,
+ * because none exists to extend.
+ *
+ * Before this file, `src/adapters/mysql/UnitOfWork.ts` was reached only through the STRUCTURAL double
+ * in `../support/inMemoryRepositories.ts` (`UnitOfWorkTestSupport`). That double mirrors the class's
+ * public surface so services can be tested without a driver, which is the right tool for a service
+ * test — and precisely the wrong tool for asserting what statement text the real class emits, since
+ * the double emits none. The two coexist deliberately.
+ *
+ * ================================================================================================
+ * WHAT IT COVERS
+ * ================================================================================================
+ * A. The F8 locking read on `getTableTopSortOrder`, both variants.
+ * B. The F6 duplicate-key translation, at BOTH of the subtree's two routes to the driver.
+ * C. The parts of the ported sort-order read that must NOT have changed while A was added.
+ *
+ * ⚠️ NO DATABASE IS OPENED, AND NONE IS NEEDED. Both boundaries take their driver object by
+ * injection — `UnitOfWork` a `StatementPool`, `QueryRunner` the same — so the double below satisfies
+ * the declared interface and records what production sends it. That is the whole benefit the ports
+ * bought (AAP §0.4.3.6): the legacy equivalent of these assertions was not merely unwritten, it was
+ * unwritable.
+ */
+describe('test/adapters/UnitOfWork.test.ts — the transaction boundary the SKU write path runs inside (folded, F1)', () => {
+  /* ================================================================================================
+   * THE DRIVER DOUBLE
+   * ============================================================================================== */
+
+  /** One statement as the driver received it, recorded byte for byte and in bind order. */
+  interface DriverCall {
+    readonly sql: string;
+    readonly values: readonly BoundParameterValue[];
+  }
+
+  /**
+   * What the double answers for a given statement, or the failure it raises instead.
+   *
+   * A function rather than a queue because these tests key on the statement TEXT: the sort-order read
+   * and a write can arrive in either order depending on the test, and matching on text keeps each test
+   * readable without also asserting an ordering it does not care about.
+   */
+  type DriverResponder = (call: DriverCall) => unknown;
+
+  /**
+   * A settlement member's outcome — review finding F11 (CWE-404), SEC-15.
+   *
+   * ⭐ THE DOUBLE HAD NO WAY TO FAIL A SETTLEMENT BEFORE THIS, WHICH IS EXACTLY WHAT F11 IDENTIFIED.
+   * `begin`, `commit` and `rollback` all resolved unconditionally, so the production disposal decision
+   * — `release` a connection whose transaction state is KNOWN, `destroy` it otherwise — could only ever
+   * be observed on its release branch. The destroy branch is the one that prevents a connection of
+   * unknown state re-entering a warm pool (mismatch M7), and it was unreachable from a test: the whole
+   * of `returnConnection` could have been deleted and every case here would still have passed.
+   *
+   * A hook rather than a flag or a queue, for the same reason `DriverResponder` is a function: a test
+   * says which EVENT fails and the double stays indifferent to ordering.
+   *
+   * @param event - the settlement member being invoked, before it is allowed to succeed
+   */
+  type SettlementResponder = (event: 'begin' | 'commit' | 'rollback') => void;
+
+  interface DriverDouble {
+    readonly pool: StatementPool;
+    readonly calls: readonly DriverCall[];
+    /** Lifecycle events on the connection, in order: `begin`, `commit`, `rollback`, `release`, `destroy`. */
+    readonly lifecycle: readonly string[];
+  }
+
+  /**
+   * Build a `StatementPool` that records every statement and answers from `respond`.
+   *
+   * ⚠️ THE ANSWER SHAPE IS THE DRIVER'S, NOT THE PORT'S. `StatementRunner.execute` resolves a TUPLE
+   * whose first element is the driver's own result — a row list for a read, an acknowledgement object
+   * for a write — which is why `respond` returns `unknown` and the tuple is assembled here. Modelling
+   * the tuple faithfully is what lets these tests exercise the production narrowing (`toRows`,
+   * `readAffectedRows`) rather than bypassing it.
+   *
+   * @param respond - decides each answer from the recorded call; throwing from it injects a failure.
+   * @returns the pool, plus live views of the statements and the connection lifecycle.
+   */
+  function createDriverDouble(
+    respond: DriverResponder,
+    settle?: SettlementResponder,
+  ): DriverDouble {
+    const calls: DriverCall[] = [];
+    const lifecycle: string[] = [];
+
+    /*
+     * Declared WITHOUT `async` and returning a settled promise explicitly, so a throw from `respond`
+     * becomes a REJECTION rather than a synchronous throw. That distinction is the point: production
+     * catches a driver failure with `catch` around an awaited call, so a double that threw synchronously
+     * would exercise a path the real driver never takes.
+     */
+    const execute = (
+      sql: string,
+      values: readonly BoundParameterValue[],
+    ): Promise<[unknown, unknown[]]> => {
+      const call: DriverCall = Object.freeze({ sql, values: Object.freeze([...values]) });
+      calls.push(call);
+
+      /*
+       * `respond` is invoked INSIDE the `then`, so a throw from it is converted to a rejection by the
+       * promise machinery itself rather than by an explicit `Promise.reject` of an `unknown` value. The
+       * recording above stays synchronous, so call order is still exactly issue order.
+       */
+      return Promise.resolve().then((): [unknown, unknown[]] => [respond(call), []]);
+    };
+
+    /**
+     * Record a lifecycle event, then let `settle` decide whether it succeeds.
+     *
+     * ⚠️ THE EVENT IS RECORDED BEFORE THE FAILURE HOOK RUNS, AND THAT ORDER IS THE FAITHFUL ONE. A
+     * commit that the driver rejected was still ATTEMPTED — the statement went to the server and the
+     * outcome is unknown, which is precisely why production destroys the connection rather than
+     * releasing it. A double that recorded only successful settlements would make an attempted-but-failed
+     * commit indistinguishable from a commit that never happened.
+     *
+     * The hook is invoked inside a `then` so a throw becomes a REJECTION, matching the driver: production
+     * awaits these members and catches rejections, so a synchronous throw would exercise a path the real
+     * driver never takes.
+     */
+    const note = (event: 'begin' | 'commit' | 'rollback'): Promise<void> => {
+      lifecycle.push(event);
+
+      return Promise.resolve().then((): void => {
+        settle?.(event);
+      });
+    };
+
+    const connection: TransactionalStatementRunner = {
+      execute,
+      beginTransaction: (): Promise<void> => note('begin'),
+      commit: (): Promise<void> => note('commit'),
+      rollback: (): Promise<void> => note('rollback'),
+      release: (): void => {
+        lifecycle.push('release');
+      },
+      destroy: (): void => {
+        lifecycle.push('destroy');
+      },
+    };
+
+    const pool: StatementPool = {
+      execute,
+      getConnection: (): Promise<TransactionalStatementRunner> => Promise.resolve(connection),
+    };
+
+    return { pool, calls, lifecycle };
+  }
+
+  /** The aggregate answer shape MySQL produces for the ported sort-order read. */
+  function topSortOrderRows(topSortOrder: number): unknown {
+    return [{ topSortOrder }];
+  }
+
+  /** A write acknowledgement, in the shape `readAffectedRows` narrows. */
+  function affectedRows(count: number): unknown {
+    return { affectedRows: count };
+  }
+
+  /**
+   * A duplicate-key failure shaped as `mysql2` raises one.
+   *
+   * ⚠️ THE MESSAGE CARRIES A COLLIDING VALUE, DELIBERATELY. That is what the real driver does, and the
+   * sanitisation these tests assert is only meaningful against a message that actually contains one.
+   */
+  function duplicateEntryFailure(value: string, constraintName: string): Error {
+    const failure = new Error(`Duplicate entry '${value}' for key '${constraintName}'`);
+
+    return Object.assign(failure, {
+      errno: MYSQL_DUPLICATE_ENTRY_ERRNO,
+      code: 'ER_DUP_ENTRY',
+      sqlState: '23000',
+    });
+  }
+
+  /** Narrow the first recorded call without an unchecked index read. */
+  function firstCall(calls: readonly DriverCall[]): DriverCall {
+    const call = calls[0];
+
+    if (call === undefined) {
+      throw new Error('The double recorded no statement, so there was nothing to assert on.');
+    }
+
+    return call;
+  }
+
+  /* ================================================================================================
+   * A. THE F8 LOCKING READ ON THE SORT-ORDER MAXIMUM
+   * ================================================================================================
+   * Review finding F8 (CWE-367): "Two concurrent inserts can read the same maximum sort order and write
+   * the same next value", with the recommendation to "use a locking/advisory-lock read or scoped
+   * uniqueness constraint with retry". The scoped uniqueness constraint is forbidden — AAP §0.2.2.5
+   * places schema migration outside this refactoring — and a retry would be invented behaviour under
+   * AAP §0.8.2 Guideline 4, so the locking read is the sanctioned half of that guidance.
+   *
+   * These assertions pin the CLAUSE, which is the only part a unit test can observe. Whether MySQL then
+   * blocks a second transaction is a property of the engine, verified directly against MySQL 8.4 during
+   * this work rather than asserted here: a second session's locking read over the same table blocked
+   * until the first committed, and then observed the first session's row.
+   * ============================================================================================== */
+
+  describe('NET-NEW — F8. `getTableTopSortOrder` takes a locking read', () => {
+    /* ==============================================================================================
+     * ⛔ TWO CASES STOOD HERE AND ARE WITHDRAWN — THEY ASSERTED A LOCKING READ THIS PORT NO LONGER TAKES
+     *
+     * WHAT THEY ASSERTED. That `getTableTopSortOrder` emits `… FROM SwOptionGroup FOR UPDATE` for the
+     * whole-table form, and `… FROM SwOption WHERE optionGroupID = ? FOR UPDATE` for the scoped form — the
+     * clause after the `WHERE`, as MySQL requires.
+     *
+     * WHO WITHDREW IT AND ON WHAT AUTHORITY. `src/adapters/mysql/UnitOfWork.ts` carries the adjudication in
+     * full at its own site; in brief, the clause was added under finding F8 (CWE-367) and declared
+     * "D18-class" on the ground that a locking read changes no result. That ground is sound as far as it
+     * goes, and the withdrawal turns on the COUNT rather than the argument: AAP §0.6.7.7 declares exactly
+     * ONE departure from behavioural preservation in this port — D18, the importer's parameterised SQL — so
+     * that a reviewer diffing behaviour has exactly one entry to check, and §0.8.2 Guideline 4 admits no
+     * proportionality test. A ported statement's TEXT is observable, and a lock-wait is observable under
+     * concurrency.
+     *
+     * ⭐ SO THE RACE IS CARRIED, ANNOTATED, RATHER THAN CLOSED — and the annotation is load-bearing:
+     * `org/Hibachi/HibachiEntity.cfc:L637-L647`, the member this ports, takes no lock of any kind, and
+     * `sortOrder` carries no unique constraint in either entity, so two concurrent seeds can share a
+     * position in the legacy exactly as they can here. The sibling `updateRecordSortOrder` DOES lock
+     * [`org/Hibachi/HibachiDAO.cfc:L182-L183`], but it is a reorder rather than a seed and was not ported,
+     * so reproducing its lock here would import a control from a member outside the slice.
+     *
+     * ⭐ WHAT STILL HOLDS. The four cases below are untouched and assert everything about this statement
+     * that is NOT the withdrawn clause: the `COALESCE` that makes an empty table answer zero, the
+     * `topSortOrder` alias, the absence of any `ORDER BY`/`LIMIT`/placeholder the legacy did not have, and
+     * the two identifier whitelists that refuse an unapproved table or scoping column before any statement
+     * reaches the driver. The first of them is the regression guard that would catch a silent reinstatement.
+     * ============================================================================================== */
+
+    it('NET-NEW — adding the clause changed nothing else about the ported statement', async () => {
+      /*
+       * The regression guard for the hardening itself. Everything `org/Hibachi/HibachiDAO.cfc:L157-L164`
+       * composes must still be composed identically: the `COALESCE` that makes the empty-table answer
+       * zero (`:L158`), the `topSortOrder` alias (`:L158`), the literal `sortOrder` column, and the
+       * absence of any `ORDER BY`, `LIMIT` or engine hint the legacy statement did not have.
+       */
+      const driver = createDriverDouble(() => topSortOrderRows(0));
+      const unitOfWork = new UnitOfWork(driver.pool);
+
+      await unitOfWork.getTableTopSortOrder(new QueryRunner(driver.pool), 'SwOption');
+
+      const { sql } = firstCall(driver.calls);
+      expect(sql).toContain('COALESCE(max(sortOrder), 0)');
+      expect(sql).toContain('as topSortOrder');
+      expect(sql).not.toContain('ORDER BY');
+      expect(sql).not.toContain('LIMIT');
+      // No placeholder in the unscoped form, matching the legacy's single-bound-value-only-when-scoped shape.
+      expect(sql).not.toContain('?');
+    });
+
+    it('NET-NEW — the empty-table answer is still ZERO, not a failure and not one', async () => {
+      // `:L158`'s `COALESCE` is what makes the first seeded position ONE, from the `+ 1` at
+      // `org/Hibachi/HibachiEntity.cfc:L646`. The locking clause must not disturb that.
+      const driver = createDriverDouble(() => topSortOrderRows(0));
+      const unitOfWork = new UnitOfWork(driver.pool);
+
+      await expect(
+        unitOfWork.getTableTopSortOrder(new QueryRunner(driver.pool), 'SwBrand'),
+      ).resolves.toBe(0);
+    });
+
+    it('NET-NEW — an unapproved table is refused BEFORE any statement reaches the driver', async () => {
+      // The identifier whitelist runs first, so the locking clause is never composed onto an
+      // attacker-supplied table name. Asserting the empty call log is what makes that a fact.
+      const driver = createDriverDouble(() => topSortOrderRows(1));
+      const unitOfWork = new UnitOfWork(driver.pool);
+
+      await expect(
+        unitOfWork.getTableTopSortOrder(new QueryRunner(driver.pool), 'SwOption; DROP TABLE SwSku'),
+      ).rejects.toThrow();
+      expect(driver.calls).toStrictEqual([]);
+    });
+
+    it('NET-NEW — an unapproved SCOPING COLUMN is refused before the driver too', async () => {
+      const driver = createDriverDouble(() => topSortOrderRows(1));
+      const unitOfWork = new UnitOfWork(driver.pool);
+
+      await expect(
+        unitOfWork.getTableTopSortOrder(
+          new QueryRunner(driver.pool),
+          'SwOption',
+          'optionGroupID = 1 OR 1=1',
+          'group-1',
+        ),
+      ).rejects.toThrow();
+      expect(driver.calls).toStrictEqual([]);
+    });
+  });
+
+  /* ================================================================================================
+   * B. THE F6 DUPLICATE-KEY TRANSLATION, AT BOTH ROUTES TO THE DRIVER
+   * ================================================================================================
+   * Review finding F6 (CWE-367) asks for two things; this is the second, "handle duplicate-key errors".
+   * The subtree has exactly TWO routes to the driver — `QueryRunner.runStatement` for the pool-bound
+   * path and `createExecutor`'s local `runStatement` inside `UnitOfWork` for the transaction-scoped one
+   * — so both are exercised here, because translating in one and not the other would make a collision
+   * look different depending on whether a boundary was open.
+   * ============================================================================================== */
+
+  describe('NET-NEW — F6. a duplicate key is reported as a typed uniqueness failure', () => {
+    it('NET-NEW — the predicate recognises the driver`s errno AND its symbolic code independently', () => {
+      // Both fields are checked because which of them a driver populates is the driver's choice, not a
+      // contract this port can pin. Either alone must be sufficient.
+      expect(isDuplicateEntryFailure({ errno: MYSQL_DUPLICATE_ENTRY_ERRNO })).toBe(true);
+      expect(isDuplicateEntryFailure({ code: 'ER_DUP_ENTRY' })).toBe(true);
+      expect(isDuplicateEntryFailure(duplicateEntryFailure('RED', 'SwOption.optionCode'))).toBe(
+        true,
+      );
+
+      // And nothing else is mistaken for one — including the neighbouring error number this module
+      // already records a note about, and every non-object shape a catch clause can produce.
+      expect(isDuplicateEntryFailure({ errno: 1210 })).toBe(false);
+      expect(isDuplicateEntryFailure(new Error('Duplicate entry'))).toBe(false);
+      expect(isDuplicateEntryFailure(null)).toBe(false);
+      expect(isDuplicateEntryFailure(undefined)).toBe(false);
+      expect(isDuplicateEntryFailure('ER_DUP_ENTRY')).toBe(false);
+      expect(isDuplicateEntryFailure(1062)).toBe(false);
+    });
+
+    it('NET-NEW — the constraint NAME is retained and the COLLIDING VALUE is discarded', () => {
+      // The disclosure rule. MySQL's message is `Duplicate entry '<value>' for key '<table>.<index>'`;
+      // the value is caller data and routinely the very field under validation, the key name is a schema
+      // identifier that discloses nothing about the caller.
+      const described = describeDuplicateEntryConstraint(
+        duplicateEntryFailure('SECRET-SKU-CODE', 'SwSku.skuCode'),
+      );
+
+      expect(described).toBe('SwSku.skuCode');
+      expect(described).not.toContain('SECRET-SKU-CODE');
+    });
+
+    it('NET-NEW — a colliding value that itself contains the anchor cannot widen the capture', () => {
+      /*
+       * The extraction is anchored on `for key '` and stops at the NEXT quote rather than the last one,
+       * so a value crafted to contain the anchor text captures only the real key. A greedy match would
+       * have promoted the attacker's own string into the recorded constraint name.
+       */
+      const described = describeDuplicateEntryConstraint(
+        duplicateEntryFailure("evil for key 'INJECTED", 'SwBrand.urlTitle'),
+      );
+
+      expect(described).toBe('INJECTED');
+      expect(described).not.toContain('SwBrand');
+    });
+
+    it('NET-NEW — a control character in the key position yields no constraint name at all', () => {
+      // CWE-117. Only printable ASCII other than a quote is admitted, so a log-injection payload does
+      // not become a recorded field; the full driver error is still attached as `cause`.
+      expect(
+        describeDuplicateEntryConstraint(
+          duplicateEntryFailure('x', 'SwOption.optionCode\n\u001b[31mFORGED'),
+        ),
+      ).toBeUndefined();
+      expect(describeDuplicateEntryConstraint(new Error('no key clause here'))).toBeUndefined();
+      expect(describeDuplicateEntryConstraint({ message: 42 })).toBeUndefined();
+      expect(describeDuplicateEntryConstraint(null)).toBeUndefined();
+    });
+
+    it('NET-NEW — an over-long constraint name is truncated rather than echoed unbounded', () => {
+      const described = describeDuplicateEntryConstraint(
+        duplicateEntryFailure('x', `SwSku.${'z'.repeat(400)}`),
+      );
+
+      expect(described).toBeDefined();
+      // 96 retained characters plus the single ellipsis that marks the truncation.
+      expect(described).toHaveLength(97);
+      expect(described?.endsWith('…')).toBe(true);
+    });
+
+    it('NET-NEW — the POOL-BOUND route translates a duplicate key on a write', async () => {
+      const driver = createDriverDouble(() => {
+        throw duplicateEntryFailure('WIDGET-1', 'SwProduct.productCode');
+      });
+      const runner = new QueryRunner(driver.pool);
+
+      const rejection: unknown = await runner
+        .executeMutation('INSERT INTO SwProduct (productID, productCode) VALUES (?, ?)', [
+          'product-1',
+          'WIDGET-1',
+        ])
+        .then(
+          () => undefined,
+          (failure: unknown) => failure,
+        );
+
+      expect(rejection).toBeInstanceOf(UniqueConstraintViolationError);
+      const failure = rejection as UniqueConstraintViolationError;
+      // The classification is what the finding asked for: a request rejection, not a service fault.
+      expect(failure.getPublicError().code).toBe('CATALOG_REQUEST_REJECTED');
+      // The internal account keeps the constraint and drops the value.
+      expect(failure.context).toMatchObject({
+        parameterCount: 2,
+        errno: MYSQL_DUPLICATE_ENTRY_ERRNO,
+        constraintName: 'SwProduct.productCode',
+      });
+      expect(JSON.stringify(failure.context)).not.toContain('WIDGET-1');
+      // Nothing is lost for a server-side reader.
+      expect(failure.cause).toBeDefined();
+    });
+
+    it('NET-NEW — the TRANSACTION-SCOPED route translates the same failure identically', async () => {
+      // The other of the two routes. `run` opens a boundary and hands out `scope.executor`, whose own
+      // `runStatement` applies the SAME imported helper. The commit gate answers `false` — "no errors to
+      // report" — so a SUCCESSFUL body would commit, which is what makes the rollback below attributable
+      // to the collision rather than to the gate.
+      const driver = createDriverDouble((call) => {
+        if (call.sql.startsWith('INSERT')) {
+          throw duplicateEntryFailure('RED', 'SwOption.optionCode');
+        }
+
+        return affectedRows(1);
+      });
+      const unitOfWork = new UnitOfWork(driver.pool);
+
+      const rejection: unknown = await unitOfWork
+        .run(
+          async (scope) =>
+            scope.executor.executeMutation('INSERT INTO SwOption (optionCode) VALUES (?)', ['RED']),
+          () => false,
+        )
+        .then(
+          () => undefined,
+          (failure: unknown) => failure,
+        );
+
+      expect(rejection).toBeInstanceOf(UniqueConstraintViolationError);
+      expect((rejection as UniqueConstraintViolationError).context).toMatchObject({
+        constraintName: 'SwOption.optionCode',
+      });
+    });
+
+    it('NET-NEW — losing the race ROLLS BACK the boundary rather than committing it', async () => {
+      /*
+       * Translating an error must not settle a boundary. The rollback decision still belongs to the
+       * boundary members, and a collision has to abandon the work — which on the importer's per-row path
+       * (M3) means abandoning THAT row's transaction and no other.
+       */
+      const driver = createDriverDouble(() => {
+        throw duplicateEntryFailure('RED', 'SwOption.optionCode');
+      });
+      const unitOfWork = new UnitOfWork(driver.pool);
+
+      await expect(
+        unitOfWork.run(
+          async (scope) =>
+            scope.executor.executeMutation('INSERT INTO SwOption (optionCode) VALUES (?)', ['RED']),
+          () => false,
+        ),
+      ).rejects.toBeInstanceOf(UniqueConstraintViolationError);
+
+      expect(driver.lifecycle).toContain('rollback');
+      expect(driver.lifecycle).not.toContain('commit');
+    });
+
+    it('NET-NEW — EVERY OTHER driver failure passes through as the identical object', async () => {
+      /*
+       * The narrowing that keeps this a reporting change rather than a rewrite of the failure surface.
+       * A deadlock, a lock-wait timeout, a connection reset and a syntax error must reach the caller with
+       * the same identity, message and stack they had before the translation existed — asserted by
+       * reference equality, which no re-wrapping can satisfy.
+       */
+      const lockWaitTimeout = Object.assign(new Error('Lock wait timeout exceeded'), {
+        errno: 1205,
+        code: 'ER_LOCK_WAIT_TIMEOUT',
+      });
+      const driver = createDriverDouble(() => {
+        throw lockWaitTimeout;
+      });
+      const runner = new QueryRunner(driver.pool);
+
+      const rejection: unknown = await runner
+        .executeMutation('UPDATE SwOption SET sortOrder = ? WHERE optionID = ?', [2, 'option-1'])
+        .then(
+          () => undefined,
+          (failure: unknown) => failure,
+        );
+
+      expect(rejection).toBe(lockWaitTimeout);
+      expect(rejection).not.toBeInstanceOf(UniqueConstraintViolationError);
+    });
+
+    it('NET-NEW — a deliberate `DomainError` from the guard is never re-examined as a driver failure', async () => {
+      // The catch wraps only the driver call, so the blank-statement refusal this class raises itself
+      // cannot be mistaken for a collision. It also proves the driver was never reached.
+      const driver = createDriverDouble(() => affectedRows(1));
+      const runner = new QueryRunner(driver.pool);
+
+      await expect(runner.executeMutation('   ', [])).rejects.toBeInstanceOf(DomainError);
+      await expect(runner.executeMutation('   ', [])).rejects.not.toBeInstanceOf(
+        UniqueConstraintViolationError,
+      );
+      expect(driver.calls).toStrictEqual([]);
+    });
+
+    it('NET-NEW — a successful write is entirely unaffected by the translation', async () => {
+      // The other half of "no outcome changed": the non-failing path returns exactly what it returned.
+      const driver = createDriverDouble(() => affectedRows(3));
+      const runner = new QueryRunner(driver.pool);
+
+      await expect(
+        runner.executeMutation('UPDATE SwSku SET price = ? WHERE productID = ?', [10, 'product-1']),
+      ).resolves.toBe(3);
+    });
+  });
+
+  /* ================================================================================================
+   * NET-NEW — F11. SETTLEMENT FAILURES, AND THE DISPOSAL DECISION THEY DRIVE (SEC-15, CWE-404)
+   *
+   * ⭐ EVERY CASE HERE WAS UNREACHABLE BEFORE THE DOUBLE COULD FAIL A SETTLEMENT, which is the whole of
+   * review finding F11: "UnitOfWork probes cannot fail begin/commit/rollback and never assert `destroy`,
+   * so dirty-connection handling can regress while tests stay green." `returnConnection` could have been
+   * reduced to a bare `connection.release()` and the entire suite would have stayed green.
+   *
+   * THE PRODUCTION RULE THESE CASES PIN, read from the code rather than assumed:
+   *   • `state.knownClean` starts `true`, is set `false` immediately BEFORE `beginTransaction`, and is
+   *     restored to `true` only by a settlement that actually SUCCEEDED — a successful commit, or a
+   *     successful roll-back.
+   *   • The `finally` disposes of the connection through `returnConnection`: `release` when the state is
+   *     known, `destroy` when it is not. Destroying takes the connection permanently out of service so a
+   *     connection of unknown transaction state cannot re-enter a warm pool and have the next
+   *     invocation begin work on top of whatever was left open (mismatch M7).
+   * So a failure in begin, in the work's roll-back, or in the commit all destroy; a work failure whose
+   * roll-back SUCCEEDED releases.
+   * ============================================================================================== */
+
+  describe('NET-NEW — F11. a failed settlement destroys the connection instead of recycling it', () => {
+    /** The work every case here hands the boundary: one write, so a transaction genuinely has content. */
+    const writeOneRow = async (scope: {
+      readonly executor: {
+        executeMutation(sql: string, values: readonly string[]): Promise<number>;
+      };
+    }): Promise<number> => scope.executor.executeMutation('UPDATE SwSku SET skuCode = ?', ['a']);
+
+    it('NET-NEW — a `beginTransaction` failure DESTROYS the connection and never reaches the work', async () => {
+      /*
+       * The known-clean flag is withdrawn BEFORE begin is attempted, so a failed begin leaves the
+       * connection's state unknown — the server may or may not have opened a transaction — and it is
+       * destroyed. Asserting that the work never ran matters too: a boundary that ran the work anyway
+       * would perform writes outside any transaction at all.
+       */
+      const beginFailure = new Error('begin refused');
+      const driver = createDriverDouble(
+        () => affectedRows(1),
+        (event) => {
+          if (event === 'begin') {
+            throw beginFailure;
+          }
+        },
+      );
+      const unitOfWork = new UnitOfWork(driver.pool);
+
+      const rejection: unknown = await unitOfWork
+        .run(writeOneRow, () => false)
+        .then(
+          () => undefined,
+          (failure: unknown) => failure,
+        );
+
+      /* Propagated by identity: nothing wraps, re-types or re-messages a begin failure. */
+      expect(rejection).toBe(beginFailure);
+      expect(driver.lifecycle).toStrictEqual(['begin', 'destroy']);
+      /* No statement was issued, so no write escaped the transaction that never opened. */
+      expect(driver.calls).toStrictEqual([]);
+    });
+
+    it('NET-NEW — a `commit` failure DESTROYS the connection and propagates the driver failure unchanged', async () => {
+      /*
+       * `state.knownClean = true` sits AFTER the awaited commit, so a rejected commit never restores the
+       * standing. The write may or may not be durable — that is exactly the unknown state the destroy
+       * exists for.
+       *
+       * The failure is propagated by identity rather than wrapped. That asymmetry with the roll-back path
+       * is deliberate and worth pinning: a roll-back failure is compound (something abandoned the work AND
+       * the undo failed) so it is wrapped to say so, whereas a commit failure's driver error is the whole
+       * story, and re-wrapping it would cost a caller the driver's own code and errno.
+       */
+      const commitFailure = Object.assign(new Error('commit refused'), {
+        code: 'ER_LOCK_DEADLOCK',
+      });
+      const driver = createDriverDouble(
+        () => affectedRows(1),
+        (event) => {
+          if (event === 'commit') {
+            throw commitFailure;
+          }
+        },
+      );
+      const unitOfWork = new UnitOfWork(driver.pool);
+
+      const rejection: unknown = await unitOfWork
+        .run(writeOneRow, () => false)
+        .then(
+          () => undefined,
+          (failure: unknown) => failure,
+        );
+
+      expect(rejection).toBe(commitFailure);
+      expect(driver.lifecycle).toStrictEqual(['begin', 'commit', 'destroy']);
+      /* The work DID run: the write reached the driver before the commit was attempted. */
+      expect(driver.calls).toHaveLength(1);
+    });
+
+    it('NET-NEW — a work failure whose ROLL-BACK SUCCEEDS releases the connection and preserves the primary error', async () => {
+      /*
+       * The other side of the disposal rule, and the one that keeps `destroy` honest: a successful
+       * roll-back restores the known-clean standing, so this connection is RELEASED and stays in service.
+       * A boundary that destroyed here would take a healthy connection out of the pool on every ordinary
+       * validation-driven abort.
+       *
+       * PRIMARY-ERROR PRESERVATION IS ASSERTED BY IDENTITY. `runWorkInside` rolls back and then re-raises
+       * the caller's own failure untouched, so a caller catching a specific type still catches the same
+       * VALUE. Comparing messages would pass against a re-wrapped error; `toBe` cannot.
+       */
+      const workFailure = new UniqueConstraintViolationError('the SKU code is taken');
+      const driver = createDriverDouble(() => affectedRows(1));
+      const unitOfWork = new UnitOfWork(driver.pool);
+
+      const rejection: unknown = await unitOfWork
+        .run(
+          () => Promise.reject(workFailure),
+          () => false,
+        )
+        .then(
+          () => undefined,
+          (failure: unknown) => failure,
+        );
+
+      expect(rejection).toBe(workFailure);
+      expect(driver.lifecycle).toStrictEqual(['begin', 'rollback', 'release']);
+    });
+
+    it('NET-NEW — a work failure whose ROLL-BACK ALSO FAILS destroys the connection and records the abandoned failure as a CLASS NAME only', async () => {
+      /*
+       * ⭐ THE COMPOUND CASE, AND THE ONE WITH A DISCLOSURE PROPERTY TO PIN. Two failures are in flight:
+       * the work's, and the roll-back's. Production reports the ROLL-BACK failure — because "nothing can
+       * be reported about what the database retained" is the more serious fact — carries the driver's
+       * rejection as `cause`, and reduces the abandoned failure to its NEUTRALIZED CLASS NAME on
+       * `context`.
+       *
+       * SO THE PRIMARY REASON IS NOT LOST, BUT IT IS NOT EMBEDDED EITHER, and this case asserts both
+       * halves. The abandoned error's MESSAGE carries caller data — here a URL title and a credential-like
+       * string — and attaching the object itself would put that in every log that renders the context
+       * (CWE-532), with its control characters intact (CWE-117). Only `'Error'` travels.
+       */
+      const abandoned = new Error('rejected acme-widgets for user:hunter2\nINJECTED LOG LINE');
+      const rollbackFailure = new Error('rollback refused');
+      const driver = createDriverDouble(
+        () => affectedRows(1),
+        (event) => {
+          if (event === 'rollback') {
+            throw rollbackFailure;
+          }
+        },
+      );
+      const unitOfWork = new UnitOfWork(driver.pool);
+
+      const rejection: unknown = await unitOfWork
+        .run(
+          () => Promise.reject(abandoned),
+          () => false,
+        )
+        .then(
+          () => undefined,
+          (failure: unknown) => failure,
+        );
+
+      if (!(rejection instanceof DomainError)) {
+        throw new Error('A failed roll-back was expected to be reported as a domain failure.');
+      }
+      expect(rejection.message).toMatch(/could not be rolled back/);
+      expect(rejection.cause).toBe(rollbackFailure);
+      expect(rejection.context).toStrictEqual({
+        rolledBackBecause: 'workFailure',
+        abandonedFailureClass: 'Error',
+      });
+
+      /* Nothing of the abandoned failure's own text survives into the record. */
+      const record = JSON.stringify({ message: rejection.message, context: rejection.context });
+      expect(record).not.toMatch(/acme-widgets|hunter2|INJECTED/);
+      expect(record).not.toMatch(/\n/);
+
+      expect(driver.lifecycle).toStrictEqual(['begin', 'rollback', 'destroy']);
+    });
+
+    it('NET-NEW — M5. an ERROR-GATE roll-back that fails destroys the connection and records NO abandoned class, because nothing was abandoned', async () => {
+      /*
+       * The gate path (mismatch M5) reaches the same roll-back with a different `cause` and, decisively,
+       * with NO abandoned failure — the work SUCCEEDED and the caller's accumulated findings are what
+       * refuse the commit. `exactOptionalPropertyTypes` makes "absent" and "present and undefined"
+       * different things, and the honest statement is absent, so `toStrictEqual` is what asserts it: a
+       * `{ abandonedFailureClass: undefined }` record would fail here.
+       */
+      const rollbackFailure = new Error('rollback refused');
+      const driver = createDriverDouble(
+        () => affectedRows(1),
+        (event) => {
+          if (event === 'rollback') {
+            throw rollbackFailure;
+          }
+        },
+      );
+      const unitOfWork = new UnitOfWork(driver.pool);
+
+      const rejection: unknown = await unitOfWork
+        .run(writeOneRow, () => true)
+        .then(
+          () => undefined,
+          (failure: unknown) => failure,
+        );
+
+      if (!(rejection instanceof DomainError)) {
+        throw new Error('A failed roll-back was expected to be reported as a domain failure.');
+      }
+      expect(rejection.context).toStrictEqual({ rolledBackBecause: 'accumulatedErrors' });
+      expect(driver.lifecycle).toStrictEqual(['begin', 'rollback', 'destroy']);
+    });
+
+    it('NET-NEW — M5. an error-gate roll-back that SUCCEEDS releases, and the refusal is a domain failure rather than a quiet return', async () => {
+      /*
+       * The ordinary M5 path, kept beside the failing one so the destroy above is attributable to the
+       * FAILED settlement rather than to the gate. It also pins that the boundary RAISES: a caller that
+       * received a quiet "nothing was kept" would carry on as though the write had happened.
+       */
+      const driver = createDriverDouble(() => affectedRows(1));
+      const unitOfWork = new UnitOfWork(driver.pool);
+
+      const rejection: unknown = await unitOfWork
+        .run(writeOneRow, () => true)
+        .then(
+          () => undefined,
+          (failure: unknown) => failure,
+        );
+
+      if (!(rejection instanceof DomainError)) {
+        throw new Error('The gate was expected to refuse the commit with a domain failure.');
+      }
+      expect(rejection.context).toStrictEqual({ settledAs: 'rollback' });
+      expect(driver.lifecycle).toStrictEqual(['begin', 'rollback', 'release']);
+    });
+
+    it('NET-NEW — M3. a per-item commit failure destroys the ONE shared connection and leaves earlier rows committed', async () => {
+      /*
+       * The importer's shape (`model/dao/ProductDAO.cfc:L176-L177`): one connection for the whole list,
+       * one INDEPENDENT transaction per row. Row two's commit fails, and three properties must hold at
+       * once — row one stays committed, row three never begins, and the single shared connection is
+       * DESTROYED rather than released back for the next invocation to inherit.
+       *
+       * A boundary that acquired per item would show three acquires here; one that used `Promise.all`
+       * would show all three begins. The event list rules out both.
+       */
+      let commits = 0;
+      const commitFailure = new Error('commit refused');
+      const driver = createDriverDouble(
+        () => affectedRows(1),
+        (event) => {
+          if (event === 'commit') {
+            commits += 1;
+            if (commits === 2) {
+              throw commitFailure;
+            }
+          }
+        },
+      );
+      const unitOfWork = new UnitOfWork(driver.pool);
+      const rowsAttempted: string[] = [];
+
+      const rejection: unknown = await unitOfWork
+        .runPerItemWithoutResults(['row-1', 'row-2', 'row-3'], async (row, scope) => {
+          rowsAttempted.push(row);
+          await scope.executor.executeMutation('INSERT INTO SwProduct (productID) VALUES (?)', [
+            row,
+          ]);
+        })
+        .then(
+          () => undefined,
+          (failure: unknown) => failure,
+        );
+
+      expect(rejection).toBe(commitFailure);
+      expect(rowsAttempted).toStrictEqual(['row-1', 'row-2']);
+      expect(driver.lifecycle).toStrictEqual(['begin', 'commit', 'begin', 'commit', 'destroy']);
+    });
+  });
+
+  describe('NET-NEW — the support double and the real boundary agree on WHICH disposal happens', () => {
+    /*
+     * ⭐ WHY A PARITY BLOCK, AND WHY IT BELONGS HERE RATHER THAN IN TEST SUPPORT. Every service, handler
+     * and repository suite in this port asserts boundary behaviour through the STRUCTURAL double in
+     * `../support/inMemoryRepositories.ts`, never through the class — that is what lets a service be
+     * tested with no driver at all. Those assertions are worth exactly as much as the agreement between
+     * the two implementations, and the disposal decision is the one place where a plausible double
+     * diverges in silence: releasing unconditionally is the obvious thing to write, it needs no
+     * settlement modelling at all, and it is WRONG on four of the seven paths below.
+     *
+     * So the block drives the SAME seven settlement outcomes through the real class over the driver double
+     * and through the support double, and asserts three things each time: what the class did, what the
+     * double did, and that the two are the same list. The third assertion is the contract; the first two
+     * are what tell you which side broke when it fails.
+     *
+     * ⚠️ ONE PROPERTY IS DELIBERATELY NOT ASSERTED AS PARITY. The class's compound roll-back failure
+     * carries a SANITISED, length-bounded class name for the abandoned failure and the double does not
+     * reproduce that reduction — a second implementation in test support could agree with itself while
+     * disagreeing with the code that ships. The reduction is pinned against the class alone, above.
+     */
+
+    /** The failure injected into whichever settlement step a scenario names. */
+    const settlementFailure = new Error('the settlement was refused');
+    /** The failure the work itself raises, for the scenarios that need one. */
+    const workFailure = new Error('the work inside the boundary was abandoned');
+
+    /** One settlement outcome and the disposal it must produce on BOTH implementations. */
+    interface DisposalScenario {
+      readonly name: string;
+      /** Which settlement step fails, or `undefined` when every step succeeds. */
+      readonly failing: 'begin' | 'commit' | 'rollback' | undefined;
+      readonly workFails: boolean;
+      readonly gateReportsErrors: boolean;
+      readonly disposal: 'release' | 'destroy';
+    }
+
+    const SCENARIOS: readonly DisposalScenario[] = [
+      {
+        name: 'a clean commit',
+        failing: undefined,
+        workFails: false,
+        gateReportsErrors: false,
+        disposal: 'release',
+      },
+      {
+        name: 'work that failed, rolled back cleanly',
+        failing: undefined,
+        workFails: true,
+        gateReportsErrors: false,
+        disposal: 'release',
+      },
+      {
+        name: 'the M5 gate, rolled back cleanly',
+        failing: undefined,
+        workFails: false,
+        gateReportsErrors: true,
+        disposal: 'release',
+      },
+      {
+        name: 'a failed begin',
+        failing: 'begin',
+        workFails: false,
+        gateReportsErrors: false,
+        disposal: 'destroy',
+      },
+      {
+        name: 'a failed commit',
+        failing: 'commit',
+        workFails: false,
+        gateReportsErrors: false,
+        disposal: 'destroy',
+      },
+      {
+        name: 'a failed roll-back after failed work',
+        failing: 'rollback',
+        workFails: true,
+        gateReportsErrors: false,
+        disposal: 'destroy',
+      },
+      {
+        name: 'a failed roll-back after the M5 gate',
+        failing: 'rollback',
+        workFails: false,
+        gateReportsErrors: true,
+        disposal: 'destroy',
+      },
+    ];
+
+    for (const scenario of SCENARIOS) {
+      it(`NET-NEW — ${scenario.name} ends in a ${scenario.disposal} on both implementations`, async () => {
+        /*
+         * The same work and the same gate go to both boundaries. Neither issues a statement: the disposal
+         * decision is a property of the SETTLEMENT, so a statement would add a variable without adding a
+         * distinction, and the class's statement handling is asserted elsewhere in this file.
+         */
+        const work = (): Promise<void> =>
+          scenario.workFails ? Promise.reject(workFailure) : Promise.resolve();
+        const gate = (): boolean => scenario.gateReportsErrors;
+        const settle = (step: 'begin' | 'commit' | 'rollback'): void => {
+          if (step === scenario.failing) {
+            throw settlementFailure;
+          }
+        };
+        /** Only the disposal events, which is the whole of what the two implementations must agree on. */
+        const disposalsIn = (events: readonly string[]): readonly string[] =>
+          events.filter((event) => event === 'release' || event === 'destroy');
+        /** Swallows the rejection: every scenario but the first has one, and none of them is under test here. */
+        const ignoreOutcome = (): undefined => undefined;
+
+        const driver = createDriverDouble(() => affectedRows(1), settle);
+        await new UnitOfWork(driver.pool).run(work, gate).then(ignoreOutcome, ignoreOutcome);
+
+        const double = createUnitOfWorkDouble({ settlement: settle });
+        await double.unitOfWork.run(work, gate).then(ignoreOutcome, ignoreOutcome);
+
+        expect(disposalsIn(driver.lifecycle)).toStrictEqual([scenario.disposal]);
+        expect(disposalsIn(double.eventKinds())).toStrictEqual([scenario.disposal]);
+        /* The parity statement itself, so a divergence fails here even if both lists changed together. */
+        expect(disposalsIn(driver.lifecycle)).toStrictEqual(disposalsIn(double.eventKinds()));
+      });
+    }
+  });
+});
+
+/* =====================================================================================================
+ * FOLDED IN FROM `test/adapters/UnitOfWorkSortOrder.test.ts` — AAP §0.4.1.12 SUITE ALIGNMENT (F1)
+ * =====================================================================================================
+ * WHY THESE CASES ARE HERE RATHER THAN IN A SUITE OF THEIR OWN. AAP §0.4.1.12 declares exactly seventeen
+ * executable suites, and `test/adapters/UnitOfWorkSortOrder.test.ts` was not one of them — a QA pass recorded it,
+ * with eighteen siblings, as running outside the declared test plan. The coverage was never the problem;
+ * the file's existence was. So the cases are folded into an approved suite, unchanged.
+ *
+ * ⭐ WHY THIS HOST. The sort-order read belongs to the option-group ordering `model/dao/SkuDAO.cfc:L204-L220` memoizes, and
+ * `MySqlSkuRepository` is the adapter that holds that memo. Its carried CWE-367 race is asserted here too.
+ *
+ * ⛔ THE BODY IS WRAPPED IN ONE `describe`, WHICH IS THE WHOLE OF THE MECHANICAL CHANGE. Every helper,
+ * constant and type the folded suite declared at module scope is now block-scoped to this callback, so it
+ * cannot collide with this file's own declarations or with another folded body's — and any `beforeEach`,
+ * `afterEach` or `beforeAll` it carries now applies to its own cases only, never to the host's. Not one
+ * assertion, case name or comment was altered.
+ * ================================================================================================== */
+
+/* ================================================================================================
+ * `UnitOfWork` — THE SORT-ORDER SEEDING BOUNDARY (review finding 18)
+ * ================================================================================================
+ * Companion to `UnitOfWork.test.ts`, which covers the execution/settlement boundary (the locking read,
+ * the duplicate-key translation and the disposal decision). The sort-order seeding members are a
+ * separate concern with their own driver expectations, so they are exercised here rather than being
+ * interleaved with those cases.
+ * ============================================================================================== */
+
+/**
+ * ================================================================================================
+ * `UnitOfWork` — THE SORT-ORDER SEEDING CONTRACT — **NET-NEW** COVERAGE (REVIEW FINDING 18)
+ * ================================================================================================
+ * EVERY CASE IN THIS FILE IS **NET-NEW**, AND EVERY CASE TITLE SAYS SO. There is no legacy
+ * `HibachiDAOTest` or `HibachiEntityTest` covering the sort-order block anywhere in `meta/tests/`, so
+ * nothing here extends, replaces or reproduces an existing assertion. A reviewer asking "did this suite
+ * replicate existing tests, or generate new ones?" has an unambiguous answer for this file: generated,
+ * and labelled as generated in every single title.
+ *
+ * TRACEABILITY IS **DOCUMENTARY**, NOT EMPIRICAL, for the reasons the sibling adapter suites state at
+ * length: MXUnit is not vendored, no CFML engine is available, and `meta/docker/slatwall-local-dev/`
+ * does not exist. Every behavioural claim below was established by READING
+ * `org/Hibachi/HibachiEntity.cfc` and `org/Hibachi/HibachiDAO.cfc` line by line, and each assertion
+ * carries the `path:Lnnn` locator it was derived from. **NO RUNTIME BEHAVIOURAL COMPARISON WAS
+ * PERFORMED.**
+ *
+ * ------------------------------------------------------------------------------------------------
+ * WHY THIS FILE EXISTS, AND WHAT THE REVIEW FOUND
+ * ------------------------------------------------------------------------------------------------
+ * `model/entity/OptionGroup.cfc:L58` declares `sortOrder` with `required="true"`, and
+ * `model/validation/OptionGroup.json` declares NO rule for it. Those are two different requirement
+ * systems, and `test/domain/OptionGroup.test.ts` correctly pins the validation half: a group with
+ * `sortOrder` unset validates clean, and the ported rule set must not invent a presence rule merely
+ * because the mapping marks the column required.
+ *
+ * The review's point was about the OTHER half. `UnitOfWork` owned the READ —
+ * `getTableTopSortOrder`, the port of `org/Hibachi/HibachiDAO.cfc:L149-L168` — and owned it with no test
+ * at all, while NOTHING anywhere ported the ASSIGNMENT at `org/Hibachi/HibachiEntity.cfc:L646` that
+ * consumes it. So the invariant had no enforcement point and no coverage, and an entity could reach a
+ * writable-value collector with the slot still absent: "any bypass reaches the database with a
+ * non-writable object."
+ *
+ * ⛔ WHAT THIS FILE REFUSES TO DO. It does not test a validation rule for `sortOrder`, because there
+ * must not be one. It does not assert a default value, because none may be invented (S9) — the seed is
+ * always `topSortOrder + 1` read from the table, and an unseeded entity raises. And it adds no database:
+ * `mysql2` is not imported, no pool is constructed, and the executor is the shared support double.
+ * ================================================================================================
+ */
+describe("test/adapters/UnitOfWorkSortOrder.test.ts — the sort-order maximum read, whose memo this file's own repository owns (folded, F1)", () => {
+  /* ================================================================================================
+   * THE HARNESS
+   * ============================================================================================== */
+
+  /**
+   * A pool that refuses to hand out a connection.
+   *
+   * ⭐ REFUSING IS THE ASSERTION, NOT A CONVENIENCE. Every member exercised in this file takes its
+   * executor as an ARGUMENT, precisely so the read shares the connection and the transaction of the insert
+   * it is seeding (M6). A pool that answered would let a member quietly reach for a second connection and
+   * the mistake would pass unnoticed; this one turns that into a failure.
+   */
+  const refusingPool: StatementPool = {
+    getConnection: (): Promise<TransactionalStatementRunner> =>
+      Promise.reject(
+        new Error(
+          'seeding must run on the executor it is given, never on a pool connection of its own',
+        ),
+      ),
+    execute: (_sql: string, _values: readonly BoundParameterValue[]): Promise<never> =>
+      Promise.reject(new Error('seeding must not issue statements through the pool')),
+  };
+
+  /** What one harness observes. */
+  interface Harness {
+    readonly unitOfWork: UnitOfWork;
+    readonly calls: readonly SqlExecutorCall[];
+    readonly executor: Parameters<UnitOfWork['getTableTopSortOrder']>[0];
+  }
+
+  /**
+   * Builds the harness.
+   *
+   * @param answer - the rows every statement resolves to; the sort-order read is the only statement any
+   *   case here issues, so one answer suffices.
+   * @returns the harness.
+   */
+  function buildHarness(answer: readonly MySqlRow[]): Harness {
+    const sqlExecutor = createSqlExecutorDouble({ respond: () => sqlRows(answer) });
+
+    return {
+      unitOfWork: new UnitOfWork(refusingPool),
+      calls: sqlExecutor.calls,
+      executor: sqlExecutor.executor,
+    };
+  }
+
+  /** Collapses runs of whitespace so a statement can be matched without depending on its indentation. */
+  function collapse(sql: string): string {
+    return sql.replace(/\s+/g, ' ').trim();
+  }
+
+  /** A bare group-shaped seed target — only the mutable slot the contract needs. */
+  function seedTarget(sortOrder?: number): SortOrderSeedTarget {
+    return sortOrder === undefined ? {} : { sortOrder };
+  }
+
+  /* ================================================================================================
+   * getTableTopSortOrder — org/Hibachi/HibachiDAO.cfc:L149-L168
+   * ============================================================================================== */
+
+  describe('NET-NEW — getTableTopSortOrder, the read the seeding step consumes', () => {
+    it('NET-NEW — composes the WHOLE-TABLE read with no WHERE clause and no parameters', async () => {
+      const harness = buildHarness([{ topSortOrder: 7 }]);
+
+      const top = await harness.unitOfWork.getTableTopSortOrder(harness.executor, 'SwOptionGroup');
+
+      /*
+       * `:L153-L157` — `SELECT COALESCE(max(sortOrder), 0) as topSortOrder FROM #tableName#`, and `:L159`
+       * guards the `WHERE` clause on BOTH context arguments existing. `OptionGroup` declares no
+       * `sortContext`, so `org/Hibachi/HibachiEntity.cfc:L644` supplies neither and this is the shape it
+       * gets: the maximum across the ENTIRE table.
+       *
+       * ⛔ AND NOTHING TRAILS IT. A revision appended ` FOR UPDATE` here to close the read-then-write race
+       * at `org/Hibachi/HibachiEntity.cfc:L646`; the suffix is WITHDRAWN because AAP §0.6.7.7 authorises
+       * exactly one behavioural departure in this port (D18) and AAP §0.8.2 Guideline 4 admits no
+       * proportionality test. The CWE-367 exposure is carried and flagged on the member itself. So this case
+       * asserts exactly what it always asserted about the SHAPE, with nothing added: one statement, no
+       * `WHERE`, no bound value, no clause after the table name.
+       */
+      expect(collapse(harness.calls[0]?.sql ?? '')).toBe(
+        'SELECT COALESCE(max(sortOrder), 0) as topSortOrder FROM SwOptionGroup',
+      );
+      expect(harness.calls[0]?.params).toEqual([]);
+      expect(harness.calls).toHaveLength(1);
+      expect(top).toBe(7);
+    });
+
+    it('NET-NEW — composes the SCOPED read with the context value BOUND, never interpolated', async () => {
+      const harness = buildHarness([{ topSortOrder: 3 }]);
+
+      const top = await harness.unitOfWork.getTableTopSortOrder(
+        harness.executor,
+        'SwOption',
+        'optionGroupID',
+        'cccccccccccccccccccccccccccc0001',
+      );
+
+      /*
+       * `:L160-L162` — the clause the legacy adds, and it is the ONE value the legacy already bound:
+       * `<cfqueryparam cfsqltype="cf_sql_varchar" value="#arguments.contextIDValue#" />`. So this is not a
+       * D18 hardening, it is a like-for-like translation of a statement that was already parameterised.
+       * The COLUMN is an identifier and travels through `assertColumnName`, which is why it appears in the
+       * text rather than as a marker.
+       *
+       * ⛔ AND THE STATEMENT ENDS AT THE `WHERE`. The withdrawn locking suffix was appended after it, which
+       * is the only place MySQL accepts one; with the suffix gone the bound clause is the last thing in the
+       * statement, asserted byte-for-byte here and positionally in `UnitOfWork.test.ts`.
+       */
+      expect(collapse(harness.calls[0]?.sql ?? '')).toBe(
+        'SELECT COALESCE(max(sortOrder), 0) as topSortOrder FROM SwOption WHERE optionGroupID = ?',
+      );
+      expect(harness.calls[0]?.params).toEqual(['cccccccccccccccccccccccccccc0001']);
+      expect(top).toBe(3);
+    });
+
+    it('NET-NEW — reads the COALESCE zero of an empty table rather than raising', async () => {
+      const harness = buildHarness([{ topSortOrder: 0 }]);
+
+      /* `:L153` projects `COALESCE(max(sortOrder), 0)`, so an empty table is a legitimate zero and not an
+       * absent answer. The `+ 1` in the seeding step is what turns it into the first position. */
+      await expect(
+        harness.unitOfWork.getTableTopSortOrder(harness.executor, 'SwOptionGroup'),
+      ).resolves.toBe(0);
+    });
+
+    it('NET-NEW — RAISES when the aggregate produced no row at all', async () => {
+      const harness = buildHarness([]);
+
+      /*
+       * An aggregate without a `GROUP BY` always produces exactly one row, so no row means the statement
+       * did not run as composed. That RAISES rather than degrading to the zero the `COALESCE` would have
+       * produced — degrading would seed position 1 into a populated table and collide with a real row.
+       */
+      await expect(
+        harness.unitOfWork.getTableTopSortOrder(harness.executor, 'SwOptionGroup'),
+      ).rejects.toBeInstanceOf(DataIntegrityError);
+    });
+
+    it('NET-NEW — RAISES when the row lacks the projected alias', async () => {
+      const harness = buildHarness([{ somethingElse: 4 }]);
+
+      await expect(
+        harness.unitOfWork.getTableTopSortOrder(harness.executor, 'SwOptionGroup'),
+      ).rejects.toThrow(/without its projected column/);
+    });
+
+    it('NET-NEW — refuses a table outside the physical whitelist', async () => {
+      const harness = buildHarness([{ topSortOrder: 1 }]);
+
+      /* The table name is an IDENTIFIER and cannot be bound, so it is whitelisted instead. `tContent` is
+       * the CMS table review finding 12 established must never enter the Catalog whitelist. The refused
+       * candidate travels in the diagnostic CONTEXT rather than in the message, so the message stays free of
+       * caller-supplied text — asserted on the context for exactly that reason. */
+      const refusal = await harness.unitOfWork
+        .getTableTopSortOrder(harness.executor, 'tContent')
+        .then(
+          () => undefined,
+          (error: unknown) => error as DataIntegrityError,
+        );
+
+      expect(refusal).toBeInstanceOf(DomainError);
+      expect(refusal?.context).toEqual({ candidate: 'tContent' });
+
+      /* ⭐ AND IT IS REFUSED BEFORE ANY STATEMENT TEXT IS ASSEMBLED, so nothing reached the executor. */
+      expect(harness.calls).toEqual([]);
+    });
+  });
+
+  /* ================================================================================================
+   * seedFirstSortOrder — org/Hibachi/HibachiEntity.cfc:L637-L647
+   * ============================================================================================== */
+
+  describe('NET-NEW — seedFirstSortOrder, the whole-table assignment (review finding 18)', () => {
+    it('NET-NEW — assigns topSortOrder + 1 across the WHOLE SwOptionGroup table', async () => {
+      const harness = buildHarness([{ topSortOrder: 4 }]);
+      const optionGroup = seedTarget();
+
+      const assigned = await harness.unitOfWork.seedFirstSortOrder(
+        harness.executor,
+        'SwOptionGroup',
+        optionGroup,
+      );
+
+      /*
+       * ⭐⭐ THIS IS THE HALF THAT WAS MISSING, AND THE ARITHMETIC IS THE ASSERTION. `:L646` is
+       * `setSortOrder( topSortOrder + 1 )`. `OptionGroup` declares no `sortContext`, so `:L644` takes the
+       * unscoped read and the new group's position is one past the highest position IN THE ENTIRE TABLE —
+       * which is exactly what "the whole-table top-sort-order assignment" in the review's resolution names.
+       *
+       * ⚠️ AND THE `+ 1` IS NOT COSMETIC. `SwOptionGroup.sortOrder` is an EXPONENT: `model/dao/SkuDAO.cfc:L195`
+       * computes `SUM(SwOption.sortOrder * POWER(10, next - SwOptionGroup.sortOrder))`. An off-by-one here
+       * reorders SKUs with no error anywhere, which is why the seed is pinned rather than assumed.
+       */
+      expect(assigned).toBe(5);
+      expect(optionGroup.sortOrder).toBe(5);
+
+      expect(collapse(harness.calls[0]?.sql ?? '')).toBe(
+        'SELECT COALESCE(max(sortOrder), 0) as topSortOrder FROM SwOptionGroup',
+      );
+      expect(harness.calls[0]?.params).toEqual([]);
+    });
+
+    it('NET-NEW — seeds the FIRST row of an empty table to 1, not 0', async () => {
+      const harness = buildHarness([{ topSortOrder: 0 }]);
+      const optionGroup = seedTarget();
+
+      await harness.unitOfWork.seedFirstSortOrder(harness.executor, 'SwOptionGroup', optionGroup);
+
+      /* `COALESCE(max(sortOrder), 0)` at `:L153` plus the `+ 1` at `:L646`. Position 1, and the zero the
+       * legacy initialises `topSortOrder` to at `:L640` is dead in the source and reproduced nowhere. */
+      expect(optionGroup.sortOrder).toBe(1);
+    });
+
+    it('NET-NEW — takes the SCOPED read when a sortContext scope is supplied (Option)', async () => {
+      const harness = buildHarness([{ topSortOrder: 2 }]);
+      const option = seedTarget();
+
+      const assigned = await harness.unitOfWork.seedFirstSortOrder(
+        harness.executor,
+        'SwOption',
+        option,
+        {
+          contextIDColumn: 'optionGroupID',
+          contextIDValue: 'cccccccccccccccccccccccccccc0001',
+        },
+      );
+
+      /*
+       * ⭐ THE SIBLING BRANCH, AND THE ONLY IN-SCOPE ENTITY THAT EXERCISES IT. `sortContext=` occurs five
+       * times in the legacy tree and `model/entity/Option.cfc:L56` is the only one inside this slice, so
+       * `:L641-L642` fires for an option and `:L644` for its group. An option's first position is therefore
+       * one past the highest position WITHIN ITS GROUP, not within the table — which is why the two entities
+       * cannot share one seeding call.
+       */
+      expect(assigned).toBe(3);
+      expect(option.sortOrder).toBe(3);
+      expect(collapse(harness.calls[0]?.sql ?? '')).toContain('WHERE optionGroupID = ?');
+      expect(harness.calls[0]?.params).toEqual(['cccccccccccccccccccccccccccc0001']);
+    });
+
+    it('NET-NEW — the two branches differ ONLY in the scope, and read the same aggregate', async () => {
+      const unscoped = buildHarness([{ topSortOrder: 9 }]);
+      const scoped = buildHarness([{ topSortOrder: 9 }]);
+
+      await unscoped.unitOfWork.seedFirstSortOrder(
+        unscoped.executor,
+        'SwOptionGroup',
+        seedTarget(),
+      );
+      await scoped.unitOfWork.seedFirstSortOrder(scoped.executor, 'SwOption', seedTarget(), {
+        contextIDColumn: 'optionGroupID',
+        contextIDValue: 'cccccccccccccccccccccccccccc0001',
+      });
+
+      /* Same projection, same `COALESCE`, same `+ 1`; the scoped form adds one clause and one bound value
+       * and changes nothing else. Bounding the divergence with evidence is what keeps `:L641`'s branch from
+       * drifting into two different reads. */
+      const [unscopedSql, scopedSql] = [
+        collapse(unscoped.calls[0]?.sql ?? ''),
+        collapse(scoped.calls[0]?.sql ?? ''),
+      ];
+
+      /* ⛔ NEITHER STATEMENT TRAILS ANYTHING. A revision appended ` FOR UPDATE` to both and this comparison
+       * had to lift the suffix off before comparing; with the suffix withdrawn the two statements differ by
+       * exactly one clause and one bound value, and that is asserted directly. */
+      expect(unscopedSql).toBe(
+        'SELECT COALESCE(max(sortOrder), 0) as topSortOrder FROM SwOptionGroup',
+      );
+      expect(scopedSql).toBe(
+        `${unscopedSql.replace('SwOptionGroup', 'SwOption')} WHERE optionGroupID = ?`,
+      );
+    });
+
+    it('NET-NEW — REPLACES an existing value, because :L637-L647 carries no idempotency guard', async () => {
+      const harness = buildHarness([{ topSortOrder: 6 }]);
+      const optionGroup = seedTarget(99);
+
+      await harness.unitOfWork.seedFirstSortOrder(harness.executor, 'SwOptionGroup', optionGroup);
+
+      /*
+       * ⚠️ TODO(parity) `org/Hibachi/HibachiEntity.cfc:L639-L646` — THE BLOCK IS GATED ONLY ON THE ACCESSOR
+       * EXISTING, NEVER ON THE VALUE BEING ABSENT. It runs inside `preInsert()` and assigns
+       * unconditionally, so an entity that arrived carrying a position has it overwritten on insert. That is
+       * preserved rather than repaired: adding an "only if absent" guard would be an enhancement the legacy
+       * does not have, and it would also mask a caller that seeded from the wrong table. The obligation this
+       * places on callers — invoke on INSERT only, never on update — is recorded on the member itself.
+       */
+      expect(optionGroup.sortOrder).toBe(7);
+    });
+
+    it('NET-NEW — issues its read on the GIVEN executor, never on a pool connection of its own', async () => {
+      const harness = buildHarness([{ topSortOrder: 1 }]);
+
+      /* The harness's pool rejects every member. Resolving at all therefore proves the read travelled on the
+       * executor it was handed — which is what makes it share the connection and transaction of the insert
+       * it is seeding (M6). Two concurrent inserts reading through separate connections would see the same
+       * maximum and collide. */
+      await expect(
+        harness.unitOfWork.seedFirstSortOrder(harness.executor, 'SwOptionGroup', seedTarget()),
+      ).resolves.toBe(2);
+    });
+
+    it('NET-NEW — leaves the slot UNSET when the read fails, seeding nothing on failure', async () => {
+      const harness = buildHarness([]);
+      const optionGroup = seedTarget();
+
+      await expect(
+        harness.unitOfWork.seedFirstSortOrder(harness.executor, 'SwOptionGroup', optionGroup),
+      ).rejects.toBeInstanceOf(DataIntegrityError);
+
+      /* No partial assignment: a failed read must not leave a position behind for the guard below to
+       * accept. The insert that was being seeded is the caller's to abandon. */
+      expect(optionGroup.sortOrder).toBeUndefined();
+    });
+  });
+
+  /* ================================================================================================
+   * assertSortOrderAssigned — the persistence-boundary invariant
+   * ============================================================================================== */
+
+  describe('NET-NEW — assertSortOrderAssigned, the invariant guard (review finding 18)', () => {
+    it('NET-NEW — REFUSES an entity whose sortOrder was never assigned', () => {
+      /*
+       * ⭐⭐ THIS IS THE BYPASS THE REVIEW NAMED, NOW CLOSED. `model/entity/OptionGroup.cfc:L58` declares
+       * the column required and `model/validation/OptionGroup.json` declares no rule, so validation passes a
+       * group with no position — correctly, and `test/domain/OptionGroup.test.ts` pins exactly that. What
+       * used to be missing was anything downstream that noticed. A collector that read the absent slot would
+       * bind `NULL` into a `NOT NULL` column, and the failure would surface as a driver error naming a
+       * column rather than as a diagnosis naming the invariant.
+       */
+      expect(() => assertSortOrderAssigned(seedTarget(), 'SwOptionGroup')).toThrow(
+        DataIntegrityError,
+      );
+      expect(() => assertSortOrderAssigned(seedTarget(), 'SwOptionGroup')).toThrow(
+        /no sort order assigned/,
+      );
+    });
+
+    it('NET-NEW — names the table in the diagnostic, and invents no value for the column', () => {
+      let captured: DataIntegrityError | undefined;
+
+      try {
+        assertSortOrderAssigned(seedTarget(), 'SwOptionGroup');
+      } catch (error) {
+        captured = error as DataIntegrityError;
+      }
+
+      /* ⛔ S9 — THE GUARD IS DELIBERATELY INCAPABLE OF REPAIR. It does not default to `0`, does not default
+       * to `1`, and does not perform the `MAX()` read itself: a guard that quietly seeded would hide the
+       * bypass instead of reporting it, and would issue a statement from whatever call site forgot to seed —
+       * possibly outside the transaction the write belongs to. */
+      expect(captured?.context).toEqual({
+        table: 'SwOptionGroup',
+        member: 'assertSortOrderAssigned',
+      });
+    });
+
+    it('NET-NEW — admits an entity that WAS seeded, and narrows the slot to present', async () => {
+      const harness = buildHarness([{ topSortOrder: 11 }]);
+      const optionGroup = seedTarget();
+
+      await harness.unitOfWork.seedFirstSortOrder(harness.executor, 'SwOptionGroup', optionGroup);
+      const writable = assertSortOrderAssigned(optionGroup, 'SwOptionGroup');
+
+      /* The seeding step and the guard compose: what `:L646` assigned is what the boundary admits, and the
+       * returned type carries `sortOrder: number` rather than an optional, so a collector downstream cannot
+       * reintroduce the absent case by accident. */
+      expect(writable.sortOrder).toBe(12);
+    });
+
+    it('NET-NEW — admits position ZERO, because absence and zero are different questions', () => {
+      /* A row genuinely holding `0` is a legal stored value — `COALESCE(max(sortOrder), 0)` returns zero for
+       * an empty table, and nothing forbids the column from holding it. The guard tests for ABSENCE, so a
+       * falsy-value test here would refuse a row the database accepts. */
+      expect(assertSortOrderAssigned(seedTarget(0), 'SwOptionGroup').sortOrder).toBe(0);
+    });
+
+    it('NET-NEW — refuses a table outside the physical whitelist even while refusing the entity', () => {
+      /* Both refusals are real, and the whitelist one wins because the diagnostic's table is resolved while
+       * the error is being composed. The point is that the guard cannot be used to smuggle an arbitrary table
+       * name into a diagnostic — even on the path where the entity was going to be refused anyway. */
+      let captured: DomainError | undefined;
+
+      try {
+        assertSortOrderAssigned(seedTarget(), 'tContent');
+      } catch (error) {
+        captured = error as DomainError;
+      }
+
+      expect(captured?.context).toEqual({ candidate: 'tContent' });
+    });
   });
 });

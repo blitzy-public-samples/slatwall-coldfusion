@@ -43,32 +43,33 @@
  * and the constraints vanish rather than degrading to a database guarantee. Carried as observed:
  * no `unique="true"` is proposed and no compensating behaviour is invented (AAP §0.7.3 S7).
  *
- * ⭐ SEC-HARDENING (D18-CLASS) — WHAT THIS PREDICATE NOW GUARANTEES, AND WHAT DIVERGENCE 1 STILL
- * LEAVES OPEN. Review finding F6 (CWE-367) observed that a predicate of this shape is the READ half
- * of a check-then-write, so two concurrent saves could both be told the value was free and both
- * commit it. Two things changed, and neither is a change of outcome:
+ * ⛔ TODO(parity) — THIS PREDICATE IS THE READ HALF OF A CHECK-THEN-WRITE, AND NOTHING SERIALIZES IT
+ * (CWE-367, TOCTOU). Two concurrent saves can both be told a value is free and both commit it. One
+ * thing, and only one, sits behind it, and it is a REPORTING change rather than a serialization one:
  *
- *   1. SERIALIZATION, IN THE ADAPTER. `src/adapters/mysql/UniquePropertyChecker.ts` takes a LOCKING
- *      read when — and only when — it has been re-bound to a transaction boundary's executor, so the
- *      check and the write that follows it inside that boundary are serialized against a concurrent
- *      boundary asking the same question. A locking read returns exactly the rows the same statement
- *      returns without one; it orders concurrent transactions and changes no verdict, which is why it
- *      is licensed on the D18 footing (AAP §0.6.7.7) rather than forbidden by AAP §0.8.2 Guideline 4.
- *      The legacy framework serializes the analogous sort-order read-then-write the same way, with a
- *      table-keyed lock at org/Hibachi/HibachiDAO.cfc:L182.
+ *   REPORTING, AT THE EXECUTION BOUNDARY. A write that loses the race against a real database
+ *   constraint arrives as a typed `UniqueConstraintViolationError` classified as a request rejection,
+ *   instead of as an unclassified driver error indistinguishable from a service fault. The same writes
+ *   succeed and fail, at the same moment; only the classification of the failure differs.
  *
- *   2. REPORTING, AT THE EXECUTION BOUNDARY. A write that loses the race against a real database
- *      constraint now arrives as a typed `UniqueConstraintViolationError` classified as a request
- *      rejection, instead of as an unclassified driver error indistinguishable from a service fault.
- *      That is a reporting change only: the same writes succeed and fail, at the same moment.
+ * ⛔ A REVISION ALSO TOOK A LOCKING READ IN THE ADAPTER — `FOR UPDATE`, on the boundary-scoped instance
+ * only — and licensed it on the D18 footing on the ground that a locking read returns exactly the rows
+ * the same statement returns without one and merely orders concurrent transactions. THAT IS WITHDRAWN.
+ * The ground was sound; the objection is the COUNT. AAP §0.6.7.7 authorises exactly ONE departure from
+ * behavioural preservation in this port — D18, the importer's parameterised SQL — and says so precisely
+ * to give a reviewer diffing behaviour a fixed number of entries to check. Statement text is observable,
+ * a lock-wait is observable under concurrency, and AAP §0.8.2 Guideline 4 admits no proportionality test.
+ * That the legacy framework serializes an ANALOGOUS sort-order read-then-write at
+ * org/Hibachi/HibachiDAO.cfc:L182 does not license it either: that lock guards a different member, which
+ * this port does not carry, and importing a control from an unported member is still an addition.
  *
- * ⚠️ AND HERE IS WHY DIVERGENCE 1 STILL MATTERS AFTER BOTH. Point 2 depends on a database constraint
- * existing to lose the race AGAINST, and for these two properties none does. Point 1 depends on the
- * write happening inside the boundary that performed the check. So for `optionCode` and
- * `optionGroupCode` specifically, a write issued outside any boundary is still arbitrated by nothing
- * at all. The repair that would close it — adding the two missing unique indexes — is FORBIDDEN, not
- * overlooked: AAP §0.2.2.5 places schema migration outside this refactoring entirely, and the `Sw*`
- * tables are read and written as they are. Flagged, not claimed closed (AAP §0.7.3 S8).
+ * ⚠️ SO THE EXPOSURE IS CARRIED IN FULL, AND DIVERGENCE 1 MAKES IT WORSE ON TWO PROPERTIES. Five of the
+ * seven ported rules have a `unique="true"` column behind them, so the database convicts the losing
+ * write and the reporting change above gives it a name. `optionCode` and `optionGroupCode` have NO such
+ * column, so on those two a lost race is arbitrated by nothing at all — before this port and after it.
+ * The repair that would close it — adding the two missing unique indexes — is FORBIDDEN, not overlooked:
+ * AAP §0.2.2.5 places schema migration outside this refactoring entirely, and the `Sw*` tables are read
+ * and written as they are. Flagged, not claimed closed (AAP §0.7.3 S8).
  *
  * CONSUMERS. src/validation/Validator.ts evaluates the `unique` constraint through this port, and
  * src/services/** runs validation before delegating to `BaseService.save`. That mirrors the legacy
@@ -378,4 +379,121 @@ export interface UniquePropertyPort {
    *   in use. Never null, never undefined, and never inverted.
    */
   isUniqueProperty(propertyName: string, entity: UniquePropertyEntity): Promise<boolean>;
+}
+
+/* =====================================================================================================
+ * FOLDED IN FROM `src/ports/TransactionalWritePort.ts` — AAP §0.4.1 INVENTORY ALIGNMENT (F1)
+ * =====================================================================================================
+ * WHY THIS SECTION IS HERE RATHER THAN IN ITS OWN FILE. AAP §0.4.1 freezes the subtree at 102 files and
+ * `TransactionalWritePort.ts` was not one of them. The declaration itself is load-bearing — it is what
+ * lets `src/handlers/**` reach a transaction boundary WITHOUT importing an adapter — so it is folded into
+ * an approved port rather than deleted, and it is reproduced below unchanged, doc record and all.
+ *
+ * ⭐ WHY THIS HOST. Both declarations stand for `org/Hibachi/**` persistence infrastructure that the
+ * WRITE path needs and that no domain type expresses: this file's own subject is the application-side
+ * uniqueness probe of `org/Hibachi/HibachiDAO.cfc:L130-L146`, which runs inside a save, and the section
+ * below is the transaction that save runs in. AAP §0.6.2's read-back — a uniqueness rule observing
+ * siblings the same unit is still writing — is the exact point at which the two meet, so a reader who
+ * needs one almost always needs the other.
+ *
+ * ⛔ NO IMPORT WAS ADDED, AND NO CYCLE IS POSSIBLE. This file imported nothing before the fold and the
+ * folded section imported nothing either: it is one generic interface over a caller's graph type. The
+ * handler layer therefore still imports a PORT and never an adapter, which is the property the section's
+ * own doc record spends its length defending.
+ *
+ * ⚠️ THE FOLD CHANGES ONLY THE IMPORT PATH ITS CONSUMERS WRITE — `src/handlers/skuHandler.ts`,
+ * `src/handlers/productHandler.ts`, `src/config/container.ts`, `src/adapters/mysql/UnitOfWork.ts` and two
+ * test suites now name this file.
+ * ================================================================================================== */
+
+/**
+ * The transaction boundary a write path runs inside — the port that replaces the legacy's request-end
+ * commit.
+ *
+ * AAP authority: AAP §0.3.3 lists **Unit of Work** as the pattern that replaces "the implicit
+ * request-end commit gated on `getORMHasErrors()`", and AAP §0.4.4 authorises
+ * `slatwall-ts/src/ports/**` | CREATE. `src/adapters/mysql/UnitOfWork.ts` already implements the
+ * mechanism; this file is the DECLARATION that lets a handler reach it without importing an adapter.
+ *
+ * =================================================================================================
+ * WHY A PORT AND NOT A DIRECT CALL TO `UnitOfWork`
+ * =================================================================================================
+ * ⛔ A HANDLER MUST NOT IMPORT FROM `../adapters/**`. AAP §0.3.3 places `handlers` and `adapters` in
+ * different layers of the hexagon and confines all AWS coupling to the handler layer; a handler that
+ * imported `UnitOfWork` would couple the AWS boundary to MySQL and to `mysql2`'s `PoolConnection`, which
+ * is the one direction the architecture exists to prevent. AAP §0.5.5 depends on that separation
+ * concretely: it states a runtime migration touches four artefacts "with no change to `src/domain/**`,
+ * `src/services/**`, `src/ports/**` or `src/adapters/**`", which only holds while the handler layer knows
+ * nothing about the driver.
+ *
+ * ⭐ THE GRAPH IS A TYPE PARAMETER BECAUSE A TRANSACTION-SCOPED SERVICE IS A DIFFERENT OBJECT. This is
+ * the part that a "just wrap the call in a transaction" reading gets wrong. A service holds its
+ * repository, and a repository holds its executor, from the moment it is constructed — so the service a
+ * handler captured at start-up is bound to the POOL, and calling it inside an open transaction would run
+ * its statements on a DIFFERENT connection, outside that transaction. Nothing would fail; the writes
+ * would simply not be part of the unit being committed, and a roll-back would leave them behind. The work
+ * function therefore receives a graph BUILT FOR THAT TRANSACTION rather than closing over an ambient one,
+ * and `TGraph` is generic so each handler declares only the capabilities its write path uses.
+ *
+ * =================================================================================================
+ * WHAT THE TWO ARGUMENTS CORRESPOND TO IN THE LEGACY
+ * =================================================================================================
+ * The legacy commit is not a statement anyone wrote. Per AAP §0.6.6 M5, `flushAtRequestEnd=false` and
+ * `Hibachi.cfc` performs a double `ormFlush()` at request end ONLY when the ORM reports no errors, so
+ * every write in a request was kept or discarded together, decided by a predicate evaluated after the
+ * work finished. `runWrite` is that shape made explicit: `work` is the request's writes and `hasErrors`
+ * is the gate, evaluated once, after the work and before the commit.
+ *
+ * ⚠️ THE GATE IS A CALLBACK RATHER THAN A RETURNED FLAG, AND THAT IS FORCED BY WHERE ERRORS LIVE. In
+ * this slice a batch's findings do NOT accumulate onto a single object: `src/services/SkuService.ts`
+ * records at length that per-SKU rule findings stay on the SKU that produced them while branch
+ * preconditions go to the product's bag, and that a product-level merge must not be reinstated because it
+ * re-keys a SKU's `skuCode` finding onto the product and loses which SKU failed. A caller must therefore
+ * be free to inspect the whole graph it just mutated, which a boolean returned from `work` cannot express
+ * — the work's return value is the operation's own result, and for `createSkus` that result is `true`
+ * unconditionally even when the batch failed.
+ */
+
+/**
+ * Runs one unit of work inside one transaction, against a graph built for that transaction.
+ *
+ * ⚠️ IMPLEMENTATIONS OWN THE WHOLE LIFECYCLE AND MUST NOT LEAK IT. Acquire, begin, commit or roll back,
+ * and DISPOSE OF the connection on every path — including when the work throws.
+ * `src/adapters/mysql/UnitOfWork.ts` holds that sequence, and this contract deliberately exposes none of
+ * it: a caller cannot commit early, cannot roll back explicitly and cannot reach the connection.
+ *
+ * ⛔ DISPOSAL IS NOT ALWAYS A RELEASE, and an implementation that made it one would be wrong rather than
+ * merely simple. A connection whose begin, commit or roll-back ITSELF failed carries a transaction state
+ * nobody can describe, so returning it to a warm pool hands the next invocation whatever was left open —
+ * precisely the cross-invocation bleed M7 exists to prevent, and silent, because the next caller sees no
+ * error. Such a connection must be taken out of service instead. Both branches are asserted against the
+ * MySQL implementation in `test/adapters/UnitOfWork.test.ts`, and the structural double in
+ * `test/support/inMemoryRepositories.ts` reproduces the same rule so a consumer suite cannot disagree
+ * with the class about it.
+ *
+ * @typeParam TGraph - The transaction-scoped capabilities the work needs. Declared by the caller, so a
+ *   write path depends on nothing wider than it uses.
+ */
+export interface TransactionalWriteRunner<TGraph> {
+  /**
+   * @param work - The writes, run inside an open transaction against a graph bound to it.
+   * @param hasErrors - The commit gate, evaluated ONCE after `work` settles successfully. `true` rolls
+   *   the transaction back and reports the roll-back to the caller as a failure; `false` commits. It must
+   *   be free of side effects, and it must read the state `work` accumulated rather than re-deriving it.
+   * @returns Whatever `work` produced — for a unit that was COMMITTED.
+   * @throws When `work` throws, after rolling back; and when `hasErrors` reports accumulated findings,
+   *   because a caller that received the work's value would otherwise be unable to tell a committed
+   *   result from a discarded one. `createSkus` makes that concrete: it returns `true` even for a batch
+   *   whose SKUs all failed validation, so its return value cannot distinguish the two outcomes.
+   * @throws When a SETTLEMENT itself fails — the begin, the commit, or the roll-back that either of the
+   *   two cases above asked for. A commit failure reaches the caller as the driver reported it, because
+   *   that failure is the whole story; a roll-back failure is compound, so it is reported as the more
+   *   serious fact — that nothing can be said about what the database retained — carrying the roll-back's
+   *   own failure as `cause`. On every one of these paths the connection is taken out of service rather
+   *   than returned to the pool, per the disposal rule above.
+   */
+  runWrite<TResult>(
+    work: (graph: TGraph) => Promise<TResult>,
+    hasErrors: () => boolean,
+  ): Promise<TResult>;
 }

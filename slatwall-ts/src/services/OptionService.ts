@@ -91,15 +91,12 @@ import type { ProductOptionFinder, ProductOptionGroupFinder } from '../domain/pr
 import type { Option } from '../domain/option/Option';
 import type { OptionGroup } from '../domain/option/OptionGroup';
 import type {
-  SmartListEntityName,
   SmartListInput,
-  SmartListPropertyIdentifier,
-  SmartListQuery,
   SmartListQueryPort,
   SmartListResult,
 } from '../ports/SmartListQueryPort';
 import type { OptionRepository } from '../ports/repositories/OptionRepository';
-import { translateSmartListInput } from '../util/smartListInput';
+import { buildIdentifierQuery, translateSmartListInput } from '../ports/SmartListQueryPort';
 
 /**
  * One entry of a select projection — a display label paired with the value that is submitted.
@@ -287,7 +284,7 @@ const OPTION_GROUP_ID_PROPERTY = 'optionGroupID';
  * A LOCAL COPY OF THE ENTIRE `applyData` GRAMMAR USED TO LIVE HERE: the key delimiters and prefix
  * constants, the add/remove filter folding, pattern-value wrapping, range parsing, order-statement and
  * keyword parsing, page-figure acceptance and a query composer. An equivalent copy lived in
- * `./SkuService`, and both restated what `../util/smartListInput` now owns.
+ * `./SkuService`, and both restated what `../ports/SmartListQueryPort` now owns.
  *
  * THE GRAMMAR IS ONE LEGACY BEHAVIOUR — `org/Hibachi/HibachiSmartList.cfc` `applyData` — SO IT IS
  * TRANSLATED ONCE. Both smart lists this service exposes now call `translateSmartListInput`, passing
@@ -296,50 +293,26 @@ const OPTION_GROUP_ID_PROPERTY = 'optionGroupID';
  * were sliced around — which is precisely the drift a single owner prevents.
  *
  * ⛔ DO NOT REINSTATE A LOCAL TRANSLATOR to add a key or change a precedence rule; extend
- * `../util/smartListInput`, where every caller gets the change. That translator also resolves every
+ * `../ports/SmartListQueryPort`, where every caller gets the change. That translator also resolves every
  * caller-supplied property path against the port's entity whitelist (SEC-09), so this service's two
  * smart lists inherit the closed-identifier guarantee without a copy here to keep in step. The branded `SmartListPropertyIdentifier` makes that
  * self-enforcing: an unresolved path is not assignable to a filter, so a future local copy could not
  * skip the check and still compile.
  * ============================================================================================== */
 
-/**
- * Builds the query that loads a single entity by its primary identifier.
+/* ================================================================================================
+ * The primary-identifier load — WITHDRAWN FROM THIS FILE, NOT FROM THE SERVICE.
  *
- * This is the target counterpart of the legacy identifier load. `onMissingGetMethod`
- * [org/Hibachi/HibachiService.cfc:L305-L328] resolves a `get`-prefixed member to
- * `get(entityName, id, isReturnNewOnNotFound)` at [:L326], which delegates through
- * [org/Hibachi/HibachiService.cfc:L22-L24] to [org/Hibachi/HibachiDAO.cfc:L6-L26], where the load
- * itself happens by primary key at [:L13]. Expressed through the port, that becomes a query filtered
- * on the identifier property — which is why {@link OptionService.getOption} and
- * {@link OptionService.getOptionGroup} need no repository member of their own, and why no statement
- * text, driver reference or query runner is imported here (S2).
- *
- * THE UNPAGED COLLECTION IS THE ONE TO READ. `SmartListResult` exposes both the full record set and
- * the current page, mirroring [org/Hibachi/HibachiSmartList.cfc:L751] and [:L759]. A primary-key
- * filter can match at most one row either way, but the unpaged collection is the faithful analogue:
- * the legacy load is a direct primary-key fetch with no paging applied, and reading the paged slice
- * would make the result depend on a page size this member never sets.
- *
- * ⭐ AND IT IS THE ONLY ONE EXECUTED, NOT MERELY THE ONLY ONE READ. Both callers run this query through
- * {@link SmartListQueryPort.executeRecords} rather than {@link SmartListQueryPort.execute}, so the page
- * query and the count query are never issued — which is what makes the paragraph above true of the
- * statements as well as of the return value. `entityLoadByPK` at [org/Hibachi/HibachiDAO.cfc:L13] is
- * ONE statement; selecting one view keeps it one statement. The compiled text, the bound parameters and
- * the resulting rows are unchanged, because both members compile THIS query through the same plan.
- *
- * @param entityName - The ORM logical entity name to load from.
- * @param propertyIdentifier - The entity's primary-identifier property.
- * @param value - The identifier to match.
- * @returns The query description.
- */
-function buildIdentifierQuery<TEntity extends SmartListEntityName>(
-  entityName: TEntity,
-  propertyIdentifier: SmartListPropertyIdentifier<TEntity>,
-  value: string,
-): SmartListQuery<TEntity> {
-  return { entityName, whereGroups: [{ filters: [{ propertyIdentifier, value }] }] };
-}
+ * `buildIdentifierQuery` used to stand here as a private local function, byte-identically in
+ * `./ProductService`, with `../config/container.ts` writing the same query out inline a third time.
+ * That is the same three-copy drift the paragraph above records for the input translator, so the shape
+ * now lives once in `../ports/SmartListQueryPort` and this file imports it; {@link OptionService.getOption}
+ * and {@link OptionService.getOptionGroup} call it exactly as before. Its own contract carries the
+ * reasoning that used to sit here: why the legacy `onMissingGetMethod` load becomes a single-filter
+ * query, why the UNPAGED collection is the faithful view, and why every caller executes it through
+ * {@link SmartListQueryPort.executeRecords} so the page and count statements are never issued. No
+ * statement text, driver reference or query runner is imported here (S2) — that is unchanged.
+ * ============================================================================================== */
 
 /**
  * The Catalog's option and option-group service.
@@ -423,10 +396,10 @@ export class OptionService {
    * `model/service/ProductService.cfc`. The `for...of` binding here cannot leak: it is scoped to the
    * loop and there is no shared mutable state to leak into (M7). NO NEW DEFECT IDENTIFIER IS MINTED
    * for this, and none is implied — this file introduces nothing beyond what is already carried, and
-   * the register is stated canonically, and only once, in the header of
-   * `src/ports/repositories/SkuRepository.ts` (AAP 0.6.7's frozen source range D1-D21, plus the
-   * source extension D22 and the three contract corrections D23, D24 and D25, with no D26 or
-   * beyond; and AAP 0.6.6's M1-M8 plus M9, with no M10 or beyond).
+   * the two registers are stated canonically, and only once, in the header of
+   * `src/ports/repositories/SkuRepository.ts`, and BOTH ARE FROZEN AT THE AAP's OWN BOUNDS — AAP
+   * 0.6.7's D1-D21 and AAP 0.6.6's M1-M8. Nothing in this port mints an identifier beyond either
+   * range; a further source observation is recorded by its `path:Lnnn` locator instead.
    * The change is recorded instead as a deliberate
    * translation decision in the manner AAP §0.8.2 Guideline 6 requires, exactly as the plan itself
    * treats D10.
