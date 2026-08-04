@@ -164,7 +164,7 @@
 //   the hydrated projection with no live server and no ambient state anywhere.
 // ---------------------------------------------------------------------------
 
-import { sqlPlaceholderList } from '../../repositories/mysql/connection.js';
+import { chunkTupleRows, sqlPlaceholderList } from '../../repositories/mysql/connection.js';
 import type { PreparedStatementExecutor, SqlRow } from '../../repositories/mysql/connection.js';
 import { Money } from '../../domain/valueObjects/money.js';
 import { cfBoolean } from '../../lib/cfml/truthiness.js';
@@ -1456,61 +1456,30 @@ class GoogleFeedSkuSettingMissingError extends Error {
   }
 }
 
-/**
- * The greatest number of qualifying SKUs one feed generation will materialize.
- *
- * SECURITY REVIEW DISPOSITION - RAISED AS S-08, ACCEPTED. The finding names whole-catalog feed
- * materialization as a resource risk, and it is right: {@link FEED_SELECTION_SQL} carries no row
- * bound of any kind - deliberately, because the legacy controller narrowed by four predicates and
- * nothing else [integrationServices/google/controllers/feed.cfc:L58-L70] - so the selection is as
- * large as the catalog. Each surviving row is then narrowed into a {@link GoogleProductFeedRow} and
- * held in memory while four further statements are resolved against it.
- *
- * ★ WHY A REFUSAL RATHER THAN A PAGE OR A STREAM, which is what the finding suggests first. The
- * feed's response contract is ONE RSS DOCUMENT: AAP 0.4.2 fixes the target signature as
- * `generateProductFeed(criteria: FeedCriteria): Promise<string>`, converting the legacy
- * `void function product(required struct rc)` [integrationServices/google/controllers/feed.cfc:L58]
- * into a function returning the document as a string, and AAP 0.4.1 describes the renderer as a
- * "pure string-emitting RSS 2.0 renderer". A cursor or a stream would change that published return
- * type, which is an AAP-frozen decision this remediation may not take. Refusing above a ceiling is
- * therefore the bound actually available, and it converts an exhausted container into a named,
- * actionable failure that says exactly how large the catalog was.
- *
- * JUDGMENT CALL on the number, stated as one because nothing in the schema or the legacy source
- * bounds a catalog: 25,000 SKUs. Above that the rendered document has certainly outgrown every
- * synchronous response budget this runtime offers, so a feed larger than the ceiling could not have
- * been DELIVERED however this adapter behaved - the ceiling changes where that failure surfaces, not
- * whether it happens. Below it nothing observes any difference.
- */
-const MAX_FEED_SELECTION_ROWS = 25_000;
-
-/**
- * Raised when the qualifying selection exceeds {@link MAX_FEED_SELECTION_ROWS}.
- *
- * It names the count and the ceiling and no row content, matching the discipline of every other
- * failure in this module.
- */
-class GoogleFeedTooLargeError extends Error {
-  /** How many qualifying SKUs the selection returned. */
-  readonly selectionRowCount: number;
-
-  /** The ceiling that was exceeded. */
-  readonly maximumSelectionRowCount: number;
-
-  constructor(selectionRowCount: number) {
-    super(
-      [
-        `The feed selection returned ${String(selectionRowCount)} qualifying SKUs and at most`,
-        `${String(MAX_FEED_SELECTION_ROWS)} will be materialized into one RSS document.`,
-        'The feed is generated as a single string [AAP 0.4.2], so it cannot be paged or streamed',
-        'here; a catalog this size needs a feed pipeline rather than a request.',
-      ].join(' '),
-    );
-    this.name = 'GoogleFeedTooLargeError';
-    this.selectionRowCount = selectionRowCount;
-    this.maximumSelectionRowCount = MAX_FEED_SELECTION_ROWS;
-  }
-}
+// --- Feed selection totality -------------------------------------------------
+//
+// SECURITY REVIEW DISPOSITION - RAISED AS S-08, AND THE 25,000-ROW REFUSAL AN EARLIER REVISION
+// IMPOSED HERE HAS BEEN REMOVED. The record is kept because the removal is the finding, and because
+// re-adding the ceiling would put the divergence straight back.
+//
+// WHAT WAS HERE. A `MAX_FEED_SELECTION_ROWS = 25_000` ceiling on the qualifying selection, raising a
+// `GoogleFeedTooLargeError` when the catalog exceeded it. The number was explicitly a judgment call:
+// nothing in the schema and nothing in the legacy source bounds a catalog.
+//
+// WHY IT IS GONE. The legacy controller narrows the feed by four predicates and nothing else
+// [integrationServices/google/controllers/feed.cfc:L58-L70] - no row limit, no page, no ceiling - and
+// AAP 0.9.5 requires the ported adapter to satisfy the feed contract for the catalog it is given. A
+// merchant whose catalog crossed an invented threshold would have had a WORKING feed replaced by an
+// error, on correct data, with no legacy antecedent and no AAP authorization. That is exactly the
+// class of divergence AAP 0.8.1 forbids, and a security goal does not license it: the earlier
+// disposition's own argument conceded the point by resting on what "could not have been DELIVERED
+// however this adapter behaved" - a prediction about the runtime, not a property of the contract.
+//
+// WHAT REPLACES IT. Nothing, in the selection: {@link FEED_SELECTION_SQL} answers every qualifying
+// SKU exactly as the legacy did. The four follow-up statements resolved against that selection DO
+// bind one placeholder per SKU, so those - the product-type ancestry walk, the additional-image
+// read, the shipping-weight resolution and the sale-price resolution - batch their identifier lists,
+// which bounds statement construction without bounding the answer.
 
 /**
  * Names a value's TYPE for a failure message, never its contents.
@@ -2386,14 +2355,9 @@ export class GoogleFeedRepository {
   async fetchProductFeedRows(): Promise<readonly GoogleProductFeedRow[]> {
     const selectedRows = await this.executor.execute(FEED_SELECTION_SQL);
 
-    // S-08. REFUSED BEFORE ANY ROW IS NARROWED, so a refused feed costs one selection and no
-    // hydration, no key extraction and none of the four follow-up statements. See
-    // {@link MAX_FEED_SELECTION_ROWS} for the ceiling's justification and for why a refusal rather
-    // than a page is the instrument available here.
-    if (selectedRows.length > MAX_FEED_SELECTION_ROWS) {
-      throw new GoogleFeedTooLargeError(selectedRows.length);
-    }
-
+    // EVERY QUALIFYING ROW IS NARROWED, however many the catalog holds. An earlier revision refused
+    // a selection above 25,000 rows here; the feed-selection-totality block above records why that
+    // ceiling is gone and what bounds the follow-up statements instead.
     const selections = selectedRows.map((row) => narrowFeedSelectionRow(row));
 
     // Both lookups short-circuit on an empty key list, so an empty selection costs
@@ -2582,11 +2546,11 @@ export class GoogleFeedRepository {
       return details;
     }
 
-    const sql = `${PRODUCT_TYPE_ANCESTRY_SQL_HEAD} (${sqlPlaceholderList(
-      productTypeIDs.length,
-    )})${PRODUCT_TYPE_ANCESTRY_SQL_TAIL}`;
-
-    const ancestryRows = await this.executor.execute(sql, productTypeIDs);
+    const ancestryRows = await this.executeInIdentifierBatches(
+      productTypeIDs,
+      (placeholders: string) =>
+        `${PRODUCT_TYPE_ANCESTRY_SQL_HEAD} (${placeholders})${PRODUCT_TYPE_ANCESTRY_SQL_TAIL}`,
+    );
 
     const segmentsByLeaf = new Map<string, ProductTypeAncestrySegment[]>();
 
@@ -2611,6 +2575,52 @@ export class GoogleFeedRepository {
     }
 
     return details;
+  }
+
+  /**
+   * Run one identifier-keyed follow-up statement over a key set, in batches, returning every row.
+   *
+   * ★ WHAT THIS EXISTS TO PREVENT, and it is what made removing the selection ceiling safe. The
+   * feed selection is unbounded by design, so the key sets derived from it are as large as the
+   * catalog, and each follow-up statement embeds one `IN (...)` list with a placeholder per key.
+   * `sqlPlaceholderList` refuses a count above the driver's 65,535-placeholder protocol limit, so
+   * one statement per key set would have swapped a refusal on the catalog SIZE for a refusal on the
+   * placeholder COUNT. Batching moves the bound onto statement construction, where nothing the feed
+   * publishes depends on it.
+   *
+   * THE EMITTED SQL IS UNCHANGED FOR EVERY REALISTIC KEY SET. `chunkTupleRows` yields a single batch
+   * up to `SQL_TUPLE_ROW_LIMIT`, so one call emits exactly the one statement and the one parameter
+   * array this module always emitted. Only a larger set becomes several statements, concatenated in
+   * batch order - and both callers immediately regroup rows by their own key, so batch order is all
+   * either depends on. The recursive ancestry statement in particular is per-leaf, so splitting the
+   * leaf set splits the recursion with it and no segment is lost.
+   *
+   * @param identifiers the keys to bind; never empty, both callers short-circuit first.
+   * @param buildSql renders the statement text around a placeholder list.
+   * @returns every row from every batch, concatenated in batch order.
+   */
+  private async executeInIdentifierBatches(
+    identifiers: readonly string[],
+    buildSql: (placeholders: string) => string,
+  ): Promise<readonly SqlRow[]> {
+    // `chunkTupleRows` refuses an empty set rather than yielding zero batches, and MySQL cannot parse
+    // `IN ()`, so the empty case is answered before either can be reached.
+    if (identifiers.length === 0) {
+      return [];
+    }
+
+    const collected: SqlRow[] = [];
+
+    for (const batch of chunkTupleRows(identifiers)) {
+      const batchRows = await this.executor.execute(
+        buildSql(sqlPlaceholderList(batch.length)),
+        batch,
+      );
+
+      collected.push(...batchRows);
+    }
+
+    return collected;
   }
 
   /**
@@ -2647,9 +2657,10 @@ export class GoogleFeedRepository {
       return pathsByProductID;
     }
 
-    const sql = `${PRODUCT_IMAGES_SQL_HEAD} (${sqlPlaceholderList(productIDs.length)})`;
-
-    const imageRows = await this.executor.execute(sql, productIDs);
+    const imageRows = await this.executeInIdentifierBatches(
+      productIDs,
+      (placeholders: string) => `${PRODUCT_IMAGES_SQL_HEAD} (${placeholders})`,
+    );
 
     const collected = new Map<string, string[]>();
 

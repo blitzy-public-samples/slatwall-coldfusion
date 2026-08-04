@@ -25,10 +25,18 @@
  * `BrandRepository` is available - and a partial brand write, one that stored `urlTitle` and
  * `brandName` while dropping `activeFlag`, `publishedFlag` and `brandWebsite` and enforcing none of
  * `model/validation/Brand.json`, would durably store a WRONG ROW and be strictly worse than no
- * write. `src/domain/ports/productRepository.ts` records the removal and its reasoning in full;
- * `src/services/brandService.ts` carries the LEGACY-NOTE that leaves the durable half to the
- * composition root. `Brand` is still constructed in this file, but only as the eager many-to-one
- * association of a product graph row - a read, never a write.
+ * write. `src/domain/ports/productRepository.ts` records the removal and its reasoning in full.
+ *
+ * ★ AND THE COMPOSITION ROOT NOW SUPPLIES THAT DURABLE HALF, WHERE THIS SENTENCE USED TO SAY IT WAS
+ * MERELY LEFT THERE. It read: "`src/services/brandService.ts` carries the LEGACY-NOTE that leaves the
+ * durable half to the composition root." The deferral had no owner at the time and the brand was
+ * discarded; `src/handlers/bootstrap.ts` now satisfies a narrow structural write contract that
+ * `brandService.ts` declares, writing all eleven `SwBrand` columns and enforcing every save-context
+ * rule - so the write is COMPLETE rather than partial, and the hazard the paragraph above rules out
+ * does not arise. Everything else here stands unchanged: this port still has SIX members, there is
+ * still no seventh and no `BrandRepository`, and nothing in THIS FILE writes `SwBrand`. `Brand` is
+ * still constructed here only as the eager many-to-one association of a product graph row - a read,
+ * never a write.
  *
  * JUDGMENT CALL: where the authoring brief for this file and the port disagree, the PORT WINS,
  * and one disagreement is live. The brief describes `searchProductsByProductType` as returning
@@ -139,8 +147,10 @@ import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import { cfBoolean, cfLen, isNullish } from '../../lib/cfml/truthiness.js';
 import type { AuditActorContext, PreparedStatementExecutor, SqlRow } from './connection.js';
 import {
+  chunkTupleRows,
   resolveAuditActorAccountID,
   resolveStampedModifiedByAccountID,
+  SQL_TUPLE_ROW_LIMIT,
   sqlPlaceholderList,
   sqlUpdateAssignment,
 } from './connection.js';
@@ -273,95 +283,28 @@ class ProductUndefinedArgumentError extends Error {
   }
 }
 
-// --- Resource ceilings (S-08) ------------------------------------------------
+// --- Read totality: why this module refuses nothing on magnitude ------------
 //
-// SECURITY REVIEW DISPOSITION - RAISED AS S-08, ACCEPTED. AAP 0.6.5 positively requires explicit
-// resource bounds under the Lambda execution model, so these are mandated rather than discretionary.
-// They live in this adapter, and its sibling `./mysqlSkuRepository.ts` carries the full record of why
-// this layer rather than the service or the statement builders - the short version is that this is
-// the layer that decides what it will EXECUTE and, decisively, what it will MATERIALIZE, and this
-// module already owns every fetch decision in the product graph outright.
+// SECURITY REVIEW DISPOSITION - RAISED AS S-08, AND THE TWO REFUSAL CEILINGS AN EARLIER REVISION
+// IMPOSED HERE HAVE BEEN REMOVED. A 255-character ceiling on the `productName LIKE` term and a
+// 2,000-identifier ceiling on search-result materialization both raised a `ProductReadTooLargeError`
+// instead of executing, turning inputs [model/dao/ProductDAO.cfc:L419-L435] answered - with rows or
+// with an empty structure - into thrown errors.
 //
-// NEITHER CEILING CHANGES A STATEMENT'S TEXT. The pinned parity claim that the search statement
+// The full reasoning is recorded once, in the matching block at the head of
+// `./mysqlSkuRepository.ts`, because the two adapters carried the same ceilings for the same stated
+// reason and lost them for the same one. In short: the legacy validates nothing and refuses nothing
+// on magnitude, a read that raises where the legacy returned is a divergence this port is not
+// allowed, and AAP 0.6.5's "explicit batch limits" clause is written about the bulk MUTATION loops -
+// which remain bounded, in the services that own them - and says nothing about bounding a read.
+//
+// THE AMPLIFICATION CONCERN IS ANSWERED BY STATEMENT CONSTRUCTION INSTEAD. This adapter's
+// materialization is already BATCHED rather than per-row - one graph statement, one SKU statement and
+// one option statement for the whole match set - and each of those embeds an `IN (...)` list whose
+// placeholder count would otherwise grow with the match set until it passed the driver's protocol
+// limit. Those lists are now chunked, so an arbitrarily large match set becomes a bounded number of
+// bounded statements. No statement's TEXT changed: the pinned parity claim that the search statement
 // emits "NO ORDER BY, and no DISTINCT or LIMIT either" still holds exactly.
-
-/**
- * The greatest search-term length this adapter will execute a `productName LIKE` statement for.
- *
- * DERIVED FROM THE COLUMN THE TERM IS MATCHED AGAINST, with its derivation stated in full because
- * the column's width is IMPLICIT rather than declared. `productName` is
- * `ormtype="string" notNull="true"` with NO `length` attribute [model/entity/Product.cfc:L55], and a
- * Hibernate string property with no declared length maps to `varchar(255)`. The legacy predicate is
- * `productName like :prodName` with `value="%#arguments.term#%"`
- * [model/dao/ProductDAO.cfc:L421-L422], and a substring cannot be longer than the string containing
- * it, so a term above 255 characters cannot match any `productName` in any `Sw*` database.
- *
- * IT IS A LENGTH CEILING AND NOT A CONTENT CHECK: a `%` or `_` in the term still reaches the driver
- * as a live LIKE metacharacter, exactly as [model/dao/ProductDAO.cfc:L422] sent it. The finding's
- * escape-the-wildcard suggestion is declined for the reason its sibling records - escaping would
- * change which rows a CORRECT search returns - and the resource risk the live wildcard creates is
- * answered by {@link MAX_SEARCH_RESULT_MATERIALIZATION} instead.
- */
-const MAX_PRODUCT_NAME_SEARCH_TERM_LENGTH = 255;
-
-/**
- * The greatest number of matched identifiers this adapter will materialize into `Product` graphs
- * from one search.
- *
- * ★ THIS BOUNDS AMPLIFICATION THE PORT INTRODUCED, NOT ANYTHING THE LEGACY DID. The legacy
- * `searchProductsByProductType` projects `productID, productName` and reduces each row to a two-key
- * autocomplete structure keyed `"id"` and `"value"` [model/dao/ProductDAO.cfc:L421, L429-L435] - it
- * materializes NO graph at all. This port returns `Product[]`, so every matched identifier becomes a
- * `Product` carrying its eager `brand` and `productType`, its `skus`, each SKU's `options` and its
- * `defaultSku`. That widening is this module's own decision and so is the ceiling on it.
- *
- * ★ THE NUMBER IS THE SIBLING'S MEASURED CEILING, and it is deliberately the LOWER of the two
- * candidates. `./mysqlSkuRepository.ts` carries the measurement in full: its hydration cost is
- * super-linear, 2,000 rows cost about half a second and 10,000 cost over eighteen, so 2,000 is where
- * that curve is still flat. This adapter's materialization is BATCHED rather than per-row - one graph
- * statement, one SKU statement and one option statement for the whole match set - so its own curve is
- * flatter than the sibling's, and adopting the sibling's number is therefore the conservative choice
- * rather than a measured one. One number for one kind of amplification, and the safer of the two.
- *
- * It remains two orders of magnitude above the autocomplete the legacy consumer was
- * [model/dao/ProductDAO.cfc:L429-L435].
- */
-const MAX_SEARCH_RESULT_MATERIALIZATION = 2_000;
-
-/**
- * Raised when a read would exceed one of the two ceilings above.
- *
- * It names the ceiling, the observed magnitude and the statement label - never the term itself and
- * never a row. Caller data on a driver-adjacent path is reported as a SHAPE, which is the same
- * discipline the statement labels in this module exist to enforce.
- */
-class ProductReadTooLargeError extends Error {
-  /** Which ceiling was exceeded, so a handler can distinguish them without parsing the message. */
-  readonly ceiling: 'searchTermLength' | 'searchResultMaterialization';
-
-  /** The magnitude actually observed. */
-  readonly observed: number;
-
-  /** The ceiling that was exceeded. */
-  readonly maximum: number;
-
-  constructor(
-    ceiling: 'searchTermLength' | 'searchResultMaterialization',
-    observed: number,
-    maximum: number,
-    statementLabel: string,
-    why: string,
-  ) {
-    super(
-      `A read of ${statementLabel} was refused: ${ceiling} is ${String(observed)} and at most ` +
-        `${String(maximum)} is admissible. ${why}`,
-    );
-    this.name = 'ProductReadTooLargeError';
-    this.ceiling = ceiling;
-    this.observed = observed;
-    this.maximum = maximum;
-  }
-}
 
 /**
  * A row carries a foreign key that names no row in the referenced table.
@@ -1928,15 +1871,24 @@ type ProductHydrationCollaborators = Readonly<
  * Something therefore has to resolve the map before a product is constructed, and the only place that
  * can is the construction site. This is it.
  *
- * ★ MODULE-LOCAL AND UN-EXPORTED, DELIBERATELY. `src/domain/ports/promotionRepository.ts` used to
- * publish this contract as `export interface SalePriceResolver` and records at the foot of that file why
- * it no longer does: the port inventory is locked at the THIRTEEN files the transformation plan
- * enumerates (AAP 0.4.1), and an interface exported from a port module reads as an addition to that
- * inventory whether or not it occupies a file of its own. So it lives here, un-exported, in the single
- * module that constructs a `Product` from rows, and `src/handlers/bootstrap.ts` satisfies it
- * STRUCTURALLY by adapting the ported `src/services/promotionService.ts` surface - which is where
- * `getSalePriceDetailsForProductSkus` itself lives [model/service/PromotionService.cfc:L1022].
- * Structural satisfaction needs no exported name to import.
+ * ★ MODULE-LOCAL AND UN-EXPORTED, DELIBERATELY - AND IT IS NOT THE ONLY DECLARATION OF THIS SHAPE.
+ * `src/domain/ports/promotionRepository.ts` DOES publish `export interface SalePriceResolver`, and the
+ * foot of that file states the relationship in terms this one now matches rather than contradicts:
+ * the exported contract is what `src/domain/entities/product.ts` and the request scope are typed
+ * against, this module-local one is what THIS adapter holds on its read path, and the two are
+ * satisfied structurally by the same ported service surface. An earlier revision of this paragraph
+ * claimed the port "no longer" exported it and that this declaration had replaced it; both halves
+ * were wrong, and the port's own closing note - that this interface "IS NOT A RIVAL AND WAS NOT
+ * REMOVED" - is the record that corrects them.
+ *
+ * WHY A LOCAL DECLARATION AT ALL, THEN. Importing the exported one would make this adapter depend on
+ * a port module for a shape it only consumes internally, and the interface is one method wide, so the
+ * local declaration keeps the dependency edge out of the file while remaining structurally identical.
+ * `src/handlers/bootstrap.ts` satisfies both by adapting the ported `src/services/promotionService.ts`
+ * surface - which is where `getSalePriceDetailsForProductSkus` itself lives
+ * [model/service/PromotionService.cfc:L1022]. Structural satisfaction needs no exported name to
+ * import, and neither declaration adds a fourteenth port: the inventory is locked at THIRTEEN files
+ * (AAP 0.4.1) and both of these live inside one of them or outside the port layer entirely.
  *
  * ONE MEMBER, AND ITS SIGNATURE IS THE PORTED ONE VERBATIM: `getSalePriceDetailsForProductSkus`
  * [model/service/PromotionService.cfc:L1022], keeping the legacy CFML camelCase name so a reviewer can
@@ -2909,6 +2861,50 @@ function rebuildProduct(
 }
 
 /**
+ * Run one identifier-keyed statement over a set of identifiers, in batches, returning every row.
+ *
+ * ★ WHAT THIS EXISTS TO PREVENT, and it is what made removing this module's read ceilings safe.
+ * Every statement below that takes an identifier set embeds one `IN (...)` list with a placeholder
+ * per identifier, and `sqlPlaceholderList` refuses a count above the driver's 65,535-placeholder
+ * protocol limit. Materializing an uncapped match set through a single such statement would have
+ * traded a refusal on the match COUNT for a refusal on the placeholder COUNT - the same failure one
+ * layer down. Batching puts the bound on statement construction, where nothing observable depends
+ * on it.
+ *
+ * THE EMITTED SQL IS UNCHANGED FOR EVERY REALISTIC SET. `chunkTupleRows` yields a single batch up to
+ * `SQL_TUPLE_ROW_LIMIT`, so one call produces exactly the one statement and the one parameter array
+ * this module always produced. Only a larger set becomes several statements, concatenated in batch
+ * order; every caller regroups by a parent identifier immediately afterwards, so batch order is all
+ * they depend on.
+ *
+ * @param executor the statement executor to run each batch on.
+ * @param identifiers the identifiers to bind; an empty set issues no statement at all.
+ * @param buildSql renders the statement text for a given identifier count.
+ * @returns every row from every batch, concatenated in batch order.
+ */
+async function executeInIdentifierBatches(
+  executor: PreparedStatementExecutor,
+  identifiers: readonly string[],
+  buildSql: (identifierCount: number) => string,
+): Promise<readonly SqlRow[]> {
+  // `chunkTupleRows` refuses an empty set rather than yielding zero batches, and every statement
+  // builder here refuses a zero-length `IN` list, so the empty case is answered before either.
+  if (identifiers.length === 0) {
+    return [];
+  }
+
+  const collected: SqlRow[] = [];
+
+  for (const batch of chunkTupleRows(identifiers)) {
+    const batchRows = await executor.execute(buildSql(batch.length), batch);
+
+    collected.push(...batchRows);
+  }
+
+  return collected;
+}
+
+/**
  * The MySQL product adapter - the only exported unit of this module.
  *
  * Implements every member of `ProductRepository` and publishes nothing else. E7: one exported unit per
@@ -2922,8 +2918,9 @@ function rebuildProduct(
  * that Hibernate is gone." The arithmetic is four declared DAO functions, less the `private` helper
  * `saveImportData` [model/dao/ProductDAO.cfc:L328], plus load / save / delete for the product. There is
  * no seventh, and in particular no brand save: the port records why the member was removed rather than
- * relocated, and `src/services/brandService.ts` carries the LEGACY-NOTE that leaves the durable half of
- * `super.save` [model/service/BrandService.cfc:L76] to the composition root. B4, interface parity:
+ * relocated, and the durable half of `super.save` [model/service/BrandService.cfc:L76] is SUPPLIED BY
+ * the composition root through a contract `src/services/brandService.ts` declares - not, as this
+ * sentence previously said, merely "left to" it. This adapter writes no `SwBrand` row either way. B4, interface parity:
  * `getAttributeSets`, `loadDataFromFile` and `searchProductsByProductType` keep their legacy CFML
  * camelCase names verbatim; the three lifecycle names have no legacy antecedent and the port says so on
  * each.
@@ -3220,21 +3217,13 @@ export class MysqlProductRepository implements ProductRepository {
       throw new ProductUndefinedArgumentError('term', PRODUCT_SEARCH_LABEL);
     }
 
-    // S-08. A term longer than the `productName` column cannot be a substring of any value in it, so
-    // this refuses only terms that could not have matched a row. See
-    // {@link MAX_PRODUCT_NAME_SEARCH_TERM_LENGTH}, whose derivation covers why the column's width is
-    // 255 even though [model/entity/Product.cfc:L55] declares no length.
-    if (term.length > MAX_PRODUCT_NAME_SEARCH_TERM_LENGTH) {
-      throw new ProductReadTooLargeError(
-        'searchTermLength',
-        term.length,
-        MAX_PRODUCT_NAME_SEARCH_TERM_LENGTH,
-        PRODUCT_SEARCH_LABEL,
-        'A term longer than the productName column [model/entity/Product.cfc:L55] cannot be a ' +
-          'substring of any name in it, so no row could match.',
-      );
-    }
-
+    // TOTAL ON THE TERM, DELIBERATELY. An earlier revision refused a term longer than the implicit
+    // 255-character width of `productName` [model/entity/Product.cfc:L55] because such a term cannot
+    // be a substring of any name in the column. True, and beside the point:
+    // [model/dao/ProductDAO.cfc:L421-L422] binds `%#arguments.term#%` unconditionally and answers
+    // such a term with no matches. The metacharacters inside the term stay LIVE, exactly as the
+    // legacy sent them.
+    //
     // [model/dao/ProductDAO.cfc:L423] `structKeyExists(arguments,"productTypeIDs") && len(...)` -
     // asymmetry 1 above. `cfLen` is the ported `len()`, so a whitespace-only list passes as it does there.
     const boundProductTypeIDs: readonly string[] =
@@ -3247,20 +3236,11 @@ export class MysqlProductRepository implements ProductRepository {
       ...boundProductTypeIDs,
     ]);
 
-    // S-08. REFUSED BEFORE MATERIALIZATION, NOT AFTER. The search rows are two columns wide and
-    // cheap; what is bounded is the product graph this port builds from each of them, which the
-    // legacy never built. See {@link MAX_SEARCH_RESULT_MATERIALIZATION}.
-    if (rows.length > MAX_SEARCH_RESULT_MATERIALIZATION) {
-      throw new ProductReadTooLargeError(
-        'searchResultMaterialization',
-        rows.length,
-        MAX_SEARCH_RESULT_MATERIALIZATION,
-        PRODUCT_SEARCH_LABEL,
-        'Narrow the term or the product-type list. The legacy projected two columns per match ' +
-          '[model/dao/ProductDAO.cfc:L421]; this port materializes a full product graph per match.',
-      );
-    }
-
+    // EVERY MATCHED IDENTIFIER IS MATERIALIZED, however many there are. An earlier revision refused
+    // a match set above 2,000 here, which made a search the legacy answered fail outright. The
+    // amplification that motivated the refusal is real - the legacy projected two columns per match
+    // [model/dao/ProductDAO.cfc:L421] and this port materializes a product graph per match - and it
+    // is answered inside `materializeProducts`, whose statements chunk their identifier lists.
     const matchedProductIDs = rows.map((row: SqlRow) =>
       readIdentifier(row, 'productID', PRODUCT_SEARCH_LABEL),
     );
@@ -3736,9 +3716,10 @@ export class MysqlProductRepository implements ProductRepository {
     // still honoured on the way out.
     const distinctProductIDs = [...new Set(productIDs)];
 
-    const graphRows = await this.executor.execute(
-      buildProductGraphSql(distinctProductIDs.length),
+    const graphRows = await executeInIdentifierBatches(
+      this.executor,
       distinctProductIDs,
+      buildProductGraphSql,
     );
 
     if (graphRows.length === 0) {
@@ -3806,10 +3787,7 @@ export class MysqlProductRepository implements ProductRepository {
       return { byProductID: new Map<string, Sku[]>(), bySkuID: new Map<string, Sku>() };
     }
 
-    const skuRows = await this.executor.execute(
-      buildProductSkusSql(productIDs.length, defaultSkuIDs.length),
-      [...productIDs, ...defaultSkuIDs],
-    );
+    const skuRows = await this.readSkuRows(productIDs, defaultSkuIDs);
 
     if (skuRows.length === 0) {
       return { byProductID: new Map<string, Sku[]>(), bySkuID: new Map<string, Sku>() };
@@ -3903,6 +3881,68 @@ export class MysqlProductRepository implements ProductRepository {
   }
 
   /**
+   * Read the SKU rows for a product set and a default-SKU set, batching only when it is necessary.
+   *
+   * ★ THE ONE STATEMENT IS PRESERVED FOR EVERY REALISTIC CALL, and that is the point of the branch.
+   * {@link buildProductSkusSql} renders TWO `IN` lists joined by `OR` in a single statement, so the
+   * two identifier sets cannot be batched independently without changing the emitted SQL. Whenever
+   * the combined bind fits one batch - which is every call this adapter's own reads produce, since
+   * both sets come from one graph read - exactly the statement and parameter array this method has
+   * always emitted is emitted, and every parity assertion about it still holds.
+   *
+   * ABOVE THAT, THE PREDICATES ARE SPLIT, because one statement carrying both sets would eventually
+   * pass the driver's placeholder limit and fail a read the legacy answered. The split issues
+   * product-keyed batches and then default-SKU-keyed batches, which is the same row set the combined
+   * `OR` matches - with one difference the merge below removes: a SKU that is both a member of a
+   * product's collection AND some product's default SKU matches BOTH predicates, so it would appear
+   * twice across the two statements where the `OR` returns it once. Rows are therefore de-duplicated
+   * on `skuID`, keeping the first occurrence, so the caller's two indexes are built from exactly the
+   * row set the single statement would have produced.
+   *
+   * @param productIDs the products whose SKU collections are wanted.
+   * @param defaultSkuIDs the default-SKU identifiers to resolve, already de-duplicated.
+   * @returns the matched SKU rows, each appearing exactly once.
+   * @throws An error named `ProductColumnError` when a projected column is missing or malformed.
+   */
+  private async readSkuRows(
+    productIDs: readonly string[],
+    defaultSkuIDs: readonly string[],
+  ): Promise<readonly SqlRow[]> {
+    if (productIDs.length + defaultSkuIDs.length <= SQL_TUPLE_ROW_LIMIT) {
+      return await this.executor.execute(
+        buildProductSkusSql(productIDs.length, defaultSkuIDs.length),
+        [...productIDs, ...defaultSkuIDs],
+      );
+    }
+
+    const productKeyedRows = await executeInIdentifierBatches(
+      this.executor,
+      productIDs,
+      (identifierCount: number) => buildProductSkusSql(identifierCount, 0),
+    );
+
+    const defaultSkuKeyedRows = await executeInIdentifierBatches(
+      this.executor,
+      defaultSkuIDs,
+      (identifierCount: number) => buildProductSkusSql(0, identifierCount),
+    );
+
+    const seenSkuIDs = new Set<string>();
+    const merged: SqlRow[] = [];
+
+    for (const row of [...productKeyedRows, ...defaultSkuKeyedRows]) {
+      const skuID = readIdentifier(row, 'skuID', PRODUCT_SKUS_LABEL);
+
+      if (!seenSkuIDs.has(skuID)) {
+        seenSkuIDs.add(skuID);
+        merged.push(row);
+      }
+    }
+
+    return merged;
+  }
+
+  /**
    * Read the options of a set of SKUs and index them by SKU identifier.
    *
    * ONE STATEMENT FOR THE WHOLE SET. `Sku.options` is a many-to-many over `SwSkuOption`
@@ -3924,9 +3964,10 @@ export class MysqlProductRepository implements ProductRepository {
       return indexed;
     }
 
-    const optionRows = await this.executor.execute(
-      buildSkuOptionsSql(distinctSkuIDs.length),
+    const optionRows = await executeInIdentifierBatches(
+      this.executor,
       distinctSkuIDs,
+      buildSkuOptionsSql,
     );
 
     for (const row of optionRows) {

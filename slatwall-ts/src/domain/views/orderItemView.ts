@@ -408,8 +408,16 @@ export interface OrderItemView {
    *
    * The element type is shared with `OrderFulfillmentView.appliedPromotions` and
    * `OrderView.appliedPromotions` because all three associations point at the same entity,
-   * [model/entity/PromotionApplied.cfc], and the clear reads the same two fields at all three levels.
-   * Duplicating the shape per level would let the three sides drift.
+   * [model/entity/PromotionApplied.cfc], and the clear addresses a row the same way at all three
+   * levels. Duplicating the shape per level would let the three sides drift.
+   *
+   * ★ QUOTE-THEN-REVISE. That sentence used to end "and the clear reads the same two fields at all
+   * three levels." It reads NEITHER of them. The clear at [model/service/PromotionService.cfc:L64-L68,
+   * L71-L75, L78-L80] calls `removeOrderItem()` / `removeOrderFulfillment()` / `removeOrder()` on the
+   * row OBJECT, reached by reverse index - the row's own identity is the whole address, and both of the
+   * fields the old sentence named are NULLABLE anyway [model/entity/PromotionApplied.cfc:L53, L58].
+   * The shared shape now carries `promotionAppliedID` for exactly this reason; see
+   * `AppliedPromotionView` in `./orderFulfillmentView.js`.
    *
    * ORM authority [model/entity/OrderItem.cfc:L71]: `property name="appliedPromotions"
    * singularname="appliedPromotion" cfc="PromotionApplied" fieldtype="one-to-many"

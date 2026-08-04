@@ -343,6 +343,13 @@ interface OrderItemFixtureOverrides {
    * [model/entity/OrderItem.cfc:L71] `PromotionApplied`, `one-to-many`, `fkcolumn="orderItemID"`,
    * `inverse`, `cascade="all-delete-orphan"` - a DISTINCT association from the order's own
    * [model/entity/Order.cfc:L72] `fkcolumn="orderID"`.
+   *
+   * ★ EVERY PERSISTED ROW STATE IS EXPRESSIBLE HERE, which was not always so. `AppliedPromotionView`
+   * carries the row's required `promotionAppliedID` plus a NULLABLE `discountAmount` and `promotion`
+   * [model/entity/PromotionApplied.cfc:L52-L58], so an override may seed TWO ROWS SHARING ONE
+   * PROMOTION, a row with NO promotion (which `removePromotion` at [:L85-L94] produces by
+   * `structDelete`), or a row recording NO amount. Each of those is a row the legacy clear detaches,
+   * and each is exercised in `tests/unit/services/promotionService.test.ts`.
    */
   readonly appliedPromotions?: readonly AppliedPromotionView[] | undefined;
 

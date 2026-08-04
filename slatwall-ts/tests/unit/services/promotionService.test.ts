@@ -185,6 +185,7 @@ import { PriceGroupService } from '../../../src/services/priceGroupService.js';
 import { PromotionService } from '../../../src/services/promotionService.js';
 import type { ShippingDiscountDetails } from '../../../src/services/promotionService.js';
 import { RoundingRuleService } from '../../../src/services/roundingRuleService.js';
+import type { RoundingRuleFrameworkWrites } from '../../../src/services/roundingRuleService.js';
 import { makeOrderViewFixture } from '../../fixtures/orderViewFixtures.js';
 import { makePriceGroupFixtures } from '../../fixtures/priceGroupFixtures.js';
 import { makePromotionFixtures } from '../../fixtures/promotionFixtures.js';
@@ -533,6 +534,25 @@ interface Subject {
 }
 
 /**
+ * The durable-write collaborator every `RoundingRuleService` in this file is handed, which REFUSES.
+ *
+ * `saveRoundingRule` genuinely persists now, through a single-method contract the service declares
+ * and `src/handlers/bootstrap.ts` satisfies over the request's executor. Nothing in this file saves
+ * a rounding rule - the only member exercised is the SYNCHRONOUS `roundValueByRoundingRule`
+ * [model/service/RoundingRuleService.cfc:L84] - so the strongest available statement is a writer
+ * that fails by name if the write is ever reached from here. Same device as the refusing repository
+ * above, for the same reason.
+ */
+const refusingRoundingRuleFrameworkWrites: RoundingRuleFrameworkWrites = {
+  saveRoundingRule: (): never => {
+    throw new Error(
+      'a rounding-rule WRITE was reached from this suite. Only the synchronous rounding pair is ' +
+        'exercised here; saveRoundingRule is covered by tests/unit/services/roundingRuleService.test.ts.',
+    );
+  },
+};
+
+/**
  * Builds a completely fresh subject. Called from `beforeEach`, and called again inside any test that
  * needs a second, independent engine - there is NO mutable module-level state in this file, which
  * matters most for the usage ledger: a second pipeline run must start from a clean one.
@@ -544,7 +564,10 @@ function makeSubject(): Subject {
   const repository = new RecordingPromotionRepository();
   const addressZones = new RecordingAddressZoneEvaluator();
   const frameworkReads = new RecordingPromotionFrameworkReads();
-  const roundingRuleValues: RoundingRuleValueResolver = new RoundingRuleService(repository);
+  const roundingRuleValues: RoundingRuleValueResolver = new RoundingRuleService(
+    repository,
+    refusingRoundingRuleFrameworkWrites,
+  );
   const service = new PromotionService(
     repository,
     addressZones,
@@ -1233,8 +1256,13 @@ describe('PromotionService', () => {
       // A persisted discount FAR larger than anything this reward set can compute, so "the reward
       // still wins" cannot be explained by the comparison at [L385] / [L431].
       const stalePromotionID = 'promotion-persisted-by-a-previous-run';
+      const staleAmount = Money.fromDecimalString('9999.00');
       const staleRow: AppliedPromotionView = Object.freeze({
-        discountAmount: Money.fromDecimalString('9999.00'),
+        // A row a PREVIOUS invocation persisted, so it carries the generated identity its mapping
+        // requires [model/entity/PromotionApplied.cfc:L52]. The clear names the row by this, which is
+        // what the legacy did when it called `removeOrderFulfillment()` on the row object itself.
+        promotionAppliedID: 'applied-stale-row',
+        discountAmount: staleAmount,
         promotion: Object.freeze({ promotionID: stalePromotionID }),
       });
 
@@ -1271,7 +1299,10 @@ describe('PromotionService', () => {
       const shippingAdd = requirePresent(shippingIntents[1], 'the shipping add');
       expect(shippingAdd.promotionID).toBe(rewardPromotionID);
       expect(intentDiscount(shippingAdd).isGreaterThan(Money.zero)).toBe(true);
-      expect(intentDiscount(shippingAdd).isGreaterThan(staleRow.discountAmount)).toBe(false);
+      // `staleAmount` rather than `staleRow.discountAmount`: the view member is NULLABLE
+      // [model/entity/PromotionApplied.cfc:L53], and comparing against the local keeps the assertion
+      // free of a narrowing step that would say nothing about the behavior under test.
+      expect(intentDiscount(shippingAdd).isGreaterThan(staleAmount)).toBe(false);
 
       // CASE 2 - pickup: nothing could be applied, so the stale row is removed and nothing replaces it.
       const pickupIntents = intents.filter(
@@ -1300,6 +1331,7 @@ describe('PromotionService', () => {
         capture: sameCapture,
         appliedPromotions: [
           Object.freeze({
+            promotionAppliedID: 'applied-same-promotion-row',
             discountAmount: Money.fromDecimalString('0.01'),
             promotion: Object.freeze({ promotionID: rewardPromotionID }),
           }),
@@ -1317,6 +1349,7 @@ describe('PromotionService', () => {
         capture: sameCapture,
         appliedPromotions: [
           Object.freeze({
+            promotionAppliedID: 'applied-matching-row',
             discountAmount: Money.fromDecimalString('0.01'),
             promotion: Object.freeze({ promotionID: sameGraph.promotion.getPromotionID() }),
           }),
@@ -1351,9 +1384,21 @@ describe('PromotionService', () => {
   // ===============================================================================================
 
   describe('★★★ the blanket clear detaches every pre-existing applied promotion', () => {
-    /** One prior applied-promotion row, as a view. */
-    function priorRow(promotionID: string, discount: string): AppliedPromotionView {
+    /**
+     * One prior applied-promotion row, as a view.
+     *
+     * `promotionAppliedID` is REQUIRED of every row [model/entity/PromotionApplied.cfc:L52] and is
+     * what the clear names, so it is a parameter rather than derived from the promotion: two rows can
+     * share a promotion, and the whole point of carrying the row id is that they remain distinct.
+     * It defaults from the promotion only for the many single-row cases that do not care.
+     */
+    function priorRow(
+      promotionID: string,
+      discount: string,
+      promotionAppliedID = `applied-${promotionID}`,
+    ): AppliedPromotionView {
       return {
+        promotionAppliedID,
         discountAmount: Money.fromDecimalString(discount),
         promotion: { promotionID },
       };
@@ -1454,6 +1499,160 @@ describe('PromotionService', () => {
       expect(
         intents.filter((intent) => intent.operation === 'remove').map((i) => i.promotionID),
       ).toStrictEqual(['stale-order-c', 'stale-order-b', 'stale-order-a']);
+
+      // ★ AND EACH NAMES ITS OWN ROW. Three distinct promotions make the promotion identifiers
+      // sufficient here; the sibling case below removes that crutch.
+      expect(
+        intents.filter((intent) => intent.operation === 'remove').map((i) => i.promotionAppliedID),
+      ).toStrictEqual(['applied-stale-order-c', 'applied-stale-order-b', 'applied-stale-order-a']);
+    });
+
+    // =============================================================================================
+    // ★★★ ROW IDENTITY. The three cases below are the ones that a removal addressed only by
+    // `(appliedType, target ID, promotionID)` could not express at all, which is why they are here.
+    //
+    // The legacy clear at [model/service/PromotionService.cfc:L61-L80] detaches each row by calling
+    // `removeOrderItem()` / `removeOrderFulfillment()` / `removeOrder()` ON THE ROW OBJECT, reached by
+    // reverse index. It reads neither `getPromotion()` nor `getDiscountAmount()` on the way. So the
+    // row's own `promotionAppliedID` [model/entity/PromotionApplied.cfc:L52] is the whole address, and
+    // the two members a triple leaned on are both NULLABLE [:L53, L58].
+    //
+    // Coverage here is NET-NEW: no legacy test constructs an applied-promotion row at all.
+    // =============================================================================================
+
+    it('★★★ two rows sharing ONE promotion on ONE target are removed as TWO DISTINCT rows', async () => {
+      // ★★ WITHOUT ROW IDENTITY THIS CASE IS UNANSWERABLE. Both rows carry the same promotion on the
+      // same target, so both produce the identical triple `(order, orderID, 'stale-duplicate')`. A
+      // consumer receiving two identical instructions cannot tell it was asked to detach two rows: it
+      // either detaches one and orphans the other - whose discount then survives a recalculation that
+      // no longer qualifies it - or applies a promotion-keyed delete once and cannot report what it
+      // removed. Legacy detaches both, because it visits both elements.
+      const capture: OrderViewFixtureCapture = {};
+      const duplicatedPromotionID = 'stale-duplicate';
+      const order = makeOrderViewFixture({
+        capture,
+        appliedPromotions: [
+          priorRow(duplicatedPromotionID, '11.00', 'applied-duplicate-first'),
+          priorRow(duplicatedPromotionID, '12.00', 'applied-duplicate-second'),
+        ],
+      });
+      const graph = buildQualifyingGraph('clear-dupe-', order, capture.acceptedPriceGroup);
+      armSubject(subject, graph, rewardSequence(graph, 'orderRewardLast'));
+
+      const intents = await subject.service.updateOrderAmountsWithPromotions(order);
+      const removeIntents = intents.filter((intent) => intent.operation === 'remove');
+
+      // Two removals, and the promotion identifier alone cannot tell them apart - which is the point.
+      expect(removeIntents).toHaveLength(2);
+      expect(removeIntents.map((intent) => intent.promotionID)).toStrictEqual([
+        duplicatedPromotionID,
+        duplicatedPromotionID,
+      ]);
+
+      // The ROW identities DO tell them apart, in the source's reverse traversal order.
+      expect(removeIntents.map((intent) => intent.promotionAppliedID)).toStrictEqual([
+        'applied-duplicate-second',
+        'applied-duplicate-first',
+      ]);
+      expect(new Set(removeIntents.map((intent) => intent.promotionAppliedID)).size).toBe(2);
+    });
+
+    it('★★★ a row with NO promotion is representable, and is CLEARED rather than skipped', async () => {
+      // ★★ THE LEGACY PRODUCES THIS ROW ITSELF. `removePromotion`
+      // [model/entity/PromotionApplied.cfc:L85-L94] ends in `structDelete(variables, "promotion")`,
+      // and the FK declares no `notnull` [:L58]. The clear detaches such a row like any other, because
+      // it never looks at the association. A projection requiring a non-null promotion could not even
+      // BUILD this row, so nothing could clear it and its discount would outlive every recalculation.
+      const capture: OrderViewFixtureCapture = {};
+      const order = makeOrderViewFixture({
+        capture,
+        appliedPromotions: [
+          {
+            promotionAppliedID: 'applied-orphan-row',
+            discountAmount: Money.fromDecimalString('31.00'),
+            promotion: undefined,
+          },
+        ],
+      });
+      const graph = buildQualifyingGraph('clear-orphan-', order, capture.acceptedPriceGroup);
+      armSubject(subject, graph, rewardSequence(graph, 'orderRewardLast'));
+
+      const intents = await subject.service.updateOrderAmountsWithPromotions(order);
+      const removeIntents = intents.filter((intent) => intent.operation === 'remove');
+
+      // It IS cleared - one removal, naming the row.
+      expect(removeIntents).toHaveLength(1);
+      const orphanRemoval = requirePresent(removeIntents[0], 'the orphan-row removal');
+      expect(orphanRemoval.promotionAppliedID).toBe('applied-orphan-row');
+      expect(orphanRemoval.appliedType).toBe('order');
+      expect(orphanRemoval.orderID).toBe(order.orderID);
+
+      // And the absent promotion surfaces as absent, not as some borrowed identifier.
+      expect(orphanRemoval.promotionID).toBeUndefined();
+    });
+
+    it('★★ a row with NO discountAmount is representable, and is cleared naming the row', async () => {
+      // `discountAmount ormtype="big_decimal"` carries no `notnull`
+      // [model/entity/PromotionApplied.cfc:L53]. The clear never reads it, so a row recording no
+      // amount is detached exactly like one recording an amount. `Money` has no zero fallback, and
+      // defaulting to zero would assert the row discounted nothing - a different claim from recording
+      // no amount, and one that would make the comparison at [L385]/[L431] behave differently.
+      const capture: OrderViewFixtureCapture = {};
+      const order = makeOrderViewFixture({
+        capture,
+        appliedPromotions: [
+          {
+            promotionAppliedID: 'applied-amountless-row',
+            discountAmount: undefined,
+            promotion: { promotionID: 'stale-amountless' },
+          },
+        ],
+      });
+      const graph = buildQualifyingGraph('clear-amountless-', order, capture.acceptedPriceGroup);
+      armSubject(subject, graph, rewardSequence(graph, 'orderRewardLast'));
+
+      const intents = await subject.service.updateOrderAmountsWithPromotions(order);
+      const removeIntents = intents.filter((intent) => intent.operation === 'remove');
+
+      expect(removeIntents).toHaveLength(1);
+      const removal = requirePresent(removeIntents[0], 'the amountless-row removal');
+      expect(removal.promotionAppliedID).toBe('applied-amountless-row');
+      expect(removal.promotionID).toBe('stale-amountless');
+
+      // A removal still carries no amount of its own - `discountAmount` is `?: never` on every remove
+      // shape, so the member is genuinely absent rather than present-and-undefined.
+      expect('discountAmount' in removal).toBe(false);
+    });
+
+    it('★★ EVERY removal the clear emits names a row, at all three levels', async () => {
+      // The invariant behind the three cases above, asserted over the full three-level output rather
+      // than one target at a time: a removal without a row identity is one the consumer cannot apply
+      // faithfully, so none may be emitted.
+      const capture: OrderViewFixtureCapture = {};
+      const order = makeOrderViewFixture({
+        capture,
+        itemOverrides: [
+          { appliedPromotions: [priorRow('stale-i0', '1.00', 'applied-i0')] },
+          { appliedPromotions: [priorRow('stale-i1', '2.00', 'applied-i1')] },
+        ],
+        fulfillmentOverrides: [
+          { appliedPromotions: [priorRow('stale-f0', '3.00', 'applied-f0')] },
+          { appliedPromotions: [priorRow('stale-f1', '4.00', 'applied-f1')] },
+        ],
+        appliedPromotions: [priorRow('stale-o', '5.00', 'applied-o')],
+      });
+      const graph = buildQualifyingGraph('clear-allnamed-', order, capture.acceptedPriceGroup);
+      armSubject(subject, graph, rewardSequence(graph, 'orderRewardLast'));
+
+      const intents = await subject.service.updateOrderAmountsWithPromotions(order);
+      const removeIntents = intents.filter((intent) => intent.operation === 'remove');
+
+      expect(removeIntents).toHaveLength(5);
+      for (const removal of removeIntents) {
+        expect(typeof removal.promotionAppliedID).toBe('string');
+        expect(removal.promotionAppliedID).not.toBe('');
+      }
+      expect(new Set(removeIntents.map((intent) => intent.promotionAppliedID)).size).toBe(5);
     });
 
     it('★★★ a SMALLER qualifying discount still displaces a larger stale one - the money case', async () => {
@@ -1655,6 +1854,7 @@ describe('PromotionService', () => {
           {
             appliedPromotions: [
               {
+                promotionAppliedID: 'applied-stale-ship',
                 discountAmount: Money.fromDecimalString('25.00'),
                 promotion: { promotionID: 'stale-ship' },
               },

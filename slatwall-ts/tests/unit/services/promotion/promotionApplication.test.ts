@@ -174,8 +174,26 @@ function digestIntents(
     const digest: Record<string, string> = {
       appliedType: intent.appliedType,
       operation: intent.operation,
-      promotionID: intent.promotionID,
     };
+
+    // `promotionID` used to be read unconditionally here, on the reading that every intent carries
+    // one. It is a `string` on add, on update and on a provisional cancellation, but NULLABLE on a
+    // persisted-row removal alone - the FK it mirrors declares no `notnull`
+    // [model/entity/PromotionApplied.cfc:L58] and the legacy produces promotion-less rows itself
+    // [:L85-L94]. Recorded when present, so such a row digests as a row with no promotion rather
+    // than being defaulted into looking like one that has a promotion.
+    const promotionID = intent.promotionID;
+    if (promotionID !== undefined) {
+      digest.promotionID = promotionID;
+    }
+
+    // The ROW's own identity, present only on a persisted-row removal. Recorded so that a
+    // whole-result assertion observes WHICH ROW an intent named - the distinction that
+    // `(appliedType, target ID, promotionID)` could not draw when two rows share a promotion.
+    const promotionAppliedID = intent.promotionAppliedID;
+    if (promotionAppliedID !== undefined) {
+      digest.promotionAppliedID = promotionAppliedID;
+    }
 
     // Narrowed on the discriminant rather than asserted: `discountAmount` is declared `?: never`
     // on the remove arm, so it is genuinely absent there and reading it unconditionally would be
@@ -253,8 +271,13 @@ function snapshotOrderState(order: OrderView): OrderStateSnapshot {
     fulfillmentChargeAfterDiscountTotal:
       order.fulfillmentChargeAfterDiscountTotal.toDecimalString(),
     orderTypeSystemCode: order.orderType.systemCode,
+    // Both members are NULLABLE on a persisted row [model/entity/PromotionApplied.cfc:L53, L58], so
+    // absence digests as an explicit sentinel rather than as a defaulted value. A `0.00` in place of
+    // a missing amount would make this immutability digest unable to tell "recorded no amount" from
+    // "recorded zero", which are different rows. The row id leads, because it is what identifies one.
     appliedPromotionDigests: order.appliedPromotions.map(
-      (applied) => `${applied.promotion.promotionID}@${applied.discountAmount.toDecimalString()}`,
+      (applied) =>
+        `${applied.promotionAppliedID}:${applied.promotion?.promotionID ?? '<no-promotion>'}@${applied.discountAmount?.toDecimalString() ?? '<no-amount>'}`,
     ),
     orderFulfillmentIDs: order.orderFulfillments.map(
       (fulfillment) => fulfillment.orderFulfillmentID,
@@ -867,6 +890,10 @@ describe('applyBestOrderItemDiscounts', () => {
       const alreadyApplied = makeOrderViewFixture({
         appliedPromotions: [
           {
+            // A PERSISTED row, so it carries the generated identity its mapping requires
+            // [model/entity/PromotionApplied.cfc:L52] - which is precisely what makes it a row a
+            // clear could name. This module still names none, which is what the test asserts.
+            promotionAppliedID: 'applied-pre-existing',
             discountAmount: Money.fromDecimalString('99.00'),
             promotion: { promotionID: 'pre-existing-promotion' },
           },

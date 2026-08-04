@@ -324,20 +324,32 @@ export interface AttributeSetSummary {
  *
  * WHAT THIS MEANS FOR A CALLER, STATED PLAINLY RATHER THAN LEFT TO INFERENCE. `saveBrand` on
  * `src/services/brandService.ts` resolves the unique URL title exactly as [L68-L74] does, writes it
- * into the supplied payload, and THEN RAISES `BrandPersistenceUnavailableError`. A partial brand
- * write - one that persisted `urlTitle` and `brandName` while silently dropping `activeFlag`,
- * `publishedFlag` and `brandWebsite`, and while enforcing none of `model/validation/Brand.json`
- * because the framework validation service is not ported - would be strictly worse than no write at
- * all: it would durably store a WRONG ROW. So the member is gone rather than narrowed.
+ * into the supplied payload, POPULATES the entity from that payload, enforces the three save-context
+ * rules in `model/validation/Brand.json`, and then performs the durable write through a collaborator
+ * the COMPOSITION ROOT supplies.
  *
- * ★ AND THE ABSENCE IS NOW SIGNALLED AT THE CALL RATHER THAN LEFT TO A COMMENT. An earlier revision
- * of this paragraph said the durable half was "left to the composition root". Finding S-06 checked
- * that: no module under `src/repositories/**` issues an INSERT or UPDATE against `SwBrand` - this
- * port's own adapter reads those eleven columns and never writes them - so the deferral named no
- * owner and every brand a caller saved was discarded silently (CWE-703, CWE-840). Removing the
- * member is still the right call for the reason above; what changed is that `brandService` no longer
- * answers as though the missing member did not matter. Wiring persistence here later is a deliberate
- * decision that begins by deleting that `throw`, not a gap someone stumbles into.
+ * ★★ THAT LAST CLAUSE REVERSES WHAT THIS PARAGRAPH USED TO SAY, AND THE REVERSAL IS THE POINT.
+ * It read: "...and THEN RAISES `BrandPersistenceUnavailableError`. A partial brand write - one that
+ * persisted `urlTitle` and `brandName` while silently dropping `activeFlag`, `publishedFlag` and
+ * `brandWebsite`, and while enforcing none of `model/validation/Brand.json` because the framework
+ * validation service is not ported - would be strictly worse than no write at all: it would durably
+ * store a WRONG ROW."
+ *
+ * The hazard it named was real, and the write that now exists does not have it: all ELEVEN `SwBrand`
+ * columns are written, `populate` [org/Hibachi/HibachiTransient.cfc:L169-L205] is reproduced so no
+ * supplied column is dropped, and every save-context rule in the validation file is enforced -
+ * including the `unique` one, transcribed from `HibachiDAO.isUniqueProperty`
+ * [org/Hibachi/HibachiDAO.cfc:L130-L147]. What the old paragraph had ruled out was a PARTIAL write;
+ * it did not establish that a complete one was impossible, and it is not.
+ *
+ * ★ WHAT IS UNCHANGED, AND MUST STAY UNCHANGED. THIS PORT STILL HAS SIX MEMBERS AND THE SET IS
+ * STILL THIRTEEN PORTS. `saveBrand` is NOT a seventh member here and no `brandRepository` was
+ * created; there is still no `BrandDAO.cfc` to port one from. The write arrives as a narrow
+ * structural collaborator declared by `brandService.ts` and satisfied module-locally inside
+ * `src/handlers/bootstrap.ts` over the request's prepared-statement executor - the same shape
+ * `PriceGroupService` and `PromotionService` already use for their framework READS. It is also still
+ * true that no module under `src/repositories/**` writes `SwBrand`: this port's own adapter reads
+ * those eleven columns and never writes them, and that remains accurate.
  */
 
 /**

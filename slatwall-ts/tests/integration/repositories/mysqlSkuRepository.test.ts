@@ -158,6 +158,7 @@ import type {
   SqlMutationResult,
   SqlRow,
 } from '../../../src/repositories/mysql/connection.js';
+import { SQL_TUPLE_ROW_LIMIT } from '../../../src/repositories/mysql/connection.js';
 import type { DatabaseDialect } from '../../../src/repositories/mysql/dialect.js';
 import {
   optionGroupOdometerPowerFragment,
@@ -165,8 +166,8 @@ import {
   resolveDialect,
 } from '../../../src/repositories/mysql/dialect.js';
 import { MysqlSkuRepository } from '../../../src/repositories/mysql/mysqlSkuRepository.js';
-// Imported for exactly one S-08 case: the proof that the selected-option ceiling was imposed in the
-// ADAPTER and not pushed down into the contractually total builder.
+// Imported for exactly one read-totality case: the proof that neither the adapter nor the
+// contractually total builder beneath it counts the elements of a selected-option list.
 import { buildSkusBySelectedOptionsStatement } from '../../../src/repositories/mysql/sql/skusBySelectedOptions.sql.js';
 
 /**
@@ -3744,25 +3745,32 @@ describe('MysqlSkuRepository currency-cascade hydration (NET-NEW: no legacy ante
 });
 
 // =============================================================================
-// THE THREE RESOURCE CEILINGS (S-08)
+// READ TOTALITY - THE THREE RESOURCE CEILINGS, INVERTED
 //
 // A security review raised finding S-08, MEDIUM, CWE-400: unbounded selected-option `EXISTS` chains
 // and wildcard-broadened unpaginated searches can exhaust database or container resources. Values
-// are bound on every path, so this is denial of service rather than injection - nothing here is
+// are bound on every path, so this was denial of service rather than injection - nothing here is
 // about statement text, and no case below asserts a change to any.
 //
-// THE CEILINGS LIVE IN THE ADAPTER, and the module's own ceilings block carries the full argument for
-// why not in `./sql/skusBySelectedOptions.sql.ts` (contractually total, with an inverted suite
-// written to keep it that way) and not in `productService` (must-preserve forwarder that reshapes
-// nothing). Two of the three are DERIVED FROM THE SCHEMA and are therefore provably non-binding on
-// input that could match a row; the third bounds graph materialization this port introduced and the
-// legacy never performed.
+// ★★ AN EARLIER REVISION ANSWERED IT WITH THREE REFUSAL CEILINGS IN THIS ADAPTER, AND THIS BLOCK
+// USED TO PIN THEM. A later review found the ceilings themselves to be the defect:
+// [model/dao/SkuDAO.cfc:L102-L145] validates nothing and refuses nothing on magnitude, so every
+// input these ceilings rejected was one the legacy ANSWERED - with rows, or with an empty array.
+// A read that raises where the legacy returned is a behavioural divergence, and this port is allowed
+// exactly three of those (AAP 0.6.7), none of which is a resource ceiling. One of the three affected
+// paths, `getProductSkusBySelectedOptions`, is a must-preserve behaviour outright.
 //
-// Each ceiling gets a case AT the limit and a case ABOVE it, so the boundary is pinned inclusively
-// rather than approximately.
+// SO EVERY CASE THAT ASSERTED A REFUSAL IS NOW ITS INVERSE. The same inputs - a 65-element option
+// list, a 51-character search term, a 2,001-row result set - are asserted to be ANSWERED, and the
+// at-the-limit cases are kept unchanged so that the previously-inclusive boundary is still covered
+// on the admissible side. If a ceiling is ever reinstated, one of these cases fails and names it.
+//
+// AND THE RESOURCE CONCERN IS STILL ANSWERED, one layer down: the association follow-up statements
+// batch their identifier lists, so a large answer costs a bounded number of bounded statements
+// instead of one statement the driver could not carry. The final case pins that batching directly.
 // =============================================================================
 
-describe('the three resource ceilings refuse only what could not have been answered', () => {
+describe('the read path is total on magnitude, refusing nothing the legacy answered', () => {
   /** A well-formed 32-character option identifier, distinct per index. */
   function optionIDAt(index: number): string {
     return index.toString(16).padStart(32, '0');
@@ -3774,33 +3782,36 @@ describe('the three resource ceilings refuse only what could not have been answe
   }
 
   describe('the selected-option count', () => {
-    it('executes a list AT the ceiling, so the limit is inclusive', async () => {
+    it('executes a 64-element list, which was the old ceiling', async () => {
       const executor = new RecordingExecutor([NO_ROWS]);
 
       await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).getSkusBySelectedOptions(
         optionListOf(64),
       );
 
-      // 64 option groups is already absurd - a product carrying them would hold at least 2^64 SKUs
-      // - so the ceiling sits above every list that could match. The statement was still built and
-      // still issued, with one placeholder and one bind per element.
+      // 64 option groups is already absurd - a product carrying them would hold at least 2^64 SKUs.
+      // The statement is built and issued regardless, with one placeholder and one bind per element.
       const statement = onlyStatement(executor.calls);
 
       expect(statement.params).toHaveLength(64);
     });
 
-    it('★★ refuses a list ABOVE the ceiling before issuing any statement', async () => {
+    it('★★ executes a list ABOVE the old ceiling instead of refusing it', async () => {
       const executor = new RecordingExecutor([NO_ROWS]);
 
-      await expect(
-        new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).getSkusBySelectedOptions(
-          optionListOf(65),
-        ),
-      ).rejects.toThrow(/selectedOptionCount is 65 and at most 64/u);
+      const found = await new MysqlSkuRepository(
+        executor,
+        TEST_AUDIT_ACTOR,
+      ).getSkusBySelectedOptions(optionListOf(65));
 
-      // The refusal precedes the statement, which is the whole point: a refused list costs one parse
-      // and one comparison, not 65 string concatenations and a round trip.
-      expect(executor.calls).toHaveLength(0);
+      // THE INVERTED CASE. This used to reject with `selectedOptionCount is 65 and at most 64` and
+      // to issue no statement at all. [model/dao/SkuDAO.cfc:L107-L128] counts nothing and refuses
+      // nothing, so the statement is built, issued with 65 binds, and answers the empty array that
+      // no such SKU produces - which is exactly what the legacy answered.
+      const statement = onlyStatement(executor.calls);
+
+      expect(statement.params).toHaveLength(65);
+      expect(found).toStrictEqual([]);
     });
 
     it('counts with CFML list semantics, so a doubled delimiter is not an element', async () => {
@@ -3817,13 +3828,11 @@ describe('the three resource ceilings refuse only what could not have been answe
 
     // SYNCHRONOUS ON PURPOSE, and the absence of `async` is part of the assertion. The builder is
     // a pure function that touches no executor, so awaiting it would be awaiting a non-thenable -
-    // which this suite treats as a lint failure rather than a passing test. That it needs no
-    // `await` while every sibling case above does is itself evidence that the ceiling lives in the
-    // adapter's async read path and was not pushed down into the builder.
+    // which this suite treats as a lint failure rather than a passing test.
     it('leaves the builder itself total, which is its own contract', () => {
-      // The refusal is the ADAPTER's. `buildSkusBySelectedOptionsStatement` still emits for a
-      // 65-element list, and its own suite pins that; this case only proves that the ceiling was not
-      // pushed down into it, because a pushed-down guard would make the builder throw here too.
+      // `buildSkusBySelectedOptionsStatement` emits for a 65-element list, and its own suite pins
+      // that. The case is kept because it proves the two tiers agree: neither the builder nor the
+      // adapter above it counts elements, so a guard added to either would fail a case that names it.
       const statement = buildSkusBySelectedOptionsStatement(optionListOf(65));
 
       expect(statement.params).toHaveLength(65);
@@ -3831,7 +3840,7 @@ describe('the three resource ceilings refuse only what could not have been answe
   });
 
   describe('the search-term length', () => {
-    it('searches with a term AT the column width, so the limit is inclusive', async () => {
+    it('searches with a term at the column width, which was the old ceiling', async () => {
       const executor = new RecordingExecutor([NO_ROWS]);
 
       await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).searchSkusByProductType(
@@ -3843,22 +3852,27 @@ describe('the three resource ceilings refuse only what could not have been answe
       expect(onlyStatement(executor.calls).params).toStrictEqual([`%${'a'.repeat(50)}%`]);
     });
 
-    it('★★ refuses a term ABOVE the column width before issuing any statement', async () => {
+    it('★★ searches with a term ABOVE the column width instead of refusing it', async () => {
       const executor = new RecordingExecutor([NO_ROWS]);
 
-      await expect(
-        new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).searchSkusByProductType('a'.repeat(51)),
-      ).rejects.toThrow(/searchTermLength is 51 and at most 50/u);
+      const found = await new MysqlSkuRepository(
+        executor,
+        TEST_AUDIT_ACTOR,
+      ).searchSkusByProductType('a'.repeat(51));
 
-      expect(executor.calls).toHaveLength(0);
+      // THE INVERTED CASE. This used to reject with `searchTermLength is 51 and at most 50` and to
+      // issue no statement. [model/dao/SkuDAO.cfc:L132-L133] binds `%#arguments.term#%`
+      // unconditionally, so the search runs and answers no matches - which is what a term longer
+      // than the column can hold has always meant.
+      expect(onlyStatement(executor.calls).params).toStrictEqual([`%${'a'.repeat(51)}%`]);
+      expect(found).toStrictEqual([]);
     });
 
-    it('leaves a LIKE metacharacter live inside an admissible term, exactly as the legacy did', async () => {
+    it('leaves a LIKE metacharacter live inside the term, exactly as the legacy did', async () => {
       // The finding suggests escaping LIKE wildcards where literal matching is intended. It is NOT
       // intended here: [model/dao/SkuDAO.cfc:L133] binds `%#arguments.term#%` with the
       // metacharacters active, so `%` legitimately matches every code and escaping it would change
-      // which rows a CORRECT search returns. The ceiling above bounds the resource instead; this
-      // case pins that the matching semantics were left alone.
+      // which rows a CORRECT search returns. Nothing bounds the term now, and nothing rewrites it.
       const executor = new RecordingExecutor([NO_ROWS]);
 
       await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).searchSkusByProductType('%_%');
@@ -3868,47 +3882,78 @@ describe('the three resource ceilings refuse only what could not have been answe
   });
 
   describe('the search-result hydration count', () => {
-    it('★★ refuses a result set ABOVE the ceiling before hydrating any row', async () => {
+    it('★★ hydrates a result set ABOVE the old ceiling instead of refusing it', async () => {
       const oversized: readonly SqlRow[] = Array.from({ length: 2_001 }, (_unused, index) =>
         makeSkuRow({ skuID: index.toString(16).padStart(32, '0') }),
       );
       const executor = new RecordingExecutor([oversized]);
-
-      await expect(
-        new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).searchSkusByProductType('shirt'),
-      ).rejects.toThrow(/searchResultHydration is 2001 and at most 2000/u);
-
-      // ONE statement was issued - the search itself - and none of the follow-up statements
-      // hydration would have needed. That is what bounds the amplification: the legacy projected two
-      // columns per match [model/dao/SkuDAO.cfc:L131] and built no graph at all.
-      expect(executor.calls).toHaveLength(1);
-    });
-
-    it('hydrates a result set AT the ceiling, so the limit is inclusive', async () => {
-      const atTheCeiling: readonly SqlRow[] = Array.from({ length: 2_000 }, (_unused, index) =>
-        makeSkuRow({ skuID: index.toString(16).padStart(32, '0') }),
-      );
-      const executor = new RecordingExecutor([atTheCeiling, NO_ROWS, NO_ROWS]);
 
       const skus = await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).searchSkusByProductType(
         'shirt',
       );
 
-      // Not refused, and hydration proceeded: the follow-up statements were issued and every row
-      // became a `Sku`.
+      // THE INVERTED CASE. This used to reject with `searchResultHydration is 2001 and at most 2000`
+      // after issuing only the search itself. Every matched row is now hydrated, because the legacy
+      // answered every match [model/dao/SkuDAO.cfc:L131, L141-L145] and a search that raises on
+      // magnitude is not the same interface as one that returns.
+      expect(skus).toHaveLength(2_001);
+    });
+
+    it('hydrates a result set at the old ceiling, unchanged', async () => {
+      const atTheOldCeiling: readonly SqlRow[] = Array.from({ length: 2_000 }, (_unused, index) =>
+        makeSkuRow({ skuID: index.toString(16).padStart(32, '0') }),
+      );
+      const executor = new RecordingExecutor([atTheOldCeiling, NO_ROWS, NO_ROWS]);
+
+      const skus = await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).searchSkusByProductType(
+        'shirt',
+      );
+
       expect(skus).toHaveLength(2_000);
       expect(executor.calls.length).toBeGreaterThan(1);
     });
 
-    it('names the ceiling it enforced, so an operator need not read the source to find it', async () => {
+    it('★★ batches the association statements so no single bind exceeds the tuple row limit', async () => {
       const oversized: readonly SqlRow[] = Array.from({ length: 2_001 }, (_unused, index) =>
         makeSkuRow({ skuID: index.toString(16).padStart(32, '0') }),
       );
       const executor = new RecordingExecutor([oversized]);
 
-      await expect(
-        new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).searchSkusByProductType('shirt'),
-      ).rejects.toThrow(/Narrow the term or the product-type list/u);
+      await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).searchSkusByProductType('shirt');
+
+      // WHAT REPLACED THE CEILING. The two follow-up statements each bind one placeholder per matched
+      // SKU, and `sqlPlaceholderList` refuses a count above the driver's protocol limit - so an
+      // uncapped search would have failed one layer down had the lists not been chunked. 2,001
+      // identifiers become three batches per statement: the search, then 3 currency reads, then 3
+      // option reads.
+      expect(executor.calls).toHaveLength(7);
+
+      // The search itself binds one term; every association batch binds at most the tuple row limit.
+      for (const call of executor.calls) {
+        expect(call.params.length).toBeLessThanOrEqual(SQL_TUPLE_ROW_LIMIT);
+      }
+
+      // And the batches together cover the whole set exactly once, with no identifier dropped and
+      // none bound twice.
+      const associationBindCount = executor.calls
+        .slice(1)
+        .reduce((total: number, call) => total + call.params.length, 0);
+
+      expect(associationBindCount).toBe(2 * 2_001);
+    });
+
+    it('emits exactly one statement per association when the set fits a single batch', async () => {
+      const withinOneBatch: readonly SqlRow[] = Array.from({ length: 3 }, (_unused, index) =>
+        makeSkuRow({ skuID: index.toString(16).padStart(32, '0') }),
+      );
+      const executor = new RecordingExecutor([withinOneBatch]);
+
+      await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).searchSkusByProductType('shirt');
+
+      // THE EMITTED SQL IS UNCHANGED FOR EVERY REALISTIC RESULT SET, which is what makes the
+      // batching invisible to every parity assertion in this file: the search, one currency read and
+      // one option read, exactly as before.
+      expect(executor.calls).toHaveLength(3);
     });
   });
 });

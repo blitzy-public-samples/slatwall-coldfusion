@@ -3336,54 +3336,72 @@ describe('SkuService', () => {
       expect(Object.keys(criteria).sort()).toStrictEqual(['keyword', 'productTypeID']);
     });
 
-    it('preserves the five keyword properties, all at weight 1', async () => {
-      // CFML parity [model/service/SkuService.cfc:L316-L322]: five
-      // `addKeywordProperty(propertyIdentifier=..., weight=1)` calls, in this order, every one at
-      // weight 1. The uniform weight is worth pinning because it means the legacy applied NO
-      // relevance ranking whatsoever; the weights were not lost in translation, they were always 1.
+    it('★★ reports the ONE keyword property the executed statement matches, at weight 1', async () => {
+      // THIS CASE IS AN INVERSION AND WAS NAMED "preserves the five keyword properties, all at
+      // weight 1". It asserted all five `addKeywordProperty` identifiers from
+      // [model/service/SkuService.cfc:L318-L322], and it passed - against a page whose statement
+      // compares one column. The five belong to `getSkuSmartList`'s `HibachiSmartList`, which AAP
+      // 0.6.2 rules out of this port; `findSkus` executes `SkuDAO.searchSkusByProductType`, whose
+      // whole predicate is `skuCode like :code` [model/dao/SkuDAO.cfc:L132].
+      //
+      // Reporting five was not a documented gap, it was a false statement of what was matched: a
+      // caller reading the page would expect a product-name search to find its SKUs, and it
+      // silently would not. The four unmatched identifiers survive as an inert record on
+      // `SKU_KEYWORD_PROPERTIES`, so their spellings and weights are not lost.
       const repository = new RecordingSkuRepository();
       const subject = new SkuService(repository, imageStore, subscriptionTermProvider);
 
       const page = await subject.findSkus({ keyword: 'jordan' });
 
-      expect(page.keywordProperties).toStrictEqual([
-        { propertyIdentifier: 'skuCode', weight: 1 },
-        { propertyIdentifier: 'skuID', weight: 1 },
-        { propertyIdentifier: 'product.productName', weight: 1 },
-        { propertyIdentifier: 'product.productType.productTypeName', weight: 1 },
-        { propertyIdentifier: 'alternateSkuCodes.alternateSkuCode', weight: 1 },
-      ]);
-      expect(page.keywordProperties).toHaveLength(5);
+      expect(page.keywordProperties).toStrictEqual([{ propertyIdentifier: 'skuCode', weight: 1 }]);
+      expect(page.keywordProperties).toHaveLength(1);
+
+      // Weight 1 still holds and is still worth pinning: the legacy ranked nothing, and no
+      // relevance scoring, boosting or ordering has been invented in the narrowing.
       expect(page.keywordProperties.every((property) => property.weight === 1)).toBe(true);
+
+      // ★ NONE of the four the smart list additionally configured is reported.
+      const reported = page.keywordProperties.map((property) => property.propertyIdentifier);
+
+      for (const unmatched of [
+        'skuID',
+        'product.productName',
+        'product.productType.productTypeName',
+        'alternateSkuCodes.alternateSkuCode',
+      ]) {
+        expect(reported).not.toContain(unmatched);
+      }
     });
 
-    it('preserves the three joins, including the LEFT join on alternateSkuCodes', async () => {
-      // CFML parity [model/service/SkuService.cfc:L312-L314]: three `addJoin` calls. The first two
-      // carry no join type - Hibachi's default inner join - while the THIRD is explicitly
-      // `joinType="left"`, because a SKU with no alternate codes must still appear. Turning that
-      // left join into an inner one would silently drop most of the catalogue from every keyword
-      // search, so the join type itself is asserted.
+    it('★★ reports NO joins, because the executed statement performs none', async () => {
+      // THE OTHER HALF OF THE INVERSION. This case was named "preserves the three joins, including
+      // the LEFT join on alternateSkuCodes" and asserted all three `addJoin` calls from
+      // [model/service/SkuService.cfc:L314-L316], including the finding that the first two carry
+      // the EMPTY STRING rather than `'inner'` [org/Hibachi/HibachiSmartList.cfc:L212].
+      //
+      // Every one of those observations is true OF THE SMART LIST and none is true of the statement
+      // that runs. [model/dao/SkuDAO.cfc:L132] selects from `SlatwallSku` alone; the optional
+      // product-type restriction at [L135] is an `IN` SUBQUERY through `SlatwallProduct`, not a
+      // join - the same distinction `buildSearchSkusByProductTypeSql` is annotated to preserve
+      // against its product sibling, which filters `productTypeID` directly on its own row. So the
+      // join list is empty even though the statement can name two tables.
+      //
+      // The three configured joins, their join types and the entity-lock reasoning about
+      // `alternateSkuCodes` all survive as an inert record on `SKU_SMART_LIST_JOINS`.
       const repository = new RecordingSkuRepository();
       const subject = new SkuService(repository, imageStore, subscriptionTermProvider);
 
       const page = await subject.findSkus({ keyword: 'jordan' });
 
-      expect(page.joins).toStrictEqual([
-        { parentEntityName: 'SlatwallSku', relatedProperty: 'product', joinType: '' },
-        { parentEntityName: 'SlatwallProduct', relatedProperty: 'productType', joinType: '' },
-        {
-          parentEntityName: 'SlatwallSku',
-          relatedProperty: 'alternateSkuCodes',
-          joinType: 'left',
-        },
-      ]);
-      expect(page.joins).toHaveLength(3);
+      expect(page.joins).toStrictEqual([]);
+      expect(page.joins).toHaveLength(0);
 
-      const alternateSkuCodesJoin = page.joins[2];
-      expect(alternateSkuCodesJoin).toBeDefined();
-      if (alternateSkuCodesJoin !== undefined) {
-        expect(alternateSkuCodesJoin.joinType).toBe('left');
-      }
+      // ★ THE MEMBER STILL EXISTS, and that is deliberate rather than incidental: "this query
+      // joins nothing" is the fact that tells a caller a SKU with no alternate codes, and one whose
+      // product has no product type, are both still returned. Deleting the member would leave that
+      // unsaid.
+      expect(Object.keys(page)).toContain('joins');
+      expect(Array.isArray(page.joins)).toBe(true);
     });
 
     it('routes the keyword and product type through the same port the legacy DAO served', async () => {

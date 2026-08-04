@@ -192,113 +192,77 @@ describe('appConfig.load', () => {
   });
 
   // -------------------------------------------------------------------------
-  // FEED_URL_SCHEME - finding S-09
+  // FEED_URL_SCHEME - THE VARIABLE THAT IS NOT READ, AND WHY
   //
-  // A security review raised S-09 (MEDIUM, CWE-319): the feed renderer hardcoded `http://`, so
-  // every product, image and channel URL a merchant feed published was cleartext and an on-path
-  // attacker could rewrite the links a shopper follows. The required resolution was to "Emit
-  // HTTPS-only URLs from a deployment-owned canonical origin; refuse insecure origin
-  // configuration." This variable is the deployment-owned half; the refusal is the production rule.
+  // A security review raised S-09 (MEDIUM, CWE-319) against the renderer's hardcoded `http://`,
+  // and an intervening revision ACCEPTED it here: this module read a `FEED_URL_SCHEME` variable,
+  // published it as `AppConfig.feed.scheme`, defaulted it to `https` and refused `http` outright
+  // when `NODE_ENV` was production. A suite of nine cases pinned every one of those behaviours.
   //
-  // AAP 0.4.1 permits it: it enumerates the hardcodings preserved in the renderer -
-  // `g:condition="new"`, `g:availability="in stock"` and the empty `g:google_product_category` -
-  // and THE SCHEME IS NOT AMONG THEM. The legacy origin was `http://#CGI.HTTP_HOST#`, a runtime
-  // value, so there was never a fixed origin to preserve.
+  // ALL OF IT IS REMOVED, AND THESE CASES ARE ITS INVERSION rather than its deletion, so the
+  // reversal is checked and not merely asserted in a comment. The variable, the `FeedUrlScheme`
+  // type, the `https` default, the production refusal and the `feed.scheme` member are gone. AAP
+  // 0.1.1 requires preserving "the Google product-feed integration contract exactly", AAP 0.8.1
+  // freezes it, and AAP 0.6.7 admits exactly three divergences in this port - the un-`var`'d scope
+  // leak, the `amountOff` precision gap and the entity memo bugs - so a scheme change would be a
+  // fourth. The earlier argument leaned on AAP 0.4.1 enumerating three preserved hardcodings and
+  // "THE SCHEME IS NOT AMONG THEM", but that list enumerates the hardcodings worth ANNOTATING, not
+  // an exhaustive licence to change everything absent from it. The scheme is the frozen legacy
+  // literal in `src/integrations/google/rssFeedRenderer.ts`.
   //
   // NET-NEW COVERAGE per AAP 0.6.6.
   // -------------------------------------------------------------------------
 
-  describe('FEED_URL_SCHEME', () => {
-    it('★★ defaults to https when unset, which is the one non-legacy default in this module', () => {
-      // The legacy literal was `http`. This default deliberately is not, so an unconfigured
-      // deployment publishes secure URLs instead of inheriting a cleartext accident. Every other
-      // default in this file matches its legacy or conventional value; this one is called out
-      // because it is the exception.
-      expect(load().feed.scheme).toBe('https');
+  describe('FEED_URL_SCHEME is not part of the configuration contract', () => {
+    it('★★ publishes NO scheme member: the feed config is the allow-list and nothing else', () => {
+      const { feed } = load();
+
+      // Reflected rather than type-asserted. A removed member is invisible to `expect(x).toBe`
+      // once the type is gone, so the key set is what proves the surface actually narrowed.
+      expect(Object.keys(feed)).toStrictEqual(['allowedHosts']);
+      expect('scheme' in feed).toBe(false);
     });
 
-    it('accepts https explicitly, and accepts http outside production', () => {
-      expect(load({ FEED_URL_SCHEME: 'https' }).feed.scheme).toBe('https');
+    it('★★ IGNORES the variable entirely when a leftover deployment still sets it', () => {
+      // The realistic failure this guards: an operator upgrades a deployment whose environment
+      // still carries `FEED_URL_SCHEME=https` from the earlier revision. It must be INERT - not a
+      // start-up refusal, which would block the upgrade, and not a silently honoured setting,
+      // which would reintroduce the divergence. This module reads only the keys it declares.
+      for (const supplied of ['https', 'http', 'HTTPS', 'htps', 'ftp', 'https://', '']) {
+        const { feed } = load({ FEED_URL_SCHEME: supplied });
 
-      // `http` stays ADMISSIBLE rather than being removed from the union: a loopback or local host
-      // may genuinely serve plain HTTP, and it is the only way to reproduce the legacy document.
-      expect(load({ FEED_URL_SCHEME: 'http' }).feed.scheme).toBe('http');
+        expect(Object.keys(feed)).toStrictEqual(['allowedHosts']);
+      }
     });
 
-    it('matches without regard to case, like every other enumeration here', () => {
-      expect(load({ FEED_URL_SCHEME: 'HTTPS' }).feed.scheme).toBe('https');
-      expect(load({ FEED_URL_SCHEME: '  Http  ' }).feed.scheme).toBe('http');
-    });
-
-    it('★★ REFUSES http when NODE_ENV is production, which is the "refuse insecure" half', () => {
-      // The transport mode already works exactly this way - `DB_TLS_MODE=disabled` is refused in
-      // production - so the two are expressed identically rather than each inventing a shape.
-      // `DB_TLS_MODE` is raised to a valid production value here so the SCHEME is the only
-      // problem reported and the case cannot pass on an unrelated refusal.
-      const problems = loadExpectingRefusal({
+    it('starts in production with the variable set to http, which the earlier revision refused', () => {
+      // The exact case the removed production rule rejected. It now starts, because the value is
+      // not read at all - and the emitted feed is `http://` regardless of it, which is the frozen
+      // legacy output. `DB_TLS_MODE` is raised to a valid production value so this case cannot
+      // pass or fail on the unrelated transport rule, which DOES still refuse in production.
+      const config = load({
         FEED_URL_SCHEME: 'http',
         NODE_ENV: 'production',
         DB_TLS_MODE: 'verify-identity',
       });
 
-      expect(problems).toHaveLength(1);
-      expectProblemMentioning(problems, 'FEED_URL_SCHEME');
-
-      const [reported] = problems.filter((problem) => problem.includes('FEED_URL_SCHEME'));
-
-      // The message has to say what is actually at stake, not merely that a rule failed.
-      expect(reported).toContain('cleartext');
-      expect(reported).toContain('production');
-    });
-
-    it('permits https in production, so the refusal is about the value and not the environment', () => {
-      const config = load({
-        FEED_URL_SCHEME: 'https',
-        NODE_ENV: 'production',
-        DB_TLS_MODE: 'verify-identity',
-      });
-
-      expect(config.feed.scheme).toBe('https');
       expect(config.environment).toBe('production');
+      expect(Object.keys(config.feed)).toStrictEqual(['allowedHosts']);
     });
 
-    it('permits an UNSET scheme in production, because the default is already the safe one', () => {
-      // A deployment that configured nothing must not be blocked from starting: it gets `https`.
-      // If the default had been `http`, this would have had to fail - which is the clearest
-      // statement of why the default was changed.
-      const config = load({ NODE_ENV: 'production', DB_TLS_MODE: 'verify-identity' });
+    it('leaves the transport-mode production refusal untouched, so the shape was not lost with it', () => {
+      // The removed scheme rule was modelled on this one. Removing the scheme rule must not have
+      // weakened the rule it was modelled on: `DB_TLS_MODE=disabled` is still refused in
+      // production, which is a real transport decision rather than a frozen output contract.
+      const problems = loadExpectingRefusal({ NODE_ENV: 'production', DB_TLS_MODE: 'disabled' });
 
-      expect(config.feed.scheme).toBe('https');
+      expectProblemMentioning(problems, 'DB_TLS_MODE');
     });
 
-    it('refuses an unrecognized scheme rather than falling back to the default', () => {
-      // A silent fallback would upgrade `htps` to `https` and leave the typo in place forever. The
-      // value is an enumeration and never a credential, so it is echoed back.
-      const problems = loadExpectingRefusal({ FEED_URL_SCHEME: 'htps' });
-
-      expectProblemMentioning(problems, 'FEED_URL_SCHEME');
-
-      const [reported] = problems.filter((problem) => problem.includes('FEED_URL_SCHEME'));
-
-      expect(reported).toContain('htps');
-      expect(reported).toContain('http, https');
-    });
-
-    it('refuses a scheme supplied WITH its separator, or as a whole origin', () => {
-      // Both are the mistake an operator actually makes. The renderer adds `://` itself, so
-      // accepting these would compose `https://://host` and `https://https://host`.
-      for (const supplied of ['https://', 'https://shop.example.com']) {
-        expectProblemMentioning(
-          loadExpectingRefusal({ FEED_URL_SCHEME: supplied }),
-          'FEED_URL_SCHEME',
-        );
-      }
-    });
-
-    it('is FROZEN on the resolved config, so nothing can retune it after start-up', () => {
-      // The same guarantee the allow-list has: a request cannot reach this value, widen it or
-      // downgrade it. Both halves of the origin are fixed for the container's lifetime.
-      const config = load({ FEED_URL_SCHEME: 'https' });
+    it('is FROZEN on the resolved config, so nothing can add a scheme back after start-up', () => {
+      // The guarantee the allow-list has, retained: a request cannot reach this object, widen it,
+      // or graft a `scheme` onto it at run time.
+      const config = load({ FEED_ALLOWED_HOSTS: 'shop.example.com' });
 
       expect(Object.isFrozen(config.feed)).toBe(true);
     });

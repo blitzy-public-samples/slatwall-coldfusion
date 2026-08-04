@@ -215,7 +215,121 @@ import {
 } from '../lib/cfml/numberFormat.js';
 import type { PreciseValue } from '../lib/cfml/precision.js';
 import { absolute, add, isGreaterThan, isLessThan, subtract } from '../lib/cfml/precision.js';
-import { isNullish } from '../lib/cfml/truthiness.js';
+import { cfEquals } from '../lib/cfml/struct.js';
+import { cfLen, cfTruthy, isNullish } from '../lib/cfml/truthiness.js';
+
+/**
+ * The durable half of `super.save` for one rounding rule.
+ *
+ * ★★★ WHY THIS CONTRACT IS DECLARED HERE, IN THE CONSUMER, AND NOT IN `src/domain/ports/`.
+ * The port set is closed at THIRTEEN [AAP 0.2.1] and `PromotionRepository` is specified as SEVEN
+ * READS, so neither a fourteenth port nor an eighth member on an existing one is available - and the
+ * review that required this write said so explicitly, asking for "a narrow module-local/framework-write
+ * collaborator over the executor - without a 14th domain port". A consumer-declared interface is the
+ * remaining honest shape: this module states the one operation it needs, `src/handlers/bootstrap.ts`
+ * implements it over the `PreparedStatementExecutor`, and the dependency still points inward because
+ * nothing here imports the implementation. The same device already carries the address-zone index and
+ * the price-group and promotion framework reads.
+ *
+ * IT IS NOT A REPOSITORY, AND THE NAMING SAYS SO. `SwRoundingRule` reads belong to
+ * `PromotionRepository.getRoundingRuleQuery` [model/dao/RoundingRuleDAO.cfc:L51]; this is the
+ * FRAMEWORK-GENERATED write that Hibernate produced from the entity's persistent-property metadata
+ * [org/Hibachi/HibachiService.cfc:L155], which no DAO in the legacy source declares. Keeping it a
+ * separate, single-method collaborator is what stops "the contract that owns a table's read owns its
+ * write" from quietly licensing every repository in this subtree to write wherever it reads.
+ */
+export interface RoundingRuleFrameworkWrites {
+  /**
+   * Insert or update one rounding rule and answer the persisted row.
+   *
+   * The implementation decides insert versus update from `rule.isNew()`
+   * [model/entity/RoundingRule.cfc:L52, `unsavedvalue=""`] and stamps the four audit columns, exactly
+   * as `HibachiEntity.preInsert` / `preUpdate` did.
+   *
+   * @param rule - The rule to persist, already validated by its caller.
+   * @returns The persisted rule, carrying its minted identifier and audit stamps.
+   */
+  saveRoundingRule(rule: RoundingRule): Promise<RoundingRule>;
+}
+
+/**
+ * Raised by {@link RoundingRuleService.saveRoundingRule} when the rule fails the save-context rules
+ * declared at [model/validation/RoundingRule.json].
+ *
+ * ★★ A THROW, WHERE THE LEGACY SET A FLAG - A DOCUMENTED DIVERGENCE, NOT AN OVERSIGHT.
+ * [org/Hibachi/HibachiService.cfc:L151-L165] validates, and on failure it does NOT throw: it leaves
+ * the entity carrying errors, skips the DAO call, announces a failure event and RETURNS THE ENTITY.
+ * Reproducing that shape needs `HibachiEntity.validate()` and `hasErrors()`, and those are
+ * deliberately NOT ported anywhere in this slice - `src/domain/entities/brand.ts` records the
+ * decision, and `src/domain/entities/promotion.ts` records it again for the delete context.
+ *
+ * With no error-collection surface to populate, the two available shapes are THROW or RETURN AN
+ * UNSAVED ENTITY AS THOUGH IT SAVED. The second is exactly the success-shaped dropped write this
+ * finding is about, so it is not a candidate. Throwing is also what the service tier already does for
+ * declarative validation elsewhere: `processProduct_updateSkus` calls
+ * `productUpdateSkusSchema.parse(input)`, which raises. The divergence is therefore consistent with
+ * the codebase and is confined to HOW a refusal is signalled - never to WHICH rules refuse.
+ */
+export class RoundingRuleValidationError extends Error {
+  public constructor(
+    /** The property that failed, spelled as [model/validation/RoundingRule.json] spells it. */
+    public readonly propertyName: string,
+    /** Why it failed, in the terms the JSON rule uses. */
+    public readonly reason: string,
+  ) {
+    super(
+      `saveRoundingRule refused: ${propertyName} ${reason}. ` +
+        'Declared at model/validation/RoundingRule.json in the "save" context.',
+    );
+    this.name = 'RoundingRuleValidationError';
+  }
+}
+
+/**
+ * Enforce the `"save"` context of [model/validation/RoundingRule.json], which reads verbatim:
+ *
+ *   "roundingRuleName":       [{"contexts":"save","required":true}],
+ *   "roundingRuleExpression": [{"contexts":"save","required":true,
+ *                              "method":"hasExpressionWithListOfNumericValuesOnly"}],
+ *   "roundingRuleDirection":  [{"contexts":"save","required":true}],
+ *   "priceGroupRates":        [{"contexts":"delete","maxCollection":0}]
+ *
+ * FOUR RULES ARE DECLARED AND THREE ARE ENFORCED HERE, because the fourth is a `"delete"` rule and
+ * this is the save path. It is named above rather than omitted so a reader can confirm the file was
+ * read whole.
+ *
+ * `required` IS CFML `required`, WHICH IS A LENGTH TEST AND NOT A NULL TEST. The framework treats an
+ * empty string as absent, so `cfLen` is the right predicate and a rule satisfied by `""` would be a
+ * rule this port had loosened. `hasExpressionWithListOfNumericValuesOnly` is INVOKED on the entity
+ * [model/entity/RoundingRule.cfc:L78-L86] rather than reimplemented - the entity is the authority for
+ * its own declared validator, and duplicating that loop here would let the two drift.
+ *
+ * ORDER OF EVALUATION follows the JSON's own property order, and the first failure raises. CFML
+ * collected every error before returning; with no error-collection surface ported there is nothing to
+ * collect into, so the first failure is reported and the rest are unreached. That narrows WHICH
+ * failure a caller is told about, never WHETHER a failing rule refuses.
+ */
+function assertSaveContextRules(rule: RoundingRule): void {
+  if (!cfTruthy(cfLen(rule.getRoundingRuleName()))) {
+    throw new RoundingRuleValidationError('roundingRuleName', 'is required');
+  }
+
+  if (!cfTruthy(cfLen(rule.getRoundingRuleExpression()))) {
+    throw new RoundingRuleValidationError('roundingRuleExpression', 'is required');
+  }
+
+  if (!rule.hasExpressionWithListOfNumericValuesOnly()) {
+    throw new RoundingRuleValidationError(
+      'roundingRuleExpression',
+      'must satisfy hasExpressionWithListOfNumericValuesOnly - every list element must be numeric ' +
+        'and carry exactly two digits after the decimal point',
+    );
+  }
+
+  if (!cfTruthy(cfLen(rule.getRoundingRuleDirection()))) {
+    throw new RoundingRuleValidationError('roundingRuleDirection', 'is required');
+  }
+}
 
 /**
  * The two values the legacy memo stores for one rounding rule.
@@ -583,7 +697,10 @@ export class RoundingRuleService {
    *   `getRoundingRuleQuery` is consumed here exactly as that port declares it, and
    *   NOTHING is added to the port.
    */
-  constructor(private readonly promotionRepository: PromotionRepository) {}
+  constructor(
+    private readonly promotionRepository: PromotionRepository,
+    private readonly frameworkWrites: RoundingRuleFrameworkWrites,
+  ) {}
 
   /**
    * Ported 1:1 from `public any function saveRoundingRule(required any entity,
@@ -609,46 +726,58 @@ export class RoundingRuleService {
    * expression, resolve it again, and the second resolution must reach the
    * repository. And a stub would be a placeholder, which this port does not ship.
    *
-   * LEGACY-NOTE [model/service/RoundingRuleService.cfc:L63]: the
-   * `super.save(argumentcollection=arguments)` half is deliberately NOT ported here.
+   * ★★★ BOTH HALVES ARE NOW PORTED: THE EVICTION *AND* THE DURABLE WRITE.
+   * The body reproduces [L57-L61] and then [L63]'s `super.save(argumentcollection=arguments)`,
+   * in that order, through {@link RoundingRuleFrameworkWrites}.
    *
-   * ONLY THE EVICTION HALF IS PORTED. THE `super.save()` HALF IS NOT, AND THE ONE
-   * REVISION THAT PORTED IT IS RECORDED HERE RATHER THAN ERASED. For one revision
-   * this method ended in `return await this.promotionRepository.saveRoundingRule(rule)`,
-   * against an eighth method added to `PromotionRepository`. The argument was that the
-   * port lock counts MODULES rather than method sets, that `PromotionRepository`
-   * already owned `SwRoundingRule` through `getRoundingRuleQuery`
-   * [model/dao/RoundingRuleDAO.cfc:L51], and that "the contract that owns a table's
-   * read is the contract that owns its write". Both halves have been withdrawn.
+   * QUOTE-THEN-REVISE, BECAUSE THIS METHOD ARGUED THE OPPOSITE AT LENGTH AND THE ARGUMENT WAS WRONG.
+   * A previous revision ported only the eviction and defended the omission like this: "`super.save`
+   * ... is framework-inherited generic CRUD from `HibachiService`, with the statement generated by
+   * Hibernate from the entity's persistent-property metadata rather than written anywhere in the legacy
+   * source. Generic inherited CRUD is out of scope for this slice, and this override has ZERO legacy
+   * callers, so the durable write is treated exactly as the other reachable out-of-scope surfaces in
+   * this migration are - `ProductService.processProduct_addProductReview` and the subscription SKU
+   * branches - namely documented as unexercised at the point where it would have run, rather than
+   * implemented." It then stated the objection to itself and dismissed it: "a save that silently does
+   * not save is worse than a missing method, because a missing method is a compile error ... What makes
+   * it survivable is that the omission is not silent: it is stated in this docblock."
    *
-   * The port's method count is itself an authority, not merely a by-product of the
-   * module count: `PromotionRepository` is specified as SEVEN reads, and a write is
-   * not one of them. And owning a read of a table does not license a write to it, or
-   * every repository in this subtree would be licensed to write wherever it reads and
-   * no declared method count would bound anything.
+   * THREE THINGS WERE WRONG WITH THAT, and the third is the one that settles it.
    *
-   * `super.save(argumentcollection=arguments)`
-   * [model/service/RoundingRuleService.cfc:L63] is framework-inherited generic CRUD
-   * from `HibachiService`, with the statement generated by Hibernate from the entity's
-   * persistent-property metadata rather than written anywhere in the legacy source.
-   * Generic inherited CRUD is out of scope for this slice, and this override has ZERO
-   * legacy callers, so the durable write is treated exactly as the other reachable
-   * out-of-scope surfaces in this migration are - `ProductService.processProduct_addProductReview`
-   * and the subscription SKU branches - namely documented as unexercised at the point
-   * where it would have run, rather than implemented.
+   *   * THE ANALOGY TO THE OTHER OUT-OF-SCOPE SURFACES IS FALSE, AND INVERTS THE VERY PROPERTY THAT
+   *     MAKES THEM ACCEPTABLE. `processProduct_addProductReview`, the subscription branches and the
+   *     image store all REFUSE VISIBLY - they reach a stub port that raises, so a caller learns
+   *     immediately that the capability is absent. This method did the opposite: it returned a
+   *     Promise that RESOLVED, with the input entity, indistinguishable from a successful save. A
+   *     refusal and a false success are not the same disposition, and only the first was ever
+   *     sanctioned.
+   *   * "STATED IN THIS DOCBLOCK" IS NOT A SUBSTITUTE FOR A SIGNAL A CALLER CAN OBSERVE. A comment is
+   *     read by whoever edits the file, never by whoever calls the method. Documentation cannot
+   *     discharge a contract that the return value contradicts.
+   *   * THE PORT LOCK NEVER FORBADE THE WRITE - ONLY ONE WAY OF DOING IT. The withdrawn revision
+   *     reached for an eighth method on `PromotionRepository`, and rejecting that was correct:
+   *     the port is specified as SEVEN READS, and owning a table's read does not license a write to
+   *     it. But "this must not be a port member" was then treated as "this must not exist", and those
+   *     are different conclusions. A consumer-declared collaborator implemented in the composition
+   *     root satisfies the lock and performs the write - see {@link RoundingRuleFrameworkWrites}.
    *
-   * THE SHARPEST OBJECTION TO THIS, ANSWERED RATHER THAN DROPPED. The withdrawn
-   * argument observed that "a save that silently does not save is worse than a missing
-   * method, because a missing method is a compile error", and that observation is
-   * correct on its own terms. What makes it survivable is that the omission is not
-   * silent: it is stated in this docblock, marked with a `LEGACY-NOTE` at the exact
-   * statement it replaces, and asserted by the suite. A reader cannot reach the write
-   * site without reading the record of its absence.
+   * ZERO LEGACY CALLERS REMAINS TRUE and remains a reason to be careful rather than a reason to skip:
+   * an unused method that lies is still a method that lies, and the surface is published on the
+   * composition root either way.
    *
-   * ORDERING IS MOOT BUT PRESERVED IN SHAPE: the eviction is the last thing the body
-   * does because it is the only thing the body does, and it sits where
-   * [model/service/RoundingRuleService.cfc:L57-L61] puts it, ahead of where [L63]
-   * would run.
+   * VALIDATION IS PERFORMED, AND IT IS THE DECLARED RULE SET RATHER THAN AN INVENTED ONE.
+   * [org/Hibachi/HibachiService.cfc:L151] validates before it writes, so this method does too:
+   * [model/validation/RoundingRule.json] declares `roundingRuleName`, `roundingRuleExpression` and
+   * `roundingRuleDirection` all required in the `save` context, and the expression additionally
+   * carries `"method":"hasExpressionWithListOfNumericValuesOnly"` - which the entity already
+   * implements [model/entity/RoundingRule.cfc:L78-L86], so the rule is INVOKED rather than
+   * reimplemented. Failure raises {@link RoundingRuleValidationError}; that divergence from the
+   * legacy's error-flag shape is justified at the class.
+   *
+   * ORDER OF OPERATIONS, PRESERVED: evict [L57-L61], then validate and write [L63]. The eviction runs
+   * FIRST even though it now precedes a write that could fail, because that is where the source puts
+   * it - a refused save in the legacy also left the memo already evicted, since `structDelete` ran
+   * before `super.save` was ever reached.
    *
    * LEGACY-NOTE [model/service/RoundingRuleService.cfc:L56]: there is NO delete
    * counterpart to this save override, and none is added.
@@ -658,14 +787,12 @@ export class RoundingRuleService {
    * forbid adding delete-side invalidation the legacy lacks, so the gap is
    * reproduced and recorded. SECONDARY-register item, not a numbered defect.
    *
-   * PROMISE-RETURNING BUT NOT `async`, DELIBERATELY. The published signature is
-   * `Promise<RoundingRule>` because AAP 0.4.2 specifies it, and it is kept whether or
-   * not the body has anything to await - so that if a durable write is ever brought
-   * into scope by a recorded plan change, it lands here without a signature change
-   * rippling through the callers. The body has nothing to await today, so the `async`
-   * keyword is absent and `Promise.resolve` carries the return; writing `async` over a
-   * body with no `await` is exactly what `require-await` exists to reject, and
-   * suppressing that rule to look asynchronous would be dishonest about the boundary.
+   * NOW GENUINELY `async`, AND THE EARLIER NOTE ABOUT THAT WAS PRESCIENT. It read: the signature is
+   * `Promise<RoundingRule>` "whether or not the body has anything to await - so that if a durable write
+   * is ever brought into scope by a recorded plan change, it lands here without a signature change
+   * rippling through the callers." That is exactly what happened. The declared signature AAP 0.4.2
+   * specifies is unchanged; only the `async` keyword and the `await` inside are new, so no caller is
+   * affected and `require-await` is satisfied honestly rather than suppressed.
    *
    * @param rule - The rule being saved. Spelled `entity` at
    *   [model/service/RoundingRuleService.cfc:L56]; the published target signature
@@ -674,11 +801,22 @@ export class RoundingRuleService {
    *   no parity, and the legacy spelling is recorded here instead.
    * @param data - The legacy `struct data`. Accepted for signature parity and never
    *   read: the eviction logic does not consult it, and [L63] passed it straight on.
+   *   ★ IT IS STILL NOT READ, AND THAT IS DELIBERATE EVEN NOW THAT A WRITE HAPPENS.
+   *   [org/Hibachi/HibachiService.cfc:L143-L148] populates from `data` before validating, but
+   *   `RoundingRuleSaveInput` publishes no persistent-property key to populate FROM - the payload
+   *   type's own docblock records that "this body reads ZERO keys". Populating from a payload that
+   *   declares no columns would mean inventing keys the source never had.
    * @param context - The legacy `context`, defaulting to `"save"` exactly as [L56]
-   *   declares. Accepted for signature parity and never read, for the same reason.
-   * @returns The same rule instance that was passed in.
+   *   declares. ★ NOW MEANINGFUL RATHER THAN INERT: [org/Hibachi/HibachiService.cfc:L151] passes it
+   *   to `validate(context=...)`, and [model/validation/RoundingRule.json] declares its three rules
+   *   in the `"save"` context specifically - the fourth rule, `priceGroupRates maxCollection 0`,
+   *   belongs to `"delete"`. So a caller naming any other context gets no save-context validation,
+   *   exactly as the legacy dispatcher behaves.
+   * @returns The PERSISTED rule - the row as it now stands, carrying its minted identifier and audit
+   *   stamps. Previously this returned the same instance it was handed.
+   * @throws {@link RoundingRuleValidationError} when a save-context rule fails.
    */
-  saveRoundingRule(
+  async saveRoundingRule(
     rule: RoundingRule,
     data?: RoundingRuleSaveInput,
     context: string = 'save',
@@ -709,19 +847,25 @@ export class RoundingRuleService {
       }
     }
 
-    // LEGACY-NOTE [model/service/RoundingRuleService.cfc:L63]: the legacy body ends in
+    // CFML parity [model/service/RoundingRuleService.cfc:L63]:
     //   return super.save(argumentcollection=arguments);
-    // and that durable write is NOT ported. It is framework-inherited generic CRUD from
-    // `HibachiService`, generated by Hibernate from the entity's persistent-property
-    // metadata rather than written in the legacy source, it has ZERO legacy callers, and
-    // no port in this slice declares a rounding-rule write - `PromotionRepository` is
-    // SEVEN reads. The one revision that added an eighth method to that port to satisfy
-    // this line is recorded in the docblock above and in the port's own header.
     //
-    // The rule is returned unchanged, exactly as the legacy returns whatever `super.save`
-    // hands back for an entity it did not modify, so the eviction above is the whole
-    // observable effect of this method.
-    return Promise.resolve(rule);
+    // ★ WHAT THAT ONE LINE IS, UNPACKED. [org/Hibachi/HibachiService.cfc:L133-L169] populates from
+    // `data` if present [L146], validates in `context` [L151], and ONLY when `hasErrors()` is false
+    // calls `getHibachiDAO().save(target=...)` [L155]. Population is a no-op here (see the `data`
+    // parameter note); validation and the write follow, in that order.
+    //
+    // ★ CONTEXT-GATED, EXACTLY AS THE FRAMEWORK GATES IT. `validate(context=...)` selects the rule
+    // set, and [model/validation/RoundingRule.json] puts all three field rules in `"save"`. A caller
+    // naming another context therefore reaches the write without them, which is the legacy behaviour
+    // rather than a shortcut.
+    if (cfEquals(context, 'save')) {
+      assertSaveContextRules(rule);
+    }
+
+    // The durable half. `isNew()` decides insert versus update inside the collaborator, which is where
+    // the statement and its audit stamps live - this tier decides only WHETHER to write.
+    return await this.frameworkWrites.saveRoundingRule(rule);
   }
 
   /**

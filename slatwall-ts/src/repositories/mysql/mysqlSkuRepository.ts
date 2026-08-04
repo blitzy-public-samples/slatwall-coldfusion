@@ -173,141 +173,45 @@ class SkuNonUniqueResultError extends Error {
   }
 }
 
-// --- Resource ceilings (S-08) ------------------------------------------------
+// --- Read totality: why this module refuses nothing on magnitude ------------
 //
-// SECURITY REVIEW DISPOSITION - RAISED AS S-08, ACCEPTED, AND IMPOSED HERE RATHER THAN IN THE TWO
-// LAYERS THAT LOOK LIKE MORE OBVIOUS HOMES. AAP 0.6.5 positively requires "explicit batch limits"
-// under the Lambda execution model, so the bounds themselves are mandated, not discretionary. Where
-// they go was the whole question, and it was settled by reading what each layer has already
-// committed to:
+// SECURITY REVIEW DISPOSITION - RAISED AS S-08, AND THE THREE REFUSAL CEILINGS AN EARLIER REVISION
+// IMPOSED HERE HAVE BEEN REMOVED. The record is kept because a reader will look for them, and
+// because re-adding one would reintroduce the exact divergence that was ruled out.
 //
-//   * NOT in `./sql/skusBySelectedOptions.sql.ts`. That module is contractually TOTAL, and its
-//     suite keeps a whole inverted block - "buildSkusBySelectedOptionsStatement - totality: it
-//     never throws" - written expressly so that a returning guard fails a case that names it. An
-//     earlier revision of that module DID carry a 64-element cap next to `len()`, `trim()` and
-//     membership checks; every one was removed because each turned "no SKU matches" into a request
-//     failure for inputs [model/dao/SkuDAO.cfc:L107-L128] accepted.
-//   * NOT in `../../services/productService.ts`. `getProductSkusBySelectedOptions` is one of the
-//     three must-preserve behaviours and its obligation is explicit: forward both arguments
-//     unchanged and "reshape NOTHING around them", with `selectedOptions` staying an unparsed
-//     comma-list so the service and the SQL cannot disagree about what a delimiter is.
-//   * HERE, because this is the layer that decides what it is willing to EXECUTE and, above all,
-//     what it is willing to MATERIALIZE. This module already owns every fetch decision in the SKU
-//     graph outright - the header records that the legacy expressed no eager-load intent anywhere,
-//     so each shape was decided rather than translated - and a ceiling on how much a decided shape
-//     may materialize is therefore this module's own business. It is also exactly where the finding
-//     points: it cites this adapter's line range alongside the builder's.
+// WHAT WAS HERE. A 64-element ceiling on `selectedOptions`, a 50-character ceiling on the
+// `skuCode LIKE` term, and a 2,000-row ceiling on search-result hydration, each raising a
+// `SkuReadTooLargeError` instead of executing. All three were REFUSALS: they turned an input the
+// legacy answered - with rows or with an empty array - into a thrown error.
 //
-// None of these becomes a `len()` check, a `trim()` check or a membership check, and none of them
-// changes a statement's TEXT. Every parity claim the suite makes about emitted SQL still holds.
-
-/**
- * The greatest number of selected options this adapter will execute a statement for.
- *
- * THE NUMBER IS DERIVED, NOT CHOSEN. A selected-options list carries at most one option per option
- * group - that is what `getFormattedOptionGroups` [model/service/ProductService.cfc:L70] assembles
- * and what `getSkuBySelectedOptions` [model/entity/Product.cfc:L349] passes - and a SKU satisfies
- * every element of an n-element list only if its product carries n option groups. The legacy
- * populates such a product with the cartesian-product odometer at
- * [model/service/SkuService.cfc:L109-L121], whose combination count is the PRODUCT of every group's
- * size, so a product with n option groups holds at least 2^n SKUs. At n = 64 that is 2^64 rows in
- * `SwSku`, which no `Sw*` database contains or can contain. The ceiling therefore sits above every
- * list that could match a single row, and a list above it could only ever have returned an empty
- * array - which is why refusing it is a resource decision and not a semantic one.
- */
-const MAX_SELECTED_OPTION_COUNT = 64;
-
-/**
- * The greatest search-term length this adapter will execute a `skuCode LIKE` statement for.
- *
- * DERIVED FROM THE COLUMN THE TERM IS MATCHED AGAINST. `skuCode` is declared
- * `ormtype="string" unique="true" length="50"` [model/entity/Sku.cfc:L54], and the legacy predicate
- * is `skuCode like :code` with `value="%#arguments.term#%"` [model/dao/SkuDAO.cfc:L132-L133]. A
- * substring cannot be longer than the string that contains it, so a term of more than 50 characters
- * cannot match any `skuCode` in any `Sw*` database. The ceiling is provably non-binding on every
- * term that could match a row.
- *
- * IT IS A LENGTH CEILING AND NOT A CONTENT CHECK. A `%` or `_` inside the term still reaches the
- * driver as a live LIKE metacharacter, exactly as [model/dao/SkuDAO.cfc:L133] sent it - see the
- * disposition on {@link MAX_SEARCH_RESULT_HYDRATION} for why the wildcard is not escaped and what
- * answers the resource risk it creates instead.
- */
-const MAX_SKU_CODE_SEARCH_TERM_LENGTH = 50;
-
-/**
- * The greatest number of matched rows this adapter will hydrate into `Sku` graphs from one search.
- *
- * ★ THIS BOUNDS AMPLIFICATION THE PORT INTRODUCED, NOT ANYTHING THE LEGACY DID. The legacy
- * `searchSkusByProductType` projects `skuID, skuCode` and reduces each row to a two-key
- * autocomplete structure [model/dao/SkuDAO.cfc:L131, L141-L145] - it materializes NO graph at all.
- * This port returns `Sku[]`, so every matched row becomes a `Sku` carrying its options, their
- * option groups and its per-currency price rows with the cascade materialised. That widening is
- * this module's own decision, recorded in the fetch-shape blocks, so the ceiling on it is this
- * module's own decision too.
- *
- * ★ THE NUMBER WAS MEASURED, NOT REASONED ABOUT, and the first number written here was WRONG. This
- * ceiling read 10,000 until the boundary case that hydrates a result set AT it was run: 10,000 rows
- * took OVER EIGHTEEN SECONDS of in-process hydration and timed the case out. Measuring the curve
- * properly, on this suite's own harness, gave:
- *
- *     250 rows -> 12 ms     500 -> 18 ms     1,000 -> 54 ms     2,000 -> 522 ms     4,000 -> 2,674 ms
- *
- * The cost is SUPER-LINEAR - roughly quadratic - so a ceiling has to sit where that curve is still
- * flat, and 10,000 sat far past the knee. A ceiling that permits eighteen seconds of hydration inside
- * a twenty-nine-second request budget is not a bound; it is a formality. 2,000 costs about half a
- * second, which is where the curve is still nearly flat, and it remains two orders of magnitude
- * above the autocomplete the legacy consumer actually was.
- *
- * LEGACY-NOTE - DISCOVERED WHILE MEASURING, NOT FIXED: the super-linear shape is a property of this
- * port's hydration, not of the legacy, which built no graph at all. It is not a review finding and
- * repairing it would be a refactor of the association-matching in `hydrateSkus` rather than a
- * remediation, so it is recorded here where it justifies the number and left alone.
- *
- * ★ THIS IS ALSO WHAT ANSWERS THE FINDING'S LIKE-WILDCARD CLAUSE, and the reasoning matters.
- * S-08 suggests escaping LIKE wildcards "when literal matching is intended"; here it is NOT
- * intended. [model/dao/SkuDAO.cfc:L133] binds `%#arguments.term#%` with the metacharacters live, so
- * a term of `%` legitimately matches every code, and escaping would silently change which rows a
- * search returns - a behaviour change on CORRECT data, to fix a resource problem. This ceiling
- * bounds the resource instead and leaves the matching semantics exactly as the legacy set them.
- */
-const MAX_SEARCH_RESULT_HYDRATION = 2_000;
-
-/**
- * Raised when a read would exceed one of the three ceilings above.
- *
- * It names the ceiling, the observed magnitude and the statement label - never the term, the
- * identifiers or any row. Caller data on a driver-adjacent path is reported as a SHAPE here for the
- * same reason the statement labels exist at all.
- */
-class SkuReadTooLargeError extends Error {
-  /** Which ceiling was exceeded, so a handler can distinguish them without parsing the message. */
-  readonly ceiling: 'selectedOptionCount' | 'searchTermLength' | 'searchResultHydration';
-
-  /** The magnitude actually observed. */
-  readonly observed: number;
-
-  /** The ceiling that was exceeded. */
-  readonly maximum: number;
-
-  constructor(
-    ceiling: 'selectedOptionCount' | 'searchTermLength' | 'searchResultHydration',
-    observed: number,
-    maximum: number,
-    statementLabel: string,
-    why: string,
-  ) {
-    super(
-      `Statement '${statementLabel}' was refused: ${ceiling} is ${String(observed)} and at most ` +
-        `${String(maximum)} is admissible. ${why}`,
-    );
-    this.name = 'SkuReadTooLargeError';
-    this.ceiling = ceiling;
-    this.observed = observed;
-    this.maximum = maximum;
-  }
-}
-
+// WHY THEY ARE GONE. [model/dao/SkuDAO.cfc:L102-L145] validates nothing and refuses nothing on
+// magnitude; every one of these reads answered every input it was given. A read path that raises
+// where the legacy returned is a behavioural divergence, and this port is allowed exactly three of
+// them - the un-`var`'d scope leak, the `amountOff` precision gap and the entity memo bugs (AAP
+// 0.6.7) - none of which is this. Interface parity is the acceptance contract (AAP 0.8.1), and a
+// method that throws for a 65-element list does not have the same interface as one that returns an
+// empty array for it.
 //
+// AND AAP 0.6.5 DOES NOT MANDATE THEM, which is what the earlier disposition got wrong. The clause
+// it cited - "explicit batch limits, idempotency on retry, and a documented compensation story" -
+// is written about the UNBOUNDED BULK MUTATION LOOPS, `processProduct_updateSkus`
+// [model/service/ProductService.cfc:L216-L233] and the cartesian-product odometer in `createSkus`
+// [model/service/SkuService.cfc:L109-L121]. Those limits exist and are untouched:
+// `DEFAULT_MAXIMUM_SKU_CREATION_BATCH_SIZE` in `../../services/skuService.ts` and
+// `DEFAULT_MAXIMUM_SKU_UPDATE_BATCH_SIZE` in `../../services/productService.ts` bound the WRITES.
+// Nothing in AAP 0.6.5 speaks to bounding a read.
+//
+// WHAT ANSWERS THE RESOURCE CONCERN INSTEAD, because the concern itself was real. The amplification
+// S-08 pointed at is entirely in the ASSOCIATION FOLLOW-UP statements this module issues after a
+// search: each builds one `IN (...)` list over every matched identifier, and `sqlPlaceholderList`
+// raises above the driver's 65,535-placeholder protocol limit. Those lists are now CHUNKED through
+// `chunkTupleRows` and merged, so an arbitrarily large result set is answered by a bounded number
+// of bounded statements rather than by one statement that cannot be sent or by a refusal. The
+// bound moved from the CALLER's input to this module's own statement construction, which is where
+// it always belonged: it changes no matching semantics and no statement TEXT, and every parity
+// claim the suite makes about emitted SQL still holds.
+
+// --- Statement labels --------------------------------------------------------
 
 const SELECT_SKU_BY_SKU_CODE = 'selectSkuBySkuCode';
 const SELECT_SKUS_BY_SELECTED_OPTIONS = 'selectSkusBySelectedOptions';
@@ -1622,8 +1526,12 @@ function toOption(row: SqlRow, statementLabel: string): Option {
  * because a working implementation is precisely what the legacy does not have. Supplying one under
  * this or any other name would expand the port surface beyond what the source supports.
  *
- * @see `src/domain/ports/skuRepository.ts` for the authoritative contract, which declares eight
- *   methods and independently records the same absence.
+ * @see `src/domain/ports/skuRepository.ts` for the authoritative contract, which declares SEVEN
+ *   methods - `getTransactionExistsFlag`, `getSkuBySkuCode`, `getSkusBySelectedOptions`,
+ *   `searchSkusByProductType`, `getProductSkus`, `getSortedProductSkusID` and `saveSku` - and
+ *   independently records the same absence. (That file's header separately counts EIGHT functions on
+ *   `model/dao/SkuDAO.cfc`; that is the legacy DAO's inventory, not the port's, and the two numbers
+ *   differ because the DAO's cache-clear and sort-order members are not port members.)
  */
 export class MysqlSkuRepository implements SkuRepository {
   /**
@@ -1666,7 +1574,7 @@ export class MysqlSkuRepository implements SkuRepository {
   ) {}
 
   // =========================================================================
-  // The eight port methods
+  // The seven port methods
   // =========================================================================
 
   // CFML parity [model/service/SkuService.cfc:L285-L287]: the service declares
@@ -1829,25 +1737,11 @@ export class MysqlSkuRepository implements SkuRepository {
     selectedOptions: string,
     productID?: string,
   ): Promise<Sku[]> {
-    // S-08. THE CEILING IS TESTED BEFORE THE STATEMENT IS BUILT, so a refused list costs one parse
-    // and one comparison rather than n string concatenations. It counts with `listToArray` - the
-    // SAME helper the builder parses with - so the two cannot disagree about how many predicates a
-    // list would produce: `'a,,b'` is two elements here and two predicates there. See
-    // {@link MAX_SELECTED_OPTION_COUNT} for why a longer list could not have matched a row, and the
-    // ceilings block for why the bound is here and not in the builder.
-    const selectedOptionCount = listToArray(selectedOptions).length;
-
-    if (selectedOptionCount > MAX_SELECTED_OPTION_COUNT) {
-      throw new SkuReadTooLargeError(
-        'selectedOptionCount',
-        selectedOptionCount,
-        MAX_SELECTED_OPTION_COUNT,
-        SELECT_SKUS_BY_SELECTED_OPTIONS,
-        'A list this long cannot be satisfied by any SKU: a product carrying that many option ' +
-          'groups would hold at least 2^64 SKUs [model/service/SkuService.cfc:L109-L121].',
-      );
-    }
-
+    // TOTAL ON THE LIST LENGTH, DELIBERATELY. An earlier revision counted the elements here and
+    // refused a list longer than 64. [model/dao/SkuDAO.cfc:L107-L128] counts nothing and refuses
+    // nothing: a list no SKU can satisfy yields an empty array, not an error, and one of the three
+    // must-preserve behaviours runs straight through this method. The read-totality block at the
+    // head of this file records the removal and what replaced it.
     const statement = buildSkusBySelectedOptionsStatement(selectedOptions, productID);
 
     const rows = await this.executor.execute(statement.sql, statement.params);
@@ -1897,20 +1791,12 @@ export class MysqlSkuRepository implements SkuRepository {
       );
     }
 
-    // S-08. A term longer than the `skuCode` column cannot be a substring of any value in it, so
-    // this refuses only terms that could not have matched a row. See
-    // {@link MAX_SKU_CODE_SEARCH_TERM_LENGTH}.
-    if (term.length > MAX_SKU_CODE_SEARCH_TERM_LENGTH) {
-      throw new SkuReadTooLargeError(
-        'searchTermLength',
-        term.length,
-        MAX_SKU_CODE_SEARCH_TERM_LENGTH,
-        SEARCH_SKUS_BY_PRODUCT_TYPE,
-        'A term longer than the skuCode column [model/entity/Sku.cfc:L54] cannot be a substring ' +
-          'of any code in it, so no row could match.',
-      );
-    }
-
+    // TOTAL ON THE TERM, DELIBERATELY. An earlier revision refused a term longer than the 50-char
+    // `skuCode` column [model/entity/Sku.cfc:L54] on the ground that it could not be a substring of
+    // any code. True, and beside the point: [model/dao/SkuDAO.cfc:L132-L133] binds
+    // `%#arguments.term#%` unconditionally and answers such a term with an empty result set. The
+    // metacharacters inside the term stay LIVE, exactly as the legacy sent them, so a term of `%`
+    // still matches every code - escaping it would change which rows a correct search returns.
     const boundValues: SqlParameter[] = [`%${term}%`];
 
     const applyProductTypeFilter = productTypeID !== undefined && productTypeID.trim() !== '';
@@ -1937,20 +1823,12 @@ export class MysqlSkuRepository implements SkuRepository {
       boundValues,
     );
 
-    // S-08. REFUSED BEFORE HYDRATION, NOT AFTER. The rows themselves are two columns wide and cheap;
-    // what is bounded is the `Sku` graph this port builds from each of them, which the legacy never
-    // built at all. See {@link MAX_SEARCH_RESULT_HYDRATION}.
-    if (rows.length > MAX_SEARCH_RESULT_HYDRATION) {
-      throw new SkuReadTooLargeError(
-        'searchResultHydration',
-        rows.length,
-        MAX_SEARCH_RESULT_HYDRATION,
-        SEARCH_SKUS_BY_PRODUCT_TYPE,
-        'Narrow the term or the product-type list. The legacy projected two columns per match ' +
-          '[model/dao/SkuDAO.cfc:L131]; this port materializes a full SKU graph per match.',
-      );
-    }
-
+    // EVERY MATCHED ROW IS HYDRATED, however many there are. An earlier revision refused a result
+    // set above 2,000 rows here, which made a search the legacy answered fail outright. The
+    // amplification that motivated the refusal is real - the legacy projected two columns per match
+    // [model/dao/SkuDAO.cfc:L131] and this port materializes a SKU graph per match - and it is
+    // answered inside `hydrateSkus`, whose association statements chunk their identifier lists
+    // rather than emitting one `IN (...)` the driver could not carry.
     return this.hydrateSkus(rows, SEARCH_SKUS_BY_PRODUCT_TYPE, BARE_SKU_FETCH_SHAPE);
   }
 
@@ -2416,13 +2294,8 @@ export class MysqlSkuRepository implements SkuRepository {
 
     const skuIDs = distinctIdentifiers(rows, 'skuID', statementLabel);
 
-    const skuIDPlaceholders = sqlPlaceholderList(skuIDs.length);
-
-    const currencyRows = await this.executor.execute(
-      buildSkuCurrenciesSql(skuIDPlaceholders),
-      skuIDs,
-    );
-    const optionRows = await this.executor.execute(buildSkuOptionsSql(skuIDPlaceholders), skuIDs);
+    const currencyRows = await this.executeOverSkuIDBatches(buildSkuCurrenciesSql, skuIDs);
+    const optionRows = await this.executeOverSkuIDBatches(buildSkuOptionsSql, skuIDs);
 
     const currencyRowsBySku = groupRowsByParentIdentifier(
       currencyRows,
@@ -2437,12 +2310,13 @@ export class MysqlSkuRepository implements SkuRepository {
 
     const accessContentRowsBySku = fetchShape.accessContents
       ? groupRowsByParentIdentifier(
-          await this.executor.execute(
-            buildSkuLinkIdentifiersSql(
-              ACCESS_CONTENT_LINK.tableName,
-              ACCESS_CONTENT_LINK.identifierColumnName,
-              skuIDPlaceholders,
-            ),
+          await this.executeOverSkuIDBatches(
+            (placeholders) =>
+              buildSkuLinkIdentifiersSql(
+                ACCESS_CONTENT_LINK.tableName,
+                ACCESS_CONTENT_LINK.identifierColumnName,
+                placeholders,
+              ),
             skuIDs,
           ),
           SKU_OPTION_LINK_SKU_ID,
@@ -2452,12 +2326,13 @@ export class MysqlSkuRepository implements SkuRepository {
 
     const subscriptionBenefitRowsBySku = fetchShape.subscriptionBenefits
       ? groupRowsByParentIdentifier(
-          await this.executor.execute(
-            buildSkuLinkIdentifiersSql(
-              SUBSCRIPTION_BENEFIT_LINK.tableName,
-              SUBSCRIPTION_BENEFIT_LINK.identifierColumnName,
-              skuIDPlaceholders,
-            ),
+          await this.executeOverSkuIDBatches(
+            (placeholders) =>
+              buildSkuLinkIdentifiersSql(
+                SUBSCRIPTION_BENEFIT_LINK.tableName,
+                SUBSCRIPTION_BENEFIT_LINK.identifierColumnName,
+                placeholders,
+              ),
             skuIDs,
           ),
           SKU_OPTION_LINK_SKU_ID,
@@ -2548,6 +2423,53 @@ export class MysqlSkuRepository implements SkuRepository {
     }
 
     return hydrated;
+  }
+
+  /**
+   * Runs one association statement over a set of SKU identifiers, in batches, and returns every
+   * row the batches produced.
+   *
+   * ★ WHAT THIS EXISTS TO PREVENT, and it is the whole reason the read ceilings above it could be
+   * removed. Each association statement embeds one `IN (...)` list with a placeholder per matched
+   * SKU, and `sqlPlaceholderList` raises above the driver's 65,535-placeholder protocol limit. An
+   * uncapped search over a large catalogue would therefore have swapped a refusal on the result
+   * SIZE for a refusal on the placeholder COUNT - the same failure, one layer down. Batching moves
+   * the bound onto statement construction, where it costs nothing observable.
+   *
+   * THE EMITTED SQL IS UNCHANGED FOR EVERY REALISTIC RESULT SET. `chunkTupleRows` yields a single
+   * batch up to `SQL_TUPLE_ROW_LIMIT` identifiers, so one call produces exactly the one statement
+   * and the one parameter array this method always produced; only a set larger than that limit
+   * becomes several statements. Row ORDER within each statement is preserved and the batches are
+   * concatenated in identifier order, which is all the callers depend on: every consumer regroups
+   * by parent identifier immediately afterwards.
+   *
+   * @param buildSql renders the statement text for a given placeholder list.
+   * @param skuIDs the distinct identifiers to fetch for; an empty set issues no statement.
+   * @returns every row from every batch, concatenated in batch order.
+   */
+  private async executeOverSkuIDBatches(
+    buildSql: (skuIDPlaceholders: string) => string,
+    skuIDs: readonly string[],
+  ): Promise<readonly SqlRow[]> {
+    // `chunkTupleRows` refuses an empty set rather than yielding zero batches, so the empty case is
+    // answered here. It is not reachable from `hydrateSkus`, which returns early on no rows, but
+    // this method states its own contract rather than depending on its caller's.
+    if (skuIDs.length === 0) {
+      return [];
+    }
+
+    const collected: SqlRow[] = [];
+
+    for (const batch of chunkTupleRows(skuIDs)) {
+      const batchRows = await this.executor.execute(
+        buildSql(sqlPlaceholderList(batch.length)),
+        batch,
+      );
+
+      collected.push(...batchRows);
+    }
+
+    return collected;
   }
 
   /**

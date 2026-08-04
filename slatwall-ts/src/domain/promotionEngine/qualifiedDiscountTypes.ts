@@ -433,6 +433,16 @@ interface AddOperationIntent {
    * rather than this member weakened to optional everywhere.
    */
   readonly discountAmount: Money;
+
+  /**
+   * FORBIDDEN on an add: the row does not exist yet, so there is no row identity to name. Declared
+   * `?: never` rather than omitted for the same reason `discountAmount` is declared that way on the
+   * remove shapes - the forbidding becomes visible in the type, spreading a wider object into an add
+   * is caught, and `intent.promotionAppliedID` stays readable off the un-narrowed union as
+   * `string | undefined`, which is how a consumer tells a persisted-row removal from everything else
+   * without first narrowing on `operation`.
+   */
+  readonly promotionAppliedID?: never;
 }
 
 /**
@@ -449,6 +459,17 @@ interface UpdateOperationIntent {
 
   /** REQUIRED on an update: raising the discount is the entire operation. */
   readonly discountAmount: Money;
+
+  /**
+   * FORBIDDEN on an update, and this is the one `?: never` here that is a genuine JUDGMENT CALL
+   * rather than a restatement of the schema. The row an update raises IS persisted, so it does have a
+   * `promotionAppliedID` - but the legacy does not address it by one. It reaches the row as
+   * `getAppliedPromotions()[1]` [model/service/PromotionService.cfc:L389, L435] after confirming the
+   * promotion matches [L388, L434], so `(appliedType, target ID, promotionID)` is precisely the
+   * address it used. Admitting a row id here would let a consumer update the nth applied promotion,
+   * which the legacy never does; forbidding it keeps the ported surface no wider than its source.
+   */
+  readonly promotionAppliedID?: never;
 }
 
 /**
@@ -496,6 +517,79 @@ interface RemoveOperationIntent {
 }
 
 /**
+ * A remove that detaches a row ALREADY IN THE DATABASE, addressed by that row's own identity.
+ *
+ * This is origin 1 - the blanket clear at [model/service/PromotionService.cfc:L61-L80]. Every row it
+ * detaches was written by some EARLIER invocation, so every one carries a generated
+ * `promotionAppliedID` [model/entity/PromotionApplied.cfc:L52].
+ *
+ * ★★ `promotionAppliedID` IS WHAT MAKES THE CLEAR FAITHFUL, AND ITS ABSENCE WAS A DEFECT.
+ * QUOTE-THEN-REVISE: the union's own documentation used to close with "Identity for update and
+ * remove is `(appliedType, target ID, promotionID)`, reproducing a legacy assumption rather than
+ * choosing one: there is no `promotionAppliedID` on the read side, and the legacy simply indexes
+ * `getAppliedPromotions()[1]`."
+ *
+ * That defence held for `update` and failed for this half of `remove`, and it failed circularly. It
+ * was true that "there is no `promotionAppliedID` on the read side" - but the read side is
+ * `AppliedPromotionView`, authored by this same port, and it lacked the member only because it had
+ * omitted it. The legacy row has always had one. Worse, the appeal to `getAppliedPromotions()[1]`
+ * describes the UPDATE path at L385-L393 / L427-L439, which really does look only at element 1; the
+ * blanket clear is a REVERSE LOOP OVER EVERY ELEMENT that calls `removeOrderItem()` /
+ * `removeOrderFulfillment()` / `removeOrder()` on each row OBJECT, reading neither its promotion nor
+ * its amount. So a triple of `(appliedType, target ID, promotionID)` could not address:
+ *
+ *   * DUPLICATE ROWS - two rows for one promotion on one target produce two identical triples, and a
+ *     consumer cannot tell it was asked to detach two things. Legacy detaches both.
+ *   * NULL-PROMOTION ROWS - which is why `promotionID` is NULLABLE HERE and required everywhere
+ *     else. `removePromotion` [model/entity/PromotionApplied.cfc:L85-L94] ends in
+ *     `structDelete(variables, "promotion")`, so the legacy creates rows this shape must still be
+ *     able to clear. Skipping them instead would be the stale-discount bug in a different place.
+ *
+ * The row id addresses all of it, and it is what the legacy addressed all along.
+ */
+interface PersistedRowRemovalIntent extends RemoveOperationIntent {
+  /** The row to detach [model/entity/PromotionApplied.cfc:L52]. Opaque; carried, never parsed. */
+  readonly promotionAppliedID: string;
+
+  /**
+   * The promotion the row points at, or `undefined` when it points at none.
+   *
+   * NULLABLE on this shape ALONE. The blanket clear never reads the association, and the FK declares
+   * no `notnull` [model/entity/PromotionApplied.cfc:L58], so requiring it here would make a row the
+   * legacy clears unrepresentable. It is carried when known because a consumer auditing what it
+   * detached should not have to re-read the row to find out.
+   */
+  readonly promotionID: string | undefined;
+}
+
+/**
+ * A remove that CANCELS A ROW THIS SAME PASS CREATED and has not persisted - no durable identity to
+ * address, because none has been assigned yet.
+ *
+ * This is origin 2 - the same-promotion else-arm at [model/service/PromotionService.cfc:L393, L439],
+ * each immediately followed by `addNew = true` (L394, L440).
+ *
+ * ★★ WHY THESE TWO KINDS OF REMOVE ARE GENUINELY DIFFERENT, AND NOT A DISTINCTION INVENTED FOR
+ * TIDINESS. The blanket clear at L61-L80 runs FIRST and empties all three collections. Any row the
+ * reward loop later finds on a target at L385 / L431 was therefore created DURING THIS SAME
+ * INVOCATION, by `newPromotionApplied()` at L400-L405 / L446-L451. Such an entity is unsaved, and
+ * [model/entity/PromotionApplied.cfc:L52] states exactly what its id is in that state:
+ * `unsavedvalue="" default=""`. It has no uuid to carry, so this shape FORBIDS the member rather
+ * than inventing a value for it - `promotionAppliedID?: never` means the key may be absent and
+ * cannot be present, the same device the three target shapes use above.
+ *
+ * `promotionID` stays REQUIRED here, and that asymmetry with the persisted shape is deliberate: this
+ * arm is reached only by the promotion comparison at L388 / L434, so the promotion is always known.
+ *
+ * A consumer distinguishes the two kinds by presence - `if (intent.promotionAppliedID !== undefined)`
+ * - with no extra discriminant field. That keeps `operation` the only member in this file with no
+ * legacy antecedent, which the union's note below relies on.
+ */
+interface ProvisionalCancellationIntent extends RemoveOperationIntent {
+  readonly promotionAppliedID?: never;
+}
+
+/**
  * Create a new applied-promotion record at one of the three levels.
  *
  * THREE exact variants, one per level. Each requires its own opaque identifier,
@@ -536,10 +630,23 @@ export type UpdatePromotionAppliedIntent = PromotionAppliedIntentPromotion &
  * Dropping the item variant would make the item half of that clear inexpressible, so a stale item
  * row from a previous invocation could never be detached and its discount would survive a
  * recalculation that no longer qualifies it. See `RemoveOperationIntent` for both origins.
+ *
+ * ★★ SIX VARIANTS, NOT THREE: each of the three levels pairs with each of the TWO REMOVE KINDS.
+ * `PersistedRowRemovalIntent` carries the row's `promotionAppliedID` and a nullable `promotionID`;
+ * `ProvisionalCancellationIntent` forbids the id and requires the promotion. The two are documented
+ * at their declarations, together with the legacy evidence that they are different operations rather
+ * than one operation described twice - the blanket clear detaches rows a PREVIOUS invocation
+ * persisted, while the else-arm cancels a row THIS invocation just created and never saved.
+ *
+ * Narrowing is by presence: `intent.promotionAppliedID !== undefined` selects the persisted kind and,
+ * with it, tightens `promotionID` to `string | undefined` rather than `string`.
  */
-export type RemovePromotionAppliedIntent = PromotionAppliedIntentPromotion &
-  RemoveOperationIntent &
-  (OrderTargetedIntent | OrderItemTargetedIntent | OrderFulfillmentTargetedIntent);
+export type RemovePromotionAppliedIntent =
+  | (PersistedRowRemovalIntent &
+      (OrderTargetedIntent | OrderItemTargetedIntent | OrderFulfillmentTargetedIntent))
+  | (PromotionAppliedIntentPromotion &
+      ProvisionalCancellationIntent &
+      (OrderTargetedIntent | OrderItemTargetedIntent | OrderFulfillmentTargetedIntent));
 
 /**
  * One instruction from the promotion engine to whatever owns applied-promotion
@@ -603,10 +710,27 @@ export type RemovePromotionAppliedIntent = PromotionAppliedIntentPromotion &
  * and no `as` is needed anywhere in that reading, which matters because
  * `@typescript-eslint/no-non-null-assertion` is an error across `src/**`.
  *
- * Identity for update and remove is `(appliedType, target ID, promotionID)`, reproducing a legacy
- * assumption rather than choosing one: there is no `promotionAppliedID` on the read side, and the
- * legacy simply indexes `getAppliedPromotions()[1]` [model/service/PromotionService.cfc:L385-L393,
- * L427-L439]. Do not generalise it into addressing the nth applied promotion.
+ * IDENTITY IS NOT UNIFORM ACROSS THE OPERATIONS, and each form is the one its legacy origin used:
+ *
+ *   * UPDATE - `(appliedType, target ID, promotionID)`. The legacy really does look only at
+ *     `getAppliedPromotions()[1]` [model/service/PromotionService.cfc:L385-L393, L427-L439], having
+ *     first confirmed the promotion is the SAME one, so the triple addresses exactly what it
+ *     addressed. Do not generalise it into addressing the nth applied promotion.
+ *   * REMOVE, persisted kind - the row's own `promotionAppliedID`. The blanket clear at L61-L80
+ *     iterates EVERY element in reverse and detaches each row object directly, so a triple cannot
+ *     express it. See `PersistedRowRemovalIntent`.
+ *   * REMOVE, provisional kind - `(appliedType, target ID, promotionID)`, because the row it cancels
+ *     is unsaved and has no id to address [model/entity/PromotionApplied.cfc:L52,
+ *     `unsavedvalue=""`]. See `ProvisionalCancellationIntent`.
+ *
+ * ★ QUOTE-THEN-REVISE. This paragraph used to read, in full: "Identity for update and remove is
+ * `(appliedType, target ID, promotionID)`, reproducing a legacy assumption rather than choosing one:
+ * there is no `promotionAppliedID` on the read side, and the legacy simply indexes
+ * `getAppliedPromotions()[1]`." It was right about `update` and wrong about `remove`, and the reason
+ * it went wrong is instructive: it generalised the update path's locators onto an operation whose
+ * other origin behaves differently, then justified the omission by pointing at a read side that this
+ * same port had left incomplete. A projection this codebase authors is not evidence about the legacy
+ * contract. The row id existed in [model/entity/PromotionApplied.cfc:L52] the whole time.
  *
  * TODO [issue #1766]: In the future allow for return Items to have negative promotions applied.  This isn't import right now because you can determine how much you would like to refund ordersItems
  *

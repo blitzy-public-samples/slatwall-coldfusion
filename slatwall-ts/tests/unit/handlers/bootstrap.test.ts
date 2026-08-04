@@ -20,12 +20,16 @@
 //     those row fixtures here would duplicate them and pin the same behaviour twice, in two places
 //     that could then drift.
 //
-// JUDGMENT CALL: the composition step is isolated by substituting the collaborators the SCOPE
-// ITSELF PUBLISHES - `scope.priceGroupService` and `scope.priceGroupRepository` - with `vi.spyOn`,
-// rather than by seeding the several statements a full price-group hydration would need. This is
-// legitimate precisely because `createRequestScope` publishes the very instances the composed
-// operation closes over, so substituting one is substituting the collaborator the subject actually
-// calls, not a lookalike. `vi` is vitest itself, already one of the fourteen exact pins; NO MOCKING
+// JUDGMENT CALL: the composition step is isolated by substituting the collaborators one ASSEMBLY
+// produced - `scope.priceGroupService`, which the scope publishes, and the concrete
+// `priceGroupRepository`, which comes back beside it from `createInspectableRequestScope` - with
+// `vi.spyOn`, rather than by seeding the several statements a full price-group hydration would need.
+// This is legitimate precisely because ONE assembly hands back both halves, so substituting either
+// is substituting the collaborator the subject actually calls, not a lookalike. (This sentence used
+// to say "the collaborators the SCOPE ITSELF PUBLISHES - `scope.priceGroupService` and
+// `scope.priceGroupRepository`". Finding F18 withdrew the six raw repositories from `RequestScope`
+// because publishing them put seven durable mutations within reach of anything holding a scope; the
+// instance identity this reasoning depends on is unchanged, and only the route to it moved.) `vi` is vitest itself, already one of the fourteen exact pins; NO MOCKING
 // LIBRARY IS ADDED, and every spy is restored in a suite-local `afterEach` as well as by the global
 // one in `tests/setup.ts`.
 //
@@ -60,17 +64,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PriceGroup } from '../../../src/domain/entities/priceGroup.js';
+import { PromotionQualifier } from '../../../src/domain/entities/promotionQualifier.js';
 import type { PromotionAppliedIntent } from '../../../src/domain/promotionEngine/qualifiedDiscountTypes.js';
 import { Money } from '../../../src/domain/valueObjects/money.js';
+import type { ShippingAddressView } from '../../../src/domain/views/orderFulfillmentView.js';
 import type { OrderItemView } from '../../../src/domain/views/orderItemView.js';
 import type { OrderView } from '../../../src/domain/views/orderView.js';
+// ★ NO `UrlTitleCollisionLimitError` IMPORT ANY MORE. This file used to import that class and assert
+// `createUniqueURLTitle` rejected with it on the hundred-and-first colliding suffix. Finding F9
+// established that a valid state was being refused, so the generator now reads the whole slug family
+// in one statement and walks the legacy candidate sequence in memory - a walk that cannot fail - and
+// the class is retired. The cases that named it are inverted in the walk's own describe block below.
 import {
   bootstrapCompositionRoot,
   resetCompositionRoot,
   UntrustedFeedHostError,
-  UrlTitleCollisionLimitError,
 } from '../../../src/handlers/bootstrap.js';
-import type { CompositionRoot, RequestScope } from '../../../src/handlers/bootstrap.js';
+import type {
+  CompositionRoot,
+  RequestScope,
+  RequestScopeAdapters,
+  RequestScopeInput,
+} from '../../../src/handlers/bootstrap.js';
 import { appConfig } from '../../../src/lib/config.js';
 import type { EnvironmentSource } from '../../../src/lib/config.js';
 import type {
@@ -86,6 +101,7 @@ import type { PromotionService } from '../../../src/services/promotionService.js
 import { makeOrderViewFixture } from '../../fixtures/orderViewFixtures.js';
 import { makePriceGroupFixtures } from '../../fixtures/priceGroupFixtures.js';
 import { Brand } from '../../../src/domain/entities/brand.js';
+import { RoundingRule } from '../../../src/domain/entities/roundingRule.js';
 import { toCurrencyCode } from '../../../src/domain/valueObjects/currencyCode.js';
 // ★ IMPORTED FROM THE COMPOSITION ROOT, NOT FROM THE FEED SERVICE. This type used to be exported
 // from `src/integrations/google/googleFeedService.js` beside a branded `TrustedFeedHost` and the
@@ -95,8 +111,23 @@ import { toCurrencyCode } from '../../../src/domain/valueObjects/currencyCode.js
 // finding S-15 is. So the refusal now lives in `bootstrap.ts`, reads a list only a deployment can
 // write, and is imported from there.
 
-import { BrandPersistenceUnavailableError } from '../../../src/services/brandService.js';
+// ★ NO `BrandPersistenceUnavailableError` IMPORT ANY MORE. This file used to import that
+// class and assert `saveBrand` rejected with it, on the reading that the durable half of
+// `super.save` [model/service/BrandService.cfc:L76] did not exist in the subtree. It does
+// now: the composition root supplies it as a narrow module-local write collaborator over
+// the request's executor, so the class is retired and the assertion that named it is
+// inverted below into an end-to-end write.
 import { MySqlPriceGroupRepository } from '../../../src/repositories/mysql/mysqlPriceGroupRepository.js';
+// ★ THE OTHER FIVE ADAPTER CLASSES, imported for ONE case: the assertion that no member of a
+// published `RequestScope` is an instance of any of them. The set-of-member-names assertion beside
+// it cannot make that claim, because a renamed member satisfies it - so the classes themselves are
+// what the walk looks for. Note the casing is NOT uniform in the subject: five spell the prefix
+// `Mysql` and the price-group adapter spells it `MySql`. They are quoted as they are declared.
+import { MysqlOptionRepository } from '../../../src/repositories/mysql/mysqlOptionRepository.js';
+import { MysqlProductRepository } from '../../../src/repositories/mysql/mysqlProductRepository.js';
+import { MysqlProductTypeRepository } from '../../../src/repositories/mysql/mysqlProductTypeRepository.js';
+import { MysqlPromotionRepository } from '../../../src/repositories/mysql/mysqlPromotionRepository.js';
+import { MysqlSkuRepository } from '../../../src/repositories/mysql/mysqlSkuRepository.js';
 
 // ---------------------------------------------------------------------------
 // The statements this suite observes, quoted from the subject verbatim
@@ -108,6 +139,19 @@ const CURRENCY_RECORDS_SQL = 'SELECT currencyCode, activeFlag FROM SwCurrency';
 /** `SELECT_ACCOUNT_PRICE_GROUP_IDS_SQL`, the first statement the price-group pass issues. */
 const ACCOUNT_PRICE_GROUP_IDS_SQL =
   'SELECT priceGroupID FROM SwAccountPriceGroup WHERE accountID = ?';
+
+/**
+ * `SELECT_ADDRESS_ZONE_LOCATIONS_SQL`, the one PER-REQUEST read opening a scope performs.
+ *
+ * Quoted verbatim, including the join, because the join is the load-bearing part: there is no
+ * `AddressZoneLocation` entity in the legacy model, `SwAddressZoneLocation` is a LINK TABLE
+ * [model/entity/AddressZone.cfc:L61], and a zone's locations ARE `SwAddress` rows.
+ */
+const ADDRESS_ZONE_LOCATIONS_SQL =
+  'SELECT zoneLocation.addressZoneID, ' +
+  'location.postalCode, location.city, location.stateCode, location.countryCode ' +
+  'FROM SwAddressZoneLocation zoneLocation ' +
+  'INNER JOIN SwAddress location ON zoneLocation.addressID = location.addressID';
 
 // ---------------------------------------------------------------------------
 // The recording executor
@@ -299,25 +343,85 @@ async function rejectionOf(run: () => Promise<unknown>): Promise<Error> {
 }
 
 /**
- * The `Error` a synchronous call raises.
+ * Every primitive reachable from `subject` by walking own enumerable members, transitively.
  *
- * `createRequestScope` is deliberately SYNCHRONOUS - every read it needs was
- * already performed once at tier one - so its refusals are thrown, not rejected,
- * and they need their own helper.
+ * ★★ THIS EXISTS FOR ONE ASSERTION, AND ITS SHAPE IS THE WHOLE ARGUMENT. F17's decisive sentence
+ * was "Serialization redaction does not prevent direct access", so a case proving the leak is
+ * closed cannot prove it by SERIALIZING the root - serialization is the very check the finding
+ * says is insufficient. It has to WALK, reaching members a `toJSON` would have replaced and
+ * members no `toJSON` covers at all.
+ *
+ * Functions are descended into as well as objects, because own enumerable properties hung off a
+ * function are reachable exactly like object members. What the walk CANNOT see is a variable
+ * captured in a closure - and that asymmetry is the point of the fix rather than a limitation of
+ * the helper: `graph.config` is now reachable only from inside `createCompositionRoot`'s closure,
+ * which is precisely why no walk of the published root finds it.
+ *
+ * A visited set makes the walk safe against the cycles the wiring legitimately contains, and each
+ * member is read defensively because a member that refuses to be read cannot be leaking a value.
  */
-function raisedBy(run: () => unknown): Error {
-  try {
-    run();
-  } catch (error: unknown) {
-    if (error instanceof Error) {
-      return error;
+function deepValues(subject: unknown): readonly unknown[] {
+  const collected: unknown[] = [];
+  const seen = new Set<unknown>();
+
+  const walk = (value: unknown): void => {
+    if (value === null || value === undefined) {
+      return;
     }
 
-    throw new Error(`the suite expected an Error and the call raised a ${typeof error}`);
-  }
+    if (typeof value !== 'object' && typeof value !== 'function') {
+      collected.push(value);
 
-  throw new Error('the suite expected the call to raise, and it returned');
+      return;
+    }
+
+    if (seen.has(value)) {
+      return;
+    }
+
+    seen.add(value);
+
+    // Narrowed once into a keyed view. `Object.keys` accepts the `object | Function` the guards
+    // above leave, so asserting at the call would be the redundant kind; the indexed READ is what
+    // needs the view, and one named const serves both without repeating it.
+    const members = value as Record<string, unknown>;
+
+    for (const key of Object.keys(members)) {
+      try {
+        walk(members[key]);
+      } catch {
+        // The lazy `valueRounder` forward refuses to answer until its binding closes, and a
+        // member that throws on read is not a member that hands a credential to a caller.
+        continue;
+      }
+    }
+  };
+
+  walk(subject);
+
+  return collected;
 }
+
+// ---------------------------------------------------------------------------
+// ★★ THERE IS NO `raisedBy` HELPER ANY MORE, AND ITS OWN DOCUMENTATION IS WHY.
+//
+// It read, verbatim: "The `Error` a synchronous call raises. `createRequestScope` is
+// deliberately SYNCHRONOUS - every read it needs was already performed once at tier one -
+// so its refusals are thrown, not rejected, and they need their own helper."
+//
+// The premise was false, and the composition root's own defect proved it. One read had NOT
+// been performed at tier one: the address-zone locations that gate every shipping-related
+// promotion are per-request state, and because the `AddressZoneEvaluator` port is
+// SYNCHRONOUS by contract the read cannot happen inside the predicate either - so it
+// happens in `createRequestScope`, which is therefore `async`. Every refusal that helper
+// existed for is consequently a REJECTION now, and `rejectionOf` above already covered
+// that case. Keeping a second helper whose stated reason for existing had been withdrawn
+// would have been the more misleading of the two options.
+//
+// What the five converted cases assert has not changed: an unlisted product-feed host is
+// still refused with `UntrustedFeedHostError`, still before any `GoogleFeedService` is
+// constructed, and still without a single feed statement being issued.
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Shared construction.
@@ -377,23 +481,31 @@ function observablePromotionPass(published: RequestScope['promotionService']): P
  * `getPriceGroup` call per identifier. That seventh read is deliberately NOT a port member:
  * `src/domain/ports/priceGroupRepository.ts` locks its count at six explicitly, so only the
  * composition root, which constructs the adapter and therefore holds its concrete type, can reach
- * it. `RequestScope.priceGroupRepository` publishes THE VERY SAME INSTANCE the composed operation
+ * it. The adapter handed back beside the scope IS THE VERY SAME INSTANCE the composed operation
  * closes over, narrowed to the port - so spying here intercepts exactly the call it makes.
  *
- * The narrowing is an `instanceof` test rather than an assertion, so if composition ever publishes
+ * ★★ QUOTE-THEN-REVISE, AND THE SENTENCE THAT CHANGED IS THE ONE F18 WAS ABOUT. The paragraph above
+ * used to read "`RequestScope.priceGroupRepository` publishes THE VERY SAME INSTANCE the composed
+ * operation closes over". It did, and that was the finding: publishing the adapter on the
+ * request-tier surface to make it observable also made `savePriceGroup` callable by anything
+ * holding a scope. The instance identity this reader depends on is preserved - it is what
+ * `createInspectableRequestScope` guarantees by performing one assembly - while the request-tier
+ * route to it is gone.
+ *
+ * The narrowing is an `instanceof` test rather than an assertion, so if composition ever assembles
  * something else this fails loudly at the seam instead of silently mocking a method nobody calls.
  */
 function observableSetLoader(
-  published: RequestScope['priceGroupRepository'],
+  assembled: RequestScopeAdapters['priceGroupRepository'],
 ): MySqlPriceGroupRepository {
-  if (!(published instanceof MySqlPriceGroupRepository)) {
+  if (!(assembled instanceof MySqlPriceGroupRepository)) {
     throw new TypeError(
-      'RequestScope.priceGroupRepository is expected to be the MySQL adapter, which is what ' +
+      'The assembled priceGroupRepository is expected to be the MySQL adapter, which is what ' +
         'carries the set-based by-key read the composed pricing operation uses.',
     );
   }
 
-  return published;
+  return assembled;
 }
 
 /**
@@ -410,7 +522,7 @@ function armSetLoader(scope: RequestScope, resolvable: readonly PriceGroup[]) {
   );
 
   return vi
-    .spyOn(observableSetLoader(scope.priceGroupRepository), 'getPriceGroupsByID')
+    .spyOn(observableSetLoader(adaptersOf(scope).priceGroupRepository), 'getPriceGroupsByID')
     .mockImplementation(
       (priceGroupIDs: readonly string[]): Promise<ReadonlyMap<string, PriceGroup>> =>
         Promise.resolve(
@@ -430,6 +542,54 @@ function bootWith(
   environment: EnvironmentSource = BASE_ENVIRONMENT,
 ): Promise<CompositionRoot> {
   return bootstrapCompositionRoot({ executor, environment });
+}
+
+/**
+ * The adapters each opened scope was assembled with, remembered by the SUITE.
+ *
+ * ★★★ THIS SIDE TABLE IS FINDING F18 MADE VISIBLE, AND IT IS DELIBERATELY NOT A WORKAROUND FOR IT.
+ * `RequestScope` used to publish all six raw repositories, so a case that needed the concrete
+ * `MySqlPriceGroupRepository` simply read `scope.priceGroupRepository` - and so could any future
+ * handler, which is what the finding objected to. The adapters now come back beside the scope from
+ * `createInspectableRequestScope`, once per assembly, and this table is where the suite keeps its
+ * own record of the pairing.
+ *
+ * That the suite has to keep a record at all is the property under test: there is no route FROM a
+ * scope TO an adapter, which is exactly why a lookup table is the only way to express "the adapter
+ * this scope was built with". A `WeakMap` rather than a `Map` so a scope a case has finished with
+ * is collectable, and keyed by the scope object so two scopes opened in one case cannot be
+ * confused for one another - which the per-request-identity cases depend on.
+ */
+const adaptersByScope = new WeakMap<RequestScope, RequestScopeAdapters>();
+
+/**
+ * Opens a scope through the inspection hook and remembers the adapters it was assembled with.
+ *
+ * ONE assembly, so the adapters recorded here are BY IDENTITY the ones the returned scope's
+ * services and composed pricing operation closed over. Opening the scope with
+ * `createRequestScope` and the adapters with a second call would produce two graphs, and a spy
+ * installed on the second graph's adapter would mock a method the first graph's operation never
+ * calls - passing for the wrong reason. See the hook's own documentation, which rules that out for
+ * the same reason.
+ */
+async function openScopeWithAdapters(
+  root: CompositionRoot,
+  input?: RequestScopeInput,
+): Promise<RequestScope> {
+  const opened = await root.createInspectableRequestScope(input);
+
+  adaptersByScope.set(opened.scope, opened.adapters);
+
+  return opened.scope;
+}
+
+/** The adapters `scope` was assembled with, narrowed. */
+function adaptersOf(scope: RequestScope): RequestScopeAdapters {
+  return requirePresent(
+    adaptersByScope.get(scope),
+    'a scope opened through openScopeWithAdapters; a scope from createRequestScope has no ' +
+      'recorded adapters, because nothing on it leads to one',
+  );
 }
 
 beforeEach(() => {
@@ -452,16 +612,31 @@ afterEach(() => {
 // ===========================================================================
 
 describe('bootstrapCompositionRoot tier-one initialization', () => {
-  it('publishes exactly the five module-scope members and nothing else', async () => {
+  it('publishes exactly the six module-scope members and nothing else', async () => {
     const executor = makeExecutor();
 
     const root = await bootWith(executor);
 
     // The published surface is asserted as a SET, not member by member, so that
     // a member silently added or dropped fails here rather than passing quietly.
+    //
+    // ★★ THE FIRST ELEMENT WAS `'config'` UNTIL F17. This case is why the set form was chosen and
+    // it is the case that earned its keep: the member was RENAMED and narrowed, not removed, and a
+    // member-by-member assertion would have gone on passing on the four it still names while
+    // saying nothing about the fifth. The fifth is now a redacted projection rather than the live
+    // `AppConfig`.
+    //
+    // ★★ AND THERE ARE SIX MEMBERS RATHER THAN FIVE, WHICH IS F18'S HALF OF THE CHANGE. F18
+    // withdrew the six raw repositories from `RequestScope`, and its remedy sanctioned "a separate
+    // test assembly hook if required" - `createInspectableRequestScope`, which performs one
+    // assembly and returns the scope beside the adapters it was built with. Growing the TIER-ONE
+    // surface by one named member in order to shrink the REQUEST-TIER surface by six raw
+    // repositories is the trade the finding asked for: request-tier code is handed a scope, not
+    // this root.
     expect(Object.keys(root).sort()).toEqual([
-      'config',
+      'createInspectableRequestScope',
       'createRequestScope',
+      'diagnostics',
       'dialect',
       'integration',
       'settingsProvider',
@@ -477,10 +652,14 @@ describe('bootstrapCompositionRoot tier-one initialization', () => {
     // BASE_ENVIRONMENT spells it `mySql`. `resolveDatabaseDialect` matches
     // without regard to case and then normalizes to the canonical spelling
     // [config/configORM.cfm:L1-L15 is the source of the roster], so BOTH the
-    // config member and the republished `dialect` member read `MySQL`.
-    expect(root.config.dialect).toBe('MySQL');
+    // diagnostic member and the republished `dialect` member read `MySQL`.
+    //
+    // ★ THE FIRST TWO ASSERTIONS READ `root.diagnostics` WHERE THEY ONCE READ `root.config`.
+    // The claim is unchanged - two members, one value, normalized once - and only the surface
+    // moved. `dialect` is one of the four facts the redacted projection deliberately keeps.
+    expect(root.diagnostics.dialect).toBe('MySQL');
     expect(root.dialect).toBe('MySQL');
-    expect(root.dialect).toBe(root.config.dialect);
+    expect(root.dialect).toBe(root.diagnostics.dialect);
   });
 
   it('carries the two defaulted database values through from the environment contract', async () => {
@@ -488,12 +667,48 @@ describe('bootstrapCompositionRoot tier-one initialization', () => {
 
     const root = await bootWith(executor);
 
-    // Only the two non-secret defaults are asserted. Host, user and credential
-    // are required with no default, and this suite never asserts their values
-    // beyond the placeholder host it supplied itself.
-    expect(root.config.database.database).toBe('Slatwall');
-    expect(root.config.database.port).toBe(3306);
-    expect(root.config.database.host).toBe(`${UNUSED_PLACEHOLDER}.invalid`);
+    // ★★ QUOTE-THEN-REVISE. This case used to read `root.config.database` and its note said:
+    // "Only the two non-secret defaults are asserted. Host, user and credential are required
+    // with no default, and this suite never asserts their values beyond the placeholder host it
+    // supplied itself." Then it asserted the host on the very next line, which is the tell: the
+    // note was describing a discipline the SURFACE did not enforce, and F17 is exactly that gap.
+    //
+    // The two defaults still come through, and they are the two the redaction keeps visible
+    // "because those two are what make a misconfiguration diagnosable". The host assertion moves
+    // to the case below, where it becomes an assertion that the host is NOT readable.
+    expect(root.diagnostics.database['database']).toBe('Slatwall');
+    expect(root.diagnostics.database['port']).toBe(3306);
+  });
+
+  it('★★★ PUBLISHES NO DATABASE CREDENTIAL, HOST OR ACCOUNT ANYWHERE ON THE ROOT', async () => {
+    // ★★★ THE INVERSION OF `expect(root.config.database.host).toBe(...)`, AND THE CASE F17 ASKED
+    // FOR. The finding's decisive sentence was "Serialization redaction does not prevent direct
+    // access": `DatabaseConnectionConfig.toJSON()` has always replaced the credential, the host
+    // and the account with a marker, and `root.config.database.password` has always read straight
+    // past it. So the property under test is not "does the projection redact" - it did - but "is
+    // the unredacted object reachable at all".
+    const executor = makeExecutor();
+
+    const root = await bootWith(executor);
+
+    // The three never-echoed fields arrive as markers, because `database` IS `toJSON()`'s output.
+    expect(root.diagnostics.database['host']).toBe('[REDACTED]');
+    expect(root.diagnostics.database['user']).toBe('[REDACTED]');
+    expect(root.diagnostics.database['password']).toBe('[REDACTED]');
+
+    // ★★ AND THE PLACEHOLDER HOST THIS SUITE SUPPLIED ITSELF IS NOWHERE ON THE ROOT, serialized or
+    // walked. Asserting on the marker alone would pass for a root that ALSO published the live
+    // config beside it, so the real assertion is the absence of the value across the whole surface.
+    // `UNUSED_PLACEHOLDER` is what `BASE_ENVIRONMENT` sets `DB_HOST`, `DB_USER` and `DB_PASSWORD`
+    // from, which is what makes one search cover all three.
+    expect(JSON.stringify(root.diagnostics)).not.toContain(UNUSED_PLACEHOLDER);
+    expect(
+      deepValues(root).filter((value) => String(value).includes(UNUSED_PLACEHOLDER)),
+    ).toStrictEqual([]);
+
+    // ★ AND `config` IS GONE RATHER THAN RENAMED. A root that kept the member and added the
+    // projection beside it would satisfy every assertion above.
+    expect(Object.keys(root)).not.toContain('config');
   });
 
   it('reads SwCurrency exactly once, eagerly, with no parameters, and issues no other statement', async () => {
@@ -848,41 +1063,82 @@ describe('createRequestScope', () => {
   // prefix. This suite needs a value it controls, not one it inherits.
   const ACCOUNT_ID = 'account-bootstrap-scope-1';
 
-  it('publishes exactly the nineteen documented members', async () => {
+  it('★★ publishes exactly the THIRTEEN documented members, and NOT ONE RAW REPOSITORY', async () => {
     const root = await bootWith(makeExecutor());
 
-    const scope = root.createRequestScope();
+    const scope = await root.createRequestScope();
 
     // Asserted as a set for the same reason the module-scope surface is: a
     // member quietly added or dropped must fail here.
+    //
+    // ★★ THIS CASE WAS CALLED "publishes exactly the nineteen documented members" AND ITS LIST
+    // NAMED ALL SIX RAW REPOSITORIES - `optionRepository`, `priceGroupRepository`,
+    // `productRepository`, `productTypeRepository`, `promotionRepository`, `skuRepository`. F18
+    // established that publishing them let anything holding a scope reach seven durable mutations
+    // without the services that own their invariants, including `saveProduct` without the
+    // unique-URL-title resolution `ProductService.saveProduct` performs. Nineteen minus six is
+    // thirteen, and the six are on the module-private `RequestGraph` now.
     expect(Object.keys(scope).sort()).toEqual([
       'brandService',
       'currencyConverter',
       'currentAccountContext',
       'getSalePriceDetailsForProductSkus',
       'now',
-      'optionRepository',
       'optionService',
-      'priceGroupRepository',
       'priceGroupService',
       'productFeedPort',
-      'productRepository',
       'productService',
-      'productTypeRepository',
-      'promotionRepository',
       'promotionService',
       'roundingRuleService',
-      'skuRepository',
       'skuService',
       'updateOrderAmountsWithPriceGroupsThenPromotions',
     ]);
   });
 
+  it('★★★ EXPOSES NO ROUTE FROM A SCOPE TO A REPOSITORY, UNDER ANY NAME', async () => {
+    // ★★★ THE INVERSION OF THE SIX NAMES STRUCK FROM THE SET ABOVE. Asserting the shortened set
+    // alone would pass for a scope that had merely RENAMED the members - `repositories`, `adapters`,
+    // `daos` - which is the failure the F17 sibling case guards against on the root and the same
+    // one applies here. So this walks what the scope actually carries and looks for the adapter
+    // CLASSES, whatever member name might lead to them.
+    const root = await bootWith(makeExecutor());
+
+    const scope = await root.createRequestScope();
+
+    // The six ports resolve to these six adapter classes and nothing else, so finding an instance
+    // of any of them anywhere on the published surface means a route exists.
+    const adapterClasses = [
+      MysqlProductRepository,
+      MysqlSkuRepository,
+      MysqlOptionRepository,
+      MysqlProductTypeRepository,
+      MysqlPromotionRepository,
+      MySqlPriceGroupRepository,
+    ];
+
+    const reachable = Object.entries(scope).filter(([, value]) =>
+      adapterClasses.some((adapterClass) => value instanceof adapterClass),
+    );
+
+    expect(reachable).toStrictEqual([]);
+
+    // ★ AND THE HOOK STILL REACHES THEM, so this case is asserting a narrowed surface rather than a
+    // broken assembly. A scope with no adapters at all would satisfy the assertion above.
+    const inspectable = await root.createInspectableRequestScope();
+
+    expect(inspectable.adapters.priceGroupRepository).toBeInstanceOf(MySqlPriceGroupRepository);
+    expect(inspectable.adapters.productRepository).toBeInstanceOf(MysqlProductRepository);
+  });
+
   it('hands every request its OWN service and repository instances', async () => {
     const root = await bootWith(makeExecutor());
 
-    const first = root.createRequestScope();
-    const second = root.createRequestScope();
+    // ★ OPENED THROUGH THE INSPECTION HOOK because the repository half of this case's claim can no
+    // longer be read off a scope. The claim itself is UNCHANGED and none of its eleven assertions
+    // is dropped - which is why the hook exists rather than the three repository lines being
+    // quietly deleted along with the members they read.
+    const first = await openScopeWithAdapters(root);
+    const second = await openScopeWithAdapters(root);
 
     expect(second).not.toBe(first);
 
@@ -903,31 +1159,55 @@ describe('createRequestScope', () => {
     expect(second.skuService).not.toBe(first.skuService);
     expect(second.brandService).not.toBe(first.brandService);
     expect(second.optionService).not.toBe(first.optionService);
-    expect(second.priceGroupRepository).not.toBe(first.priceGroupRepository);
-    expect(second.skuRepository).not.toBe(first.skuRepository);
-    expect(second.promotionRepository).not.toBe(first.promotionRepository);
+    expect(adaptersOf(second).priceGroupRepository).not.toBe(
+      adaptersOf(first).priceGroupRepository,
+    );
+    expect(adaptersOf(second).skuRepository).not.toBe(adaptersOf(first).skuRepository);
+    expect(adaptersOf(second).promotionRepository).not.toBe(adaptersOf(first).promotionRepository);
     expect(second.currencyConverter).not.toBe(first.currencyConverter);
   });
 
-  it('opening a scope issues no statement of its own', async () => {
+  it('★★ opening a scope issues EXACTLY ONE statement of its own, per scope', async () => {
+    // ★★ QUOTE-THEN-REVISE. This case was called "opening a scope issues no statement of
+    // its own" and asserted `expect(executor.calls).toHaveLength(1)` after three scopes,
+    // reasoning: "Scope construction is pure wiring. The only statement on the ledger is
+    // still the single eager tier-one read - three scopes added nothing, which is what
+    // makes the tier-one/tier-two split worth having."
+    //
+    // The premise no longer holds and it should never have been what the split was worth
+    // having FOR. One read genuinely belongs to the request rather than to the process:
+    // the address-zone locations that gate every shipping-related promotion. Tier one may
+    // not hold them - zone membership decides a discount, so a warm container answering
+    // one invocation from another's zone configuration would keep applying a promotion an
+    // administrator had already withdrawn - and the `AddressZoneEvaluator` port is
+    // SYNCHRONOUS by contract, so the read cannot happen inside the predicate either. It
+    // happens once per scope, and the split is worth having because tier two's state is
+    // DISCARDED with the request, not because tier two reads nothing.
     const executor = makeExecutor();
     const root = await bootWith(executor);
 
-    root.createRequestScope();
-    root.createRequestScope();
-    root.createRequestScope();
+    await root.createRequestScope();
+    await root.createRequestScope();
+    await root.createRequestScope();
 
-    // Scope construction is pure wiring. The only statement on the ledger is
-    // still the single eager tier-one read - three scopes added nothing, which
-    // is what makes the tier-one/tier-two split worth having.
-    expect(executor.calls).toHaveLength(1);
+    // Three scopes, three zone reads, and the tier-one read still exactly once - which is
+    // the property that actually matters: what is shared is read once, and what is
+    // per-request is read per request.
+    expect(executor.calls).toHaveLength(4);
     expect(executor.countOf(CURRENCY_RECORDS_SQL)).toBe(1);
+    expect(executor.countOf(ADDRESS_ZONE_LOCATIONS_SQL)).toBe(3);
+
+    // And nothing else crept in. Asserted as a SET so a fourth per-scope read added later
+    // fails here rather than passing quietly.
+    expect(new Set(executor.calls.map((call: RecordedStatement): string => call.sql))).toEqual(
+      new Set([CURRENCY_RECORDS_SQL, ADDRESS_ZONE_LOCATIONS_SQL]),
+    );
   });
 
   it('adopts an injected instant rather than minting one', async () => {
     const root = await bootWith(makeExecutor());
 
-    const scope = root.createRequestScope({ now: PINNED_INSTANT });
+    const scope = await root.createRequestScope({ now: PINNED_INSTANT });
 
     // ★ VALUE, AND DELIBERATELY NOT IDENTITY. The scope must carry the caller's instant so
     // that every date comparison inside one request - `PromotionPeriod.isCurrent(now)` among
@@ -952,8 +1232,8 @@ describe('createRequestScope', () => {
     const root = await bootWith(makeExecutor());
     const before = Date.now();
 
-    const scope = root.createRequestScope();
-    const scopeFromEmptyInput = root.createRequestScope({});
+    const scope = await root.createRequestScope();
+    const scopeFromEmptyInput = await root.createRequestScope({});
 
     const after = Date.now();
 
@@ -971,7 +1251,7 @@ describe('createRequestScope', () => {
   it('reflects an absent accountID as an EMPTY current-account context', async () => {
     const root = await bootWith(makeExecutor());
 
-    const scope = root.createRequestScope();
+    const scope = await root.createRequestScope();
 
     // `exactOptionalPropertyTypes` is on, so "absent" means the key is not
     // present at all rather than present-and-undefined. Both are asserted,
@@ -984,7 +1264,7 @@ describe('createRequestScope', () => {
   it('reflects a supplied accountID as a populated current-account context', async () => {
     const root = await bootWith(makeExecutor());
 
-    const scope = root.createRequestScope({ accountID: ACCOUNT_ID });
+    const scope = await root.createRequestScope({ accountID: ACCOUNT_ID });
 
     expect(scope.currentAccountContext.accountID).toBe(ACCOUNT_ID);
     expect('accountID' in scope.currentAccountContext).toBe(true);
@@ -999,7 +1279,7 @@ describe('createRequestScope', () => {
   it('omits productFeedPort entirely unless a feed host is requested', async () => {
     const root = await bootWith(makeExecutor());
 
-    const scope = root.createRequestScope({ accountID: ACCOUNT_ID, now: PINNED_INSTANT });
+    const scope = await root.createRequestScope({ accountID: ACCOUNT_ID, now: PINNED_INSTANT });
 
     // Undefined rather than a port that refuses on use: the feed capability is
     // simply not present on a scope that did not ask for it.
@@ -1009,7 +1289,7 @@ describe('createRequestScope', () => {
   it('publishes productFeedPort for a host on the allow-list, folding case and trimming', async () => {
     const root = await bootWith(makeExecutor(), FEED_ENVIRONMENT);
 
-    const scope = root.createRequestScope({
+    const scope = await root.createRequestScope({
       now: PINNED_INSTANT,
       feedHost: '  Shop.Example.COM  ',
     });
@@ -1024,7 +1304,9 @@ describe('createRequestScope', () => {
   it('refuses a feed host that is not on the allow-list, and says so', async () => {
     const root = await bootWith(makeExecutor(), FEED_ENVIRONMENT);
 
-    const error = raisedBy(() => root.createRequestScope({ feedHost: 'attacker.example.net' }));
+    const error = await rejectionOf(() =>
+      root.createRequestScope({ feedHost: 'attacker.example.net' }),
+    );
 
     expect(error.name).toBe('UntrustedFeedHostError');
     expect(error.message).toContain('allow-list');
@@ -1033,7 +1315,7 @@ describe('createRequestScope', () => {
   it('refuses a feed host that is empty or only whitespace', async () => {
     const root = await bootWith(makeExecutor(), FEED_ENVIRONMENT);
 
-    const error = raisedBy(() => root.createRequestScope({ feedHost: '   ' }));
+    const error = await rejectionOf(() => root.createRequestScope({ feedHost: '   ' }));
 
     expect(error.name).toBe('UntrustedFeedHostError');
     expect(error.message).toContain('empty');
@@ -1054,7 +1336,7 @@ describe('createRequestScope', () => {
     // allow-list holds bare authorities, so a URL cannot equal an entry in it. What changes is the
     // message, and the case asserts the grammar is NOT what did the refusing so a future re-added
     // duplicate would be visible here rather than silently absorbed.
-    const error = raisedBy(() =>
+    const error = await rejectionOf(() =>
       root.createRequestScope({ feedHost: `https://${FEED_HOST}/feed/product` }),
     );
 
@@ -1076,7 +1358,9 @@ describe('createRequestScope', () => {
     const root = await bootWith(makeExecutor(), FEED_ENVIRONMENT);
     const secretBearingCandidate = 'admin:sup3rs3cret@feed.example.invalid?token=abc123';
 
-    const error = raisedBy(() => root.createRequestScope({ feedHost: secretBearingCandidate }));
+    const error = await rejectionOf(() =>
+      root.createRequestScope({ feedHost: secretBearingCandidate }),
+    );
 
     expect(error.name).toBe('UntrustedFeedHostError');
 
@@ -1117,11 +1401,24 @@ describe('createRequestScope', () => {
     const root = await bootWith(executor, FEED_ENVIRONMENT);
     const statementsBefore = executor.calls.length;
 
-    expect(() => root.createRequestScope({ feedHost: 'attacker.example.net' })).toThrow(
+    await expect(root.createRequestScope({ feedHost: 'attacker.example.net' })).rejects.toThrow(
       UntrustedFeedHostError,
     );
 
-    expect(executor.calls).toHaveLength(statementsBefore);
+    // ★ QUOTE-THEN-REVISE, AND THE PROPERTY IS UNCHANGED WHILE THE COUNT IS NOT. This
+    // assertion read `expect(executor.calls).toHaveLength(statementsBefore)` under the
+    // claim "nothing was read to find that out". One statement now is: opening a scope
+    // materializes this request's address-zone locations before it assembles anything, so
+    // the ledger grows by exactly that one read even on a refused request.
+    //
+    // What the case is FOR survives intact, and is now asserted directly rather than
+    // inferred from a total: no FEED statement was issued, and no `GoogleFeedService`
+    // holds an unlisted origin because none was constructed.
+    expect(executor.calls).toHaveLength(statementsBefore + 1);
+    expect(executor.countOf(ADDRESS_ZONE_LOCATIONS_SQL)).toBe(1);
+    expect(
+      executor.calls.filter((call: RecordedStatement): boolean => call.sql.includes('SwSku')),
+    ).toStrictEqual([]);
   });
 
   it('refuses a feed host when the allow-list is empty, rather than admitting everything', async () => {
@@ -1130,7 +1427,7 @@ describe('createRequestScope', () => {
     // not serve a feed therefore cannot accidentally serve one.
     const root = await bootWith(makeExecutor());
 
-    const error = raisedBy(() => root.createRequestScope({ feedHost: FEED_HOST }));
+    const error = await rejectionOf(() => root.createRequestScope({ feedHost: FEED_HOST }));
 
     expect(error.name).toBe('UntrustedFeedHostError');
     expect(error.message).toContain('allow-list');
@@ -1139,7 +1436,7 @@ describe('createRequestScope', () => {
   it('resolves both construction cycles before returning, so no wiring fault is reachable', async () => {
     const root = await bootWith(makeExecutor());
 
-    const scope = root.createRequestScope({ now: PINNED_INSTANT });
+    const scope = await root.createRequestScope({ now: PINNED_INSTANT });
 
     // The rounding-rule binding and the three-method price-group delegate are
     // both `undefined` while the graph is being built and are assigned before
@@ -1167,7 +1464,7 @@ describe('createRequestScope', () => {
     const executor = makeExecutor();
     const root = await bootWith(executor);
 
-    const scope = root.createRequestScope();
+    const scope = await root.createRequestScope();
     const activeCurrencies = await scope.currencyConverter.getAllActiveCurrencyIDList();
 
     // The converter is built per scope from the module-scope currency records, so
@@ -1187,6 +1484,230 @@ describe('createRequestScope', () => {
 });
 
 // ===========================================================================
+// 3b. THE ADDRESS-ZONE EVALUATOR RESOLVES A ZONE IT WAS GIVEN ONLY THE ID OF.
+//
+// ★★★ WHY THIS BLOCK EXISTS. `CfmlAddressZoneEvaluator` used to test ONLY the location
+// array its caller supplied, and no in-scope caller can supply one: `AddressZone` is not
+// among the eighteen in-scope entities, so `PromotionQualifier.getShippingAddressZoneIDs()`
+// [model/entity/PromotionQualifier.cfc:L75] and
+// `PromotionReward.getShippingAddressZoneIDs()` [model/entity/PromotionReward.cfc:L77]
+// publish OPAQUE IDENTIFIERS and all three call sites hand over an EMPTY list. Every
+// configured zone therefore answered `false`, which silently disabled every
+// address-zone restriction in the promotion engine and changed what customers are
+// charged. `src/domain/ports/addressZoneEvaluator.ts` had already stated the obligation
+// the implementation was missing, in terms, on `AddressZoneProjection`.
+//
+// THE ROUTE THROUGH THE PUBLISHED SURFACE IS `getQualifierQualificationDetails`, which is
+// SYNCHRONOUS and takes both of its arguments directly - so these cases reach the real
+// wired evaluator with no repository read to seed and no double substituted anywhere. It
+// is the shipping-address-zone qualifier gate at [model/service/PromotionService.cfc:L684].
+//
+// WHY THE QUALIFIER MUST ALSO NAME A SHIPPING METHOD: LEGACY-DEFECT 11. The clause at
+// [model/service/PromotionService.cfc:L703] re-tests `hasShippingMethod` instead of a zone
+// condition, so a qualifier with zones and NO shipping methods excludes every fulfillment
+// regardless of the zone verdict. That defect is preserved, so naming the fulfillment's own
+// shipping method is what makes `addressZoneOk` the discriminator these cases observe -
+// exactly as it would be in the legacy.
+//
+// COVERAGE HERE IS NET-NEW. No legacy test touches `AddressService`, and only three legacy
+// test files reach the in-scope slice at all - `BrandTest.cfc`, `ProductTest.cfc` and an
+// empty functional scaffold. None covers `isAddressInZone`.
+// ===========================================================================
+
+describe('the wired address-zone evaluator resolves locations by identifier', () => {
+  const ZONE_ID = 'address-zone-west';
+
+  /** One `SwAddressZoneLocation` join row, as the executor would answer it. */
+  function zoneLocationRow(zoneID: string, columns: Readonly<Record<string, unknown>>): SqlRow {
+    return {
+      addressZoneID: zoneID,
+      postalCode: null,
+      city: null,
+      stateCode: null,
+      countryCode: null,
+      ...columns,
+    };
+  }
+
+  /**
+   * Open a scope whose zone read answers `rows`, and hand back the pieces a case asserts on.
+   *
+   * The qualifier is built directly rather than through `makePromotionFixtures`, because what
+   * these cases need is a MINIMAL qualifier: zones configured, the fulfillment's own shipping
+   * method named so DEFECT 11 does not swallow the verdict, and no other gate engaged.
+   */
+  async function openZoneScope(
+    rows: readonly SqlRow[],
+    qualifierZoneID: string = ZONE_ID,
+  ): Promise<{
+    readonly qualifier: PromotionQualifier;
+    readonly order: OrderView;
+    readonly fulfillmentID: string;
+    readonly address: ShippingAddressView;
+    evaluate(): readonly string[];
+  }> {
+    const executor = makeExecutor().seed(ADDRESS_ZONE_LOCATIONS_SQL, rows);
+    const scope = await bootWith(executor).then((root) => root.createRequestScope());
+
+    // The single SHIPPING fulfillment. The pickup one carries no shipping method and no
+    // address, so it is dropped rather than reasoned about.
+    const order = makeOrderViewFixture({ includePickupFulfillment: false });
+    const fulfillment = requirePresent(order.orderFulfillments[0], 'the shipping fulfillment');
+    const shippingMethod = requirePresent(fulfillment.shippingMethod, 'its shipping method');
+    const address = requirePresent(fulfillment.address, 'its shipping address');
+
+    const qualifier = new PromotionQualifier({
+      promotionQualifierID: 'pq-zone',
+      qualifierType: 'fulfillment',
+      shippingAddressZoneIDs: [qualifierZoneID],
+      shippingMethodIDs: [shippingMethod.shippingMethodID],
+    });
+
+    return {
+      qualifier,
+      order,
+      fulfillmentID: fulfillment.orderFulfillmentID,
+      address,
+      evaluate: (): readonly string[] =>
+        scope.promotionService.getQualifierQualificationDetails(qualifier, order)
+          .qualifiedFulfillmentIDs,
+    };
+  }
+
+  it('★★★ ADMITS a fulfillment whose address matches a zone supplied only as an ID', async () => {
+    const scope = await openZoneScope([]);
+    const configured = await openZoneScope([
+      zoneLocationRow(ZONE_ID, {
+        stateCode: scope.address.stateCode,
+        countryCode: scope.address.countryCode,
+      }),
+    ]);
+
+    // THE WHOLE OF THE FINDING IN TWO LINES. The caller supplies `addressZoneLocations: []`
+    // in both runs and the ONLY difference is whether `SwAddressZoneLocation` carries a row
+    // for this zone. Before the repair both answered the empty list, because the evaluator
+    // tested the supplied array and nothing else.
+    expect(configured.evaluate()).toStrictEqual([configured.fulfillmentID]);
+    expect(scope.evaluate()).toStrictEqual([]);
+  });
+
+  it('★★ keeps a GENUINELY empty zone restrictive rather than softening it into a match', async () => {
+    // The third rule of the port's obligation: resolving by identifier must not turn "this
+    // zone has no locations" into "this zone admits everything". A zone the index does not
+    // carry is NOT entered - `addressInZone` starts false [model/service/AddressService.cfc:L58]
+    // and the loop body never runs.
+    const other = await openZoneScope([zoneLocationRow('some-other-zone', { stateCode: 'ZZ' })]);
+
+    expect(other.evaluate()).toStrictEqual([]);
+  });
+
+  it('★★ folds case on the ZONE IDENTIFIER, on BOTH sides of the lookup', async () => {
+    // The identifier travels verbatim from a link row on one side and verbatim from a
+    // promotion link table on the other, so the two spellings are independent and CFML would
+    // have compared them without regard to case either way. BOTH directions are asserted,
+    // because folding only one side leaves the other broken and a single-direction case
+    // cannot tell the difference: an index keyed on the raw value passes a test whose
+    // qualifier happens to be lower-case, and a raw lookup passes a test whose row happens
+    // to be.
+    const base = await openZoneScope([]);
+
+    // (a) The STORED row is upper-case; the qualifier names it lower-case.
+    const foldedIndexKey = await openZoneScope([
+      zoneLocationRow(ZONE_ID.toUpperCase(), { countryCode: base.address.countryCode }),
+    ]);
+
+    // (b) The STORED row is lower-case; the qualifier names it upper-case.
+    const foldedLookupKey = await openZoneScope(
+      [zoneLocationRow(ZONE_ID, { countryCode: base.address.countryCode })],
+      ZONE_ID.toUpperCase(),
+    );
+
+    expect(foldedIndexKey.evaluate()).toStrictEqual([foldedIndexKey.fulfillmentID]);
+    expect(foldedLookupKey.evaluate()).toStrictEqual([foldedLookupKey.fulfillmentID]);
+  });
+
+  it('★★ folds case on the four COMPARED FIELDS, because CFML `!=` on strings ignores case', async () => {
+    const base = await openZoneScope([]);
+    const scope = await openZoneScope([
+      zoneLocationRow(ZONE_ID, {
+        city: requirePresent(base.address.city, 'the fixture city').toUpperCase(),
+        stateCode: requirePresent(base.address.stateCode, 'the fixture state').toLowerCase(),
+      }),
+    ]);
+
+    expect(scope.evaluate()).toStrictEqual([scope.fulfillmentID]);
+  });
+
+  it('★★ REFUSES when any field the location DOES set disagrees, and skips the ones it leaves NULL', async () => {
+    // The asymmetric guard at [model/service/AddressService.cfc:L63-L74], observed through the
+    // wired evaluator: a NULL location column constrains nothing, a set one that disagrees
+    // rejects that location outright.
+    const base = await openZoneScope([]);
+    const mismatch = await openZoneScope([
+      zoneLocationRow(ZONE_ID, {
+        countryCode: base.address.countryCode,
+        postalCode: 'definitely-not-the-fixture-postal-code',
+      }),
+    ]);
+
+    expect(mismatch.evaluate()).toStrictEqual([]);
+  });
+
+  it('★★ ADMITS on the FIRST matching location when the zone carries several', async () => {
+    const base = await openZoneScope([]);
+    const scope = await openZoneScope([
+      zoneLocationRow(ZONE_ID, { stateCode: 'no-such-state' }),
+      zoneLocationRow(ZONE_ID, { countryCode: base.address.countryCode }),
+    ]);
+
+    // Grouped in arrival order, and the walk stops at the first location whose set fields all
+    // match [model/service/AddressService.cfc:L75-L78]. A single non-matching location must
+    // not veto the zone.
+    expect(scope.evaluate()).toStrictEqual([scope.fulfillmentID]);
+  });
+
+  it('★★ issues the zone read PARAMETERLESS, as one statement joining the link table to SwAddress', async () => {
+    const executor = makeExecutor();
+
+    await bootWith(executor).then((root) => root.createRequestScope());
+
+    const recorded = requirePresent(
+      executor.calls.find(
+        (call: RecordedStatement): boolean => call.sql === ADDRESS_ZONE_LOCATIONS_SQL,
+      ),
+      'the recorded address-zone read',
+    );
+
+    // NO PARAMETER, because the zone identifiers are discovered mid-algorithm inside a
+    // synchronous predicate; binding a key set would mean guessing it, and guessing low is
+    // the failure this read exists to repair. `params` is `undefined` rather than `[]`
+    // because the reader calls `execute(sql)` with one argument.
+    expect(recorded.params).toBeUndefined();
+
+    // An INNER JOIN, deliberately: a LEFT JOIN would answer an orphaned link row as a
+    // location constraining NO field, and a location that constrains nothing matches EVERY
+    // address - so one orphan row would admit everybody into that zone.
+    expect(recorded.sql).toContain('INNER JOIN SwAddress location');
+    expect(recorded.sql).not.toContain('LEFT JOIN');
+    expect(recorded.sql).not.toContain('WHERE');
+    expect(recorded.sql).not.toContain('ORDER BY');
+  });
+
+  it('★★ materializes the index PER REQUEST, so a warm container cannot serve a stale zone', async () => {
+    // Zone membership decides a discount. An administrator who removes a zone location must
+    // not keep seeing the promotion apply, which is why this read is tier 2 and the evaluator
+    // is no longer a module-scope adapter.
+    const executor = makeExecutor().seed(ADDRESS_ZONE_LOCATIONS_SQL, []);
+    const root = await bootWith(executor);
+
+    await root.createRequestScope();
+    await root.createRequestScope();
+
+    expect(executor.countOf(ADDRESS_ZONE_LOCATIONS_SQL)).toBe(2);
+  });
+});
+
+// ===========================================================================
 // 4. The composed pricing operation.
 //
 // ★ THIS IS THE ONE CROSS-SERVICE ORDERING CONSTRAINT THE LEGACY LEAVES IMPLICIT.
@@ -1202,14 +1723,21 @@ describe('createRequestScope', () => {
 // sequence [model/service/OrderService.cfc:L60-L61]. Here the composition root
 // owns the sequence, and these cases are what hold it.
 //
-// JUDGMENT CALL - WHY SPIES ARE LEGITIMATE HERE. `createRequestScope` publishes
-// the very `priceGroupService`, `promotionService` and `priceGroupRepository`
-// instances that the composed closure captured, so `vi.spyOn` on a published
-// member substitutes the collaborator the subject actually calls. No mocking
-// library is added - `vi` is vitest itself - and the suite-level `afterEach`
-// restores every spy. The alternative, a hand-written double, cannot be injected
-// at all: `CompositionOverrides` exposes an executor, an environment and a rate
-// table, and deliberately no service seam.
+// JUDGMENT CALL - WHY SPIES ARE LEGITIMATE HERE. ONE assembly produces the very
+// `priceGroupService`, `promotionService` and `priceGroupRepository` instances
+// that the composed closure captured, so `vi.spyOn` on any of the three
+// substitutes the collaborator the subject actually calls. No mocking library is
+// added - `vi` is vitest itself - and the suite-level `afterEach` restores every
+// spy. The alternative, a hand-written double, cannot be injected at all:
+// `CompositionOverrides` exposes an executor, an environment and a rate table,
+// and deliberately no service seam.
+//
+// ★ TWO OF THE THREE ARE PUBLISHED ON THE SCOPE AND THE THIRD IS NOT, WHICH IS WHY
+// `openScope` BELOW GOES THROUGH `createInspectableRequestScope`. This paragraph
+// used to open "`createRequestScope` publishes the very ... `priceGroupRepository`
+// instances". Finding F18 withdrew the six raw repositories from `RequestScope`,
+// so the adapter now arrives beside the scope from a single assembly rather than
+// on it. The identity these cases rely on is the same identity; only the route is.
 // ===========================================================================
 
 describe('updateOrderAmountsWithPriceGroupsThenPromotions', () => {
@@ -1224,7 +1752,9 @@ describe('updateOrderAmountsWithPriceGroupsThenPromotions', () => {
     const fixtures = makePriceGroupFixtures();
 
     return {
-      scope: root.createRequestScope(),
+      // ★ THROUGH THE INSPECTION HOOK, because `armSetLoader` needs the concrete adapter this
+      // scope's composed operation closed over and no member of the scope leads to it any more.
+      scope: await openScopeWithAdapters(root),
       order: makeOrderViewFixture(),
       priceGroup: fixtures.rootPriceGroup,
       otherPriceGroup: fixtures.siblingPriceGroup,
@@ -1648,7 +2178,7 @@ describe('updateOrderAmountsWithPriceGroupsThenPromotions', () => {
   it('issues no statement of its own beyond what the collaborators it calls would', async () => {
     const executor = makeExecutor();
     const root = await bootWith(executor);
-    const scope = root.createRequestScope();
+    const scope = await root.createRequestScope();
 
     vi.spyOn(
       observableOrderPass(scope.priceGroupService),
@@ -1662,15 +2192,19 @@ describe('updateOrderAmountsWithPriceGroupsThenPromotions', () => {
     await scope.updateOrderAmountsWithPriceGroupsThenPromotions(makeOrderViewFixture());
 
     // The composed operation is sequencing and projection only. With both passes
-    // substituted, the ledger still shows nothing but the eager tier-one read.
-    expect(executor.calls).toHaveLength(1);
+    // substituted, the ledger shows nothing but the eager tier-one read and the one
+    // per-scope address-zone read - and the count is stated as that sum rather than as a
+    // bare `1`, which is what the case asserted before the zone read existed.
+    expect(executor.calls).toHaveLength(2);
+    expect(executor.countOf(CURRENCY_RECORDS_SQL)).toBe(1);
+    expect(executor.countOf(ADDRESS_ZONE_LOCATIONS_SQL)).toBe(1);
     expect(executor.mutationCalls).toHaveLength(0);
   });
 
   it('drives the REAL price-group pass through the wired repository, parameterized by the account', async () => {
     const executor = makeExecutor();
     const root = await bootWith(executor);
-    const scope = root.createRequestScope();
+    const scope = await root.createRequestScope();
     const order = makeOrderViewFixture();
     const accountID = requirePresent(order.accountID, 'the fixture order account');
 
@@ -1747,7 +2281,7 @@ describe('RequestScope.getSalePriceDetailsForProductSkus', () => {
   it('forwards to the wired promotion service, which reaches the injected executor', async () => {
     const executor = makeExecutor();
     const root = await bootWith(executor);
-    const scope = root.createRequestScope();
+    const scope = await root.createRequestScope();
 
     stubProcessEnvironmentForDialectFragments();
 
@@ -1767,7 +2301,7 @@ describe('RequestScope.getSalePriceDetailsForProductSkus', () => {
 
   it('forwards to the same promotion service instance the scope published', async () => {
     const root = await bootWith(makeExecutor());
-    const scope = root.createRequestScope();
+    const scope = await root.createRequestScope();
     const forwarded = vi
       .spyOn(scope.promotionService, 'getSalePriceDetailsForProductSkus')
       .mockResolvedValue({});
@@ -1857,18 +2391,53 @@ class StubExecutor implements PreparedStatementExecutor {
    */
   readonly mutations: { readonly sql: string; readonly params: readonly unknown[] }[] = [];
 
-  constructor(private readonly answer: (sql: string) => readonly SqlRow[] = () => []) {}
+  /**
+   * Every read, with its bound values.
+   *
+   * ★ WHY `statements` IS NOT ENOUGH ANY MORE. It records only the SQL text, which serves the
+   * many cases that just count or match statements. The URL-title family read cannot be
+   * checked that way: all three of its literals are fixed, and the interesting facts - which
+   * slug was asked about and what `LIKE` pattern was built from it - live entirely in the
+   * parameters. `statements` is kept untouched so no existing case changes.
+   */
+  readonly reads: RecordedStatement[] = [];
 
-  execute(sql: string, _params?: readonly unknown[]): Promise<readonly SqlRow[]> {
+  /**
+   * @param answer - Rows to answer each read with, from the statement and its bound values.
+   * @param affectedRows - What every write reports back.
+   *
+   * ★ WHY THE ROW COUNT IS NOW SETTABLE, DEFAULTING TO THE OLD FIXED `0`. Most cases here
+   * read a write's BOUND VALUES and never its result, so `0` served them and still does -
+   * the default keeps every existing call site behaving exactly as before. But the two
+   * framework write collaborators the composition root builds refuse a write whose count is
+   * not `1`, transcribing Hibernate's own `StaleObjectStateException` on a zero-match flush.
+   * A case that means to drive one of those to completion has to be able to say the row
+   * matched, and forcing it to say so is better than having the writers skip the check.
+   *
+   * ★ AND WHY `answer` NOW RECEIVES THE PARAMETERS TOO. A double that models a column rather
+   * than a fixed answer has to see what was asked. Widening the callback is backwards
+   * compatible - a one-parameter function is assignable to a two-parameter type - so every
+   * existing `(sql) => …` call site is unchanged.
+   */
+  constructor(
+    private readonly answer: (
+      sql: string,
+      params: readonly unknown[],
+    ) => readonly SqlRow[] = () => [],
+    private readonly affectedRows = 0,
+  ) {}
+
+  execute(sql: string, params: readonly unknown[] = []): Promise<readonly SqlRow[]> {
     this.statements.push(sql);
+    this.reads.push({ sql, params: [...params] });
 
-    return Promise.resolve(this.answer(sql));
+    return Promise.resolve(this.answer(sql, params));
   }
 
   executeMutation(sql: string, params: readonly unknown[] = []): Promise<SqlMutationResult> {
     this.mutations.push({ sql, params: [...params] });
 
-    return Promise.resolve({ affectedRows: 0, warningStatus: 0 });
+    return Promise.resolve({ affectedRows: this.affectedRows, warningStatus: 0 });
   }
 
   transaction<T>(work: (tx: PreparedStatementExecutor) => Promise<T>): Promise<T> {
@@ -1937,7 +2506,7 @@ describe('bootstrapCompositionRoot', () => {
     let scope: RequestScope;
 
     beforeEach(async () => {
-      scope = (await makeRoot()).createRequestScope();
+      scope = await (await makeRoot()).createRequestScope();
     });
 
     it('publishes the composed fixed-order command', () => {
@@ -2020,13 +2589,16 @@ describe('bootstrapCompositionRoot', () => {
     it('reads the allow-list from configuration', async () => {
       const root = await makeRoot({ env: { FEED_ALLOWED_HOSTS: ALLOWED_FEED_HOST } });
 
-      expect(root.config.feed.allowedHosts).toStrictEqual([ALLOWED_FEED_HOST]);
+      // ★ `root.config` UNTIL F17. The allow-list is deployment-owned configuration and carries
+      // nothing secret, so the redacted projection republishes `feed` whole and the claim is
+      // unchanged. What moved is only which member the assertion reads it from.
+      expect(root.diagnostics.feed.allowedHosts).toStrictEqual([ALLOWED_FEED_HOST]);
     });
 
     it('mints a feed port for a host that IS on the deployment allow-list', async () => {
       const root = await makeRoot({ env: { FEED_ALLOWED_HOSTS: ALLOWED_FEED_HOST } });
 
-      const scope = root.createRequestScope({ feedHost: ALLOWED_FEED_HOST });
+      const scope = await root.createRequestScope({ feedHost: ALLOWED_FEED_HOST });
 
       expect(scope.productFeedPort).toBeDefined();
     });
@@ -2041,7 +2613,7 @@ describe('bootstrapCompositionRoot', () => {
       return expect(async () => {
         const root = await makeRoot({ env: { FEED_ALLOWED_HOSTS: ALLOWED_FEED_HOST } });
 
-        root.createRequestScope({ feedHost: 'attacker.example.invalid' });
+        await root.createRequestScope({ feedHost: 'attacker.example.invalid' });
       }).rejects.toBeInstanceOf(UntrustedFeedHostError);
     });
 
@@ -2053,26 +2625,33 @@ describe('bootstrapCompositionRoot', () => {
       return expect(async () => {
         const root = await makeRoot();
 
-        root.createRequestScope({ feedHost: ALLOWED_FEED_HOST });
+        await root.createRequestScope({ feedHost: ALLOWED_FEED_HOST });
       }).rejects.toBeInstanceOf(UntrustedFeedHostError);
     });
 
     it('mints no feed port when the request names no host', async () => {
       const root = await makeRoot({ env: { FEED_ALLOWED_HOSTS: ALLOWED_FEED_HOST } });
 
-      expect(root.createRequestScope().productFeedPort).toBeUndefined();
+      expect((await root.createRequestScope()).productFeedPort).toBeUndefined();
     });
   });
 
   // -------------------------------------------------------------------------
-  // The configured feed URL scheme reaches the document (S-09)
+  // The FROZEN legacy feed origin reaches the document (S-09, declined)
   //
-  // ★★ THIS BLOCK EXISTS BECAUSE MUTATION TESTING FOUND ITS ABSENCE. Replacing
-  // `graph.config.feed.scheme` in the composition root with a hardcoded `'http'` - the
-  // exact defect finding S-09 named - left ALL 5,168 tests passing. The renderer suite
-  // proved the renderer honours a scheme, and the service suite proved the service
-  // forwards one, but NOTHING proved the composition root read the configured value, so
-  // the fix could have been silently inert in the only wiring that ships.
+  // ★★ THIS BLOCK EXISTS BECAUSE MUTATION TESTING FOUND ITS ABSENCE, and that reason
+  // survives the reversal intact. The renderer suite proves the renderer emits `http://`
+  // and the service suite proves the service forwards only the host, but NOTHING proved
+  // the COMPOSITION ROOT's own wiring - and this is the only wiring that ships. When the
+  // scheme was briefly configurable, replacing `graph.config.feed.scheme` here with a
+  // hardcoded `'http'` left all 5,168 tests passing; the mirror hazard now is a root that
+  // reaches for a scheme that no longer exists, or one that grows an `https` upgrade of its
+  // own. These cases fail either way.
+  //
+  // WHAT CHANGED: the earlier version of this block asserted that a configured
+  // `FEED_URL_SCHEME` reached the document, accepting finding S-09 (MEDIUM, CWE-319). That
+  // acceptance is reversed - AAP 0.1.1 and 0.8.1 freeze the product-feed contract and AAP
+  // 0.6.7 admits no fourth divergence - so the cases are inverted rather than deleted.
   //
   // A zero-row feed is deliberately enough to assert this: a feed with no items is still a
   // complete document carrying the channel `<link>`, which is one of the five sites the
@@ -2081,8 +2660,8 @@ describe('bootstrapCompositionRoot', () => {
   // without fabricating catalog rows, and the case stays about wiring.
   // -------------------------------------------------------------------------
 
-  describe('the configured feed URL scheme reaches the document (S-09)', () => {
-    /** A root whose feed host is allowed, under the given scheme configuration. */
+  describe('the frozen legacy feed origin reaches the document (S-09 declined)', () => {
+    /** A root whose feed host is allowed, under the given environment. */
     async function feedPortUnder(
       env: Readonly<Record<string, string>>,
     ): Promise<{ readonly document: Promise<string> }> {
@@ -2090,7 +2669,7 @@ describe('bootstrapCompositionRoot', () => {
         env: { FEED_ALLOWED_HOSTS: ALLOWED_FEED_HOST, ...env },
         executor: new StubExecutor(),
       });
-      const port = root.createRequestScope({ feedHost: ALLOWED_FEED_HOST }).productFeedPort;
+      const port = (await root.createRequestScope({ feedHost: ALLOWED_FEED_HOST })).productFeedPort;
 
       if (port === undefined) {
         throw new Error('expected a feed port for an allow-listed host');
@@ -2099,36 +2678,57 @@ describe('bootstrapCompositionRoot', () => {
       return { document: port.generateProductFeed() };
     }
 
-    it('★★ publishes https URLs when the deployment configured https', async () => {
-      const { document } = await feedPortUnder({ FEED_URL_SCHEME: 'https' });
-
-      await expect(document).resolves.toContain(`<link>https://${ALLOWED_FEED_HOST}</link>`);
-    });
-
-    it('★★ publishes https URLs when the deployment configured NOTHING, because that is the default', async () => {
-      // The default path is the one most deployments take, so it is asserted rather than
-      // inferred from the config suite. An unconfigured deployment must not inherit the
-      // legacy cleartext origin.
+    it('★★ publishes http URLs from the shipped wiring, with nothing configured', async () => {
+      // The path every deployment takes. The legacy emitted `http://#CGI.HTTP_HOST#`
+      // [.../product.cfm:L14], and the composed graph must reproduce it without being asked.
       const { document } = await feedPortUnder({});
 
-      await expect(document).resolves.toContain(`<link>https://${ALLOWED_FEED_HOST}</link>`);
-      await expect(document).resolves.not.toContain(`<link>http://${ALLOWED_FEED_HOST}</link>`);
+      await expect(document).resolves.toContain(`<link>http://${ALLOWED_FEED_HOST}</link>`);
+      await expect(document).resolves.not.toContain(`<link>https://${ALLOWED_FEED_HOST}</link>`);
     });
 
-    it('★★ publishes http URLs when the deployment explicitly configured http', async () => {
-      // The case that would have caught the hardcoding had it been the other way round: the
-      // root must read the value, not choose one. Together with the https case above, a
-      // hardcoded scheme in the composition root fails one of the two whichever value it
-      // hardcodes.
-      const { document } = await feedPortUnder({ FEED_URL_SCHEME: 'http' });
+    it('★★ publishes http URLs even when a LEFTOVER FEED_URL_SCHEME=https is set', async () => {
+      // The realistic upgrade hazard: an environment still carrying the removed variable from
+      // the accepted-S-09 revision. It must be inert here as it is in the config module - not a
+      // start-up refusal, which would block the upgrade, and not honoured, which would leave the
+      // divergence in place through a variable nobody reads on purpose.
+      const { document } = await feedPortUnder({ FEED_URL_SCHEME: 'https' });
+
+      await expect(document).resolves.toContain(`<link>http://${ALLOWED_FEED_HOST}</link>`);
+      await expect(document).resolves.not.toContain(`<link>https://${ALLOWED_FEED_HOST}</link>`);
+    });
+
+    it('★★ publishes http URLs in PRODUCTION, which the accepted revision refused to start under', async () => {
+      // The sharpest case of the reversal. Under the accepted revision, `NODE_ENV=production`
+      // plus `http` was a start-up refusal; the frozen contract means production publishes the
+      // legacy origin and starts normally. `DB_TLS_MODE` is raised to a valid production value so
+      // this cannot pass or fail on the transport rule, which DOES still refuse in production.
+      const { document } = await feedPortUnder({
+        NODE_ENV: 'production',
+        DB_TLS_MODE: 'verify-identity',
+      });
 
       await expect(document).resolves.toContain(`<link>http://${ALLOWED_FEED_HOST}</link>`);
     });
 
-    it('leaves the xmlns:g namespace URI alone, whatever the configured scheme', async () => {
+    it('writes the SAME origin at both channel sites, so no half of the wiring is stale', async () => {
+      // Two of the five legacy sites, built from one composed origin
+      // [.../product.cfm:L14, L15]. A root that composed the origin twice, differently, would
+      // pass a single-site assertion and fail this one.
+      const { document } = await feedPortUnder({});
+      const resolved = await document;
+
+      expect(resolved).toContain(`<link>http://${ALLOWED_FEED_HOST}</link>`);
+      expect(resolved).toContain(
+        `<description>Google Product Feed for http://${ALLOWED_FEED_HOST}</description>`,
+      );
+    });
+
+    it('leaves the xmlns:g namespace URI alone, as it always did', async () => {
       // `http://base.google.com/ns/1.0` is an XML namespace NAME compared byte for byte by
-      // consumers, never dereferenced. Upgrading it would break the feed contract outright.
-      const { document } = await feedPortUnder({ FEED_URL_SCHEME: 'https' });
+      // consumers, never dereferenced. It was the one thing an https sweep would have broken
+      // while the scheme was configurable, and it is asserted here for the same reason still.
+      const { document } = await feedPortUnder({});
 
       await expect(document).resolves.toContain('xmlns:g="http://base.google.com/ns/1.0"');
     });
@@ -2152,18 +2752,20 @@ describe('bootstrapCompositionRoot', () => {
           ECB_RATES_RETRIEVED_AT: new Date().toISOString(),
         },
       }).then(async (root) => {
-        expect(root.config.currency.europeanCentralBankRates).toStrictEqual({ USD: '1.0850' });
+        // ★ `root.config` UNTIL F17, for the same reason as S-15 above: a published exchange rate
+        // is a public reference figure, so `currency` survives the redaction whole.
+        expect(root.diagnostics.currency.europeanCentralBankRates).toStrictEqual({ USD: '1.0850' });
 
         // EUR is the implicit pivot and is deliberately absent from the table, so a
         // EUR-to-USD conversion exercises the multiply-out half against a configured
         // rate: 100 EUR * 1.0850.
-        const converted = await root
-          .createRequestScope()
-          .currencyConverter.convertCurrency(
-            Money.fromDecimalString('100.00'),
-            toCurrencyCode('EUR'),
-            toCurrencyCode('USD'),
-          );
+        const converted = await (
+          await root.createRequestScope()
+        ).currencyConverter.convertCurrency(
+          Money.fromDecimalString('100.00'),
+          toCurrencyCode('EUR'),
+          toCurrencyCode('USD'),
+        );
 
         expect(converted.toFixed2()).toBe('108.50');
 
@@ -2213,13 +2815,11 @@ describe('bootstrapCompositionRoot', () => {
         env: { ECB_REFERENCE_RATES: 'USD=1.0850', ECB_RATES_RETRIEVED_AT: yearAgo },
       })
         .then(async (root) =>
-          root
-            .createRequestScope()
-            .currencyConverter.convertCurrency(
-              Money.fromDecimalString('100.00'),
-              toCurrencyCode('EUR'),
-              toCurrencyCode('USD'),
-            ),
+          (await root.createRequestScope()).currencyConverter.convertCurrency(
+            Money.fromDecimalString('100.00'),
+            toCurrencyCode('EUR'),
+            toCurrencyCode('USD'),
+          ),
         )
         .then((converted) => {
           expect(converted.toFixed2()).toBe('108.50');
@@ -2245,13 +2845,13 @@ describe('bootstrapCompositionRoot', () => {
       const { lines } = captureLogLines();
       const root = await makeRoot();
 
-      const converted = await root
-        .createRequestScope()
-        .currencyConverter.convertCurrency(
-          Money.fromDecimalString('100.00'),
-          toCurrencyCode('USD'),
-          toCurrencyCode('GBP'),
-        );
+      const converted = await (
+        await root.createRequestScope()
+      ).currencyConverter.convertCurrency(
+        Money.fromDecimalString('100.00'),
+        toCurrencyCode('USD'),
+        toCurrencyCode('GBP'),
+      );
 
       // Must-preserve: the amount is answered unchanged.
       expect(converted.toFixed2()).toBe('100.00');
@@ -2291,13 +2891,13 @@ describe('bootstrapCompositionRoot', () => {
       const { lines } = captureLogLines();
       const root = await makeRoot();
 
-      const converted = await root
-        .createRequestScope()
-        .currencyConverter.convertCurrency(
-          Money.fromDecimalString('100.00'),
-          toCurrencyCode('USD'),
-          toCurrencyCode('USD'),
-        );
+      const converted = await (
+        await root.createRequestScope()
+      ).currencyConverter.convertCurrency(
+        Money.fromDecimalString('100.00'),
+        toCurrencyCode('USD'),
+        toCurrencyCode('USD'),
+      );
 
       expect(converted.toFixed2()).toBe('100.00');
 
@@ -2321,13 +2921,13 @@ describe('bootstrapCompositionRoot', () => {
         },
       });
 
-      const converted = await root
-        .createRequestScope()
-        .currencyConverter.convertCurrency(
-          Money.fromDecimalString('100.00'),
-          toCurrencyCode('USD'),
-          toCurrencyCode('USD'),
-        );
+      const converted = await (
+        await root.createRequestScope()
+      ).currencyConverter.convertCurrency(
+        Money.fromDecimalString('100.00'),
+        toCurrencyCode('USD'),
+        toCurrencyCode('USD'),
+      );
 
       expect(converted.toFixed2()).toBe('100.00');
       expect(lines.filter((line) => line.message.includes('passed through'))).toStrictEqual([]);
@@ -2335,93 +2935,325 @@ describe('bootstrapCompositionRoot', () => {
   });
 
   // -------------------------------------------------------------------------
-  // S-19 - the URL-title collision loop is bounded
+  // The URL-title next-suffix walk (S-19 discharged, F9 resolved)
+  //
+  // ★★★ THIS BLOCK WAS `the URL-title collision bound (S-19)` AND EVERY CASE IN IT HAS BEEN
+  // INVERTED OR REPLACED, SO THE HISTORY IS RECORDED HERE RATHER THAN CASE BY CASE.
+  //
+  // Security finding S-19 objected that the generator "loops indefinitely and issues one serial
+  // query per suffix", and the accepted remedy was a 100-attempt cap raising
+  // `UrlTitleCollisionLimitError`. Code review then raised F9, MAJOR, against exactly that remedy:
+  // the callers "require the next available suffix and the legacy loop continues until success",
+  // and the required resolution was "a set-based/deterministic next-suffix implementation that
+  // still succeeds for every valid state; do not expose a 101st-collision error."
+  //
+  // THE TWO FINDINGS OBJECT TO DIFFERENT THINGS, WHICH IS WHY BOTH CAN HOLD. S-19 is about ROUND
+  // TRIPS; F9 is about REFUSING A VALID STATE. The generator now reads the slug family in ONE
+  // statement and walks the legacy candidate sequence against that set, so the round-trip count is
+  // 1 - stronger than the cap's "at most 101", and no longer a function of the data - while the
+  // answer is the legacy's for every input. The cases below assert both halves.
+  //
+  // `alwaysCollidingExecutor` IS GONE, AND ITS ABSENCE IS ITSELF EVIDENCE. It answered
+  // `[{ urlTitle: 'taken' }]` to every probe so the loop could never settle. No executor can do
+  // that any more: the walk terminates on the SIZE of the set it read, so an executor that wanted
+  // to lengthen the walk would have to volunteer more rows, and each row it volunteers is one more
+  // candidate the walk skips rather than one more it retries.
   // -------------------------------------------------------------------------
 
-  describe('the URL-title collision bound (S-19)', () => {
-    /** Answers "taken" for every uniqueness probe, so the loop can never settle. */
-    function alwaysCollidingExecutor(): StubExecutor {
-      return new StubExecutor((sql) => (sql.includes('urlTitle') ? [{ urlTitle: 'taken' }] : []));
+  describe('the URL-title next-suffix walk (S-19, F9)', () => {
+    /**
+     * One bound value, folded, or `''` when it is anything but a string.
+     *
+     * `params` is `readonly unknown[]`, so a `String(...)` coercion would stringify an object as
+     * `[object Object]` - which the lint rule that forbids it is right about. Narrowing instead
+     * means a case that accidentally bound a non-string sees an empty slug and fails loudly rather
+     * than matching something by coincidence.
+     */
+    function boundText(value: unknown): string {
+      return typeof value === 'string' ? value.toLowerCase() : '';
     }
 
-    it('★★ REFUSES rather than looping forever when every candidate collides', async () => {
-      // The legacy loop is genuinely unbounded -
-      // `model/service/DataService.cfc:L64-L68` is `while(!unique) { addon++; ... }`
-      // with no ceiling and one round trip per iteration. Under Lambda that is a
-      // correctness problem rather than merely slow, which is what AAP 0.6.5 requires
-      // "explicit batch limits" for.
-      //
-      // Reached through `saveBrand`, because that is the caller AAP 0.4.1 gives the
-      // generator. The refusal must be the COLLISION error and not the persistence
-      // error `saveBrand` ends with, which is what pins that the bound fires first.
-      const executor = alwaysCollidingExecutor();
-      const scope = (await makeRoot({ executor })).createRequestScope();
-
-      await expect(
-        scope.brandService.saveBrand(new Brand({ brandID: 'b-1' }), { brandName: 'Acme' }),
-      ).rejects.toBeInstanceOf(UrlTitleCollisionLimitError);
-    });
-
-    it('issues a bounded number of probes, not an unbounded one', async () => {
-      // The resource half. 100 suffixed attempts plus the unsuffixed candidate tried
-      // before the loop is 101 reads - a number a reviewer can multiply out, which is
-      // why the bound is a COUNT rather than a wall-clock deadline whose outcome would
-      // depend on how loaded the database was that day.
-      const executor = alwaysCollidingExecutor();
-      const scope = (await makeRoot({ executor })).createRequestScope();
-
-      await expect(
-        scope.brandService.saveBrand(new Brand({ brandID: 'b-2' }), { brandName: 'Acme' }),
-      ).rejects.toBeInstanceOf(UrlTitleCollisionLimitError);
-
-      const probes = executor.statements.filter((sql) => sql.includes('urlTitle'));
-      expect(probes).toHaveLength(101);
-    });
-
-    it('discloses neither the candidate title nor the table in the error it raises', async () => {
-      // The disclosure half. A caller able to submit titles and read errors must not
-      // be able to learn, one refusal at a time, which slugs are crowded.
-      const executor = alwaysCollidingExecutor();
-      const scope = (await makeRoot({ executor })).createRequestScope();
-
-      const thrown = await scope.brandService
-        .saveBrand(new Brand({ brandID: 'b-3' }), { brandName: 'Acme Widgets' })
-        .then(
-          () => undefined,
-          (error: unknown) => error,
-        );
-
-      expect(thrown).toBeInstanceOf(UrlTitleCollisionLimitError);
-      const message = thrown instanceof Error ? thrown.message : '';
-      expect(message).not.toContain('acme');
-      expect(message).not.toContain('Acme');
-      expect(message).not.toContain('SwBrand');
-    });
-
-    it('settles on the first free suffixed candidate, preserving the legacy -2 start', async () => {
-      // The bound must not have changed the ordinary outcome. The unsuffixed candidate
-      // is tried first [L60], so the FIRST suffix the legacy ever produces is `-2` and
-      // never `-1` - `addon` starts at 1 and is incremented before use [L55, L65].
-      let probe = 0;
-      const executor = new StubExecutor((sql) => {
-        if (!sql.includes('urlTitle')) {
+    /**
+     * An executor that models a real `urlTitle` column instead of a fixed answer.
+     *
+     * It resolves the family read from its BOUND VALUES - the bare slug and the `slug-%` pattern -
+     * so a case can state which titles are taken and let the subject work out the rest. That is
+     * what makes the dense-family and gap-reuse cases meaningful: a stub keyed only on SQL text
+     * could not distinguish `acme-2` from `acme-40`.
+     *
+     * ★★★ IT MATCHES CASE-INSENSITIVELY AND THEN ANSWERS THE ROW AS STORED, and getting that
+     * distinction wrong once is why it is spelled out at this length. An earlier version of this
+     * double folded the taken titles BEFORE answering, so the subject never received a mixed-case
+     * row - and a mutation that deleted the subject's own `toLowerCase()` fold passed every case in
+     * the block, INCLUDING the one named for that fold. The double was doing the subject's work and
+     * therefore proving nothing.
+     *
+     * A double must reproduce the collation, not pre-apply the behaviour under test. MySQL under the
+     * schema's case-insensitive default collation MATCHES a bound `'acme'` against a stored `'ACME'`
+     * and then returns `'ACME'` - the stored bytes, not the folded comparison key. So matching folds
+     * both sides here, while the answered row carries the title exactly as the case supplied it.
+     * That is what leaves the subject's own fold load-bearing: drop it and `'ACME'` stops counting
+     * as taken.
+     */
+    function tableWithTitles(takenTitles: readonly string[], affectedRows = 1): StubExecutor {
+      return new StubExecutor((sql, params) => {
+        if (!sql.includes('OR urlTitle LIKE ?')) {
           return [];
         }
-        probe += 1;
-        // First two candidates taken, third free.
-        return probe <= 2 ? [{ urlTitle: 'taken' }] : [];
-      });
-      const scope = (await makeRoot({ executor })).createRequestScope();
-      const payload: { brandName: string; urlTitle?: string } = { brandName: 'Acme' };
 
-      // `saveBrand` still fails closed on the absent durable write (S-06), so the
-      // resolved title is read from the payload it was handed - the same route the
-      // legacy `super.save` read the column from.
-      await expect(
-        scope.brandService.saveBrand(new Brand({ brandID: 'b-4' }), payload),
-      ).rejects.toBeInstanceOf(BrandPersistenceUnavailableError);
+        const exact = boundText(params[0]);
+        const pattern = boundText(params[1]);
+        const prefix = pattern.endsWith('%') ? pattern.slice(0, -1) : pattern;
 
-      expect(payload.urlTitle).toBe('acme-3');
+        return takenTitles
+          .filter((title) => {
+            const comparisonKey = title.toLowerCase();
+            return comparisonKey === exact || (prefix !== '' && comparisonKey.startsWith(prefix));
+          })
+          .map((title) => ({ urlTitle: title }));
+      }, affectedRows);
+    }
+
+    /** The family statement, isolated from the brand writer's own uniqueness probe. */
+    function familyReads(executor: StubExecutor): readonly RecordedStatement[] {
+      return executor.reads.filter((read) => read.sql.includes('OR urlTitle LIKE ?'));
+    }
+
+    /**
+     * Resolves a title through `saveBrand`, which is the caller AAP 0.4.1 gives the generator.
+     *
+     * The payload is handed back so a case can read the resolved title off it - the legacy route
+     * [model/service/BrandService.cfc:L70] - and the brand is PERSISTED so the write path is an
+     * update, whose bound values the write assertions read.
+     */
+    async function resolveThrough(
+      executor: StubExecutor,
+      brandName: string,
+    ): Promise<{ readonly urlTitle: string | undefined; readonly saved: Brand }> {
+      const scope = await (await makeRoot({ executor })).createRequestScope();
+      const payload: { brandName: string; urlTitle?: string } = { brandName };
+      const saved = await scope.brandService.saveBrand(
+        new Brand({ brandID: 'b-resolving-a-title' }),
+        payload,
+      );
+
+      return { urlTitle: payload.urlTitle, saved };
+    }
+
+    it('★★★ RESOLVES A FAMILY FAR BEYOND THE RETIRED 100 CEILING instead of refusing it', async () => {
+      // ★★★ THE INVERSION OF `★★ REFUSES rather than looping forever when every candidate
+      // collides`, which asserted `rejects.toBeInstanceOf(UrlTitleCollisionLimitError)` and argued:
+      // "The legacy loop is genuinely unbounded ... Under Lambda that is a correctness problem
+      // rather than merely slow, which is what AAP 0.6.5 requires 'explicit batch limits' for."
+      //
+      // The AAP citation was right about the CONSTRUCT and wrong about the REMEDY. A batch limit
+      // bounds work; it does not license answering a different question. Two hundred and fifty
+      // taken titles is ordinary catalog data - a retailer with that many "T-Shirt" variants is not
+      // an attacker - and the legacy resolved it. So does this, and the answer is exact.
+      const taken = [
+        'acme',
+        ...Array.from({ length: 249 }, (_unused, index) => `acme-${String(index + 2)}`),
+      ];
+      const executor = tableWithTitles(taken);
+
+      const { urlTitle } = await resolveThrough(executor, 'Acme');
+
+      // 250 taken titles are `acme` and `acme-2` ... `acme-250`, so the first free candidate is
+      // `acme-251` - a suffix the retired ceiling could not reach and would have refused at 101.
+      expect(urlTitle).toBe('acme-251');
+    });
+
+    it('★★ issues EXACTLY ONE family statement, however large the family is', async () => {
+      // ★★ THE INVERSION OF `issues a bounded number of probes, not an unbounded one`, which
+      // asserted `expect(probes).toHaveLength(101)` and argued: "100 suffixed attempts plus the
+      // unsuffixed candidate tried before the loop is 101 reads - a number a reviewer can multiply
+      // out, which is why the bound is a COUNT rather than a wall-clock deadline."
+      //
+      // A reviewer can still multiply it out, and the number is now ONE. This is S-19's own resource
+      // concern discharged more completely than its accepted remedy discharged it: 101 was a
+      // ceiling on serial round trips, and 1 is a constant that does not move with the data at all.
+      const executor = tableWithTitles([
+        'acme',
+        ...Array.from({ length: 299 }, (_unused, index) => `acme-${String(index + 2)}`),
+      ]);
+
+      const { urlTitle } = await resolveThrough(executor, 'Acme');
+
+      expect(urlTitle).toBe('acme-301');
+      expect(familyReads(executor)).toHaveLength(1);
+    });
+
+    it('walks candidates ASCENDING, so a gap is reused rather than skipped', async () => {
+      // The legacy tested `slug`, `slug-2`, `slug-3`, ... in order and stopped at the first free one
+      // [model/service/DataService.cfc:L64-L68], so a hole left by a deletion is filled. Deriving
+      // the answer from `MAX(suffix) + 1` would have been simpler, would pass the dense cases
+      // above, and would answer `acme-6` here - a difference visible in the column a customer sees.
+      const executor = tableWithTitles(['acme', 'acme-2', 'acme-5']);
+
+      const { urlTitle } = await resolveThrough(executor, 'Acme');
+
+      expect(urlTitle).toBe('acme-3');
+    });
+
+    it('answers the unsuffixed slug when nothing in the family is taken', async () => {
+      // [L60] `var returnTitle = urlTitle;` - the bare slug is the FIRST candidate, so an empty
+      // family must not produce `acme-2`. This is the case a `MAX(suffix) + 1` implementation
+      // would also fail, in the opposite direction.
+      const executor = tableWithTitles([]);
+
+      const { urlTitle } = await resolveThrough(executor, 'Acme');
+
+      expect(urlTitle).toBe('acme');
+    });
+
+    it('starts at -2 and never at -1 when only the bare slug is taken', async () => {
+      // `addon` starts at 1 and is incremented BEFORE use [L55, L65], so the first suffix the
+      // legacy can ever emit is `-2`. An implementation that initialized it to 0 would answer
+      // `acme-1` here and pass every other case in this block.
+      const executor = tableWithTitles(['acme']);
+
+      const { urlTitle } = await resolveThrough(executor, 'Acme');
+
+      expect(urlTitle).toBe('acme-2');
+    });
+
+    it('treats a differently-cased stored title as taken, as the column collation does', async () => {
+      // `SwBrand.urlTitle` is a `varchar` under a case-insensitive collation, so the legacy
+      // `WHERE urlTitle = 'acme'` matched a stored `ACME` and the caller treated the slug as taken.
+      // Comparing case-sensitively would answer `acme` as free and then fail the write on the
+      // `unique="true"` constraint [model/entity/Brand.cfc:L55] - a refusal moved one layer later
+      // rather than avoided.
+      const executor = tableWithTitles(['ACME', 'Acme-2']);
+
+      const { urlTitle } = await resolveThrough(executor, 'Acme');
+
+      expect(urlTitle).toBe('acme-3');
+
+      // ★★★ AND A GUARD ON THE DOUBLE, WHICH THIS CASE NEEDS AND THE OTHERS DO NOT. This assertion
+      // exists because the case above once passed for the wrong reason: the double folded the taken
+      // titles before answering, so deleting the subject's own fold changed nothing and the case
+      // proved only that the DOUBLE was case-insensitive. Pinning the answered rows to their stored
+      // casing means a double that ever starts folding again fails here, loudly, instead of quietly
+      // hollowing out the case it is meant to support.
+      const answered = await executor.execute(
+        'SELECT urlTitle FROM SwBrand WHERE urlTitle = ? OR urlTitle LIKE ?',
+        ['acme', 'acme-%'],
+      );
+
+      expect(answered).toStrictEqual([{ urlTitle: 'ACME' }, { urlTitle: 'Acme-2' }]);
+    });
+
+    it('ignores family rows that are not candidates it could ever propose', async () => {
+      // The `slug-%` pattern is deliberately BROADER than the candidate sequence, so a genuine
+      // neighbouring title is read and must then be disregarded. `acme-deluxe` and `acme-2-old` are
+      // both matched by the pattern and neither equals `acme-2`, so the walk stops there - which is
+      // what the legacy did, since it compared whole strings and never parsed a suffix.
+      const executor = tableWithTitles(['acme', 'acme-deluxe', 'acme-2-old', 'acme-042']);
+
+      const { urlTitle } = await resolveThrough(executor, 'Acme');
+
+      // `acme-042` is worth naming: it is not `acme-42`, so it occupies no suffix. The legacy
+      // tested the unpadded string too, and parsing digits out of rows would have wrongly treated
+      // it as taken.
+      expect(urlTitle).toBe('acme-2');
+    });
+
+    it('★★ binds the slug and the family pattern, splicing neither into the statement', async () => {
+      // The `cfqueryparam` property AAP 0.8.3 makes unconditional. It is asserted on the BOUND
+      // VALUES rather than by reading the SQL for absence, because the pattern is the interesting
+      // parameter: `%` belongs to the pattern the subject builds and must not arrive from a title.
+      const executor = tableWithTitles([]);
+
+      await resolveThrough(executor, 'Acme Widgets & Co.');
+
+      const read = familyReads(executor)[0];
+
+      // Sanitization first: `&` and `.` are outside `[a-z0-9 -]` and are stripped, then the space
+      // run collapses to a hyphen [L57-L58].
+      expect(read?.params).toStrictEqual(['acme-widgets-co', 'acme-widgets-co-%']);
+      expect(read?.sql).not.toContain('acme');
+      expect(read?.sql).toContain('WHERE urlTitle = ? OR urlTitle LIKE ?');
+    });
+
+    it('scopes the family read to the table the caller named', async () => {
+      // `tableName="SwBrand"` is handed through verbatim [model/service/BrandService.cfc:L70]
+      // because slug uniqueness is scoped to that table's column. The three statements are fixed
+      // literals selected by a closed union, so no identifier is ever spliced.
+      const executor = tableWithTitles([]);
+
+      await resolveThrough(executor, 'Acme');
+
+      expect(familyReads(executor)[0]?.sql).toContain('FROM SwBrand');
+      expect(familyReads(executor)[0]?.sql).not.toContain('SwProduct');
+    });
+
+    it('discloses neither the candidate title nor the table in anything it emits', async () => {
+      // ★ THE DISCLOSURE HALF OF S-19, AND IT IS NOW STRUCTURAL. The old case asserted the ERROR's
+      // message named neither the title nor the table: "A caller able to submit titles and read
+      // errors must not be able to learn, one refusal at a time, which slugs are crowded." There is
+      // no error to inspect, which is the strongest form of that property - but the log line
+      // remains, so it is the log that is asserted. `../lib/logger.js` fails closed on any context
+      // key it does not recognize as legible, and the generator passes only `rowCount`.
+      //
+      // `LOG_LEVEL` is stubbed to `debug` because the family line is emitted at that level and the
+      // default threshold is `info` [src/lib/logger.ts], so without the stub the line is suppressed
+      // and the assertion would pass vacuously - proving nothing about what the line CARRIES. The
+      // module-level `afterEach` restores it via `vi.unstubAllEnvs()`.
+      vi.stubEnv('LOG_LEVEL', 'debug');
+
+      const { lines } = captureLogLines();
+      const executor = tableWithTitles(['acme-widgets', 'acme-widgets-2']);
+
+      const { urlTitle } = await resolveThrough(executor, 'Acme Widgets');
+
+      expect(urlTitle).toBe('acme-widgets-3');
+
+      const familyLines = lines.filter((line) => line.message.includes('urlTitle family'));
+
+      expect(familyLines).toHaveLength(1);
+      expect(familyLines[0]?.context).toStrictEqual({ rowCount: 2 });
+      expect(JSON.stringify(familyLines[0])).not.toContain('acme');
+      expect(JSON.stringify(familyLines[0])).not.toContain('SwBrand');
+    });
+
+    it('★★★ settles on the first free suffixed candidate AND WRITES IT, preserving the legacy -2 start', async () => {
+      // ★★★ QUOTE-THEN-REVISE, AND THIS IS THE ONE CASE IN THIS FILE THAT PROVES THE BRAND
+      // WRITE END TO END THROUGH THE COMPOSITION ROOT. It used to assert a rejection, with
+      // the note: "`saveBrand` still fails closed on the absent durable write (S-06), so the
+      // resolved title is read from the payload it was handed - the same route the legacy
+      // `super.save` read the column from."
+      //
+      // The route claim was right and is still asserted. The premise was not: "no port is
+      // available" was read as "no write is possible", and only the first was ever
+      // established. `super.save` [model/service/BrandService.cfc:L76] is now performed by a
+      // narrow write collaborator this file's subject builds per request over the executor -
+      // so the resolved title is observable where it actually belongs, in the bound values of
+      // an `UPDATE SwBrand`, and reading it from the payload is now the WEAKER of the two
+      // available assertions rather than the only one.
+      const executor = tableWithTitles(['acme', 'acme-2']);
+
+      const { urlTitle, saved } = await resolveThrough(executor, 'Acme');
+
+      // The legacy route: the generated slug is written into the payload [L70] and populate
+      // folds it onto the entity.
+      expect(urlTitle).toBe('acme-3');
+
+      // ★★ AND IT REACHED THE STATEMENT. One write was issued, it is the brand update, and
+      // `acme-3` is among its bound values - which is the assertion no amount of payload
+      // inspection can substitute for.
+      const brandWrites = executor.mutations.filter((mutation) => mutation.sql.includes('SwBrand'));
+
+      expect(brandWrites).toHaveLength(1);
+      expect(brandWrites[0]?.sql).toContain('UPDATE SwBrand');
+      expect(brandWrites[0]?.params).toContain('acme-3');
+
+      // ★ AND THE ANSWER DESCRIBES THE PERSISTED ROW. `brandID` is the caller's, because an
+      // update never mints one; `modifiedByAccountID` is absent because `BASE_ENV` configures
+      // no audit actor and the gate refuses rather than inventing attribution (S-07).
+      expect(saved.getBrandID()).toBe('b-resolving-a-title');
+      expect(saved.getUrlTitle()).toBe('acme-3');
+      expect(saved.getModifiedDateTime()).toBeInstanceOf(Date);
+      expect(saved.getModifiedByAccountID()).toBeUndefined();
     });
   });
 
@@ -2470,9 +3302,15 @@ describe('bootstrapCompositionRoot', () => {
       input: { accountID?: string; adminAccountFlag?: boolean } = {},
     ): Promise<StubExecutor> {
       const executor = new StubExecutor();
-      const scope = (await makeRoot({ executor })).createRequestScope(input);
+      // ★ THE ADAPTER COMES FROM THE INSPECTION HOOK NOW. This case is about what the ADAPTER
+      // stamps into the audit columns, so it has to call `savePriceGroup` on the adapter itself -
+      // there is no service member that wraps it, because the legacy `savePriceGroup` was
+      // `HibachiService`'s generic `save<Entity>` rather than a declared method on
+      // `PriceGroupService`. Withdrawing the repositories from `RequestScope` therefore removes the
+      // only route this case had, and the hook is the sanctioned replacement.
+      const opened = await (await makeRoot({ executor })).createInspectableRequestScope(input);
 
-      await scope.priceGroupRepository.savePriceGroup(makePersistedPriceGroup());
+      await opened.adapters.priceGroupRepository.savePriceGroup(makePersistedPriceGroup());
 
       return executor;
     }
@@ -2516,8 +3354,8 @@ describe('bootstrapCompositionRoot', () => {
       // The actor is composed INSIDE `createRequestScope` and never surfaced. Publishing
       // it would hand back a mutable handle on the very value the finding is about.
       return expect(
-        makeRoot().then((root) => {
-          const scope = root.createRequestScope({ accountID: REQUEST_ACCOUNT_ID });
+        makeRoot().then(async (root) => {
+          const scope = await root.createRequestScope({ accountID: REQUEST_ACCOUNT_ID });
 
           return Object.keys(scope);
         }),
@@ -2528,19 +3366,394 @@ describe('bootstrapCompositionRoot', () => {
       // Per-request construction, not process state: the whole reason the legacy memo
       // families were re-scoped. One request's attribution cannot leak into another's.
       const root = await makeRoot({ executor: new StubExecutor() });
-      const first = root.createRequestScope({
+      const first = await openScopeWithAdapters(root, {
         accountID: 'acct-first',
         adminAccountFlag: true,
       });
-      const second = root.createRequestScope({
+      const second = await openScopeWithAdapters(root, {
         accountID: 'acct-second',
         adminAccountFlag: true,
       });
 
-      expect(first.priceGroupRepository).not.toBe(second.priceGroupRepository);
+      // ★ THE ADAPTER IDENTITY CLAIM IS RETAINED VERBATIM and reached through the recorded
+      // assembly, because the actor is constructed per adapter and two scopes sharing one adapter
+      // would share one actor - which is precisely what this case exists to rule out.
+      expect(adaptersOf(first).priceGroupRepository).not.toBe(
+        adaptersOf(second).priceGroupRepository,
+      );
       expect(first.currentAccountContext.accountID).toBe('acct-first');
       expect(second.currentAccountContext.accountID).toBe('acct-second');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The two framework WRITE collaborators (F13, F14)
+//
+// A code review raised two findings against durable writes this subtree performed nowhere:
+//
+//   F13, CRITICAL - `RoundingRuleService.saveRoundingRule` evicted its memo entry and then
+//   ANSWERED THE ARGUMENT, so the ported `super.save`
+//   [model/service/RoundingRuleService.cfc:L63] did nothing.
+//
+//   F14, MAJOR - `BrandService.saveBrand` resolved the URL title and then raised an
+//   unavailable-capability error, so `super.save` [model/service/BrandService.cfc:L76] did
+//   nothing either.
+//
+// ★★★ WHY THE ASSERTIONS LIVE HERE AND NOT IN THE SERVICE SUITES. Both services are typed
+// against a single-method contract they DECLARE, and the two service suites double it - which
+// proves each service reaches its collaborator, populates, validates and answers the
+// collaborator's result, and nothing at all about the SQL. The implementations are module-local
+// classes in the subject of this file, reached only through the graph it assembles, so this is
+// the only place the statements, the bound values and the audit stamps are observable. Both
+// halves are needed: a suite that only doubled the writer would pass against a writer that
+// wrote the wrong columns.
+//
+// ★★ AND WHY THEY ARE NOT PORTS. The thirteen-port set is closed (AAP 0.2.1) and
+// `ProductRepository` is locked at six members, so a fourteenth port or a seventh member is not
+// available. Neither is it wanted: `super.save` is framework-inherited generic Hibachi CRUD
+// that AAP 0.5.3 deliberately does not carry forward, and the composition root is where that
+// document puts every replaced framework responsibility. The precedent is already in the file -
+// `SqlPriceGroupFrameworkReads` and `SqlPromotionFrameworkReads` are structural collaborators
+// over the same executor, satisfied without an `implements` clause.
+// ---------------------------------------------------------------------------
+
+describe('the framework write collaborators (F13, F14)', () => {
+  /** A 32-character hyphen-free identifier, which is what `generator="uuid" length="32"` produces. */
+  const MINTED_ID_PATTERN = /^[0-9a-f]{32}$/;
+
+  const WRITER_ACCOUNT_ID = 'acct-that-may-be-attributed';
+
+  /**
+   * A rounding rule the save-context rules accept.
+   *
+   * `'0.99'` satisfies `hasExpressionWithListOfNumericValuesOnly`
+   * [model/entity/RoundingRule.cfc:L78-L86] - two characters after the decimal point and numeric -
+   * so validation reaches the write rather than refusing before it.
+   *
+   * The value rounder is a pass-through: this block asserts what is WRITTEN, and no assertion here
+   * rounds anything. The parameter is typed to a non-exported interface, so an object literal
+   * satisfies it structurally, which is also how the composition root satisfies it.
+   */
+  function makeRoundingRule(roundingRuleID: string): RoundingRule {
+    return new RoundingRule(
+      {
+        roundingRuleID,
+        roundingRuleName: 'Ninety-nine cents',
+        roundingRuleExpression: '0.99',
+        roundingRuleDirection: 'Closest',
+        createdDateTime: undefined,
+        createdByAccountID: undefined,
+        modifiedDateTime: undefined,
+        modifiedByAccountID: undefined,
+        priceGroupRates: [],
+      },
+      { roundValueByRoundingRule: (value: Money): Money => value },
+    );
+  }
+
+  /**
+   * Opens a scope over an executor whose writes report ONE affected row.
+   *
+   * `affectedRows: 1` matters: both writers refuse a count other than one, transcribing the
+   * `StaleObjectStateException` Hibernate raised on a zero-match flush. The default `0` is what
+   * the refusal cases below use.
+   */
+  async function openWritingScope(
+    affectedRows = 1,
+    input: { accountID?: string; adminAccountFlag?: boolean } = {},
+  ): Promise<{ readonly scope: RequestScope; readonly executor: StubExecutor }> {
+    const executor = new StubExecutor(() => [], affectedRows);
+    const scope = await (await makeRoot({ executor })).createRequestScope(input);
+
+    return { scope, executor };
+  }
+
+  describe('SwRoundingRule (F13)', () => {
+    it('★★★ INSERTS a new rule, mints its identifier and answers the persisted row', async () => {
+      const { scope, executor } = await openWritingScope(1, {
+        accountID: WRITER_ACCOUNT_ID,
+        adminAccountFlag: true,
+      });
+      const unsaved = makeRoundingRule('');
+
+      const saved = await scope.roundingRuleService.saveRoundingRule(unsaved);
+
+      // ONE statement, and it is the insert. Asserted on the SQL rather than on a count alone,
+      // so an update issued against an unsaved rule could not pass here.
+      expect(executor.mutations).toHaveLength(1);
+      expect(executor.mutations[0]?.sql).toContain('INSERT INTO SwRoundingRule');
+
+      // ★★ EIGHT COLUMNS, EIGHT PLACEHOLDERS, EIGHT BOUND VALUES - and no value interpolated into
+      // the statement text. That is the `cfqueryparam` property AAP 0.8.3 makes unconditional, and
+      // it is asserted structurally rather than by eyeballing the SQL: a writer that concatenated
+      // one value would bind seven.
+      const insert = executor.mutations[0];
+
+      expect(insert?.params).toHaveLength(8);
+      expect(insert?.sql.match(/\?/g)).toHaveLength(8);
+      expect(insert?.sql).not.toContain('Ninety-nine');
+      expect(insert?.sql).not.toContain('0.99');
+
+      // The minted key, in the shape `generator="uuid" length="32"`
+      // [model/entity/RoundingRule.cfc:L52] produced - hyphens stripped, which is the 36-to-32
+      // reduction the writing repositories already perform.
+      expect(insert?.params[0]).toMatch(MINTED_ID_PATTERN);
+      expect(insert?.params[1]).toBe('Ninety-nine cents');
+      expect(insert?.params[2]).toBe('0.99');
+      expect(insert?.params[3]).toBe('Closest');
+
+      // ★★ ONE CAPTURED INSTANT SERVES BOTH TIMESTAMPS. `preInsert`
+      // [org/Hibachi/HibachiEntity.cfc:L609-L630] stamped created and modified from the same
+      // `now()`, so two different values here would be a divergence a reader could not see.
+      expect(insert?.params[4]).toBeInstanceOf(Date);
+      expect(insert?.params[4]).toStrictEqual(insert?.params[6]);
+      expect(insert?.params[5]).toBe(WRITER_ACCOUNT_ID);
+      expect(insert?.params[7]).toBe(WRITER_ACCOUNT_ID);
+
+      // ★★★ AND THE ANSWER IS THE PERSISTED ROW, NOT THE ARGUMENT. This is the finding itself:
+      // the method used to answer `rule` unchanged, so `isNew()` stayed true and the caller had
+      // no identifier for the row it believed it had saved.
+      expect(saved).not.toBe(unsaved);
+      expect(saved.isNew()).toBe(false);
+      expect(saved.getRoundingRuleID()).toBe(insert?.params[0]);
+      expect(saved.getCreatedByAccountID()).toBe(WRITER_ACCOUNT_ID);
+      expect(saved.getModifiedByAccountID()).toBe(WRITER_ACCOUNT_ID);
+
+      // The caller's instance is untouched - the entity publishes no setter, so the persisted
+      // state is a fresh instance.
+      expect(unsaved.isNew()).toBe(true);
+      expect(unsaved.getRoundingRuleID()).toBe('');
+    });
+
+    it('★★ UPDATES a persisted rule and never restamps the created-* columns', async () => {
+      const { scope, executor } = await openWritingScope(1, {
+        accountID: WRITER_ACCOUNT_ID,
+        adminAccountFlag: true,
+      });
+
+      const saved = await scope.roundingRuleService.saveRoundingRule(
+        makeRoundingRule('rr-00000000000000000000000000001'),
+      );
+
+      const update = executor.mutations[0];
+
+      expect(update?.sql).toContain('UPDATE SwRoundingRule');
+      expect(update?.sql).toContain('WHERE roundingRuleID = ?');
+
+      // ★★ WRITE-ONCE, READ OFF THE MAPPING RATHER THAN CHOSEN.
+      // `HibachiEntity.preUpdate` [org/Hibachi/HibachiEntity.cfc:L651-L679] restamps only the
+      // modified pair; `setCreatedByAccount` appears in `preInsert` alone [:L628-L630]. So the SET
+      // list omits both created columns, and an update that carried them would silently rewrite
+      // the row's origin.
+      expect(update?.sql).not.toContain('createdDateTime =');
+      expect(update?.sql).not.toContain('createdByAccountID =');
+      expect(update?.sql).toContain('modifiedDateTime =');
+
+      // Five bound values for the SET list plus the key in the WHERE clause.
+      expect(update?.params).toHaveLength(6);
+      expect(update?.params[5]).toBe('rr-00000000000000000000000000001');
+
+      // The identifier is the caller's: an update mints nothing.
+      expect(saved.getRoundingRuleID()).toBe('rr-00000000000000000000000000001');
+      expect(saved.getModifiedByAccountID()).toBe(WRITER_ACCOUNT_ID);
+    });
+
+    it('★★ leaves attribution to the audit gate, stamping NULL when elevation was never established', async () => {
+      // The same fail-safe property the S-07 block pins for the repositories, asserted for the
+      // writers because they stamp on their own. An omitted `adminAccountFlag` is the non-admin
+      // arm of the legacy gate [org/Hibachi/HibachiEntity.cfc:L628, L633], under which `preInsert`
+      // never reached its setter - so no attribution is invented for an unelevated request.
+      const { scope, executor } = await openWritingScope(1, { accountID: WRITER_ACCOUNT_ID });
+
+      const saved = await scope.roundingRuleService.saveRoundingRule(makeRoundingRule(''));
+
+      expect(executor.mutations[0]?.params[5]).toBeNull();
+      expect(executor.mutations[0]?.params[7]).toBeNull();
+      expect(executor.mutations[0]?.params).not.toContain(WRITER_ACCOUNT_ID);
+      expect(saved.getCreatedByAccountID()).toBeUndefined();
+
+      // The timestamps are still stamped: the gate governs WHO, never WHETHER.
+      expect(executor.mutations[0]?.params[4]).toBeInstanceOf(Date);
+    });
+
+    it('★★ REFUSES rather than reporting success when the statement matched no row', async () => {
+      // Reproducing the ORM's own refusal, not adding a guarantee: Hibernate raised
+      // `StaleObjectStateException` when a flush matched zero rows, so a writer that shrugged at
+      // `affectedRows: 0` would be MORE forgiving than the framework it replaces - and would
+      // reintroduce exactly the finding, one layer down, by answering a persisted-looking entity
+      // for a row that does not exist.
+      const { scope } = await openWritingScope(0);
+
+      await expect(
+        scope.roundingRuleService.saveRoundingRule(makeRoundingRule('rr-vanished')),
+      ).rejects.toThrow(/roundingRule/i);
+    });
+
+    it('does not reach the write at all when a save-context rule refuses', async () => {
+      // The order `super.save` used: validate [org/Hibachi/HibachiService.cfc:L151], and flush
+      // only when `hasErrors()` is false [:L155]. A rule missing its name is refused before any
+      // statement, which is what makes the refusal equivalent to the legacy's skipped DAO call.
+      const { scope, executor } = await openWritingScope(1);
+      const nameless = new RoundingRule(
+        {
+          roundingRuleID: '',
+          roundingRuleName: undefined,
+          roundingRuleExpression: '0.99',
+          roundingRuleDirection: 'Closest',
+          createdDateTime: undefined,
+          createdByAccountID: undefined,
+          modifiedDateTime: undefined,
+          modifiedByAccountID: undefined,
+          priceGroupRates: [],
+        },
+        { roundValueByRoundingRule: (value: Money): Money => value },
+      );
+
+      await expect(scope.roundingRuleService.saveRoundingRule(nameless)).rejects.toThrow(
+        /roundingRuleName/,
+      );
+      expect(executor.mutations).toStrictEqual([]);
+    });
+  });
+
+  describe('SwBrand (F14)', () => {
+    it('★★★ INSERTS a new brand across all eleven columns and answers the persisted row', async () => {
+      const { scope, executor } = await openWritingScope(1, {
+        accountID: WRITER_ACCOUNT_ID,
+        adminAccountFlag: true,
+      });
+
+      const saved = await scope.brandService.saveBrand(new Brand({}), {
+        brandName: 'Acme Athletics',
+        brandWebsite: 'https://example.invalid/acme',
+        remoteID: 'legacy-remote-identifier',
+      });
+
+      const insert = executor.mutations[0];
+
+      expect(executor.mutations).toHaveLength(1);
+      expect(insert?.sql).toContain('INSERT INTO SwBrand');
+
+      // ★★ ELEVEN COLUMNS, NOT THE TWO THE LEGACY BRANCH LOGIC READS. A partial write was the
+      // hazard the earlier fail-closed reading correctly identified; this is the assertion that
+      // rules it out.
+      expect(insert?.params).toHaveLength(11);
+      expect(insert?.sql.match(/\?/g)).toHaveLength(11);
+      expect(insert?.params[0]).toMatch(MINTED_ID_PATTERN);
+      expect(insert?.params[3]).toBe('acme-athletics');
+      expect(insert?.params[4]).toBe('Acme Athletics');
+      expect(insert?.params[5]).toBe('https://example.invalid/acme');
+      expect(insert?.params[6]).toBe('legacy-remote-identifier');
+      expect(insert?.params[7]).toBeInstanceOf(Date);
+      expect(insert?.params[8]).toBe(WRITER_ACCOUNT_ID);
+
+      // Nothing interpolated.
+      expect(insert?.sql).not.toContain('Acme');
+      expect(insert?.sql).not.toContain('example.invalid');
+
+      expect(saved.isNew()).toBe(false);
+      expect(saved.getBrandID()).toBe(insert?.params[0]);
+      expect(saved.getUrlTitle()).toBe('acme-athletics');
+      expect(saved.getRemoteID()).toBe('legacy-remote-identifier');
+    });
+
+    it('★★ evaluates the uniqueness rule BEFORE the write, and refuses without writing on a collision', async () => {
+      // `model/validation/Brand.json` declares `"urlTitle": {"unique":true}` in the SAVE context,
+      // so the legacy answered it through `validate` [org/Hibachi/HibachiService.cfc:L151] and
+      // never reached the DAO - a duplicate title was a refused save, not a driver error on a
+      // column constraint. The probe transcribes `HibachiDAO.isUniqueProperty`
+      // [org/Hibachi/HibachiDAO.cfc:L130-L147].
+      const executor = new StubExecutor(
+        (sql) => (sql.includes('SELECT brandID FROM SwBrand') ? [{ brandID: 'other-brand' }] : []),
+        1,
+      );
+      const scope = await (await makeRoot({ executor })).createRequestScope();
+
+      await expect(
+        scope.brandService.saveBrand(new Brand({ brandID: 'b-colliding' }), {
+          brandName: 'Acme Athletics',
+          urlTitle: 'acme-athletics',
+        }),
+      ).rejects.toThrow(/unique/i);
+
+      // ★★★ AND NOT ONE STATEMENT WAS WRITTEN. `rejects` alone would also be satisfied by a
+      // writer that inserted the row and then threw on the constraint violation coming back.
+      expect(executor.mutations).toStrictEqual([]);
+      expect(executor.statements.some((sql) => sql.includes('SELECT brandID FROM SwBrand'))).toBe(
+        true,
+      );
+    });
+
+    it('excludes the row being saved from its own uniqueness probe', async () => {
+      // The ported `!= :entityID` term. Without it, re-saving an existing brand whose title is
+      // unchanged would collide with ITSELF and refuse every update - which is exactly why the
+      // legacy carried the term rather than testing the column alone.
+      const { scope, executor } = await openWritingScope(1);
+
+      await scope.brandService.saveBrand(
+        new Brand({ brandID: 'b-keeping-its-title', urlTitle: 'acme-athletics' }),
+        { brandName: 'Acme Athletics' },
+      );
+
+      const probe = executor.statements.find((sql) => sql.includes('SELECT brandID FROM SwBrand'));
+
+      expect(probe).toContain('AND brandID <> ?');
+      expect(executor.mutations[0]?.sql).toContain('UPDATE SwBrand');
+    });
+
+    it('★★ REFUSES rather than reporting success when the statement matched no row', async () => {
+      const { scope } = await openWritingScope(0);
+
+      await expect(
+        scope.brandService.saveBrand(new Brand({ brandID: 'b-vanished' }), {
+          brandName: 'Acme Athletics',
+        }),
+      ).rejects.toThrow(/brand/i);
+    });
+
+    it('does not reach the write at all when a save-context rule refuses', async () => {
+      // `brandWebsite` carries `"dataType":"url"` in the save context, answered by
+      // `validate_dataType` [org/Hibachi/HibachiValidationService.cfc:L256-L262]. A relative path
+      // is not an absolute URL, so `isValid("url", ...)` refused it and the DAO was skipped.
+      const { scope, executor } = await openWritingScope(1);
+
+      await expect(
+        scope.brandService.saveBrand(new Brand({ brandID: 'b-bad-website' }), {
+          brandName: 'Acme Athletics',
+          brandWebsite: '/relative/path',
+        }),
+      ).rejects.toThrow(/brandWebsite/);
+      expect(executor.mutations).toStrictEqual([]);
+    });
+  });
+
+  it('★★ builds both writers PER REQUEST, so one request cannot stamp another request\u2019s row', async () => {
+    // The writers close over the request's audit actor, so a container-scoped writer would carry
+    // one invocation's attribution into the next - the whole hazard AAP 0.6.5 re-scopes the legacy
+    // memo families for. Two scopes off ONE root, two different accounts, and each write must
+    // carry its own.
+    const executor = new StubExecutor(() => [], 1);
+    const root = await makeRoot({ executor });
+
+    const first = await root.createRequestScope({
+      accountID: 'acct-first',
+      adminAccountFlag: true,
+    });
+    const second = await root.createRequestScope({
+      accountID: 'acct-second',
+      adminAccountFlag: true,
+    });
+
+    await first.roundingRuleService.saveRoundingRule(makeRoundingRule(''));
+    await second.roundingRuleService.saveRoundingRule(makeRoundingRule(''));
+
+    expect(executor.mutations[0]?.params[5]).toBe('acct-first');
+    expect(executor.mutations[1]?.params[5]).toBe('acct-second');
+
+    // And the services themselves are per-scope instances, which is what makes that possible.
+    expect(second.roundingRuleService).not.toBe(first.roundingRuleService);
+    expect(second.brandService).not.toBe(first.brandService);
   });
 });
 
@@ -2601,7 +3814,7 @@ describe('the price-group page ceiling (S-08)', () => {
 
   it('★★ refuses a page ABOVE the ceiling before hydrating a single group', async () => {
     const executor = pageOf(1_001);
-    const scope = (await makeRoot({ executor })).createRequestScope();
+    const scope = await (await makeRoot({ executor })).createRequestScope();
     const mark = executor.statements.length;
 
     await expect(scope.priceGroupService.getPriceGroupDataJSON()).rejects.toThrow(
@@ -2616,7 +3829,7 @@ describe('the price-group page ceiling (S-08)', () => {
 
   it('proceeds past a page AT the ceiling, so the limit is inclusive', async () => {
     const executor = pageOf(1_000);
-    const scope = (await makeRoot({ executor })).createRequestScope();
+    const scope = await (await makeRoot({ executor })).createRequestScope();
     const mark = executor.statements.length;
 
     // It gets PAST the ceiling and into hydration, which then fails for an unrelated and honest
@@ -2636,7 +3849,7 @@ describe('the price-group page ceiling (S-08)', () => {
 
   it('leaves the page statement carrying the source-declared LIMIT and no invented ORDER BY', async () => {
     const executor = pageOf(1);
-    const scope = (await makeRoot({ executor })).createRequestScope();
+    const scope = await (await makeRoot({ executor })).createRequestScope();
     const mark = executor.statements.length;
 
     await expect(scope.priceGroupService.getPriceGroupDataJSON()).rejects.toThrow();
@@ -2651,5 +3864,500 @@ describe('the price-group page ceiling (S-08)', () => {
     expect(page).toBe('SELECT priceGroupID FROM SwPriceGroup LIMIT 10');
     expect(page?.toUpperCase()).not.toContain('ORDER BY');
     expect(page).not.toContain(String(1_000));
+  });
+});
+
+// -------------------------------------------------------------------------
+// The per-SKU feed setting cascade (F10)
+//
+// ★★★ THIS BLOCK IS NET-NEW, AND THE BEHAVIOUR IT PINS REPLACES A CONSTANT.
+//
+// `DeclaredDefaultSkuFeedSettingResolver` answered `1 lb` for every SKU and defended that with a
+// sentence from the port's own docblock: a resolver "is free to answer ... FROM DECLARED DEFAULTS".
+// Code review raised F10, MAJOR: the resolver "ignores product/product-type/brand precedence and
+// returns `1 lb` for every SKU, while `googleFeedRepository.ts:342-415,2446-2481` requires effective
+// per-SKU settings", and required either "a batched resolver with the legacy precedence" or a refusal,
+// with the instruction "Do not masquerade defaults as resolved overrides."
+//
+// THE BATCHED RESOLVER WAS BUILT AND THE REFUSAL WAS REJECTED, on the evidence of F1, F2 and F8 -
+// three refusals of valid states that this same review cycle required removing. A catalog with no
+// `SwSetting` overrides is the ordinary case and the legacy served it from the declared default
+// without complaint, so refusing it would have traded a wrong answer for no answer.
+//
+// EVERY CASE DRIVES THE COMPOSED GRAPH END TO END, through `productFeedPort.generateProductFeed()`,
+// and reads the resolved pair out of the emitted `<g:shipping_weight>` element
+// [integrationServices/google/views/feed/product.cfm:L58]. Asserting on the rendered document rather
+// than on the resolver in isolation is deliberate: the resolver is module-local and unexported, and
+// what the finding is about is the value a merchant reads in the feed.
+// -------------------------------------------------------------------------
+
+describe('the per-SKU feed setting cascade (F10)', () => {
+  /**
+   * Every column `SwSetting` discriminates on, restated INDEPENDENTLY of the subject.
+   *
+   * ★★ THE DUPLICATION IS THE POINT. The subject narrows a probe by requiring these columns NULL, so
+   * a row must carry all seventeen for the narrowing to be observable at all. Deriving this list from
+   * the subject's own constant would make a case that dropped a column pass by agreeing with the bug.
+   */
+  const SETTING_COLUMNS = [
+    'accountID',
+    'contentID',
+    'cmsContentID',
+    'brandID',
+    'emailID',
+    'emailTemplateID',
+    'fulfillmentMethodID',
+    'paymentMethodID',
+    'productID',
+    'productTypeID',
+    'shippingMethodID',
+    'shippingMethodRateID',
+    'siteID',
+    'skuID',
+    'subscriptionTermID',
+    'subscriptionUsageID',
+    'taskID',
+  ] as const;
+
+  /** One `SwSetting` row: the named relationships populated, every other column SQL NULL. */
+  function settingRow(
+    settingName: string,
+    settingValue: string | null,
+    relationships: Readonly<Record<string, string>> = {},
+  ): SqlRow {
+    const row: Record<string, unknown> = { settingName, settingValue };
+
+    for (const columnName of SETTING_COLUMNS) {
+      row[columnName] = relationships[columnName] ?? null;
+    }
+
+    return row;
+  }
+
+  /** A `skuShippingWeight` row, which is the key every case below varies. */
+  function weightRow(value: string | null, relationships: Readonly<Record<string, string>> = {}) {
+    return settingRow('skuShippingWeight', value, relationships);
+  }
+
+  /**
+   * One feed selection row, complete.
+   *
+   * Mirrors `makeSelectionRow` in `tests/unit/integrations/google/googleFeedRepository.test.ts`:
+   * the subject proves each column exists before reading it, so an omitted column would fail for the
+   * wrong reason and hide what the case meant to assert.
+   */
+  function selectionRow(overrides: Readonly<Record<string, unknown>> = {}): SqlRow {
+    return {
+      skuID: 'sku-one',
+      skuCode: 'SKU-ONE',
+      skuActiveFlag: 1,
+      skuPrice: '19.99',
+      skuImageFile: null,
+      productID: 'prod-one',
+      productCode: 'PROD-ONE',
+      calculatedTitle: 'A Product',
+      productDescription: 'A description.',
+      productUrlTitle: 'a-product',
+      productActiveFlag: 1,
+      productPublishedFlag: 1,
+      productCalculatedQATS: 7,
+      productTypeID: 'pt-leaf',
+      brandID: 'brand-one',
+      productPrice: '19.99',
+      joinedBrandID: 'brand-one',
+      brandName: 'A Brand',
+      ...overrides,
+    };
+  }
+
+  interface FeedWorld {
+    readonly selections?: readonly SqlRow[];
+    readonly settings?: readonly SqlRow[];
+    /** Leaf product-type identifier to its STORED path - root first, leaf last. */
+    readonly paths?: Readonly<Record<string, string | null>>;
+  }
+
+  /**
+   * An executor answering the three statements the cascade depends on, routed by SQL text.
+   *
+   * ★★★ EACH DISCRIMINATOR IS VERIFIED UNIQUE ACROSS `src/`, AND THE FIRST ATTEMPT WAS NOT.
+   * Routing the path read on `productTypeIDPath` alone matched the SALE-PRICE UNION as well - that
+   * statement mentions the column four times, walking it for product-type-scoped rewards
+   * [model/dao/PromotionDAO.cfc:L482-L488] - so a path-shaped answer reached a reader expecting nine
+   * promotion columns and every case in this block failed on a missing `originalPrice`. The routes
+   * below are the full projection prefixes, each of which occurs exactly once in the source tree:
+   *
+   *   `FROM SwSetting`                              the resolver's candidate-row read
+   *   `SELECT productTypeID, productTypeIDPath`     the resolver's ancestry-path read
+   *   `AS skuActiveFlag`                            the feed's own selection
+   *
+   * Everything unrouted answers no rows, which is what the image and sale-price statements want here.
+   * A double that answers the WRONG statement is worse than one that answers nothing, because it fails
+   * somewhere else and points at the wrong subject.
+   */
+  function feedExecutor(world: FeedWorld): StubExecutor {
+    return new StubExecutor((sql: string, params: readonly unknown[]): readonly SqlRow[] => {
+      if (sql.includes('FROM SwSetting')) {
+        return world.settings ?? [];
+      }
+
+      if (sql.includes('SELECT productTypeID, productTypeIDPath')) {
+        return params
+          .filter((param): param is string => typeof param === 'string')
+          .map((productTypeID) => ({
+            productTypeID,
+            productTypeIDPath: world.paths?.[productTypeID] ?? null,
+          }));
+      }
+
+      if (sql.includes('AS skuActiveFlag')) {
+        return world.selections ?? [selectionRow()];
+      }
+
+      return [];
+    });
+  }
+
+  /** Generates the feed through the composed graph and answers the document. */
+  async function feedFrom(world: FeedWorld): Promise<string> {
+    const executor = feedExecutor(world);
+    const root = await makeRoot({
+      env: { FEED_ALLOWED_HOSTS: ALLOWED_FEED_HOST },
+      executor,
+    });
+    const scope = await root.createRequestScope({ feedHost: ALLOWED_FEED_HOST });
+    const port = requirePresent(scope.productFeedPort, 'the product feed port');
+
+    return await port.generateProductFeed();
+  }
+
+  /** The emitted `<g:shipping_weight>` bodies, in document order. */
+  function shippingWeights(document: string): readonly string[] {
+    return [...document.matchAll(/<g:shipping_weight>([^<]*)<\/g:shipping_weight>/g)].map(
+      (match) => match[1] ?? '',
+    );
+  }
+
+  it('★★★ ANSWERS A PRODUCT-TYPE OVERRIDE instead of the declared default', async () => {
+    // ★★★ THE LITERAL INVERSION OF F10. Nothing about this catalog is unusual - a merchant set a
+    // shipping weight on a product type - and the retired resolver answered `1 lb` for it, because it
+    // answered `1 lb` for everything. The cascade's fourth step
+    // [model/service/SettingService.cfc:L104, entry 3] is what finds it.
+    const document = await feedFrom({
+      settings: [weightRow('12', { productTypeID: 'pt-leaf' })],
+      paths: { 'pt-leaf': 'pt-leaf' },
+    });
+
+    expect(shippingWeights(document)).toStrictEqual(['12 lb']);
+  });
+
+  it('falls back to the declared default only when every probe misses', async () => {
+    // ★★ THE OTHER HALF, AND WHY THE DEFAULTS ARE NOT DELETED. The legacy seeds them before any probe
+    // runs [model/service/SettingService.cfc:L482-L487] and they survive an empty table, so `1 lb` is
+    // still the right answer HERE. What F10 objected to was answering it everywhere; a default that is
+    // reachable only by exhausting the cascade is not masquerading as anything.
+    const document = await feedFrom({ settings: [], paths: { 'pt-leaf': 'pt-leaf' } });
+
+    expect(shippingWeights(document)).toStrictEqual(['1 lb']);
+  });
+
+  it('prefers the SKU-level row over every less specific one', async () => {
+    // Step 1, the object's own identifier [model/service/SettingService.cfc:L519-L523]. All four
+    // levels are populated at once so the ORDER decides rather than availability.
+    const document = await feedFrom({
+      settings: [
+        weightRow('40'),
+        weightRow('30', { productTypeID: 'pt-leaf' }),
+        weightRow('20', { productID: 'prod-one' }),
+        weightRow('10', { skuID: 'sku-one' }),
+      ],
+      paths: { 'pt-leaf': 'pt-leaf' },
+    });
+
+    expect(shippingWeights(document)).toStrictEqual(['10 lb']);
+  });
+
+  it('prefers the product-level row over the product-type and installation rows', async () => {
+    // Step 2, lookup entry 1 [model/service/SettingService.cfc:L104]. Same table as above minus the
+    // SKU row, so the winner moves exactly one step down the cascade.
+    const document = await feedFrom({
+      settings: [
+        weightRow('40'),
+        weightRow('30', { productTypeID: 'pt-leaf' }),
+        weightRow('20', { productID: 'prod-one' }),
+      ],
+      paths: { 'pt-leaf': 'pt-leaf' },
+    });
+
+    expect(shippingWeights(document)).toStrictEqual(['20 lb']);
+  });
+
+  it('prefers the product-type-and-brand row over the product-type row alone', async () => {
+    // Step 3 before step 4: lookup entry 2 carries the `&product.brand.brandID` conjunct
+    // [model/service/SettingService.cfc:L104] and is strictly more specific than entry 3.
+    const document = await feedFrom({
+      settings: [
+        weightRow('30', { productTypeID: 'pt-leaf' }),
+        weightRow('25', { productTypeID: 'pt-leaf', brandID: 'brand-one' }),
+      ],
+      paths: { 'pt-leaf': 'pt-leaf' },
+    });
+
+    expect(shippingWeights(document)).toStrictEqual(['25 lb']);
+  });
+
+  it('★★★ WALKS THE PRODUCT-TYPE PATH LEAF FIRST, so the nearest type wins', async () => {
+    // ★★★ THE DIRECTION CASE, AND THE ONE MOST WORTH GETTING WRONG SLOWLY. The stored path runs ROOT
+    // FIRST because `buildIDPathList` prepends [org/Hibachi/HibachiEntity.cfc:L315], and the legacy
+    // indexes it DOWNWARDS from `listLen` [model/service/SettingService.cfc:L552-L557] - so the walk
+    // starts at the leaf. A resolver that iterated the stored order instead would answer `90`, the
+    // root's value, while the leaf override sat unread. Both rows exist here precisely so the
+    // direction, and not the availability, decides.
+    const document = await feedFrom({
+      settings: [
+        weightRow('90', { productTypeID: 'pt-root' }),
+        weightRow('11', { productTypeID: 'pt-leaf' }),
+      ],
+      paths: { 'pt-leaf': 'pt-root,pt-mid,pt-leaf' },
+    });
+
+    expect(shippingWeights(document)).toStrictEqual(['11 lb']);
+  });
+
+  it('inherits an ancestor product type when nearer ones carry no row', async () => {
+    // The same path with only the ROOT populated. This is what makes the walk an inheritance chain
+    // rather than a leaf test: the two nearer segments miss and the walk keeps going outwards.
+    const document = await feedFrom({
+      settings: [weightRow('90', { productTypeID: 'pt-root' })],
+      paths: { 'pt-leaf': 'pt-root,pt-mid,pt-leaf' },
+    });
+
+    expect(shippingWeights(document)).toStrictEqual(['90 lb']);
+  });
+
+  it('★★ exhausts the whole path WITH the brand before trying any segment without it', async () => {
+    // ★★ THE STEP-ORDERING CASE. The legacy advances `nextLookupOrderIndex` only once
+    // `nextPathListIndex` reaches 0 [model/service/SettingService.cfc:L586-L589], so EVERY segment is
+    // tried with the brand before ANY segment is tried alone. Here the brand row sits on the ROOT and
+    // the plain row on the LEAF, which puts the two orderings in direct conflict: interleaving the
+    // steps segment by segment would answer `11`, the nearer plain row. The legacy answers `90`.
+    const document = await feedFrom({
+      settings: [
+        weightRow('11', { productTypeID: 'pt-leaf' }),
+        weightRow('90', { productTypeID: 'pt-root', brandID: 'brand-one' }),
+      ],
+      paths: { 'pt-leaf': 'pt-root,pt-mid,pt-leaf' },
+    });
+
+    expect(shippingWeights(document)).toStrictEqual(['90 lb']);
+  });
+
+  it('★★ ignores a row carrying a relationship the lookup never mentions', async () => {
+    // ★★ THE `IS NULL` HALF OF THE PREDICATE, WHICH IS EASY TO LOSE AND EXPENSIVE TO LOSE.
+    // `getSettingRecordBySettingRelationships` emits `AND <col> IS NULL` for every NON-participating
+    // column [model/service/SettingService.cfc:L768-L870], so a row scoped to an account is invisible
+    // to a lookup that names no account - even though its `skuID` matches perfectly. A resolver
+    // matching only the columns it asked about would answer `77` here and leak one account's setting
+    // into every other account's feed.
+    const document = await feedFrom({
+      settings: [weightRow('77', { skuID: 'sku-one', accountID: 'acct-other' }), weightRow('40')],
+      paths: { 'pt-leaf': 'pt-leaf' },
+    });
+
+    expect(shippingWeights(document)).toStrictEqual(['40 lb']);
+  });
+
+  it('finds no brand-only row, because the sku lookup order has no brand-only step', async () => {
+    // The brand appears ONLY as entry 2's conjunct [model/service/SettingService.cfc:L104], never
+    // alone, so a brand-scoped row is unreachable from a SKU and the cascade falls through to the
+    // installation row. Counter-intuitive, and reproduced rather than repaired: inventing the missing
+    // step would answer settings the legacy never found.
+    const document = await feedFrom({
+      settings: [weightRow('55', { brandID: 'brand-one' }), weightRow('40')],
+      paths: { 'pt-leaf': 'pt-leaf' },
+    });
+
+    expect(shippingWeights(document)).toStrictEqual(['40 lb']);
+  });
+
+  it('★★ lets a blanked row short-circuit the cascade rather than inherit', async () => {
+    // A row whose `settingValue` is NULL still sets `foundValue` [model/service/SettingService.cfc:
+    // L525-L527] and a NULL query column reads as `''` in CFML, so a merchant who blanks a setting at
+    // SKU level suppresses the product-level value rather than falling through to it. Mapping NULL to
+    // `undefined` would have inverted this and answered `20`.
+    const document = await feedFrom({
+      settings: [weightRow(null, { skuID: 'sku-one' }), weightRow('20', { productID: 'prod-one' })],
+      paths: { 'pt-leaf': 'pt-leaf' },
+    });
+
+    expect(shippingWeights(document)).toStrictEqual([' lb']);
+  });
+
+  it('matches setting names and identifiers case-insensitively, as the legacy LOWER() pair does', async () => {
+    // Both sides of every comparison are wrapped in `LOWER(...)`
+    // [model/service/SettingService.cfc:L783 onwards], so a row stored in a different case than the
+    // column the selection returned is still the same row.
+    const document = await feedFrom({
+      settings: [settingRow('SKUSHIPPINGWEIGHT', '13', { skuID: 'SKU-ONE' })],
+      paths: { 'pt-leaf': 'pt-leaf' },
+    });
+
+    expect(shippingWeights(document)).toStrictEqual(['13 lb']);
+  });
+
+  it('resolves the two keys independently, so one override does not drag the other', async () => {
+    // The view reads two settings [integrationServices/google/views/feed/product.cfm:L58] and each
+    // runs its OWN cascade. A weight set at SKU level with no unit row must answer the overridden
+    // weight beside the DECLARED unit, not a pair drawn from one level.
+    const document = await feedFrom({
+      settings: [
+        weightRow('7', { skuID: 'sku-one' }),
+        settingRow('skuShippingWeightUnitCode', 'kg', { productTypeID: 'pt-leaf' }),
+      ],
+      paths: { 'pt-leaf': 'pt-leaf' },
+    });
+
+    expect(shippingWeights(document)).toStrictEqual(['7 kg']);
+  });
+
+  it('★★★ answers two SKUs of ONE product differently, which is why the resolver is per-SKU', async () => {
+    // ★★★ THE PORT'S WHOLE REASON FOR EXISTING, quoted from its docblock: "Two SKUs of the same
+    // product can answer differently, because the very first lookup step is a value bound to the
+    // SKU's own identifier." A pair of strings resolved once and copied onto every row cannot express
+    // this, and the retired resolver did exactly that.
+    const document = await feedFrom({
+      selections: [selectionRow(), selectionRow({ skuID: 'sku-two', skuCode: 'SKU-TWO' })],
+      settings: [weightRow('5', { skuID: 'sku-one' }), weightRow('50', { skuID: 'sku-two' })],
+      paths: { 'pt-leaf': 'pt-leaf' },
+    });
+
+    expect(shippingWeights(document)).toStrictEqual(['5 lb', '50 lb']);
+  });
+
+  it('★★ issues EXACTLY ONE settings read and ONE path read, whatever the batch size', async () => {
+    // ★★ THE BATCHING HALF OF THE FINDING, which the port states as a requirement: "a per-row call
+    // would issue one lookup per SKU, which is the N+1 shape the repository boundary exists to make
+    // impossible." Three SKUs across two product types, and the statement count does not move. The
+    // legacy's own shape agrees - it read the table ONCE [model/dao/SettingDAO.cfc:L51-L62] and
+    // probed in-engine.
+    const executor = feedExecutor({
+      selections: [
+        selectionRow(),
+        selectionRow({ skuID: 'sku-two', skuCode: 'SKU-TWO' }),
+        selectionRow({ skuID: 'sku-three', skuCode: 'SKU-THREE', productTypeID: 'pt-other' }),
+      ],
+      settings: [weightRow('40')],
+      paths: { 'pt-leaf': 'pt-root,pt-leaf', 'pt-other': 'pt-other' },
+    });
+    const root = await makeRoot({
+      env: { FEED_ALLOWED_HOSTS: ALLOWED_FEED_HOST },
+      executor,
+    });
+    const scope = await root.createRequestScope({ feedHost: ALLOWED_FEED_HOST });
+
+    await requirePresent(scope.productFeedPort, 'the product feed port').generateProductFeed();
+
+    const settingReads = executor.reads.filter((read) => read.sql.includes('FROM SwSetting'));
+    const pathReads = executor.reads.filter((read) =>
+      read.sql.includes('SELECT productTypeID, productTypeIDPath'),
+    );
+
+    expect(settingReads).toHaveLength(1);
+    expect(pathReads).toHaveLength(1);
+
+    // And the path read is DEDUPLICATED: three SKUs mention two distinct product types, so it binds
+    // two keys rather than three.
+    expect(pathReads[0]?.params).toStrictEqual(['pt-leaf', 'pt-other']);
+  });
+
+  it('★★ binds both setting names and every product-type key, splicing neither', async () => {
+    // The `cfqueryparam` property AAP 0.8.3 makes unconditional. The names are bound FOLDED because
+    // the legacy compared `LOWER(settingName)` [model/service/SettingService.cfc:L783], and the
+    // statement selects all seventeen relationship columns because it must require sixteen of them
+    // NULL.
+    const executor = feedExecutor({
+      settings: [weightRow('40')],
+      paths: { 'pt-leaf': 'pt-leaf' },
+    });
+    const root = await makeRoot({
+      env: { FEED_ALLOWED_HOSTS: ALLOWED_FEED_HOST },
+      executor,
+    });
+    const scope = await root.createRequestScope({ feedHost: ALLOWED_FEED_HOST });
+
+    await requirePresent(scope.productFeedPort, 'the product feed port').generateProductFeed();
+
+    const settingRead = executor.reads.find((read) => read.sql.includes('FROM SwSetting'));
+
+    expect(settingRead?.params).toStrictEqual(['skushippingweight', 'skushippingweightunitcode']);
+    expect(settingRead?.sql).toContain('WHERE LOWER(settingName) IN (?, ?)');
+    expect(settingRead?.sql).not.toContain('skuShippingWeight');
+
+    for (const columnName of SETTING_COLUMNS) {
+      expect(settingRead?.sql).toContain(columnName);
+    }
+  });
+
+  it('skips the path read entirely when no selected product has a product type', async () => {
+    // `IN ()` is a MySQL syntax error, so a batch with nothing to ask about must not ask. A product
+    // with no type also reaches no path probe: the legacy set `relationshipValue = ""`
+    // [model/service/SettingService.cfc:L558-L560] and probed `LOWER(productTypeID) = ''`, which no
+    // NULL or populated column satisfies - so the cascade lands on the installation row either way.
+    const executor = feedExecutor({
+      selections: [selectionRow({ productTypeID: null })],
+      settings: [weightRow('40'), weightRow('30', { productTypeID: 'pt-leaf' })],
+    });
+    const root = await makeRoot({
+      env: { FEED_ALLOWED_HOSTS: ALLOWED_FEED_HOST },
+      executor,
+    });
+    const scope = await root.createRequestScope({ feedHost: ALLOWED_FEED_HOST });
+
+    const document = await requirePresent(
+      scope.productFeedPort,
+      'the product feed port',
+    ).generateProductFeed();
+
+    expect(
+      executor.reads.filter((read) => read.sql.includes('SELECT productTypeID, productTypeIDPath')),
+    ).toStrictEqual([]);
+    expect(shippingWeights(document)).toStrictEqual(['40 lb']);
+  });
+
+  it('still finds a leaf-level row when the stored path column is NULL', async () => {
+    // A leaf whose materialized column is empty still has ONE known segment: itself.
+    // `getProductTypeIDPath` [model/entity/ProductType.cfc:L251-L253] rebuilt the list from the live
+    // parent chain whenever the column was null, and `buildIDPathList` always includes the entity it
+    // starts from [org/Hibachi/HibachiEntity.cfc:L315], so the legacy could not observe an empty path
+    // here. Seeding the leaf reproduces the floor of that guarantee without inventing an ancestry the
+    // column did not record.
+    const document = await feedFrom({
+      settings: [weightRow('19', { productTypeID: 'pt-leaf' })],
+      paths: { 'pt-leaf': null },
+    });
+
+    expect(shippingWeights(document)).toStrictEqual(['19 lb']);
+  });
+
+  it('discloses no setting value and no identifier in what it logs', async () => {
+    // The same disclosure property the other bootstrap collaborators hold. `../lib/logger.js` fails
+    // closed on any context key it does not recognize as legible, and the resolver passes only the two
+    // counts. `LOG_LEVEL` is stubbed because the line is emitted at `debug` and the default threshold
+    // is `info`, so without the stub the assertion would pass vacuously.
+    vi.stubEnv('LOG_LEVEL', 'debug');
+
+    const { lines } = captureLogLines();
+
+    await feedFrom({
+      settings: [weightRow('12', { skuID: 'sku-one' })],
+      paths: { 'pt-leaf': 'pt-leaf' },
+    });
+
+    const resolved = lines.filter((line) => line.message.includes('shipping-weight settings'));
+
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]?.context).toStrictEqual({ rowCount: 1, resultCount: 1 });
+    expect(JSON.stringify(resolved[0])).not.toContain('sku-one');
+    expect(JSON.stringify(resolved[0])).not.toContain('12');
   });
 });

@@ -183,6 +183,7 @@ import type { RoundingRule } from '../../../../src/domain/entities/roundingRule.
 import { Money } from '../../../../src/domain/valueObjects/money.js';
 import { DiscountAmountCalculator } from '../../../../src/services/promotion/discountAmount.js';
 import { RoundingRuleService } from '../../../../src/services/roundingRuleService.js';
+import type { RoundingRuleFrameworkWrites } from '../../../../src/services/roundingRuleService.js';
 import { makePromotionFixtures } from '../../../fixtures/promotionFixtures.js';
 
 // ---------------------------------------------------------------------------
@@ -271,6 +272,25 @@ function makeUnreachedRepository(): RoundingRuleServiceRepository {
 }
 
 /**
+ * The durable-write collaborator every `RoundingRuleService` in this file is handed, which REFUSES.
+ *
+ * `saveRoundingRule` genuinely persists now, through a single-method contract the service declares
+ * and `src/handlers/bootstrap.ts` satisfies over the request's executor. Nothing in this file saves
+ * a rounding rule - the only member exercised is the SYNCHRONOUS `roundValueByRoundingRule`
+ * [model/service/RoundingRuleService.cfc:L84] - so the strongest available statement is a writer
+ * that fails by name if the write is ever reached from here. Same device as the refusing repository
+ * above, for the same reason.
+ */
+const refusingRoundingRuleFrameworkWrites: RoundingRuleFrameworkWrites = {
+  saveRoundingRule: (): never => {
+    throw new Error(
+      'a rounding-rule WRITE was reached from this suite. Only the synchronous rounding pair is ' +
+        'exercised here; saveRoundingRule is covered by tests/unit/services/roundingRuleService.test.ts.',
+    );
+  },
+};
+
+/**
  * The hand-written rounding collaborator, declared inline in this file and nowhere else.
  *
  * It implements EXACTLY the one member the subject invokes - `roundValueByRoundingRule`
@@ -301,7 +321,7 @@ class RecordingRoundingRuleService extends RoundingRuleService {
    *   specific answer - a negative one, say - passes its own.
    */
   constructor(private readonly syntheticRoundedNetAmount: string = SYNTHETIC_ROUNDED_NET_AMOUNT) {
-    super(makeUnreachedRepository());
+    super(makeUnreachedRepository(), refusingRoundingRuleFrameworkWrites);
   }
 
   override roundValueByRoundingRule(value: Money, rule: RoundingRule): Money {

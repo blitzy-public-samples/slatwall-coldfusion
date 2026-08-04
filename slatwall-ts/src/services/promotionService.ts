@@ -767,7 +767,16 @@ function buildBlanketClearIntents(order: OrderView): PromotionAppliedIntent[] {
 
       if (appliedPromotion !== undefined) {
         intents.push({
-          promotionID: appliedPromotion.promotion.promotionID,
+          // ★ THE ROW'S OWN IDENTITY, not a re-derivation of it. The legacy calls
+          // `removeOrderItem()` on this row OBJECT [model/service/PromotionService.cfc:L66], reading
+          // neither its promotion nor its amount; carrying `promotionAppliedID` is what lets a
+          // consumer detach the same row rather than "some row for this promotion on this item".
+          promotionAppliedID: appliedPromotion.promotionAppliedID,
+          // Nullable on a persisted-row removal, and passed through rather than dereferenced: the FK
+          // declares no `notnull` [model/entity/PromotionApplied.cfc:L58] and the legacy itself
+          // produces promotion-less rows via `removePromotion` [:L85-L94]. Legacy clears them, so
+          // this emits an intent for them instead of skipping them.
+          promotionID: appliedPromotion.promotion?.promotionID,
           operation: 'remove',
           appliedType: 'orderItem',
           orderItemID: orderItem.orderItemID,
@@ -797,8 +806,11 @@ function buildBlanketClearIntents(order: OrderView): PromotionAppliedIntent[] {
       const appliedPromotion = orderFulfillment.appliedPromotions[rowIndex];
 
       if (appliedPromotion !== undefined) {
+        // Row identity and a nullable promotion, for the reasons given at the order-item loop above;
+        // the legacy locator for this level is [model/service/PromotionService.cfc:L73].
         intents.push({
-          promotionID: appliedPromotion.promotion.promotionID,
+          promotionAppliedID: appliedPromotion.promotionAppliedID,
+          promotionID: appliedPromotion.promotion?.promotionID,
           operation: 'remove',
           appliedType: 'orderFulfillment',
           orderFulfillmentID: orderFulfillment.orderFulfillmentID,
@@ -812,8 +824,11 @@ function buildBlanketClearIntents(order: OrderView): PromotionAppliedIntent[] {
     const appliedPromotion = order.appliedPromotions[rowIndex];
 
     if (appliedPromotion !== undefined) {
+      // Row identity and a nullable promotion, as at both loops above; the legacy locator for the
+      // order level is [model/service/PromotionService.cfc:L79].
       intents.push({
-        promotionID: appliedPromotion.promotion.promotionID,
+        promotionAppliedID: appliedPromotion.promotionAppliedID,
+        promotionID: appliedPromotion.promotion?.promotionID,
         operation: 'remove',
         appliedType: 'order',
         orderID: order.orderID,
@@ -868,9 +883,32 @@ function toAddressProjection(address: ShippingAddressView): AddressProjection {
  * link table `SwPromoRewardShipAddressZone`, and the ported entity deliberately publishes it as
  * `getShippingAddressZoneIDs(): readonly string[]` rather than as an array of `AddressZone` entities -
  * the entity graph beyond the identifier is not in scope. The zone locations therefore arrive empty,
- * which the port reads as a zone matching nothing; the repository is what populates them when a
- * zone's locations are materialised. The shape is the same one
- * `./promotion/qualifierQualification.ts` builds for the structurally identical qualifier path.
+ * and `addressZoneID` is what the port resolves them from.
+ *
+ * ★★ THIS PARAGRAPH USED TO STATE THE OPPOSITE, AND THE MISSTATEMENT WAS THE DEFECT.
+ * It finished: "The zone locations therefore arrive empty, which the port reads as a zone matching
+ * nothing; the repository is what populates them when a zone's locations are materialised." Both
+ * halves were wrong, and together they described a promotion engine in which every configured
+ * shipping-address zone silently answers `false`.
+ *
+ *   * "the port reads as a zone matching nothing" inverts the contract. {@link AddressZoneProjection}
+ *     distinguishes an empty list that means NOT SUPPLIED - which this function produces, because this
+ *     layer publishes no locations - from a zone that GENUINELY has none. Only the second is
+ *     unmatchable. On the first, the implementation is obliged to resolve the zone from
+ *     `addressZoneID` before answering.
+ *   * "the repository is what populates them" names a collaborator that neither does this nor can.
+ *     No repository port carries a zone-locations member, and the port set is closed at thirteen
+ *     [AAP 0.2.1], so no repository was ever going to grow one. The resolution belongs to the port
+ *     IMPLEMENTATION, and the composition root now performs it: it materialises an immutable
+ *     zone-ID-to-locations index per request from the `SwAddressZoneLocation` link table and hands it
+ *     to the evaluator, which folds case on the identifier when it looks a zone up
+ *     [src/handlers/bootstrap.ts, section 4.2].
+ *
+ * Nothing about this function changes as a result - it supplies the identifier and an empty list, which
+ * is exactly what the contract asks a caller with no locations to supply. What changed is that the
+ * claim written here no longer contradicts the port it documents. The shape is the same one
+ * `./promotion/qualifierQualification.ts` builds for the structurally identical qualifier path, and
+ * that module has stated the obligation correctly all along.
  */
 function toConfiguredShippingAddressZones(
   addressZoneIDs: readonly string[],

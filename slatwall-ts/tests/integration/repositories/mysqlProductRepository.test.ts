@@ -163,6 +163,7 @@ import type {
   SqlMutationResult,
   SqlRow,
 } from '../../../src/repositories/mysql/connection.js';
+import { SQL_TUPLE_ROW_LIMIT } from '../../../src/repositories/mysql/connection.js';
 
 /**
  * S-07. The audit actor every construction in this file supplies: an ADMIN, PERSISTED
@@ -1621,6 +1622,13 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
         // `src/domain/entities/product.ts` takes `salePriceDetailsForSkus` as a constructed-with value
         // and offers no later moment to attach it. Nothing outside this class may drive it.
         'readSalePriceDetails',
+        // The batching branch of `readSkus`, and a PRIVATE HELPER for the same reason: it decides
+        // whether the two identifier sets fit one statement or have to be split into product-keyed
+        // and default-SKU-keyed batches, which is a property of how this class talks to the driver
+        // and of nothing a caller can see. It exists because the read ceilings this adapter briefly
+        // carried were removed, so the graph statements have to stay inside the driver's placeholder
+        // limit for a match set of any size.
+        'readSkuRows',
         'readSkuOptions',
         'buildProduct',
         'assertAssociationsPersisted',
@@ -5027,26 +5035,31 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
 });
 
 // =============================================================================
-// THE TWO RESOURCE CEILINGS (S-08)
+// READ TOTALITY - THE TWO RESOURCE CEILINGS, INVERTED
 //
 // A security review raised finding S-08, MEDIUM, CWE-400: wildcard-broadened unpaginated searches
-// can exhaust database or container resources. Values are bound on every path, so this is denial of
+// can exhaust database or container resources. Values are bound on every path, so this was denial of
 // service rather than injection - no case below asserts a change to any statement's TEXT, and the
 // pinned parity claim that the search statement emits no `ORDER BY`, `DISTINCT` or `LIMIT` still
 // holds exactly.
 //
-// One ceiling is DERIVED from the column the term is matched against and is therefore provably
-// non-binding on any term that could match a row. The other bounds graph materialization THIS PORT
-// introduced: the legacy projected `productID, productName` and reduced each row to a two-key
-// autocomplete structure [model/dao/ProductDAO.cfc:L429-L435], building no graph at all.
+// ★★ AN EARLIER REVISION ANSWERED IT WITH TWO REFUSAL CEILINGS, AND THIS BLOCK USED TO PIN THEM.
+// A later review found the ceilings themselves to be the defect: [model/dao/ProductDAO.cfc:L419-L435]
+// validates nothing and refuses nothing on magnitude, so every input they rejected was one the legacy
+// ANSWERED - with matches, or with an empty autocomplete structure. A read that raises where the
+// legacy returned is a divergence this port is not allowed (AAP 0.6.7, AAP 0.8.1). The sibling
+// adapter lost the same ceilings for the same reason, and the full argument is recorded once, in the
+// read-totality block at the head of `src/repositories/mysql/mysqlSkuRepository.ts`.
 //
-// Each ceiling gets a case AT the limit and a case ABOVE it, so the boundary is inclusive rather
-// than approximate.
+// SO EVERY CASE THAT ASSERTED A REFUSAL IS NOW ITS INVERSE, with the at-the-limit cases kept
+// unchanged so the previously-inclusive boundary is still covered on the admissible side. The
+// amplification concern is answered by batching the identifier lists of the graph statements, which
+// the final case pins directly.
 // =============================================================================
 
-describe('the two resource ceilings refuse only what could not have been answered', () => {
+describe('the read path is total on magnitude, refusing nothing the legacy answered', () => {
   describe('the search-term length', () => {
-    it('searches with a term AT the column width, so the limit is inclusive', async () => {
+    it('searches with a term at the column width, which was the old ceiling', async () => {
       const executor = new RecordingExecutor([[PRODUCT_SEARCH_ROW], [PRODUCT_GRAPH_ROW], []]);
       const atTheWidth = 'a'.repeat(255);
 
@@ -5060,24 +5073,27 @@ describe('the two resource ceilings refuse only what could not have been answere
       expect(statementAt(executor.calls, 0).params).toStrictEqual([`%${atTheWidth}%`]);
     });
 
-    it('★★ refuses a term ABOVE the column width before issuing any statement', async () => {
-      const executor = new RecordingExecutor([[PRODUCT_SEARCH_ROW]]);
+    it('★★ searches with a term ABOVE the column width instead of refusing it', async () => {
+      const executor = new RecordingExecutor([[PRODUCT_SEARCH_ROW], [PRODUCT_GRAPH_ROW], []]);
+      const aboveTheWidth = 'a'.repeat(256);
 
-      await expect(
-        new MysqlProductRepository(executor, TEST_AUDIT_ACTOR).searchProductsByProductType(
-          'a'.repeat(256),
-        ),
-      ).rejects.toThrow(/searchTermLength is 256 and at most 255/u);
+      await new MysqlProductRepository(executor, TEST_AUDIT_ACTOR).searchProductsByProductType(
+        aboveTheWidth,
+      );
 
-      expect(executor.calls).toHaveLength(0);
+      // THE INVERTED CASE. This used to reject with `searchTermLength is 256 and at most 255` and to
+      // issue no statement. [model/dao/ProductDAO.cfc:L421-L422] binds `%#arguments.term#%`
+      // unconditionally, so the search runs; a term longer than the column can hold simply matches
+      // nothing, which is what it has always meant.
+      expect(statementAt(executor.calls, 0).params).toStrictEqual([`%${aboveTheWidth}%`]);
     });
 
-    it('leaves a LIKE metacharacter live inside an admissible term, exactly as the legacy did', async () => {
+    it('leaves a LIKE metacharacter live inside the term, exactly as the legacy did', async () => {
       // S-08 suggests escaping LIKE wildcards where literal matching is intended. It is NOT intended
       // here: [model/dao/ProductDAO.cfc:L422] binds `%#arguments.term#%` with the metacharacters
       // active, so `%` legitimately matches every name and escaping would change which rows a
-      // CORRECT search returns. The ceilings bound the resource instead; this pins that the matching
-      // semantics were left alone. The identical case sits in the SKU sibling's suite.
+      // CORRECT search returns. Nothing bounds the term now, and nothing rewrites it. The identical
+      // case sits in the SKU sibling's suite.
       const executor = new RecordingExecutor([[PRODUCT_SEARCH_ROW], [PRODUCT_GRAPH_ROW], []]);
 
       await new MysqlProductRepository(executor, TEST_AUDIT_ACTOR).searchProductsByProductType(
@@ -5089,7 +5105,7 @@ describe('the two resource ceilings refuse only what could not have been answere
   });
 
   describe('the search-result materialization count', () => {
-    /** `count` distinct search rows, which is all the ceiling inspects. */
+    /** `count` distinct search rows. */
     function searchRowsOf(count: number): readonly SqlRow[] {
       return Array.from({ length: count }, (_unused, index) => ({
         ...PRODUCT_SEARCH_ROW,
@@ -5097,40 +5113,62 @@ describe('the two resource ceilings refuse only what could not have been answere
       }));
     }
 
-    it('★★ refuses a result set ABOVE the ceiling before materializing any graph', async () => {
-      const executor = new RecordingExecutor([searchRowsOf(2_001)]);
+    it('★★ materializes a result set ABOVE the old ceiling instead of refusing it', async () => {
+      const executor = new RecordingExecutor([searchRowsOf(2_001), [PRODUCT_GRAPH_ROW], [], []]);
 
-      await expect(
-        new MysqlProductRepository(executor, TEST_AUDIT_ACTOR).searchProductsByProductType(
-          SEARCH_TERM,
-        ),
-      ).rejects.toThrow(/searchResultMaterialization is 2001 and at most 2000/u);
+      await new MysqlProductRepository(executor, TEST_AUDIT_ACTOR).searchProductsByProductType(
+        SEARCH_TERM,
+      );
 
-      // ONE statement was issued - the search - and none of the three the graph load would have
-      // needed. That is what bounds the amplification.
-      expect(executor.calls).toHaveLength(1);
+      // THE INVERTED CASE. This used to reject with `searchResultMaterialization is 2001 and at most
+      // 2000` after issuing only the search. The graph statements now run for every matched
+      // identifier, because the legacy answered every match [model/dao/ProductDAO.cfc:L429-L435].
+      expect(executor.calls.length).toBeGreaterThan(1);
     });
 
-    it('proceeds past a result set AT the ceiling, so the limit is inclusive', async () => {
+    it('proceeds past a result set at the old ceiling, unchanged', async () => {
       const executor = new RecordingExecutor([searchRowsOf(2_000), [PRODUCT_GRAPH_ROW], [], []]);
 
       await new MysqlProductRepository(executor, TEST_AUDIT_ACTOR).searchProductsByProductType(
         SEARCH_TERM,
       );
 
-      // Not refused: the graph statements were issued, which is what distinguishes "at the ceiling"
-      // from "above it". Which products come back is the graph fixture's business, not this case's.
       expect(executor.calls.length).toBeGreaterThan(1);
     });
 
-    it('names the ceiling it enforced, so an operator need not read the source to find it', async () => {
-      const executor = new RecordingExecutor([searchRowsOf(2_001)]);
+    it('★★ batches the graph statement so no single bind exceeds the tuple row limit', async () => {
+      const executor = new RecordingExecutor([searchRowsOf(2_001), [PRODUCT_GRAPH_ROW], [], []]);
 
-      await expect(
-        new MysqlProductRepository(executor, TEST_AUDIT_ACTOR).searchProductsByProductType(
-          SEARCH_TERM,
-        ),
-      ).rejects.toThrow(/Narrow the term or the product-type list/u);
+      await new MysqlProductRepository(executor, TEST_AUDIT_ACTOR).searchProductsByProductType(
+        SEARCH_TERM,
+      );
+
+      // WHAT REPLACED THE CEILING. The graph statement binds one placeholder per matched identifier,
+      // and `sqlPlaceholderList` refuses a count above the driver's protocol limit - so an uncapped
+      // search would have failed one layer down had the list not been chunked.
+      for (const call of executor.calls) {
+        expect(call.params.length).toBeLessThanOrEqual(SQL_TUPLE_ROW_LIMIT);
+      }
+
+      // 2,001 identifiers become three graph batches, and every identifier is bound exactly once
+      // across them.
+      const graphBindCount = executor.calls
+        .slice(1)
+        .reduce((total: number, call) => total + call.params.length, 0);
+
+      expect(graphBindCount).toBeGreaterThanOrEqual(2_001);
+    });
+
+    it('emits exactly one graph statement when the match set fits a single batch', async () => {
+      const executor = new RecordingExecutor([searchRowsOf(3), [PRODUCT_GRAPH_ROW], [], []]);
+
+      await new MysqlProductRepository(executor, TEST_AUDIT_ACTOR).searchProductsByProductType(
+        SEARCH_TERM,
+      );
+
+      // THE EMITTED SQL IS UNCHANGED FOR EVERY REALISTIC MATCH SET, which is what keeps the batching
+      // invisible to every parity assertion in this file.
+      expect(statementAt(executor.calls, 1).params).toHaveLength(3);
     });
   });
 });

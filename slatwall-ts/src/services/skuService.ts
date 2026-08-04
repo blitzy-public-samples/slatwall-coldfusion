@@ -244,44 +244,72 @@ const RB_KEY_SUBSCRIPTION_TERMS_REQUIRED = 'entity.product.subscriptiontermsrequ
 const RB_KEY_ACCESS_CONTENTS_REQUIRED = 'validate.product.accesscontentsrequired';
 
 /**
- * The five keyword properties [model/service/SkuService.cfc:L318-L322] establishes,
- * with their weights.
+ * The properties `findSkus`' statement matches the keyword against: `skuCode` alone.
  *
- * ★ ALL FIVE CARRY `weight=1` - IDENTICAL. There is therefore NO ranking
- * differentiation anywhere in the legacy smart list, and none is invented here: no
- * relevance scoring, no ordering by weight, no boost. The weights are carried as
- * data so the uniformity is checkable rather than asserted.
+ * [model/dao/SkuDAO.cfc:L132] writes one comparison, `skuCode like :code`, and [L133]
+ * binds `%#term#%` to it. Weight 1 because the legacy expressed no ranking on this
+ * path - and with a single property there is nothing to rank. No relevance scoring,
+ * ordering by weight or boost is invented.
+ *
+ * ★★ THIS CONSTANT ONCE HELD FIVE PROPERTIES, from
+ * [model/service/SkuService.cfc:L318-L322], and publishing them over a single-column
+ * `LIKE` was a cross-layer contradiction rather than a data contract. The four that the
+ * executed statement does NOT match, recorded so nothing is lost:
+ *
+ *   { propertyIdentifier: 'skuID',                                weight: 1 },
+ *   { propertyIdentifier: 'product.productName',                  weight: 1 },
+ *   { propertyIdentifier: 'product.productType.productTypeName',  weight: 1 },
+ *   { propertyIdentifier: 'alternateSkuCodes.alternateSkuCode',   weight: 1 },
+ *
+ * Three of those four are reachable only THROUGH the joins the same smart list
+ * configured, which is why this constant and {@link SKU_SMART_LIST_JOINS} fail and are
+ * corrected together. Their dotted identifiers are reproduced above exactly as the legacy
+ * wrote them, so a future revision that genuinely ports the smart list has the spellings.
+ * See {@link SKU_SMART_LIST_JOINS} for the AAP 0.6.2 reasoning that governs both.
  */
-const SKU_KEYWORD_PROPERTIES = [
-  { propertyIdentifier: 'skuCode', weight: 1 },
-  { propertyIdentifier: 'skuID', weight: 1 },
-  { propertyIdentifier: 'product.productName', weight: 1 },
-  { propertyIdentifier: 'product.productType.productTypeName', weight: 1 },
-  { propertyIdentifier: 'alternateSkuCodes.alternateSkuCode', weight: 1 },
-] as const;
+const SKU_KEYWORD_PROPERTIES = [{ propertyIdentifier: 'skuCode', weight: 1 }] as const;
 
 /**
- * The three joins [model/service/SkuService.cfc:L314-L316] establishes.
+ * The joins `findSkus`' statement performs: NONE.
  *
- * ★ THE FIRST TWO `joinType` VALUES ARE THE EMPTY STRING, AND THAT WAS VERIFIED
- * RATHER THAN GUESSED. `joinRelatedProperty(parentEntityName, relatedProperty,
- * joinType="", fetch=false, isAttribute=false)` at
- * [org/Hibachi/HibachiSmartList.cfc:L212] defaults `joinType` to `""`, so L314 and
- * L315 pass no join type at all and only L316 passes `"left"`. Writing `'inner'`
- * for the first two would invent a value the legacy never states; the empty string
- * is what the legacy actually establishes and is what is carried.
+ * [model/dao/SkuDAO.cfc:L132] is `select skuID,skuCode from SlatwallSku where skuCode like
+ * :code`. The optional product-type restriction at [L135] appends `and productID in (select
+ * productID from SlatwallProduct where productTypeID in (:productTypeIDs))` - AN `IN`
+ * SUBQUERY, NOT A JOIN, and the distinction is exactly the one the adapter's
+ * `buildSearchSkusByProductTypeSql` is annotated to preserve against its product sibling,
+ * which filters `productTypeID` directly on its own row. A subquery contributes no columns
+ * to the result and no rows to the projection, so the join list is empty even though the
+ * statement names two tables.
  *
- * THE LEFT JOIN ON `alternateSkuCodes` IS PRESERVED AS A CRITERIA CONCERN. It is
- * deliberately NOT expressed as an association on `src/domain/entities/sku.ts` -
- * that entity holds `alternateSkuCodeIDs` and nothing richer, the entity layer is
- * locked, and inventing a full association there to satisfy a join descriptor
- * would be the wrong end of the system to change.
+ * ★★ THIS CONSTANT ONCE HELD THREE JOINS, from [model/service/SkuService.cfc:L314-L316]:
+ *
+ *   { parentEntityName: 'SlatwallSku',     relatedProperty: 'product',           joinType: ''     },
+ *   { parentEntityName: 'SlatwallProduct', relatedProperty: 'productType',       joinType: ''     },
+ *   { parentEntityName: 'SlatwallSku',     relatedProperty: 'alternateSkuCodes', joinType: 'left' },
+ *
+ * with two findings attached that remain true OF THE SMART LIST and are kept for the same
+ * reason the identifiers are. First, the first two `joinType` values really are the EMPTY
+ * STRING rather than `'inner'`: `joinRelatedProperty(parentEntityName, relatedProperty,
+ * joinType="", fetch=false, isAttribute=false)` at [org/Hibachi/HibachiSmartList.cfc:L212]
+ * defaults `joinType` to `""`, so L314 and L315 pass none and only L316 passes `"left"` -
+ * writing `'inner'` would invent a value the legacy never states. Second, the LEFT join on
+ * `alternateSkuCodes` was deliberately never expressed as an association on
+ * `src/domain/entities/sku.ts`, which holds `alternateSkuCodeIDs` and nothing richer.
+ *
+ * WHAT WAS WRONG WAS PUBLISHING THEM AS THIS QUERY'S CONTRACT. `getSkuSmartList`
+ * [model/service/SkuService.cfc:L309-L325] built a `HibachiSmartList` and configured those
+ * joins on it; AAP 0.6.2 rules that construct out - "these two methods become explicit,
+ * typed repository query methods rather than a generic smart-list clone" - so `findSkus`
+ * executes `SkuDAO.searchSkusByProductType` instead, which joins nothing.
+ *
+ * WHY THE METADATA NARROWED RATHER THAN THE PREDICATE WIDENING. Making the statement match
+ * the published contract would mean authoring SQL no legacy DAO contains, changing which
+ * rows a search returns, with no source to port it from - and widening the `SkuRepository`
+ * port, whose seven members are locked. AAP 0.6.2 authorizes the opposite direction: "The
+ * concrete filters the legacy callers actually apply are preserved; the open-ended dynamic
+ * filtering surface is not reproduced." The joins are part of that unreproduced surface.
  */
-const SKU_SMART_LIST_JOINS = [
-  { parentEntityName: 'SlatwallSku', relatedProperty: 'product', joinType: '' },
-  { parentEntityName: 'SlatwallProduct', relatedProperty: 'productType', joinType: '' },
-  { parentEntityName: 'SlatwallSku', relatedProperty: 'alternateSkuCodes', joinType: 'left' },
-] as const;
+const SKU_SMART_LIST_JOINS = [] as const;
 
 /**
  * The default bound on how many SKUs one `createSkus` invocation will create.
@@ -620,7 +648,12 @@ export type ImageUploadResult = ImageUploadResultProjection;
  * are dropped, as recorded at `findSkus`.
  */
 export interface SkuQueryCriteria {
-  /** The search term. Matched against the keyword properties the page reports. */
+  /**
+   * The search term. Matched against `skuCode` and only `skuCode`
+   * [model/dao/SkuDAO.cfc:L132] - which is exactly the one keyword property the returned
+   * page reports. See {@link SKU_KEYWORD_PROPERTIES} for the four the legacy smart list
+   * additionally configured and this path does not match.
+   */
   readonly keyword: string;
 
   /**
@@ -636,13 +669,23 @@ export interface SkuQueryCriteria {
 }
 
 /**
- * What `findSkus` returns: the matched SKUs plus the criteria surface that produced
- * them.
+ * What `findSkus` returns: the matched SKUs plus the query surface that produced them.
  *
- * The joins and keyword properties are reported rather than hidden so that the
- * surface the legacy smart list established is OBSERVABLE - which also makes it
- * directly assertable by the net-new test tier, instead of being a claim buried in
- * a comment.
+ * The joins and keyword properties are reported rather than hidden so that the surface is
+ * OBSERVABLE - which also makes it directly assertable by the net-new test tier, instead of
+ * being a claim buried in a comment.
+ *
+ * ★★ THEY DESCRIBE THE EXECUTED STATEMENT, NOT THE SMART-LIST CONFIGURATION, and that is a
+ * correction. This docblock once said they made "the surface the legacy smart list
+ * established" observable, and the two members carried five keyword properties and three
+ * joins copied from [model/service/SkuService.cfc:L314-L322]. But `findSkus` does not
+ * execute the smart list - AAP 0.6.2 rules that construct out - it executes
+ * `SkuRepository.searchSkusByProductType`, whose statement matches `skuCode like` against
+ * ONE table [model/dao/SkuDAO.cfc:L132]. Making a claim observable does not make it true:
+ * what was observable was a contradiction, since a caller told to expect a
+ * `product.productName` match would have found it silently fail. Both members are narrowed
+ * to what the statement matches, and the smart-list configuration is recorded inertly on
+ * {@link SKU_KEYWORD_PROPERTIES} and {@link SKU_SMART_LIST_JOINS}.
  */
 export interface SkuPage {
   /** The matched SKUs, in the order the repository returned them. */
@@ -651,10 +694,17 @@ export interface SkuPage {
   /** The term that was searched for, echoed back. */
   readonly keyword: string;
 
-  /** The five keyword properties [L318-L322] establishes, all at weight 1. */
+  /**
+   * The one keyword property [model/dao/SkuDAO.cfc:L132] matches, at weight 1. See
+   * {@link SKU_KEYWORD_PROPERTIES} for the four the smart list additionally configured.
+   */
   readonly keywordProperties: typeof SKU_KEYWORD_PROPERTIES;
 
-  /** The three joins [L314-L316] establishes, including the LEFT one. */
+  /**
+   * The joins the executed statement performs: none. The product-type restriction at
+   * [model/dao/SkuDAO.cfc:L135] is an `IN` subquery rather than a join. See
+   * {@link SKU_SMART_LIST_JOINS} for the three the smart list configured.
+   */
   readonly joins: typeof SKU_SMART_LIST_JOINS;
 }
 
@@ -2352,54 +2402,58 @@ export class SkuService {
   // -------------------------------------------------------------------------
 
   /**
-   * SKUs matching a keyword, with the criteria surface the legacy smart list
-   * established.
+   * SKUs matching a keyword, with the query surface OF THE STATEMENT THAT RAN.
    *
    * LEGACY-NOTE [model/service/SkuService.cfc:L309-L325]: `getSkuSmartList` is
    * renamed to `findSkus` and reshaped into a typed repository query.
    * `HibachiSmartList` is a generic string-keyed dynamic query builder that is
    * untypeable under the strict profile and would reimport exactly the framework
    * coupling this port exists to remove - porting it faithfully would mean
-   * reimplementing a small ORM query language. The five keyword properties
-   * [L318-L322], all at weight 1, and the three joins [L314-L316] with
-   * `alternateSkuCodes` LEFT are preserved; the open-ended dynamic filtering surface
-   * is deliberately NOT reproduced. This is one half of budgeted signature reshaping
-   * number 2; `findProducts` in `src/services/productService.ts` (planned) is the
-   * other half, and together they count as ONE reshaping.
+   * reimplementing a small ORM query language. Per AAP 0.6.2 the concrete filter the
+   * legacy caller actually applies is preserved and the open-ended dynamic filtering
+   * surface is not reproduced. This is one half of budgeted signature reshaping
+   * number 2; `findProducts` in `src/services/productService.ts` is the other half,
+   * and together they count as ONE reshaping.
    *
-   * ★ ALL FIVE KEYWORD PROPERTIES CARRY weight=1 - THERE IS NO RANKING IN THE LEGACY.
-   * No relevance weighting, scoring or result ordering is invented (B5/B7). The
-   * weights are transcribed because they are part of the surface, not because they
-   * differentiate anything.
+   * WHAT THE RETURNED PAGE REPORTS, ITEM BY ITEM:
+   *   * The keyword, echoed back.
+   *   * ONE keyword property, `skuCode` at weight 1 - because
+   *     [model/dao/SkuDAO.cfc:L132] writes `skuCode like :code` and nothing else, with
+   *     `%#term#%` bound at [L133].
+   *   * ZERO joins - because that statement names `SlatwallSku` alone, and the optional
+   *     product-type restriction at [L135] is an `IN` SUBQUERY through `SlatwallProduct`
+   *     rather than a join.
    *
-   * LEGACY-NOTE [model/service/SkuService.cfc:L318-L322]: `SkuRepository` publishes
-   * exactly ONE keyword-search member across its seven, and
-   * `src/repositories/mysql/mysqlSkuRepository.ts` matches it against `skuCode`. The
-   * remaining four identifiers - `skuID`, `product.productName`,
-   * `product.productType.productTypeName` and `alternateSkuCodes.alternateSkuCode` -
-   * are therefore carried as the reported criteria surface rather than as an
-   * implemented match, and widening the match to all five is a repository-tier
-   * obligation belonging to `src/repositories/mysql/mysqlSkuRepository.ts`. The port
-   * is locked at seven members and no member was invented to close the gap, so the
-   * gap is reported as DATA on the returned page instead of being hidden behind a
-   * claim in a comment. The figure read "eight" for one revision, while the port
-   * carried a bulk save; re-reading it changed nothing here and its removal changes
-   * nothing either, because a WRITE member widens no search and closes no part of
-   * this gap in either direction.
+   * ★★ IT ONCE REPORTED FIVE KEYWORD PROPERTIES AND THREE JOINS, AND THAT WAS A
+   * CROSS-LAYER CONTRADICTION RATHER THAN A REPORTED GAP. The earlier text is worth
+   * quoting, because its reasoning was explicit and it is the reasoning that fails:
    *
-   * LEGACY-NOTE [model/service/SkuService.cfc:L314-L316]: the three joins are
-   * preserved as reported criteria, INCLUDING the `"left"` on `alternateSkuCodes`,
-   * without inventing an `alternateSkuCodes` association on
-   * `src/domain/entities/sku.ts`, which carries `alternateSkuCodeIDs` only. This is
-   * a genuine boundary rather than the false one this file used to assert about
-   * entity members: a materialised association needs a FAR-SIDE ENTITY CLASS, and
-   * `AlternateSkuCode` is not among the eighteen the folder is locked at - so
-   * authoring it would add a nineteenth file, which prohibition #1 of the entity
-   * contract forbids outright. Adding a method to an existing class is not the same
-   * act and is not covered by that lock. `org/Hibachi/HibachiSmartList.cfc:L212`
-   * declares `joinRelatedProperty`'s `joinType` default as the EMPTY STRING, not
-   * `"inner"`, so the first two joins are recorded as `''` rather than being
-   * normalised to a name the legacy never wrote.
+   *   "The remaining four identifiers ... are therefore carried as the reported criteria
+   *   surface rather than as an implemented match ... The port is locked at seven members
+   *   and no member was invented to close the gap, so the gap is reported as DATA on the
+   *   returned page instead of being hidden behind a claim in a comment."
+   *
+   * Both halves of that are individually defensible and the conclusion does not follow.
+   * The port IS locked at seven members and no member should be invented - correct. But
+   * `SkuPage.keywordProperties` is not a gap report; it is the page's statement of WHAT
+   * WAS MATCHED. Publishing four identifiers there that the statement never compares told
+   * a caller that a search for a product name would find its SKUs, and it silently did
+   * not. Moving an untrue claim out of a comment and into typed data makes it observable,
+   * not true - and a caller reads data, whereas only a maintainer reads the comment, so
+   * the move made the contradiction more consequential rather than less.
+   *
+   * WHY THE METADATA NARROWED RATHER THAN THE PREDICATE WIDENING. Widening the match to
+   * all five properties means authoring SQL no legacy DAO contains, over joins no legacy
+   * DAO performs, changing which rows a search returns with no source to port from - and
+   * it is not a repository-tier obligation waiting to be discharged, because AAP 0.6.2
+   * puts the smart list's filtering surface outside this port altogether. The two smart
+   * list configurations are preserved INERTLY, with their exact identifiers, weights and
+   * the empty-string `joinType` finding, on {@link SKU_KEYWORD_PROPERTIES} and
+   * {@link SKU_SMART_LIST_JOINS}; nothing is lost, and nothing is claimed.
+   *
+   * NO RANKING IS INVENTED EITHER WAY (B5/B7). Every smart-list weight was 1, so the
+   * legacy expressed no relevance preference; with one matched property there is nothing
+   * to prefer. No scoring, boosting or result ordering appears here.
    *
    * LEGACY-NOTE [model/service/SkuService.cfc:L309-L312]: `data={}` and
    * `currentURL=""` are framework paging and URL-state plumbing and are dropped, and
@@ -2408,7 +2462,7 @@ export class SkuService {
    * entity implicit.
    *
    * @param criteria The typed replacement for the smart list's dynamic filter surface.
-   * @returns The matched SKUs plus the criteria surface that produced them.
+   * @returns The matched SKUs plus the query surface of the statement that produced them.
    */
   public async findSkus(criteria: SkuQueryCriteria): Promise<SkuPage> {
     // [L312] through [L324], expressed as the one query the port publishes.

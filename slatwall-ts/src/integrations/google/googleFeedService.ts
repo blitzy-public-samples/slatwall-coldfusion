@@ -97,7 +97,9 @@
 // compiler erases a type-only import statement together with the comment block attached to it, so
 // anchoring this header to `./rssFeedRenderer.js` is what keeps it in `build/**`.
 import { renderGoogleProductFeed } from './rssFeedRenderer.js';
-import type { FeedUrlScheme } from '../../lib/config.js';
+// NOTHING IS IMPORTED FROM `src/lib/config.ts`. An intervening revision imported a
+// `FeedUrlScheme` type from there; the type no longer exists and this adapter holds no
+// configuration edge. See the scheme record on this class's field block.
 import type { ProductFeedPort } from '../../domain/ports/productFeedPort.js';
 import type { GoogleFeedRepository } from './googleFeedRepository.js';
 
@@ -235,6 +237,30 @@ export type GoogleProductFeedRowSource = Pick<GoogleFeedRepository, 'fetchProduc
  * request's host and instant with every later request. Both fields are read-only and this class
  * holds nothing else, so two instances never interfere.
  *
+ * WHAT THE INSTANCE OWNS, EXHAUSTIVELY - the constructor is
+ * `(repository, feedHost, now, renderFeed = renderGoogleProductFeed)` and there is no fifth
+ * parameter:
+ *
+ * * `repository` - the row source. A collaborator, injected, never constructed here.
+ * * `feedHost` - the AUTHORITY half of the feed origin only, and a CONFIGURED one. The
+ *   composition root owns its provenance; the renderer validates its shape. See the field.
+ * * `now` - the clock, passed as a value rather than read from `Date.now()`, which is what
+ *   makes the rendered document deterministic.
+ * * `renderFeed` - the renderer seam, defaulted to the real renderer.
+ *
+ * THE SCHEME IS NOT AMONG THEM, and it is not this class's to own. It is the frozen legacy
+ * `http://` literal inside `src/integrations/google/rssFeedRenderer.ts`. An intervening
+ * revision did hold a `feedScheme: FeedUrlScheme` field here and forward it to the renderer;
+ * that field, its constructor parameter and its forward are all removed, and the AAP
+ * reasoning is recorded on `FEED_ORIGIN_SCHEME_PREFIX` in the renderer.
+ *
+ * ★ THIS IS THE ONE CLASS CONTRACT BLOCK. An intervening revision left two consecutive
+ * docblocks here - a full one that had come unattached from the declaration, and a condensed
+ * restatement of it that was attached - so the two could disagree, and did: the orphan
+ * described a three-argument constructor the code no longer had. They are collapsed into
+ * this one block, which is attached to the declaration below and is the only place this
+ * class's contract is stated.
+ *
  * @example
  * ```ts
  * // In the composition root, once per invocation, with the host taken from
@@ -244,37 +270,6 @@ export type GoogleProductFeedRowSource = Pick<GoogleFeedRepository, 'fetchProduc
  * const feedService = new GoogleFeedService(rowSource, configuredFeedHost, invocationInstant);
  * const feedDocument = await feedService.generateProductFeed();
  * ```
- */
-
-/**
- * Orchestrates the Google Merchant Center product feed.
- *
- * THE PRINCIPAL EXPORTED UNIT of this module and the implementation of {@link ProductFeedPort}. The
- * `implements` clause is the parity proof: it makes the match between this class and the declared
- * capability a compiler check rather than a review comment. The whole behaviour is three steps in
- * one order - read the qualifying rows, render them, return the document - and the value of the
- * class is that the order is stated once, explicitly.
- *
- * JUDGMENT CALL: BOTH COLLABORATORS ARE CONSTRUCTOR-INJECTED, which is what replaces the framework's
- * dependency injection with wiring the compiler checks. The legacy controller declared its
- * collaborators as bare properties [integrationServices/google/controllers/feed.cfc:L51-L52] and the
- * container resolved them at runtime by scanning the source tree for that convention. Here a missing
- * or mistyped collaborator is a compile error rather than a lookup that fails on the first request.
- * Nothing is constructed here either: this class never builds its own row source and has no lazy
- * accessor that would build one, so connection ownership stays with
- * `src/repositories/mysql/connection.ts`, whose executor is injected into the ROW SOURCE.
- *
- * JUDGMENT CALL: the renderer parameter names the real renderer as its DEFAULT. The renderer is a
- * pure, stateless module-level function, so naming it in the signature states the production
- * collaborator once, where it is compile-checked, while leaving the seam substitutable. The row
- * source has no default and must not acquire one: there is no sensible production instance of it to
- * name from here.
- *
- * AN INSTANCE REPRESENTS ONE FEED REQUEST. The feed host and the range-start instant are
- * request-scoped values held on the instance, so it is constructed per invocation and never hoisted
- * to module scope, where a warm container would share one request's host and instant with every
- * later request. Both fields are read-only and this class holds nothing else, so two instances never
- * interfere.
  */
 export class GoogleFeedService implements ProductFeedPort {
   private readonly repository: GoogleProductFeedRowSource;
@@ -308,22 +303,13 @@ export class GoogleFeedService implements ProductFeedPort {
    */
   private readonly feedHost: string;
 
-  /**
-   * The scheme half of the canonical feed origin, completing {@link feedHost}.
-   *
-   * SECURITY REVIEW DISPOSITION - RAISED AS S-09, CWE-319, ACCEPTED. The legacy wrote the
-   * literal `http://` at five sites [integrationServices/google/views/feed/product.cfm:L14,
-   * L15, L22, L23, L24]; this port takes the scheme from deployment configuration instead,
-   * where `https` is the default and `http` is refused in production. It is held here for
-   * the same reason the host is - so no instance can exist without the whole origin it will
-   * publish - and forwarded to the renderer unchanged.
-   *
-   * IT NEEDS NO CONSTRUCTOR CHECK, unlike the host. The host arrives as a string whose shape
-   * must be proved; the scheme arrives as a two-member union that only
-   * `resolveFeedUrlScheme` can mint from a string, so a value reaching here from compiling
-   * code is already one of the two permitted ones.
-   */
-  private readonly feedScheme: FeedUrlScheme;
+  // THERE IS NO SCHEME FIELD, DELIBERATELY. An intervening revision held
+  // `private readonly feedScheme: FeedUrlScheme` here, took it from deployment
+  // configuration, and forwarded it to the renderer - accepting security finding S-09,
+  // CWE-319. It is removed: the scheme is the frozen legacy `http://` literal owned by
+  // `FEED_ORIGIN_SCHEME_PREFIX` in `./rssFeedRenderer.js`, because AAP 0.1.1 and 0.8.1
+  // freeze the product-feed integration contract and AAP 0.6.7 admits no fourth
+  // divergence. This class therefore holds only the AUTHORITY half of the origin.
 
   /**
    * The instant that opens each item's sale-price effective-date range. Held rather than read, so
@@ -368,22 +354,20 @@ export class GoogleFeedService implements ProductFeedPort {
    *   NEVER INTRODUCE ONE. The obligation on this parameter is unchanged - a caller that
    *   forwards a header is relying entirely on that list being configured - but the failure
    *   mode is a refusal at the root, not a poisoned document.
-   * @param feedScheme the scheme half of the canonical origin, from deployment
-   *   configuration. See {@link GoogleFeedService.feedScheme} for the S-09 disposition and
-   *   why this one takes no constructor check while the host does.
+   *
+   *   THERE IS NO SCHEME PARAMETER BETWEEN THIS ONE AND `now`. An intervening revision had
+   *   one; the record above this constructor's field block says why it is gone.
    * @param now the instant that opens each item's sale-price effective-date range.
    * @param renderFeed the document renderer, defaulted to the real one.
    */
   constructor(
     repository: GoogleProductFeedRowSource,
     feedHost: string,
-    feedScheme: FeedUrlScheme,
     now: Date,
     renderFeed: GoogleProductFeedRenderer = renderGoogleProductFeed,
   ) {
     this.repository = repository;
     this.feedHost = feedHost;
-    this.feedScheme = feedScheme;
     this.now = now;
     this.renderFeed = renderFeed;
   }
@@ -452,7 +436,8 @@ export class GoogleFeedService implements ProductFeedPort {
     const rows = await this.repository.fetchProductFeedRows();
 
     // Straight through: the rows are neither filtered, sorted, sliced, mapped nor copied, and the
-    // origin's two halves and the instant are forwarded exactly as they were supplied.
-    return this.renderFeed(rows, this.feedHost, this.feedScheme, this.now);
+    // origin's authority and the instant are forwarded exactly as they were supplied. The origin's
+    // scheme is not forwarded because it is not held: it is the renderer's frozen literal.
+    return this.renderFeed(rows, this.feedHost, this.now);
   }
 }

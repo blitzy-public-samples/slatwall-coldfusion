@@ -188,29 +188,6 @@ const DATABASE_TLS_MODES = ['disabled', 'verify-ca', 'verify-identity'] as const
 export type DatabaseTlsMode = (typeof DATABASE_TLS_MODES)[number];
 
 /**
- * The URL schemes a product feed may publish, in ascending order of safety.
- *
- * `http` is retained as an ACCEPTED value rather than removed, because the legacy
- * template emitted exactly that and a local or loopback deployment can legitimately
- * serve plain HTTP. It is refused outright when `NODE_ENV` is production - see
- * {@link resolveFeedUrlScheme} - which is the same shape the transport mode already
- * uses for `DB_TLS_MODE=disabled`.
- */
-const FEED_URL_SCHEMES = ['http', 'https'] as const;
-
-/**
- * The scheme half of the canonical feed origin.
- *
- * ★ THIS TYPE IS DECLARED HERE, IN THE CONFIGURATION MODULE, ON PURPOSE. The scheme
- * is a DEPLOYMENT fact - which transport a host actually serves - not a rendering
- * choice, so it belongs beside the allow-list that governs the other half of the
- * origin. `src/integrations/google/rssFeedRenderer.ts` imports it as a TYPE ONLY,
- * which keeps that module's standing promise that it never reads the environment:
- * an erased type import pulls no runtime code and no `process.env` access with it.
- */
-export type FeedUrlScheme = (typeof FEED_URL_SCHEMES)[number];
-
-/**
  * How to reach the MySQL server that holds the existing `Sw*` schema.
  *
  * `password` is deliberately absent from anything this object serializes to, and
@@ -433,12 +410,33 @@ export interface CurrencyConfig {
  * configuration, fixed for the lifetime of the container and unreachable from any
  * request.
  *
- * NOTHING HERE IS AAP-CONSTRAINED. AAP 0.4.1 specifies exactly three hardcodings
- * to preserve in the feed renderer - `g:condition="new"`, `g:availability="in
- * stock"` and the empty `g:google_product_category` - and the origin is not among
- * them. The origin was never hardcoded in the legacy either; it was a runtime
- * value. Making its provenance configuration rather than a request header is
+ * THE HOST HALF OF THE ORIGIN IS NOT AAP-CONSTRAINED, because it was never a fixed
+ * value in the legacy to preserve. `CGI.HTTP_HOST` varied per deployment and per
+ * request, so no two installations ever published the same authority. Moving the
+ * ALLOW-LIST for that authority out of the request and into process configuration is
  * therefore a change of provenance, not a change of the feed contract.
+ *
+ * ★★ THE SCHEME HALF IS AAP-CONSTRAINED, AND THIS INTERFACE NO LONGER CARRIES IT.
+ * An earlier revision declared a second member here:
+ *
+ *   "readonly scheme: FeedUrlScheme;" - "The scheme written into the five URL sites
+ *   the legacy prefixed with `http://`" - defaulting to `https` and refusing `http`
+ *   in production, argued on the ground that AAP 0.4.1 enumerates only
+ *   `g:condition="new"`, `g:availability="in stock"` and the empty
+ *   `g:google_product_category` as preserved hardcodings, so "THE SCHEME IS NOT
+ *   AMONG THEM".
+ *
+ * That reading was wrong, and the member, its `FeedUrlScheme` type, its `https`
+ * default and its `FEED_URL_SCHEME` resolver are all removed. AAP 0.4.1's list
+ * enumerates the hardcodings that carry a KNOWN LEGACY DEFECT worth annotating - the
+ * empty category element is the one with the legacy TODO - and reading a
+ * non-exhaustive list of annotated defects as an exhaustive licence to change
+ * everything absent from it inverts it. The governing clauses are AAP 0.1.1, which
+ * requires preserving "the Google product-feed integration contract exactly", and AAP
+ * 0.8.1, which freezes that contract; neither admits a scheme change, and AAP 0.6.7
+ * permits exactly three divergences in this port, none of them this one. A security
+ * goal does not authorize AAP drift. The scheme is once again the legacy literal, in
+ * `src/integrations/google/rssFeedRenderer.ts`, where the five URL sites are built.
  */
 export interface FeedConfig {
   /**
@@ -451,40 +449,6 @@ export interface FeedConfig {
    * deployment and every test that supplies only the five the database needs.
    */
   readonly allowedHosts: readonly string[];
-
-  /**
-   * The scheme written into the five URL sites the legacy prefixed with `http://`.
-   *
-   * ★★ THIS MEMBER REVERSES AN EARLIER DECLINATION IN THIS PORT, and the reversal is
-   * recorded rather than quietly applied. A previous revision hardcoded `http://` in
-   * `rssFeedRenderer.ts` and declined the security review's CWE-319 finding (S-09) on
-   * the ground that AAP 0.1.1 requires preserving "the Google product-feed integration
-   * contract exactly". Re-reading the AAP settles it the other way, on the more
-   * specific clause:
-   *
-   *   AAP 0.4.1 enumerates, for this exact file, the hardcodings that are preserved -
-   *   `g:condition="new"`, `g:availability="in stock"`, and the empty
-   *   `g:google_product_category` "preserved with the legacy TODO". THE SCHEME IS NOT
-   *   AMONG THEM. A specific instruction about this renderer governs a general one
-   *   about the integration, and the general clause is about the CONTRACT - the
-   *   element set, their order and their semantics - all of which are untouched here.
-   *
-   * The decisive legacy fact is that the origin was NEVER a fixed value to preserve.
-   * [integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24] read
-   * `http://#CGI.HTTP_HOST#`: the authority varied per deployment and per request
-   * already, so no two installations ever published the same URLs. Making the scheme
-   * deployment-owned puts it on exactly the footing the host has always been on. What
-   * would breach the contract is changing WHICH elements carry a URL, and nothing does.
-   *
-   * DEFAULTS TO `https`, WHICH IS A DELIBERATE CHANGE OF DEFAULT. An unconfigured
-   * deployment now publishes secure URLs instead of cleartext ones; a deployment that
-   * genuinely serves plain HTTP opts in explicitly, and cannot do so in production.
-   * Byte-for-byte legacy parity remains reachable and is still pinned by the renderer
-   * suite, which renders with `'http'` supplied explicitly and asserts the golden
-   * legacy document - so parity is demonstrated by a test rather than by a hardcoded
-   * literal nobody can override.
-   */
-  readonly scheme: FeedUrlScheme;
 }
 
 // --- Defaults ---------------------------------------------------------------
@@ -516,15 +480,6 @@ const DEFAULT_IDLE_TIMEOUT_MS = 60_000;
 
 /** Matches the template value of `NODE_ENV` in `slatwall-ts/.env.example`. */
 const DEFAULT_RUNTIME_ENVIRONMENT: RuntimeEnvironment = 'development';
-
-/**
- * The scheme an unconfigured deployment publishes feed URLs with.
- *
- * `https`, NOT the legacy `http`. This is the one default in this file that is
- * deliberately not the legacy value; {@link FeedConfig.scheme} carries the AAP
- * reasoning and the reversal it records.
- */
-const DEFAULT_FEED_URL_SCHEME: FeedUrlScheme = 'https';
 
 /** Highest port number expressible in a 16-bit TCP port field. */
 const MAX_TCP_PORT = 65_535;
@@ -1056,58 +1011,14 @@ function resolveFeedAllowedHosts(
   return Object.freeze([...new Set(members)]);
 }
 
-/**
- * Resolves `FEED_URL_SCHEME`, the scheme half of the canonical feed origin.
- *
- * Unset yields `https`, which is the SAFE default and a deliberate departure from the
- * legacy literal - see {@link FeedConfig.scheme} for why AAP 0.4.1 permits it. An
- * operator who needs the legacy value sets `http` explicitly and thereby makes a
- * cleartext feed a recorded decision instead of an inherited accident.
- *
- * `http` IS REFUSED OUTRIGHT WHEN `NODE_ENV` IS PRODUCTION. That is the review's
- * "refuse insecure origin configuration" requirement, and it deliberately mirrors the
- * existing `DB_TLS_MODE=disabled` refusal in {@link resolveDatabaseTls}: the two are
- * the same judgment - a transport that is defensible on a developer's loopback is not
- * defensible for real traffic - so they are expressed the same way rather than each
- * inventing its own shape. The refusal is a startup problem, so a production
- * deployment cannot begin serving cleartext feed URLs and discover it later.
- *
- * A misspelled scheme is a recorded problem rather than a silent fallback to the
- * default: `htps` must be reported, not quietly upgraded to `https`, because an
- * operator who mistyped it needs to see the typo. The value is an enumeration and
- * never a credential, so it is echoed back like every other non-secret one.
- */
-function resolveFeedUrlScheme(
-  source: EnvironmentSource,
-  environment: RuntimeEnvironment | undefined,
-  problems: string[],
-): FeedUrlScheme | undefined {
-  const guidance = `Accepted values are ${FEED_URL_SCHEMES.join(', ')} (matched without regard to case). Leave it unset to use ${DEFAULT_FEED_URL_SCHEME}, which is the safe default; http is accepted only outside production, for a loopback or local host that genuinely serves plain HTTP.`;
-
-  const raw = readTrimmed(source, 'FEED_URL_SCHEME');
-
-  if (raw === undefined) {
-    return DEFAULT_FEED_URL_SCHEME;
-  }
-
-  const scheme = matchCanonical(FEED_URL_SCHEMES, raw);
-
-  if (scheme === undefined) {
-    problems.push(
-      `FEED_URL_SCHEME is not a recognized URL scheme; received ${describeReceived(raw)}. ${guidance}`,
-    );
-    return undefined;
-  }
-
-  if (scheme === 'http' && environment === 'production') {
-    problems.push(
-      'FEED_URL_SCHEME is http while NODE_ENV is production, which would publish every product, image and channel URL in the merchant feed over cleartext and let an on-path attacker rewrite the links a shopper follows. Set https, or leave it unset.',
-    );
-    return undefined;
-  }
-
-  return scheme;
-}
+// THERE IS NO `FEED_URL_SCHEME` RESOLVER, DELIBERATELY. An earlier revision read a
+// `FEED_URL_SCHEME` variable here, defaulted it to `https`, and pushed a startup
+// problem when a production deployment asked for `http`. The scheme is not a
+// deployment choice: the legacy view hardcodes `http://` at all five URL sites
+// [integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24], and AAP
+// 0.1.1 and 0.8.1 freeze the product-feed integration contract. See {@link FeedConfig}
+// for the full reversal record. The host allow-list resolver above stays, because the
+// host genuinely was a runtime value in the legacy and only its ALLOW-LIST moved here.
 
 /** A three-letter ISO currency code, the only key shape a rate entry may carry. */
 const CURRENCY_CODE_SHAPE = /^[A-Z]{3}$/;
@@ -1374,10 +1285,6 @@ function buildConfiguration(source: EnvironmentSource): AppConfig {
   // rather than arriving on the request that is being checked against it.
   const feedAllowedHosts = resolveFeedAllowedHosts(source, problems);
 
-  // Also resolved AFTER the environment, and for the same reason as the transport
-  // mode: its production rule reads the already-validated `environment`.
-  const feedScheme = resolveFeedUrlScheme(source, environment, problems);
-
   // Optional, and empty when unset. See {@link CurrencyConfig} for why a rate table
   // is configuration at all, and `src/handlers/bootstrap.ts` for what an empty one
   // means at conversion time.
@@ -1432,7 +1339,6 @@ function buildConfiguration(source: EnvironmentSource): AppConfig {
     dialect === undefined ||
     tls === undefined ||
     feedAllowedHosts === undefined ||
-    feedScheme === undefined ||
     currency === undefined
   ) {
     // Unreachable. Each of these resolvers records a problem whenever it returns
@@ -1453,7 +1359,7 @@ function buildConfiguration(source: EnvironmentSource): AppConfig {
     dialect,
     pool: Object.freeze(pool),
     tls,
-    feed: Object.freeze({ allowedHosts: feedAllowedHosts, scheme: feedScheme }),
+    feed: Object.freeze({ allowedHosts: feedAllowedHosts }),
     currency,
   });
 }

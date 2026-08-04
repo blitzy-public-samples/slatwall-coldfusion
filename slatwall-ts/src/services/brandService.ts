@@ -101,11 +101,27 @@
 //     key union is fixed and does not include it; brand URL construction is not
 //     part of this slice. If a brand URL prefix ever seems necessary here, that
 //     is the signal to stop - not to add an eighth key and not to hardcode "sb".
-//   * NO VALIDATION SCHEMA. `model/validation/Brand.json` exists and is enforced
-//     by the framework validation service, which is not ported. Adding a schema
-//     here would introduce a constraint the legacy save path never applied on
-//     this side of `super.save`, so none is declared. Schema continuity also
-//     forbids inventing a default or a required field the legacy lacks.
+//   * NO ZOD SCHEMA - BUT THE SAVE-CONTEXT RULES ARE ENFORCED, AND THAT REVERSES
+//     WHAT THIS BULLET USED TO SAY. It read: "NO VALIDATION SCHEMA.
+//     `model/validation/Brand.json` exists and is enforced by the framework
+//     validation service, which is not ported. Adding a schema here would
+//     introduce a constraint the legacy save path never applied on this side of
+//     `super.save`, so none is declared."
+//
+//     The premise was that the rules lived on the far side of a boundary somebody
+//     else owned. They did - `HibachiService.save` ran `validate(context)` at
+//     [org/Hibachi/HibachiService.cfc:L151] and reached the DAO only when
+//     `!hasErrors()` [:L155]. But this file now performs that flush, so "the other
+//     side of `super.save`" is HERE, and declining to validate would durably write
+//     a row the legacy would have REFUSED to write. That is not fidelity; it is a
+//     silently weaker save. `model/validation/Brand.json`'s three save-context
+//     rules are therefore enforced in `assertBrandSaveContextRules` below, each
+//     transcribed from the framework validator that answered it rather than
+//     invented, and NO rule the file does not declare is added.
+//
+//     No zod schema is used, unlike `productService.ts`: three property rules over
+//     an already-typed entity do not need a parser, and a schema would have to
+//     restate the entity's own shape to get at them.
 //   * NO LAYER VIOLATION. Nothing is imported from src/repositories/**,
 //     src/handlers/** or src/integrations/**, and the one collaborator is a PORT
 //     INTERFACE rather than a concrete adapter - `UrlTitleGenerator` names no
@@ -192,9 +208,14 @@
 // model/service/RoundingRuleService.cfc:L183 carry the other two.
 // ---------------------------------------------------------------------------
 
-import type { Brand } from '../domain/entities/brand.js';
+// A VALUE import, where this was `import type` before. `populate`
+// [org/Hibachi/HibachiTransient.cfc:L169-L205] copied the payload ONTO the entity before the
+// flush, and `Brand` is immutable and publishes no setter - so the only way to reproduce that
+// step is to construct the populated entity. Constructing one needs the class itself.
+import { Brand } from '../domain/entities/brand.js';
 import type { UrlTitleGenerator } from '../domain/ports/urlTitleGenerator.js';
 import { structFindKey, structGet, structKeyExists } from '../lib/cfml/struct.js';
+import type { CfBooleanInput } from '../lib/cfml/truthiness.js';
 import { cfLen, cfTruthy, isNullish } from '../lib/cfml/truthiness.js';
 
 /**
@@ -210,17 +231,31 @@ import { cfLen, cfTruthy, isNullish } from '../lib/cfml/truthiness.js';
  * is enforced by the framework validation service, which is not ported, and
  * schema continuity forbids adding a rule the legacy lacks.
  *
- * ★ MINIMAL IS NOT LOSSY, AND THE DISTINCTION MATTERS. Declaring two keys does
- * not DISCARD the others: TypeScript types erase at run time, this method mutates
- * the caller's object in place rather than copying it, and it answers without
- * rebuilding it - so a payload that arrived carrying `activeFlag`,
+ * ★★ THE SIX PERSISTABLE COLUMNS ARE NOW ALL DECLARED, AND THAT REVERSES THIS
+ * TYPE'S PREVIOUS SHAPE. It declared two members and defended the omission thus:
+ * "MINIMAL IS NOT LOSSY... a payload that arrived carrying `activeFlag`,
  * `publishedFlag`, `brandWebsite` or `remoteID` still carries all of them
- * afterwards, alongside whatever `urlTitle` the guard chain resolved. That is
- * precisely what the legacy `super.save(brand, data)` needed, because it POPULATED
- * the entity from the whole struct; the composition root that performs the flush
- * therefore receives the complete column set and not a two-key subset. Widening
- * this interface to enumerate those columns would add a contract the legacy save
- * path never had while changing nothing about what survives.
+ * afterwards... the composition root that performs the flush therefore receives the
+ * complete column set and not a two-key subset. Widening this interface to enumerate
+ * those columns would add a contract the legacy save path never had while changing
+ * nothing about what survives."
+ *
+ * Every clause of that was true EXCEPT its premise. It rested on some later stage
+ * populating the entity from the whole struct, and the checked fact was that no such
+ * stage existed - which is the defect the review raised. Now that this service
+ * populates and writes, an undeclared column is not "still carried"; it is READ BY
+ * NOBODY and therefore lost. Declaring the six is what makes the write non-lossy,
+ * and it adds no contract the legacy lacked: `HibachiTransient.populate`
+ * [org/Hibachi/HibachiTransient.cfc:L169-L205] looped `getProperties()` and copied
+ * EVERY simple column key the struct held, so the legacy's populated surface was
+ * always the full column set. This type now says so.
+ *
+ * WHAT IS STILL NOT DECLARED, DELIBERATELY: `brandID`, the four audit columns, and
+ * every association. The identifier decides insert-versus-update and is not a
+ * payload field; the audit columns are stamped by the writer from the request's own
+ * actor and clock, so accepting them from a caller would let a client forge
+ * attribution; and the eight associations are all `inverse="true"`
+ * [model/entity/Brand.cfc:L60-L61, L66-L72], so a brand save never wrote one.
  *
  * ABSENT, PRESENT-BUT-EMPTY AND PRESENT-BUT-UNDEFINED ARE THREE DIFFERENT INPUTS
  * THAT THE GUARD CHAIN TREATS IDENTICALLY, and every one of them must work. Both
@@ -250,6 +285,37 @@ export interface BrandSaveInput {
    * written.
    */
   readonly brandName?: string | undefined;
+
+  /**
+   * [model/entity/Brand.cfc:L53] `ormtype="boolean"`, undefaulted.
+   *
+   * Typed to the CFML boolean input union rather than to `boolean`, because that is
+   * what `populate` fed the setter: it passed `trim(value)` - a STRING - and left the
+   * coercion to the engine [org/Hibachi/HibachiTransient.cfc:L194]. `'1'`, `'true'`
+   * and `'yes'` therefore all had to work, and the entity's own constructor accepts
+   * the same union for the same reason.
+   */
+  readonly activeFlag?: CfBooleanInput;
+
+  /** [model/entity/Brand.cfc:L54] Same input union and same reasoning as `activeFlag`. */
+  readonly publishedFlag?: CfBooleanInput;
+
+  /**
+   * [model/entity/Brand.cfc:L57] Carried as an opaque string.
+   *
+   * `hb_formatType="url"` is presentation metadata, but `model/validation/Brand.json`
+   * separately declares `{"contexts":"save","dataType":"url"}`, which IS enforced -
+   * see `assertBrandSaveContextRules`. Nothing here or there contacts the host.
+   */
+  readonly brandWebsite?: string | undefined;
+
+  /**
+   * [model/entity/Brand.cfc:L74] The external-system correlation key.
+   *
+   * Declared because `populate` copied it like any other simple column, and no
+   * validation rule governs it.
+   */
+  readonly remoteID?: string | undefined;
 }
 
 /**
@@ -289,6 +355,29 @@ export interface BrandSaveInput {
  */
 function hasCfLength(value: string | undefined): value is string {
   return !isNullish(value) && cfTruthy(cfLen(value));
+}
+
+/**
+ * The two STRING-valued payload keys the legacy guard chain reads, as a narrow view over
+ * {@link BrandSaveInput}.
+ *
+ * WHY A SECOND TYPE RATHER THAN READING THE INPUT DIRECTLY. `structGet` is generic in the
+ * struct and answers `TStruct[keyof TStruct] | undefined` - the union of EVERY member type
+ * - so reading `urlTitle` off the full input now yields `string | CfBooleanInput`, because
+ * the two flag members widened that union. `hasCfLength` narrows a `string | undefined`
+ * and must keep doing so: its whole purpose is handing the URL-title port a definite
+ * `string` without a banned `!` assertion.
+ *
+ * Naming the view is the honest fix. It asserts nothing that is not already declared -
+ * both members are `string | undefined` on the input - and it says exactly which keys the
+ * guard chain treats as title sources, which is the same two the legacy body reads at
+ * [model/service/BrandService.cfc:L68-L72]. The flags are read only by
+ * `populatedColumn`, which takes `unknown` and coerces the way `populate` did, so they
+ * never reach this path.
+ */
+interface BrandTitleSource {
+  readonly urlTitle?: string | undefined;
+  readonly brandName?: string | undefined;
 }
 
 /**
@@ -345,66 +434,305 @@ function writeResolvedUrlTitle(data: BrandSaveInput, urlTitle: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Unavailable-capability signal
+// The durable half of `super.save`, and the populate/validate steps that precede it
 // ---------------------------------------------------------------------------
 
 /**
- * Raised by {@link BrandService.saveBrand} because THIS SLICE CANNOT DURABLY WRITE A
- * BRAND, and a caller must learn that from the call rather than from a missing row.
+ * The persistence collaborator this service needs in order to BE a save.
  *
- * ★ WHY AN ERROR RATHER THAN A QUIET RETURN. The legacy
- * `saveBrand` ended in `super.save(arguments.brand, arguments.data)`
- * [model/service/BrandService.cfc:L76] - framework-inherited generic CRUD that
- * populated the entity from the payload and flushed it. That generic CRUD is listed
- * among the dependencies deliberately not carried forward (AAP 0.5.3), and the
- * thirteen-port set the AAP enumerates (0.3.1) publishes no brand persistence
- * member for it to have been replaced by. So the durable half genuinely does not
- * exist here, and no amount of care in this file can conjure it.
+ * ★★★ WHY THE CONTRACT IS DECLARED HERE, IN THE CONSUMER, RATHER THAN IN
+ * `src/domain/ports/`. The AAP enumerates THIRTEEN ports (0.3.1) and specifies
+ * `ProductRepository`'s member set, and neither has room for a brand writer - there is
+ * no `BrandDAO.cfc` in the legacy repository to have ported one from, because
+ * `super.save` was framework-inherited generic CRUD
+ * [org/Hibachi/HibachiService.cfc:L133-L169] that AAP 0.5.3 lists among the
+ * dependencies deliberately not carried forward. So the write can be neither a
+ * fourteenth port nor a seventh member of an existing one.
  *
- * What DID exist before this error was introduced was a method that resolved the URL
- * title, returned the brand it was handed, and looked from the outside exactly like
- * a completed save. A security review raised that as CWE-703 with CWE-840:
- * `saveBrand` "returns a success-shaped mutated Brand but performs no durable write
- * and throws no unavailable-capability error", and required that the port "wire
- * verified persistence or fail closed until persistence exists. Never return success
- * for an unavailable write."
+ * What remains is exactly what the AAP already does with every other replaced
+ * framework responsibility: put it in the composition root. This interface is the
+ * narrow contract the root satisfies - ONE METHOD, no connection, no statement, no
+ * table name, nothing a domain port would have carried - and `src/handlers/bootstrap.ts`
+ * satisfies it STRUCTURALLY with a module-local collaborator over the request's
+ * prepared-statement executor. TypeScript's structural typing is what makes that work
+ * without an import in either direction: this file names no adapter, and the adapter
+ * declares no `implements`.
  *
- * ★ THE CLAIM THAT WIRING WOULD HAVE SATISFIED IT WAS CHECKED AND IS FALSE. An
- * earlier revision of this file deferred the write to "the composition root", which
- * would "own the flush". Nothing does: no module under `src/repositories/**` issues
- * an INSERT or UPDATE against `SwBrand`, and `mysqlProductRepository.ts` states in
- * terms that its eleven `SwBrand` columns are READ-ONLY there. The deferral named no
- * actual owner, so every brand a caller "saved" was discarded silently. Failing
- * closed is the half of the required resolution that is achievable without adding a
- * fourteenth port the AAP's enumerated layout does not have room for.
+ * ★ THE LAYER RULE PERMITS THIS, AND IT IS WORTH BEING PRECISE ABOUT WHY. The ESLint
+ * `no-restricted-imports` boundary forbids `src/domain/**` from importing repositories,
+ * handlers or integrations. A file under `src/services/**` declaring an interface it
+ * needs, and importing nothing, crosses no boundary at all: dependency flows inward,
+ * from the root to this service, exactly as with the six ports it would have used had
+ * one carried this member. `PriceGroupService` and `PromotionService` each already
+ * declare their own framework-read contract on the same footing.
  *
- * ★ WHAT A READER SHOULD DO WITH THIS. It is a scaffold, not a verdict: when brand
- * persistence is wired, the `throw` in `saveBrand` is deleted and the flush result
- * returned in its place. Nothing else about the method changes - the URL-title
- * resolution above the throw is the ported logic and is already correct. The error
- * exists so that the day that happens is a deliberate decision rather than the day
- * somebody notices their brands were never there.
- *
- * Carries no caller data. The brand and the payload are the caller's own values and
- * naming them back adds nothing an operator can act on, whereas a brand name is a
- * commercial label this class has no reason to put into an error string that
- * `src/handlers/errorMapper.ts` may publish.
+ * IT TAKES THE ENTITY AND NOTHING ELSE. The payload's role ends before this point: the
+ * populate step below has already folded it onto the entity, so handing the struct
+ * across as well would give the writer a second, redundant source of truth for every
+ * column and an opportunity to disagree with the first.
  */
-export class BrandPersistenceUnavailableError extends Error {
-  constructor() {
+export interface BrandFrameworkWrites {
+  /**
+   * Persist one brand - INSERT when `isNew()`, UPDATE otherwise - and answer the
+   * persisted row.
+   *
+   * The returned entity is not the argument: a new brand acquires the identifier the
+   * absent flush used to mint [model/entity/Brand.cfc:L52, `generator="uuid"
+   * unsavedvalue=""`], and both paths acquire audit stamps, so the answer necessarily
+   * differs from the input.
+   *
+   * MAY REJECT. The `"unique":true` half of the `urlTitle` rule
+   * [model/validation/Brand.json] needs a query, so it is the one save-context rule
+   * this service cannot evaluate itself; the implementation transcribes
+   * `HibachiDAO.isUniqueProperty` [org/Hibachi/HibachiDAO.cfc:L130-L147] and refuses
+   * on a collision.
+   */
+  saveBrand(brand: Brand): Promise<Brand>;
+}
+
+/**
+ * Raised when a brand fails one of `model/validation/Brand.json`'s save-context rules.
+ *
+ * ★ WHY A THROW, WHERE THE LEGACY SET AN ERROR FLAG. `HibachiService.save` called
+ * `validate(context)` [org/Hibachi/HibachiService.cfc:L151] and then flushed only if
+ * `!hasErrors()` [:L155]; on failure it announced a failure event and RETURNED THE
+ * ENTITY, errors attached. `hasErrors()` is part of the framework validation service,
+ * which is not ported, and no entity in this subtree carries an error collection - so
+ * there is no channel for a returned-with-errors entity, and inventing one would be a
+ * new framework rather than a port.
+ *
+ * A throw is what the subtree already does with the same situation: `productService.ts`
+ * lets `productUpdateSkusSchema.parse(input)` reject. The property that must hold either
+ * way, and does, is the one that matters: A FAILING BRAND IS NOT WRITTEN.
+ *
+ * Names the property and the rule, and NOT the value. A brand name or website is the
+ * caller's own commercial data and `src/handlers/errorMapper.ts` may publish this
+ * message.
+ */
+export class BrandValidationError extends Error {
+  public readonly propertyName: string;
+
+  public readonly reason: string;
+
+  constructor(propertyName: string, reason: string) {
     super(
-      [
-        'Brand persistence is not available in this service.',
-        'The URL title was resolved and written into the supplied payload, but no durable',
-        'write was performed and none can be: the legacy save was framework-inherited',
-        'generic CRUD (model/service/BrandService.cfc:L76), which is not carried forward,',
-        'and no brand persistence port exists to replace it. This error is raised instead',
-        'of returning, so that an unavailable write is never mistaken for a completed one.',
-      ].join(' '),
+      `saveBrand refused: ${propertyName} ${reason} ` +
+        '(model/validation/Brand.json, save context). No row was written.',
     );
-    this.name = 'BrandPersistenceUnavailableError';
+    this.name = 'BrandValidationError';
+    this.propertyName = propertyName;
+    this.reason = reason;
   }
 }
+
+/**
+ * One column's fate under `populate`: either the payload supplied it - in which case
+ * the resolved value travels with the verdict, and `undefined` means SET TO NULL - or
+ * it did not, and the entity keeps whatever it already held.
+ *
+ * The distinction cannot be collapsed into `string | undefined`, because "absent" and
+ * "present and blank" are different instructions
+ * [org/Hibachi/HibachiTransient.cfc:L191-L196]: the first preserves, the second nulls.
+ */
+type PopulatedColumn =
+  { readonly supplied: true; readonly value: string | undefined } | { readonly supplied: false };
+
+const COLUMN_NOT_SUPPLIED: PopulatedColumn = Object.freeze({ supplied: false });
+
+/**
+ * Read one simple column out of the save payload the way
+ * `HibachiTransient.populate` [org/Hibachi/HibachiTransient.cfc:L169-L205] read it.
+ *
+ * FOUR RULES, EACH TRANSCRIBED RATHER THAN CHOSEN:
+ *
+ *   1. `structKeyExists(arguments.data, currentProperty.name)` [L184] - a key the
+ *      payload does not hold is not populated, and the stored value survives. The read
+ *      is case-insensitive here because a CFML struct folds key case and this payload
+ *      may have arrived from an untyped boundary; `structFindKey` is the primitive
+ *      `src/lib/cfml/struct.ts` publishes for exactly that.
+ *   2. `isSimpleValue(arguments.data[...])` [L192] - the column branch is entered only
+ *      for a scalar. An object, array or function reaching a column key fell through
+ *      every branch and set nothing, so it reads as NOT SUPPLIED.
+ *   3. `trim(...) == "" && !notNull` -> `_setProperty(name)` [L194-L195] - a blank value
+ *      UNSETS the property, which becomes SQL NULL. None of Brand's six persistable
+ *      columns declares `notnull`, so the second conjunct holds for all of them and no
+ *      per-column table is needed.
+ *   4. `_setProperty(name, trim(value))` [L200] - and otherwise the value is stored
+ *      TRIMMED. That trim is easy to overlook and is observable: a payload
+ *      `brandName: '  Acme  '` persisted as `'Acme'`.
+ *
+ * `null` and `undefined` have no CFML counterpart - a struct key cannot hold either -
+ * so both are treated as the blank case, which is the same reading `BrandSaveInput`
+ * documents for its optional slots.
+ */
+function populatedColumn(data: object, propertyName: string): PopulatedColumn {
+  const storedKey = structFindKey(data, propertyName);
+
+  if (storedKey === undefined) {
+    return COLUMN_NOT_SUPPLIED;
+  }
+
+  const rawValue: unknown = Reflect.get(data, storedKey);
+
+  if (rawValue === null || rawValue === undefined) {
+    return { supplied: true, value: undefined };
+  }
+
+  if (
+    typeof rawValue !== 'string' &&
+    typeof rawValue !== 'number' &&
+    typeof rawValue !== 'boolean' &&
+    typeof rawValue !== 'bigint'
+  ) {
+    return COLUMN_NOT_SUPPLIED;
+  }
+
+  const trimmed = String(rawValue).trim();
+
+  return { supplied: true, value: trimmed === '' ? undefined : trimmed };
+}
+
+/**
+ * Fold the save payload onto the brand, reproducing the `populate` step
+ * `super.save` performed at [org/Hibachi/HibachiService.cfc:L146] before it validated
+ * and flushed.
+ *
+ * ★ A NEW INSTANCE, NOT A MUTATION, and the observable outcome is the same. CFML
+ * populated the managed entity in place; `Brand` here is immutable by construction and
+ * publishes no setter, so the populated state is expressed as a fresh entity carrying
+ * the folded columns. The caller's own instance is left exactly as it was - which the
+ * suite asserts - and the returned brand is what gets written and answered.
+ *
+ * SIX COLUMNS, AND THE IDENTIFIER CARRIED THROUGH UNCHANGED. `brandID` is not a
+ * populated field: it decides INSERT versus UPDATE via `isNew()`, and letting a payload
+ * set it would let a caller redirect a save onto another brand's row. The four audit
+ * columns are likewise carried through rather than populated - the writer stamps them
+ * from the request's actor and clock [org/Hibachi/HibachiEntity.cfc:L609, L661], and
+ * accepting them from a caller would let a client forge attribution.
+ *
+ * ALL FIVE ASSOCIATIONS ARE PASSED THROUGH. They are `inverse="true"`
+ * [model/entity/Brand.cfc:L60-L61, L66-L72] so no brand save ever wrote one, but
+ * dropping them here would hand back a brand that had silently lost its in-memory
+ * graph.
+ */
+function populateBrandFromSaveInput(brand: Brand, data: BrandSaveInput): Brand {
+  const urlTitle = populatedColumn(data, 'urlTitle');
+  const brandName = populatedColumn(data, 'brandName');
+  const brandWebsite = populatedColumn(data, 'brandWebsite');
+  const remoteID = populatedColumn(data, 'remoteID');
+  const activeFlag = populatedColumn(data, 'activeFlag');
+  const publishedFlag = populatedColumn(data, 'publishedFlag');
+
+  return new Brand({
+    brandID: brand.getBrandID(),
+    urlTitle: urlTitle.supplied ? urlTitle.value : brand.getUrlTitle(),
+    brandName: brandName.supplied ? brandName.value : brand.getBrandName(),
+    brandWebsite: brandWebsite.supplied ? brandWebsite.value : brand.getBrandWebsite(),
+    remoteID: remoteID.supplied ? remoteID.value : brand.getRemoteID(),
+    // The flag slots accept the CFML boolean input union, so a trimmed `'1'` or `'true'`
+    // from the payload reaches the entity's own `cfBoolean` coercion exactly as
+    // `_setProperty(name, trim(value))` reached the engine's.
+    activeFlag: activeFlag.supplied ? activeFlag.value : brand.getActiveFlag(),
+    publishedFlag: publishedFlag.supplied ? publishedFlag.value : brand.getPublishedFlag(),
+    products: brand.getProducts(),
+    promotionRewards: brand.getPromotionRewards(),
+    promotionRewardExclusions: brand.getPromotionRewardExclusions(),
+    promotionQualifiers: brand.getPromotionQualifiers(),
+    promotionQualifierExclusions: brand.getPromotionQualifierExclusions(),
+    createdDateTime: brand.getCreatedDateTime(),
+    createdByAccountID: brand.getCreatedByAccountID(),
+    modifiedDateTime: brand.getModifiedDateTime(),
+    modifiedByAccountID: brand.getModifiedByAccountID(),
+  });
+}
+
+/**
+ * `isValid("url", value)`, for the one `dataType` constraint Brand declares.
+ *
+ * WHAT IT ACCEPTS AND WHY. CFML's `isValid("url", ...)` requires an ABSOLUTE URL - a
+ * scheme is mandatory and a bare host or relative path fails - which is precisely the
+ * distinction the `URL` constructor draws, so the constructor is the test rather than a
+ * hand-rolled expression. Deliberately NOT restricted to http and https: the legacy
+ * validator restricted neither, and a merchant's `ftp://` link would have saved. No
+ * request is made, no host is resolved, and nothing about the target is checked -
+ * only the shape of the string.
+ */
+function isValidUrl(value: string): boolean {
+  return URL.canParse(value);
+}
+
+/**
+ * Enforce the three save-context rules in `model/validation/Brand.json`, in the order
+ * the file lists them.
+ *
+ * Runs on the POPULATED brand, not on the payload and not on the caller's instance,
+ * because that is the order `super.save` used: populate [org/Hibachi/HibachiService.cfc:L146],
+ * then validate [:L151]. Validating the pre-populate entity would refuse a save whose
+ * payload supplied the missing value.
+ *
+ * THE `unique` HALF OF THE `urlTitle` RULE IS NOT HERE. It needs a query, so it belongs
+ * to {@link BrandFrameworkWrites}, whose implementation transcribes
+ * `HibachiDAO.isUniqueProperty` [org/Hibachi/HibachiDAO.cfc:L130-L147]. Splitting one
+ * JSON rule across two places is worth stating plainly, and the alternative - giving
+ * this service a uniqueness read of its own - would put a second query surface in the
+ * service tier for a rule the writer already has to hold anyway.
+ *
+ * EACH TEST IS THE FRAMEWORK VALIDATOR'S, TRANSCRIBED:
+ *   * `required` -> `validate_required` [org/Hibachi/HibachiValidationService.cfc:L233-L239],
+ *     whose simple-value arm is `len(trim(propertyValue))`. The trim is redundant after
+ *     populate, which already trimmed, but `cfLen` is used because it is the published
+ *     helper for a CFML length test and a bare `!value` would mis-handle `'0'`.
+ *   * `dataType` -> `validate_dataType` [:L256-L262], which PASSES ON NULL - `isNull(...)
+ *     || isValid(...)` - so an absent website is valid and only a present, malformed one
+ *     is refused.
+ */
+function assertBrandSaveContextRules(brand: Brand): void {
+  if (!cfTruthy(cfLen(brand.getBrandName()))) {
+    throw new BrandValidationError('brandName', 'is required');
+  }
+
+  const brandWebsite = brand.getBrandWebsite();
+
+  if (brandWebsite !== undefined && !isValidUrl(brandWebsite)) {
+    throw new BrandValidationError('brandWebsite', 'must be a valid URL');
+  }
+
+  if (!cfTruthy(cfLen(brand.getUrlTitle()))) {
+    throw new BrandValidationError('urlTitle', 'is required');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// RETIRED - `BrandPersistenceUnavailableError`, and this tombstone records what it said
+// so the reversal is checkable rather than merely absent.
+//
+// It was raised unconditionally at the end of `saveBrand`, and its own docblock argued:
+// "THIS SLICE CANNOT DURABLY WRITE A BRAND... the durable half genuinely does not exist
+// here, and no amount of care in this file can conjure it... Failing closed is the half
+// of the required resolution that is achievable without adding a fourteenth port the
+// AAP's enumerated layout does not have room for."
+//
+// ★ THE FIRST HALF WAS RIGHT AND THE CONCLUSION WAS WRONG, FOR ONE REASON. Everything
+// it said about the port set is still true: there is no fourteenth port, and
+// `ProductRepository` gains no seventh member. What it missed is that A DOMAIN PORT WAS
+// NEVER THE ONLY ROUTE. The AAP puts every replaced framework responsibility in the
+// composition root, and the root already hosts module-local structural collaborators
+// over the request's executor for `PriceGroupService` and `PromotionService` - so the
+// durable half could arrive the same way, and now does, as
+// the `BrandFrameworkWrites` contract above. "No port is available" was read as "no write is
+// possible"; those are different claims, and only the first was ever established.
+//
+// Its own closing line anticipated this: "when brand persistence is wired, the `throw`
+// in `saveBrand` is deleted and the flush result returned in its place. Nothing else
+// about the method changes." That is exactly what happened - plus the populate and
+// validate steps that `super.save` performed either side of the flush, which the throw
+// had made unreachable and therefore unwritten.
+//
+// The class is REMOVED rather than deprecated: it is a signal about an unavailable
+// capability, the capability is available, and leaving a constructible
+// never-thrown error behind invites a caller to keep branching on it.
+// `src/handlers/errorMapper.ts` no longer references it.
+// ---------------------------------------------------------------------------
 
 /**
  * The ported surface of `model/service/BrandService.cfc`.
@@ -413,9 +741,18 @@ export class BrandPersistenceUnavailableError extends Error {
  * file header for why the absence of `getBrand`, `deleteBrand` and the smart-list
  * accessors is faithful rather than incomplete.
  *
- * ONE COLLABORATOR, injected - the leanest service in the slice. Instances hold no
- * mutable state of any kind, so a single instance is safe to construct once in the
- * composition root and reuse.
+ * ONE DECLARED LEGACY COLLABORATOR, plus the durable half of the framework save.
+ * `dataService` [model/service/BrandService.cfc:L51] really is the only thing the legacy
+ * component injects - it remains the leanest service in the slice on that measure - and
+ * the second constructor argument is not a second legacy dependency but the persistence
+ * `super.save` supplied by inheritance. Both arrive explicitly, and instances hold no
+ * mutable state of any kind.
+ *
+ * PER REQUEST, NOT PER CONTAINER, and the reason changed with the second argument. This
+ * class still caches nothing, so on its own it would be safe to construct once. Its
+ * writer collaborator closes over the request's audit actor, so the composition root
+ * builds both per request; a container-scoped brand service would stamp one request's
+ * account onto another request's row.
  */
 export class BrandService {
   /**
@@ -426,9 +763,18 @@ export class BrandService {
    *   to the single method this component actually consumed
    *   [slatwall-ts/src/domain/ports/urlTitleGenerator.ts:L60], and it is a port
    *   interface rather than a concrete adapter, so a test supplies a stub without
-   *   a database. Wired once, explicitly, in `src/handlers/bootstrap.ts` (planned).
+   *   a database. Wired once, explicitly, in `src/handlers/bootstrap.ts`.
+   * @param frameworkWrites - The durable half of `super.save`
+   *   [model/service/BrandService.cfc:L76], which the legacy component inherited from
+   *   `HibachiService` rather than declaring. See {@link BrandFrameworkWrites} for why
+   *   the contract is declared in this file instead of in `src/domain/ports/`, and why
+   *   satisfying it does not extend the thirteen-port set. Like the generator it is an
+   *   interface, so a test supplies a recording double and needs no database.
    */
-  constructor(private readonly urlTitleGenerator: UrlTitleGenerator) {}
+  constructor(
+    private readonly urlTitleGenerator: UrlTitleGenerator,
+    private readonly frameworkWrites: BrandFrameworkWrites,
+  ) {}
 
   /**
    * Ported 1:1 from `public any function saveBrand(required any brand, required
@@ -439,29 +785,52 @@ export class BrandService {
    * over verbatim: `saveBrand`, never `save` and never `createBrand`, because
    * method-level interface parity is this migration's acceptance contract.
    *
-   * ASYNC BECAUSE THE LEGACY BODY REACHES THE DATA STORE. A method is made async
-   * in this port if and only if that is true, and it is true here: the generator
-   * runs a uniqueness read per candidate slug against `SwBrand.urlTitle`. The
-   * legacy body reached persistence a second time through `super.save`, whose
-   * durable half is left to the composition root for the reasons recorded at the
-   * closing statement. Nothing else about the shape changes - the parameter list,
-   * its order and the returned entity all stand as they were.
+   * ASYNC BECAUSE THE LEGACY BODY REACHES THE DATA STORE - TWICE, and now both
+   * reaches are here. The generator runs a uniqueness read per candidate slug against
+   * `SwBrand.urlTitle`, and `super.save` flushed the row. Nothing about the declared
+   * shape changes: the parameter list, its order and the `Promise<Brand>` return all
+   * stand as they were.
    *
-   * SIX INPUT SHAPES, ALL REACHABLE, ALL PRESERVED:
+   * THREE STEPS, IN THE LEGACY'S ORDER, AND THE ORDER IS LOAD-BEARING:
+   *   1. resolve `urlTitle` through the guard chain [model/service/BrandService.cfc:L68-L73],
+   *      writing it into the payload - which is where the next step reads it from;
+   *   2. populate the entity from the payload [org/Hibachi/HibachiService.cfc:L146] and
+   *      validate the result [:L151];
+   *   3. flush, and answer the persisted row [:L155].
+   *
+   * SIX INPUT SHAPES FOR THE TITLE GUARD, ALL REACHABLE, ALL PRESERVED:
    *   1. entity already has a non-empty `urlTitle`  -> no generation
    *   2. incoming `data.urlTitle` non-empty         -> no generation
    *   3. neither, and `data.brandName` non-empty    -> generate from data [L70]
    *   4. neither, no `data.brandName`, entity name  -> generate from entity [L72]
-   *   5. neither, and no name from either source    -> NO `urlTitle` set, no throw
+   *   5. neither, and no name from either source    -> NO `urlTitle` set, and the
+   *      SAVE-CONTEXT RULES then refuse the write - see below
    *   6. `data.urlTitle` present but empty string   -> treated exactly as absent,
    *      so generation proceeds
    *
-   * @param brand - The brand being saved. Read-only to this method: the entity is
-   *   immutable and is imported type-only, so nothing here mutates or constructs
-   *   one.
+   * ★ SHAPE 5 NOW REFUSES, WHERE THIS DOCBLOCK USED TO PROMISE "NO `urlTitle` set, no
+   * throw". Both halves of the old sentence were describing a method that never wrote
+   * anything, so "no throw" cost nothing. Under the legacy, shape 5 reached
+   * `validate(context="save")` with `urlTitle` unset, `model/validation/Brand.json`
+   * declares it `required`, `hasErrors()` was therefore true, and
+   * [org/Hibachi/HibachiService.cfc:L155] SKIPPED THE DAO CALL - so the legacy did not
+   * write the row either. The preserved property is the one that matters, that no row
+   * is written; only the delivery differs, because `hasErrors()` has no ported channel
+   * and this subtree signals a failed validation by throwing. There is still NO
+   * fallback, no slug-from-identifier and no empty-string assignment: the guard chain
+   * is untouched, and the refusal comes from the declared rule rather than from the
+   * title logic.
+   *
+   * @param brand - The brand being saved. NOT mutated: the entity is immutable, so the
+   *   populate step produces a new instance and the caller's own object is untouched.
    * @param data - The save payload. Its `urlTitle` is written in place when
-   *   generation fires - see the JUDGMENT CALL below.
-   * @returns The same brand instance that was passed in.
+   *   generation fires - see the JUDGMENT CALL below - and every column it carries is
+   *   then folded onto the entity.
+   * @returns The PERSISTED brand, which is a different instance from the argument: a new
+   *   brand carries the identifier the flush minted [model/entity/Brand.cfc:L52], and
+   *   both paths carry the audit stamps the write applied.
+   * @throws {BrandValidationError} When a save-context rule in
+   *   `model/validation/Brand.json` fails. Nothing is written.
    */
   async saveBrand(brand: Brand, data: BrandSaveInput): Promise<Brand> {
     // LEGACY-NOTE [model/service/BrandService.cfc:L68]: the legacy line reads the
@@ -507,13 +876,14 @@ export class BrandService {
     // shape 6 from shape 2 for a reader.
     if (
       !hasCfLength(brand.getUrlTitle()) &&
-      (!structKeyExists(data, 'urlTitle') || !hasCfLength(structGet(data, 'urlTitle')))
+      (!structKeyExists(data, 'urlTitle') ||
+        !hasCfLength(structGet<BrandTitleSource>(data, 'urlTitle')))
     ) {
       // CFML parity [model/service/BrandService.cfc:L69-L72]: the preference order
       // is `data.brandName` FIRST and the entity's own `getBrandName()` SECOND.
       // Both are bound to locals so the narrowing predicate can hand the port a
       // definite `string`; a call expression is not narrowable, and `!` is banned.
-      const incomingBrandName = structGet(data, 'brandName');
+      const incomingBrandName = structGet<BrandTitleSource>(data, 'brandName');
       const entityBrandName = brand.getBrandName();
 
       if (structKeyExists(data, 'brandName') && hasCfLength(incomingBrandName)) {
@@ -581,107 +951,62 @@ export class BrandService {
 
       // CFML parity [model/service/BrandService.cfc:L73]: there is NO `else`
       // branch. When neither source yields a name, `urlTitle` is never set at all
-      // and the brand is saved without one. That path is live, reachable and
+      // and the guard chain simply falls through. That path is live, reachable and
       // faithful - input shape 5 above - so no fallback, no slug-from-ID, no
-      // empty-string assignment and no thrown error is added here. Whether the
-      // save then fails on the `unique="true"` / required constraint declared at
-      // [model/entity/Brand.cfc:L55] and in `model/validation/Brand.json` is the
-      // framework validation service's business, and that service is not ported.
+      // empty-string assignment and no title-related error is added HERE.
+      //
+      // ★ WHAT ANSWERS INSTEAD, AND THIS SENTENCE REPLACES A CLAIM THAT IS NO LONGER
+      // TRUE. It used to read: "Whether the save then fails on the `unique="true"` /
+      // required constraint declared at [model/entity/Brand.cfc:L55] and in
+      // `model/validation/Brand.json` is the framework validation service's business,
+      // and that service is not ported." The rules are the same rules; what has
+      // changed is that this file now performs the flush those rules gated, so
+      // declining to evaluate them would durably write a row the legacy refused.
+      // `assertBrandSaveContextRules`, below the guard, is where shape 5 is refused -
+      // by the `required` rule, exactly as `validate_required`
+      // [org/Hibachi/HibachiValidationService.cfc:L233-L239] refused it. The
+      // separation still holds: the title logic decides nothing about validity, and
+      // the validator decides nothing about titles.
     }
 
-    // LEGACY-NOTE [model/service/BrandService.cfc:L76]: super.save is framework-inherited generic CRUD.
-    // No brand repository exists in the 13-port set, and nothing anywhere writes `SwBrand`, so the
-    // persistence half DOES NOT EXIST rather than living elsewhere - which is why this method now
-    // refuses instead of returning. See the S-06 disposition below.
-    //
-    // ★ WHY THE DURABLE HALF IS NOT PERFORMED HERE, STATED AT THE STATEMENT THAT
-    // WOULD HAVE PERFORMED IT. An earlier revision of this file awaited a
-    // seventh member on `ProductRepository`, `saveBrand(brand, data)`, and
-    // returned its result. That member has been removed: the port's member set is
-    // LOCKED AT SIX and the port inventory is LOCKED AT THIRTEEN (AAP 0.4.1),
-    // there is no `BrandDAO.cfc` anywhere in the legacy repository for a brand
-    // repository to port, and `super.save` is generic Hibachi CRUD, which AAP
-    // 0.5.3 lists among the dependencies deliberately not carried forward. A
-    // partial brand write - one that persisted `urlTitle` and `brandName` while
-    // silently dropping `activeFlag`, `publishedFlag` and `brandWebsite`, and
-    // enforcing none of `model/validation/Brand.json` because the framework
-    // validation service is not ported - would durably store a WRONG ROW and be
-    // strictly worse than no write at all.
-    // `src/domain/ports/productRepository.ts` records the removal in full.
-    //
-    // ★ AND WHY THIS METHOD NOW FAILS CLOSED INSTEAD OF ANSWERING THE BRAND.
-    // SECURITY REVIEW DISPOSITION - RAISED AS S-06, ACCEPTED.
-    //
-    // The finding: `saveBrand` "returns a success-shaped mutated Brand but performs
-    // no durable write and throws no unavailable-capability error" (CWE-703,
-    // CWE-840). Required resolution: "Wire verified persistence or fail closed until
-    // persistence exists. Never return success for an unavailable write."
-    //
-    // An earlier revision of this comment answered the first half by deferring:
-    // the resolved `urlTitle` sits in the payload this method was handed, exactly
-    // where the legacy `super.save(brand, data)` read it from - in CFML the save
-    // POPULATED the entity from that struct before flushing, so `data` IS the route
-    // to the column and `Brand`, being immutable and publishing no mutator, offers
-    // no other - and on that basis it declared that the composition root "receives
-    // both halves and owns the flush".
-    //
-    // THAT DEFERRAL NAMED NO OWNER, AND THE CLAIM WAS CHECKED: no module under
-    // `src/repositories/**` issues an INSERT or UPDATE against `SwBrand`, and
-    // `src/repositories/mysql/mysqlProductRepository.ts` says in terms that its
-    // eleven `SwBrand` columns are READ-ONLY there. Nothing flushed. A caller
-    // invoking a method named `saveBrand`, published as a capability on
-    // `RequestScope` by `src/handlers/bootstrap.ts`, received a Brand back and had
-    // no way to discover that the row was discarded. Silent loss of a write is worse
-    // than a refused write, which is the whole of why the review raised it.
-    //
-    // Wiring persistence - the better half of the resolution - is not reachable from
-    // here: it needs a brand persistence member, the AAP enumerates thirteen ports
-    // (0.3.1) and none of them is one, and `super.save` is generic Hibachi CRUD that
-    // AAP 0.5.3 lists among the dependencies deliberately not carried forward. So
-    // the achievable half is taken, deliberately and visibly.
-    //
-    // WHAT IS PRESERVED, AND WHAT INTERFACE PARITY STILL REQUIRES. Everything above
-    // this point still runs: the URL-title resolution is the logic AAP 0.4.1
-    // mandates for this file ("Port `saveBrand` L67; the single `dataService`
-    // dependency becomes the URL-title port"), it still fires under exactly the
-    // legacy gate, and it still writes through to the payload - so the ported
-    // behaviour remains fully exercised and observable by a caller that inspects the
-    // payload it supplied. The symbol, its parameters and its declared
-    // `Promise<Brand>` are untouched, so the AAP 0.4.2 row for
-    // `public any function saveBrand(required any brand, required struct data)`
-    // still resolves and the 0.9.2 parity gate still passes; a declared promise that
-    // rejects is a promise of that type. The identifier a new brand would have
-    // acquired during the absent flush [model/entity/Brand.cfc:L52,
-    // `generator="uuid" unsavedvalue=""`] is minted by whatever eventually performs
-    // it, which is precisely the thing that does not exist yet.
-    //
-    // Deleting the throw and returning the flush result is the entire change required
-    // when persistence arrives. See {@link BrandPersistenceUnavailableError}.
+    // ★★★ THE DURABLE HALF OF `super.save`, PERFORMED HERE. This is the statement that
+    // used to raise `BrandPersistenceUnavailableError` unconditionally, making the
+    // service's only operation permanently unavailable. The tombstone above the class
+    // records the argument that led there and why its conclusion was wrong; what follows
+    // is `HibachiService.save` [org/Hibachi/HibachiService.cfc:L133-L169] reproduced in
+    // its own order.
     //
     // CFML parity [model/service/BrandService.cfc:L76]: the legacy call is
     // POSITIONAL - `super.save(arguments.brand, arguments.data)` - where
-    // [model/service/RoundingRuleService.cfc:L63] passes
-    // `argumentcollection=arguments` for the same operation. A gratuitous
-    // inconsistency across the slice, recorded so a reviewer can see it was
-    // observed rather than missed. SECONDARY-REGISTER item, not a numbered defect.
+    // [model/service/RoundingRuleService.cfc:L63] passes `argumentcollection=arguments`
+    // for the same operation. A gratuitous inconsistency across the slice, recorded so a
+    // reviewer can see it was observed rather than missed. SECONDARY-REGISTER item, not a
+    // numbered defect.
+
+    // STEP 1 - POPULATE [org/Hibachi/HibachiService.cfc:L146]. The resolved `urlTitle`
+    // sits in the payload, which is exactly where the legacy save read it from, so this
+    // is also what carries the guard chain's work into the row. A new instance rather
+    // than a mutation, because `Brand` is immutable; the caller's object is untouched.
+    const populatedBrand = populateBrandFromSaveInput(brand, data);
+
+    // STEP 2 - VALIDATE [org/Hibachi/HibachiService.cfc:L151], on the POPULATED entity
+    // and before anything is written. The legacy reached the DAO only when
+    // `!hasErrors()` [:L155]; here a failing rule throws, and either way no row is
+    // written. The `"unique":true` half of the `urlTitle` rule needs a query and is
+    // enforced by the writer - see `assertBrandSaveContextRules`.
+    assertBrandSaveContextRules(populatedBrand);
+
+    // STEP 3 - FLUSH [org/Hibachi/HibachiService.cfc:L155], and answer THE PERSISTED ROW
+    // rather than the argument. A new brand acquires there the identifier
+    // [model/entity/Brand.cfc:L52, `generator="uuid" unsavedvalue=""`] that the absent
+    // flush used to leave unminted, and both paths acquire the audit stamps
+    // [org/Hibachi/HibachiEntity.cfc:L609, L661]. Returning the input instead would hand
+    // back a brand whose `isNew()` still answered true after a successful insert.
     //
-    // NOT REPRODUCED, AND DELIBERATELY SO: `HibachiService.save` also ran the
-    // framework validation service before flushing. That service is not ported
-    // (AAP 0.5.3), `model/validation/Brand.json` is enforced by it, and inventing
-    // a validation step here would add a rule the extracted component never had.
-    // The no-name path documented above therefore leaves `urlTitle` unresolved,
-    // and the database's `unique="true"` constraint [model/entity/Brand.cfc:L55]
-    // is what answers whenever the flush happens - the same outcome as the legacy
-    // once its validator is absent.
-    //
-    // `RoundingRuleService.saveRoundingRule` carries the identical note against
-    // the identical construct, for the identical reason: the thirteen-port set
-    // publishes no rounding-rule persistence member either. The two are the
-    // slice's only `super.save`-only services, so the treatment is consistent
-    // rather than special-cased. `saveRoundingRule` has the SAME unbacked-write
-    // shape and is published on `RequestScope` alongside this method; it was not
-    // reached by finding S-06 and is therefore left as it stands rather than changed
-    // on this method's authority, and is recorded as a discovered issue instead.
-    throw new BrandPersistenceUnavailableError();
+    // NOT REPRODUCED, DELIBERATELY: the before/after save EVENTS the framework announced
+    // [org/Hibachi/HibachiService.cfc:L140, and the failure announcement on the invalid
+    // path]. `HibachiEventService` is not ported (AAP 0.5.3) and nothing in the subtree
+    // subscribes, so announcing into a void would be ceremony rather than behaviour.
+    return await this.frameworkWrites.saveBrand(populatedBrand);
   }
 }

@@ -2621,8 +2621,11 @@ describe('ProductService', () => {
       expect(page.records).toStrictEqual([]);
       expect(page.recordsCount).toBe(0);
       expect(page.entityName).toBe('SlatwallProduct');
-      expect(page.joins).toHaveLength(3);
-      expect(page.keywordProperties).toHaveLength(5);
+      // The two metadata members report the EXECUTED statement, which joins nothing and matches
+      // one property. They read 3 and 5 while the page published the smart list's configuration
+      // instead - see the two inverted cases below.
+      expect(page.joins).toHaveLength(0);
+      expect(page.keywordProperties).toHaveLength(1);
     });
   });
 
@@ -2673,43 +2676,73 @@ describe('ProductService', () => {
       expect(productRepository.searches).toHaveLength(1);
     });
 
-    it('preserves the three concrete legacy JOINS, including the LEFT join on brand', async () => {
+    it('★★ reports NO joins, because the executed statement performs none', async () => {
       productRepository.searchResult = [];
 
       const page = await service.findProducts({ keyword: REQUIRED_KEYWORD });
 
-      // CFML parity [model/service/ProductService.cfc:L347-L349]: three joins, in declaration
-      // order, with the brand join declared `"left"` while the other two are inner. That asymmetry
-      // is load-bearing rather than incidental: a product need not have a brand, so an inner join
-      // there would silently drop every unbranded product from the listing.
-      expect(page.joins).toStrictEqual([
-        { entityName: 'SlatwallProduct', propertyIdentifier: 'productType', joinType: 'inner' },
-        { entityName: 'SlatwallProduct', propertyIdentifier: 'defaultSku', joinType: 'inner' },
-        { entityName: 'SlatwallProduct', propertyIdentifier: 'brand', joinType: 'left' },
-      ]);
+      // THIS CASE IS AN INVERSION. It was named "preserves the three concrete legacy JOINS,
+      // including the LEFT join on brand" and asserted all three `joinRelatedProperty` calls from
+      // [model/service/ProductService.cfc:L347-L349], with the observation that the LEFT on `brand`
+      // is load-bearing because "an inner join there would silently drop every unbranded product".
+      //
+      // All of that is true of the SMART LIST, and the smart list is not what runs. AAP 0.6.2 rules
+      // `HibachiSmartList` out of this port, so `findProducts` executes
+      // `ProductDAO.searchProductsByProductType`, whose statement is
+      // `select productID,productName from SwProduct where productName like :prodName`
+      // [model/dao/ProductDAO.cfc:L421] - ONE table. The optional restriction at [L424] appends
+      // `and productTypeID in (...)`, a predicate on a column of the same row, not a join.
+      //
+      // So under the statement that runs there is no inner join to drop anything: an unbranded
+      // product IS returned, and so is one with no product type or no default SKU. Publishing three
+      // joins asserted the opposite. The configured three survive as an inert record on
+      // `PRODUCT_QUERY_JOINS`.
+      expect(page.joins).toStrictEqual([]);
+      expect(page.joins).toHaveLength(0);
+
+      // ★ THE MEMBER REMAINS, deliberately: "this query joins nothing" is precisely what tells a
+      // caller that an unbranded product is not filtered out. Deleting it would leave that unsaid.
+      expect(Object.keys(page)).toContain('joins');
+      expect(Array.isArray(page.joins)).toBe(true);
     });
 
-    it('preserves the five concrete legacy KEYWORD PROPERTIES, all at weight 1', async () => {
+    it('★★ reports the ONE keyword property the executed statement matches, at weight 1', async () => {
       productRepository.searchResult = [];
 
       const page = await service.findProducts({ keyword: REQUIRED_KEYWORD });
 
-      // CFML parity [model/service/ProductService.cfc:L351-L355]: five keyword properties in
-      // declaration order, EVERY ONE at weight 1. The legacy assigned no relative weighting at all,
-      // and inventing one here would change which product a search ranked first. Both repository
-      // arguments are optional on the port, and an omitted criterion is forwarded as ABSENT rather
-      // than as an empty string - an empty string is a filter matching nothing useful, whereas
-      // absence means "do not filter".
+      // THE OTHER HALF OF THE INVERSION. This case was named "preserves the five concrete legacy
+      // KEYWORD PROPERTIES, all at weight 1" and asserted all five identifiers from
+      // [model/service/ProductService.cfc:L351-L355]. It passed - against a page whose statement
+      // compares ONE column, `productName like :prodName` [model/dao/ProductDAO.cfc:L421].
+      //
+      // Publishing five was a false statement of what was matched rather than a documented gap: a
+      // caller reading the page would expect a search for a brand name or a product code to
+      // succeed, and it silently returned nothing. Two of the four unmatched identifiers are
+      // reachable only through the joins the same smart list configured, which is why both members
+      // fail together and are corrected together. The four survive as an inert record on
+      // `PRODUCT_QUERY_KEYWORD_PROPERTIES`, spellings and weights intact.
       expect(page.keywordProperties).toStrictEqual([
-        { propertyIdentifier: 'calculatedTitle', weight: 1 },
-        { propertyIdentifier: 'brand.brandName', weight: 1 },
         { propertyIdentifier: 'productName', weight: 1 },
-        { propertyIdentifier: 'productCode', weight: 1 },
-        { propertyIdentifier: 'productType.productTypeName', weight: 1 },
       ]);
+      expect(page.keywordProperties).toHaveLength(1);
 
+      // Weight 1 still holds. The legacy assigned no relative weighting anywhere on this path, and
+      // the narrowing invents none: with one property there is nothing to rank.
       for (const keywordProperty of page.keywordProperties) {
         expect(keywordProperty.weight).toBe(1);
+      }
+
+      // ★ NONE of the four the smart list additionally configured is reported.
+      const reported = page.keywordProperties.map((property) => property.propertyIdentifier);
+
+      for (const unmatched of [
+        'calculatedTitle',
+        'brand.brandName',
+        'productCode',
+        'productType.productTypeName',
+      ]) {
+        expect(reported).not.toContain(unmatched);
       }
     });
 
@@ -2915,15 +2948,17 @@ describe('ProductService', () => {
       expect(page.pageRecordsShow).toBe(0);
     });
 
-    it('imposes NO MAGNITUDE CEILING, because slice clamps and materialization is bounded below', async () => {
+    it('imposes NO MAGNITUDE CEILING, because slice clamps what was already materialized', async () => {
       const [alpha, beta, gamma] = threeProducts();
 
       // Deliberate absence, pinned so it reads as a decision rather than an oversight. An
       // implausibly large window is ADMITTED: `slice` clamps it to the array it was given, so it
-      // costs nothing beyond what was already materialized - and that materialization is bounded
-      // one layer down, by `MAX_SEARCH_RESULT_MATERIALIZATION` in
-      // `src/repositories/mysql/mysqlProductRepository.ts`. A second ceiling here would refuse
-      // pages the repository has already proved it can answer.
+      // costs nothing beyond what was already materialized. An earlier revision of this comment
+      // added that the materialization was itself "bounded one layer down, by
+      // `MAX_SEARCH_RESULT_MATERIALIZATION`"; that ceiling has since been removed from
+      // `src/repositories/mysql/mysqlProductRepository.ts`, because it refused searches the legacy
+      // answered. Neither tier refuses on magnitude now, which is what this case asserts of this
+      // one.
       const page = await service.findProducts({
         keyword: REQUIRED_KEYWORD,
         pageRecordsShow: Number.MAX_SAFE_INTEGER,

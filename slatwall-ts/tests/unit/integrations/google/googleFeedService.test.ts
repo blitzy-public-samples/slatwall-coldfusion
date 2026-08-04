@@ -113,7 +113,8 @@ import type {
 import { renderGoogleProductFeed } from '../../../../src/integrations/google/rssFeedRenderer.js';
 import type { GoogleProductFeedRow } from '../../../../src/integrations/google/googleFeedRepository.js';
 import type { ProductFeedPort } from '../../../../src/domain/ports/productFeedPort.js';
-import type { FeedUrlScheme } from '../../../../src/lib/config.js';
+// NOTHING FROM `src/lib/config.js`. An intervening revision imported a `FeedUrlScheme` type from
+// there for a constructor argument that no longer exists; the subject holds no configuration edge.
 
 // ---------------------------------------------------------------------------
 // Fixed inputs
@@ -197,16 +198,11 @@ const PADDED_FEED_HOST = '  Feed.EXAMPLE.invalid  ';
  * The subject holds an instant rather than reading a clock, which is what makes it deterministic;
  * nothing in this file consults the system clock.
  */
-/**
- * The scheme this suite constructs with, and it is the LEGACY one on purpose.
- *
- * Finding S-09 made the scheme a constructor argument taken from deployment
- * configuration rather than a literal in the renderer. This suite keeps supplying `'http'`
- * so that every existing assertion about an `http://` URL still asserts LEGACY PARITY;
- * that the service forwards whatever it was given, rather than a scheme of its own
- * choosing, is asserted directly in the S-09 case below.
- */
-const FEED_SCHEME: FeedUrlScheme = 'http';
+// THERE IS NO FEED SCHEME CONSTANT, because the subject takes no scheme. An intervening revision
+// declared `const FEED_SCHEME: FeedUrlScheme = 'http'` here to feed a constructor argument that
+// accepted security finding S-09; the argument is removed and the scheme is the frozen legacy
+// literal owned by `src/integrations/google/rssFeedRenderer.ts`. The inversion is the trailing
+// block of this file.
 
 const FEED_INSTANT = new Date('2024-06-01T12:34:56.789Z');
 
@@ -317,7 +313,6 @@ function makeFeedRow(overrides: Partial<GoogleProductFeedRow> = {}): GoogleProdu
 interface RecordedRendererCall {
   readonly rows: FeedRows;
   readonly feedHost: string;
-  readonly feedScheme: FeedUrlScheme;
   readonly now: Date;
 }
 
@@ -363,9 +358,6 @@ interface FeedServiceHarnessOptions {
    * subject does with an arbitrary host at all. The type is the contract's again.
    */
   readonly feedHost?: string;
-
-  /** The scheme given to the constructor. Defaults to {@link FEED_SCHEME}. */
-  readonly feedScheme?: FeedUrlScheme;
 
   /** The instant given to the constructor. Defaults to {@link FEED_INSTANT}. */
   readonly now?: Date;
@@ -419,11 +411,11 @@ function makeFeedServiceHarness(options: FeedServiceHarnessOptions): FeedService
     },
   };
 
-  // The double renderer. Its four parameters are contextually typed by the shipped renderer
+  // The double renderer. Its three parameters are contextually typed by the shipped renderer
   // collaborator type, and it is SYNCHRONOUS, exactly as the contract needs.
-  const renderFeed: GoogleProductFeedRenderer = (rows, feedHost, feedScheme, now) => {
+  const renderFeed: GoogleProductFeedRenderer = (rows, feedHost, now) => {
     callLog.push(RENDERER_STEP);
-    const call: RecordedRendererCall = { rows, feedHost, feedScheme, now };
+    const call: RecordedRendererCall = { rows, feedHost, now };
     rendererCalls.push(call);
     return render(call);
   };
@@ -431,7 +423,6 @@ function makeFeedServiceHarness(options: FeedServiceHarnessOptions): FeedService
   const service = new GoogleFeedService(
     repository,
     options.feedHost ?? FEED_HOST,
-    options.feedScheme ?? FEED_SCHEME,
     options.now ?? FEED_INSTANT,
     renderFeed,
   );
@@ -1040,7 +1031,7 @@ describe('GoogleFeedService - the surface admits no invented input', () => {
     // @ts-expect-error - a promise-returning renderer is not assignable: the contract returns string.
     const asyncRenderer: GoogleProductFeedRenderer = () => Promise.resolve(feedDocument);
 
-    expect(asyncRenderer([], FEED_HOST, FEED_SCHEME, FEED_INSTANT)).toBeInstanceOf(Promise);
+    expect(asyncRenderer([], FEED_HOST, FEED_INSTANT)).toBeInstanceOf(Promise);
   });
 });
 
@@ -1376,9 +1367,7 @@ describe('GoogleFeedService - the module surface, which is the finding this tier
     expect(soleRendererCall(harness).feedHost).toBe(SCHEME_AND_PATH_HOST);
 
     // And refused one layer down, which is where the shape check lives now.
-    expect(() =>
-      renderGoogleProductFeed([], SCHEME_AND_PATH_HOST, FEED_SCHEME, FEED_INSTANT),
-    ).toThrow();
+    expect(() => renderGoogleProductFeed([], SCHEME_AND_PATH_HOST, FEED_INSTANT)).toThrow();
   });
 
   it('★ the host grammar is still enforced, by the renderer, and it still throws', () => {
@@ -1402,16 +1391,14 @@ describe('GoogleFeedService - the module surface, which is the finding this tier
       PADDED_FEED_HOST,
       'a'.repeat(260),
     ]) {
-      expect(() => renderGoogleProductFeed([], malformed, FEED_SCHEME, FEED_INSTANT)).toThrow();
+      expect(() => renderGoogleProductFeed([], malformed, FEED_INSTANT)).toThrow();
     }
 
     // ANTI-VACUITY: the two hosts this suite uses throughout are ACCEPTED, so the loop above
     // is not passing because the renderer refuses everything it is handed. Mixed case is
     // shape-valid and proves the grammar is a grammar rather than an equality check.
-    expect(() => renderGoogleProductFeed([], FEED_HOST, FEED_SCHEME, FEED_INSTANT)).not.toThrow();
-    expect(() =>
-      renderGoogleProductFeed([], MIXED_CASE_FEED_HOST, FEED_SCHEME, FEED_INSTANT),
-    ).not.toThrow();
+    expect(() => renderGoogleProductFeed([], FEED_HOST, FEED_INSTANT)).not.toThrow();
+    expect(() => renderGoogleProductFeed([], MIXED_CASE_FEED_HOST, FEED_INSTANT)).not.toThrow();
   });
 
   it('★ a well-formed but untrusted host is accepted end to end, which is the residual risk', async () => {
@@ -1431,84 +1418,100 @@ describe('GoogleFeedService - the module surface, which is the finding this tier
 
     expect(soleRendererCall(harness).feedHost).toBe(UNTRUSTED_WELL_FORMED_HOST);
     expect(() =>
-      renderGoogleProductFeed([], UNTRUSTED_WELL_FORMED_HOST, FEED_SCHEME, FEED_INSTANT),
+      renderGoogleProductFeed([], UNTRUSTED_WELL_FORMED_HOST, FEED_INSTANT),
     ).not.toThrow();
   });
 });
 
 // ---------------------------------------------------------------------------
-// The URL scheme is forwarded, never chosen (S-09)
+// The URL scheme is NOT this class's to hold (S-09, declined)
 //
-// Finding S-09 (MEDIUM, CWE-319) made the feed's URL scheme a deployment-owned value instead of a
-// literal hardcoded in the renderer. The service's whole part in that is custody: it accepts the
-// scheme, holds it beside the host, and hands it to the renderer unchanged. These cases pin exactly
-// that and nothing more - which scheme is SAFE is `resolveFeedUrlScheme`'s judgment, and which
-// document results is the renderer's.
+// Finding S-09 (MEDIUM, CWE-319) asked for the feed's URL scheme to become a deployment-owned
+// value instead of the literal the legacy hardcoded. An intervening revision accepted it, and this
+// block asserted the service's part in it: that it accepted a scheme, held it beside the host, and
+// forwarded it to the renderer unchanged.
+//
+// ★★ THAT ACCEPTANCE IS REVERSED AND THESE CASES ARE ITS INVERSION, kept rather than deleted so
+// the reversal is executed and not merely narrated. AAP 0.1.1 requires preserving "the Google
+// product-feed integration contract exactly", AAP 0.8.1 freezes it, and AAP 0.6.7 admits exactly
+// three divergences in this port - none of them this. The scheme is the frozen `http://` literal
+// owned by `src/integrations/google/rssFeedRenderer.ts`; this class holds only the AUTHORITY half
+// of the origin, whose ALLOW-LIST is genuinely deployment-owned under finding S-15.
 //
 // NET-NEW COVERAGE per AAP 0.6.6.
 // ---------------------------------------------------------------------------
 
-describe('GoogleFeedService - the scheme is forwarded, never chosen (S-09)', () => {
-  it('★★ hands the renderer the scheme it was CONSTRUCTED with, not one of its own', async () => {
+describe('GoogleFeedService - the scheme is not held, forwarded or chosen (S-09 declined)', () => {
+  it('★★ hands the renderer THREE arguments: rows, the host, and the instant', async () => {
     const harness = makeFeedServiceHarness({
       read: (): Promise<FeedRows> => Promise.resolve([]),
-      feedScheme: 'https',
-    });
-
-    await harness.service.generateProductFeed();
-
-    // The service neither upgrades nor downgrades. A service that hardcoded a scheme, or that
-    // "helpfully" forced https, would fail this - and would put the decision in the wrong layer.
-    expect(soleRendererCall(harness).feedScheme).toBe('https');
-  });
-
-  it('forwards http just as faithfully, which is what keeps legacy parity reachable', async () => {
-    const harness = makeFeedServiceHarness({
-      read: (): Promise<FeedRows> => Promise.resolve([]),
-      feedScheme: 'http',
-    });
-
-    await harness.service.generateProductFeed();
-
-    // Custody, not policy: a deployment outside production that genuinely serves plain HTTP still
-    // gets the legacy document. `resolveFeedUrlScheme` is where production refuses this value.
-    expect(soleRendererCall(harness).feedScheme).toBe('http');
-  });
-
-  it('carries the scheme and the host as ONE origin, both from construction', async () => {
-    const harness = makeFeedServiceHarness({
-      read: (): Promise<FeedRows> => Promise.resolve([]),
-      feedScheme: 'https',
     });
 
     await harness.service.generateProductFeed();
 
     const call = soleRendererCall(harness);
 
-    // Both halves of the origin arrive together and neither is read from the request. The host's
-    // provenance was fixed by S-15 and the scheme's by S-09; this asserts the pair.
-    expect({ feedHost: call.feedHost, feedScheme: call.feedScheme }).toStrictEqual({
-      // `FEED_HOST` IS THE PLAIN LITERAL, and it is what the harness constructs with now. This
-      // read `FEED_HOST_TEXT` while a branded `TrustedFeedHost` constant stood beside a raw-text
-      // companion; the brand, its mint and the companion were all withdrawn with the constructor
-      // guard, so there is one constant again and it is this one.
-      feedHost: FEED_HOST,
-      feedScheme: 'https',
-    });
+    // Reflected rather than type-asserted: a removed field is invisible to a typed comparison once
+    // the type is gone, so the recorded call's own key set is what proves the argument list
+    // narrowed. `rows`, `feedHost` and `now`, and nothing between the host and the instant.
+    expect(Object.keys(call)).toStrictEqual(['rows', 'feedHost', 'now']);
   });
 
-  it('★ will not COMPILE without a scheme, so no instance can exist without a full origin', () => {
-    // A TYPE-LEVEL assertion, and the reason the class needs no runtime check for it: the scheme is
-    // required and is a two-member union, so an instance holding a half-origin is unconstructable.
+  it('★★ carries ONLY the authority half of the origin, and carries it from construction', async () => {
+    const harness = makeFeedServiceHarness({
+      read: (): Promise<FeedRows> => Promise.resolve([]),
+    });
+
+    await harness.service.generateProductFeed();
+
+    const call = soleRendererCall(harness);
+
+    // `FEED_HOST` IS THE PLAIN LITERAL, and it is what the harness constructs with. This read
+    // `FEED_HOST_TEXT` while a branded `TrustedFeedHost` constant stood beside a raw-text
+    // companion; the brand, its mint and the companion were all withdrawn with the constructor
+    // guard, so there is one constant again and it is this one.
+    expect(call.feedHost).toBe(FEED_HOST);
+
+    // And the scheme is nowhere on the instance either, so it cannot be forwarded by accident.
+    expect(Object.keys(call)).not.toContain('feedScheme');
+  });
+
+  it('★ will not COMPILE with a scheme, which is what stops the argument creeping back', () => {
+    // THE TYPE-LEVEL HALF OF THE REVERSAL. The earlier revision asserted the mirror image - that
+    // omitting the scheme would not compile - so this case has flipped rather than disappeared.
+    // `@ts-expect-error` fails the build if the error stops being reported, so it cannot rot into a
+    // no-op the way a commented-out assertion would.
+    //
+    // The directive sits on the SCHEME ARGUMENT rather than on the call expression, because that
+    // is where the compiler reports it: with a fourth positional argument present, `'https'` lands
+    // in the `now: Date` slot and the mismatch is attributed to the argument.
     expect(
       () =>
-        // @ts-expect-error - the scheme is REQUIRED between the host and the instant, and an
-        // arity error is reported against the call expression rather than the argument.
         new GoogleFeedService(
           { fetchProductFeedRows: (): Promise<FeedRows> => Promise.resolve([]) },
           FEED_HOST,
+          // @ts-expect-error - there is no scheme parameter; the renderer owns a frozen literal.
+          'https',
           FEED_INSTANT,
         ),
     ).not.toThrow();
+  });
+
+  it('★ constructs from THREE arguments, leaving the renderer to its default', () => {
+    // The positive half: the shipped constructor is `(repository, feedHost, now, renderFeed?)`, so
+    // a three-argument construction is complete and the class contract block's `@example` - which
+    // shows exactly that - is correct again. It was correct, then wrong, and is correct once more.
+    const service = new GoogleFeedService(
+      { fetchProductFeedRows: (): Promise<FeedRows> => Promise.resolve([]) },
+      FEED_HOST,
+      FEED_INSTANT,
+    );
+
+    expect(service).toBeInstanceOf(GoogleFeedService);
+
+    // Still the port, so the arity change did not cost the parity proof.
+    const port: ProductFeedPort = service;
+
+    expect(typeof port.generateProductFeed).toBe('function');
   });
 });

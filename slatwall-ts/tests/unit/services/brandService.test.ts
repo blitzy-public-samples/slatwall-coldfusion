@@ -123,38 +123,77 @@ import type {
   UrlTitleGenerator,
   UrlTitleTableName,
 } from '../../../src/domain/ports/urlTitleGenerator.js';
-import {
-  BrandPersistenceUnavailableError,
-  BrandService,
-} from '../../../src/services/brandService.js';
-import type { BrandSaveInput } from '../../../src/services/brandService.js';
+import { BrandService, BrandValidationError } from '../../../src/services/brandService.js';
+import type { BrandFrameworkWrites, BrandSaveInput } from '../../../src/services/brandService.js';
 
 /**
- * Runs `saveBrand` to completion and asserts it FAILED CLOSED, leaving the payload
- * available for inspection.
+ * Runs `saveBrand` to completion and answers the PERSISTED brand.
  *
- * Every URL-title case in this suite goes through here, and the indirection is the
- * point rather than a convenience. `saveBrand` no longer returns: finding S-06
- * established that answering the brand made an unavailable durable write look like a
- * completed one, so the method now raises
- * {@link BrandPersistenceUnavailableError} after resolving the title. The ported
- * logic AAP 0.4.1 mandates is unchanged and still fully observable - it writes
- * through to the payload the caller supplied, which is the same route the legacy
- * `super.save` read the column from [model/service/BrandService.cfc:L76] - so each
- * case still asserts exactly what it asserted before, on the same object.
+ * ★★★ THIS HELPER REPLACES `runSaveExpectingFailClosed`, AND THE REPLACEMENT IS THE
+ * WHOLE STORY OF THIS SUITE'S REVISION. That helper existed because every case had to
+ * absorb an unconditional rejection: it documented itself as "`saveBrand` no longer
+ * returns: finding S-06 established that answering the brand made an unavailable durable
+ * write look like a completed one, so the method now raises
+ * `BrandPersistenceUnavailableError` after resolving the title."
  *
- * The rejection is asserted here, once, rather than restated in a dozen places: a
- * case that forgot to await it would otherwise pass on an unhandled rejection and
- * assert nothing at all.
+ * The premise - that the durable write was unavailable - was checked and found to be
+ * about a MISSING PORT rather than a missing possibility. `super.save`
+ * [model/service/BrandService.cfc:L76] is now performed through a narrow collaborator the
+ * service declares and the composition root satisfies, so the method returns again and the
+ * cases below assert on its answer.
+ *
+ * The indirection is kept for the reason it was worth having: every URL-title case runs
+ * through one place, so a case that forgot to `await` cannot pass on a floating promise.
  */
-async function runSaveExpectingFailClosed(
-  service: BrandService,
-  brand: Brand,
-  data: BrandSaveInput,
-): Promise<void> {
-  await expect(service.saveBrand(brand, data)).rejects.toBeInstanceOf(
-    BrandPersistenceUnavailableError,
-  );
+async function runSave(service: BrandService, brand: Brand, data: BrandSaveInput): Promise<Brand> {
+  return await service.saveBrand(brand, data);
+}
+
+/** The identifier {@link RecordingBrandFrameworkWrites} mints for an unsaved brand. */
+const MINTED_BRAND_ID = 'minted-by-the-framework-writer';
+
+/** The `modifiedDateTime` the writer double stamps, fixed so an assertion can name it. */
+const PERSISTED_AUDIT_TIMESTAMP = new Date('2024-03-04T05:06:07.000Z');
+
+/** The `modifiedByAccountID` the writer double stamps. */
+const PERSISTED_AUDIT_ACCOUNT_ID = 'audit-actor-account';
+
+/**
+ * In-memory stand-in for the durable half of `super.save`.
+ *
+ * Records the brand it was handed - AFTER the service's populate step, which is what makes
+ * the payload-to-row assertions below possible - and answers a DISTINCT instance carrying a
+ * minted identifier and audit stamps, exactly as the real writer does. Answering the
+ * argument would let a service that forgot to return the writer's result still pass.
+ *
+ * It is a single-method interface, not a port: the thirteen-port set is closed and
+ * `ProductRepository` is locked at six members, so the contract is declared by the service
+ * and satisfied module-locally in `src/handlers/bootstrap.ts` over the request's executor.
+ * Doubling it here mirrors that wiring rather than inventing one.
+ */
+class RecordingBrandFrameworkWrites implements BrandFrameworkWrites {
+  readonly saves: Brand[] = [];
+
+  saveBrand(brand: Brand): Promise<Brand> {
+    this.saves.push(brand);
+
+    return Promise.resolve(
+      new Brand({
+        brandID: brand.isNew() ? MINTED_BRAND_ID : brand.getBrandID(),
+        activeFlag: brand.getActiveFlag(),
+        publishedFlag: brand.getPublishedFlag(),
+        urlTitle: brand.getUrlTitle(),
+        brandName: brand.getBrandName(),
+        brandWebsite: brand.getBrandWebsite(),
+        remoteID: brand.getRemoteID(),
+        products: brand.getProducts(),
+        createdDateTime: brand.getCreatedDateTime(),
+        createdByAccountID: brand.getCreatedByAccountID(),
+        modifiedDateTime: PERSISTED_AUDIT_TIMESTAMP,
+        modifiedByAccountID: PERSISTED_AUDIT_ACCOUNT_ID,
+      }),
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -169,21 +208,27 @@ async function runSaveExpectingFailClosed(
 // suite should give, rather than continuing to pass against a contract that has
 // moved.
 //
-// ★ THE TUPLE HAS EXACTLY ONE ELEMENT, AND THIS SUITE PINS THAT. `BrandService`
-// is the leanest service in the slice: the legacy component declares one
-// collaborator, `property name="dataService" type="any";`
-// [model/service/BrandService.cfc:L51], and the ported class takes exactly that
-// one. An earlier revision took a SECOND - a persistence port standing in for
-// `super.save(arguments.brand, arguments.data)`
-// [model/service/BrandService.cfc:L76] - and that was wrong: `super.save` is
-// framework-inherited generic Hibachi CRUD, which AAP 0.5.3 does not carry
-// forward; there is no `BrandDAO.cfc` anywhere in the legacy repository; the
-// thirteen-port set publishes no brand repository and is closed; and
-// `ProductRepository`'s own member set is locked at six, so it cannot host a
-// brand write either. The durable half therefore belongs to the composition root,
-// which is what the service's LEGACY-NOTE records at the statement that used to
-// perform it. The arity assertion below is what stops a second collaborator
-// reappearing unnoticed.
+// ★★ THE TUPLE HAS EXACTLY TWO ELEMENTS, AND THIS SUITE PINS THAT - WHERE IT USED TO
+// PIN ONE. The old note read: "THE TUPLE HAS EXACTLY ONE ELEMENT... An earlier revision
+// took a SECOND - a persistence port standing in for `super.save(arguments.brand,
+// arguments.data)` [model/service/BrandService.cfc:L76] - and that was wrong... The
+// durable half therefore belongs to the composition root, which is what the service's
+// LEGACY-NOTE records at the statement that used to perform it."
+//
+// Every constraint it cited is still binding and still honoured: `super.save` is
+// framework-inherited generic Hibachi CRUD that AAP 0.5.3 does not carry forward, there
+// is no `BrandDAO.cfc` in the legacy repository, the thirteen-port set is closed, and
+// `ProductRepository` is locked at six members. What changed is the CONCLUSION. "The
+// durable half belongs to the composition root" was correct - and the composition root
+// now SUPPLIES it, as a narrow single-method contract the service declares. So the second
+// element is not a legacy collaborator (`dataService`
+// [model/service/BrandService.cfc:L51] remains the only one of those, and this is still
+// the leanest service in the slice by that measure); it is the persistence the legacy
+// component inherited.
+//
+// The arity assertion below still does its job, inverted: it stops a THIRD collaborator
+// reappearing unnoticed, and it would fail if the write were ever hung on a repository
+// port instead.
 type BrandServiceCollaborators = ConstructorParameters<typeof BrandService>;
 
 // --- Deterministic synthetic values -----
@@ -245,10 +290,12 @@ class RecordingUrlTitleGenerator implements UrlTitleGenerator {
 
 describe('BrandService', () => {
   let urlTitleGenerator: RecordingUrlTitleGenerator;
+  let frameworkWrites: RecordingBrandFrameworkWrites;
   let service: BrandService;
 
   beforeEach(() => {
     urlTitleGenerator = new RecordingUrlTitleGenerator();
+    frameworkWrites = new RecordingBrandFrameworkWrites();
 
     // JUDGMENT CALL: the collaborator is handed to the constructor, and that is
     // the whole wiring story. The legacy body reached it through
@@ -259,17 +306,16 @@ describe('BrandService', () => {
     // container, composition root or locator is imported by this file, and why
     // constructing the subject needs nothing but one object.
     //
-    // ONE argument, matching the ONE collaborator the legacy component declares
-    // [model/service/BrandService.cfc:L51]. The durable half of `super.save`
-    // [model/service/BrandService.cfc:L76] is NOT a second collaborator here: it
-    // was framework-inherited generic CRUD with no DAO behind it, and the
-    // thirteen-port set the AAP enumerates publishes no brand repository to replace
-    // it. Since finding S-06 the service does not pretend otherwise - it resolves the
-    // URL title and then FAILS CLOSED, because nothing anywhere writes `SwBrand` and
-    // an earlier revision's deferral to "the composition root" named no actual owner.
-    // This suite is typed against whatever the shipped constructor declares, so it
+    // TWO arguments, and they are different KINDS of thing. The first is the ONE
+    // collaborator the legacy component declares
+    // [model/service/BrandService.cfc:L51]. The second is the durable half of
+    // `super.save` [model/service/BrandService.cfc:L76], which the component inherited
+    // from `HibachiService` rather than declaring - framework-inherited generic CRUD
+    // with no DAO behind it, which is exactly why it arrives as a narrow contract the
+    // service declares and the composition root satisfies rather than as a fourteenth
+    // port. This suite is typed against whatever the shipped constructor declares, so it
     // follows that surface rather than asserting a shape of its own.
-    service = new BrandService(urlTitleGenerator);
+    service = new BrandService(urlTitleGenerator, frameworkWrites);
   });
 
   describe('saveBrand', () => {
@@ -293,33 +339,38 @@ describe('BrandService', () => {
       expect(publishedMembers).not.toContain('findBrands');
     });
 
-    it('declares exactly one collaborator, the URL-title generator and nothing else', () => {
-      // COMPILE-TIME half: the annotation only accepts `1`, so widening the
-      // constructor to a second collaborator fails the build rather than this
+    it('declares exactly two constructor arguments: the URL-title generator and the framework write', () => {
+      // COMPILE-TIME half: the annotation only accepts `2`, so widening the
+      // constructor to a THIRD collaborator fails the build rather than this
       // assertion. It is the stronger of the two checks and is the reason the
       // tuple type is derived from the shipped class above.
-      const declaredArity: BrandServiceCollaborators['length'] = 1;
+      const declaredArity: BrandServiceCollaborators['length'] = 2;
 
       // RUN-TIME half, which also states the fact in the reporter's output.
       // `Function.length` counts declared parameters before any default, and the
-      // ported constructor declares one.
-      expect(declaredArity).toBe(1);
-      expect(BrandService.length).toBe(1);
+      // ported constructor declares two.
+      expect(declaredArity).toBe(2);
+      expect(BrandService.length).toBe(2);
 
-      // ★ THE SECOND COLLABORATOR IS ABSENT DELIBERATELY, AND THIS IS WHERE THAT
-      // IS PINNED. An earlier revision injected a persistence port to perform
-      // `super.save(arguments.brand, arguments.data)`
-      // [model/service/BrandService.cfc:L76]. `super.save` is framework-inherited
-      // generic Hibachi CRUD (AAP 0.5.3 does not carry it forward); there is no
-      // `BrandDAO.cfc` anywhere in the legacy repository; the thirteen-port set is
-      // closed and publishes no brand repository; and `ProductRepository`'s member
-      // set is locked at six, so it cannot host a brand write either. A partial
-      // brand write would have stored a WRONG ROW - `urlTitle` and `brandName`
+      // ★★ THIS CASE ASSERTED `1` AND IS INVERTED, WITH ITS REASONING PARTLY UPHELD AND
+      // PARTLY OVERTURNED. It argued: "THE SECOND COLLABORATOR IS ABSENT DELIBERATELY...
+      // A partial brand write would have stored a WRONG ROW - `urlTitle` and `brandName`
       // only, with `activeFlag`, `publishedFlag` and `brandWebsite` dropped and
-      // `model/validation/Brand.json` unenforced - which is strictly worse than no
-      // write at all. So the flush belongs to the composition root, and this
-      // service resolves the title and answers the brand.
-      expect(new BrandService(urlTitleGenerator)).toBeInstanceOf(BrandService);
+      // `model/validation/Brand.json` unenforced - which is strictly worse than no write
+      // at all. So the flush belongs to the composition root, and this service resolves
+      // the title and answers the brand."
+      //
+      // UPHELD: the flush does belong to the composition root, every port constraint it
+      // cited still binds, and a partial write would indeed be worse than none.
+      // OVERTURNED: the conclusion that the service must therefore write NOTHING. The
+      // hazard was PARTIALNESS, and the write that exists is not partial - all eleven
+      // `SwBrand` columns are written, `populate`
+      // [org/Hibachi/HibachiTransient.cfc:L169-L205] is reproduced so no supplied column
+      // is dropped, and every save-context rule in `model/validation/Brand.json` is
+      // enforced. The cases below assert each of those individually.
+      expect(
+        new BrandService(urlTitleGenerator, new RecordingBrandFrameworkWrites()),
+      ).toBeInstanceOf(BrandService);
     });
 
     it('leaves an existing entity URL title alone and never calls the generator', async () => {
@@ -333,7 +384,7 @@ describe('BrandService', () => {
       // on its own.
       const data: BrandSaveInput = { brandName: PAYLOAD_BRAND_NAME };
 
-      await runSaveExpectingFailClosed(service, brand, data);
+      await runSave(service, brand, data);
 
       expect(urlTitleGenerator.requests).toStrictEqual([]);
 
@@ -351,7 +402,7 @@ describe('BrandService', () => {
         brandName: PAYLOAD_BRAND_NAME,
       };
 
-      await runSaveExpectingFailClosed(service, brand, data);
+      await runSave(service, brand, data);
 
       // The gate is a CONJUNCTION, so either half suppressing is enough: a usable payload title
       // stops generation even though the entity has nothing.
@@ -363,7 +414,7 @@ describe('BrandService', () => {
       const brand = new Brand({ brandID: 'brand-needing-a-url-title' });
       const data: BrandSaveInput = { brandName: PAYLOAD_BRAND_NAME };
 
-      await runSaveExpectingFailClosed(service, brand, data);
+      await runSave(service, brand, data);
 
       // CFML parity [model/service/BrandService.cfc:L70]: `tableName="SwBrand"` is the PHYSICAL
       // table name [model/entity/Brand.cfc:L49], handed verbatim to the port. Schema continuity
@@ -397,7 +448,7 @@ describe('BrandService', () => {
       // test [model/service/BrandService.cfc:L69] answers false for.
       const data: BrandSaveInput = {};
 
-      await runSaveExpectingFailClosed(service, brand, data);
+      await runSave(service, brand, data);
 
       expect(urlTitleGenerator.requests).toStrictEqual([
         { titleString: ENTITY_BRAND_NAME, tableName: 'SwBrand' },
@@ -412,7 +463,7 @@ describe('BrandService', () => {
       });
       const data: BrandSaveInput = { brandName: PAYLOAD_BRAND_NAME };
 
-      await runSaveExpectingFailClosed(service, brand, data);
+      await runSave(service, brand, data);
 
       // CFML parity [model/service/BrandService.cfc:L69-L72]: L69 tests the payload FIRST and L71
       // is its `else if`, so the entity name is consulted only where the payload has nothing
@@ -439,28 +490,50 @@ describe('BrandService', () => {
       // and the framework validation service that used to answer first is not
       // ported.
       //
-      // THE ASSERTION IS NOW ON THE ERROR'S IDENTITY, AND THAT IS WHAT PINS THE
-      // PARITY. This case previously asserted `resolves`, precisely to prove the
-      // no-name path raised nothing of its own. Since finding S-06 that method fails
-      // closed on the absent durable write for EVERY input, so `resolves` no longer
-      // separates the two possibilities - but the error's TYPE still does. Rejecting
-      // with exactly `BrandPersistenceUnavailableError` says the refusal is about
-      // persistence and nothing else; had a title fallback or a title validation
-      // been introduced, this input is the one that would raise something else here.
-      await expect(service.saveBrand(brand, data)).rejects.toBeInstanceOf(
-        BrandPersistenceUnavailableError,
-      );
+      // ★★★ AND THE FAILURE THIS INPUT DOES REACH IS `brandName`, NOT `urlTitle`,
+      // WHICH IS THE WHOLE PARITY CLAIM. Two intermediate revisions of this case are
+      // worth recording, because the assertion has now been inverted twice and only the
+      // third reading is the legacy's.
+      //
+      // It first asserted `resolves` - proving the no-name path raised nothing of its
+      // own. It then asserted `BrandPersistenceUnavailableError`, on the argument that
+      // "since finding S-06 that method fails closed on the absent durable write for
+      // EVERY input, so `resolves` no longer separates the two possibilities - but the
+      // error's TYPE still does".
+      //
+      // That second reading was right about the METHOD - the type is what separates the
+      // possibilities - and wrong about which type. With the durable write in place, an
+      // input carrying no name anywhere is refused by `model/validation/Brand.json`
+      // itself, and the legacy refused it too: `validate(context="save")`
+      // [org/Hibachi/HibachiService.cfc:L151] flagged `brandName` required, `hasErrors()`
+      // answered true, and L155 SKIPPED the DAO call. So no row was written then and none
+      // is written now.
+      //
+      // The reported property is `brandName` because the rules run in the JSON's own
+      // listed order and `brandName` is first. `urlTitle` is also unset and also
+      // required, so a port that evaluated the rules in a different order would report
+      // the other one - which is exactly why the property is asserted rather than just
+      // the class.
+      await expect(service.saveBrand(brand, data)).rejects.toBeInstanceOf(BrandValidationError);
+      await expect(service.saveBrand(brand, data)).rejects.toMatchObject({
+        propertyName: 'brandName',
+      });
 
       expect(urlTitleGenerator.requests).toStrictEqual([]);
       expect(Object.hasOwn(data, 'urlTitle')).toBe(false);
       expect(data).toStrictEqual({});
+
+      // ★ AND NO ROW WAS WRITTEN, which is the assertion that makes the refusal mean
+      // something. `rejects` alone would also be satisfied by a method that wrote the row
+      // and then threw on the way out.
+      expect(frameworkWrites.saves).toStrictEqual([]);
     });
 
     it('treats an empty payload urlTitle as absent and generates', async () => {
       const brand = new Brand({ brandID: 'brand-with-an-empty-payload-title' });
       const data: BrandSaveInput = { urlTitle: '', brandName: PAYLOAD_BRAND_NAME };
 
-      await runSaveExpectingFailClosed(service, brand, data);
+      await runSave(service, brand, data);
 
       // CFML parity [model/service/BrandService.cfc:L68]: CFML len() truthiness means an empty
       // string is absent. The gate's second disjunction is
@@ -484,7 +557,7 @@ describe('BrandService', () => {
       });
       const data: BrandSaveInput = {};
 
-      await runSaveExpectingFailClosed(service, brand, data);
+      await runSave(service, brand, data);
 
       // CFML parity [model/service/BrandService.cfc:L68]: the gate's FIRST disjunction is
       // `isNull(brand.getURLTitle()) || !len(brand.getURLTitle())`, so the entity side applies the
@@ -516,7 +589,7 @@ describe('BrandService', () => {
         BrandName: PAYLOAD_BRAND_NAME,
       };
 
-      await runSaveExpectingFailClosed(service, brand, payload);
+      await runSave(service, brand, payload);
 
       expect(urlTitleGenerator.requests).toStrictEqual([
         { titleString: PAYLOAD_BRAND_NAME, tableName: 'SwBrand' },
@@ -530,85 +603,137 @@ describe('BrandService', () => {
       expect(Object.hasOwn(payload, 'urlTitle')).toBe(false);
     });
 
-    it('★★ NEVER REPORTS SUCCESS for the durable write it cannot perform', async () => {
-      // ★ THIS CASE IS THE INVERSE OF THE ONE IT REPLACES, AND THE INVERSION IS THE
-      // POINT. It previously read 'answers the brand it was handed, leaving the
-      // durable half to the composition root' and asserted `result).toBe(brand)` -
-      // encoding as correct the very behaviour a security review then raised as
-      // S-06 (CWE-703, CWE-840): `saveBrand` "returns a success-shaped mutated Brand
-      // but performs no durable write and throws no unavailable-capability error".
+    it('★★★ REPORTS SUCCESS ONLY BY ANSWERING THE ROW THAT WAS WRITTEN', async () => {
+      // ★★★ THIS CASE HAS NOW BEEN INVERTED TWICE, AND THE TWO INVERSIONS TOGETHER ARE
+      // THE ENTIRE HISTORY OF THIS METHOD. Both prior readings are recorded because each
+      // was right about something.
       //
-      // The deferral that assertion rested on was checked and found to name no
-      // owner: NOTHING under `src/repositories/**` writes `SwBrand`, and
-      // `mysqlProductRepository.ts` states that its eleven `SwBrand` columns are
-      // read-only there. So the brand a caller "saved" was discarded, silently, and
-      // this suite asserted that outcome was intended. A test that pins a defect as
-      // a contract is worse than no test, because it makes the fix look like the
-      // regression - which is exactly why the assertion is inverted here rather than
-      // deleted.
+      // READING ONE - 'answers the brand it was handed, leaving the durable half to the
+      // composition root', asserting `result).toBe(brand)`. That encoded as correct the
+      // behaviour a security review then raised as S-06 (CWE-703, CWE-840): `saveBrand`
+      // "returns a success-shaped mutated Brand but performs no durable write and throws
+      // no unavailable-capability error". It was wrong, and its own reasoning shows why:
+      // the deferral it rested on named no owner.
+      //
+      // READING TWO - '★★ NEVER REPORTS SUCCESS for the durable write it cannot
+      // perform', asserting a rejection. It argued: "NOTHING under `src/repositories/**`
+      // writes `SwBrand`... So the brand a caller 'saved' was discarded, silently, and
+      // this suite asserted that outcome was intended. A test that pins a defect as a
+      // contract is worse than no test, because it makes the fix look like the
+      // regression."
+      //
+      // Every word of that diagnosis stands. What it got wrong was the REMEDY: it read
+      // "no port is available" as "no write is possible", and those are different claims
+      // - only the first was ever established. Refusing every save is not a fix for a
+      // dropped write; it is the same lost row with a louder failure mode, and it left
+      // `saveBrand` unable to do the one thing its name promises. The write now exists as
+      // a narrow contract the service declares and the composition root satisfies over
+      // the request's executor, so the third reading is the legacy's own: populate,
+      // validate, flush, ANSWER THE PERSISTED ROW.
       const brand = new Brand({
         brandID: 'brand-already-carrying-a-title',
         brandName: ENTITY_BRAND_NAME,
       });
       const data: BrandSaveInput = { urlTitle: 'already-resolved-url-title' };
 
-      // The refusal is asserted on the error's IDENTITY, not on its message: a
-      // message is prose and may be reworded, whereas the class is the contract a
-      // caller branches on. Naming it also proves the rejection is deliberate rather
-      // than an incidental `TypeError` from a half-written path.
-      await expect(service.saveBrand(brand, data)).rejects.toBeInstanceOf(
-        BrandPersistenceUnavailableError,
-      );
+      const result = await runSave(service, brand, data);
 
-      // ★ AND NOTHING WAS QUIETLY DONE ON THE WAY OUT. Failing closed must not become
-      // an excuse for partial work: the entity is untouched, no identifier was
-      // invented for the flush that did not happen [model/entity/Brand.cfc:L52,
-      // `generator="uuid" unsavedvalue=""`], and the payload is exactly as supplied
-      // because the outer gate suppressed generation on the strength of the title
-      // already in it.
-      expect(brand.getBrandID()).toBe('brand-already-carrying-a-title');
+      // ★★ THE WRITE HAPPENED, and this is the assertion the two earlier readings each
+      // lacked. The writer was reached exactly once, and what reached it is the POPULATED
+      // brand - the payload's `urlTitle` folded onto the caller's entity - which is the
+      // order `super.save` used [org/Hibachi/HibachiService.cfc:L146, L151, L155].
+      expect(frameworkWrites.saves).toHaveLength(1);
+
+      const written = frameworkWrites.saves[0];
+
+      expect(written?.getBrandID()).toBe('brand-already-carrying-a-title');
+      expect(written?.getUrlTitle()).toBe('already-resolved-url-title');
+      expect(written?.getBrandName()).toBe(ENTITY_BRAND_NAME);
+
+      // ★★★ AND THE ANSWER IS THE WRITER'S, NOT THE ARGUMENT. `toBe` on the caller's
+      // instance is precisely what reading one asserted, so `not.toBe` is what pins the
+      // correction: a service that populated, validated, flushed and then answered its own
+      // argument would still be discarding the persisted state - the audit stamps most of
+      // all - and would pass every other assertion in this case.
+      expect(result).not.toBe(brand);
+      expect(result.getBrandID()).toBe('brand-already-carrying-a-title');
+      expect(result.getModifiedDateTime()).toStrictEqual(PERSISTED_AUDIT_TIMESTAMP);
+      expect(result.getModifiedByAccountID()).toBe(PERSISTED_AUDIT_ACCOUNT_ID);
+
+      // ★ AND THE CALLER'S INSTANCE IS UNTOUCHED. `Brand` publishes no mutator, so the
+      // populated state is a fresh entity; the argument keeps exactly what it arrived
+      // with, including the `urlTitle` it never had.
       expect(brand.getUrlTitle()).toBeUndefined();
-      expect(brand.getBrandName()).toBe(ENTITY_BRAND_NAME);
+      expect(brand.getModifiedByAccountID()).toBeUndefined();
+
+      // No generation fired, because the outer gate was suppressed by the title already
+      // in the payload, and the payload is otherwise exactly as supplied.
       expect(urlTitleGenerator.requests).toStrictEqual([]);
       expect(data).toStrictEqual({ urlTitle: 'already-resolved-url-title' });
     });
 
-    it('still resolves the ported URL title before it refuses, so no ported logic is lost', async () => {
-      // The other half of the fail-closed contract, and the reason the throw sits at
-      // the END of the method rather than at its start. AAP 0.4.1 mandates this file
-      // port `saveBrand` L67 with "the single `dataService` dependency becomes the
-      // URL-title port"; that logic is the method's entire ported substance, and a
-      // guard clause at the top would have deleted it while appearing to satisfy the
-      // review. Here the generator IS called, and its answer IS written through to
-      // the payload - the same route the legacy `super.save` read the column from -
-      // and only then does the method refuse.
-      const brand = new Brand({ brandID: 'brand-needing-a-generated-title' });
+    it('resolves the ported URL title BEFORE it writes, so the generated title reaches the row', async () => {
+      // ★★ THE ORDER IS THE ASSERTION, AND ITS JUSTIFICATION HAS CHANGED WHILE ITS
+      // SUBJECT HAS NOT. This case previously read 'still resolves the ported URL title
+      // before it refuses, so no ported logic is lost' and argued: "the reason the throw
+      // sits at the END of the method rather than at its start. AAP 0.4.1 mandates this
+      // file port `saveBrand` L67 with 'the single `dataService` dependency becomes the
+      // URL-title port'; that logic is the method's entire ported substance, and a guard
+      // clause at the top would have deleted it while appearing to satisfy the review."
+      //
+      // The AAP citation and the ordering claim both stand. What was provisional was the
+      // DESTINATION: the title was resolved and then thrown away with the rest of the
+      // save. Now the same ordering carries it into the written row, which is the outcome
+      // the ordering existed to make possible. So this case no longer proves "no ported
+      // logic is lost on the way to a refusal" - it proves the generated title is what
+      // `populate` folds onto the entity the writer receives.
+      const brand = new Brand({
+        brandID: 'brand-needing-a-generated-title',
+        brandName: ENTITY_BRAND_NAME,
+      });
       const data: BrandSaveInput = { brandName: PAYLOAD_BRAND_NAME };
 
-      await runSaveExpectingFailClosed(service, brand, data);
+      const result = await runSave(service, brand, data);
 
       expect(urlTitleGenerator.requests).toStrictEqual([
         { titleString: PAYLOAD_BRAND_NAME, tableName: 'SwBrand' },
       ]);
       expect(data.urlTitle).toBe(PAYLOAD_DERIVED_URL_TITLE);
+
+      // ★ AND IT REACHED THE ROW BY THE PAYLOAD, NOT BY THE ENTITY. The legacy wrote the
+      // generated slug into `data` [model/service/BrandService.cfc:L70] and let
+      // `super.save` populate the entity from the struct; the ported `Brand` publishes no
+      // `urlTitle` mutator, so that is the only route available and this pins that it is
+      // the route taken. Were generation moved after populate, the payload assertion above
+      // would still pass and this one would not.
+      expect(frameworkWrites.saves[0]?.getUrlTitle()).toBe(PAYLOAD_DERIVED_URL_TITLE);
+      expect(result.getUrlTitle()).toBe(PAYLOAD_DERIVED_URL_TITLE);
     });
 
-    it('preserves every payload column the caller supplied, not just the two it reads', async () => {
-      // ★ THE DEFECT THIS CASE EXISTS TO RULE OUT. `BrandSaveInput` declares only
-      // the two keys the legacy body reads - `urlTitle` [L68, L70, L72] and
-      // `brandName` [L69] - which invites the conclusion that the flags, the
-      // website and the remote identifier are DROPPED somewhere in this service.
-      // They are not: TypeScript types erase at run time, this method mutates the
-      // caller's object in place rather than copying it, and it answers without
-      // rebuilding it. So the payload the composition root goes on to flush carries
-      // the COMPLETE column set the caller supplied plus the resolved `urlTitle` -
-      // which is exactly what the legacy `super.save(brand, data)` needed, because
-      // it populated the entity from the whole struct.
+    it('★★ CARRIES EVERY PAYLOAD COLUMN THROUGH TO THE ROW, not just the two it reads', async () => {
+      // ★★★ THE DEFECT THIS CASE EXISTS TO RULE OUT, AND ITS ASSERTION HAS MOVED TO WHERE
+      // THE COLUMNS ACTUALLY LAND. `BrandSaveInput` used to declare only the two keys the
+      // legacy body reads - `urlTitle` [L68, L70, L72] and `brandName` [L69] - which
+      // invited the conclusion that the flags, the website and the remote identifier were
+      // DROPPED somewhere in this service.
       //
-      // The payload is typed as a loose record for the same reason the casing case
-      // above is: excess-property checking would reject these keys on a fresh
-      // literal typed as the save input, and the path that carries them opens at an
-      // untyped boundary such as a handler forwarding a parsed request body.
+      // The old case answered that by asserting on the PAYLOAD: "TypeScript types erase at
+      // run time, this method mutates the caller's object in place rather than copying it,
+      // and it answers without rebuilding it. So the payload the composition root goes on
+      // to flush carries the COMPLETE column set the caller supplied plus the resolved
+      // `urlTitle` - which is exactly what the legacy `super.save(brand, data)` needed,
+      // because it populated the entity from the whole struct."
+      //
+      // Every clause was true, and the conclusion no longer follows FROM IT ALONE, because
+      // there is now a populate step in this file rather than a hypothetical one downstream.
+      // An intact payload proves nothing about the row if populate reads only two of its
+      // keys. So the payload assertion is KEPT - the caller's object must still not be
+      // damaged - and the load-bearing assertion is now on the brand the writer received.
+      // The input type is widened to all six columns for the same reason.
+      //
+      // The payload stays typed as a loose record: the casing case above needs that, and
+      // the path that carries these keys opens at an untyped boundary such as a handler
+      // forwarding a parsed request body.
       const payload: Record<string, unknown> = {
         brandName: PAYLOAD_BRAND_NAME,
         activeFlag: true,
@@ -618,7 +743,7 @@ describe('BrandService', () => {
       };
 
       const brand = new Brand({ brandID: 'brand-with-a-full-payload' });
-      await runSaveExpectingFailClosed(service, brand, payload);
+      const result = await runSave(service, brand, payload);
 
       // The guard chain ran and resolved the title into the SAME object.
       expect(payload['urlTitle']).toBe(PAYLOAD_DERIVED_URL_TITLE);
@@ -635,38 +760,69 @@ describe('BrandService', () => {
         urlTitle: PAYLOAD_DERIVED_URL_TITLE,
       });
 
-      // `brandWebsite` is carried as an opaque string and nothing is done with the
-      // host it names: no reachability check, no name resolution, no request. The
-      // legacy `saveBrand` never reads the column either. That holds on the
-      // fail-closed path too: refusing the write is not licence to touch a column the
-      // method never read, so the assertion above is on the WHOLE payload.
+      // ★★★ AND ALL SIX COLUMNS REACHED THE ROW. This is the assertion the old reading
+      // could not make. `populate` [org/Hibachi/HibachiTransient.cfc:L169-L205] folds every
+      // simple key the payload holds, not the two the branch logic reads, so a port that
+      // populated only `urlTitle` and `brandName` would satisfy every assertion above and
+      // fail here - which is the exact shape of the dropped-column defect.
+      const written = frameworkWrites.saves[0];
+
+      expect(written?.getBrandName()).toBe(PAYLOAD_BRAND_NAME);
+      expect(written?.getUrlTitle()).toBe(PAYLOAD_DERIVED_URL_TITLE);
+      expect(written?.getActiveFlag()).toBe(true);
+      expect(written?.getPublishedFlag()).toBe(false);
+      expect(written?.getBrandWebsite()).toBe('https://example.invalid/acme');
+      expect(written?.getRemoteID()).toBe('legacy-remote-identifier');
+
+      // `brandWebsite` reaches `validate_dataType` [org/Hibachi/HibachiValidationService.cfc:L256-L262]
+      // and passes because it is an absolute URL - but nothing is done with the host it
+      // names: no reachability check, no name resolution, no request. The legacy
+      // `saveBrand` never read the column at all, and the ported validator only inspects
+      // the string's shape.
+      expect(written?.getBrandID()).toBe('brand-with-a-full-payload');
+      expect(result.getBrandID()).toBe('brand-with-a-full-payload');
+
+      // The caller's own instance is untouched, because populate builds a new entity.
       expect(brand.getBrandID()).toBe('brand-with-a-full-payload');
+      expect(brand.getBrandName()).toBeUndefined();
+      expect(brand.getRemoteID()).toBeUndefined();
     });
 
-    it('reaches its collaborator only through the constructor, never through a locator', async () => {
-      // Two services, two independent doubles. Were either instance resolving its
+    it('reaches BOTH collaborators only through the constructor, never through a locator', async () => {
+      // Two services, FOUR independent doubles. Were either instance resolving a
       // collaborator from a registry, a module singleton or an ambient request
       // scope, the call would land somewhere other than the double that instance
       // was constructed with, and this case would fail. That is the whole proof,
       // and it is why no container, composition root or locator is imported
       // anywhere in this file.
+      //
+      // ★ THE WRITE COLLABORATOR IS NOW HALF OF THAT PROOF, AND IT IS THE HALF THAT
+      // MATTERS MOST. The composition root builds `SqlBrandFrameworkWrites` PER REQUEST
+      // because it closes over the request's audit actor, so a brand service that reached
+      // its writer through module state would stamp one request's account onto another
+      // request's row. This case is where that cannot happen unnoticed: the isolated
+      // instance's write must land in the isolated writer and nowhere else.
       const isolatedGenerator = new RecordingUrlTitleGenerator();
-      const isolatedService = new BrandService(isolatedGenerator);
+      const isolatedWrites = new RecordingBrandFrameworkWrites();
+      const isolatedService = new BrandService(isolatedGenerator, isolatedWrites);
 
       const brand = new Brand({ brandID: 'brand-routed-to-the-isolated-double' });
       const data: BrandSaveInput = { brandName: PAYLOAD_BRAND_NAME };
 
-      await runSaveExpectingFailClosed(isolatedService, brand, data);
+      await runSave(isolatedService, brand, data);
 
       expect(isolatedGenerator.requests).toStrictEqual([
         { titleString: PAYLOAD_BRAND_NAME, tableName: 'SwBrand' },
       ]);
       expect(data.urlTitle).toBe(PAYLOAD_DERIVED_URL_TITLE);
+      expect(isolatedWrites.saves).toHaveLength(1);
+      expect(isolatedWrites.saves[0]?.getUrlTitle()).toBe(PAYLOAD_DERIVED_URL_TITLE);
 
-      // The double built in `beforeEach` was handed to a different instance and
+      // The doubles built in `beforeEach` were handed to a different instance and
       // recorded nothing, which also demonstrates the per-case isolation every
       // assertion in this file depends on.
       expect(urlTitleGenerator.requests).toStrictEqual([]);
+      expect(frameworkWrites.saves).toStrictEqual([]);
     });
   });
 });

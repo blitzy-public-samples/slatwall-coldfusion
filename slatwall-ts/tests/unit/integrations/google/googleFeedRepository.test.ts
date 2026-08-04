@@ -137,6 +137,7 @@ import { describe, expect, it } from 'vitest';
 
 import { GoogleFeedRepository } from '../../../../src/integrations/google/googleFeedRepository.js';
 import type { PreparedStatementExecutor } from '../../../../src/repositories/mysql/connection.js';
+import { SQL_TUPLE_ROW_LIMIT } from '../../../../src/repositories/mysql/connection.js';
 import type {
   GoogleFeedSalePriceSource,
   GoogleFeedValueRounder,
@@ -3317,42 +3318,60 @@ describe('the sale price is resolved for the whole catalog and keyed per SKU', (
 });
 
 // ---------------------------------------------------------------------------
-// The whole-catalog materialization ceiling (S-08)
+// Whole-catalog materialization - the ceiling, inverted
 //
 // A security review raised finding S-08, MEDIUM, CWE-400: whole-catalog feed materialization can
 // exhaust database or container resources. It is right about the shape - the selection statement
 // carries no row bound of any kind, deliberately, because the legacy controller narrowed by four
 // predicates and nothing else [integrationServices/google/controllers/feed.cfc:L58-L70], so the
-// selection is as large as the catalog and every surviving row is held in memory while four further
-// statements resolve against it.
+// selection is as large as the catalog.
 //
-// THE BOUND IS A REFUSAL RATHER THAN A PAGE, and that is forced rather than preferred: AAP 0.4.2
-// fixes the feed's signature as returning the document as a `string`, so a cursor or a stream would
-// change an AAP-frozen return type. The full argument is on `MAX_FEED_SELECTION_ROWS`.
+// ★★ AN EARLIER REVISION ANSWERED IT WITH A 25,000-ROW REFUSAL, AND THIS BLOCK USED TO PIN IT. A
+// later review found the refusal to be the defect. The legacy feed has no row bound, so a merchant
+// whose catalog crossed the invented threshold would have had a WORKING feed replaced by an error, on
+// correct data, with no legacy antecedent and no AAP authorization. The earlier disposition conceded
+// as much by resting on what "could not have been DELIVERED however this adapter behaved" - a
+// prediction about the runtime, not a property of the contract.
+//
+// SO THE REFUSAL CASES ARE NOW THEIR INVERSE, and the at-the-limit case is kept unchanged. What
+// bounds the follow-up statements instead is batching: each binds one placeholder per key, and
+// `sqlPlaceholderList` refuses a count above the driver's protocol limit, so the ancestry walk and
+// the image read chunk their key lists. The final two cases pin that, one above the batch limit and
+// one below it.
+//
+// THE DEPTH CEILING ON THE RECURSIVE ANCESTRY WALK IS UNAFFECTED and stays exactly where it is: it
+// guards against MySQL error 3636 on cyclic legacy data, which is a platform limit rather than an
+// invented one, and its own block above holds it to its claim.
 // ---------------------------------------------------------------------------
 
-describe('a catalog too large to render is refused rather than materialized', () => {
-  /** `count` distinct selection rows, which is all the ceiling inspects. */
+describe('a whole catalog is materialized rather than refused', () => {
+  /** `count` selection rows, distinct in every key the follow-up statements are keyed on. */
   function selectionRowsOf(count: number): readonly DriverRow[] {
     return Array.from({ length: count }, (_unused, index) =>
-      makeSelectionRow({ skuID: `fake-sku-id-${String(index)}` }),
+      makeSelectionRow({
+        skuID: `fake-sku-id-${String(index)}`,
+        productID: `fake-product-id-${String(index)}`,
+      }),
     );
   }
 
-  it('★★ refuses a selection ABOVE the ceiling before narrowing a single row', async () => {
-    const recorder = new RecordingExecutor({ selection: selectionRowsOf(25_001) });
+  it('★★ materializes a selection ABOVE the old ceiling instead of refusing it', async () => {
+    const recorder = new RecordingExecutor({
+      selection: selectionRowsOf(25_001),
+      ancestry: [],
+      images: [],
+    });
     const repository = makeRepository(recorder);
 
-    await expect(repository.fetchProductFeedRows()).rejects.toThrow(
-      /returned 25001 qualifying SKUs and at most 25000/u,
-    );
+    const rows = await repository.fetchProductFeedRows();
 
-    // ONE statement was issued - the selection - and none of the four the feed would have needed.
-    // Refusing before narrowing is what makes the ceiling a bound rather than a report.
-    expect(recorder.captured).toHaveLength(1);
+    // THE INVERTED CASE. This used to reject with `returned 25001 qualifying SKUs and at most 25000`
+    // after issuing only the selection. Every qualifying SKU now reaches the feed.
+    expect(rows).toHaveLength(25_001);
+    expect(recorder.captured.length).toBeGreaterThan(1);
   });
 
-  it('materializes a selection AT the ceiling, so the limit is inclusive', async () => {
+  it('materializes a selection at the old ceiling, unchanged', async () => {
     const recorder = new RecordingExecutor({
       selection: selectionRowsOf(25_000),
       ancestry: [],
@@ -3366,15 +3385,39 @@ describe('a catalog too large to render is refused rather than materialized', ()
     expect(recorder.captured.length).toBeGreaterThan(1);
   });
 
-  it('says what an operator should do about it, and names no row', async () => {
-    const recorder = new RecordingExecutor({ selection: selectionRowsOf(25_001) });
+  it('★★ batches the follow-up statements so no single bind exceeds the tuple row limit', async () => {
+    const recorder = new RecordingExecutor({
+      selection: selectionRowsOf(2_500),
+      ancestry: [],
+      images: [],
+    });
     const repository = makeRepository(recorder);
 
-    // The message explains WHY it cannot be paged - the feed is one string - so the refusal is
-    // actionable rather than merely a number, and it carries no SKU identifier, price or name.
-    await expect(repository.fetchProductFeedRows()).rejects.toThrow(
-      /generated as a single string \[AAP 0\.4\.2\], so it cannot be paged or streamed/u,
-    );
-    await expect(repository.fetchProductFeedRows()).rejects.not.toThrow(/fake-sku-id-/u);
+    await repository.fetchProductFeedRows();
+
+    // WHAT REPLACED THE CEILING. Every captured statement binds at most one batch of keys, so an
+    // uncapped selection cannot produce a statement the driver refuses to carry.
+    for (const captured of recorder.captured) {
+      expect(captured.params?.length ?? 0).toBeLessThanOrEqual(SQL_TUPLE_ROW_LIMIT);
+    }
+
+    // 2,500 distinct product identifiers become three image batches; the ancestry walk is keyed on
+    // the ONE product type the selection fixture carries, so it stays a single statement.
+    expect(recorder.captured.length).toBeGreaterThan(3);
+  });
+
+  it('emits one statement per follow-up when the key sets fit a single batch', async () => {
+    const recorder = new RecordingExecutor({
+      selection: selectionRowsOf(3),
+      ancestry: [],
+      images: [],
+    });
+    const repository = makeRepository(recorder);
+
+    await repository.fetchProductFeedRows();
+
+    // THE EMITTED SQL IS UNCHANGED FOR EVERY REALISTIC CATALOG, which is what keeps the batching
+    // invisible to every other case in this file: the selection, the ancestry walk and the images.
+    expect(recorder.captured).toHaveLength(3);
   });
 });

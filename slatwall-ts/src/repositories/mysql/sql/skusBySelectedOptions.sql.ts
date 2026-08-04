@@ -475,26 +475,32 @@ const PRODUCT_PREDICATE = 'and sku.productID = ?';
  *   empty-string `productID` - yields a statement that returns ZERO ROWS, exactly
  *   as the legacy did. It does not yield an exception.
  *
- *   SECURITY REVIEW DISPOSITION - RAISED AS S-08, AND THE CEILING IT ASKS FOR IS
- *   IMPOSED AT THE REQUEST BOUNDARY RATHER THAN HERE. The finding names this
- *   builder's `EXISTS`-per-element loop as an unbounded-construction risk, and it is
- *   right that the loop is unbounded. It is deliberately NOT bounded here, for a
- *   reason this module recorded before the review ever ran: an earlier revision DID
- *   carry a 64-element cap alongside `len()`, `trim()` and membership checks, and all
- *   of them were removed because each turned "no SKU matches" into a request failure
- *   for inputs [model/dao/SkuDAO.cfc:L107-L128] accepted. The suite KEPT those cases,
- *   INVERTED, precisely so that a returning guard fails a case that names it - see
+ *   SECURITY REVIEW DISPOSITION - RAISED AS S-08, AND NO CEILING IS IMPOSED, HERE OR
+ *   ANYWHERE ELSE ON THIS PATH. The finding names this builder's `EXISTS`-per-element
+ *   loop as an unbounded-construction risk, and it is right that the loop is
+ *   unbounded. It stays unbounded, for the reason this module recorded before the
+ *   review ever ran: an earlier revision DID carry a 64-element cap alongside `len()`,
+ *   `trim()` and membership checks, and all of them were removed because each turned
+ *   "no SKU matches" into a request failure for inputs
+ *   [model/dao/SkuDAO.cfc:L107-L128] accepted. The suite KEPT those cases, INVERTED,
+ *   precisely so that a returning guard fails a case that names it - see
  *   `tests/integration/repositories/skusBySelectedOptions.test.ts`, block
- *   "buildSkusBySelectedOptionsStatement - totality: it never throws". Reinstating the
- *   cap here would re-litigate a settled decision and reintroduce a divergence in the
- *   one folder granted none.
+ *   "buildSkusBySelectedOptionsStatement - totality: it never throws".
  *
- *   The ceiling lives instead in `src/handlers/skuResolutionHandler.ts`, applied to the
- *   caller-supplied field before any service is reached. That is where the finding's own
- *   suggested resolution puts it - "conservative core/handler count ... limits" - and
- *   where this module's own test comment already said it belonged: "it is a request
- *   boundary's, and no such boundary is in scope for this folder". The boundary IS in
- *   scope; this folder is not it.
+ *   ★ AND THE CEILING IS NOT SOMEWHERE ELSE EITHER, WHICH THIS PARAGRAPH USED TO CLAIM.
+ *   It read: "The ceiling lives instead in `src/handlers/skuResolutionHandler.ts`,
+ *   applied to the caller-supplied field before any service is reached." That was
+ *   wrong twice over. No such module exists, so the sentence pointed at nothing a
+ *   reader could check. And the adapter one layer up, `../mysqlSkuRepository.ts`, DID
+ *   briefly carry a 64-element refusal of its own - which has since been removed for
+ *   the same reason this module never accepted one; see the read-totality block at the
+ *   head of that file. The whole path from the request to the statement is now total on
+ *   magnitude, and `getProductSkusBySelectedOptions` - a must-preserve behaviour -
+ *   answers every list it is given, with rows or with an empty array.
+ *
+ *   The resource concern the finding raised is answered where the amplification
+ *   actually is: the adapter's association follow-up statements batch their identifier
+ *   lists, so a large answer costs bounded statements rather than a refused request.
  */
 export function buildSkusBySelectedOptionsStatement(
   selectedOptions: string,

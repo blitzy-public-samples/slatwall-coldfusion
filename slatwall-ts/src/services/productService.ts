@@ -662,8 +662,16 @@ function assertPagingBound(
  */
 export interface ProductQueryCriteria {
   /**
-   * The keyword term matched against the five keyword properties preserved on
-   * {@link ProductPage}.
+   * The keyword term matched against the keyword property published on
+   * {@link ProductPage} - `productName`, and only that one.
+   *
+   * ★★ THIS ONCE READ "the five keyword properties preserved on {@link ProductPage}" AND THAT
+   * WAS A CROSS-LAYER CONTRADICTION. Five properties were published, but the statement this
+   * term reaches - [model/dao/ProductDAO.cfc:L421] - matches `productName like` and nothing
+   * else. A caller reading the published metadata would have expected a brand-name or
+   * product-code match to succeed and found that it silently did not. The metadata is
+   * narrowed to the executed predicate; see {@link ProductPage.keywordProperties} for where
+   * the five-property configuration actually lived and why it is not reproduced.
    *
    * ★ REQUIRED HERE, THOUGH THE PORT MEMBER IT FEEDS IS OPTIONAL. This field once read
    * `keyword?: string | undefined`, and its comment once justified that with "Optional,
@@ -728,15 +736,32 @@ export interface ProductQueryCriteria {
 }
 
 /**
- * The result of `findProducts`: the matched products, the paging window that
- * produced them, and the QUERY CONTRACT the legacy smart list configured.
+ * The result of `findProducts`: the matched products, the paging window that produced
+ * them, and the QUERY CONTRACT OF THE STATEMENT THAT ACTUALLY RAN.
  *
- * The last part is the point. `getProductSmartList` returned a live query-builder
- * object, and a caller could inspect its joins and keyword properties. Those
- * settings are a DATA CONTRACT - the entity name, the three join types and the
- * five weighted keyword properties are all reproduced verbatim - so they are
- * published on the result rather than discarded with the builder. A reviewer can
- * diff them against [model/service/ProductService.cfc:L343-L355] directly.
+ * The last part is the point, and it is worth being exact about WHICH query it describes.
+ * `getProductSmartList` returned a live query-builder object, and a caller could inspect
+ * its joins and keyword properties; a returned array cannot be inspected, so the query
+ * shape is published on the result instead of being discarded with the builder.
+ *
+ * ★★ IT DESCRIBES THE EXECUTED STATEMENT, NOT THE SMART-LIST CONFIGURATION, and that is a
+ * correction. An earlier revision published the entity name, THREE joins and FIVE weighted
+ * keyword properties copied verbatim from [model/service/ProductService.cfc:L343-L355],
+ * describing them as "a DATA CONTRACT ... A reviewer can diff them against
+ * [L343-L355] directly". A reviewer could - and the diff was against the wrong thing.
+ *
+ * `findProducts` does not execute the smart list. It executes
+ * `ProductRepository.searchProductsByProductType`, whose statement is
+ * [model/dao/ProductDAO.cfc:L421] - `select productID,productName from SwProduct where
+ * productName like :prodName`, optionally `and productTypeID in (...)` [L424]. ONE table,
+ * NO join, ONE matched property. Publishing three joins and five properties over that
+ * statement told a caller that a match on `brand.brandName` or `productCode` would
+ * succeed, when it could not - a cross-layer contradiction rather than a data contract.
+ *
+ * Both members are therefore narrowed to what the statement matches. What the smart list
+ * configured is not lost: it is recorded, inert, on {@link PRODUCT_QUERY_JOINS} and
+ * {@link PRODUCT_QUERY_KEYWORD_PROPERTIES}, which is the honest place for a configuration
+ * this port deliberately does not reproduce (AAP 0.6.2).
  *
  * The join and keyword shapes are written inline rather than promoted to named
  * aliases, keeping this module's published names to the set its method signatures
@@ -762,9 +787,19 @@ export interface ProductPage {
   readonly entityName: 'SlatwallProduct';
 
   /**
-   * The three related-property joins, in declaration order, with their EXACT join
-   * types. The `left` on `brand` is load-bearing: a product with no brand survives
-   * the query only because of it.
+   * The related-property joins the executed statement performs. EMPTY, because it performs
+   * none: [model/dao/ProductDAO.cfc:L421] selects from `SwProduct` alone, and the optional
+   * product-type restriction at [L424] is a column predicate on `SwProduct.productTypeID`,
+   * not a join to `SwProductType`.
+   *
+   * The member survives as an empty list rather than being deleted, because "this query
+   * joins nothing" is a fact worth publishing: it is what tells a caller that a product
+   * with no brand, no product type or no default SKU is still returned. The three joins the
+   * smart list configured - and why an INNER-versus-LEFT distinction mattered there - are
+   * recorded on {@link PRODUCT_QUERY_JOINS}.
+   *
+   * The element type stays STRUCTURAL rather than being narrowed to `never`, so a future
+   * statement that genuinely joins can populate it without reopening this type.
    */
   readonly joins: readonly {
     readonly entityName: 'SlatwallProduct';
@@ -773,9 +808,17 @@ export interface ProductPage {
   }[];
 
   /**
-   * The five keyword properties, in declaration order, each at weight 1. EVERY
-   * WEIGHT IS 1 in the legacy, so no ranking differentiation exists and none is
-   * invented here.
+   * The properties the executed statement matches the keyword against: `productName`
+   * alone, at weight 1.
+   *
+   * ONE PROPERTY, because [model/dao/ProductDAO.cfc:L421] writes `productName like
+   * :prodName` and nothing more. The weight is 1 for the same reason it was 1 on all five
+   * smart-list properties - the legacy expressed no ranking anywhere on this path - and
+   * with a single property there is nothing to differentiate in any case. No relevance
+   * weighting, scoring, boosting or result ordering is invented.
+   *
+   * The four properties the smart list additionally configured are recorded on
+   * {@link PRODUCT_QUERY_KEYWORD_PROPERTIES}.
    */
   readonly keywordProperties: readonly {
     readonly propertyIdentifier: string;
@@ -885,42 +928,69 @@ export interface OptionLoadingCollaborator {
 // ---------------------------------------------------------------------------
 
 /**
- * The three related-property joins the legacy smart list configured, in
- * declaration order, verbatim from [model/service/ProductService.cfc:L347-L349].
+ * The related-property joins `findProducts`' statement performs: NONE.
  *
- * ★ THE JOIN TYPES ARE LOAD-BEARING AND ARE NOT NORMALISED. `joinRelatedProperty`
- * defaults to an INNER join, and L347 and L348 both take that default while L349
- * passes `"left"` explicitly. A product with no brand therefore survives the query,
- * and a product with no product type or no default SKU does not. Converting all
- * three to the same type - in either direction - would silently change which
- * products a catalogue search returns.
+ * [model/dao/ProductDAO.cfc:L421] is `select productID,productName from SwProduct where
+ * productName like :prodName`, and the optional restriction at [L424] appends
+ * `and productTypeID in (...)` - a predicate on a column of the SAME row. One table, no
+ * join, and therefore an empty list.
+ *
+ * ★★ THIS CONSTANT ONCE HELD THREE JOINS AND PUBLISHING THEM WAS A CROSS-LAYER DEFECT.
+ * Its earlier body was:
+ *
+ *   { entityName: 'SlatwallProduct', propertyIdentifier: 'productType', joinType: 'inner' },
+ *   { entityName: 'SlatwallProduct', propertyIdentifier: 'defaultSku',  joinType: 'inner' },
+ *   { entityName: 'SlatwallProduct', propertyIdentifier: 'brand',       joinType: 'left'  },
+ *
+ * taken verbatim from [model/service/ProductService.cfc:L347-L349], with the note that "THE
+ * JOIN TYPES ARE LOAD-BEARING AND ARE NOT NORMALISED ... A product with no brand therefore
+ * survives the query, and a product with no product type or no default SKU does not."
+ *
+ * Every word of that is true OF THE SMART LIST, and the smart list is not what runs.
+ * `getProductSmartList` [L342-L358] built a `HibachiSmartList` and configured those joins on
+ * it; AAP 0.6.2 rules that construct out - "these two methods become explicit, typed
+ * repository query methods rather than a generic smart-list clone" - and `findProducts`
+ * consequently executes `ProductDAO.searchProductsByProductType` instead. Under THAT
+ * statement the INNER joins do not exist, so a product with no product type or no default
+ * SKU is returned, and publishing three joins asserted the opposite.
+ *
+ * WHY THE METADATA NARROWED RATHER THAN THE PREDICATE WIDENING. The alternative was to make
+ * the statement match the published contract - three joins and a five-property OR. That
+ * would mean authoring SQL no legacy DAO contains, changing which rows a search returns,
+ * with no source to port it from. AAP 0.6.2 authorizes exactly the opposite direction:
+ * "The concrete filters the legacy callers actually apply are preserved; the open-ended
+ * dynamic filtering surface is not reproduced." The joins are part of that unreproduced
+ * surface, so they are recorded here and published nowhere.
  */
-const PRODUCT_QUERY_JOINS = [
-  { entityName: 'SlatwallProduct', propertyIdentifier: 'productType', joinType: 'inner' },
-  { entityName: 'SlatwallProduct', propertyIdentifier: 'defaultSku', joinType: 'inner' },
-  { entityName: 'SlatwallProduct', propertyIdentifier: 'brand', joinType: 'left' },
-] as const satisfies ProductPage['joins'];
+const PRODUCT_QUERY_JOINS = [] as const satisfies ProductPage['joins'];
 
 /**
- * The five keyword properties the legacy smart list configured, in declaration
- * order, verbatim from [model/service/ProductService.cfc:L351-L355].
+ * The properties `findProducts`' statement matches the keyword against: `productName` alone.
  *
- * ★ EVERY WEIGHT IS 1, SO NO RANKING DIFFERENTIATION EXISTS IN THE LEGACY. The
- * five identifiers are equally weighted, which means the legacy expressed no
- * preference between a match on a brand name and a match on a product code. No
- * relevance weighting, scoring, boosting or result ordering is invented here, and
- * the uniform weight is published on the result so that its uniformity is visible
- * rather than assumed.
+ * [model/dao/ProductDAO.cfc:L421] writes one comparison, `productName like :prodName`, and
+ * [L422] binds `%#term#%` to it. Weight 1 because the legacy expressed no ranking on this
+ * path - and with a single property there is nothing to rank. No relevance weighting,
+ * scoring, boosting or result ordering is invented.
  *
- * The dotted identifiers are preserved exactly. `calculatedTitle` in particular is
- * a persisted calculated-property name and is a data contract, not a label.
+ * ★★ THIS CONSTANT ONCE HELD FIVE PROPERTIES, verbatim from
+ * [model/service/ProductService.cfc:L351-L355], and publishing them over a single-column
+ * `LIKE` was the cross-layer defect this narrowing fixes. The four that are NOT matched by
+ * the executed statement, recorded so nothing is lost:
+ *
+ *   { propertyIdentifier: 'calculatedTitle',              weight: 1 },
+ *   { propertyIdentifier: 'brand.brandName',              weight: 1 },
+ *   { propertyIdentifier: 'productCode',                  weight: 1 },
+ *   { propertyIdentifier: 'productType.productTypeName',  weight: 1 },
+ *
+ * Two of those four are reachable only THROUGH the joins the same smart list configured,
+ * which is why the two constants fail and are corrected together. The dotted identifiers are
+ * reproduced above exactly as the legacy wrote them, and `calculatedTitle` is noted as a
+ * persisted calculated-property name rather than a label, so a future revision that
+ * genuinely ports the smart list has the spellings it needs. See {@link PRODUCT_QUERY_JOINS}
+ * for the AAP 0.6.2 reasoning that governs both.
  */
 const PRODUCT_QUERY_KEYWORD_PROPERTIES = [
-  { propertyIdentifier: 'calculatedTitle', weight: 1 },
-  { propertyIdentifier: 'brand.brandName', weight: 1 },
   { propertyIdentifier: 'productName', weight: 1 },
-  { propertyIdentifier: 'productCode', weight: 1 },
-  { propertyIdentifier: 'productType.productTypeName', weight: 1 },
 ] as const satisfies ProductPage['keywordProperties'];
 
 /**
@@ -3904,24 +3974,33 @@ export class ProductService {
    * LEGACY-NOTE [model/service/ProductService.cfc:L342]: getProductSmartList returned a
    * HibachiSmartList - a generic, string-keyed, dynamically-filtered framework query
    * builder that is untypeable under the strict profile and would reimport the framework
-   * coupling this port exists to remove. It is replaced by an explicit typed query. The
-   * concrete joins and keyword properties below are preserved as a data contract; the
-   * open-ended dynamic filtering surface is deliberately not reproduced.
+   * coupling this port exists to remove. It is replaced by an explicit typed query over
+   * `ProductRepository.searchProductsByProductType` [model/dao/ProductDAO.cfc:L419-L437],
+   * per AAP 0.6.2: "The concrete filters the legacy callers actually apply are preserved;
+   * the open-ended dynamic filtering surface is not reproduced."
    *
    * WHAT IS PRESERVED, ITEM BY ITEM, AS A DATA CONTRACT:
-   *   * The entity name `"SlatwallProduct"` [L343], verbatim.
-   *   * THREE joins with their EXACT types [L347-L349] - `productType` and `defaultSku`
-   *     taking `joinRelatedProperty`'s default INNER, and `brand` passing `"left"`
-   *     explicitly. The LEFT-versus-INNER distinction is load-bearing: a product with no
-   *     brand survives the query only because of it. See {@link PRODUCT_QUERY_JOINS}.
-   *   * FIVE keyword properties, ALL AT `weight=1` [L351-L355], with their dotted
-   *     identifiers verbatim. Every weight being 1 means NO RANKING DIFFERENTIATION
-   *     EXISTS in the legacy, so no relevance weighting, scoring, boosting or result
-   *     ordering is invented. See {@link PRODUCT_QUERY_KEYWORD_PROPERTIES}.
+   *   * The entity name `"SlatwallProduct"` [L343], verbatim. It is the entity the returned
+   *     records are, so it holds whichever statement produced them.
+   *   * The EXECUTED predicate, verbatim: `productName like :prodName`
+   *     [model/dao/ProductDAO.cfc:L421] with `%#term#%` bound at [L422], plus the optional
+   *     `and productTypeID in (...)` behind its `structKeyExists && len` guard [L423-L425].
+   *   * ONE keyword property, `productName` at weight 1, and ZERO joins - because that is
+   *     what the predicate above matches and how many tables it names. See
+   *     {@link PRODUCT_QUERY_KEYWORD_PROPERTIES} and {@link PRODUCT_QUERY_JOINS}.
+   *
+   * ★★ THIS LIST ONCE CLAIMED THREE JOINS AND FIVE KEYWORD PROPERTIES, copied from
+   * [L347-L355], and that was a cross-layer contradiction rather than a data contract: those
+   * are the SMART LIST's settings, and the smart list is precisely the construct AAP 0.6.2
+   * removes. The statement that runs matches one column of one table, so a caller told to
+   * expect a `brand.brandName` or `productCode` match would have found it silently fail.
+   * Both constants now describe the executed statement and record the smart-list
+   * configuration inertly, with the full reasoning.
    *
    * WHAT IS DELIBERATELY NOT REPRODUCED: the dynamic `data`-struct filtering surface,
-   * `currentURL` URL-state parsing, and any string-keyed filter dispatch. Those are the
-   * framework mechanism, not the business rule.
+   * `currentURL` URL-state parsing, any string-keyed filter dispatch, AND the smart list's
+   * own joins and multi-property keyword search. Those are the framework mechanism, not the
+   * business rule.
    *
    * LEGACY-NOTE [model/dao/ProductDAO.cfc:L419]: the repository member consumed here
    * declares `productTypeIDs` - PLURAL - while

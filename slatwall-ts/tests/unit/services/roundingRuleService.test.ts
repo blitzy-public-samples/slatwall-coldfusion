@@ -187,6 +187,8 @@ import {
 } from '../../../src/lib/cfml/precision.js';
 import type { PreciseValue } from '../../../src/lib/cfml/precision.js';
 import { RoundingRuleService } from '../../../src/services/roundingRuleService.js';
+import { RoundingRuleValidationError } from '../../../src/services/roundingRuleService.js';
+import type { RoundingRuleFrameworkWrites } from '../../../src/services/roundingRuleService.js';
 import type {
   RoundingRuleDetails,
   RoundingRuleSaveInput,
@@ -311,13 +313,19 @@ class RecordingPromotionRepository implements PromotionRepository {
     return Promise.resolve(this.stub(roundingRuleID));
   }
 
-  // ★ THERE IS NO `saveRoundingRule` MEMBER HERE, AND THERE IS NONE ON THE PORT. For one
-  // revision this class carried a recording `saves: RoundingRule[]` array, a `saveFailure`
-  // field and a `saveRoundingRule` implementation, against an eighth method added to
-  // `PromotionRepository`. The port is back to SEVEN READS and all three are gone with it.
-  // Their absence is now load-bearing rather than incidental: the six raising members below
-  // plus the one lookup above are the WHOLE port, so if the service ever reaches for a write
-  // again there is no member for it to reach, and the file stops compiling.
+  // ★ THERE IS STILL NO `saveRoundingRule` MEMBER HERE, AND STILL NONE ON THE PORT - AND THAT
+  // IS NOW A SHARPER STATEMENT THAN IT WAS, NOT A WEAKER ONE. For one revision this class
+  // carried a recording `saves: RoundingRule[]` array, a `saveFailure` field and a
+  // `saveRoundingRule` implementation, against an EIGHTH METHOD ADDED TO `PromotionRepository`.
+  // The port is SEVEN READS and all three are gone with it.
+  //
+  // The service does now perform the durable write, through
+  // `RoundingRuleFrameworkWrites` - a contract the SERVICE declares and the composition root
+  // satisfies module-locally, doubled below by `RecordingRoundingRuleFrameworkWrites`. So the
+  // absence here says exactly what it always meant to: the write did not arrive by widening a
+  // repository port. The six raising members below plus the one lookup above are the WHOLE
+  // port, so if the service ever reaches through the REPOSITORY for a write there is no
+  // member for it to reach and the file stops compiling.
   //
   // The other six members of the port. Every one raises, which is the strongest
   // available statement that this service touches exactly the ONE repository
@@ -340,6 +348,59 @@ class RecordingPromotionRepository implements PromotionRepository {
   readonly getSalePricePromotionRewardsQuery: PromotionRepository['getSalePricePromotionRewardsQuery'] =
     () => unreachedRepositoryMember('getSalePricePromotionRewardsQuery');
 }
+
+/**
+ * A recording double for the durable half of `super.save`.
+ *
+ * ★ WHY THIS EXISTS AT ALL, AND WHY IT IS NOT ON THE REPOSITORY DOUBLE. `saveRoundingRule`
+ * used to evict its memo and resolve the input entity, writing nothing; a review raised that
+ * as a success-shaped dropped write, and the fix is a narrow single-method collaborator that
+ * the service declares and `src/handlers/bootstrap.ts` satisfies over the request's prepared
+ * statement executor. It is deliberately NOT a member of `PromotionRepository` - the port
+ * inventory is closed at thirteen and this one is specified as seven reads - so doubling it
+ * separately here mirrors the production wiring exactly.
+ *
+ * ANSWERS A DISTINCT INSTANCE, NOT THE ARGUMENT, because the real writer does: an inserted
+ * rule acquires the identifier `generator="uuid"` minted for it
+ * [model/entity/RoundingRule.cfc:L52] and both paths acquire audit stamps. Returning the
+ * argument would let a service that forgot to answer the WRITER'S result still pass.
+ */
+class RecordingRoundingRuleFrameworkWrites implements RoundingRuleFrameworkWrites {
+  readonly saves: RoundingRule[] = [];
+
+  saveRoundingRule(rule: RoundingRule): Promise<RoundingRule> {
+    this.saves.push(rule);
+
+    return Promise.resolve(
+      new RoundingRule(
+        {
+          // An unsaved rule is answered with a minted identifier, exactly as the real writer
+          // answers one. Any other column is carried straight through: this double is a
+          // stand-in for persistence, not a second implementation of it.
+          roundingRuleID: rule.isNew() ? MINTED_ROUNDING_RULE_ID : rule.getRoundingRuleID(),
+          roundingRuleName: rule.getRoundingRuleName(),
+          roundingRuleExpression: rule.getRoundingRuleExpression(),
+          roundingRuleDirection: rule.getRoundingRuleDirection(),
+          createdDateTime: rule.getCreatedDateTime(),
+          createdByAccountID: rule.getCreatedByAccountID(),
+          modifiedDateTime: PERSISTED_AUDIT_TIMESTAMP,
+          modifiedByAccountID: PERSISTED_AUDIT_ACCOUNT_ID,
+          priceGroupRates: rule.getPriceGroupRates(),
+        },
+        boundaryEnforcingValueRounder,
+      ),
+    );
+  }
+}
+
+/** The identifier `RecordingRoundingRuleFrameworkWrites` mints for an unsaved rule. */
+const MINTED_ROUNDING_RULE_ID = 'minted-by-the-framework-writer';
+
+/** The `modifiedDateTime` the double stamps, fixed so an assertion can name it. */
+const PERSISTED_AUDIT_TIMESTAMP = new Date('2024-03-04T05:06:07.000Z');
+
+/** The `modifiedByAccountID` the double stamps. */
+const PERSISTED_AUDIT_ACCOUNT_ID = 'audit-actor-account';
 
 /**
  * A rounder that raises, injected into every rule this suite builds itself.
@@ -380,11 +441,21 @@ function buildRoundingRule(init: {
   readonly roundingRuleID: string;
   readonly roundingRuleExpression: string | undefined;
   readonly roundingRuleDirection: string | undefined;
+  /**
+   * The name, which every case that reaches a SAVE must supply.
+   *
+   * Optional and defaulting to `undefined`, so no existing case changes: the name is read by
+   * nothing outside `saveRoundingRule`'s save-context validation, and `roundValue` never sees it.
+   * The save cases pass one because [model/validation/RoundingRule.json] declares
+   * `"roundingRuleName": [{"contexts":"save","required":true}]`, and a rule without one is
+   * refused - which is itself a case below.
+   */
+  readonly roundingRuleName?: string | undefined;
 }): RoundingRule {
   return new RoundingRule(
     {
       roundingRuleID: init.roundingRuleID,
-      roundingRuleName: undefined,
+      roundingRuleName: init.roundingRuleName,
       roundingRuleExpression: init.roundingRuleExpression,
       roundingRuleDirection: init.roundingRuleDirection,
       createdDateTime: undefined,
@@ -404,6 +475,7 @@ function buildRoundingRule(init: {
 describe('RoundingRuleService', () => {
   let graph: PriceGroupFixtureGraph;
   let repository: RecordingPromotionRepository;
+  let frameworkWrites: RecordingRoundingRuleFrameworkWrites;
   let service: RoundingRuleService;
 
   beforeEach(() => {
@@ -423,7 +495,9 @@ describe('RoundingRuleService', () => {
         : undefined,
     );
 
-    service = new RoundingRuleService(repository);
+    frameworkWrites = new RecordingRoundingRuleFrameworkWrites();
+
+    service = new RoundingRuleService(repository, frameworkWrites);
   });
 
   // -------------------------------------------------------------------------
@@ -460,16 +534,28 @@ describe('RoundingRuleService', () => {
       expect(publishedMembers).not.toContain('roundValueByRoundingRuleExpression');
     });
 
-    it('takes exactly one collaborator, so the graph is wired by constructor alone', () => {
+    it('takes exactly two constructor arguments: the one legacy port and the framework write', () => {
       // T1 APPLIED. The legacy component declares one property
       // [model/service/RoundingRuleService.cfc:L51] resolved by a DI/1 convention
       // scan; the port arrives as an explicit, compile-checked argument. There is
       // no runtime scan, no service locator and no container package anywhere.
-      expect(RoundingRuleService.length).toBe(1);
+      //
+      // ★ THIS ASSERTED `1` UNTIL THE DURABLE WRITE ARRIVED, and the case was titled "takes
+      // exactly one collaborator". Both were true of a service whose `saveRoundingRule` wrote
+      // nothing. The count is INVERTED rather than deleted because the number is the whole
+      // point of the case: it must move when - and only when - a genuine collaborator is added,
+      // and here one was. The second argument is not a second LEGACY dependency; it is the
+      // durable half of `super.save(argumentcollection=arguments)`
+      // [model/service/RoundingRuleService.cfc:L63], which the component inherited rather than
+      // declared. The DI/1 calibration is therefore unchanged: the legacy declares one property,
+      // and this service consumes exactly one port.
+      expect(RoundingRuleService.length).toBe(2);
 
       // Constructing a second service over the same port is legal and needs no
       // teardown, which is the property the isolation case relies on.
-      expect(new RoundingRuleService(repository)).toBeInstanceOf(RoundingRuleService);
+      expect(
+        new RoundingRuleService(repository, new RecordingRoundingRuleFrameworkWrites()),
+      ).toBeInstanceOf(RoundingRuleService);
     });
   });
 
@@ -1339,7 +1425,10 @@ describe('RoundingRuleService', () => {
       const value = Money.fromDecimalString('12.3456');
 
       const viaQueryRepository = new RecordingPromotionRepository(() => absentExpressionRule);
-      const viaQueryService = new RoundingRuleService(viaQueryRepository);
+      const viaQueryService = new RoundingRuleService(
+        viaQueryRepository,
+        new RecordingRoundingRuleFrameworkWrites(),
+      );
 
       // Both halves are asserted against the SAME rule instance and the SAME
       // service, so nothing about the data or the wiring can explain the
@@ -1411,7 +1500,10 @@ describe('RoundingRuleService', () => {
         roundingRuleDirection: undefined,
       });
       const nullColumnRepository = new RecordingPromotionRepository(() => absentColumnsRule);
-      const nullColumnService = new RoundingRuleService(nullColumnRepository);
+      const nullColumnService = new RoundingRuleService(
+        nullColumnRepository,
+        new RecordingRoundingRuleFrameworkWrites(),
+      );
 
       const details = await nullColumnService.getRoundingRuleDetailsByID('rule-with-null-columns');
 
@@ -1474,8 +1566,14 @@ describe('RoundingRuleService', () => {
         return resolutionCount === 1 ? graph.closestRoundingRule : graph.roundUpRoundingRule;
       });
 
-      const firstService = new RoundingRuleService(alternatingRepository);
-      const secondService = new RoundingRuleService(alternatingRepository);
+      const firstService = new RoundingRuleService(
+        alternatingRepository,
+        new RecordingRoundingRuleFrameworkWrites(),
+      );
+      const secondService = new RoundingRuleService(
+        alternatingRepository,
+        new RecordingRoundingRuleFrameworkWrites(),
+      );
 
       const firstDetails = await firstService.getRoundingRuleDetailsByID(identifier);
 
@@ -1530,61 +1628,212 @@ describe('RoundingRuleService', () => {
     // is reproduced rather than closed, and nothing below asserts a delete-side
     // invalidation that the legacy design does not have.
 
-    it('answers the rule it was handed, with both optional arguments omitted', async () => {
+    it('answers the PERSISTED rule, with both optional arguments omitted', async () => {
       // `exactOptionalPropertyTypes` is enabled and the optional arguments are
       // GENUINELY OMITTED here rather than passed as undefined, so the declared
       // default for `context` - `"save"`, exactly as [L56] declares - is what
       // supplies it.
+      //
+      // ★ THIS CASE ASSERTED `expect(saved).toBe(graph.closestRoundingRule)` AND IS NOW
+      // INVERTED. Answering the argument was what made an unperformed write look performed:
+      // `super.save` [org/Hibachi/HibachiService.cfc:L155] returned what the DAO persisted, so
+      // returning the input was only ever correct for a method that did not write. It now
+      // answers the WRITER's result, which for an already-persisted rule differs from the input
+      // in its audit stamps.
       const saved = await service.saveRoundingRule(graph.closestRoundingRule);
 
-      expect(saved).toBe(graph.closestRoundingRule);
+      expect(saved).not.toBe(graph.closestRoundingRule);
+      expect(frameworkWrites.saves).toStrictEqual([graph.closestRoundingRule]);
+      expect(saved.getRoundingRuleID()).toBe(graph.closestRoundingRule.getRoundingRuleID());
+      expect(saved.getModifiedDateTime()).toStrictEqual(PERSISTED_AUDIT_TIMESTAMP);
+      expect(saved.getModifiedByAccountID()).toBe(PERSISTED_AUDIT_ACCOUNT_ID);
 
-      // Neither argument is read by the ported body: the eviction logic does not
+      // Neither optional argument is read by the ported body: the eviction logic does not
       // consult them, and [L63] passed them straight on. Supplying both therefore
-      // changes nothing observable.
+      // changes nothing observable EXCEPT through `context`, which selects the validation rule
+      // set - and the rule this fixture carries satisfies the save rules, so both calls write.
       const data: RoundingRuleSaveInput = { roundingRuleName: 'A renamed rule' };
 
-      expect(await service.saveRoundingRule(graph.closestRoundingRule, data, 'save')).toBe(
-        graph.closestRoundingRule,
-      );
-      expect(await service.saveRoundingRule(graph.closestRoundingRule, data, 'anyContext')).toBe(
-        graph.closestRoundingRule,
-      );
+      await service.saveRoundingRule(graph.closestRoundingRule, data, 'save');
+      await service.saveRoundingRule(graph.closestRoundingRule, data, 'anyContext');
 
-      // The payload is handed on untouched - no key added, none rewritten.
+      expect(frameworkWrites.saves).toHaveLength(3);
+
+      // The payload is handed on untouched - no key added, none rewritten. `populate`
+      // [org/Hibachi/HibachiService.cfc:L146] is a no-op on this path for the reason the
+      // service's `data` parameter documents, so nothing reads it and nothing writes it.
       expect(data).toStrictEqual({ roundingRuleName: 'A renamed rule' });
 
-      // NO REPOSITORY CALL OF ANY KIND is issued: saving reads nothing back, and it
-      // writes nothing either. `lookups` is the only thing the double can record,
-      // because a lookup is the only thing the port lets this service do.
+      // NO REPOSITORY CALL OF ANY KIND is issued: saving reads nothing back. `lookups` is the
+      // only thing the repository double can record, because a lookup is the only thing the
+      // port lets this service do - the write went to the separate collaborator above.
       expect(repository.lookups).toStrictEqual([]);
     });
 
-    it('★★ does NOT persist the rule, and the omission is the documented contract', async () => {
+    it('★★★ mints an identifier for an UNSAVED rule, so a caller can tell an insert happened', async () => {
+      // The other half of the durable contract. [model/entity/RoundingRule.cfc:L52] declares
+      // `generator="uuid" unsavedvalue=""`, so an unsaved rule carries no identifier until the
+      // flush assigns one - and a method that answered the argument would hand back a rule whose
+      // `isNew()` still reported true immediately after a successful insert.
+      const unsavedRule = buildRoundingRule({
+        roundingRuleID: '',
+        roundingRuleName: 'A brand new rule',
+        roundingRuleExpression: EXPRESSION_LEADING_DOT,
+        roundingRuleDirection: DIRECTION_CLOSEST,
+      });
+
+      expect(unsavedRule.isNew()).toBe(true);
+
+      const saved = await service.saveRoundingRule(unsavedRule);
+
+      expect(saved.getRoundingRuleID()).toBe(MINTED_ROUNDING_RULE_ID);
+      expect(saved.isNew()).toBe(false);
+
+      // And the rule the caller still holds is untouched: entities in this subtree are
+      // immutable, so persistence answers a new instance rather than mutating the argument.
+      expect(unsavedRule.isNew()).toBe(true);
+    });
+
+    describe('save-context validation, from model/validation/RoundingRule.json', () => {
+      // ★★ EVERY CASE HERE PROVES THE SAME TWO THINGS: the rule refuses, AND NOTHING IS
+      // WRITTEN. The second is the one that matters. `super.save` reached
+      // `getHibachiDAO().save()` [org/Hibachi/HibachiService.cfc:L155] only when
+      // `hasErrors()` was false, so a failing entity was never persisted; performing the
+      // flush here without the rules would durably store a row the legacy REFUSED. The
+      // refusal is delivered as a throw because `hasErrors()` has no ported channel - a
+      // divergence in HOW, never in WHICH rules refuse.
+
+      it('refuses a rule with no name, and writes nothing', async () => {
+        const nameless = buildRoundingRule({
+          roundingRuleID: 'rule-without-a-name',
+          roundingRuleName: '',
+          roundingRuleExpression: EXPRESSION_LEADING_DOT,
+          roundingRuleDirection: DIRECTION_CLOSEST,
+        });
+
+        await expect(service.saveRoundingRule(nameless)).rejects.toBeInstanceOf(
+          RoundingRuleValidationError,
+        );
+
+        expect(frameworkWrites.saves).toStrictEqual([]);
+      });
+
+      it('refuses a rule with no expression, and writes nothing', async () => {
+        const expressionless = buildRoundingRule({
+          roundingRuleID: 'rule-without-an-expression',
+          roundingRuleName: 'A named rule with no expression',
+          roundingRuleExpression: '',
+          roundingRuleDirection: DIRECTION_CLOSEST,
+        });
+
+        await expect(service.saveRoundingRule(expressionless)).rejects.toBeInstanceOf(
+          RoundingRuleValidationError,
+        );
+
+        expect(frameworkWrites.saves).toStrictEqual([]);
+      });
+
+      it('refuses a rule whose expression fails the declared entity method, and writes nothing', async () => {
+        // `"method":"hasExpressionWithListOfNumericValuesOnly"` is the third rule the JSON
+        // declares on this property, and it is INVOKED on the entity
+        // [model/entity/RoundingRule.cfc:L78-L86] rather than reimplemented - so this case
+        // also pins that the service asks the entity rather than carrying its own copy.
+        const nonNumeric = buildRoundingRule({
+          roundingRuleID: 'rule-with-a-non-numeric-expression',
+          roundingRuleName: 'A named rule with a non-numeric expression',
+          roundingRuleExpression: 'nearest,.99',
+          roundingRuleDirection: DIRECTION_CLOSEST,
+        });
+
+        expect(nonNumeric.hasExpressionWithListOfNumericValuesOnly()).toBe(false);
+
+        await expect(service.saveRoundingRule(nonNumeric)).rejects.toBeInstanceOf(
+          RoundingRuleValidationError,
+        );
+
+        expect(frameworkWrites.saves).toStrictEqual([]);
+      });
+
+      it('refuses a rule with no direction, and writes nothing', async () => {
+        const directionless = buildRoundingRule({
+          roundingRuleID: 'rule-without-a-direction',
+          roundingRuleName: 'A named rule with no direction',
+          roundingRuleExpression: EXPRESSION_LEADING_DOT,
+          roundingRuleDirection: '',
+        });
+
+        await expect(service.saveRoundingRule(directionless)).rejects.toBeInstanceOf(
+          RoundingRuleValidationError,
+        );
+
+        expect(frameworkWrites.saves).toStrictEqual([]);
+      });
+
+      it('★★ applies the rules ONLY in the save context, because validate() is context-gated', async () => {
+        // `validate(context=...)` [org/Hibachi/HibachiService.cfc:L151] selects the rule set,
+        // and all three field rules sit in `"save"`. A caller naming another context therefore
+        // reaches the write WITHOUT them - which is the legacy's behaviour, not a shortcut, and
+        // is why the gate is a context comparison rather than an unconditional check.
+        const nameless = buildRoundingRule({
+          roundingRuleID: 'rule-without-a-name',
+          roundingRuleName: '',
+          roundingRuleExpression: EXPRESSION_LEADING_DOT,
+          roundingRuleDirection: DIRECTION_CLOSEST,
+        });
+
+        const saved = await service.saveRoundingRule(nameless, undefined, 'delete');
+
+        expect(frameworkWrites.saves).toStrictEqual([nameless]);
+        expect(saved.getRoundingRuleID()).toBe('rule-without-a-name');
+      });
+
+      it('compares the context case-insensitively, as CFML compares a string', async () => {
+        // CFML `eq` folds case, so `context="SAVE"` selected the same rule set as `"save"`.
+        // `cfEquals` is what preserves that; a `===` would have let a caller skip every rule
+        // by capitalising one letter.
+        const nameless = buildRoundingRule({
+          roundingRuleID: 'rule-without-a-name',
+          roundingRuleName: '',
+          roundingRuleExpression: EXPRESSION_LEADING_DOT,
+          roundingRuleDirection: DIRECTION_CLOSEST,
+        });
+
+        await expect(service.saveRoundingRule(nameless, undefined, 'SAVE')).rejects.toBeInstanceOf(
+          RoundingRuleValidationError,
+        );
+
+        expect(frameworkWrites.saves).toStrictEqual([]);
+      });
+    });
+
+    it('★★ persists WITHOUT a repository write member, because the write is a separate collaborator', async () => {
       // LEGACY-NOTE [model/service/RoundingRuleService.cfc:L63]: the legacy body ends in
       // `return super.save(argumentcollection=arguments)` - framework-inherited generic
       // CRUD from `HibachiService`, with the statement generated by Hibernate from the
       // entity's persistent-property metadata rather than written in the legacy source.
-      // Generic inherited CRUD is out of scope for this slice and this override has ZERO
-      // legacy callers, so the durable write is NOT ported, and no port in the slice
-      // declares a rounding-rule write: `PromotionRepository` is seven reads.
-      //
-      // ★ FOR ONE REVISION IT WAS PORTED, AND THESE CASES ASSERTED IT. Three cases stood
-      // here - "persists the rule through the port exactly once", "evicts BEFORE it
-      // writes, so a failed write leaves the record cold" and "propagates a write failure
-      // rather than swallowing it into the returned rule" - driven by a `saveFailure`
-      // field on the double and an eighth method on the port. All of it has been withdrawn.
-      //
-      // The objection that motivated the write was that "a save that evicted a cache entry
-      // and persisted nothing while still handing back a rule that looked saved" is a
-      // silent failure. That objection is sound, and the answer to it is THIS CASE plus the
+      // ★★★ THIS CASE HAS BEEN INVERTED IN ITS CONCLUSION AND KEPT IN ITS MECHANISM, WHICH IS
+      // EXACTLY THE RIGHT OUTCOME FOR IT. It was titled "does NOT persist the rule, and the
+      // omission is the documented contract", and it argued: "the durable write is NOT ported,
+      // and no port in the slice declares a rounding-rule write: `PromotionRepository` is seven
+      // reads... the answer to [the silent-failure objection] is THIS CASE plus the
       // `LEGACY-NOTE` at the statement it replaces: the omission is stated, marked and
-      // asserted, so it is not silent. What it is not is invented.
+      // asserted, so it is not silent. What it is not is invented."
       //
-      // The gate is expressed as a type-level exhaustion rather than by asking the double
-      // whether it recorded a write, because the drift to guard against is a write
-      // REAPPEARING on the port - and a double that has no `saves` array cannot answer a
-      // question about one.
+      // The second half of that reasoning was the mistake, and it is worth naming precisely: a
+      // DOCUMENTED dropped write is still a dropped write. A caller invoking a method named
+      // `saveRoundingRule`, published on `RequestScope` by the composition root, cannot see a
+      // comment - and every rule it "saved" was discarded. Annotating a gap does not close it.
+      //
+      // The first half remains completely true, and this case still proves it: the write did NOT
+      // arrive by widening a repository port. `PromotionRepository` is still seven reads, the
+      // port inventory is still thirteen, and the durable half arrives instead through
+      // `RoundingRuleFrameworkWrites` - declared by the service, satisfied module-locally by
+      // `src/handlers/bootstrap.ts` over the request's executor.
+      //
+      // The type-level exhaustion below is retained VERBATIM because the drift it guards against
+      // is unchanged and is now MORE likely, not less: with a write in the picture, the tempting
+      // shortcut is to hang it on the repository that already reads the table. If a
+      // `saveRoundingRule` member ever appears on `PromotionRepository`, this case fails.
       const portMembers: Readonly<Record<keyof PromotionRepository, true>> = Object.freeze({
         getActivePromotionRewards: true,
         getPromotionPeriodUseCount: true,
@@ -1599,11 +1848,14 @@ describe('RoundingRuleService', () => {
       expect(Object.keys(portMembers)).not.toContain('saveRoundingRule');
       expect('saveRoundingRule' in repository).toBe(false);
 
-      // And the method still ANSWERS, because AAP 0.4.2 specifies the signature and the
-      // eviction is a real effect. What it does not do is reach the database.
+      // And the write DOES happen - through the separate collaborator, leaving the repository
+      // untouched. Both halves are asserted together, because either alone would be
+      // satisfiable by the wrong implementation: a write recorded with no repository call
+      // proves the durable half exists AND that it did not come from the port.
       const saved = await service.saveRoundingRule(graph.closestRoundingRule);
 
-      expect(saved).toBe(graph.closestRoundingRule);
+      expect(frameworkWrites.saves).toStrictEqual([graph.closestRoundingRule]);
+      expect(saved).not.toBe(graph.closestRoundingRule);
       expect(repository.lookups).toStrictEqual([]);
     });
 
@@ -1644,7 +1896,10 @@ describe('RoundingRuleService', () => {
           ? graph.closestRoundingRule
           : graph.roundUpRoundingRule,
       );
-      const twoRuleService = new RoundingRuleService(twoRuleRepository);
+      const twoRuleService = new RoundingRuleService(
+        twoRuleRepository,
+        new RecordingRoundingRuleFrameworkWrites(),
+      );
 
       await twoRuleService.getRoundingRuleDetailsByID(closestIdentifier);
       await twoRuleService.getRoundingRuleDetailsByID(upIdentifier);
@@ -1677,6 +1932,7 @@ describe('RoundingRuleService', () => {
       // than assuming it.
       const unsavedRule = buildRoundingRule({
         roundingRuleID: '',
+        roundingRuleName: 'An unsaved rule',
         roundingRuleExpression: EXPRESSION_LEADING_DOT,
         roundingRuleDirection: DIRECTION_CLOSEST,
       });
@@ -1688,7 +1944,13 @@ describe('RoundingRuleService', () => {
       await service.getRoundingRuleDetailsByID(identifier);
       expect(repository.lookups).toHaveLength(1);
 
-      expect(await service.saveRoundingRule(unsavedRule)).toBe(unsavedRule);
+      // ★ THE ASSERTION MOVED FROM `.toBe(unsavedRule)` TO THE MINTED IDENTIFIER, and the case's
+      // own subject is untouched by that: it is about EVICTION, and the write is now what proves
+      // the method ran at all. An insert answers a new instance carrying the identifier the flush
+      // minted, so identity with the argument is no longer available to assert.
+      const saved = await service.saveRoundingRule(unsavedRule);
+
+      expect(saved.getRoundingRuleID()).toBe(MINTED_ROUNDING_RULE_ID);
 
       // Nothing was evicted, so the previously recorded identifier still answers.
       await service.getRoundingRuleDetailsByID(identifier);
@@ -1856,7 +2118,10 @@ describe('rounding-expression resource limits (S-10, resource half)', () => {
   let boundedService: RoundingRuleService;
 
   beforeEach(() => {
-    boundedService = new RoundingRuleService(new RecordingPromotionRepository(() => undefined));
+    boundedService = new RoundingRuleService(
+      new RecordingPromotionRepository(() => undefined),
+      new RecordingRoundingRuleFrameworkWrites(),
+    );
   });
 
   it('leaves every realistic expression untouched, including the AAP-measured ones', () => {

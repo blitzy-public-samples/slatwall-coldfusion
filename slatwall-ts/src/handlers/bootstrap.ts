@@ -115,6 +115,17 @@
 //     * the European Central Bank daily-rate table
 //       [model/service/CurrencyService.cfc:L105].
 //
+//   ★★ AND ONE PIECE OF TIER-2 STATE IS READ RATHER THAN MEMOIZED: the address-zone
+//   locations that every shipping-related promotion restriction is decided by. The
+//   legacy reached them by walking a Hibernate association INSIDE the request
+//   [model/service/AddressService.cfc:L60-L61]; the target has no ORM, and the
+//   `AddressZoneEvaluator` port is SYNCHRONOUS by contract, so they are materialized
+//   once per request by `createRequestScope` before the graph is assembled. THIS IS
+//   WHY `createRequestScope` IS ASYNCHRONOUS. Module scope may not hold them: zone
+//   membership decides a discount, and a warm container answering one invocation from
+//   another's zone configuration would keep applying a promotion an administrator had
+//   already withdrawn. See section 4.2.
+//
 //   JUDGMENT CALL: the seven services and the six repositories are constructed
 //   PER REQUEST rather than at module scope, precisely because they own those
 //   memos - `RoundingRuleService` holds `roundingRuleDetails` and
@@ -153,6 +164,13 @@
 //   handler awaits once per invocation.
 // ---------------------------------------------------------------------------
 
+// The only Node built-in this file imports, and it is imported for exactly one purpose: minting the
+// 32-character identifiers the two framework writers below assign to new rows, in place of the
+// `generator="uuid"` the ORM applied [model/entity/Brand.cfc:L52, model/entity/RoundingRule.cfc:L52].
+// A CJS-safe named import from a built-in - no `import.meta`, no top-level await - so it respects the
+// bundling constraint recorded at the top of this file.
+import { randomUUID } from 'node:crypto';
+
 import { appConfig } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
 import { cfEquals } from '../lib/cfml/struct.js';
@@ -168,6 +186,10 @@ import { MySqlPriceGroupRepository } from '../repositories/mysql/mysqlPriceGroup
 import { Option } from '../domain/entities/option.js';
 import { OptionGroup } from '../domain/entities/optionGroup.js';
 import { Promotion } from '../domain/entities/promotion.js';
+// VALUE imports, not `import type`: the two framework writers below CONSTRUCT these entities to describe
+// the row they just wrote, the way each writing repository constructs the entity it persisted.
+import { Brand } from '../domain/entities/brand.js';
+import { RoundingRule } from '../domain/entities/roundingRule.js';
 import { toCurrencyCode } from '../domain/valueObjects/currencyCode.js';
 import { RoundingRuleService } from '../services/roundingRuleService.js';
 import { BrandService } from '../services/brandService.js';
@@ -181,12 +203,30 @@ import { GoogleFeedRepository } from '../integrations/google/googleFeedRepositor
 import { GoogleFeedService } from '../integrations/google/googleFeedService.js';
 import { GoogleIntegration } from '../integrations/google/integration.js';
 
-import type { AppConfig, EnvironmentSource } from '../lib/config.js';
+// `AppConfig` is imported as a TYPE and is deliberately NOT re-exported: `CompositionRoot` used to
+// publish it whole, which put a directly readable database credential on the public surface (F17). The
+// six shapes beside it are the pieces `CompositionDiagnostics` republishes, each either secret-free or
+// already redacted.
+import type {
+  AppConfig,
+  CurrencyConfig,
+  DatabasePoolConfig,
+  DatabaseTlsMode,
+  EnvironmentSource,
+  FeedConfig,
+  RuntimeEnvironment,
+  TlsMinimumVersion,
+} from '../lib/config.js';
 import type { CfBooleanInput } from '../lib/cfml/truthiness.js';
 import type {
   AuditActorContext,
   PreparedStatementExecutor,
   SqlRow,
+} from '../repositories/mysql/connection.js';
+import {
+  resolveAuditActorAccountID,
+  resolveStampedModifiedByAccountID,
+  sqlUpdateAssignment,
 } from '../repositories/mysql/connection.js';
 import type { DatabaseDialect } from '../repositories/mysql/dialect.js';
 import type {
@@ -219,7 +259,6 @@ import type {
 import type { UrlTitleGenerator, UrlTitleTableName } from '../domain/ports/urlTitleGenerator.js';
 import type { PriceGroup } from '../domain/entities/priceGroup.js';
 import type { PriceGroupRate } from '../domain/entities/priceGroupRate.js';
-import type { RoundingRule } from '../domain/entities/roundingRule.js';
 import type { Sku, SkuImageSettingValues, SkuPriceGroupResolver } from '../domain/entities/sku.js';
 import type { CfStruct } from '../lib/cfml/struct.js';
 import { Money } from '../domain/valueObjects/money.js';
@@ -503,12 +542,46 @@ export interface RequestScope extends SalePriceResolver {
   /** The explicit replacement for `getHibachiScope()` / `getSlatwallScope()`. */
   readonly currentAccountContext: CurrentAccountContext;
 
-  readonly productRepository: ProductRepository;
-  readonly skuRepository: SkuRepository;
-  readonly optionRepository: OptionRepository;
-  readonly productTypeRepository: ProductTypeRepository;
-  readonly promotionRepository: PromotionRepository;
-  readonly priceGroupRepository: PriceGroupRepository;
+  // ★★★ THE SIX RAW REPOSITORIES USED TO BE PUBLISHED HERE, AND THEIR ABSENCE IS THE POINT.
+  //
+  // The six lines that stood between `currentAccountContext` and `roundingRuleService` were:
+  //
+  //     readonly productRepository: ProductRepository;
+  //     readonly skuRepository: SkuRepository;
+  //     readonly optionRepository: OptionRepository;
+  //     readonly productTypeRepository: ProductTypeRepository;
+  //     readonly promotionRepository: PromotionRepository;
+  //     readonly priceGroupRepository: PriceGroupRepository;
+  //
+  // They carried SEVEN durable mutations onto the request-tier surface - `saveProduct` and
+  // `deleteProduct` [src/domain/ports/productRepository.ts], `saveSku`, `saveProductType`,
+  // `savePriceGroup`, `savePriceGroupRate` and `deletePriceGroup` - each reachable without the
+  // service that owns its invariants. Concretely, and this is the part that makes it a defect
+  // rather than an untidiness: `productRepository.saveProduct` writes a product WITHOUT the
+  // unique-URL-title resolution that `ProductService.saveProduct` performs through its injected
+  // `UrlTitleGenerator`, so a row saved that way carries whatever `urlTitle` the caller happened
+  // to hand it, colliding with an existing one. `savePriceGroup` writes a price group without
+  // going through the service that owns the tier, and the price-group and promotion order passes
+  // are withheld from this interface precisely so their sequence cannot be inverted - a guarantee
+  // that means nothing while the underlying repositories are one member away.
+  //
+  // ★★ AND THE NARROWING IS THE SAME ARGUMENT THIS INTERFACE ALREADY MAKES ONE MEMBER LOWER,
+  // APPLIED CONSISTENTLY. `priceGroupService` and `promotionService` are published as capability
+  // types rather than as whole services, and the reasoning recorded there - "an ordering
+  // obligation that a caller can violate is exactly the arrangement the legacy had" - does not
+  // stop being true when the bypass is spelled `priceGroupRepository` instead of
+  // `priceGroupService.updateOrderAmountsWithPriceGroups`. Narrowing the services while leaving
+  // the adapters underneath them published was half a boundary.
+  //
+  // WHERE THEY LIVE NOW: on the module-private `RequestGraph`, which is where every collaborator
+  // that legitimately needs one already reached them from. Nothing in `src/` read them off this
+  // interface - `router.ts` never mentions `RequestScope` at all - so no production caller loses
+  // a capability, and no ported service loses a collaborator.
+  //
+  // WHAT REPLACES THEM FOR A SUITE THAT GENUINELY NEEDS THE ADAPTER INSTANCE:
+  // {@link CompositionRoot.createInspectableRequestScope}, which performs ONE assembly and hands
+  // back the scope together with the adapters that scope closes over. See its documentation for
+  // what it does and does not claim.
 
   readonly roundingRuleService: RoundingRuleService;
   readonly brandService: BrandService;
@@ -657,11 +730,87 @@ export interface RequestScope extends SalePriceResolver {
 }
 
 /**
+ * What a caller may learn about how this process was configured.
+ *
+ * ★★★ THIS EXISTS BECAUSE `CompositionRoot` USED TO PUBLISH `config: AppConfig` WHOLE, and code
+ * review raised that as MAJOR / Security - Least Privilege: the root "publishes full `AppConfig`,
+ * including directly readable database password/TLS material from `config.ts:220-248`", with the
+ * decisive observation that "serialization redaction does not prevent direct access". That last
+ * sentence is the whole finding in nine words. `DatabaseConnectionConfig` DOES carry a careful
+ * `toJSON()` that replaces the credential, the host and the account with a marker - but `toJSON` is
+ * consulted by `JSON.stringify`, and nothing at all stops `root.config.database.password`.
+ *
+ * ★★ SO THE REDACTION IS MOVED FROM THE SERIALIZER TO THE TYPE. Every member below is either a value
+ * with no never-echoed promise attached to it, or a value that has already been through
+ * `AppConfig.database.toJSON()`. `AppConfig` itself is no longer reachable from the published surface,
+ * so a consumer cannot read a credential whether or not it thinks to serialize first.
+ *
+ * ★★ AND THE REDACTION BOUNDARY IS BORROWED, NOT INVENTED. `DatabaseConnectionConfig.toJSON`'s own
+ * docblock already fixes which side each field falls on - "the port and the schema name remain visible,
+ * because those two are what make a misconfiguration diagnosable and neither carries a never-echoed
+ * promise" - and cites three sources for it. Re-deciding that here would create a second boundary to
+ * keep in step with the first, so `database` below is literally that projection's output.
+ *
+ * WHY PUBLISH ANYTHING AT ALL. The finding permits "an explicitly redacted, purpose-built diagnostic
+ * projection if needed", and it is: a deployment that cannot see which dialect it committed to, which
+ * schema it opened, which hosts its feed will serve or whether conversion rates were supplied has no
+ * way to diagnose a misconfiguration short of reading logs. None of those four is a secret.
+ */
+export interface CompositionDiagnostics {
+  /** `development` | `test` | `production`, as resolved. */
+  readonly environment: RuntimeEnvironment;
+
+  /** The dialect this composition committed to. Always `'MySQL'`. */
+  readonly dialect: DatabaseDialect;
+
+  /**
+   * EXACTLY `AppConfig.database.toJSON()`: port and schema visible, host, account and credential
+   * replaced by that projection's redaction marker. Typed as its return type rather than as
+   * `DatabaseConnectionConfig` so no member of the live config is reachable through it.
+   */
+  readonly database: Readonly<Record<string, string | number>>;
+
+  /** Four operational numbers. None is a target, and none carries a secret. */
+  readonly pool: DatabasePoolConfig;
+
+  /**
+   * Whether the channel is protected and how weak the protocol may be - WITHOUT the trust anchor.
+   *
+   * `mode` and `minimumVersion` are the two facts an operator needs to see, and both are enumerations.
+   * `certificateAuthority` is deliberately reduced to a BOOLEAN: the finding named "TLS material"
+   * alongside the password, and while a CA certificate is public by construction, publishing its bytes
+   * serves no diagnostic purpose that "is one configured?" does not serve.
+   */
+  readonly tls: {
+    readonly mode: DatabaseTlsMode;
+    readonly minimumVersion: TlsMinimumVersion;
+    readonly certificateAuthorityConfigured: boolean;
+  };
+
+  /** The product-feed allow-list. Public hostnames this deployment will serve a feed for. */
+  readonly feed: FeedConfig;
+
+  /** The supplied conversion rates and when they were retrieved. Public reference data. */
+  readonly currency: CurrencyConfig;
+}
+
+/**
  * The module-scope graph, created once and reused across warm invocations.
  */
 export interface CompositionRoot {
-  /** The resolved process configuration. */
-  readonly config: AppConfig;
+  /**
+   * What this process was configured to do, REDACTED.
+   *
+   * ★★ THIS MEMBER WAS `config: AppConfig` AND ITS DOCBLOCK READ, IN FULL, "The resolved process
+   * configuration." That was accurate and that was the problem: the resolved configuration includes a
+   * database password as a directly readable `string`. See {@link CompositionDiagnostics} for what
+   * replaced it and why the redaction had to move from the serializer into the type.
+   *
+   * `AppConfig` remains reachable INSIDE this module - `ModuleScopeGraph.config` still holds it,
+   * because the pool factory and the feed host allow-list genuinely need the live values - and that
+   * shape is un-exported. Module-local is the whole of the fix.
+   */
+  readonly diagnostics: CompositionDiagnostics;
 
   /** The dialect this composition committed to. Always `'MySQL'`. */
   readonly dialect: DatabaseDialect;
@@ -679,8 +828,85 @@ export interface CompositionRoot {
    */
   readonly integration: GoogleIntegration;
 
-  /** Open one request's scope. Called exactly once per invocation. */
-  createRequestScope(input?: RequestScopeInput): RequestScope;
+  /**
+   * Open one request's scope. Called exactly once per invocation.
+   *
+   * ★★ ASYNCHRONOUS, AND THE PROMISE IS LOAD-BEARING RATHER THAN INCIDENTAL. This member
+   * used to return a `RequestScope` directly, because scope construction was pure wiring
+   * over state tier one had already read. It no longer is: the address-zone locations that
+   * gate every shipping-related promotion are per-request state, and the
+   * `AddressZoneEvaluator` port that consumes them is SYNCHRONOUS by contract - so the one
+   * remaining place the read can happen is here, before the graph is assembled. See
+   * section 4.2 and `createRequestScope`.
+   *
+   * The refusals this call can produce - an unlisted product-feed host among them - are
+   * therefore REJECTIONS now rather than synchronous throws. What is refused, and the fact
+   * that nothing is constructed and no feed statement is issued when it is refused, has
+   * not changed.
+   */
+  createRequestScope(input?: RequestScopeInput): Promise<RequestScope>;
+
+  /**
+   * Open one request's scope AND the six adapters that scope was assembled with.
+   *
+   * ★★★ THE ASSEMBLY-INSPECTION HOOK, WHICH EXISTS BECAUSE {@link RequestScope} NO LONGER
+   * PUBLISHES THE ADAPTERS. Withdrawing them closed a real bypass - see the block of retired
+   * declarations on that interface - but it also withdrew the only route by which a suite could
+   * reach the CONCRETE adapter in order to observe what the composed pricing operation does with
+   * it. That observation is not a convenience: `MySqlPriceGroupRepository.getPriceGroupsByID` is
+   * the set-based keyed read the composed operation issues, it is deliberately NOT a port member
+   * because `src/domain/ports/priceGroupRepository.ts` locks its count at six, and so the only
+   * holder of its concrete type is this composition root.
+   *
+   * ★★ ONE ASSEMBLY, NOT TWO, AND THAT IS THE WHOLE REASON THIS RETURNS A PAIR rather than being
+   * a second method beside `createRequestScope`. Two calls would build two graphs, and a suite
+   * that spied on the second graph's adapter while exercising the first graph's scope would be
+   * mocking a method nobody calls - passing for the wrong reason, silently, forever. The adapters
+   * returned here are BY IDENTITY the ones the returned scope's services and composed operation
+   * closed over.
+   *
+   * ★★ WHAT THIS DOES AND DOES NOT CLAIM, stated in the same terms this file already uses for the
+   * withheld order passes: the narrowing on `RequestScope` is a COMPILE-TIME guarantee about the
+   * REQUEST TIER, not a capability revocation. Request-tier code is handed a `RequestScope`; it is
+   * not handed this root, and it cannot reach an adapter through the scope it holds. A module that
+   * holds the root can call this - just as it could already import
+   * `MySqlPriceGroupRepository` directly and construct one - so this hook adds visibility of the
+   * assembled graph rather than a capability the tier-one holder lacked. Naming it for what it is
+   * beats leaving the adapters on the request-tier contract for want of a name.
+   *
+   * @param input the same per-request input `createRequestScope` accepts.
+   */
+  createInspectableRequestScope(input?: RequestScopeInput): Promise<InspectableRequestScope>;
+}
+
+/**
+ * The six MySQL adapters one request's graph was assembled with.
+ *
+ * Each member is typed to its PORT rather than to its adapter class, exactly as the retired
+ * `RequestScope` members were, so that a suite reaching for concrete behaviour has to narrow
+ * deliberately with an `instanceof` and cannot drift into asserting against an implementation
+ * detail by accident.
+ */
+export interface RequestScopeAdapters {
+  readonly productRepository: ProductRepository;
+  readonly skuRepository: SkuRepository;
+  readonly optionRepository: OptionRepository;
+  readonly productTypeRepository: ProductTypeRepository;
+  readonly promotionRepository: PromotionRepository;
+  readonly priceGroupRepository: PriceGroupRepository;
+}
+
+/**
+ * One request's scope together with the adapters it was assembled with, from a single assembly.
+ *
+ * The two halves are returned as siblings rather than the adapters being hung off the scope,
+ * because hanging them off the scope is precisely what was withdrawn: a member added back under
+ * any name would put the adapters within reach of code that holds only a scope, which is the
+ * arrangement the narrowing exists to prevent.
+ */
+export interface InspectableRequestScope {
+  readonly scope: RequestScope;
+  readonly adapters: RequestScopeAdapters;
 }
 
 /**
@@ -911,10 +1137,29 @@ const BASE_IMAGE_URL_DEFAULT = '/custom/assets/images';
  */
 const MISSING_IMAGE_PATH_DEFAULT = '/assets/images/missingimage.jpg';
 
-/** `setting('skuShippingWeight')` [model/service/SettingService.cfc:L232], `1`. */
+/**
+ * The two setting names the feed view reads, exactly as it spells them
+ * [integrationServices/google/views/feed/product.cfm:L58].
+ *
+ * They are bound values rather than interpolated text, and their case is preserved as declared even
+ * though the statement folds them, because they are also the keys the resolved rows are bucketed under
+ * and `cfEquals` compares those the way CFML's struct keys did.
+ */
+const SKU_SHIPPING_WEIGHT_SETTING_NAME = 'skuShippingWeight';
+const SKU_SHIPPING_WEIGHT_UNIT_CODE_SETTING_NAME = 'skuShippingWeightUnitCode';
+
+/**
+ * `setting('skuShippingWeight')` [model/service/SettingService.cfc:L232], `1`.
+ *
+ * ★★ THIS IS THE LAST STEP OF A CASCADE, NOT THE ANSWER. It used to be both, and a code review was
+ * right to object: a declared default returned unconditionally "masquerades as a resolved override".
+ * The legacy seeds it up front [model/service/SettingService.cfc:L482-L487] and it survives only when
+ * every relationship probe misses, which is precisely the position it now occupies in
+ * `SqlSkuFeedSettingResolver`.
+ */
 const SKU_SHIPPING_WEIGHT_DEFAULT = '1';
 
-/** `setting('skuShippingWeightUnitCode')` [model/service/SettingService.cfc:L233], `"lb"`. */
+/** `setting('skuShippingWeightUnitCode')` [model/service/SettingService.cfc:L233], `"lb"`. The last step of the cascade; see above. */
 const SKU_SHIPPING_WEIGHT_UNIT_CODE_DEFAULT = 'lb';
 
 /**
@@ -1223,7 +1468,27 @@ const SELECT_OPTIONS_BY_OPTION_GROUP_ID = 'bootstrapSelectOptionsByOptionGroupID
 const SELECT_ACCOUNT_PRICE_GROUP_IDS = 'bootstrapSelectAccountPriceGroupIDs';
 const SELECT_PRICE_GROUP_PAGE_IDS = 'bootstrapSelectPriceGroupPageIDs';
 const SELECT_PROMOTION_BY_ID = 'bootstrapSelectPromotionByID';
-const SELECT_UNIQUE_URL_TITLE = 'bootstrapSelectUniqueUrlTitle';
+// Was `SELECT_UNIQUE_URL_TITLE = 'bootstrapSelectUniqueUrlTitle'`, when the statement answered one
+// candidate at a time. It now reads a whole slug family in one go, so the label follows the statement
+// rather than describing the question the caller used to ask it repeatedly.
+const SELECT_URL_TITLE_FAMILY = 'bootstrapSelectUrlTitleFamily';
+const SELECT_ADDRESS_ZONE_LOCATIONS = 'bootstrapSelectAddressZoneLocations';
+
+// The two statements behind per-SKU setting resolution. They are a PAIR and neither is useful alone:
+// the settings read supplies the candidate rows, the path read supplies the walk order those rows are
+// probed in [model/service/SettingService.cfc:L550-L558].
+const SELECT_SKU_FEED_SETTINGS = 'bootstrapSelectSkuFeedSettings';
+const SELECT_PRODUCT_TYPE_PATHS = 'bootstrapSelectProductTypePaths';
+
+// The framework-generated writes. `HibachiService.save` [org/Hibachi/HibachiService.cfc:L155] reached
+// `getHibachiDAO().save(target=...)`, whose statement Hibernate produced from the entity's
+// persistent-property metadata - so these labels name statements that exist in no legacy DAO, which is
+// exactly why they are hosted here rather than on a repository port.
+const INSERT_ROUNDING_RULE = 'bootstrapInsertRoundingRule';
+const UPDATE_ROUNDING_RULE = 'bootstrapUpdateRoundingRule';
+const INSERT_BRAND = 'bootstrapInsertBrand';
+const UPDATE_BRAND = 'bootstrapUpdateBrand';
+const SELECT_BRAND_BY_URL_TITLE = 'bootstrapSelectBrandByUrlTitle';
 
 // --- Statements ------------------------------------------------------------
 
@@ -1480,20 +1745,320 @@ const SELECT_PROMOTION_BY_ID_SQL = [
 ].join(' ');
 
 /**
- * The uniqueness probe behind `createUniqueURLTitle`, one literal per table.
+ * Every title in one slug's FAMILY - the bare slug and everything prefixed `slug-` - read in a
+ * single statement, one literal per table.
  *
- * CFML parity [model/dao/DataDAO.cfc:L115-L131]: `verifyUniqueTableValue` runs
- * `SELECT #column# FROM #tableName# WHERE #column# = <cfqueryparam …/>` and
- * returns `false` when `rs.recordCount` is non-zero. The legacy interpolated the
- * table and column names; here the closed three-member union
- * `UrlTitleTableName` selects between three FIXED statements, so no identifier
- * is ever spliced into SQL while the behaviour is identical.
+ * ★★★ QUOTE-THEN-REVISE. This constant was `SELECT_UNIQUE_URL_TITLE_SQL`, three statements of the
+ * form `SELECT urlTitle FROM SwBrand WHERE urlTitle = ?`, and its docblock read: "The uniqueness
+ * probe behind `createUniqueURLTitle`, one literal per table. CFML parity
+ * [model/dao/DataDAO.cfc:L115-L131]: `verifyUniqueTableValue` runs `SELECT #column# FROM #tableName#
+ * WHERE #column# = <cfqueryparam …/>` and returns `false` when `rs.recordCount` is non-zero."
+ *
+ * That parity claim was accurate and is the reason the statement had to change. Answering ONE
+ * candidate per statement is what forced the caller into a serial loop, and a serial loop inside a
+ * request budget is what a security review then asked to be capped - producing a cap that refused a
+ * state the legacy resolved (finding F9). Reading the whole family ONCE removes the loop's round
+ * trips rather than its outcome: the candidate test is still `stored == candidate`, performed against
+ * a set instead of against the database, so every answer is the answer the legacy gave.
+ *
+ * TWO DISJUNCTS, AND NEITHER SUBSUMES THE OTHER. The bare slug does not match `slug-%`, and no
+ * suffixed title equals the bare slug, so both terms are required to cover the candidate sequence
+ * `slug`, `slug-2`, `slug-3`, …
+ *
+ * ★★ THE `LIKE` PATTERN CANNOT CARRY A METACHARACTER, AND THAT IS A PROOF RATHER THAN A HOPE. The
+ * slug reaching the second parameter has already passed
+ * `replace(/[^a-z0-9 -]/g, '')` followed by `replace(/ +/g, '-')`
+ * [model/service/DataService.cfc:L57-L58], so it consists only of `[a-z0-9-]`. Every LIKE
+ * metacharacter - `%`, `_` and the backslash escape - is outside that class and has therefore
+ * already been stripped. No pattern escaping is needed, and adding one would be dead code whose
+ * absence a reader could not verify.
+ *
+ * DELIBERATELY BROADER THAN THE CANDIDATE SEQUENCE, AND NARROWED IN MEMORY. `slug-%` also matches a
+ * genuine unrelated title such as `nike-air-max` when the slug is `nike-air`. Those rows are read and
+ * then simply fail the membership test for every candidate, because the test is string equality
+ * against `slug-<n>`. Expressing the digit constraint in SQL instead would need `REGEXP`, which
+ * cannot use the index a prefix `LIKE` can.
+ *
+ * The legacy interpolated the table and column names; here the closed three-member union
+ * `UrlTitleTableName` selects between three FIXED statements, so no identifier is ever spliced into
+ * SQL.
  */
-const SELECT_UNIQUE_URL_TITLE_SQL: Readonly<Record<UrlTitleTableName, string>> = Object.freeze({
-  SwBrand: 'SELECT urlTitle FROM SwBrand WHERE urlTitle = ?',
-  SwProduct: 'SELECT urlTitle FROM SwProduct WHERE urlTitle = ?',
-  SwProductType: 'SELECT urlTitle FROM SwProductType WHERE urlTitle = ?',
+const SELECT_URL_TITLE_FAMILY_SQL: Readonly<Record<UrlTitleTableName, string>> = Object.freeze({
+  SwBrand: 'SELECT urlTitle FROM SwBrand WHERE urlTitle = ? OR urlTitle LIKE ?',
+  SwProduct: 'SELECT urlTitle FROM SwProduct WHERE urlTitle = ? OR urlTitle LIKE ?',
+  SwProductType: 'SELECT urlTitle FROM SwProductType WHERE urlTitle = ? OR urlTitle LIKE ?',
 });
+
+/**
+ * Every address zone's locations, keyed by zone, in ONE parameterless statement.
+ *
+ * WHAT A ZONE "LOCATION" PHYSICALLY IS, because the answer is not the obvious one.
+ * There is no `AddressZoneLocation` entity anywhere in the legacy model. The
+ * association is declared at [model/entity/AddressZone.cfc:L61] as
+ *   `cfc="Address" fieldtype="many-to-many" linktable="SwAddressZoneLocation"`
+ *   `fkcolumn="addressZoneID" inversejoincolumn="addressID"`
+ * so `SwAddressZoneLocation` is a LINK TABLE carrying exactly those two columns, and a
+ * zone's locations ARE `SwAddress` rows [model/entity/Address.cfc:L49 `table="SwAddress"`].
+ * The four columns the zone test reads are declared without a `column=` attribute
+ * [model/entity/Address.cfc:L59-L62], so Hibernate names each column after its property
+ * and the physical names are the property names.
+ *
+ * ★ AN `INNER JOIN`, AND THE CHOICE IS A MONEY DECISION RATHER THAN A STYLE ONE. A
+ * `LEFT JOIN` would answer a link row whose `SwAddress` row is absent as a location
+ * with all four fields NULL - and a location that constrains NO field matches EVERY
+ * address [model/service/AddressService.cfc:L63-L74], so one orphaned link row would
+ * silently admit every address into that zone and apply its shipping promotion to
+ * everyone. Hibernate's many-to-many traversal produces no such phantom element
+ * either: the association is declared `cascade="all-delete-orphan"`, so the legacy
+ * never walks one. An orphan link row is therefore DROPPED here, which is both the
+ * legacy outcome and the safe one.
+ *
+ * NO `WHERE` AND NO PARAMETER, deliberately. The zone identifiers this index must
+ * answer for are not known when it is built: they are discovered mid-algorithm, from
+ * `PromotionQualifier.getShippingAddressZoneIDs()`
+ * [model/entity/PromotionQualifier.cfc:L75] and
+ * `PromotionReward.getShippingAddressZoneIDs()` [model/entity/PromotionReward.cfc:L77],
+ * inside a SYNCHRONOUS predicate that cannot issue a statement of its own. Binding a
+ * key set would therefore mean guessing it, and guessing low is exactly the failure
+ * this read exists to repair.
+ *
+ * NO `ORDER BY` EITHER, and that absence is faithful rather than an oversight. The
+ * legacy walks the Hibernate collection in whatever order the association yields
+ * [model/service/AddressService.cfc:L60-L61] and stops at the FIRST location whose set
+ * fields all match [L75-L78], so location order is observable only through which
+ * matching location wins - and every matching location produces the identical verdict
+ * `true`. Inventing a sort would assert an ordering the source does not declare.
+ *
+ * ★ IT IS BOUNDED BY ADMINISTRATOR CONFIGURATION, NOT BY CUSTOMER DATA, WHICH IS WHY
+ * IT CARRIES NO CEILING. The row count is the number of zone-to-location LINKS, i.e.
+ * `SwAddressZoneLocation`'s own size - an administrator-maintained shipping and tax
+ * taxonomy, the same class of data as the price-group taxonomy. It does NOT scale with
+ * `SwAddress`, even though the join reads that table: only addresses an administrator
+ * enrolled in a zone are linked. And a ceiling here could not be a defensive
+ * invariant the way `MAX_PRICE_GROUP_PAGE_RECORDS` is: refusing rows would silently
+ * shrink a zone and stop a configured promotion from applying, which is the very
+ * defect this statement repairs.
+ */
+const SELECT_ADDRESS_ZONE_LOCATIONS_SQL = [
+  'SELECT zoneLocation.addressZoneID,',
+  'location.postalCode, location.city, location.stateCode, location.countryCode',
+  'FROM SwAddressZoneLocation zoneLocation',
+  'INNER JOIN SwAddress location ON zoneLocation.addressID = location.addressID',
+].join(' ');
+
+/**
+ * Every column `SwSetting` discriminates a setting row by, in the order the legacy `WHERE` clause
+ * tests them.
+ *
+ * ★★★ THE LIST IS THE PREDICATE, WHICH IS WHY IT IS EXHAUSTIVE RATHER THAN NARROWED TO THE FOUR THE
+ * FEED USES. `getSettingRecordBySettingRelationships` [model/service/SettingService.cfc:L768-L870]
+ * emits, for EVERY one of these columns, one of two clauses and never neither:
+ *   participating  ->  `AND LOWER(<col>) = <cfqueryparam LCASE(value)>`
+ *   otherwise      ->  `AND <col> IS NULL`
+ * So a row carrying an `accountID` is INVISIBLE to a lookup that does not mention accounts, even
+ * though the feed's lookup never mentions one. Selecting only `skuID`, `productID`, `productTypeID`
+ * and `brandID` would silently promote such a row into an answer it never had, which is the opposite
+ * of the defect being repaired. All seventeen are read so all seventeen can be required NULL.
+ *
+ * SIXTEEN FOREIGN KEYS PLUS ONE PLAIN COLUMN. `cmsContentID` is declared as an ordinary string
+ * property [model/entity/Setting.cfc:L57] rather than a `fkcolumn`, while the other sixteen are
+ * `many-to-one` foreign keys [model/entity/Setting.cfc:L60-L75]. The legacy `WHERE` makes no such
+ * distinction and neither does this, because both are just columns to the predicate.
+ */
+const SETTING_RELATIONSHIP_COLUMNS: readonly string[] = Object.freeze([
+  'accountID',
+  'contentID',
+  'cmsContentID',
+  'brandID',
+  'emailID',
+  'emailTemplateID',
+  'fulfillmentMethodID',
+  'paymentMethodID',
+  'productID',
+  'productTypeID',
+  'shippingMethodID',
+  'shippingMethodRateID',
+  'siteID',
+  'skuID',
+  'subscriptionTermID',
+  'subscriptionUsageID',
+  'taskID',
+]);
+
+/**
+ * The candidate setting rows for the feed's two keys.
+ *
+ * REPLACES `getAllSettingsQuery` [model/dao/SettingDAO.cfc:L51-L62], whose whole body was
+ * `SELECT * FROM SwSetting` - every row of the table, cached on the service
+ * [model/service/SettingService.cfc:L424-L430] and then filtered in-engine by a query-of-queries
+ * [model/service/SettingService.cfc:L777]. Query-of-queries has no counterpart here, so the filtering
+ * moves into TypeScript; what stays is the shape, which is one read for the whole batch.
+ *
+ * ★★ NARROWED TO TWO NAMES, AND THE NARROWING CANNOT CHANGE AN ANSWER. Every legacy probe opens with
+ * `LOWER(allSettings.settingName) = <cfqueryparam LCASE(settingName)>`
+ * [model/service/SettingService.cfc:L783], so a row of any other name was already unreachable. Reading
+ * the two names the feed asks for [integrationServices/google/views/feed/product.cfm:L58] discards
+ * only rows the predicate would have discarded, while turning a whole-table read into an indexed one.
+ * The comparison is `LOWER(...) IN (?, ?)` rather than `IN (?, ?)` because that is the comparison the
+ * legacy performed, and a case-sensitive column collation would otherwise miss a row the legacy found.
+ *
+ * NO `ORDER BY`, DELIBERATELY. The legacy probe has none either, and on a multi-row match CFML reads
+ * row 1 of the result set [model/service/SettingService.cfc:L525-L527] - whichever row that is. The
+ * resolver reproduces that by keeping the FIRST row it encounters per key, so a table holding two
+ * equally-specific rows is answered as non-deterministically here as it was there. Imposing an order
+ * would be inventing a tie-break the legacy never had.
+ */
+const SELECT_SKU_FEED_SETTINGS_SQL = [
+  `SELECT settingName, settingValue, ${SETTING_RELATIONSHIP_COLUMNS.join(', ')}`,
+  'FROM SwSetting',
+  'WHERE LOWER(settingName) IN (?, ?)',
+].join(' ');
+
+/**
+ * The materialized ancestry paths of the product types a batch mentions.
+ *
+ * `productTypeIDPath` IS A STORED COLUMN, NOT A COMPUTATION [model/entity/ProductType.cfc:L53], and
+ * that is why this is one flat read rather than a recursive CTE. `HibachiEntity.buildIDPathList`
+ * [org/Hibachi/HibachiEntity.cfc:L308-L322] walks parents with `listPrepend`, so the stored list runs
+ * ROOT FIRST and LEAF LAST, and `preInsert`/`preUpdate` [model/entity/ProductType.cfc:L306, L311]
+ * refresh it on every write. The legacy read exactly this column
+ * [model/service/SettingService.cfc:L552] and so does this.
+ *
+ * @param identifierCount - how many product-type keys the statement binds, one or more. `IN ()` is a
+ *   MySQL syntax error, so the caller returns before reaching this builder when the batch mentions no
+ *   product type at all.
+ */
+function buildSelectProductTypePathsSql(identifierCount: number): string {
+  return [
+    'SELECT productTypeID, productTypeIDPath',
+    'FROM SwProductType',
+    `WHERE productTypeID IN (${new Array<string>(identifierCount).fill('?').join(', ')})`,
+  ].join(' ');
+}
+
+/**
+ * The `SwRoundingRule` column set [model/entity/RoundingRule.cfc:L52-L62].
+ *
+ * FOUR SCALARS AND FOUR AUDIT COLUMNS, AND DELIBERATELY NO `remoteID`. Its sibling `SwBrand` DOES
+ * declare one [model/entity/Brand.cfc:L74]; `RoundingRule` declares none, so writing one would invent
+ * a column. `priceGroupRates` [model/entity/RoundingRule.cfc:L65] is `inverse="true"`, which makes the
+ * CHILD the owning side - Hibernate wrote `SwPriceGroupRate.roundingRuleID`, never anything here - so
+ * the association is not part of this row's write.
+ */
+const ROUNDING_RULE_COLUMNS: readonly string[] = Object.freeze([
+  'roundingRuleID',
+  'roundingRuleName',
+  'roundingRuleExpression',
+  'roundingRuleDirection',
+  'createdDateTime',
+  'createdByAccountID',
+  'modifiedDateTime',
+  'modifiedByAccountID',
+]);
+
+/**
+ * The UPDATE set list: the key moves to the WHERE clause, and the two created-* columns are WRITE-ONCE.
+ *
+ * `createdDateTime` and `createdByAccountID` are excluded because `HibachiEntity.preUpdate`
+ * [org/Hibachi/HibachiEntity.cfc:L651-L679] never restamps them - `setCreatedByAccount` appears only
+ * in `preInsert` [:L628-L630]. `modifiedByAccountID` STAYS in the list and is rendered by
+ * `sqlUpdateAssignment`, which emits `COALESCE(?, modifiedByAccountID)` for it so a refused actor gate
+ * PRESERVES the previous attribution instead of erasing it.
+ */
+const UPDATED_ROUNDING_RULE_COLUMNS: readonly string[] = Object.freeze(
+  ROUNDING_RULE_COLUMNS.filter(
+    (columnName) =>
+      columnName !== 'roundingRuleID' &&
+      columnName !== 'createdDateTime' &&
+      columnName !== 'createdByAccountID',
+  ),
+);
+
+const INSERT_ROUNDING_RULE_SQL = [
+  `INSERT INTO SwRoundingRule (${ROUNDING_RULE_COLUMNS.join(', ')})`,
+  `VALUES (${ROUNDING_RULE_COLUMNS.map(() => '?').join(', ')})`,
+].join(' ');
+
+const UPDATE_ROUNDING_RULE_SQL = [
+  'UPDATE SwRoundingRule',
+  `SET ${UPDATED_ROUNDING_RULE_COLUMNS.map((columnName) => sqlUpdateAssignment(columnName)).join(', ')}`,
+  'WHERE roundingRuleID = ?',
+].join(' ');
+
+/**
+ * The `SwBrand` column set [model/entity/Brand.cfc:L52-L57, L74, L77-L80].
+ *
+ * SIX SCALARS INCLUDING `remoteID`, PLUS FOUR AUDIT COLUMNS. `urlTitle` carries `unique="true"`
+ * [model/entity/Brand.cfc:L55], which is the database half of the `"unique":true` rule
+ * [model/validation/Brand.json] - so a duplicate is refused by the service BEFORE the statement runs,
+ * and the constraint remains the backstop rather than the primary check.
+ *
+ * NONE OF THE ASSOCIATIONS IS WRITTEN HERE, and that is read off the mapping rather than assumed:
+ * `attributeValues` and `products` are `one-to-many ... inverse="true"` [:L60-L61], and all six
+ * many-to-many collections [:L66-L72] are declared `inverse="true"` too - so `Brand` is the owning side
+ * of NOTHING. Hibernate never wrote a `SwPromoRewardBrand` or `SwVendorBrand` row on behalf of a brand
+ * save, so neither does this. Contrast `savePriceGroupRate`, which DOES reconcile its link tables
+ * precisely because its six associations omit `inverse`.
+ */
+const BRAND_COLUMNS: readonly string[] = Object.freeze([
+  'brandID',
+  'activeFlag',
+  'publishedFlag',
+  'urlTitle',
+  'brandName',
+  'brandWebsite',
+  'remoteID',
+  'createdDateTime',
+  'createdByAccountID',
+  'modifiedDateTime',
+  'modifiedByAccountID',
+]);
+
+/** The UPDATE set list, on the same write-once reasoning as the rounding rule's. */
+const UPDATED_BRAND_COLUMNS: readonly string[] = Object.freeze(
+  BRAND_COLUMNS.filter(
+    (columnName) =>
+      columnName !== 'brandID' &&
+      columnName !== 'createdDateTime' &&
+      columnName !== 'createdByAccountID',
+  ),
+);
+
+const INSERT_BRAND_SQL = [
+  `INSERT INTO SwBrand (${BRAND_COLUMNS.join(', ')})`,
+  `VALUES (${BRAND_COLUMNS.map(() => '?').join(', ')})`,
+].join(' ');
+
+const UPDATE_BRAND_SQL = [
+  'UPDATE SwBrand',
+  `SET ${UPDATED_BRAND_COLUMNS.map((columnName) => sqlUpdateAssignment(columnName)).join(', ')}`,
+  'WHERE brandID = ?',
+].join(' ');
+
+/**
+ * The uniqueness probe behind [model/validation/Brand.json]'s `"urlTitle": {"unique":true}` rule.
+ *
+ * ★ THIS IS A TRANSCRIPTION, NOT A DESIGN. The rule was answered by
+ * `HibachiDAO.isUniqueProperty` [org/Hibachi/HibachiDAO.cfc:L130-L147], whose entire body is
+ *
+ *   `from #entityName# e where e.#property# = :propertyValue and e.#entityIDproperty# != :entityID`
+ *
+ * so the `AND brandID <> ?` clause below is the ported `!= :entityID`, not an addition. Without it an
+ * UPDATE that leaves the title unchanged would collide with itself and refuse every re-save of an
+ * existing brand - which is exactly why the legacy carried the term.
+ *
+ * ONE STATEMENT SERVES BOTH PATHS: on an INSERT the minted identifier cannot match any stored row, and
+ * the legacy passed `getPrimaryIDValue()` there too - `""` for an unsaved entity - so it likewise used
+ * one query for both.
+ *
+ * `LIMIT 1` because existence is the whole question - the legacy tested `arrayLen(results)` and nothing
+ * else. The identifier is selected only so a diagnostic can name the row that already holds the title.
+ */
+const SELECT_BRAND_BY_URL_TITLE_SQL = [
+  'SELECT brandID FROM SwBrand',
+  'WHERE urlTitle = ? AND brandID <> ?',
+  'LIMIT 1',
+].join(' ');
 
 // --- Row readers -----------------------------------------------------------
 
@@ -1768,13 +2333,51 @@ class BootstrapSettingsProvider implements SettingsProvider {
  *
  * A LIVE, FULLY IMPLEMENTED ADAPTER. It is not a stub, it does not stand in for
  * anything, and it is not one of the two stub ports - those are `imageStore` and
- * `subscriptionTermProvider`. It is reached from
- * `PromotionService.getShippingMethodOptionsDiscountAmountDetails` through the
- * `addressService` collaborator [model/service/PromotionService.cfc:L53].
+ * `subscriptionTermProvider`. It is reached through the `addressService` collaborator
+ * [model/service/PromotionService.cfc:L53] from THREE in-scope call sites: the
+ * fulfillment-reward branch of the discount pipeline [:L362], the shipping-address-zone
+ * qualifier gate [:L684], and
+ * `getShippingMethodOptionsDiscountAmountDetails` [:L1063].
  *
- * SYNCHRONOUS, because the legacy body reaches neither the DAO nor the ORM: the
- * caller supplies an ALREADY-MATERIALISED zone-locations array. Associations are
- * materialized at the repository boundary (T3) and laziness is never simulated.
+ * SYNCHRONOUS, because the legacy body reaches neither the DAO nor the ORM: it walks an
+ * already-loaded collection and compares strings. Associations are materialized ahead
+ * of the call (T3) and laziness is never simulated.
+ *
+ * ★★★ QUOTE-THEN-REVISE, AND THE OLD SENTENCE NAMED THE DEFECT WITHOUT NOTICING IT.
+ * This paragraph used to finish: "the caller supplies an ALREADY-MATERIALISED
+ * zone-locations array." No caller does, and none can. `AddressZone` is not one of the
+ * eighteen in-scope entities, so every in-scope layer publishes a zone association as
+ * OPAQUE IDENTIFIERS and holds no locations -
+ * `PromotionQualifier.getShippingAddressZoneIDs()`
+ * [model/entity/PromotionQualifier.cfc:L75] and
+ * `PromotionReward.getShippingAddressZoneIDs()` [model/entity/PromotionReward.cfc:L77] -
+ * so all three call sites above hand over `addressZoneLocations: []`. An implementation
+ * that tests only the supplied array therefore reads "this zone has no locations" for
+ * EVERY configured zone, answers `false` every time, and silently disables every
+ * address-zone restriction in the promotion engine. That is not a narrow edge case: it
+ * is the whole feature, and it changes what customers are charged.
+ *
+ * ★ THE PORT ALREADY REQUIRED THE FIX, IN TERMS. `AddressZoneProjection` states the
+ * obligation as three rules: test the supplied locations when the list is NON-EMPTY;
+ * resolve from `addressZoneID` when it is EMPTY, because "an empty list from a caller
+ * that publishes no locations is 'not supplied', not 'none exist'"; and keep a zone that
+ * GENUINELY has no locations un-entered all the same. All three are implemented below,
+ * and the third is what stops the repair from widening a zone.
+ *
+ * ★ RESOLUTION STAYS SYNCHRONOUS, WHICH IS WHY THE INDEX IS A CONSTRUCTOR ARGUMENT.
+ * The port declares `isAddressInZone(...): boolean`, never `Promise<boolean>`, and both
+ * qualification call sites are themselves synchronous - so this class may not issue a
+ * statement, and the zone-to-locations state must exist BEFORE the call. It is
+ * materialized once per request by `readAddressZoneLocationIndex` and handed in, exactly
+ * as the SKU currency-detail map is materialized during hydration so that
+ * `getPriceByCurrencyCode` can stay a synchronous accessor.
+ *
+ * ★ AND THE INDEX IS PER REQUEST, NOT PER CONTAINER. Zone membership decides a discount,
+ * so a warm Lambda container must never answer one invocation from another's zone
+ * configuration: an administrator who removes a zone location must not keep seeing the
+ * promotion apply. This class is therefore constructed in `createRequestGraph` and is
+ * NOT among the module-scope adapters, which are restricted to collaborators that hold
+ * no state at all.
  *
  * ITS EMPTY-COLLECTION DEFAULT IS RESTRICTIVE, AND THAT IS PROVEN BY
  * CONSTRUCTION rather than assumed [model/service/AddressService.cfc:L57-L82]:
@@ -1791,12 +2394,19 @@ class BootstrapSettingsProvider implements SettingsProvider {
  * record of that decision.
  */
 class CfmlAddressZoneEvaluator implements AddressZoneEvaluator {
+  /**
+   * @param addressZoneLocations - THIS REQUEST'S zone-to-locations index, already
+   *   materialized. Keyed by folded `addressZoneID`; see
+   *   {@link readAddressZoneLocationIndex}.
+   */
+  public constructor(private readonly addressZoneLocations: AddressZoneLocationIndex) {}
+
   public isAddressInZone(address: AddressProjection, addressZone: AddressZoneProjection): boolean {
     // [model/service/AddressService.cfc:L58] `var addressInZone = false;`
     let addressInZone = false;
 
     // [L60] `for(var i=1; i<=arrayLen(arguments.addressZone.getAddressZoneLocations()); i++)`
-    for (const location of addressZone.addressZoneLocations) {
+    for (const location of this.resolveAddressZoneLocations(addressZone)) {
       // [L62] `var inLocation = true;` - reset for every location.
       let inLocation = true;
 
@@ -1832,6 +2442,140 @@ class CfmlAddressZoneEvaluator implements AddressZoneEvaluator {
     // [L81] `return addressInZone;`
     return addressInZone;
   }
+
+  /**
+   * WHICH locations this zone is tested on - the one decision the port delegates here.
+   *
+   * A NON-EMPTY supplied list is authoritative and nothing is resolved: a caller that
+   * has already materialized the association knows its own zone better than any index
+   * does, and re-resolving would let a stale index override a fresh caller.
+   *
+   * An EMPTY supplied list means NOT SUPPLIED, so this request's index is consulted.
+   * That distinction is the whole of the repair, and the two cases must not be
+   * conflated in either direction.
+   *
+   * ★ AN ABSENT KEY YIELDS AN EMPTY ARRAY, AND THEREFORE `false` AT THE CALLER. That is
+   * the third rule of the port's obligation kept intact: a zone the index does not know -
+   * because it genuinely has no locations, or because no such zone exists - is NOT
+   * entered. `addressInZone` starts `false` [model/service/AddressService.cfc:L58] and
+   * the loop body never runs, exactly as the legacy loop over an empty Hibernate
+   * collection never runs. Resolving by identifier must not soften a restriction into a
+   * match, and it does not.
+   *
+   * ★ THE LOOKUP FOLDS CASE, BECAUSE CFML COMPARES IDENTIFIERS CASE-INSENSITIVELY. The
+   * port says so explicitly - "an implementation that resolves against a keyed store
+   * must fold case when it looks this up rather than assume the caller normalized it" -
+   * and the identifier travels verbatim from a link row, so its stored casing is
+   * whatever the administrator's data carries. `foldIdentifier` is the same folding this
+   * file already applies to driver column names.
+   */
+  private resolveAddressZoneLocations(
+    addressZone: AddressZoneProjection,
+  ): readonly AddressZoneLocationProjection[] {
+    if (addressZone.addressZoneLocations.length !== 0) {
+      return addressZone.addressZoneLocations;
+    }
+
+    return this.addressZoneLocations.get(foldIdentifier(addressZone.addressZoneID)) ?? NO_LOCATIONS;
+  }
+}
+
+/**
+ * One request's zone-to-locations state: folded `addressZoneID` to that zone's locations.
+ *
+ * A `ReadonlyMap`, so the index cannot be added to, cleared or re-keyed after the request
+ * that built it - and a `readonly` array per entry, so a zone's locations cannot be
+ * appended to either. Immutability is the point: the promotion engine consults this
+ * index from inside a synchronous predicate, many times per order, and a value that
+ * could change between two consultations would make one order's discounts depend on when
+ * within the order each zone happened to be tested.
+ *
+ * Module-local, like every other internal shape of this file's wiring.
+ */
+type AddressZoneLocationIndex = ReadonlyMap<string, readonly AddressZoneLocationProjection[]>;
+
+/** The answer for a zone the index does not carry. Shared because it is frozen and empty. */
+const NO_LOCATIONS: readonly AddressZoneLocationProjection[] = Object.freeze([]);
+
+/**
+ * An index carrying no zone at all.
+ *
+ * Used by tier one's validation probe, which builds a request graph WITHOUT issuing a
+ * statement. Shared safely because the type forbids writing to it and nothing in this
+ * module holds a mutable handle on it.
+ */
+const NO_ADDRESS_ZONE_LOCATIONS: AddressZoneLocationIndex = new Map();
+
+/**
+ * Read every zone's locations, once, for THIS request.
+ *
+ * ONE STATEMENT FOR EVERY ZONE, deliberately, and this is the shape that keeps the port
+ * synchronous. The alternative - one keyed read per zone identifier the engine
+ * encounters - cannot be written at all: the identifiers surface inside
+ * `getQualifierQualificationDetails`, which returns `QualifierQualification` and not a
+ * promise, so there is no `await` available at the site that would need one. It would
+ * also be an N+1 against the promotion loop, which is precisely what materializing an
+ * association at a boundary exists to prevent.
+ *
+ * ROWS ARE GROUPED IN ARRIVAL ORDER, which is the faithful treatment: the legacy walks
+ * the Hibernate collection in association order and stops at the first match
+ * [model/service/AddressService.cfc:L60-L61, L75-L78], the statement declares no
+ * `ORDER BY` because the source declares no sort, and every matching location yields the
+ * same verdict - so arrival order is preserved without asserting that any particular
+ * order is correct.
+ *
+ * ★ AN ABSENT COLUMN VALUE BECOMES `null`, NEVER AN OMITTED KEY, AND THE DIFFERENCE IS
+ * ENFORCED BY THE COMPILER. `AddressZoneLocationProjection` declares each field
+ * `?: string | null`, and under `exactOptionalPropertyTypes` an explicit `undefined` is
+ * NOT assignable to such a member - so each field is written as a REQUIRED
+ * `string | null`, which is assignable to the optional one. `null` is also the honest
+ * projection of a NULL column, and `locationValueExcludes` already reads `null` as "this
+ * location constrains nothing on this field", which is the `!isNull(location.getX())`
+ * guard at [model/service/AddressService.cfc:L63-L74].
+ *
+ * ★ THE ZONE IDENTIFIER IS REQUIRED RATHER THAN OPTIONAL. It is the link table's own
+ * foreign key [model/entity/AddressZone.cfc:L61 `fkcolumn="addressZoneID"`], so a NULL
+ * there is not a location without a constraint - it is a row that cannot be attributed
+ * to any zone. `readIdentifier` refuses it by name rather than silently filing it under
+ * the empty string, where it would become a location of a zone nobody configured.
+ */
+async function readAddressZoneLocationIndex(
+  executor: PreparedStatementExecutor,
+): Promise<AddressZoneLocationIndex> {
+  const rows = await executor.execute(SELECT_ADDRESS_ZONE_LOCATIONS_SQL);
+  const locationsByFoldedZoneID = new Map<string, AddressZoneLocationProjection[]>();
+
+  for (const row of rows) {
+    const foldedZoneID = foldIdentifier(
+      readIdentifier(row, 'addressZoneID', SELECT_ADDRESS_ZONE_LOCATIONS),
+    );
+
+    const location: AddressZoneLocationProjection = {
+      postalCode: readOptionalText(row, 'postalCode', SELECT_ADDRESS_ZONE_LOCATIONS) ?? null,
+      city: readOptionalText(row, 'city', SELECT_ADDRESS_ZONE_LOCATIONS) ?? null,
+      stateCode: readOptionalText(row, 'stateCode', SELECT_ADDRESS_ZONE_LOCATIONS) ?? null,
+      countryCode: readOptionalText(row, 'countryCode', SELECT_ADDRESS_ZONE_LOCATIONS) ?? null,
+    };
+
+    const existing = locationsByFoldedZoneID.get(foldedZoneID);
+
+    if (existing === undefined) {
+      locationsByFoldedZoneID.set(foldedZoneID, [location]);
+    } else {
+      existing.push(location);
+    }
+  }
+
+  // Frozen per zone on the way out, into a SECOND map, so the returned index's
+  // immutability is not merely a type-level claim over arrays that the grouping pass
+  // still holds a mutable handle to.
+  const index = new Map<string, readonly AddressZoneLocationProjection[]>();
+
+  for (const [foldedZoneID, locations] of locationsByFoldedZoneID) {
+    index.set(foldedZoneID, Object.freeze(locations));
+  }
+
+  return index;
 }
 
 /**
@@ -1905,81 +2649,42 @@ function locationValueExcludes(
 // 4.4  urlTitleGenerator - ASYNC, executor-backed
 // ---------------------------------------------------------------------------
 
-/**
- * How many SUFFIXED candidates the collision loop will try before giving up.
- *
- * SECURITY REVIEW DISPOSITION - RAISED AS S-19, ACCEPTED.
- *
- * The finding: URL-title "collision handling loops indefinitely and issues one
- * serial query per suffix. Collision-heavy data can consume the invocation until
- * timeout" (CWE-834 uncontrolled loop, CWE-400 resource exhaustion). Required
- * resolution: "Set an attempt cap; prefer atomic uniqueness/upsert or bounded CSPRNG
- * fallback; return generic conflict after the cap."
- *
- * ★ THE LEGACY LOOP REALLY IS UNBOUNDED, AND THAT WAS CHECKED RATHER THAN ASSUMED.
- * `model/service/DataService.cfc:L64-L68` is `while(!unique) { addon++; returnTitle =
- * "#urlTitle#-#addon#"; unique = ...verifyUniqueTableValue(...); }` - no counter
- * ceiling, no timeout, one round trip per iteration. Under the legacy runtime that
- * was merely slow; the request budget was measured in minutes and an operator could
- * watch it.
- *
- * ★ WHY BOUNDING IT IS AAP-MANDATED RATHER THAN A LIBERTY I TOOK. AAP 0.6.5 addresses
- * exactly this class of construct under the CFML-to-Lambda execution-model
- * mismatches: what "under an ambient `cftransaction` and a one-hour budget was merely
- * slow; under Lambda it is a correctness problem", and it requires the ported paths to
- * carry "explicit batch limits". The must-preserve set (AAP 0.8.1) is promotion
- * discount math with use-limit enforcement, the price-group and currency resolution
- * cascade, and `getProductSkusBySelectedOptions` - URL-title generation is in none of
- * them, and `DataService.cfc` is not even a ported file: AAP 0.4.1 replaces it with
- * this port outright. So no preserved-defect obligation reaches this loop.
- *
- * ★ WHY 100, AND WHY A COUNT RATHER THAN A DEADLINE. The bound has to clear the
- * legitimate case comfortably: a catalog holding fifty products all titled "T-Shirt"
- * is ordinary retail data, not an attack, and it must still resolve. It also has to
- * cap the worst case at something a reviewer can multiply out - 100 attempts is at
- * most 101 serial reads, since the unsuffixed candidate is tried before the loop. A
- * wall-clock deadline was rejected: it makes the outcome depend on how loaded the
- * database is, so the same data would succeed and fail on different days and no test
- * could pin it. A count is deterministic.
- *
- * ★ WHAT WAS DELIBERATELY NOT DONE, AND WHY. The finding offers two preferred
- * alternatives; both were considered and both are worse here.
- *   - An ATOMIC uniqueness/upsert would be the right answer if this port wrote
- *     anything. It does not: it performs a read and hands a string back to a caller
- *     that owns the write. Making it atomic means moving uniqueness into the write
- *     path, and the write path for these three tables is the `unique="true"`
- *     constraint declared on the entities - which already answers, authoritatively,
- *     whenever a flush happens. This generator's job is to propose, not to guarantee.
- *   - A CSPRNG FALLBACK would keep the call succeeding, and that is precisely the
- *     objection: it would durably store a title in a format the legacy could never
- *     produce, in a user-visible column, on the path where something is already
- *     abnormal. Silently inventing a different answer under pressure is how a bounded
- *     loop turns into a data-quality incident. Refusing is honest and reversible.
- * So the third clause - "return generic conflict after the cap" - is what is
- * implemented, and it is the clause the other two were alternatives to.
- */
-const MAX_URL_TITLE_COLLISION_ATTEMPTS = 100;
-
-/**
- * Raised when {@link MAX_URL_TITLE_COLLISION_ATTEMPTS} is exhausted.
- *
- * GENERIC BY CONSTRUCTION, which is the half of finding S-19 that is about disclosure
- * rather than about resources. It names NEITHER the candidate title nor the table, so
- * it cannot be used to probe which titles or which tables exist - a caller able to
- * submit titles and read errors would otherwise learn, one refusal at a time, that
- * some particular slug has a hundred neighbours. The attempt count is included
- * because it is this service's own configured ceiling and tells a caller nothing about
- * the data; `src/handlers/errorMapper.ts` publishes the class name for correlation,
- * and the operator-facing detail belongs in the log line the generator writes.
- */
-export class UrlTitleCollisionLimitError extends Error {
-  constructor() {
-    super(
-      `A unique URL title could not be generated within ${String(MAX_URL_TITLE_COLLISION_ATTEMPTS)} attempts. Supply a more distinctive title.`,
-    );
-    this.name = 'UrlTitleCollisionLimitError';
-  }
-}
+// ---------------------------------------------------------------------------
+// RETIRED - `MAX_URL_TITLE_COLLISION_ATTEMPTS = 100` and `UrlTitleCollisionLimitError`, and this
+// tombstone records what they claimed so the reversal is checkable rather than merely absent.
+//
+// The constant's docblock opened "SECURITY REVIEW DISPOSITION - RAISED AS S-19, ACCEPTED", and the
+// finding it accepted was real: URL-title "collision handling loops indefinitely and issues one
+// serial query per suffix. Collision-heavy data can consume the invocation until timeout" (CWE-834
+// uncontrolled loop, CWE-400 resource exhaustion). Required resolution: "Set an attempt cap; prefer
+// atomic uniqueness/upsert or bounded CSPRNG fallback; return generic conflict after the cap."
+//
+// ★★★ THE DIAGNOSIS STANDS; THE REMEDY DID NOT. A code review then raised F9, MAJOR: the generator
+// "throws after 100 collisions, while Brand/Product callers ... require the next available suffix and
+// the legacy loop continues until success", and required "a set-based/deterministic next-suffix
+// implementation that still succeeds for every valid state; do not expose a 101st-collision error."
+//
+// Reading the two findings together resolves them, because they object to DIFFERENT THINGS. S-19
+// objects to N SERIAL ROUND TRIPS. F9 objects to REFUSING A VALID STATE. The cap addressed the first
+// by causing the second - and it did not have to, because the round trips and the answer are
+// separable. `SqlUrlTitleGenerator` now reads the slug's whole family in ONE statement and walks the
+// legacy candidate sequence against that set in memory. S-19's resource concern is discharged more
+// completely than the cap discharged it: the round-trip count is now 1 rather than "at most 101", and
+// it no longer scales with the data at all. F9's totality requirement is met because the walk cannot
+// fail - see the loop's own termination note.
+//
+// ★★ THE CONSTANT'S TWO REJECTED ALTERNATIVES ARE STILL REJECTED, AND FOR ITS OWN REASONS. It argued
+// an ATOMIC uniqueness/upsert "would be the right answer if this port wrote anything. It does not: it
+// performs a read and hands a string back to a caller that owns the write", and that a CSPRNG
+// FALLBACK "would durably store a title in a format the legacy could never produce, in a
+// user-visible column". Both hold. What is implemented is neither of them and is not the cap either;
+// it is the fourth option the finding did not enumerate, which is to stop needing the loop.
+//
+// The error class's own docblock argued it was "GENERIC BY CONSTRUCTION, which is the half of finding
+// S-19 that is about disclosure rather than about resources. It names NEITHER the candidate title nor
+// the table." That property is preserved by construction now rather than by wording: there is no
+// refusal to disclose anything through.
+// ---------------------------------------------------------------------------
 
 /**
  * WHY A HOST TRAIT TABLE EXISTS INSTEAD OF THE HOST ITSELF.
@@ -2153,9 +2858,12 @@ function assertAllowedFeedHost(candidate: string, allowedHosts: readonly string[
  * product-type paths, which also test length.
  * Preserved deliberately; do not fix without a product decision.
  *
- * ITS COLLISION LOOP IS BOUNDED HERE, WHERE THE LEGACY'S IS NOT. See
- * {@link MAX_URL_TITLE_COLLISION_ATTEMPTS} for the finding, the reasoning and the
- * AAP clause that requires the bound rather than merely permitting it.
+ * ★★★ ITS COLLISION LOOP IS TOTAL, AND IT ISSUES EXACTLY ONE STATEMENT. This paragraph used to read
+ * "ITS COLLISION LOOP IS BOUNDED HERE, WHERE THE LEGACY'S IS NOT", pointing at a 100-attempt ceiling
+ * that raised `UrlTitleCollisionLimitError` on the hundred-and-first suffix. A code review raised
+ * that as F9, MAJOR: the callers "require the next available suffix and the legacy loop continues
+ * until success". The retirement tombstone above records both findings and why reading the slug's
+ * whole family in one statement discharges each of them rather than trading one for the other.
  */
 class SqlUrlTitleGenerator implements UrlTitleGenerator {
   public constructor(private readonly executor: PreparedStatementExecutor) {}
@@ -2164,9 +2872,6 @@ class SqlUrlTitleGenerator implements UrlTitleGenerator {
     titleString: string,
     tableName: UrlTitleTableName,
   ): Promise<string> {
-    // [model/service/DataService.cfc:L55] `var addon = 1;`
-    let addon = 1;
-
     // [L57] `reReplace(lcase(trim(titleString)), "[^a-z0-9 \-]", "", "all")`.
     // `reReplace` is the CASE-SENSITIVE form, and that is correct here rather
     // than incidental: `lcase` has already removed every capital, so the
@@ -2181,43 +2886,35 @@ class SqlUrlTitleGenerator implements UrlTitleGenerator {
     // to a single hyphen.
     const urlTitle = sanitized.replace(/ +/g, '-');
 
+    // ★★★ THE ONE STATEMENT, AND THE ONLY STRUCTURAL CHANGE FROM THE LEGACY BODY. Everything below
+    // this line is [model/service/DataService.cfc:L55-L70] unchanged, with `verifyUniqueTableValue`
+    // resolved from a set instead of from a round trip. The legacy asked the database once per
+    // candidate; this asks once per call and then asks the answer.
+    const takenTitles = await this.readUrlTitleFamily(tableName, urlTitle);
+
+    // [L55] `var addon = 1;` - one, not two, so that the first suffix [L65-L66] produces is `-2`.
+    let addon = 1;
+
     // [L60] `var returnTitle = urlTitle;` - the unsuffixed candidate is tried
     // first, which is why the FIRST SUFFIX IS `-2` and never `-1`.
     let returnTitle = urlTitle;
-    let unique = await this.verifyUniqueUrlTitle(tableName, returnTitle);
 
-    // [L64-L68] the suffix loop, BOUNDED. The legacy `while(!unique)` has no
-    // ceiling; this one stops after `MAX_URL_TITLE_COLLISION_ATTEMPTS` suffixed
-    // candidates, because one serial round trip per iteration against
-    // collision-heavy data can otherwise consume the whole invocation (finding
-    // S-19). The constant carries the full reasoning and the AAP 0.6.5 clause that
-    // requires the bound.
+    // [L64-L68] `while(!unique) { addon++; returnTitle = "#urlTitle#-#addon#"; unique = ... }`
     //
-    // THE COUNTER COUNTS ATTEMPTS, NOT SUFFIXES, and the two differ by one on
-    // purpose: `addon` is the legacy's own suffix number and still starts at 1 so
-    // that the first suffix it produces is `-2` exactly as [L65-L66] does. Deriving
-    // the ceiling from `addon` instead would silently couple the bound to that
-    // off-by-one and make `100` mean 99.
-    let attempts = 0;
-    while (!unique) {
-      if (attempts >= MAX_URL_TITLE_COLLISION_ATTEMPTS) {
-        // Only the CEILING and the table are published, and only to the log - never
-        // the candidate. A title is caller-supplied text, `../lib/logger.js` fails
-        // closed on any context key it does not recognize as legible, and neither a
-        // candidate nor a table name is on that list, so passing them would emit
-        // `[REDACTED]` and record nothing. `attemptCount` IS legible, so the ceiling
-        // that was hit is what the line carries; the statement label attributes it.
-        logger.warn(`Exhausted urlTitle collision attempts (${SELECT_UNIQUE_URL_TITLE})`, {
-          attemptCount: attempts,
-        });
-
-        throw new UrlTitleCollisionLimitError();
-      }
-
-      attempts += 1;
+    // ★★★ WHY THIS TERMINATES, WITHOUT A CEILING AND WITHOUT AN UNREACHABLE BRANCH. Every iteration
+    // produces a DISTINCT string - `addon` strictly increases, so no two iterations propose the same
+    // candidate - and the loop continues only while the proposal is a member of `takenTitles`, which
+    // is finite and never grows during the walk. So it runs at most `takenTitles.size` times and
+    // then answers. There is no counter to exhaust, no error to raise, and no branch a test cannot
+    // reach: the totality is structural rather than asserted, which is exactly what F9 required.
+    //
+    // ★★ AND GAP REUSE IS PRESERVED BECAUSE THE WALK IS ASCENDING. A family holding `slug`, `slug-2`
+    // and `slug-4` answers `slug-3`, not `slug-5` - the legacy tested candidates in the same order
+    // and stopped at the same one. Deriving the answer from `MAX(suffix) + 1` would have been simpler
+    // and would have skipped the gap, which is observable in the column a customer sees.
+    while (takenTitles.has(returnTitle)) {
       addon += 1;
       returnTitle = `${urlTitle}-${String(addon)}`;
-      unique = await this.verifyUniqueUrlTitle(tableName, returnTitle);
     }
 
     // [L70] `return returnTitle;`
@@ -2225,32 +2922,61 @@ class SqlUrlTitleGenerator implements UrlTitleGenerator {
   }
 
   /**
-   * CFML parity [model/dao/DataDAO.cfc:L115-L131]: `if(rs.recordCount)` answers
-   * NOT unique; anything else answers unique.
+   * Every stored title in this slug's family, folded for the comparison the column's collation
+   * performs.
+   *
+   * REPLACES `verifyUniqueTableValue` [model/dao/DataDAO.cfc:L115-L131], whose whole body was
+   * `SELECT #column# FROM #tableName# WHERE #column# = <cfqueryparam …/>` followed by
+   * `if(rs.recordCount) return false`. That test survives verbatim in the caller as
+   * `takenTitles.has(candidate)`; what has gone is the one-question-per-round-trip shape.
+   *
+   * ★★ THE FOLD IS THE COLLATION'S BEHAVIOUR, NOT LENIENCY ADDED HERE. `SwBrand.urlTitle`,
+   * `SwProduct.urlTitle` and `SwProductType.urlTitle` are ordinary `varchar` columns under the
+   * schema's default collation, which is case-INSENSITIVE - so the legacy
+   * `WHERE urlTitle = 'nike-air'` matched a stored `Nike-Air` and its caller treated that slug as
+   * taken. Comparing case-sensitively here would answer `nike-air` as free and then let the write
+   * fail on the `unique="true"` constraint [model/entity/Brand.cfc:L55]. Every candidate is already
+   * lowercase, so folding the STORED side is what reproduces the match.
+   *
+   * A ROW WHOSE `urlTitle` IS NULL CONTRIBUTES NOTHING, which is why the read is optional rather
+   * than required: the column is nullable on all three tables, `WHERE urlTitle = ?` never matches
+   * NULL in SQL, and neither disjunct can return such a row - so this is defence against a driver
+   * surprise rather than a live branch, and it must not become a `''` entry that makes the empty
+   * slug look taken.
    */
-  private async verifyUniqueUrlTitle(
+  private async readUrlTitleFamily(
     tableName: UrlTitleTableName,
-    candidate: string,
-  ): Promise<boolean> {
-    const rows = await this.executor.execute(SELECT_UNIQUE_URL_TITLE_SQL[tableName], [candidate]);
+    urlTitle: string,
+  ): Promise<ReadonlySet<string>> {
+    // The bare slug, then the family prefix. The pattern needs no escaping - see
+    // `SELECT_URL_TITLE_FAMILY_SQL` for why the sanitization above makes a metacharacter
+    // impossible. An EMPTY slug is passed through exactly as the legacy passed it: the candidates
+    // become `''`, `'-2'`, `'-3'`, … and the pattern `'-%'`, which is what
+    // [model/service/DataService.cfc:L57-L60] produces for a title of `'!!!'`.
+    const rows = await this.executor.execute(SELECT_URL_TITLE_FAMILY_SQL[tableName], [
+      urlTitle,
+      `${urlTitle}-%`,
+    ]);
 
-    if (rows.length > 0) {
-      // The column is selected so that the statement matches the legacy shape;
-      // reading it would add nothing, since the legacy consults only the row
-      // count. The label exists so a fault names the statement.
-      // Only the ROW COUNT is published. `../lib/logger.js` fails closed on any
-      // context key it does not recognize as legible, and neither a table name nor a
-      // candidate title is on that list - so passing them would emit `[REDACTED]`
-      // and mislead a reader into thinking something was recorded. The statement
-      // label exists for attribution in a fault, not for this breadcrumb.
-      logger.debug(`urlTitle candidate is already taken (${SELECT_UNIQUE_URL_TITLE})`, {
-        rowCount: rows.length,
-      });
+    const takenTitles = new Set<string>();
 
-      return false;
+    for (const row of rows) {
+      const storedTitle = readOptionalText(row, 'urlTitle', SELECT_URL_TITLE_FAMILY);
+
+      if (storedTitle !== undefined) {
+        takenTitles.add(storedTitle.toLowerCase());
+      }
     }
 
-    return true;
+    // Only the ROW COUNT is published. `../lib/logger.js` fails closed on any context key it does
+    // not recognize as legible, and neither a table name nor a candidate title is on that list - so
+    // passing them would emit `[REDACTED]` and mislead a reader into thinking something was
+    // recorded. The statement label attributes the line.
+    logger.debug(`Read the urlTitle family (${SELECT_URL_TITLE_FAMILY})`, {
+      rowCount: takenTitles.size,
+    });
+
+    return takenTitles;
   }
 }
 
@@ -2458,53 +3184,383 @@ class RefusingSubscriptionTermProvider implements SubscriptionTermProvider {
 // ---------------------------------------------------------------------------
 
 /**
- * Per-SKU shipping-weight settings for the product feed.
+ * One probe's participating relationship columns, as `[column, value]` pairs.
  *
- * `googleFeedRepository.ts` states that a resolver "is free to answer from one
- * query, from a warmed table or FROM DECLARED DEFAULTS", and declared defaults
- * are what this composition can honestly answer with:
- * `skuShippingWeight` is declared `1` [model/service/SettingService.cfc:L232] and
- * `skuShippingWeightUnitCode` `"lb"` [L233]. Neither key is one of the four
- * `settingsProvider` admits, and a per-SKU override lives in `SwSetting` rows
- * whose resolution order [model/service/SettingService.cfc:L104] walks the
- * product, the product-type path and the brand - a lookup that belongs to a
- * settings owner, not to this root, and that no in-scope port exposes.
- *
- * ANSWERING EVERY SUBJECT IS THE CONTRACT. The returned map has one entry per
- * subject keyed by `skuID`; answering fewer would be a contract violation, and
- * the repository would have no value for the row it is building. Duplicate
- * subjects collapse onto one entry, which is what a map keyed by SKU means.
- *
- * ONLY `skuID` IS READ, AND THAT IS DELIBERATE. An earlier revision also counted
- * how many subjects carried a `productTypeID` and a `brandID`, to "keep the seam
- * visible". Those counters decided nothing, the logger redacts every key they
- * could have been published under, and a resolver that inspects the walk order's
- * inputs while ignoring the walk reads as a half-finished lookup rather than a
- * declared default. The three unused identifiers stay on the port because a real
- * resolver needs them; this one keys by SKU and answers the declared defaults.
+ * This is the TypeScript spelling of `settingDetails.settingRelationships`
+ * [model/service/SettingService.cfc:L519], and its emptiness is meaningful rather than degenerate: the
+ * empty candidate is step 5 of the cascade, the probe that requires every column to be NULL.
  */
-class DeclaredDefaultSkuFeedSettingResolver implements SkuFeedSettingResolver {
-  public resolveSkuShippingWeightSettings(
+type SettingRelationshipCandidate = readonly (readonly [string, string])[];
+
+/**
+ * Setting rows indexed for O(1) probing: setting name, then relationship key, to setting value.
+ *
+ * The inner key is built by {@link buildSettingRelationshipKey}, which is what lets a six-step cascade
+ * over hundreds of SKUs cost no I/O and no scanning.
+ */
+type SettingRowIndex = ReadonlyMap<string, ReadonlyMap<string, string>>;
+
+/**
+ * The canonical key of a relationship set: which columns are non-NULL, and to what.
+ *
+ * ★★★ THIS ONE FUNCTION IS THE WHOLE OF THE LEGACY `WHERE` CLAUSE, which is why it is worth being
+ * explicit about the correspondence. `getSettingRecordBySettingRelationships`
+ * [model/service/SettingService.cfc:L768-L870] emits `LOWER(col) = ?` for a participating column and
+ * `col IS NULL` for every other, so a row matches a probe if and only if the row's set of non-NULL
+ * relationship columns is EXACTLY the probe's participating set, value for value. Two sets are equal
+ * exactly when their canonical keys are, so a string comparison decides it.
+ *
+ * SORTED, BECAUSE A SET HAS NO ORDER. `{ productTypeID, brandID }` and `{ brandID, productTypeID }` are
+ * the same probe and must key identically; the legacy compared struct keys, which are unordered.
+ *
+ * FOLDED, BECAUSE THE LEGACY FOLDED. Both sides of every comparison are wrapped in `LOWER(...)`
+ * [model/service/SettingService.cfc:L783 onwards], so the key lowercases values. Column names are
+ * already canonical - they come from {@link SETTING_RELATIONSHIP_COLUMNS}, not from a row.
+ *
+ * SEPARATED BY CONTROL CHARACTERS so no identifier can forge a key boundary. A value containing `=` or
+ * `&` would otherwise be able to look like two pairs, and the whole point of the key is that it means
+ * exactly one set.
+ */
+function buildSettingRelationshipKey(candidate: SettingRelationshipCandidate): string {
+  return [...candidate]
+    .map(([columnName, value]): string => `${columnName}\u0001${value.toLowerCase()}`)
+    .sort()
+    .join('\u0002');
+}
+
+/**
+ * Folds the rows of `SELECT_SKU_FEED_SETTINGS_SQL` into a probe-able index.
+ *
+ * ★★ A ROW WHOSE `settingValue` IS NULL STILL WINS, AND ANSWERS THE EMPTY STRING. The legacy assigns
+ * `settingDetails.settingValue = settingRecord.settingValue` and sets `foundValue = true` in the same
+ * breath [model/service/SettingService.cfc:L525-L527], and a NULL query column reads as `''` in CFML -
+ * so a row deliberately blanking a setting SHORT-CIRCUITS the cascade at its own level rather than
+ * falling through to an ancestor or to the declared default. Mapping NULL to `''` here, rather than to
+ * `undefined`, is what preserves that: `undefined` is reserved for "no row matched", and conflating the
+ * two would let a blanked setting inherit a value the merchant blanked it to suppress.
+ *
+ * ★★ AN EMPTY-STRING RELATIONSHIP COLUMN PARTICIPATES; IT DOES NOT COUNT AS NULL. `col IS NULL` is
+ * false for `''` in SQL, and so is `LOWER(col) = '<some-id>'`, which means such a row was unreachable
+ * from every probe the legacy issued. Recording `''` as a participating value reproduces exactly that:
+ * no candidate this resolver builds carries an empty value, so no candidate can match it.
+ *
+ * FIRST ROW WINS ON A TIE, matching CFML's read of row 1 of a multi-row result
+ * [model/service/SettingService.cfc:L525]. See `SELECT_SKU_FEED_SETTINGS_SQL` on why no `ORDER BY`
+ * imposes which row that is.
+ */
+function indexSettingRows(rows: readonly SqlRow[]): SettingRowIndex {
+  const index = new Map<string, Map<string, string>>();
+
+  for (const row of rows) {
+    const settingName = readIdentifier(row, 'settingName', SELECT_SKU_FEED_SETTINGS);
+    const settingValue = readOptionalText(row, 'settingValue', SELECT_SKU_FEED_SETTINGS) ?? '';
+
+    const participating: [string, string][] = [];
+
+    for (const columnName of SETTING_RELATIONSHIP_COLUMNS) {
+      const value = readOptionalText(row, columnName, SELECT_SKU_FEED_SETTINGS);
+
+      if (value !== undefined) {
+        participating.push([columnName, value]);
+      }
+    }
+
+    const foldedName = settingName.toLowerCase();
+    const byRelationship = index.get(foldedName) ?? new Map<string, string>();
+    const relationshipKey = buildSettingRelationshipKey(participating);
+
+    if (!byRelationship.has(relationshipKey)) {
+      byRelationship.set(relationshipKey, settingValue);
+    }
+
+    index.set(foldedName, byRelationship);
+  }
+
+  return index;
+}
+
+/** One probe against the index: the row's value, or `undefined` when no row matched. */
+function lookupSettingValue(
+  settingRows: SettingRowIndex,
+  settingName: string,
+  candidate: SettingRelationshipCandidate,
+): string | undefined {
+  return settingRows.get(settingName.toLowerCase())?.get(buildSettingRelationshipKey(candidate));
+}
+
+/**
+ * The five probes of the `sku` lookup order, in the exact sequence the legacy issues them.
+ *
+ * The sixth step - the declared default - is not a probe and is not listed; it is the caller's `return`
+ * once this sequence is exhausted.
+ *
+ * ★★ AN ABSENT IDENTIFIER SKIPS ITS PROBES RATHER THAN PROBING FOR AN EMPTY ONE, and the two are
+ * equivalent. When a product has no product type, `getValueByPropertyIdentifier` yields an empty path,
+ * `listLen("")` is 0, and the legacy's `else` branch sets `relationshipValue = ""`
+ * [model/service/SettingService.cfc:L558-L560] - so it probes `LOWER(productTypeID) = ''`, which no
+ * row with a NULL or populated column can satisfy. Omitting a probe that cannot match and issuing one
+ * that cannot match reach the same next step. The lone divergence is a row that literally stores an
+ * empty string in a foreign-key column, which Hibernate never wrote - it writes NULL for an absent
+ * association - and which `indexSettingRows` keeps unreachable in either reading.
+ *
+ * ★★ THE BRAND CONJUNCT IS WALKED TO EXHAUSTION BEFORE THE PATH-ONLY STEP BEGINS. The legacy advances
+ * `nextLookupOrderIndex` only once `nextPathListIndex` reaches 0
+ * [model/service/SettingService.cfc:L586-L589], so EVERY segment is tried with the brand before ANY
+ * segment is tried without it. A leaf-plus-brand setting therefore beats a root-only setting, and
+ * interleaving the two steps would invert that for every product whose type has a parent.
+ */
+function buildSkuSettingCandidates(
+  subject: SkuFeedSettingSubject,
+  productTypePaths: ReadonlyMap<string, readonly string[]>,
+): readonly SettingRelationshipCandidate[] {
+  const candidates: SettingRelationshipCandidate[] = [
+    // Step 1. The object's own identifier [model/service/SettingService.cfc:L519-L523].
+    [['skuID', subject.skuID]],
+    // Step 2. Lookup entry 1, `product.productID` [model/service/SettingService.cfc:L104].
+    [['productID', subject.productID]],
+  ];
+
+  // LEAF FIRST, THEN OUTWARDS TO THE ROOT. The stored path runs root-first
+  // [org/Hibachi/HibachiEntity.cfc:L315] and the legacy indexes it downwards
+  // [model/service/SettingService.cfc:L552-L557], so reversing the stored order IS the walk order.
+  const storedPath =
+    subject.productTypeID === undefined ? [] : (productTypePaths.get(subject.productTypeID) ?? []);
+  const walkOrder = [...storedPath].reverse();
+
+  // Step 3. Lookup entry 2, `productTypeIDPath & brand.brandID`, once per segment.
+  if (subject.brandID !== undefined) {
+    for (const productTypeID of walkOrder) {
+      candidates.push([
+        ['productTypeID', productTypeID],
+        ['brandID', subject.brandID],
+      ]);
+    }
+  }
+
+  // Step 4. Lookup entry 3, `productTypeIDPath` alone, once per segment.
+  for (const productTypeID of walkOrder) {
+    candidates.push([['productTypeID', productTypeID]]);
+  }
+
+  // Step 5. No relationships at all [model/service/SettingService.cfc:L594-L608] - the row an
+  // administrator sets as the installation-wide value, which requires all seventeen columns NULL.
+  candidates.push([]);
+
+  return candidates;
+}
+
+// ★★★ `DeclaredDefaultSkuFeedSettingResolver` WAS HERE, AND IT WAS THE ANSWER TO THE WRONG QUESTION.
+//
+// It answered `{ skuShippingWeight: '1', skuShippingWeightUnitCode: 'lb' }` for every subject, and
+// justified that with a sentence quoted from the port's own docblock - a resolver "is free to answer
+// from one query, from a warmed table or FROM DECLARED DEFAULTS". Its reasoning ran:
+//
+//   "declared defaults are what this composition can honestly answer with ... a per-SKU override lives
+//    in `SwSetting` rows whose resolution order [model/service/SettingService.cfc:L104] walks the
+//    product, the product-type path and the brand - a lookup that belongs to a settings owner, not to
+//    this root, and that no in-scope port exposes."
+//
+// ★★ THE PORT QUOTATION WAS ACCURATE AND THE CONCLUSION STILL DID NOT FOLLOW. "Free to answer from
+// declared defaults" licenses a default as the CASCADE'S LAST STEP, which is exactly what it is in the
+// legacy [model/service/SettingService.cfc:L482-L487]; it does not license skipping the five steps in
+// front of it. Code review put it precisely: "Do not masquerade defaults as resolved overrides." A
+// merchant who sets a 12 lb shipping weight on a product type and reads `1 lb` in the feed has not been
+// given a default - they have been given a wrong answer that is indistinguishable from a right one.
+//
+// ★★ AND "NO IN-SCOPE PORT EXPOSES IT" WAS TRUE BUT IRRELEVANT, for the same reason it was in F13 and
+// F14. `src/domain/ports/settingsProvider.ts` is locked at its four keys and stays locked; the thirteen
+// ports are unchanged. What the absence of a port rules out is a PORT-SHAPED solution, not a solution.
+// This resolver is a module-local structural collaborator over `PreparedStatementExecutor`, the same
+// construct `SqlUrlTitleGenerator`, `SqlPriceGroupFrameworkReads`, `SqlBrandFrameworkWrites` and
+// `readAddressZoneLocationIndex` already use, and it consumes no B4 ledger slot because it is not a
+// ported CFML surface.
+//
+// The review offered a second option - "or refuse feed generation until available". That is rejected on
+// the evidence of F1, F2 and F8, all three of which were refusals of valid states that had to be
+// removed in this same review cycle. A catalog with no `SwSetting` overrides at all is the ordinary
+// case, and the legacy served it from the declared defaults without complaint.
+
+/**
+ * Per-SKU shipping-weight settings for the product feed, resolved through the legacy precedence.
+ *
+ * WHAT THE LEGACY DOES, IN ONE PLACE. `local.sku.setting('skuShippingWeight')`
+ * [integrationServices/google/views/feed/product.cfm:L58] reaches `getSettingDetails`
+ * [model/service/SettingService.cfc:L466-L610], which seeds the declared default, matches the prefix
+ * `sku` against `settingPrefixInOrder` [model/service/SettingService.cfc:L81-L100], and then probes
+ * `SwSetting` in this order:
+ *
+ *   1. `{ skuID }`                              the object's own identifier [L519-L523]
+ *   2. `{ productID }`                          lookup entry 1 [L104]
+ *   3. `{ productTypeID, brandID }`             lookup entry 2, ONE PROBE PER PATH SEGMENT
+ *   4. `{ productTypeID }`                      lookup entry 3, ONE PROBE PER PATH SEGMENT
+ *   5. `{ }`                                    no relationships at all [L594-L608]
+ *   6. the declared default                     seeded before any probe ran [L482-L487]
+ *
+ * ★★★ THE PATH IS WALKED LAST SEGMENT FIRST, AND THAT IS WHAT MAKES IT INHERITANCE.
+ * `nextPathListIndex = listLen(pathList)` then `listGetAt(pathList, nextPathListIndex)` followed by
+ * `nextPathListIndex--` [model/service/SettingService.cfc:L552-L557] walks DOWN. The stored list runs
+ * root-first because `buildIDPathList` prepends [org/Hibachi/HibachiEntity.cfc:L315], so walking down
+ * means LEAF FIRST, then its parent, then its grandparent, out to the root. A setting on the nearest
+ * product type therefore beats one on a distant ancestor - and reversing the walk would silently invert
+ * that, answering the root's value while a leaf override sat unread.
+ *
+ * ★★ THERE IS NO BRAND-ONLY STEP, however much one might expect one. The brand appears only as the
+ * `&product.brand.brandID` conjunct of entry 2 [model/service/SettingService.cfc:L104], never alone, so
+ * a row carrying a `brandID` and no `productTypeID` is unreachable from a SKU. That is not an omission
+ * here; it is the lookup table, and inventing the missing step would answer settings the legacy never
+ * found.
+ *
+ * ★★ TWO STATEMENTS FOR THE WHOLE BATCH, WHICH IS THE OTHER HALF OF THE FINDING. The port requires
+ * batching - "a per-row call would issue one lookup per SKU, which is the N+1 shape the repository
+ * boundary exists to make impossible" - and the legacy's own shape agrees: it read the table ONCE
+ * [model/dao/SettingDAO.cfc:L51-L62] and memoized it, then probed in-engine. So the candidate rows and
+ * the ancestry paths are each read once, however many SKUs the feed selected, and all six steps run in
+ * memory over those two results. The statement count does not vary with the batch size.
+ *
+ * ANSWERING EVERY SUBJECT IS STILL THE CONTRACT, and it remains structurally guaranteed: step 6 is
+ * unconditional, so the cascade cannot fall off its end. Duplicate subjects collapse onto one entry,
+ * which is what a map keyed by SKU means.
+ */
+class SqlSkuFeedSettingResolver implements SkuFeedSettingResolver {
+  public constructor(private readonly executor: PreparedStatementExecutor) {}
+
+  public async resolveSkuShippingWeightSettings(
     subjects: readonly SkuFeedSettingSubject[],
   ): Promise<ReadonlyMap<string, ResolvedSkuShippingWeightSetting>> {
     const resolved = new Map<string, ResolvedSkuShippingWeightSetting>();
 
+    // No subjects means no feed rows, and `IN ()` is a MySQL syntax error besides. The repository
+    // already returns early on an empty selection; this guard makes the resolver safe on its own terms.
+    if (subjects.length === 0) {
+      return resolved;
+    }
+
+    const settingRows = await this.readSettingRows();
+    const productTypePaths = await this.readProductTypePaths(subjects);
+
     for (const subject of subjects) {
       resolved.set(subject.skuID, {
-        skuShippingWeight: SKU_SHIPPING_WEIGHT_DEFAULT,
-        skuShippingWeightUnitCode: SKU_SHIPPING_WEIGHT_UNIT_CODE_DEFAULT,
+        skuShippingWeight: this.resolveOne(
+          SKU_SHIPPING_WEIGHT_SETTING_NAME,
+          SKU_SHIPPING_WEIGHT_DEFAULT,
+          subject,
+          settingRows,
+          productTypePaths,
+        ),
+        skuShippingWeightUnitCode: this.resolveOne(
+          SKU_SHIPPING_WEIGHT_UNIT_CODE_SETTING_NAME,
+          SKU_SHIPPING_WEIGHT_UNIT_CODE_DEFAULT,
+          subject,
+          settingRows,
+          productTypePaths,
+        ),
       });
     }
 
-    // Legible keys only; see the note at `SqlUrlTitleGenerator`. `rowCount` is what
-    // was asked about and `resultCount` what was answered, and they must agree -
-    // every subject is answered, because the declared defaults apply unconditionally.
-    logger.debug('Resolved per-SKU shipping-weight settings from declared defaults', {
+    // Legible keys only; see the note at `SqlUrlTitleGenerator`. `rowCount` is what was asked about and
+    // `resultCount` what was answered, and they must agree - the cascade's last step is unconditional.
+    // Neither a setting value nor an identifier is published: a shipping weight is not a secret, but
+    // the logger admits a fixed key set and widening it for diagnostics is how that stops being true.
+    logger.debug('Resolved per-SKU shipping-weight settings', {
       rowCount: subjects.length,
       resultCount: resolved.size,
     });
 
-    return Promise.resolve(resolved);
+    return resolved;
+  }
+
+  /**
+   * Runs the six-step cascade for ONE setting and ONE subject, in memory.
+   *
+   * Every step is a lookup into the index built by `readSettingRows`, so the cascade costs no I/O and
+   * the ordering below is the whole of the behaviour. The first hit wins and the walk stops, which is
+   * `foundValue` short-circuiting the legacy's `do { } while (!foundValue && ...)`
+   * [model/service/SettingService.cfc:L544-L590].
+   */
+  private resolveOne(
+    settingName: string,
+    declaredDefault: string,
+    subject: SkuFeedSettingSubject,
+    settingRows: SettingRowIndex,
+    productTypePaths: ReadonlyMap<string, readonly string[]>,
+  ): string {
+    for (const candidate of buildSkuSettingCandidates(subject, productTypePaths)) {
+      const settingValue = lookupSettingValue(settingRows, settingName, candidate);
+
+      if (settingValue !== undefined) {
+        return settingValue;
+      }
+    }
+
+    // Step 6. [model/service/SettingService.cfc:L482-L487] seeded this before any probe ran, so
+    // reaching it means every probe missed rather than that no probe was attempted.
+    return declaredDefault;
+  }
+
+  /** Step 1 of the two reads: every candidate row for the feed's two keys. */
+  private async readSettingRows(): Promise<SettingRowIndex> {
+    const rows = await this.executor.execute(SELECT_SKU_FEED_SETTINGS_SQL, [
+      SKU_SHIPPING_WEIGHT_SETTING_NAME.toLowerCase(),
+      SKU_SHIPPING_WEIGHT_UNIT_CODE_SETTING_NAME.toLowerCase(),
+    ]);
+
+    return indexSettingRows(rows);
+  }
+
+  /**
+   * Step 2 of the two reads: the ancestry path of every product type the batch mentions.
+   *
+   * The batch is deduplicated first, so a feed of five hundred SKUs sharing one product type binds one
+   * key rather than five hundred. A batch mentioning no product type at all skips the statement
+   * entirely - there is nothing to ask about, and `IN ()` would not parse.
+   */
+  private async readProductTypePaths(
+    subjects: readonly SkuFeedSettingSubject[],
+  ): Promise<ReadonlyMap<string, readonly string[]>> {
+    const leafIdentifiers = [
+      ...new Set(
+        subjects
+          .map((subject) => subject.productTypeID)
+          .filter((productTypeID): productTypeID is string => productTypeID !== undefined),
+      ),
+    ];
+
+    if (leafIdentifiers.length === 0) {
+      return new Map<string, readonly string[]>();
+    }
+
+    const rows = await this.executor.execute(
+      buildSelectProductTypePathsSql(leafIdentifiers.length),
+      leafIdentifiers,
+    );
+
+    const paths = new Map<string, readonly string[]>();
+
+    for (const row of rows) {
+      const productTypeID = readIdentifier(row, 'productTypeID', SELECT_PRODUCT_TYPE_PATHS);
+      const storedPath = readOptionalText(row, 'productTypeIDPath', SELECT_PRODUCT_TYPE_PATHS);
+
+      // `listToArray` drops empty elements exactly as CFML's does, so a trailing comma or a doubled
+      // separator yields no phantom segment.
+      paths.set(productTypeID, listToArray(storedPath ?? ''));
+    }
+
+    // A leaf whose row is absent, or whose stored path is empty, still has ONE known segment: itself.
+    // The legacy could not observe an empty path here, because `getProductTypeIDPath`
+    // [model/entity/ProductType.cfc:L251-L253] rebuilds the list from the live parent chain whenever the
+    // column is null, and `buildIDPathList` always includes the entity it starts from
+    // [org/Hibachi/HibachiEntity.cfc:L315]. Seeding the leaf reproduces the floor of that guarantee -
+    // a leaf-level override is still found - without pretending to know an ancestry the column did not
+    // record.
+    for (const leafIdentifier of leafIdentifiers) {
+      const knownPath = paths.get(leafIdentifier);
+
+      if (knownPath === undefined || knownPath.length === 0) {
+        paths.set(leafIdentifier, [leafIdentifier]);
+      }
+    }
+
+    return paths;
   }
 }
 
@@ -3028,6 +4084,363 @@ class SqlPriceGroupFrameworkReads {
 }
 
 /**
+ * A freshly minted 32-character identifier, in the shape `fieldtype="id" generator="uuid" length="32"`
+ * expects [model/entity/RoundingRule.cfc:L52, model/entity/Brand.cfc:L52].
+ *
+ * The hyphens are stripped because the column is 32 characters and a canonical UUID string is 36 - the
+ * same reduction `mysqlProductRepository` and `mysqlPriceGroupRepository` each perform for the same
+ * reason. `node:crypto`'s `randomUUID` is the standard library's cryptographically strong v4 generator,
+ * so no dependency is added for this (E3: the pinned set is closed).
+ */
+function mintFrameworkIdentifier(): string {
+  return randomUUID().replaceAll('-', '');
+}
+
+/**
+ * The value-rounding delegate a persisted `RoundingRule` is reconstructed with.
+ *
+ * Declared module-locally and un-exported, mirroring `src/domain/entities/roundingRule.ts` and
+ * `src/repositories/mysql/mysqlPromotionRepository.ts`, which each declare their own structural copy
+ * for the same reason: the entity's own interface is not exported, and structurally identical
+ * interfaces are the same type.
+ */
+interface FrameworkWriteValueRounder {
+  roundValueByRoundingRule(value: Money, rule: RoundingRule): Money;
+}
+
+/**
+ * Raised when a framework write affects a different number of rows than the one it addressed.
+ *
+ * ★ WHY THIS IS CHECKED AT ALL, GIVEN THE LEGACY NEVER CHECKED IT. Hibernate DID check: a flush whose
+ * UPDATE matched no row raised `StaleObjectStateException` rather than continuing, so a lost update was
+ * an error in the legacy too. With the ORM gone, `executeMutation` reports an affected count and
+ * nothing else looks at it, so an UPDATE against a deleted rounding rule would otherwise be reported to
+ * the caller as a successful save - the same class of false success this whole grouping exists to
+ * remove. Reproducing the ORM's refusal is the faithful choice, not an added guarantee.
+ */
+class FrameworkWriteError extends Error {
+  public constructor(statementLabel: string, identifier: string, affectedRows: number) {
+    super(
+      `${statementLabel} affected ${String(affectedRows)} rows for identifier ${identifier}; ` +
+        'exactly one was expected. The row may have been deleted by another request.',
+    );
+    this.name = 'FrameworkWriteError';
+  }
+}
+
+/**
+ * Raised when a brand save would duplicate an existing `urlTitle`.
+ *
+ * [model/validation/Brand.json] declares `"urlTitle": [{"contexts":"save","required":true,"unique":true}]`
+ * and [model/entity/Brand.cfc:L55] carries the matching `unique="true"`. The legacy framework evaluated
+ * the `unique` rule BEFORE reaching the database, so a duplicate surfaced as a validation failure rather
+ * than as a driver-level constraint violation; this reproduces that ordering.
+ */
+class BrandUrlTitleNotUniqueError extends Error {
+  public constructor(urlTitle: string, conflictingBrandID: string) {
+    super(
+      `saveBrand refused: urlTitle "${urlTitle}" is already held by brand ${conflictingBrandID}. ` +
+        'Declared unique at model/validation/Brand.json and model/entity/Brand.cfc:L55.',
+    );
+    this.name = 'BrandUrlTitleNotUniqueError';
+  }
+}
+
+/**
+ * The durable half of `super.save` for `SwRoundingRule`, over the request's executor.
+ *
+ * ★★★ THIS IS THE COLLABORATOR THAT MAKES `RoundingRuleService.saveRoundingRule` ACTUALLY SAVE.
+ * Before it existed the method evicted its memo and resolved the input entity, which was
+ * indistinguishable from a successful write to every caller. The service declares the contract it needs
+ * as `RoundingRuleFrameworkWrites` in `../services/roundingRuleService.ts`; this class satisfies it
+ * STRUCTURALLY, with no `implements` clause, exactly as the two `Sql*FrameworkReads` collaborators
+ * satisfy theirs.
+ *
+ * ★★ NOT A PORT, AND NOT A REPOSITORY MEMBER. The domain port set is closed at THIRTEEN [AAP 0.2.1] and
+ * `PromotionRepository` is specified as SEVEN READS, so the write could live in neither place - and the
+ * review that required it asked for precisely "a narrow module-local/framework-write collaborator over
+ * the executor - without a 14th domain port". Reads of this same table stay where they already are, on
+ * `PromotionRepository.getRoundingRuleQuery` [model/dao/RoundingRuleDAO.cfc:L51]; owning a table's read
+ * has never licensed writing to it in this subtree, and this class is what keeps those two facts
+ * compatible.
+ *
+ * ★ PER REQUEST, because it closes over the request's `AuditActorContext`. An actor is who is signed in
+ * for THIS invocation, so a container-scoped writer would stamp one request's account onto another's
+ * row - the same reasoning that makes the four writing repositories per request.
+ */
+class SqlRoundingRuleFrameworkWrites {
+  public constructor(
+    private readonly executor: PreparedStatementExecutor,
+    private readonly auditActor: AuditActorContext,
+    private readonly valueRounder: FrameworkWriteValueRounder,
+  ) {}
+
+  /**
+   * Insert or update one rule and answer the persisted row.
+   *
+   * `isNew()` selects the path, reading the `unsavedvalue=""` sentinel
+   * [model/entity/RoundingRule.cfc:L52] exactly as Hibernate did when deciding whether a managed
+   * entity was transient.
+   *
+   * ONE CAPTURED INSTANT per save, written to every stamped column, matching the single `now()` each of
+   * [org/Hibachi/HibachiEntity.cfc:L609] and [:L661] takes.
+   *
+   * NO TRANSACTION, and that is a considered position rather than an omission: this is ONE statement.
+   * `executor.transaction` exists for a multi-statement unit whose partial application would be
+   * incoherent - `savePriceGroupRate`'s row-plus-six-link-tables, say - and a single statement is
+   * already atomic in MySQL. Wrapping it would add a `START TRANSACTION` and a `COMMIT` round trip to
+   * buy nothing.
+   */
+  public async saveRoundingRule(rule: RoundingRule): Promise<RoundingRule> {
+    const auditTimestamp = new Date();
+    const stampedBy = resolveAuditActorAccountID(this.auditActor);
+
+    if (rule.isNew()) {
+      const mintedID = mintFrameworkIdentifier();
+
+      const inserted = await this.executor.executeMutation(INSERT_ROUNDING_RULE_SQL, [
+        mintedID,
+        rule.getRoundingRuleName() ?? null,
+        rule.getRoundingRuleExpression() ?? null,
+        rule.getRoundingRuleDirection() ?? null,
+        auditTimestamp,
+        // A refused actor gate binds NULL on an INSERT, which is what the legacy produced: a skipped
+        // `setCreatedByAccount` left the property unset and Hibernate inserted null.
+        stampedBy ?? null,
+        auditTimestamp,
+        stampedBy ?? null,
+      ]);
+
+      if (inserted.affectedRows !== 1) {
+        throw new FrameworkWriteError(INSERT_ROUNDING_RULE, mintedID, inserted.affectedRows);
+      }
+
+      return this.rehydrate(rule, mintedID, {
+        createdDateTime: auditTimestamp,
+        createdByAccountID: stampedBy,
+        modifiedDateTime: auditTimestamp,
+        modifiedByAccountID: stampedBy,
+      });
+    }
+
+    const roundingRuleID = rule.getRoundingRuleID();
+
+    const result = await this.executor.executeMutation(UPDATE_ROUNDING_RULE_SQL, [
+      rule.getRoundingRuleName() ?? null,
+      rule.getRoundingRuleExpression() ?? null,
+      rule.getRoundingRuleDirection() ?? null,
+      auditTimestamp,
+      // Bound NULL when the gate refuses, and `sqlUpdateAssignment` has rendered this column as
+      // `COALESCE(?, modifiedByAccountID)` so the DATABASE keeps the stored value rather than losing it.
+      stampedBy ?? null,
+      // The key binds LAST, because it belongs to the WHERE clause and every SET placeholder precedes it.
+      roundingRuleID,
+    ]);
+
+    if (result.affectedRows !== 1) {
+      throw new FrameworkWriteError(UPDATE_ROUNDING_RULE, roundingRuleID, result.affectedRows);
+    }
+
+    return this.rehydrate(rule, roundingRuleID, {
+      createdDateTime: rule.getCreatedDateTime(),
+      createdByAccountID: rule.getCreatedByAccountID(),
+      modifiedDateTime: auditTimestamp,
+      // The TypeScript mirror of the statement's `COALESCE`, so the returned entity agrees with the row.
+      modifiedByAccountID: resolveStampedModifiedByAccountID(
+        this.auditActor,
+        rule.getModifiedByAccountID(),
+      ),
+    });
+  }
+
+  /**
+   * A fresh entity describing the row just written.
+   *
+   * FETCH SHAPE (T3): NO RE-READ. Re-selecting the row would issue a statement the caller did not ask
+   * for and could hand back a different shape from the one it passed in - the same disposition
+   * `mysqlPriceGroupRepository.savePriceGroupRate` records for its own return. The association is carried
+   * through unchanged; it is `inverse="true"` [model/entity/RoundingRule.cfc:L65] and so was never part
+   * of this write.
+   */
+  private rehydrate(
+    rule: RoundingRule,
+    roundingRuleID: string,
+    stamps: {
+      readonly createdDateTime: Date | undefined;
+      readonly createdByAccountID: string | undefined;
+      readonly modifiedDateTime: Date | undefined;
+      readonly modifiedByAccountID: string | undefined;
+    },
+  ): RoundingRule {
+    return new RoundingRule(
+      {
+        roundingRuleID,
+        roundingRuleName: rule.getRoundingRuleName(),
+        roundingRuleExpression: rule.getRoundingRuleExpression(),
+        roundingRuleDirection: rule.getRoundingRuleDirection(),
+        createdDateTime: stamps.createdDateTime,
+        createdByAccountID: stamps.createdByAccountID,
+        modifiedDateTime: stamps.modifiedDateTime,
+        modifiedByAccountID: stamps.modifiedByAccountID,
+        priceGroupRates: rule.getPriceGroupRates(),
+      },
+      this.valueRounder,
+    );
+  }
+}
+
+/**
+ * The durable half of `super.save` for `SwBrand`, over the request's executor.
+ *
+ * ★★★ THIS IS THE COLLABORATOR THAT REPLACES A THROW. `BrandService.saveBrand` previously resolved the
+ * URL title and then ALWAYS raised, so the service's only operation was permanently unavailable. The
+ * contract is declared by the consumer as `BrandFrameworkWrites` in `../services/brandService.ts` and
+ * satisfied structurally here, for the same reasons set out on `SqlRoundingRuleFrameworkWrites`.
+ *
+ * ★★ IT WRITES THE ROW AND NOTHING ELSE, WHICH IS READ OFF THE MAPPING RATHER THAN CHOSEN.
+ * Every one of `Brand`'s eight associations is declared `inverse="true"` [model/entity/Brand.cfc:L60-L61,
+ * L66-L72], making the brand the owning side of none of them. Hibernate wrote a link-table row only for
+ * an OWNING-side collection, so a brand save never touched `SwPromoRewardBrand`, `SwVendorBrand` or any
+ * other. Reconciling them here would write rows the legacy did not.
+ */
+class SqlBrandFrameworkWrites {
+  public constructor(
+    private readonly executor: PreparedStatementExecutor,
+    private readonly auditActor: AuditActorContext,
+  ) {}
+
+  /**
+   * Insert or update one brand and answer the persisted row.
+   *
+   * THE UNIQUENESS RULE IS EVALUATED BEFORE THE WRITE, not left to the column constraint, because
+   * [org/Hibachi/HibachiService.cfc:L151] validated before it reached the DAO - so a duplicate title was
+   * a refused save rather than a driver error. The probe excludes the row being saved, so re-saving an
+   * existing brand without changing its title is not a self-collision.
+   *
+   * ONE CAPTURED INSTANT, and the audit columns follow exactly the rules
+   * `SqlRoundingRuleFrameworkWrites.saveRoundingRule` documents: NULL on insert when the gate refuses,
+   * `COALESCE` on update so a refusal preserves the stored attribution.
+   */
+  public async saveBrand(brand: Brand): Promise<Brand> {
+    const auditTimestamp = new Date();
+    const stampedBy = resolveAuditActorAccountID(this.auditActor);
+    const isInsert = brand.isNew();
+    const brandID = isInsert ? mintFrameworkIdentifier() : brand.getBrandID();
+    const urlTitle = brand.getUrlTitle();
+
+    // `urlTitle` is REQUIRED as well as unique, and the service has already enforced requiredness - so
+    // by here it is present, and only the uniqueness half remains. The probe runs on both paths: an
+    // insert can collide with a stored row, and an update can collide with a DIFFERENT stored row.
+    if (urlTitle !== undefined) {
+      const conflicting = await this.executor.execute(SELECT_BRAND_BY_URL_TITLE_SQL, [
+        urlTitle,
+        brandID,
+      ]);
+      const conflict = conflicting[0];
+
+      if (conflict !== undefined) {
+        throw new BrandUrlTitleNotUniqueError(
+          urlTitle,
+          readIdentifier(conflict, 'brandID', SELECT_BRAND_BY_URL_TITLE),
+        );
+      }
+    }
+
+    if (isInsert) {
+      const inserted = await this.executor.executeMutation(INSERT_BRAND_SQL, [
+        brandID,
+        // The flags are booleans on the entity [model/entity/Brand.cfc:L53-L54, `ormtype="boolean"`], and
+        // the entity has already resolved CFML truthiness for them, so they bind directly.
+        brand.getActiveFlag(),
+        brand.getPublishedFlag(),
+        urlTitle ?? null,
+        brand.getBrandName() ?? null,
+        brand.getBrandWebsite() ?? null,
+        brand.getRemoteID() ?? null,
+        auditTimestamp,
+        stampedBy ?? null,
+        auditTimestamp,
+        stampedBy ?? null,
+      ]);
+
+      if (inserted.affectedRows !== 1) {
+        throw new FrameworkWriteError(INSERT_BRAND, brandID, inserted.affectedRows);
+      }
+
+      return this.rehydrate(brand, brandID, {
+        createdDateTime: auditTimestamp,
+        createdByAccountID: stampedBy,
+        modifiedDateTime: auditTimestamp,
+        modifiedByAccountID: stampedBy,
+      });
+    }
+
+    const result = await this.executor.executeMutation(UPDATE_BRAND_SQL, [
+      brand.getActiveFlag(),
+      brand.getPublishedFlag(),
+      urlTitle ?? null,
+      brand.getBrandName() ?? null,
+      brand.getBrandWebsite() ?? null,
+      brand.getRemoteID() ?? null,
+      auditTimestamp,
+      stampedBy ?? null,
+      brandID,
+    ]);
+
+    if (result.affectedRows !== 1) {
+      throw new FrameworkWriteError(UPDATE_BRAND, brandID, result.affectedRows);
+    }
+
+    return this.rehydrate(brand, brandID, {
+      createdDateTime: brand.getCreatedDateTime(),
+      createdByAccountID: brand.getCreatedByAccountID(),
+      modifiedDateTime: auditTimestamp,
+      modifiedByAccountID: resolveStampedModifiedByAccountID(
+        this.auditActor,
+        brand.getModifiedByAccountID(),
+      ),
+    });
+  }
+
+  /**
+   * A fresh entity describing the row just written, carrying the caller's associations unchanged.
+   *
+   * No re-read, for the reason given on the rounding-rule counterpart. All five association arrays are
+   * passed through because none of them was written: they are inverse collections, and dropping them
+   * would hand back a brand that had silently lost its in-memory graph.
+   */
+  private rehydrate(
+    brand: Brand,
+    brandID: string,
+    stamps: {
+      readonly createdDateTime: Date | undefined;
+      readonly createdByAccountID: string | undefined;
+      readonly modifiedDateTime: Date | undefined;
+      readonly modifiedByAccountID: string | undefined;
+    },
+  ): Brand {
+    return new Brand({
+      brandID,
+      activeFlag: brand.getActiveFlag(),
+      publishedFlag: brand.getPublishedFlag(),
+      urlTitle: brand.getUrlTitle(),
+      brandName: brand.getBrandName(),
+      brandWebsite: brand.getBrandWebsite(),
+      remoteID: brand.getRemoteID(),
+      products: brand.getProducts(),
+      promotionRewards: brand.getPromotionRewards(),
+      promotionRewardExclusions: brand.getPromotionRewardExclusions(),
+      promotionQualifiers: brand.getPromotionQualifiers(),
+      promotionQualifierExclusions: brand.getPromotionQualifierExclusions(),
+      createdDateTime: stamps.createdDateTime,
+      createdByAccountID: stamps.createdByAccountID,
+      modifiedDateTime: stamps.modifiedDateTime,
+      modifiedByAccountID: stamps.modifiedByAccountID,
+    });
+  }
+}
+
+/**
  * The one promotion read `PromotionService` declares.
  *
  * Satisfied structurally, with no `implements` clause. The return is
@@ -3181,7 +4594,13 @@ interface ModuleScopeGraph {
   readonly settingsProvider: SettingsProvider;
   readonly currencyRecords: readonly CurrencyRecordProjection[];
   readonly europeanCentralBankRates: EuropeanCentralBankRateTable;
-  readonly addressZoneEvaluator: AddressZoneEvaluator;
+  // NO `addressZoneEvaluator`. It USED TO SIT HERE, as a parameterless
+  // `new CfmlAddressZoneEvaluator()`, on the reading that it was "genuinely stateless" -
+  // and it was stateless only because it resolved nothing, which is what made every
+  // configured address zone answer `false`. Now that it holds THIS REQUEST'S
+  // zone-to-locations index it is tier-2 state by definition, and this tier is
+  // restricted to collaborators that hold none. It is constructed in
+  // `createRequestGraph`; see section 4.2.
   readonly urlTitleGenerator: UrlTitleGenerator;
   readonly imageStore: ImageStore;
   readonly imageSettingValues: SkuImageSettingValues;
@@ -3335,12 +4754,14 @@ async function createModuleScopeGraph(overrides: CompositionOverrides): Promise<
     settingsProvider,
     currencyRecords,
     europeanCentralBankRates,
-    addressZoneEvaluator: new CfmlAddressZoneEvaluator(),
     urlTitleGenerator: new SqlUrlTitleGenerator(executor),
     imageStore: new RefusingImageStore(imageSettingValues),
     imageSettingValues,
     subscriptionTermProvider: new RefusingSubscriptionTermProvider(),
-    skuFeedSettingResolver: new DeclaredDefaultSkuFeedSettingResolver(),
+    // Takes the executor and reads lazily, inside the call - the same shape as
+    // `SqlUrlTitleGenerator` and `SqlOptionEntityLoader` above. Construction stays I/O-free,
+    // which is what lets the completeness probe build this graph with no reachable server.
+    skuFeedSettingResolver: new SqlSkuFeedSettingResolver(executor),
     optionEntityLoader: new SqlOptionEntityLoader(executor),
     feedSettingValues,
     // No constructor parameters. [integrationServices/google/Integration.cfc:L51-L53]
@@ -3380,7 +4801,15 @@ async function createModuleScopeGraph(overrides: CompositionOverrides): Promise<
   // The empty input is the honest probe: it exercises the same defaults a request
   // carrying no clock, no account and no feed host would, and its wall-clock read,
   // account context and currency memo are discarded with it.
-  assertCompleteRequestGraph(createRequestGraph(graph, {}));
+  //
+  // ★ AND THE EMPTY ZONE INDEX IS PART OF THAT SAME HONESTY. The address-zone index is
+  // the one binding of the request graph that is READ rather than constructed, so the
+  // probe supplies an empty one: it proves the evaluator is WIRED without issuing the
+  // statement, which is what keeps this pass free of I/O and independent of a reachable
+  // server. A zone lookup against the empty index answers no locations and therefore
+  // `false`, which is the same restrictive verdict a request against a database with no
+  // configured zones would get - so the probe cannot be misread as having proven a match.
+  assertCompleteRequestGraph(createRequestGraph(graph, {}, NO_ADDRESS_ZONE_LOCATIONS));
 
   // --- 7. Publish -------------------------------------------------------
   // ★ THE MESSAGE CARRIES THE SIGNAL; THE CONTEXT CARRIES ONLY LEGIBLE KEYS.
@@ -3408,17 +4837,51 @@ async function createModuleScopeGraph(overrides: CompositionOverrides): Promise<
   return graph;
 }
 
+/**
+ * Project the live configuration onto the redacted surface a caller may see.
+ *
+ * ★★ EVERY MEMBER IS COPIED OUT RATHER THAN THE OBJECT BEING RE-EXPOSED, which is what makes this a
+ * projection and not a rename. `database` is the output of the config's own `toJSON()`, so the three
+ * never-echoed fields are already markers by the time they arrive; `tls` is rebuilt from two
+ * enumerations plus a boolean, so the trust anchor's bytes are not carried at all; and neither
+ * `graph.config` nor `graph.config.database` is referenced by the returned value, so there is no path
+ * back to a credential through it.
+ *
+ * `pool`, `feed` and `currency` are handed over as they stand. Each is already a frozen shape of
+ * numbers, public hostnames and public reference data, and re-copying them would suggest a redaction
+ * that is not happening.
+ */
+function projectCompositionDiagnostics(config: AppConfig): CompositionDiagnostics {
+  return {
+    environment: config.environment,
+    dialect: config.dialect,
+    database: config.database.toJSON(),
+    pool: config.pool,
+    tls: {
+      mode: config.tls.mode,
+      minimumVersion: config.tls.minimumVersion,
+      certificateAuthorityConfigured: config.tls.certificateAuthority !== undefined,
+    },
+    feed: config.feed,
+    currency: config.currency,
+  };
+}
+
 /** Wrap the tier-1 graph in the published accessor. */
 async function createCompositionRoot(overrides: CompositionOverrides): Promise<CompositionRoot> {
   const graph = await createModuleScopeGraph(overrides);
 
   return {
-    config: graph.config,
+    // `graph.config` STAYS INSIDE THE CLOSURE. What crosses the boundary is the redacted projection,
+    // so `AppConfig` - and with it the database credential - is unreachable from the returned root.
+    diagnostics: projectCompositionDiagnostics(graph.config),
     dialect: graph.dialect,
     settingsProvider: graph.settingsProvider,
     integration: graph.integration,
-    createRequestScope: (input?: RequestScopeInput): RequestScope =>
+    createRequestScope: (input?: RequestScopeInput): Promise<RequestScope> =>
       createRequestScope(graph, input ?? {}),
+    createInspectableRequestScope: (input?: RequestScopeInput): Promise<InspectableRequestScope> =>
+      createInspectableRequestScope(graph, input ?? {}),
   };
 }
 
@@ -3622,7 +5085,23 @@ function assertCompleteRequestGraph(requestGraph: RequestGraph): void {
   }
 }
 
-function createRequestGraph(graph: ModuleScopeGraph, input: RequestScopeInput): RequestGraph {
+/**
+ * Assemble one request's binding graph. SYNCHRONOUS, AND IT ISSUES NO STATEMENT.
+ *
+ * @param graph - tier one's shared, stateless bindings.
+ * @param input - this request's clock, account and feed host, all optional.
+ * @param addressZoneLocations - THIS REQUEST'S zone-to-locations index, already read.
+ *   It is a PARAMETER rather than something this function fetches for itself precisely
+ *   so that this function stays synchronous and I/O-free: tier one calls it once as a
+ *   completeness probe, with no request and no reachable server, and that probe must not
+ *   become a database round trip. `createRequestScope` performs the read and passes the
+ *   result through; the probe passes {@link NO_ADDRESS_ZONE_LOCATIONS}.
+ */
+function createRequestGraph(
+  graph: ModuleScopeGraph,
+  input: RequestScopeInput,
+  addressZoneLocations: AddressZoneLocationIndex,
+): RequestGraph {
   // --- The request's instant, under an explicit UTC policy ----------------
   // A `Date` IS an absolute instant - it carries no zone - so threading one and
   // comparing with it is UTC by construction, with no local-time reading
@@ -3970,7 +5449,25 @@ function createRequestGraph(graph: ModuleScopeGraph, input: RequestScopeInput): 
   // NO fourteenth `roundingRuleRepository` port. Its `roundingRuleDetails` memo
   // [model/service/RoundingRuleService.cfc:L67-L77] is an instance field, which is
   // precisely why this service is per request.
-  const roundingRuleService = new RoundingRuleService(promotionRepository);
+  //
+  // ★ THE SECOND ARGUMENT IS THE DURABLE HALF OF `super.save`, and it is what makes
+  // `saveRoundingRule` a save. `promotionRepository` carries the rounding-rule READ and
+  // nothing more - the port is specified as seven reads [AAP 0.4.1] - so the write cannot
+  // live there, and the port set is closed at thirteen so it cannot become a fourteenth
+  // port either. It is therefore a MODULE-LOCAL STRUCTURAL COLLABORATOR over this
+  // request's executor, constructed inline exactly as the two `Sql*FrameworkReads`
+  // collaborators are, and satisfying the `RoundingRuleFrameworkWrites` contract the
+  // SERVICE declares.
+  //
+  // It receives `valueRounder`, not `roundingRuleService`: the writer reconstructs the
+  // persisted rule, and a `RoundingRule` needs a rounding delegate. Passing the delegate
+  // rather than the service keeps the same one-method contract the two repositories get,
+  // and the forward is lazy - resolved when a save actually happens, by which point the
+  // binding two statements below is closed.
+  const roundingRuleService = new RoundingRuleService(
+    promotionRepository,
+    new SqlRoundingRuleFrameworkWrites(graph.executor, auditActor, valueRounder),
+  );
 
   roundingRuleServiceBinding = roundingRuleService;
 
@@ -3992,7 +5489,20 @@ function createRequestGraph(graph: ModuleScopeGraph, input: RequestScopeInput): 
 
   // Its ONLY collaborator [model/service/BrandService.cfc:L51] `dataService`,
   // which is BrandService's entire dependency surface.
-  const brandService = new BrandService(graph.urlTitleGenerator);
+  //
+  // ★ THE SECOND ARGUMENT IS NOT A SECOND COLLABORATOR IN THE LEGACY SENSE - it is the
+  // durable half of the `super.save` [model/service/BrandService.cfc:L77] that the legacy
+  // component inherited rather than declared. `dataService` really is the only thing
+  // `BrandService.cfc` injects; `super.save` came from the framework base
+  // [org/Hibachi/HibachiService.cfc:L133-L169]. With that base deliberately unported
+  // [AAP 0.5.3], its persistence half has to arrive from somewhere, and the composition
+  // root is where the AAP puts every replaced framework responsibility. Before this
+  // argument existed the service's only operation resolved a URL title and then always
+  // threw, so the published capability could never succeed.
+  const brandService = new BrandService(
+    graph.urlTitleGenerator,
+    new SqlBrandFrameworkWrites(graph.executor, auditActor),
+  );
 
   // Legacy [model/service/OptionService.cfc:L53] declared `property name="productService"`
   // but the component body never references it. Deliberately NOT wired: injecting
@@ -4069,9 +5579,16 @@ function createRequestGraph(graph: ModuleScopeGraph, input: RequestScopeInput): 
   // L54] exactly: the promotion DAO, the address service reduced to its one
   // in-scope method, and the rounding-rule service. The fourth argument is the
   // framework-generic promotion read the service declares for this root.
+  //
+  // ★ THE ZONE EVALUATOR IS CONSTRUCTED HERE, PER REQUEST, AND NO LONGER AT MODULE SCOPE.
+  // It closes over THIS request's zone-to-locations index, so it is tier-2 state and
+  // sharing one instance across warm invocations would let an administrator's removed
+  // zone location keep applying a shipping promotion. Section 4.2 records why the index
+  // exists at all: every in-scope caller publishes zone IDs and no locations, so an
+  // evaluator with nothing to resolve against answers `false` for every configured zone.
   const promotionService = new PromotionService(
     promotionRepository,
-    graph.addressZoneEvaluator,
+    new CfmlAddressZoneEvaluator(addressZoneLocations),
     roundingRuleService,
     new SqlPromotionFrameworkReads(graph.executor),
   );
@@ -4128,8 +5645,7 @@ function createRequestGraph(graph: ModuleScopeGraph, input: RequestScopeInput): 
   // `addRange('product.calculatedQATS','1^')` [L72] - are INVARIANTS of the
   // repository's statement, never options a caller can reach. The renderer is
   // left to the service's default, which is the PURE SYNCHRONOUS function
-  // `renderGoogleProductFeed(rows, feedHost, feedScheme, now)`; nothing here
-  // overrides it.
+  // `renderGoogleProductFeed(rows, feedHost, now)`; nothing here overrides it.
   //
   // `assertAllowedFeedHost` normalizes the candidate and then checks its MEMBERSHIP
   // of the allow-list, throwing `UntrustedFeedHostError` otherwise. An EMPTY
@@ -4172,12 +5688,15 @@ function createRequestGraph(graph: ModuleScopeGraph, input: RequestScopeInput): 
     new GoogleFeedService(
       feedRepository,
       assertAllowedFeedHost(feedHost, graph.config.feed.allowedHosts),
-      // ★ BOTH HALVES OF THE ORIGIN COME FROM PROCESS CONFIGURATION. The host's
-      // ALLOW-LIST does (S-15); the SCHEME joins it here, which is the enforcement
-      // half of finding S-09's resolution. `graph.config` is frozen and resolved once
-      // at module scope, so a request can reach neither, and `resolveFeedUrlScheme`
-      // has already refused `http` outright if this deployment is production.
-      graph.config.feed.scheme,
+      // ★ NO SCHEME IS PASSED, AND THERE IS NO THIRD ARGUMENT BETWEEN THE HOST AND THE
+      // CLOCK. Only the ALLOW-LIST for the origin's AUTHORITY is process configuration
+      // (S-15). The SCHEME is not configuration at all: it is the frozen legacy `http://`
+      // literal inside `../integrations/google/rssFeedRenderer.js`. An intervening
+      // revision passed `graph.config.feed.scheme` here, accepting finding S-09; both
+      // that argument and the config member it read are removed, because AAP 0.1.1 and
+      // 0.8.1 freeze the product-feed contract and AAP 0.6.7 admits no fourth divergence.
+      // A deployment needing HTTPS feed URLs terminates TLS in front of this service.
+      //
       // A FRESH COPY of the request epoch, not the instance exposed as
       // `RequestScope.now`: the service closes over what it is handed, so sharing
       // one mutable `Date` would let a caller that mutates the exposed instant move
@@ -4266,19 +5785,99 @@ function createRequestGraph(graph: ModuleScopeGraph, input: RequestScopeInput): 
  * binding the graph publishes as a factory, so the decision "was a feed host carried
  * by this request?" lives at the boundary that reads the request - and a request
  * without one gets `undefined`, exactly as before.
+ *
+ * ★★ IT IS ASYNCHRONOUS, AND THE ONE READ IT PERFORMS IS WHY. This function used to be
+ * synchronous, on the reading that "every read it needs was already performed once at
+ * tier one". One is not: the address-zone locations the promotion engine restricts
+ * discounts by are per-request state that tier one may not hold, and the port that
+ * consumes them is SYNCHRONOUS by contract - so the read cannot happen inside the
+ * predicate and cannot happen at module scope either. It happens here, once, before the
+ * graph is assembled, which is the only remaining place it can. Section 4.2 carries the
+ * full argument.
+ *
+ * ★ TWO CONSEQUENCES, BOTH RECORDED RATHER THAN GLOSSED. Opening a scope now issues
+ * exactly ONE statement of its own, where it previously issued none - so the tier-1 /
+ * tier-2 split is now "tier one is shared and read once; tier two is per request and
+ * reads once" rather than "tier two reads nothing". And this function's refusals - the
+ * feed-host allow-list check inside `createProductFeedPort` among them - are now REJECTED
+ * promises rather than synchronous throws. The refusal itself is unchanged: no
+ * `ProductFeedPort` is constructed for an unlisted host and no feed statement is issued.
  */
-function createRequestScope(graph: ModuleScopeGraph, input: RequestScopeInput): RequestScope {
-  const requestGraph = createRequestGraph(graph, input);
+async function createRequestScope(
+  graph: ModuleScopeGraph,
+  input: RequestScopeInput,
+): Promise<RequestScope> {
+  // BEFORE the graph is assembled, because `CfmlAddressZoneEvaluator` takes the index as
+  // a constructor argument and `PromotionService` takes the evaluator as one. There is no
+  // later point at which it could be supplied without making the evaluator mutable, and a
+  // mutable evaluator is exactly the cross-consultation instability the index type's own
+  // note refuses.
+  return projectRequestScope(await assembleRequestGraph(graph, input), input);
+}
 
+/**
+ * Open one request's scope and hand back the adapters it was assembled with.
+ *
+ * The refusal semantics are the `createRequestScope` ones unchanged, because the refusal lives in
+ * `createProductFeedPort` and this route reaches it through the same projection: an unlisted feed
+ * host rejects with `UntrustedFeedHostError`, no port is constructed and no feed statement is
+ * issued. See {@link CompositionRoot.createInspectableRequestScope}.
+ */
+async function createInspectableRequestScope(
+  graph: ModuleScopeGraph,
+  input: RequestScopeInput,
+): Promise<InspectableRequestScope> {
+  const requestGraph = await assembleRequestGraph(graph, input);
+
+  return {
+    scope: projectRequestScope(requestGraph, input),
+    // Copied out member by member rather than spread from the graph, so that a member added to
+    // `RequestGraph` later cannot arrive on this surface without someone deciding it should.
+    adapters: {
+      productRepository: requestGraph.productRepository,
+      skuRepository: requestGraph.skuRepository,
+      optionRepository: requestGraph.optionRepository,
+      productTypeRepository: requestGraph.productTypeRepository,
+      promotionRepository: requestGraph.promotionRepository,
+      priceGroupRepository: requestGraph.priceGroupRepository,
+    },
+  };
+}
+
+/**
+ * Assemble one request's graph, performing the one read that has to precede assembly.
+ *
+ * EXTRACTED SO THAT THE TWO PUBLISHED ROUTES SHARE EXACTLY ONE ASSEMBLY PATH.
+ * `createRequestScope` projects the request-tier surface from it and
+ * `createInspectableRequestScope` projects that same surface plus the adapters. Neither can drift
+ * from the other, and neither can quietly build a second graph - which is the failure mode
+ * {@link CompositionRoot.createInspectableRequestScope} exists to rule out.
+ *
+ * `createRequestGraph` itself stays SYNCHRONOUS and I/O-FREE. The await belongs here, above it,
+ * for the reason recorded on `createRequestScope`: `CfmlAddressZoneEvaluator` takes the index as a
+ * constructor argument and the port it satisfies is synchronous by contract.
+ */
+async function assembleRequestGraph(
+  graph: ModuleScopeGraph,
+  input: RequestScopeInput,
+): Promise<RequestGraph> {
+  const addressZoneLocations = await readAddressZoneLocationIndex(graph.executor);
+
+  return createRequestGraph(graph, input, addressZoneLocations);
+}
+
+/**
+ * Project the request-tier surface from an assembled graph.
+ *
+ * ★ THE SIX REPOSITORY LINES THAT USED TO SIT BETWEEN `currentAccountContext` AND
+ * `roundingRuleService` ARE GONE FROM THIS PROJECTION, which is the other half of withdrawing them
+ * from {@link RequestScope}: the type stopped declaring them and this function stopped copying
+ * them out. They remain on the graph, where the services that need them already hold them.
+ */
+function projectRequestScope(requestGraph: RequestGraph, input: RequestScopeInput): RequestScope {
   return {
     now: requestGraph.now,
     currentAccountContext: requestGraph.currentAccountContext,
-    productRepository: requestGraph.productRepository,
-    skuRepository: requestGraph.skuRepository,
-    optionRepository: requestGraph.optionRepository,
-    productTypeRepository: requestGraph.productTypeRepository,
-    promotionRepository: requestGraph.promotionRepository,
-    priceGroupRepository: requestGraph.priceGroupRepository,
     roundingRuleService: requestGraph.roundingRuleService,
     brandService: requestGraph.brandService,
     optionService: requestGraph.optionService,
