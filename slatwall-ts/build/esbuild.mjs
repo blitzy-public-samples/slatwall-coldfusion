@@ -183,20 +183,27 @@ const STAGED_MODULES_DIRECTORY = 'node_modules';
  *      compile pass into a false assurance;
  *   4. tsconfig.json's `target`/`lib` pair;
  *   5. the Toolchain section of slatwall-ts/README.md, which states the Node, npm, TypeScript, Jest,
- *      esbuild, ESLint, Prettier and mysql2 versions and repeats this same coupling list.
+ *      esbuild, ESLint, Prettier and mysql2 versions and repeats this same coupling list;
+ *   6. package-lock.json, which pins @types/node 20.19.43 by resolved URL and integrity hash.
+ *      Item 3 cannot move without it: `npm ci` installs FROM the lock rather than from the manifest,
+ *      so editing package.json alone would leave the old definitions resolving and the bump would
+ *      look applied while changing nothing.
  *
- * Items 1, 2, 3 and 5 are the four couplings AAP 0.5.5 enumerates. Item 4 is an additional coupling
- * measured in this subtree that AAP 0.5.5 does not name, and it is listed anyway because a reader
- * auditing the couplings before a bump has to find every one of them, not only the documented four.
+ * Items 1, 2, 3 and 5 are the four couplings AAP 0.5.5 enumerates. Items 4 and 6 are additional
+ * couplings measured in this subtree that AAP 0.5.5 does not name, and they are listed anyway
+ * because a reader auditing the couplings before a bump has to find every one of them, not only the
+ * documented four. Item 6 was absent from every enumeration in the subtree until review finding
+ * SEC-RUNTIME-01 named it, and it is the one whose omission would have silently defeated an uplift
+ * rather than merely left a stale document behind.
  *
  * ⚠️ ITEM 5 DID NOT EXIST WHEN THIS LIST WAS FIRST WRITTEN, AND NOW DOES. slatwall-ts/README.md is
  * declared as a CREATE target by AAP 0.2.1.7 and 0.4.1.2 but had not been generated, so this note
  * previously recorded that coupling as an outstanding gap and enumerated only four items. The file
- * has since been authored carrying the version statements AAP 0.5.5 requires, which closes the gap
- * and is why the count here is five rather than four.
+ * has since been authored carrying the version statements AAP 0.5.5 requires, which closes the gap.
+ * With the lockfile added as item 6, the count here is six rather than four.
  *
  * Because the hexagonal boundary confines every AWS type to src/handlers/**, such a move touches
- * those five artefacts and nothing under src/domain/**, src/ports/**, src/services/** or
+ * those six artefacts and nothing under src/domain/**, src/ports/**, src/services/** or
  * src/adapters/**.
  */
 const NODE_TARGET = 'node20';
@@ -933,8 +940,10 @@ const EXTERNAL_PACKAGES = ['mysql2'];
 /**
  * Announces the runtime-lifecycle gate on every build, to stderr.
  *
- * WHY IT IS HERE AND NOT ONLY IN A COMMENT. The pinned Node line is out of upstream support, and the
- * managed Lambda runtime deprecation was aligned to that same upstream date. AAP 0.5.5 weighs that
+ * WHY IT IS HERE AND NOT ONLY IN A COMMENT. The pinned Node line is out of upstream support, and AWS
+ * aligned the managed Lambda runtime deprecation to that same upstream date — two independently
+ * sourced facts that coincide, recorded with their separate authorities in tsconfig.json rather than
+ * merged into one here. AAP 0.5.5 weighs that
  * evidence and concludes "The pin stands." — the pin is an express instruction, so this script does
  * not quietly retarget it, and AAP 0.5.3.2 likewise rejects a newer @types/node precisely so the
  * type surface keeps matching the runtime. What remains is a disclosure obligation, and a comment
@@ -948,9 +957,10 @@ const EXTERNAL_PACKAGES = ['mysql2'];
  *
  * ⚠️ IT STATES NO FIGURE AND NO DATE OF ITS OWN. No support window, retention period, latency,
  * throughput, availability or capacity number is asserted anywhere in this file — the only version
- * token it owns is NODE_TARGET. The dated account, including the conflicting published timelines for
- * the later control-plane gates, is recorded in tsconfig.json, and this notice points there rather
- * than restating it, so one future correction cannot leave two copies disagreeing.
+ * token it owns is NODE_TARGET. The dated account, including the two superseded schedules for the
+ * later control-plane gates and the separate reason each is superseded, is recorded in tsconfig.json,
+ * and this notice points there rather than restating it, so one future correction cannot leave two
+ * copies disagreeing.
  *
  * WHY THE TWO MACHINE-READ PINS ARE LEFT BYTE-IDENTICAL. package.json is strict JSON and admits no
  * comment at all, and .nvmrc is a single-line version file that some readers consume whole. Neither
@@ -976,7 +986,7 @@ function announceRuntimeLifecycleGate() {
     '[esbuild]         of it; it is not by itself authorization to ship. See tsconfig.json for the',
   );
   console.error(
-    '[esbuild]         dated account and the five couplings a runtime move has to change together.',
+    '[esbuild]         dated account and the six couplings a runtime move has to change together.',
   );
 }
 

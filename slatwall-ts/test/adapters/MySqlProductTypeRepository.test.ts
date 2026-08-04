@@ -120,6 +120,7 @@ import {
   SUBSCRIPTION_PRODUCT_TYPE_ID,
 } from '../fixtures/productTypes';
 import {
+  GENEROUS_SMART_LIST_BUDGET,
   TEST_ADMIN_ACCOUNT_ID,
   createAbsentAccountContextDouble,
   createAccountContextDouble,
@@ -2102,6 +2103,7 @@ describe('test/adapters/catalogAggregates.test.ts — the association loaders th
       const builder = new SmartListQueryBuilder(
         executor,
         createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+        GENEROUS_SMART_LIST_BUDGET,
       );
 
       const result = await builder.execute({ entityName: 'SlatwallSku' });
@@ -2121,6 +2123,7 @@ describe('test/adapters/catalogAggregates.test.ts — the association loaders th
       const builder = new SmartListQueryBuilder(
         executor,
         createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+        GENEROUS_SMART_LIST_BUDGET,
       );
 
       const result = await builder.execute({ entityName: 'SlatwallSku' });
@@ -2143,6 +2146,7 @@ describe('test/adapters/catalogAggregates.test.ts — the association loaders th
       const builder = new SmartListQueryBuilder(
         executor,
         createCatalogAggregateLoaders(binder.dependencies),
+        GENEROUS_SMART_LIST_BUDGET,
       );
 
       const result = await builder.execute({ entityName: 'SlatwallSku' });
@@ -2159,6 +2163,7 @@ describe('test/adapters/catalogAggregates.test.ts — the association loaders th
       const builder = new SmartListQueryBuilder(
         executor,
         createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+        GENEROUS_SMART_LIST_BUDGET,
       );
 
       const result = await builder.execute({ entityName: 'SlatwallSku' });
@@ -2181,6 +2186,7 @@ describe('test/adapters/catalogAggregates.test.ts — the association loaders th
       const builder = new SmartListQueryBuilder(
         executor,
         createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+        GENEROUS_SMART_LIST_BUDGET,
       );
 
       await builder.execute({ entityName: 'SlatwallSku' });
@@ -2210,6 +2216,7 @@ describe('test/adapters/catalogAggregates.test.ts — the association loaders th
       const builder = new SmartListQueryBuilder(
         executor,
         createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+        GENEROUS_SMART_LIST_BUDGET,
       );
 
       const result = await builder.execute({ entityName: 'SlatwallSku' });
@@ -2225,6 +2232,7 @@ describe('test/adapters/catalogAggregates.test.ts — the association loaders th
       const builder = new SmartListQueryBuilder(
         executor,
         createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+        GENEROUS_SMART_LIST_BUDGET,
       );
 
       const result = await builder.execute({ entityName: 'SlatwallSku' });
@@ -2240,6 +2248,7 @@ describe('test/adapters/catalogAggregates.test.ts — the association loaders th
       const builder = new SmartListQueryBuilder(
         executor,
         createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+        GENEROUS_SMART_LIST_BUDGET,
       );
 
       await builder.execute({ entityName: 'SlatwallSku' });
@@ -2262,6 +2271,7 @@ describe('test/adapters/catalogAggregates.test.ts — the association loaders th
       const builder = new SmartListQueryBuilder(
         executor,
         createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+        GENEROUS_SMART_LIST_BUDGET,
       );
 
       const result = await builder.execute({ entityName: 'SlatwallOption' });
@@ -2282,6 +2292,7 @@ describe('test/adapters/catalogAggregates.test.ts — the association loaders th
       const builder = new SmartListQueryBuilder(
         executor,
         createCatalogAggregateLoaders(binder.dependencies),
+        GENEROUS_SMART_LIST_BUDGET,
       );
 
       await builder.execute({ entityName: 'SlatwallOption' });
@@ -2298,6 +2309,7 @@ describe('test/adapters/catalogAggregates.test.ts — the association loaders th
       const builder = new SmartListQueryBuilder(
         executor,
         createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+        GENEROUS_SMART_LIST_BUDGET,
       );
 
       const result = await builder.execute({ entityName: 'SlatwallOption' });
@@ -2339,6 +2351,7 @@ describe('test/adapters/catalogAggregates.test.ts — the association loaders th
       const builder = new SmartListQueryBuilder(
         executor,
         createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+        GENEROUS_SMART_LIST_BUDGET,
       );
 
       const result = await builder.execute({ entityName: 'SlatwallProduct' });
@@ -2356,6 +2369,7 @@ describe('test/adapters/catalogAggregates.test.ts — the association loaders th
       const builder = new SmartListQueryBuilder(
         executor,
         createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+        GENEROUS_SMART_LIST_BUDGET,
       );
 
       const result = await builder.execute({ entityName: 'SlatwallProduct' });
@@ -2393,6 +2407,7 @@ describe('test/adapters/catalogAggregates.test.ts — the association loaders th
       const builder = new SmartListQueryBuilder(
         executor,
         createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+        GENEROUS_SMART_LIST_BUDGET,
       );
 
       /*
@@ -2439,6 +2454,7 @@ describe('test/adapters/catalogAggregates.test.ts — the association loaders th
       const builder = new SmartListQueryBuilder(
         executor,
         createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+        GENEROUS_SMART_LIST_BUDGET,
       );
 
       await builder.execute({ entityName: 'SlatwallProduct' });
@@ -2457,6 +2473,7 @@ describe('test/adapters/catalogAggregates.test.ts — the association loaders th
       const builder = new SmartListQueryBuilder(
         executor,
         createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+        GENEROUS_SMART_LIST_BUDGET,
       );
 
       const result = await builder.execute({ entityName: 'SlatwallProduct' });
@@ -2492,6 +2509,7 @@ describe('test/adapters/catalogAggregates.test.ts — the association loaders th
       const builder = new SmartListQueryBuilder(
         executor,
         createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+        GENEROUS_SMART_LIST_BUDGET,
       );
 
       const result = await builder.execute({ entityName: 'SlatwallBrand' });
@@ -2668,6 +2686,7 @@ describe('test/adapters/catalogAggregates.test.ts — the association loaders th
       const builder = new SmartListQueryBuilder(
         executor,
         createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+        GENEROUS_SMART_LIST_BUDGET,
       );
 
       await builder.execute({ entityName: 'SlatwallProduct' });
@@ -2785,6 +2804,7 @@ describe('test/adapters/catalogAggregates.test.ts — the association loaders th
       const builder = new SmartListQueryBuilder(
         executor,
         createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+        GENEROUS_SMART_LIST_BUDGET,
       );
 
       return { service: new OptionService(UNREACHED_OPTION_REPOSITORY, builder), statements };

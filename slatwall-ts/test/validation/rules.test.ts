@@ -4805,31 +4805,53 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
   });
 
   /* ==============================================================================================
-   * NET-NEW TODO(parity) — F6 WITHDRAWAL. NEITHER PROBE LOCKS, AND THE CWE-367 RACE IS CARRIED
+   * ⭐⭐ NET-NEW SEC-RACE-01 — THE TRANSACTION-SCOPED PROBE LOCKS; THE POOL-BOUND ONE DOES NOT
    * ==============================================================================================
-   * A revision of this port appended ` FOR UPDATE` to both uniqueness probes whenever the checker had
-   * adopted a boundary's executor, and licensed it on the D18 footing (AAP §0.6.7.7) on the ground that
-   * a locking read returns the same rows and therefore the same verdict. THAT IS WITHDRAWN IN FULL. The
-   * ground was sound as far as it went, but AAP §0.6.7.7 authorises exactly ONE departure from
-   * behavioural preservation in this port — D18, the importer's parameterised SQL — and it does so
-   * precisely so that a reviewer diffing behaviour has exactly one entry to check. Statement text is
-   * observable, a lock-wait is observable under concurrency, and AAP §0.8.2 Guideline 4 admits no
-   * proportionality test. Both probes are therefore byte-identical to `org/Hibachi/HibachiDAO.cfc:L140`
-   * and `model/dao/DataDAO.cfc:L122-L124` on EVERY path, bound or unbound.
+   * ⛔ THIS BLOCK HAS ASSERTED BOTH POSITIONS, AND THE HISTORY IS KEPT BECAUSE THE MIDDLE ONE WAS THE
+   * FINDING. It was titled "F6 WITHDRAWAL. NEITHER PROBE LOCKS, AND THE CWE-367 RACE IS CARRIED", it
+   * required the boundary-scoped statement to be byte-identical to the pool-bound one, and it argued:
+   * "AAP §0.6.7.7 authorises exactly ONE departure from behavioural preservation in this port — D18, the
+   * importer's parameterised SQL — and it does so precisely so that a reviewer diffing behaviour has
+   * exactly one entry to check. Statement text is observable, a lock-wait is observable under concurrency,
+   * and AAP §0.8.2 Guideline 4 admits no proportionality test."
    *
-   * ⚠️ THE EXPOSURE THAT IS CARRIED, STATED PLAINLY (CWE-367, TOCTOU). Each probe is the READ half of a
-   * check-then-write. Two concurrent savers can both be told a value is free and both write it. Five of
-   * the seven ported uniqueness rules have a `unique="true"` column behind them, so the database
-   * convicts the second write there; `optionCode` (`model/validation/Option.json:L3`) and
-   * `optionGroupCode` (`model/validation/OptionGroup.json:L3`) do NOT, so on those two the duplicate
-   * simply persists. The repair is a unique index, and AAP §0.2.2.5 places schema migration outside this
-   * refactoring entirely — so it is the operator's decision, arriving as a stated requirement rather
-   * than smuggled in as a statement suffix. The legacy system has the same exposure for the same reason.
+   * ⭐ REVIEW FINDING SEC-RACE-01 REVERSES THAT, AND THE CITATION WAS MISREAD. §0.6.7 is the DEFECT AND
+   * TODO CARRY-OVER REGISTER: twenty-one LEGACY BUSINESS-LOGIC defects — a misnamed struct, an inverted
+   * cache guard, an unreachable private method — of which D18 is the one member the port repairs. The
+   * extracted service's data integrity under concurrency is not an entry in it, so §0.6.7.7 never spoke to
+   * this. Reading D18's exception as the sole licence to take a lock anywhere would make §0.6.7.7 say that
+   * a faithful migration must reproduce a TOCTOU race.
    *
-   * ⭐ `withExecutor` ITSELF IS NOT WITHDRAWN. Adopting a boundary's executor is M6 visibility — it is
-   * what lets a uniqueness probe observe rows the same transaction has already written, which
-   * `SkuService.createSkus` depends on (§0.6.2). It changes WHICH connection runs the statement and
-   * never the statement. The tests below pin exactly that split.
+   * Guideline 4 forbids enhancing BUSINESS LOGIC, and the lock enhances none: `FOR UPDATE` selects exactly
+   * the rows the same predicate selects without it, so both probes return the same verdict for the same
+   * data — which the verdict case below asserts on BOTH paths precisely so that claim is not merely made.
+   * What changes is when a SECOND CONCURRENT transaction may ask, and a second concurrent transaction is
+   * not an observable of the legacy's single-threaded behaviour. §0.7.3 S8 is then discharged by naming what
+   * remains unprotected, which the paragraph after next does.
+   *
+   * ⭐ WHY IT IS GATED ON SCOPE RATHER THAN APPLIED ALWAYS — the split these cases exist to pin. A lock
+   * protects a check-then-write only when the check and the write share a transaction, which is the
+   * finding's own requirement ("Keep checks and writes on the same transaction/connection"). On a
+   * POOL-BOUND autocommit connection InnoDB releases the lock at statement end, so the value could be taken
+   * before the caller's write reaches a different connection — no protection, while still taking gap locks
+   * on every validation read the service performs. `withExecutor` is the only seam through which a
+   * boundary's executor arrives, so it is the only place the scope is known, and it is where the lock is
+   * turned on.
+   *
+   * ⚠️ WHAT THE LOCK STILL DOES NOT CLOSE (CWE-367). It serialises writers that BOTH take it; it cannot
+   * bind one that never asks — a legacy CFML request against the same schema, or an administrative INSERT.
+   * Five of the seven ported uniqueness rules have a `unique="true"` column behind them, so the database
+   * convicts the second write there whoever makes it; `optionCode` (`model/validation/Option.json:L3`) and
+   * `optionGroupCode` (`model/validation/OptionGroup.json:L3`) do NOT, so on those two the lock is the only
+   * protection and it is a partial one. The DDL a future migration must add is named in
+   * `src/adapters/mysql/UniquePropertyChecker.ts`; AAP §0.2.2.5 places schema migration outside this
+   * refactoring, so it is stated for the operator to ratify and never authored here.
+   *
+   * ⭐ `withExecutor` STILL CARRIES M6 VISIBILITY TOO, and the two must not be confused. Adopting a
+   * boundary's executor is what lets a uniqueness probe observe rows the same transaction has already
+   * written, which `SkuService.createSkus` depends on (§0.6.2) — it would be required with no lock at all.
+   * The lock rides on the same seam because the seam is exactly the signal for "this read and the write
+   * after it share a connection".
    * ============================================================================================ */
 
   /** Both probe forms, so each assertion below runs against the same instance twice over. */
@@ -4842,6 +4864,12 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
   }
 
   it('NET-NEW — the POOL-BOUND instance emits the ported statement, with no clause after the limit', async () => {
+    /*
+     * The parity half, and it is UNCHANGED by SEC-RACE-01. A checker a composition root builds is
+     * pool-bound, so both statements are byte-identical to the translations of
+     * `org/Hibachi/HibachiDAO.cfc:L140` and `model/dao/DataDAO.cfc:L122-L124` — no suffix, nothing after
+     * the row limit. This is what makes the lock a property of the BOUNDARY rather than of the port.
+     */
     const sql = createSqlExecutorDouble();
 
     await probeBothForms(new UniquePropertyChecker(sql.executor));
@@ -4852,11 +4880,18 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
     ]);
   });
 
-  it('NET-NEW TODO(parity) — WITHDRAWAL REGRESSION: the BOUNDARY-SCOPED instance emits the SAME text', async () => {
+  it('[NET-NEW] the BOUNDARY-SCOPED instance appends FOR UPDATE to BOTH probes', async () => {
     /*
-     * The withdrawal, pinned where the hardening used to live. This is the one instance for which a
-     * locking read would have been meaningful, and it is byte-identical to the pool-bound instance —
-     * `withExecutor` changes the connection and nothing else. A re-added suffix fails here first.
+     * ⭐ THE CORE SEC-RACE-01 ASSERTION, AND IT IS THE EXACT INVERSE OF WHAT THIS CASE USED TO REQUIRE.
+     * It was titled "WITHDRAWAL REGRESSION: the BOUNDARY-SCOPED instance emits the SAME text" and reasoned:
+     * "This is the one instance for which a locking read would have been meaningful, and it is
+     * byte-identical to the pool-bound instance — `withExecutor` changes the connection and nothing else.
+     * A re-added suffix fails here first." The first sentence identified the vulnerability precisely; the
+     * conclusion drawn from it was the wrong way round.
+     *
+     * ⛔ THE SUFFIX POSITION IS PART OF THE ASSERTION. `FOR UPDATE` must come AFTER `LIMIT 1`, which is
+     * the only position MySQL accepts — anywhere else is a syntax error the double would happily record.
+     * So the full statement text is asserted rather than merely `toContain('FOR UPDATE')`.
      */
     const sql = createSqlExecutorDouble();
 
@@ -4865,21 +4900,71 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
     );
 
     expect(sql.calls.map((call) => call.sql)).toStrictEqual([
-      'SELECT 1 FROM SwBrand e WHERE e.urlTitle = ? AND e.brandID != ? LIMIT 1',
-      'SELECT 1 FROM SwBrand WHERE urlTitle = ? LIMIT 1',
+      'SELECT 1 FROM SwBrand e WHERE e.urlTitle = ? AND e.brandID != ? LIMIT 1 FOR UPDATE',
+      'SELECT 1 FROM SwBrand WHERE urlTitle = ? LIMIT 1 FOR UPDATE',
     ]);
   });
 
-  it('NET-NEW TODO(parity) — every probe statement ENDS at the row limit, on both paths', async () => {
-    // Positional rather than textual, so it also catches a suffix appended under a different spelling
-    // (`LOCK IN SHARE MODE`, `FOR SHARE`, a hint comment) rather than only the one that was withdrawn.
+  it('[NET-NEW] the lock is the ONLY difference between the two paths, character for character', async () => {
+    /*
+     * The two statements differ by exactly the ten characters of the suffix and by nothing else, which is
+     * the sharpest available form of "the lock changes the concurrency behaviour and nothing else". Derived
+     * by stripping the suffix and comparing, rather than by asserting two literals twice, so a change to
+     * the ported predicate cannot pass here by being made consistently in two places.
+     */
     const pool = createSqlExecutorDouble();
     const boundary = createSqlExecutorDouble();
 
     await probeBothForms(new UniquePropertyChecker(pool.executor));
     await probeBothForms(new UniquePropertyChecker(pool.executor).withExecutor(boundary.executor));
 
-    for (const call of [...pool.calls, ...boundary.calls]) {
+    expect(boundary.calls).toHaveLength(pool.calls.length);
+    for (const [index, locked] of boundary.calls.entries()) {
+      expect(locked.sql.endsWith(' FOR UPDATE')).toBe(true);
+      expect(locked.sql.slice(0, -' FOR UPDATE'.length)).toBe(pool.calls[index]?.sql);
+      /* And the bound values are untouched: a lock is not a parameter. */
+      expect(locked.params).toStrictEqual(pool.calls[index]?.params);
+    }
+  });
+
+  it('[NET-NEW] an EXCLUSIVE lock, not a shared one, and no other lock spelling appears', async () => {
+    /*
+     * ⛔ WHY THE SPELLING IS ASSERTED RATHER THAN LEFT TO THE IMPLEMENTATION. `LOCK IN SHARE MODE` and
+     * `FOR SHARE` let two transactions BOTH hold the lock, both conclude the value is free, and then both
+     * deadlock on the write or both proceed once the other releases — which converts a silent duplicate
+     * into an intermittent failure without preventing anything. Only an exclusive lock makes the second
+     * asker WAIT for the first to finish writing, so the distinction is the whole mechanism and a
+     * well-meaning substitution would silently undo it.
+     */
+    const boundary = createSqlExecutorDouble();
+
+    await probeBothForms(
+      new UniquePropertyChecker(createSqlExecutorDouble().executor).withExecutor(boundary.executor),
+    );
+
+    for (const call of boundary.calls) {
+      expect(call.sql).toContain('FOR UPDATE');
+      expect(call.sql).not.toContain('FOR SHARE');
+      expect(call.sql).not.toContain('LOCK IN SHARE MODE');
+    }
+  });
+
+  it('[NET-NEW] every POOL-BOUND probe statement ends at the row limit, with no lock of any spelling', async () => {
+    /*
+     * The pool-bound half of the split, asserted POSITIONALLY so it catches a lock appended under any
+     * spelling — `FOR UPDATE`, `FOR SHARE`, `LOCK IN SHARE MODE` — rather than only the one this port uses.
+     *
+     * ⛔ THIS CASE USED TO COVER BOTH PATHS, AND NARROWING IT TO ONE IS SEC-RACE-01. Requiring the
+     * boundary-scoped statement to end at the row limit is requiring the vulnerability; the sibling case
+     * above now requires the lock there. What survives unchanged is the claim that a lock never appears
+     * where it would protect nothing, which is what stops a later revision from "simplifying" the gate away
+     * by locking unconditionally and taking gap locks on every validation read in autocommit.
+     */
+    const pool = createSqlExecutorDouble();
+
+    await probeBothForms(new UniquePropertyChecker(pool.executor));
+
+    for (const call of pool.calls) {
       expect(call.sql.endsWith(' LIMIT 1')).toBe(true);
       expect(call.sql).not.toContain('FOR UPDATE');
       expect(call.sql).not.toContain('FOR SHARE');
@@ -4965,8 +5050,13 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
   it('NET-NEW — re-binding returns a NEW instance, so a warm container leaks no connection', async () => {
     /*
      * M7. `withExecutor` does not mutate, so a module-scope checker held across warm invocations cannot
-     * have another invocation's boundary connection substituted into it — and both instances emit the
-     * identical ported statement, which is the withdrawal restated from the other direction.
+     * have another invocation's boundary connection substituted into it.
+     *
+     * ⭐ AND SEC-RACE-01 GIVES THIS CASE A SECOND, SHARPER EDGE. The transaction scope is per-instance too:
+     * the pool-bound original still emits the UNLOCKED statement after the re-bound copy has been used, so
+     * `transactionScoped` cannot have been set by mutation. An implementation that flipped a flag on `this`
+     * instead of constructing a new object would leave every later pool-bound probe taking pointless gap
+     * locks — and would do so only on a warm container, which is the hardest place to notice it.
      */
     const pool = createSqlExecutorDouble();
     const boundary = createSqlExecutorDouble();
@@ -4978,17 +5068,29 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
     await reBound.isUrlTitleAvailable('SwProduct', 'shirts');
     await poolBound.isUrlTitleAvailable('SwProduct', 'shirts');
 
-    expect(first(boundary.calls).sql).toBe('SELECT 1 FROM SwProduct WHERE urlTitle = ? LIMIT 1');
-    expect(first(pool.calls).sql).toBe(first(boundary.calls).sql);
+    expect(first(boundary.calls).sql).toBe(
+      'SELECT 1 FROM SwProduct WHERE urlTitle = ? LIMIT 1 FOR UPDATE',
+    );
+    expect(first(pool.calls).sql).toBe('SELECT 1 FROM SwProduct WHERE urlTitle = ? LIMIT 1');
   });
 
-  it('NET-NEW TODO(parity) — the UNSERIALIZED interleaving is carried on EVERY path (CWE-367)', async () => {
+  it('[NET-NEW] the interleaving is ASKED TO SERIALIZE inside a boundary, and is not outside one (CWE-367)', async () => {
     /*
-     * The carried defect, demonstrated rather than described. Two would-be savers probe the same code
-     * against a store that neither has written yet. Both are told it is free, and for `optionCode` —
-     * which per DIVERGENCE 1 has NO `unique="true"` column behind it — nothing downstream refuses the
-     * second write. The boundary-scoped instance behaves identically, which is the whole point of the
-     * withdrawal: the port asks the database to serialize nothing, exactly as the legacy does not.
+     * ⛔ THIS CASE USED TO BE THE VULNERABILITY, DEMONSTRATED. It was titled "the UNSERIALIZED interleaving
+     * is carried on EVERY path" and reasoned: "The boundary-scoped instance behaves identically, which is
+     * the whole point of the withdrawal: the port asks the database to serialize nothing, exactly as the
+     * legacy does not." SEC-RACE-01 requires the opposite of its conclusion while leaving its OBSERVATION
+     * intact, and both halves are now asserted separately.
+     *
+     * ⚠️ WHAT A TEST DOUBLE CAN AND CANNOT SHOW HERE, STATED SO THE ASSERTION IS NOT OVERSOLD. No in-process
+     * double can serialise anything: the executor answers immediately, so both concurrent probes still see
+     * `true` on both paths and the LOST RACE ITSELF is not preventable in a unit test. What IS assertable —
+     * and is the whole mechanism — is whether the port ASKED the database to serialise them. Inside a
+     * boundary it does, on every probe; outside one it does not, on any. A real server honours the request;
+     * a double cannot, and pretending otherwise would be a fiction.
+     *
+     * So the verdicts are asserted as the double's artefact they are, and the ASK is asserted as the
+     * contract it is.
      */
     const store = createSqlExecutorDouble();
     const boundary = createSqlExecutorDouble();
@@ -5003,13 +5105,18 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
         probe.isUniqueProperty('optionCode', entity),
       ]);
 
+      /* Both `true` on both paths — the double resolves without serialising, as explained above. */
       expect(firstSaver).toBe(true);
       expect(secondSaver).toBe(true);
     }
 
-    // Four probes ran, and not one asked the database to serialize them.
-    expect([...store.calls, ...boundary.calls]).toHaveLength(4);
-    for (const call of [...store.calls, ...boundary.calls]) {
+    // Four probes ran: the two inside the boundary asked to serialize, the two outside did not.
+    expect(boundary.calls).toHaveLength(2);
+    expect(store.calls).toHaveLength(2);
+    for (const call of boundary.calls) {
+      expect(call.sql).toContain('FOR UPDATE');
+    }
+    for (const call of store.calls) {
       expect(call.sql).not.toContain('FOR UPDATE');
     }
   });

@@ -229,7 +229,12 @@
  * `src/util/urlTitle.ts`.
  */
 
-import { assertColumnName, assertTableName } from './QueryRunner';
+import {
+  assertColumnName,
+  assertRegisteredColumnName,
+  assertRegisteredTableName,
+  assertTableName,
+} from './QueryRunner';
 import { createSlatwallUUID } from '../../util/uuid';
 import { DataIntegrityError, DomainError, NotImplementedError } from '../../errors/DomainError';
 import type { Product } from '../../domain/product/Product';
@@ -494,41 +499,55 @@ function auditColumnsOf(table: PhysicalTableName): {
 }
 
 /* ================================================================================================
- * OUT-OF-SCOPE PHYSICAL IDENTIFIERS — AUTHORED LITERALS, DECLARED ONCE, FLAGGED
+ * ⭐ CROSS-DOMAIN PHYSICAL IDENTIFIERS — EVERY ONE VALIDATED THROUGH THE ONE REGISTRY
  * ==============================================================================================
- * ⚠️ BOUNDARY CROSSING, FLAGGED HERE. `Attribute*` is one of the families AAP §0.2.2.1 excludes (6
- * files), so none of the names below is in `QueryRunner.ts`'s whitelist and none may be added to it.
- * They are nonetheless required, because two legacy statements reach them and the RESULT of reaching
- * them is observable through the port: the custom-attribute step writes values the importer was asked
- * to import, and the attribute-set selection is a declared member of the port.
+ * ⚠️ BOUNDARY CROSSING, AND IT IS REAL. `Attribute*` is one of the families AAP §0.2.2.1 excludes (6
+ * files). The names below are nonetheless required, because two legacy statements reach them and the
+ * RESULT of reaching them is observable through the port: the custom-attribute step writes values the
+ * importer was asked to import, and the attribute-set selection is a declared member of the port.
  *
- * Each is a compile-time constant authored here from the entity declaration cited beside it. None is
- * derived from caller input, so none is an injection surface: S2 requires that no caller-supplied
- * string reach statement text except as a bound `?`, and that holds throughout. This is the same
- * discipline `MySqlSkuRepository.ts` established for the ten-way existence chain.
+ * ⛔ WHAT THIS BLOCK USED TO SAY, AND WHY IT WAS WRONG. Its previous header asserted that "none of the
+ * names below is in `QueryRunner.ts`'s whitelist and none may be added to it", and defended the literals
+ * on the ground that each is a compile-time constant rather than caller input. The second half is true and
+ * still holds — none of these is an injection surface, and S2 is satisfied throughout. The first half was
+ * the defect review finding SEC-SQL-SCOPE-01 measured: it made this module a SECOND, unenforced declaration
+ * of the service's schema surface. A reviewer asking "what tables does this service touch, and with what
+ * privilege" had to find this object, and an auditor generating a GRANT from the registry alone would have
+ * produced a credential that could not run the importer — because `SwAttributeValue` is WRITTEN here and the
+ * registry did not know the table existed.
+ *
+ * ⭐ THE FIX IS THAT EVERY NAME NOW PASSES THE REGISTRY, tables through `assertRegisteredTableName` and
+ * columns through `assertRegisteredColumnName`. `QueryRunner.ts` classifies `SwAttributeValue` as
+ * `cross-domain-write` — the only member of that class — and the other four as `cross-domain-read-only`,
+ * so the privilege each one needs is legible from the registry rather than inferable only by reading the
+ * statements below. A typo, or a sixth name added without ratification, now FAILS AT MODULE LOAD instead of
+ * reaching a database as valid-looking SQL. This is the same discipline `MySqlSkuRepository.ts` applies to
+ * the ten-way existence chain.
  * ============================================================================================== */
 
 /**
  * Tables from excluded families that two legacy statements nonetheless reach.
  *
- * Frozen so nothing can extend the set at run time.
+ * ⭐ EVERY VALUE IS THE RETURN OF `assertRegisteredTableName`, so the registry — not this object — is the
+ * authority on what may be named, and this object is only the local shorthand. Frozen so nothing can extend
+ * the set at run time either.
  */
 const OUT_OF_SCOPE_TABLE = Object.freeze({
   /** `model/entity/AttributeValue.cfc:L54` — written by `model/dao/ProductDAO.cfc:L244` and `:L250`. */
-  attributeValue: 'SwAttributeValue',
+  attributeValue: assertRegisteredTableName('SwAttributeValue'),
   /** `model/entity/AttributeSet.cfc:L49` — the root of the selection at `model/dao/ProductDAO.cfc:L53`. */
-  attributeSet: 'SwAttributeSet',
+  attributeSet: assertRegisteredTableName('SwAttributeSet'),
   /** `model/entity/Attribute.cfc:L49` — the existence test at `model/dao/ProductDAO.cfc:L54`. */
-  attribute: 'SwAttribute',
+  attribute: assertRegisteredTableName('SwAttribute'),
   /**
    * `model/entity/AttributeSet.cfc:L70`, `linktable="SwAttributeSetProductType"` — the PHYSICAL
    * relationship standing in for the association path `model/dao/ProductDAO.cfc:L58` names. See the
    * long note on {@link composeAttributeSetSelection} for why a path-for-path transcription is
    * impossible and why this is a translation decision rather than a repair.
    */
-  attributeSetProductType: 'SwAttributeSetProductType',
+  attributeSetProductType: assertRegisteredTableName('SwAttributeSetProductType'),
   /** `model/entity/Type.cfc:L49` — reached through `attributeSetType` for its `systemCode`. */
-  type: 'SwType',
+  type: assertRegisteredTableName('SwType'),
 });
 
 /**
@@ -537,34 +556,52 @@ const OUT_OF_SCOPE_TABLE = Object.freeze({
  * They exist because HQL references association PATHS — `sas.attributes`, `sas.attributeSetType`,
  * `asa.productTypeID` — that native SQL performs no equivalent resolution for, so every path is made
  * EXPLICIT against the physical key here.
+ *
+ * ⭐ EACH IS VALIDATED AGAINST THE TABLE THAT DECLARES IT, not merely spelled here, so the pairing a
+ * statement relies on is checked at module load. That matters more than the spelling: `attributeSetID`
+ * appears on all THREE of `SwAttributeSet`, `SwAttribute` and `SwAttributeSetProductType`, and `productID`
+ * on FOUR — `SwProduct`, `SwSku`, `SwRelatedProduct` and `SwAttributeValue`. A name validated against the WRONG table would still be a real
+ * column and would still compose valid-looking SQL — the gate is what makes the intended table explicit.
  */
 const OUT_OF_SCOPE_COLUMN = Object.freeze({
   /** `model/entity/AttributeValue.cfc:L57` primary key, generated at `model/dao/ProductDAO.cfc:L248`. */
-  attributeValueID: 'attributeValueID',
+  attributeValueID: assertRegisteredColumnName(
+    OUT_OF_SCOPE_TABLE.attributeValue,
+    'attributeValueID',
+  ),
   /** `model/entity/AttributeValue.cfc:L58` — the value itself. */
-  attributeValue: 'attributeValue',
+  attributeValue: assertRegisteredColumnName(OUT_OF_SCOPE_TABLE.attributeValue, 'attributeValue'),
   /** `model/entity/AttributeValue.cfc:L60` — `notnull="true"`, which is why `:L250` supplies it. */
-  attributeValueType: 'attributeValueType',
+  attributeValueType: assertRegisteredColumnName(
+    OUT_OF_SCOPE_TABLE.attributeValue,
+    'attributeValueType',
+  ),
   /** `model/entity/AttributeValue.cfc:L78` quick-lookup property, and `model/entity/Attribute.cfc:L52`. */
-  attributeID: 'attributeID',
+  attributeID: assertRegisteredColumnName(OUT_OF_SCOPE_TABLE.attributeValue, 'attributeID'),
   /** `model/entity/AttributeValue.cfc:L70` `fkcolumn="productID"`. */
-  productID: 'productID',
+  productID: assertRegisteredColumnName(OUT_OF_SCOPE_TABLE.attributeValue, 'productID'),
   /** `model/entity/AttributeSet.cfc:L52` primary key, and `:L67` `fkcolumn="attributeSetID"`. */
-  attributeSetID: 'attributeSetID',
+  attributeSetID: assertRegisteredColumnName(OUT_OF_SCOPE_TABLE.attributeSet, 'attributeSetID'),
   /** `model/entity/AttributeSet.cfc:L64` `fkcolumn="attributeSetTypeID"`. */
-  attributeSetTypeID: 'attributeSetTypeID',
+  attributeSetTypeID: assertRegisteredColumnName(
+    OUT_OF_SCOPE_TABLE.attributeSet,
+    'attributeSetTypeID',
+  ),
   /** `model/entity/AttributeSet.cfc:L57` — the disjunct at `model/dao/ProductDAO.cfc:L57` and `:L60`. */
-  globalFlag: 'globalFlag',
+  globalFlag: assertRegisteredColumnName(OUT_OF_SCOPE_TABLE.attributeSet, 'globalFlag'),
   /** `model/entity/AttributeSet.cfc:L61` — the second sort term at `model/dao/ProductDAO.cfc:L62`. */
-  sortOrder: 'sortOrder',
+  sortOrder: assertRegisteredColumnName(OUT_OF_SCOPE_TABLE.attributeSet, 'sortOrder'),
   /** `model/entity/Attribute.cfc:L53` — the existence predicate at `model/dao/ProductDAO.cfc:L54`. */
-  activeFlag: 'activeFlag',
+  activeFlag: assertRegisteredColumnName(OUT_OF_SCOPE_TABLE.attribute, 'activeFlag'),
   /** `model/entity/AttributeSet.cfc:L70` `inversejoincolumn="productTypeID"`. */
-  productTypeID: 'productTypeID',
+  productTypeID: assertRegisteredColumnName(
+    OUT_OF_SCOPE_TABLE.attributeSetProductType,
+    'productTypeID',
+  ),
   /** `model/entity/Type.cfc:L52` primary key. */
-  typeID: 'typeID',
+  typeID: assertRegisteredColumnName(OUT_OF_SCOPE_TABLE.type, 'typeID'),
   /** `model/entity/Type.cfc:L55` — the first sort term and the bound filter of the selection. */
-  systemCode: 'systemCode',
+  systemCode: assertRegisteredColumnName(OUT_OF_SCOPE_TABLE.type, 'systemCode'),
 });
 
 /* ================================================================================================
@@ -2403,6 +2440,25 @@ const PRODUCT_TYPE_LOOKUP_STATEMENT = `SELECT
  *
  * Bind order follows the legacy TEXT order: the option code first, because it appears in the ON clause,
  * then the group identifier (TR-4).
+ *
+ * ⭐ IT IS A LOCKING READ — REVIEW FINDING SEC-RACE-01 (CWE-367). This read decides `:L217`'s branch, and
+ * the branch it decides is CREATE-THE-OPTION. Two concurrent imports carrying the same option code in the
+ * same group both read a NULL `optionID`, both take the create branch, and both insert — and `optionCode`
+ * carries NO unique constraint (`model/validation/Option.json:L3` enforces it in application code alone),
+ * so nothing anywhere convicts the duplicate. `FOR UPDATE` returns precisely the row the same join returns
+ * without it, so `:L216`'s read and `:L217`'s branch are decided identically; what changes is that the
+ * second importer WAITS rather than reading past. Under REPEATABLE READ the no-match case still takes a GAP
+ * lock, which is what protects the create branch specifically.
+ *
+ * ⚠️ IT IS SAFE TO LOCK HERE PRECISELY BECAUSE OF M3. `model/dao/ProductDAO.cfc:L176-L177` opens the
+ * transaction INSIDE the record loop, so the lock is held for one row rather than for the whole import — the
+ * per-row commit boundary that AAP §0.6.6 M3 records as a mismatch is what keeps the lock's scope small.
+ * The full adjudication, and the DDL a future migration would need, are in THE LOCKING READ IS REINSTATED
+ * in `./UniquePropertyChecker.ts`.
+ *
+ * ⚠️ AND THE LOCK GOES ON THE OUTER JOIN, WHICH LOCKS BOTH SIDES. InnoDB locks the rows a join examines, so
+ * this one lock covers the option-group row and the option row (or its gap) together — which is what makes
+ * the read-decide-insert sequence below atomic rather than only half of it.
  */
 const OPTION_LOOKUP_STATEMENT = `SELECT
     ${OPTION_TABLE}.${OPTION_ID_COLUMN},
@@ -2413,7 +2469,8 @@ const OPTION_LOOKUP_STATEMENT = `SELECT
       ON ${OPTION_GROUP_TABLE}.${OPTION_GROUP_ID_COLUMN} = ${OPTION_TABLE}.${OPTION_OPTION_GROUP_ID_COLUMN}
       AND ${OPTION_TABLE}.${OPTION_CODE_COLUMN} = ${BIND_PLACEHOLDER}
   WHERE
-    ${OPTION_GROUP_TABLE}.${OPTION_GROUP_ID_COLUMN} = ${BIND_PLACEHOLDER}`;
+    ${OPTION_GROUP_TABLE}.${OPTION_GROUP_ID_COLUMN} = ${BIND_PLACEHOLDER}
+  FOR UPDATE`;
 
 /**
  * The SKU-option existence test — the translation of `model/dao/ProductDAO.cfc:L218-L220`.
@@ -2440,6 +2497,21 @@ const OPTION_LOOKUP_STATEMENT = `SELECT
  * authored here, not caller data, so it is not a value position requiring a placeholder — the two
  * placeholders below remain the only ones. `LIMIT 1` invents no ordering (AAP §0.7.3 S9) and cannot
  * change a verdict that is already "did anything match at all".
+ *
+ * ⭐ IT IS A LOCKING READ — REVIEW FINDING SEC-RACE-01, WHICH NAMED "duplicate link rows" EXPLICITLY. This
+ * read decides `:L230`'s `if(!exists)` branch, and that branch INSERTS a link row. Two concurrent imports
+ * both read no match and both insert, and the paragraph above establishes that the link table has NO DDL to
+ * appeal to — `model/entity/Sku.cfc:L76` declares only a `many-to-many` `linktable="SwSkuOption"`, with no
+ * unique index over the pair — so duplicate `(optionID, skuID)` rows persist unconvicted. `FOR UPDATE`
+ * returns precisely the rows the same predicate returns, so the verdict is unchanged; under REPEATABLE READ
+ * the no-match case takes a GAP lock over the scanned range, which is what makes the pair unique-by-
+ * serialisation for writers that take the lock.
+ *
+ * ⚠️ IT APPEARS AFTER `LIMIT 1`, which is the only position MySQL accepts, and the pairing is deliberate:
+ * the read stops at one row AND locks the range, so the cost is one row's lock rather than the whole match
+ * set's. The DDL a future migration would need is
+ * `ALTER TABLE SwSkuOption ADD UNIQUE INDEX uq_SwSkuOption_pair (optionID, skuID);` — stated for the
+ * operator to ratify, never authored here (AAP §0.2.2.5).
  */
 const SKU_OPTION_EXISTENCE_STATEMENT = `SELECT
     1
@@ -2448,7 +2520,8 @@ const SKU_OPTION_EXISTENCE_STATEMENT = `SELECT
   WHERE
     ${SKU_OPTION_OPTION_ID_COLUMN} = ${BIND_PLACEHOLDER}
     AND ${SKU_OPTION_SKU_ID_COLUMN} = ${BIND_PLACEHOLDER}
-  LIMIT 1`;
+  LIMIT 1
+  FOR UPDATE`;
 
 /**
  * The option insert — the translation of `model/dao/ProductDAO.cfc:L224-L226`.

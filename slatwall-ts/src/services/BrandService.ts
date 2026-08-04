@@ -193,7 +193,7 @@ import type {
   ManagedBrand as PortManagedBrand,
 } from '../ports/repositories/BrandRepository';
 import { createUniqueURLTitle } from '../util/urlTitle';
-import type { UniqueValueProbe } from '../util/urlTitle';
+import type { UniqueValueProbe, UrlTitleProbeBudget } from '../util/urlTitle';
 import type { ValidationContext } from '../validation/Validator';
 import type { BrandValidationSubject } from '../validation/rules/brand.rules';
 import type { BaseService, BaseServiceEntity } from './BaseService';
@@ -567,19 +567,23 @@ export class BrandService {
    * is INJECTED, never extended (R3), and it owns the populate/validate/persist sequence and the
    * rule sets ported from `model/validation/Brand.json`; this service reproduces none of that.
    *
-   * ⛔ AND THERE IS NO THIRD PARAMETER. An optional `urlTitleProbeBudget` occupied that position for one
-   * revision — a ceiling on how many uniqueness probes one URL-title derivation could issue, validated
-   * here at construction — and it is WITHDRAWN. An optional ceiling obliges nobody to invent a figure,
-   * but it still adds a capability the source does not describe (AAP §0.7.3 S9, IR-12) and still refuses
-   * derivations the legacy completed, and AAP §0.6.7.7 declares exactly ONE behavioural departure in this
-   * port. So this constructor takes exactly these two, both required, and the derivation below probes
-   * without a ceiling exactly as `model/service/DataService.cfc:L64` does. The carried exposure is stated
-   * where the derivation is: an adversary who can hold titles can make one save probe indefinitely
-   * (CWE-400), unrepaired, as the legacy leaves it.
+   * @param urlTitleProbeBudget - The ceiling on how many uniqueness probes ONE URL-title derivation may
+   * issue — review finding SEC-DOS-03; see `../util/urlTitle`'s {@link UrlTitleProbeBudget}.
+   *
+   * ⭐ REQUIRED, AND THAT IS THE THIRD TIME THIS PARAMETER HAS CHANGED SHAPE, SO THE HISTORY IS RECORDED
+   * RATHER THAN THE OUTCOME ASSERTED. It arrived REQUIRED as a bare number, was withdrawn as a relocated
+   * fabrication; returned OPTIONAL, and was withdrawn again on the ground that AAP §0.6.7.7 licenses one
+   * behavioural departure. It is now required and carries a RESOLVER: the figure is the operator's or
+   * there is none, and "none" is a named `ConfigurationError` from the save that needed it — never a
+   * default and never an unbounded loop. `../util/urlTitle` argues the reversal in full, including why
+   * §0.6.7's register governs legacy business-logic defects rather than the availability of the extracted
+   * service. Every derivation inside the budget returns byte-for-byte what
+   * `model/service/DataService.cfc:L64` returns.
    */
   public constructor(
     private readonly brandRepository: BrandRepository,
     private readonly baseService: BrandBaseService,
+    private readonly urlTitleProbeBudget: UrlTitleProbeBudget,
   ) {}
 
   /**
@@ -823,19 +827,19 @@ export class BrandService {
    * legacy completed, and AAP §0.6.7.7 declares exactly one departure in this port. So the probe is handed
    * over UNWRAPPED and the derivation probes exactly as `:L64` does.
    *
-   * ⚠️ THE CARRIED EXPOSURE, STATED RATHER THAN CLOSED (CWE-400). An adversary able to hold `SwBrand`
-   * URL titles can make one save issue probes indefinitely, because `while (!unique)` has no ceiling.
-   * That is the legacy's behaviour at `model/service/DataService.cfc:L64` and it is preserved unrepaired
-   * (AAP §0.8.2 g4). Bounding it belongs to a separately authorised hardening scope, not to this
-   * extraction.
+   * ⭐ THE EXPOSURE IS NOW BOUNDED — REVIEW FINDING SEC-DOS-03 (CWE-400). An adversary able to hold
+   * `SwBrand` URL titles could once make one save issue probes indefinitely, because `while (!unique)` at
+   * `model/service/DataService.cfc:L64` has no ceiling. The injected budget refuses beyond the operator's
+   * figure, and refuses BY NAME when no figure was stated; the suffix sequence, the slug transformation
+   * and every edge case are untouched for derivations inside the budget.
    *
-   * Whatever the probe rejects with propagates unchanged — this member adds no failure of its own,
-   * matching the legacy member's `returntype="string"`.
+   * Whatever the probe rejects with propagates unchanged — this member adds no failure of its own beyond
+   * the budget's, matching the legacy member's `returntype="string"`.
    */
   private createUniqueBrandUrlTitle(titleString: string): Promise<string> {
     const probe: UniqueValueProbe = (_tableName, candidateUrlTitle) =>
       this.brandRepository.isUrlTitleAvailable(candidateUrlTitle);
 
-    return createUniqueURLTitle(titleString, BRAND_TABLE_NAME, probe);
+    return createUniqueURLTitle(titleString, BRAND_TABLE_NAME, probe, this.urlTitleProbeBudget);
   }
 }

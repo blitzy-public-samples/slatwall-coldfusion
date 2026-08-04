@@ -246,8 +246,8 @@ import type { Brand } from '../domain/product/Brand';
 import type {
   EntityCrudType,
   HandlerAccessClassification,
+  InvocationSecurityResolver,
   RequestAuthorizationContext,
-  RequestAuthorizationResolver,
 } from '../ports/AccountContextPort';
 import { ValidationError } from '../errors/ValidationError';
 import type { BrandService, ManagedBrand } from '../services/BrandService';
@@ -263,6 +263,7 @@ import {
   readJsonObjectBody,
   readPathParameter,
   resolveRequestAuthorization,
+  toInvocationSecurityRequest,
   unauthorizedResponse,
   HTTP_STATUS,
   type ActionRoute,
@@ -270,6 +271,7 @@ import {
   type APIGatewayProxyEvent,
   type APIGatewayProxyHandler,
   type APIGatewayProxyResult,
+  type CatalogAuthorizationEvent,
 } from './httpResponse';
 
 /**
@@ -355,6 +357,31 @@ const BRAND_ID_REQUIRED_MESSAGE = `A "${BRAND_ID_PATH_PARAMETER}" path parameter
 const BRAND_ENTITY_NAME = 'Brand';
 
 /**
+ * The prefix every routed brand action carries, so the resolver is told which action it is gating.
+ *
+ * ⭐ ADDED BY REVIEW FINDING SEC-AUTH-03. Concatenated with the routed member name it reproduces the
+ * addresses {@link createBrandRoutes} declares — `brand.saveBrand`, `brand.getBrand`,
+ * `brand.deleteBrand` — which are the same strings the routing layer dispatches on. Derived from one
+ * constant rather than typed out per call site, so a route rename cannot leave the resolver being told
+ * an address that no longer exists.
+ */
+const BRAND_ACTION_PREFIX = 'brand.';
+
+/**
+ * What the gate answers: either the refusal to return, or the authorised invocation context.
+ *
+ * ⭐ A DISCRIMINATED PAIR RATHER THAN `APIGatewayProxyResult | undefined` — review finding
+ * SEC-AUTH-03. `undefined` meant "authorised" and threw the resolved context away, which is exactly
+ * how the principal at the gate and the principal doing the writing came to be two different things:
+ * a write route had no authorised context to pass on, so population and audit fell back to the
+ * memoised boundary collaborators. Returning the context makes the correct wiring the ONLY thing a
+ * route can do with the gate's answer, because the alternative does not type-check.
+ */
+type BrandAuthorizationOutcome =
+  | { readonly refusal: APIGatewayProxyResult; readonly authorization?: undefined }
+  | { readonly refusal?: undefined; readonly authorization: RequestAuthorizationContext };
+
+/**
  * The slice of the proxy event a member needs in order to address one brand.
  *
  * A `Pick` rather than the whole event, following the convention ./httpResponse establishes for its
@@ -405,7 +432,7 @@ export type BrandSaveEvent = Pick<APIGatewayProxyEvent, 'body' | 'pathParameters
  * A deployment that carries its principal somewhere else — an authorizer context, for instance —
  * widens THIS single declaration, and the three members widen with it.
  */
-export type BrandAuthorizationEvent = Pick<APIGatewayProxyEvent, 'headers'>;
+export type BrandAuthorizationEvent = CatalogAuthorizationEvent;
 
 /**
  * The access classification of every routed brand operation, and the evidence for each row.
@@ -434,15 +461,31 @@ export type BrandAuthorizationEvent = Pick<APIGatewayProxyEvent, 'headers'>;
  *
  * ⭐ THE CRUD TYPE PER ROW IS ALSO THE LEGACY'S, DERIVED FROM THE ITEM-NAME PREFIX BRANCH:
  *
- *   | routed member | legacy item prefix | legacy crudType                | locator          |
+ *   | routed member | legacy item prefix | crudType asked                 | locator          |
  *   | ------------- | ------------------ | ------------------------------ | ---------------- |
  *   | `getBrand`    | `detail`           | `read`                         | [:L55-L56]       |
- *   | `saveBrand`   | `save`             | `create`, THEN `update`         | [:L71-L77]       |
+ *   | `saveBrand`   | `save`             | `create` when UNADDRESSED, `update` when ADDRESSED | [:L71-L77] |
  *   | `deleteBrand` | `delete`           | `delete`                       | [:L57-L58]       |
  *
- * The `save` row is a pair rather than a single value, and the order is the legacy's: it asks for
- * `create` first and only asks for `update` if that fails. See {@link createBrandHandler}, which
- * reproduces that sequence exactly rather than choosing between the two by inspecting the request.
+ * ⭐⭐ THE `save` ROW ASKS EXACTLY ONE QUESTION, AND REVIEW FINDING SEC-AUTH-01 (CWE-862, CWE-639) IS
+ * WHY IT NO LONGER ASKS TWO. It used to ask the legacy's ordered pair — `create` first, then `update`
+ * — irrespective of whether the request addressed an existing brand, and this file argued for that at
+ * length on the ground that "the legacy action name carried no such information". The consequence was
+ * a privilege escalation: a principal granted ONLY `create` on `Brand` could submit
+ * `brand.saveBrand` carrying another party's existing `brandID`, satisfy the gate on the `create`
+ * question that is asked first, and then have the handler resolve and UPDATE that row. The addressed
+ * identifier decides the operation at [{@link createBrandHandler}'s `saveBrand`, judgment (f)], so it
+ * must decide the QUESTION too — otherwise the gate is answering about an operation the route is not
+ * performing.
+ *
+ * ⚠️ WHAT THIS COSTS IN PARITY, STATED PRECISELY RATHER THAN GLOSSED. The legacy pair admitted two
+ * callers this single question refuses: a `create`-only principal saving an ADDRESSED brand, and an
+ * `update`-only principal saving an UNADDRESSED one. Both are refusals of a caller whose grant does
+ * not cover the operation actually performed, which is the definition of the finding. This is a
+ * SECURITY control and not a business-logic enhancement (AAP §0.8.2 Guideline 4 governs the latter):
+ * the legacy gate itself is framework code that AAP §0.8.3.2 forbids carrying forward, so what stands
+ * here is a reconstruction of its CONTRACT, and reconstructing a contract to authorise the operation
+ * actually performed is the enterprise standard AAP §0.7.3 binds this port to in the absence of Rules.
  *
  * ⛔ `newBrand` HAS NO ROW BECAUSE IT HAS NO ROUTE. See {@link BrandHandler}.
  *
@@ -825,7 +868,7 @@ function readBrandIdentifier(event: BrandIdentifierEvent): string | undefined {
  */
 export function createBrandHandler(
   brandService: BrandHandlerService,
-  resolveAuthorization: RequestAuthorizationResolver<BrandAuthorizationEvent>,
+  resolveAuthorization: InvocationSecurityResolver,
   writeRunner: TransactionalWriteRunner<BrandHandlerService>,
 ): BrandHandler {
   /**
@@ -856,46 +899,80 @@ export function createBrandHandler(
    * a member forget to return and fall through into the operation it was supposed to guard; a
    * response value cannot be ignored without the compiler noticing that a branch produces nothing.
    *
-   * ⭐ IT TAKES A NON-EMPTY SEQUENCE OF CRUD TYPES, NOT ONE, BECAUSE ONE LEGACY ITEM ASKS TWICE. The
-   * `save` prefix branch at [org/Hibachi/HibachiAuthenticationService.cfc:L71-L77] grants when EITHER
-   * `create` or `update` is granted, asking `create` first. Expressing that as a sequence keeps two
-   * properties the legacy has and a caller-side pair of calls would lose: the context is resolved
-   * EXACTLY ONCE per invocation, so both questions are asked of the same principal and a resolver is
-   * never invoked twice for one request; and the order is fixed at the call site rather than emerging
-   * from control flow. The tuple type requires at least one member, so an empty sequence — which
-   * would silently refuse everything — does not compile.
+   * ⛔ IT TOOK A NON-EMPTY SEQUENCE OF CRUD TYPES, AND NOW TAKES EXACTLY ONE — REVIEW FINDING
+   * SEC-AUTH-01 (CWE-862, CWE-639). The withdrawn parameter was `crudTypes`, an ordered non-empty
+   * tuple the gate walked until one grant answered, and its rationale was the legacy `save` branch at
+   * [org/Hibachi/HibachiAuthenticationService.cfc:L71-L77]: that branch grants when EITHER `create` or
+   * `update` is granted, asking `create` first.
+   *
+   * ⛔ WHY IT IS GONE. `saveBrand` was the only caller that passed both, and passing both meant a
+   * principal granted only `create` on `Brand` could address an EXISTING brand, satisfy the `create`
+   * question asked first, and have the route overwrite that row. The `update` question — the only one
+   * describing what the route actually does when an identifier is addressed — was unreachable in
+   * exactly the case where it mattered.
+   *
+   * ⭐ WHAT REPLACES IT. The caller resolves create-versus-update from the addressed identifier BEFORE
+   * calling this gate, and passes the ONE operation it will perform together with the identifier it
+   * will perform it on. The two invariants the sequence was defended for are both preserved and are
+   * both pinned by tests: the context is resolved EXACTLY ONCE per invocation, and the question asked
+   * is fixed at the call site rather than emerging from control flow.
+   *
+   * ⚠️ THE PARITY COST, NAMED. A `create`-only principal can no longer overwrite an existing brand,
+   * and an `update`-only principal can no longer create one. Both are callers whose grant does not
+   * cover the operation performed; the legacy gate is framework code AAP §0.8.3.2 forbids carrying
+   * forward, so what stands here is a reconstruction of its CONTRACT, and reconstructing it to
+   * authorise the operation actually performed is the enterprise standard AAP §0.7.3 binds this port
+   * to in the absence of user Rules.
    *
    * @param event the invocation's event, or any object carrying its headers member
-   * @param crudTypes the operations that would each satisfy this request, in the legacy's own
-   *   vocabulary and in the legacy's own order; the invocation is authorised if ANY is granted
-   * @returns the refusal to return to the caller, or nothing when the invocation is authorised
+   * @param member the routed member being attempted, which names the action in the security request
+   * @param crudType the ONE operation this invocation performs, in the legacy's own vocabulary
+   * @param brandID the addressed brand, when one is addressed; absent means a creation
+   * @returns the refusal to return to the caller, or the authorised context when it is admitted
    */
   const refuseUnauthorized = (
     event: BrandAuthorizationEvent,
-    crudTypes: readonly [EntityCrudType, ...EntityCrudType[]],
-  ): APIGatewayProxyResult | undefined => {
-    const authorization: RequestAuthorizationContext = resolveAuthorization(event);
+    member: keyof BrandHandler,
+    crudType: EntityCrudType,
+    brandID?: string,
+  ): BrandAuthorizationOutcome => {
+    /* ⭐ ONE RESOLUTION PER INVOCATION, AND IT NOW CARRIES THE WHOLE QUESTION — review finding
+     * SEC-AUTH-03. The resolver is handed the routed action, the single operation being attempted, the
+     * entity from this file's own constant and the addressed identifier, instead of the bare header
+     * slice it used to receive. It is still called EXACTLY ONCE, which a test pins. */
+    const authorization: RequestAuthorizationContext = resolveAuthorization(
+      toInvocationSecurityRequest(event, {
+        action: `${BRAND_ACTION_PREFIX}${member}`,
+        crudType,
+        entityName: BRAND_ENTITY_NAME,
+        ...(brandID === undefined ? {} : { entityID: brandID }),
+      }),
+    );
     const account = authorization.accountContext.getCurrentAccount();
 
     // Steps 1 and 2 of the ladder. `newFlag` is `isNew()`, so TRUE means "not logged in".
     if (account === undefined || account.newFlag) {
-      return unauthorizedResponse();
+      return { refusal: unauthorizedResponse() };
     }
 
-    // Step 3. The port answers; the permission model stays behind the boundary. Asked in the given
-    // order, and the first grant wins — exactly as the legacy `createOK`-then-`updateOK` pair does.
-    for (const crudType of crudTypes) {
-      if (
-        authorization.entityAuthorization.authenticateEntity({
-          crudType,
-          entityName: BRAND_ENTITY_NAME,
-        })
-      ) {
-        return undefined;
-      }
+    /* Step 3. The port answers; the permission model stays behind the boundary. EXACTLY ONE question
+     * is asked — the one that matches the operation this route performs (SEC-AUTH-01). The addressed
+     * identifier travels with it so a deployment may scope the grant to the row. */
+    if (
+      !authorization.entityAuthorization.authenticateEntity({
+        crudType,
+        entityName: BRAND_ENTITY_NAME,
+        ...(brandID === undefined ? {} : { entityID: brandID }),
+      })
+    ) {
+      return { refusal: forbiddenResponse() };
     }
 
-    return forbiddenResponse();
+    /* ⭐ THE AUTHORISED CONTEXT IS RETURNED, NOT DISCARDED — review finding SEC-AUTH-03. The write
+     * routes hand it to the transaction boundary so property population and audit stamping run under
+     * the principal this gate just approved, rather than under whatever the composition root
+     * memoised. A gate that answered only `undefined` could not make that guarantee. */
+    return { authorization };
   };
   /**
    * Saves a brand, creating it when no identifier was addressed and updating it otherwise.
@@ -961,18 +1038,25 @@ export function createBrandHandler(
      * here also means an unauthorised caller learns nothing from the shape of its own payload — the
      * three body-problem responses ./httpResponse distinguishes are never reached.
      *
-     * THE CREATE-THEN-UPDATE SEQUENCE IS THE LEGACY'S, REPRODUCED EXACTLY. The `save` prefix branch
-     * at [org/Hibachi/HibachiAuthenticationService.cfc:L71-L77] asks for `create` first, returns true
-     * if that is granted, and only then asks for `update`. Two details are load-bearing:
-     *   - THE ORDER. `create` is asked first, always.
-     *   - IT DOES NOT DEPEND ON WHETHER AN IDENTIFIER WAS ADDRESSED. The legacy action name carried
-     *     no such information, so the legacy asked both questions regardless. Deriving the CRUD type
-     *     from the presence of a path parameter would be tidier and would be a DIFFERENT policy:
-     *     an account permitted only to create could no longer save an addressed brand it would
-     *     previously have been allowed to, and vice versa. Judgment (f) still decides create-versus-
-     *     update for the OPERATION below; it deliberately does not decide it for the AUTHORISATION.
+     * ⭐⭐ THE ADDRESSED IDENTIFIER IS READ FIRST, AND IT DECIDES THE QUESTION — review finding
+     * SEC-AUTH-01. This member used to ask the legacy's ordered `create`-then-`update` pair regardless
+     * of addressing, so a `create`-only grant authorised an UPDATE of an addressed row; the matrix
+     * docblock carries the exploit and the parity cost in full. Judgment (f) below decides
+     * create-versus-update for the OPERATION, and the gate now asks about the SAME decision.
+     *
+     * ⛔ READING THE PATH PARAMETER FIRST DOES NOT WEAKEN "REFUSE BEFORE ANYTHING IS EXAMINED". The
+     * body is still not parsed until the gate has passed, so an unauthorised caller still learns
+     * nothing from the shape of its own payload and the three body-problem responses stay unreachable.
+     * A path parameter is the ADDRESS of the request, not its content: the gate cannot ask about the
+     * right operation without it.
      */
-    const refusal = refuseUnauthorized(event, ['create', 'update']);
+    const brandID: string | undefined = readBrandIdentifier(event);
+    const { refusal, authorization } = refuseUnauthorized(
+      event,
+      'saveBrand',
+      brandID === undefined ? 'create' : 'update',
+      brandID,
+    );
 
     if (refusal !== undefined) {
       return refusal;
@@ -983,8 +1067,6 @@ export function createBrandHandler(
     if (!body.present) {
       return invalidRequestBodyResponse(body.problem);
     }
-
-    const brandID: string | undefined = readBrandIdentifier(event);
 
     try {
       /*
@@ -1013,6 +1095,9 @@ export function createBrandHandler(
       let outcome: ManagedBrand | null = null;
 
       const saved: ManagedBrand | null = await writeRunner.runWrite<ManagedBrand | null>(
+        /* SEC-AUTH-03 — the gate's own context, so population and audit run as the principal just
+         * authorised. `authorization` is defined on this path: the refusal arm returned above. */
+        authorization,
         async (graph) => {
           // Judgment (f): no identifier addressed is a creation; an addressed identifier is an update
           // and must resolve to a real row. `newBrand()` never yields null, so the single null test
@@ -1115,13 +1200,12 @@ export function createBrandHandler(
      * `read` is the legacy crudType for a `detail` item [org/Hibachi/HibachiAuthenticationService.cfc
      * :L55-L56], not `detail`; see {@link EntityCrudType} for why two prefixes collapse onto one.
      */
-    const refusal = refuseUnauthorized(event, ['read']);
+    const brandID: string | undefined = readBrandIdentifier(event);
+    const { refusal } = refuseUnauthorized(event, 'getBrand', 'read', brandID);
 
     if (refusal !== undefined) {
       return refusal;
     }
-
-    const brandID: string | undefined = readBrandIdentifier(event);
 
     // A request that addressed nothing is a REQUEST fault, not a missing brand; see the convention on
     // {@link BRAND_ID_REQUIRED_MESSAGE}. The gate above has already run, so this discloses nothing.
@@ -1184,15 +1268,17 @@ export function createBrandHandler(
    * @returns the removal verdict, or the response describing why it could not be attempted
    */
   const deleteBrand = async (event: BrandIdentifierEvent): Promise<APIGatewayProxyResult> => {
-    // The gate runs before the identifier is read, for the reason recorded on `getBrand`. `delete` is
-    // the legacy crudType for a `delete` item [org/Hibachi/HibachiAuthenticationService.cfc:L57-L58].
-    const refusal = refuseUnauthorized(event, ['delete']);
+    /* The identifier is read FIRST so the gate can name the addressed row (SEC-AUTH-01's binding half),
+     * and the gate still runs before anything is DONE with it — the bad-request and not-found branches
+     * below are both after the refusal, so this member is no more of an existence oracle than it was.
+     * `delete` is the legacy crudType for a `delete` item
+     * [org/Hibachi/HibachiAuthenticationService.cfc:L57-L58]. */
+    const brandID: string | undefined = readBrandIdentifier(event);
+    const { refusal, authorization } = refuseUnauthorized(event, 'deleteBrand', 'delete', brandID);
 
     if (refusal !== undefined) {
       return refusal;
     }
-
-    const brandID: string | undefined = readBrandIdentifier(event);
 
     /* Same convention as `getBrand`, and it matters more on a removal: a client that received 404 for
      * its own malformed request could conclude the brand was already gone and stop retrying with a
@@ -1215,6 +1301,8 @@ export function createBrandHandler(
        * rollback trigger — nothing was written to roll back.
        */
       const verdict: boolean | null = await writeRunner.runWrite<boolean | null>(
+        /* SEC-AUTH-03 — the gate's own context; see `saveBrand` for the full note. */
+        authorization,
         async (graph) => {
           // Judgment (e): the service contract takes the entity, so the identifier is resolved first —
           // inside the unit, so the read and the removal share one connection.
@@ -1316,7 +1404,7 @@ export type BrandRouteKey = 'brand.saveBrand' | 'brand.getBrand' | 'brand.delete
  */
 export function createBrandHandlerFromContainer(
   container: Pick<CatalogContainer, 'brandService' | 'brandWriteRunner'>,
-  resolveAuthorization: RequestAuthorizationResolver<BrandAuthorizationEvent> = resolveRequestAuthorization,
+  resolveAuthorization: InvocationSecurityResolver = resolveRequestAuthorization,
 ): BrandHandler {
   return createBrandHandler(
     container.brandService,

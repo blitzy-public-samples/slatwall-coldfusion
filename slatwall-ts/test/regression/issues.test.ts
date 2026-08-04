@@ -159,6 +159,8 @@ import {
   type TestMerchandiseProductTeardownOperations,
 } from '../fixtures/testProduct';
 import {
+  DENY_ALL_POPULATION_AUTHORIZATION,
+  GENEROUS_SMART_LIST_BUDGET,
   buildOption,
   buildOptionGroup,
   buildProduct,
@@ -168,6 +170,7 @@ import {
   createAccountContextDouble,
   createBaseServicePersistenceDouble,
   createDefaultSkuDelegate,
+  createFanningSqlExecutorDouble,
   createImagePathDouble,
   createInMemoryBrandRepository,
   createInMemoryOptionRepository,
@@ -177,7 +180,6 @@ import {
   createProductTypeRootResolverDouble,
   createSettingResolverDouble,
   createSkusBySelectedOptionsLookup,
-  createFanningSqlExecutorDouble,
   createSmartListQueryDouble,
   createSubscriptionTermDouble,
   createTransactionExistenceChecker,
@@ -185,10 +187,15 @@ import {
   createUnitOfWorkDouble,
   createUrlTitleAvailabilityDouble,
   createValidatorHarness,
+  persistedAdminAccount,
+  securityContext,
+  securityRequest,
   type SettingSeed,
   type SmartListOutcome,
   type SmartListResponder,
   type UrlTitleTableName,
+  GENEROUS_COMBINATION_BUDGET,
+  GENEROUS_URL_TITLE_PROBE_BUDGET,
 } from '../support/inMemoryRepositories';
 import { SmartListQueryBuilder } from '../../src/adapters/mysql/SmartListQueryBuilder';
 import { createCatalogAggregateLoaders } from '../../src/adapters/mysql/SmartListQueryBuilder';
@@ -204,6 +211,7 @@ import {
 import { ProductType } from '../../src/domain/product/ProductType';
 import { Sku } from '../../src/domain/sku/Sku';
 import { ValidationError } from '../../src/errors/ValidationError';
+import { toExactDecimal } from '../../src/util/formatting';
 import { BaseService } from '../../src/services/BaseService';
 // `OptionService` is imported as a TRANSITIVE CONSTRUCTOR REQUIREMENT, not as a subject under test.
 // `SkuService`'s second constructor parameter is typed `OptionService` (`src/services/SkuService.ts`
@@ -746,6 +754,8 @@ function buildHarness(options: HarnessOptions = {}): Harness {
     validator,
     productTypeRoots.resolver,
     (sku: Sku) => createDefaultSkuDelegate(sku),
+    /* SEC-DOS-01 — generous, so no regression's outcome depends on the ceiling. */
+    GENEROUS_COMBINATION_BUDGET,
   );
 
   const persistedProducts: Product[] = [];
@@ -772,6 +782,7 @@ function buildHarness(options: HarnessOptions = {}): Harness {
     // `UniqueValueProbe` takes a plain string; the double narrows to the three tables that actually
     // carry a urlTitle column. `find` performs the narrowing without a cast, and an unknown table is
     // refused rather than silently answered, so a mis-wiring surfaces as a failure.
+    urlTitleProbeBudget: GENEROUS_URL_TITLE_PROBE_BUDGET,
     isUrlTitleAvailable: (tableName: string, value: string): Promise<boolean> => {
       const known = URL_TITLE_TABLES.find((candidate) => candidate === tableName);
       if (known === undefined) {
@@ -890,6 +901,7 @@ function realProductSmartList(rootRows: readonly SeededRow[]): {
     port: new SmartListQueryBuilder(
       fanning.executor,
       createCatalogAggregateLoaders({ bindDefaultSkuDelegate: refuseDefaultSkuBinding }),
+      GENEROUS_SMART_LIST_BUDGET,
     ),
     fanning,
   };
@@ -2517,6 +2529,16 @@ const WIRING_VARIABLE_NAMES: readonly string[] = Object.freeze([
   'SETTING_APPLICATION_ROOT_MAPPING_PATH',
   'SETTING_SKU_ELIGIBLE_CURRENCIES',
   'SETTING_SKU_ELIGIBLE_FULFILLMENT_METHODS',
+
+  /* The six resource bounds of README §8.1. Listed here for the same exhaustiveness reason as the rest:
+   * a figure left behind by the ambient environment could otherwise decide whether a bounded route in this
+   * section serves or refuses. Their values live in {@link WIRING_ENVIRONMENT}. */
+  'CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY',
+  'CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY',
+  'CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST',
+  'CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION',
+  'CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD',
+  'CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES',
 ]);
 
 /**
@@ -2545,13 +2567,34 @@ const WIRING_ENVIRONMENT: Readonly<Record<string, string>> = Object.freeze({
   DB_CONNECT_TIMEOUT_MS: '1000',
   GOOGLE_FEED_HOST: 'catalog.example.test',
 
-  /* SEC-1 — `google:feed.product` is the one ANONYMOUS address in the slice, and the gate the composition
-   * root builds refuses an UNBOUNDED anonymous materialisation. This section drives the real router at that
-   * address, so a fixture stating no ceiling would answer 500 from the gate rather than the document the
-   * case is about. The figure is the fixture's: `../../src/config/env.ts` declares the variable OPTIONAL with
-   * no default (IR-12), and the gate's own refuse/render behaviour is asserted by the dedicated SEC-1 cases
-   * rather than incidentally here. */
+  /* SEC-DOS-02 / SEC-DOS-01 / SEC-DOS-03 — THE SIX RESOURCE BOUNDS, AND WHY A FIXTURE MAY STATE THEM.
+   *
+   * `../../src/config/env.ts` declares all six OPTIONAL with NO default, because IR-12 forbids this port
+   * from AUTHORING a capacity figure. What the port does instead is refuse to serve a bounded route until
+   * an operator states one — every bound is reached through a RESOLVER that raises a named
+   * `ConfigurationError` when the variable is unset, so an unstated bound fails closed rather than
+   * silently unbounded.
+   *
+   * ⛔ THIS FIXTURE IS THE OPERATOR. A test that supplies a figure is not inventing a production default;
+   * it is standing in for the deployment that must state one, which is the only way to exercise the
+   * mechanism at all. The figures below are deliberately GENEROUS so that no case in this section is
+   * decided by a ceiling — every case here is about wiring, dispatch or polarity. The refuse-at-the-ceiling
+   * behaviour of each bound is asserted by the dedicated cases that state a DELIBERATELY TIGHT figure
+   * (`test/services/SkuService.test.ts`, `test/adapters/SmartListQueryBuilder.test.ts`,
+   * `test/integrations/ProductFeedBuilder.test.ts`), never incidentally here.
+   *
+   * Every one is needed by this section specifically:
+   *  • records + predicates — every read in the slice goes through the smart list, so the two F5 router
+   *    cases and the brand/product surface cases would answer 500 from the builder without them;
+   *  • combinations — `sku.createSkus` and `product.saveProduct` through it;
+   *  • url-title probes — `brand.saveBrand` and both product save derivations, which F5 case 2 drives;
+   *  • feed images + response bytes — `google:feed.product`, which F5 case 5 drives. */
   CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY: '5000',
+  CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY: '250',
+  CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST: '10000',
+  CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION: '500',
+  CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD: '100',
+  CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES: '10000000',
 });
 
 /** The environment as the process held it before this section touched it. */
@@ -3058,18 +3101,25 @@ describe('NET-NEW — the composition root, which no approved suite used to reac
     expect(typeof container.skuWriteRunner.runWrite).toBe('function');
     expect(container.productWriteRunner).not.toBe(container.skuWriteRunner);
 
-    /* The two-argument shape is the contract: the work, and the commit gate read once after it settles. */
-    expect(container.productWriteRunner.runWrite).toHaveLength(2);
-    expect(container.skuWriteRunner.runWrite).toHaveLength(2);
+    /* THE THREE-ARGUMENT SHAPE IS THE CONTRACT AS OF REVIEW FINDING SEC-AUTH-03: the invocation's
+     * authorised security context, the work, and the commit gate read once after the work settles. It read
+     * two before the context existed, and asserting the arity here is what keeps a runner that quietly
+     * dropped the principal from passing this suite. */
+    expect(container.productWriteRunner.runWrite).toHaveLength(3);
+    expect(container.skuWriteRunner.runWrite).toHaveLength(3);
 
     const suppliedGraphs: unknown[] = [];
     const gateReadings: boolean[] = [];
+    const suppliedSecurity: RequestAuthorizationContext[] = [];
     const substituted = createCatalogContainer({
       productWriteRunner: {
         runWrite: async <TResult>(
+          security: RequestAuthorizationContext,
           work: (graph: never) => Promise<TResult>,
           hasErrors: () => boolean,
         ): Promise<TResult> => {
+          /* SEC-AUTH-03 — recorded so this case proves the context reaches a substituted runner too. */
+          suppliedSecurity.push(security);
           /* A double supplied here decides BOTH what the graph contains and whether the unit commits. */
           const graph = { marker: 'substituted' } as unknown as never;
           suppliedGraphs.push(graph);
@@ -3081,7 +3131,11 @@ describe('NET-NEW — the composition root, which no approved suite used to reac
       },
     });
 
+    const invocationSecurity = securityContext({ account: persistedAdminAccount() });
+
     const answer = await substituted.productWriteRunner.runWrite(
+      /* SEC-AUTH-03 — the authorised context a route would have resolved at its gate. */
+      invocationSecurity,
       /* Promise-returning without `async`, because the unit awaits nothing: the boundary's contract is
        * `(graph) => Promise<TResult>`, and an `async` body with no `await` in it would only satisfy that
        * contract by accident of the keyword. */
@@ -3096,6 +3150,10 @@ describe('NET-NEW — the composition root, which no approved suite used to reac
     expect(answer).toBe('ran');
     expect(suppliedGraphs).toHaveLength(1);
     expect(gateReadings).toStrictEqual([false]);
+
+    /* SEC-AUTH-03 — the runner received the invocation's own context, unchanged and unwrapped. A runner
+     * that ignored it, or that substituted a memoised principal of its own, fails here. */
+    expect(suppliedSecurity).toStrictEqual([invocationSecurity]);
 
     /*
      * ⛔ AND THE POOL-BOUND SERVICE IS A DIFFERENT OBJECT FROM ANYTHING A BOUNDARY HANDS OUT, which is
@@ -3164,6 +3222,89 @@ describe('NET-NEW — the aggregate router, which no approved suite used to reac
     expect(feed.headers?.['Content-Type']).toBe('application/xml');
     expect(feed.body.startsWith('<?xml version="1.0"?>')).toBe(true);
     expect(feed.body).toContain('xmlns:g="http://base.google.com/ns/1.0"');
+  });
+
+  /* ================================================================================================
+   * SEC-DOS-01/02/03 — EVERY SURFACE DECLINES TO COMPOSE WITHOUT THE BOUNDS IT NEEDS, NOT ONLY THE FEED
+   * ============================================================================================== */
+
+  it('[NET-NEW] refuses to build ANY surface graph when the six bounds are unstated, naming what is missing', async () => {
+    /*
+     * ⛔ THIS CASE IS THE DIRECT ANSWER TO REVIEW FINDING SEC-DOS-02's SCOPE CLAUSE. The finding observed that
+     * "Authenticated SmartList requests may run with no materialization budget" — only `google:feed.product`
+     * refused, through the anonymous gate, so every OTHER route was unbounded no matter what an operator did
+     * or did not state. The fix is that each bound is now a REQUIRED collaborator reached through a raising
+     * RESOLVER, so absence fails closed on every surface rather than on one.
+     *
+     * ⭐ ASSERTED AT THE COMPOSITION ROOT RATHER THAN THROUGH THE ROUTER, DELIBERATELY. Every gated address
+     * answers 401 before it reaches a smart list — `resolveFailClosedAuthorization` is wired into all four
+     * catalog surfaces — so a router-level case would observe the AUTH gate rather than the resource gate and
+     * would pass for the wrong reason. Building the graphs and driving one read on each is what actually
+     * distinguishes "this surface is bounded" from "this surface is unreachable".
+     *
+     * ⚠️ AND `{}` IS AN EXPLICIT STATEMENT, NOT AN OVERSIGHT. `CatalogContainerOverrides.resourceBounds`
+     * replaces the section WHOLE, so `{}` says "this deployment stated no figure at all" — which is exactly
+     * the deployment the finding described.
+     */
+    const { createCatalogContainer } = loadShippedWiring();
+    const unbounded = createCatalogContainer({
+      resourceBounds: {},
+      uniqueProperty: WIRING_UNIQUENESS_SATISFIED,
+    });
+
+    /*
+     * THE SMART-LIST-BACKED READS ON THREE DIFFERENT SURFACES, each refusing on the FIRST bound its
+     * compilation needs — the complexity ceiling, because `build()` runs before the count — and each naming a
+     * variable an operator can act on rather than failing generically.
+     *
+     * ⚠️ NOT EVERY READ IN THE SLICE IS SMART-LIST-BACKED, AND THE MEMBERS CHOSEN HERE ARE THE ONES THAT ARE.
+     * `getSkuBySkuCode` and `getBrand` are DIRECT adapter reads — `MySqlSkuRepository.findBySkuCode` issues its
+     * own statement with the alternate-code fallback of [model/dao/SkuDAO.cfc:L102-L104], and
+     * `MySqlBrandRepository.getBrand` reads one row by primary key — so neither compiles a smart list and
+     * neither carries a materialisation ceiling. That is correct rather than a gap: each resolves at most ONE
+     * row by a unique key, so there is no selection whose width an attacker can choose. Driving either here
+     * would reach the pool and time out instead of asserting anything, which is how the distinction was found.
+     */
+    const reads: readonly (readonly [string, () => Promise<unknown>])[] = Object.freeze([
+      ['product', () => unbounded.productService.getProduct('44444444444444444444444444444444')],
+      ['productSmartList', () => unbounded.productService.getProductSmartList()],
+      ['sku', () => unbounded.skuService.getSkuSmartList()],
+      ['productType', () => unbounded.productService.getProductType(MERCHANDISE_PRODUCT_TYPE_ID)],
+    ]);
+
+    for (const [, read] of reads) {
+      /* Awaited one at a time, so a regression on one surface is reported against that surface rather than as
+       * an anonymous rejection somewhere inside a batch. */
+      await expect(read()).rejects.toThrow(/CATALOG_SMART_LIST_MAX_/);
+    }
+
+    /* ⭐ AND THE ANONYMOUS FEED, WHICH ALREADY REFUSED, STILL DOES — through a gate that now names all FOUR
+     * figures it needs rather than only the row ceiling. The order is apply-order, so the variable an operator
+     * is told about first is the one the route would have needed first. */
+    expect(() => {
+      unbounded.assertAnonymousMaterialisationBounded();
+    }).toThrow(/CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY/);
+  });
+
+  it("[NET-NEW] refuses the WRITE surfaces on their own bounds, which are not the smart list's (F5)", async () => {
+    /*
+     * The two write-side bounds have no smart list between them and the caller, so they are asserted through
+     * the members that reach them: `saveBrand` derives a URL title (SEC-DOS-03) and `createSkus` enumerates
+     * combinations (SEC-DOS-01). Naming them separately is what proves three independent mechanisms rather
+     * than one shared ceiling with three names.
+     */
+    const { createCatalogContainer } = loadShippedWiring();
+    const unbounded = createCatalogContainer({
+      resourceBounds: {},
+      uniqueProperty: WIRING_UNIQUENESS_SATISFIED,
+    });
+
+    /* SEC-DOS-03 — the URL-title probe budget, refused before the slug is built and before any round trip. */
+    await expect(
+      unbounded.brandService.saveBrand(unbounded.brandService.newBrand(), {
+        brandName: 'ACME Widgets',
+      }),
+    ).rejects.toThrow(/CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION/);
   });
 
   it('[NET-NEW] begins the invocation FIRST, once per dispatch, whatever the outcome (F5 case 4)', async () => {
@@ -3667,7 +3808,7 @@ describe('test/handlers/httpResponse.test.ts — the shared response shaping eve
     });
 
     it('NET-NEW — with nothing registered it answers the same deny-all context as the fallback', () => {
-      const resolved = resolveRequestAuthorization({ headers: {} });
+      const resolved = resolveRequestAuthorization(securityRequest());
 
       expect(resolved).toBe(resolveFailClosedAuthorization());
       expect(resolved.accountContext.getCurrentAccount()).toBeUndefined();
@@ -3686,11 +3827,12 @@ describe('test/handlers/httpResponse.test.ts — the shared response shaping eve
           }),
         },
         entityAuthorization: { authenticateEntity: () => true },
+        populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
       };
 
       registerRequestAuthorizationResolver(() => granted);
 
-      expect(resolveRequestAuthorization({ headers: {} })).toBe(granted);
+      expect(resolveRequestAuthorization(securityRequest())).toBe(granted);
     });
 
     it('NET-NEW — the resolver receives the invocation own request, and is called once per call', () => {
@@ -3704,8 +3846,8 @@ describe('test/handlers/httpResponse.test.ts — the shared response shaping eve
 
       registerRequestAuthorizationResolver(resolver);
 
-      resolveRequestAuthorization({ headers: { 'x-principal': 'first' } });
-      resolveRequestAuthorization({ headers: { 'x-principal': 'second' } });
+      resolveRequestAuthorization(securityRequest({ headers: { 'x-principal': 'first' } }));
+      resolveRequestAuthorization(securityRequest({ headers: { 'x-principal': 'second' } }));
 
       /* Two calls, two reads, in order: nothing is memoised between invocations, which is the M7
        * property the seam exists to preserve. */
@@ -3718,22 +3860,24 @@ describe('test/handlers/httpResponse.test.ts — the shared response shaping eve
        * still take effect. It does, because the default resolver reads the registry per call. */
       const composed = resolveRequestAuthorization;
 
-      expect(composed({ headers: {} })).toBe(resolveFailClosedAuthorization());
+      expect(composed(securityRequest())).toBe(resolveFailClosedAuthorization());
 
       const granted: RequestAuthorizationContext = {
         accountContext: { getCurrentAccount: () => undefined },
         entityAuthorization: { authenticateEntity: () => true },
+        populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
       };
 
       registerRequestAuthorizationResolver(() => granted);
 
-      expect(composed({ headers: {} })).toBe(granted);
+      expect(composed(securityRequest())).toBe(granted);
     });
 
     it('NET-NEW — a second registration is refused rather than replacing the first', () => {
       const first: RequestAuthorizationContext = {
         accountContext: { getCurrentAccount: () => undefined },
         entityAuthorization: { authenticateEntity: () => true },
+        populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
       };
 
       registerRequestAuthorizationResolver(() => first);
@@ -3742,7 +3886,7 @@ describe('test/handlers/httpResponse.test.ts — the shared response shaping eve
         /already registered/,
       );
 
-      expect(resolveRequestAuthorization({ headers: {} })).toBe(first);
+      expect(resolveRequestAuthorization(securityRequest())).toBe(first);
     });
   });
 
@@ -4740,6 +4884,7 @@ describe('test/handlers/entrySurface.test.ts — the six Lambda entry artifacts,
   const admitEverything: CatalogAuthorizationResolver = () => ({
     accountContext: { getCurrentAccount: () => REGISTERED_PRINCIPAL },
     entityAuthorization: { authenticateEntity: () => true },
+    populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
   });
 
   describe('NET-NEW entry surface — every gated entry publishes the deployment registration seam', () => {
@@ -5613,6 +5758,132 @@ describe('test/config/env.test.ts — the configuration loader, which every laye
     });
   });
 
+  describe('NET-NEW env — SEC-DOC-ENV-01: the template never instructs a shell to EXECUTE a secret file', () => {
+    /*
+     * ==============================================================================================
+     * Review finding SEC-DOC-ENV-01 (CWE-78). The template used to say: `cp .env.example .env`, then
+     * `set -a && . ./.env && set +a`. Two independent defects, and these cases pin both closed.
+     *
+     *   (a) `.` / `source` runs the file as a shell PROGRAM, so a value is code rather than data. The
+     *       old text defended itself with "every line below is a plain NAME=value assignment with no
+     *       shell metacharacter" — a true statement about the TEMPLATE, which holds no values, and an
+     *       irrelevant one about the artifact the next line told you to source: the filled copy, whose
+     *       values are secrets and whose secrets routinely contain `$(`, a backtick, `;` or `&&`.
+     *   (b) `set +a` is conditional on the sourcing SUCCEEDING. Any non-zero result skips it and
+     *       strands the shell in allexport mode for the rest of the session.
+     *
+     * WHY THIS IS TESTABLE AT ALL, given it is a comment in a dotfile. The remediation is a claim about
+     * a FILE'S CONTENT, and file content is exactly what an assertion can hold still. Documentation
+     * that carries a security instruction regresses the same way code does — silently, in an edit made
+     * for an unrelated reason — and nothing else in the toolchain looks at prose. tsc does not read it,
+     * eslint does not lint it, prettier reflows it without understanding it.
+     *
+     * The assertions are written as REFUSALS OF THE IDIOM rather than as a match on the old paragraph,
+     * so reintroducing the hazard in different words still fails.
+     * ============================================================================================== */
+
+    const readEnvExample = (): string => readFileSync(ENV_EXAMPLE_PATH, 'utf8');
+
+    it('[NET-NEW] carries no executable sourcing idiom in any spelling', () => {
+      const envExample = readEnvExample();
+
+      /* The exact compound that was there, and the allexport half of it on its own. */
+      expect(envExample).not.toContain('set -a && . ./.env && set +a');
+      expect(envExample).not.toContain('set -a');
+      expect(envExample).not.toContain('set +a');
+
+      /*
+       * And the idiom however it is respelled. `. ./.env`, `. .env`, `source .env` and
+       * `source ./.env` are the same instruction; a fix that only deleted the first would leave the
+       * finding open. The dotted forms are matched with the space that makes `.` the source builtin,
+       * so ordinary prose mentioning a filename is not caught.
+       */
+      expect(envExample).not.toContain('. ./.env');
+      expect(envExample).not.toContain('. .env');
+      expect(envExample).not.toMatch(/\bsource\s+\.?\/?\.env/);
+    });
+
+    it('[NET-NEW] does not claim the file is safe to source, which was true only before values existed', () => {
+      const envExample = readEnvExample();
+
+      expect(envExample).not.toContain('safe to source');
+      /*
+       * The reasoning that made the claim sound, applied to the wrong artifact. It described the
+       * template and licensed sourcing the filled copy, so it must not return either.
+       */
+      expect(envExample).not.toContain('no shell metacharacter');
+    });
+
+    it('[NET-NEW] names the hazard and offers a data-only route instead', () => {
+      const envExample = readEnvExample();
+
+      /* The finding, so a reader can trace the instruction to its adjudication. */
+      expect(envExample).toContain('SEC-DOC-ENV-01');
+      expect(envExample).toContain('CWE-78');
+      /* Both defects stated, not just the eye-catching one. */
+      expect(envExample).toContain('EXECUTES THE VALUES');
+      expect(envExample).toContain('allexport');
+      /* And a correct alternative, so the guidance is redirected rather than merely deleted. */
+      expect(envExample).toContain('--env-file');
+    });
+
+    it('[NET-NEW] tells the reader the ONE filename .gitignore actually ignores', () => {
+      /*
+       * ⚠️ THIS CASE EXISTS BECAUSE THE FIX NEARLY INTRODUCED A LEAK. A draft of the replacement
+       * guidance named the local copy `.env.local` — which reads as the safer, more conventional
+       * choice and is NOT ignored here. slatwall-ts/.gitignore lists the literal filename `.env`
+       * rather than a wildcard, deliberately, so that `.env.example` stays committable; the
+       * consequence is that `.env` is ignored while `.env.local`, `.env.dev` and `.env.production`
+       * are all stageable credential files.
+       *
+       * The gitignore fact is verified against the file rather than assumed, so this case fails if
+       * either side of the pair drifts — a wildcard being added, or the guidance naming a variant.
+       */
+      const envExample = readEnvExample();
+      const gitignore = readFileSync(join(SUBTREE_ROOT, '.gitignore'), 'utf8');
+
+      const ignoredLines = gitignore
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0 && !line.startsWith('#'));
+
+      /* The precondition the warning rests on: the exact name, and no env wildcard. */
+      expect(ignoredLines).toContain('.env');
+      expect(ignoredLines).not.toContain('.env*');
+      expect(ignoredLines).not.toContain('*.env');
+      expect(ignoredLines).not.toContain('.env.*');
+
+      /* So the template must warn about the variants rather than recommend one. */
+      expect(envExample).toContain('.env.local');
+      expect(envExample).toContain('git check-ignore');
+    });
+
+    it('[NET-NEW] remains value-free: every declaration is a bare NAME= with nothing after it', () => {
+      /*
+       * The template's primary safety property, and the one every other claim here depends on: it is a
+       * CHECKLIST OF NAMES. A value committed to it would be a credential in version control, and
+       * would also retroactively make the deleted "safe to source" claim false again.
+       */
+      const declarations = readEnvExample()
+        .split('\n')
+        .filter((line) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(line));
+
+      /* The five-variable boot contract plus GOOGLE_FEED_HOST — assert the set, not merely the count. */
+      expect(declarations.map((line) => line.split('=')[0]).sort()).toEqual([
+        'DB_HOST',
+        'DB_NAME',
+        'DB_PASSWORD',
+        'DB_PORT',
+        'DB_USER',
+        'GOOGLE_FEED_HOST',
+      ]);
+
+      for (const declaration of declarations) {
+        expect(declaration).toMatch(/^[A-Za-z_][A-Za-z0-9_]*=$/);
+      }
+    });
+  });
+
   describe('NET-NEW env — DECISION H: the three finite resource bounds (SEC-1)', () => {
     /*
      * WHY THESE NAMES EXIST AT ALL, GIVEN THAT SEVEN OTHERS WERE REMOVED FROM THIS LOADER.
@@ -5995,6 +6266,7 @@ describe('test/config/container.test.ts — the PRODUCTION composition root: the
           removed.push(brand.brandID);
           return Promise.resolve(true);
         },
+        urlTitleProbeBudget: GENEROUS_URL_TITLE_PROBE_BUDGET,
         isUrlTitleAvailable: (): Promise<boolean> => Promise.resolve(true),
         findProductIdentifiersByBrand: (brandID: string): Promise<string[]> => {
           productsReads.push({ brandID });
@@ -6126,6 +6398,8 @@ describe('test/config/container.test.ts — the PRODUCTION composition root: the
       // it hands out is a different object from `container.brandService`.
       const handed = await probe.container.brandWriteRunner
         .runWrite(
+          /* SEC-AUTH-03 — a runner cannot be driven without an authorised context. */
+          securityContext({ account: persistedAdminAccount() }),
           (graph) => Promise.resolve(graph),
           () => true /* roll back — nothing was written, and this opens no connection */,
         )
@@ -6219,6 +6493,17 @@ describe('test/config/writeBoundaryRebuild.test.ts — the M5/M6/M7 write-bounda
       statements,
       execute: (sql: string, params: readonly unknown[]): Promise<MySqlRow[]> => {
         statements.push({ sql, params });
+
+        /* ⭐ A COUNTING STATEMENT IS ANSWERED WITH A COUNT ROW, AND THIS IS NEW — review finding
+         * SEC-DOS-02. The materialisation budget is now REQUIRED on the query builder, so both execution
+         * members count BEFORE they hydrate; previously an unbudgeted records-only read issued no count at
+         * all and this recorder never saw one. Answering an empty array for a `COUNT(...)` statement makes
+         * the builder raise `DataIntegrityError` — a fixture artefact, not a finding — so the count is
+         * answered as zero and the ROW answers below are consumed by the row statements they belong to. */
+        if (sql.includes('AS recordsCount')) {
+          return Promise.resolve([{ recordsCount: 0 }]);
+        }
+
         const answer = rows[Math.min(call, rows.length - 1)] ?? [];
         call += 1;
 
@@ -6271,9 +6556,14 @@ describe('test/config/writeBoundaryRebuild.test.ts — the M5/M6/M7 write-bounda
     const bindDefaultSkuDelegate = boundariesModule.createDefaultSkuDelegateBinder(
       boundaries.settings,
     );
-    const smartListQueryPort = readsModule.createSmartListQueryPort(statements.queryRunner, {
-      bindDefaultSkuDelegate,
-    });
+    /* SEC-DOS-02 — the budget is REQUIRED on the query port now. Generous figures, because these cases
+     * assert WHICH CONNECTION a statement runs on rather than any ceiling. */
+    const materialisationBudget = GENEROUS_SMART_LIST_BUDGET;
+    const smartListQueryPort = readsModule.createSmartListQueryPort(
+      statements.queryRunner,
+      { bindDefaultSkuDelegate },
+      materialisationBudget,
+    );
 
     return {
       buildSkuBoundaryParts: skuModule.buildSkuBoundaryParts,
@@ -6285,6 +6575,11 @@ describe('test/config/writeBoundaryRebuild.test.ts — the M5/M6/M7 write-bounda
         productTypeRootResolver: readsModule.createProductTypeRootResolver(smartListQueryPort),
         bindDefaultSkuDelegate,
         optionGroupSortOrderMemo: createOptionGroupSortOrderMemo(),
+        /* SEC-DOS-02 and SEC-DOS-01 — both budgets are required members of the dependency set, and the
+         * boundary rebuild carries the SAME objects, which is the half those findings called out
+         * separately: a bound wired only into the pool-bound graph vanishes for every write. */
+        materialisationBudget,
+        combinationBudget: GENEROUS_COMBINATION_BUDGET,
       },
     };
   }
@@ -6335,6 +6630,20 @@ describe('test/config/writeBoundaryRebuild.test.ts — the M5/M6/M7 write-bounda
     }, 20000);
   });
 
+  /**
+   * The invocation context every boundary rebuild is driven with — REVIEW FINDING SEC-AUTH-03.
+   *
+   * ⭐ WHY THESE CASES HAD TO CHANGE AT ALL. `buildSkuBoundaryParts`, `buildProductBoundaryGraph` and
+   * `buildBrandBoundaryGraph` now take the authorised context as a third argument and substitute its
+   * `accountContext` and `populationAuthorization` for the memoised pair, so that property population and
+   * audit stamping inside a transaction run as the principal the route gate approved. Passing one here is
+   * what makes these rebuild cases exercise the same path a route takes.
+   *
+   * A persisted admin account, because the rebuilt collaborators stamp `createdByAccount` from it; the
+   * property verdict stays deny-all, because none of these cases populates a property.
+   */
+  const BOUNDARY_REBUILD_SECURITY = securityContext({ account: persistedAdminAccount() });
+
   /* -----------------------------------------------------------------------------------------------------
    * 2. The SKU rebuild.
    * -------------------------------------------------------------------------------------------------- */
@@ -6343,7 +6652,7 @@ describe('test/config/writeBoundaryRebuild.test.ts — the M5/M6/M7 write-bounda
     it('[NET-NEW] the aggregate read runs on the boundary connection (M6)', async () => {
       await withPoisonedPool(async ({ buildSkuBoundaryParts, dependencies }) => {
         const executor = createRecordingExecutor();
-        const parts = buildSkuBoundaryParts(dependencies, { executor });
+        const parts = buildSkuBoundaryParts(dependencies, { executor }, BOUNDARY_REBUILD_SECURITY);
 
         await expect(parts.resolveProduct('44444444444444444444444444444444')).resolves.toBeNull();
         expect(executor.statements.length).toBeGreaterThan(0);
@@ -6354,7 +6663,7 @@ describe('test/config/writeBoundaryRebuild.test.ts — the M5/M6/M7 write-bounda
     it('[NET-NEW] the SKU repository runs on the boundary connection', async () => {
       await withPoisonedPool(async ({ buildSkuBoundaryParts, dependencies }) => {
         const executor = createRecordingExecutor();
-        const parts = buildSkuBoundaryParts(dependencies, { executor });
+        const parts = buildSkuBoundaryParts(dependencies, { executor }, BOUNDARY_REBUILD_SECURITY);
 
         await expect(parts.skuRepository.findBySkuCode('TESTPRODUCTXXX')).resolves.toBeNull();
         expect(executor.statements).toHaveLength(1);
@@ -6365,7 +6674,7 @@ describe('test/config/writeBoundaryRebuild.test.ts — the M5/M6/M7 write-bounda
     it('[NET-NEW] the SKU SERVICE reaches the database only through that repository', async () => {
       await withPoisonedPool(async ({ buildSkuBoundaryParts, dependencies }) => {
         const executor = createRecordingExecutor();
-        const parts = buildSkuBoundaryParts(dependencies, { executor });
+        const parts = buildSkuBoundaryParts(dependencies, { executor }, BOUNDARY_REBUILD_SECURITY);
 
         /* `getSkuBySkuCode` is one of the nine declared members and delegates straight to the repository —
          * the shortest path from the service surface to a statement. */
@@ -6377,7 +6686,7 @@ describe('test/config/writeBoundaryRebuild.test.ts — the M5/M6/M7 write-bounda
     it('[NET-NEW] the OPTION service and its repository run on the boundary connection', async () => {
       await withPoisonedPool(async ({ buildSkuBoundaryParts, dependencies }) => {
         const executor = createRecordingExecutor();
-        const parts = buildSkuBoundaryParts(dependencies, { executor });
+        const parts = buildSkuBoundaryParts(dependencies, { executor }, BOUNDARY_REBUILD_SECURITY);
 
         await expect(parts.optionService.getUnusedProductOptionGroups('')).resolves.toStrictEqual(
           [],
@@ -6393,6 +6702,7 @@ describe('test/config/writeBoundaryRebuild.test.ts — the M5/M6/M7 write-bounda
         const parts = buildSkuBoundaryParts(
           { ...dependencies, optionService: poolBound },
           { executor },
+          BOUNDARY_REBUILD_SECURITY,
         );
 
         /* The `optionService` slot exists so the AGGREGATE graph holds one option service rather than two —
@@ -6414,19 +6724,33 @@ describe('test/config/writeBoundaryRebuild.test.ts — the M5/M6/M7 write-bounda
     it('[NET-NEW] the product-type ancestry resolver runs on the boundary connection', async () => {
       await withPoisonedPool(async ({ buildSkuBoundaryParts, dependencies }) => {
         const executor = createRecordingExecutor();
-        const parts = buildSkuBoundaryParts(dependencies, { executor });
+        const parts = buildSkuBoundaryParts(dependencies, { executor }, BOUNDARY_REBUILD_SECURITY);
 
         await expect(
           parts.productTypeRootResolver.getProductType('444df2f7ea9c87e60051f3cd87b435a1'),
         ).resolves.toBeUndefined();
-        expect(executor.statements).toHaveLength(1);
+
+        /* TWO, and both of them on the BOUNDARY executor, which is the property this case is about.
+         *
+         * SEC-DOS-02 changed the arithmetic, not the connection. A records-only read now issues the
+         * COUNT first and hydrates second, because `SmartListQueryBuilder.gateRecordsOnlyRead` measures
+         * the row set against the operator's materialisation ceiling BEFORE asking the driver to build
+         * objects out of it — an unbounded read cannot be refused after the rows have already been
+         * materialised. The earlier revision of this expectation read `1` because the gate returned
+         * early when no budget was wired, which is precisely the hole the finding named.
+         *
+         * What matters here is that BOTH statements land on `executor` and NEITHER on the poisoned pool:
+         * `withPoisonedPool` rejects anything issued off-boundary, so a regression that sent either the
+         * count or the hydration to the pool fails on a rejection rather than on this length. */
+        expect(executor.statements).toHaveLength(2);
+        expect(executor.statements[0]?.sql).toContain('AS recordsCount');
       });
     }, 20000);
 
-    it('[NET-NEW] the uniqueness gate is re-bound to the boundary, and takes no lock', async () => {
+    it('[NET-NEW] the uniqueness gate is re-bound to the boundary, and TAKES THE LOCK there', async () => {
       await withPoisonedPool(async ({ buildSkuBoundaryParts, dependencies }) => {
         const executor = createRecordingExecutor([[]]);
-        const parts = buildSkuBoundaryParts(dependencies, { executor });
+        const parts = buildSkuBoundaryParts(dependencies, { executor }, BOUNDARY_REBUILD_SECURITY);
 
         await expect(
           parts.statements.uniqueProperty.isUrlTitleAvailable('SwBrand', 'a-title'),
@@ -6434,27 +6758,39 @@ describe('test/config/writeBoundaryRebuild.test.ts — the M5/M6/M7 write-bounda
         expect(executor.statements).toHaveLength(1);
 
         /*
-         * ⭐ THE RE-BIND IS THE ASSERTION, AND IT IS M6 RATHER THAN HARDENING. `withExecutor` returns a
-         * checker bound to the boundary's own executor, which is what makes a uniqueness check performed
-         * mid-save observe the siblings that save has already written — the thing the legacy ORM session
-         * did through its own flush (AAP §0.6.2). Without it a SKU batch would be judged against a table
-         * that does not yet contain its own siblings, a silently different answer.
+         * ⭐ TWO SEPARATE PROPERTIES, AND BOTH RIDE ON THE SAME SEAM WITHOUT BEING THE SAME THING.
          *
-         * ⛔ AND IT TAKES NO LOCK, WHICH IS A WITHDRAWAL THIS CASE USED TO ASSERT THE OPPOSITE OF. A
-         * revision appended `FOR UPDATE` to the boundary-scoped probe and this case required it. That is
-         * withdrawn — `src/adapters/mysql/UniquePropertyChecker.ts` carries the adjudication, and its
-         * WHAT IS *NOT* WITHDRAWN note draws exactly this line: the re-bind stays because it is parity,
-         * the lock goes because AAP §0.6.7.7 licenses only D18. The absence is asserted rather than merely
-         * unmentioned, so a reinstatement fails here instead of passing quietly, and it matches the
-         * pool-bound parity case below — the two instances now differ ONLY in their executor.
+         * The RE-BIND is M6 parity. `withExecutor` returns a checker bound to the boundary's own executor,
+         * which is what makes a uniqueness check performed mid-save observe the siblings that save has
+         * already written — the thing the legacy ORM session did through its own flush (AAP §0.6.2). Without
+         * it a SKU batch would be judged against a table that does not yet contain its own siblings, a
+         * silently different answer. It would be required with no lock at all, and it is proved here by the
+         * statement landing on `executor` rather than on the poisoned pool.
+         *
+         * The LOCK is review finding SEC-RACE-01. This case previously asserted its ABSENCE — it was titled
+         * "and takes no lock" and reasoned that "the re-bind stays because it is parity, the lock goes
+         * because AAP §0.6.7.7 licenses only D18". That reading is corrected in
+         * `src/adapters/mysql/UniquePropertyChecker.ts`: §0.6.7 is the DEFECT AND TODO CARRY-OVER REGISTER
+         * of legacy BUSINESS-LOGIC defects, so it never spoke to the extracted service's data integrity
+         * under concurrency, and a locking read changes no verdict either probe returns.
+         *
+         * ⭐ WHY THE TWO PROPERTIES BELONG ON ONE SEAM. Being inside a boundary is exactly the condition
+         * under which BOTH matter: it is what makes the read see the batch's own siblings, and it is what
+         * makes a lock outlive the statement that took it. Hence this case and its pool-bound counterpart
+         * below, which together assert that the boundary instance locks and the pool-bound one does not.
          */
-        expect(executor.statements[0]?.sql).not.toContain('FOR UPDATE');
+        expect(executor.statements[0]?.sql).toContain('FOR UPDATE');
+        expect(executor.statements[0]?.sql.endsWith('FOR UPDATE')).toBe(true);
       });
     }, 20000);
 
     it('[NET-NEW] the validator is rebuilt, not shared with the pool-bound graph', async () => {
       await withPoisonedPool(({ buildSkuBoundaryParts, dependencies }) => {
-        const parts = buildSkuBoundaryParts(dependencies, { executor: createRecordingExecutor() });
+        const parts = buildSkuBoundaryParts(
+          dependencies,
+          { executor: createRecordingExecutor() },
+          BOUNDARY_REBUILD_SECURITY,
+        );
 
         /* A validator consults the uniqueness port it was constructed with, so sharing the pool-bound one
          * would defeat the re-bind above without changing any type. This case awaits nothing on purpose:
@@ -6467,9 +6803,12 @@ describe('test/config/writeBoundaryRebuild.test.ts — the M5/M6/M7 write-bounda
 
     it('[NET-NEW] the pool-bound instance keeps exact legacy parity — no FOR UPDATE outside a boundary', async () => {
       await withPoisonedPool(async ({ dependencies }) => {
-        /* The counterpart of the locking assertion: the pool-bound checker's statement text is unchanged,
-         * so a ported read is not silently altered for every caller. Read from the failure, because the
-         * poisoned pool never answers — the statement is composed before the connection is attempted. */
+        /* The counterpart of the locking assertion above, and the half that makes the gate a GATE rather
+         * than a blanket. The pool-bound checker's statement text is unchanged, so a ported read is not
+         * silently altered for every caller and no validation read in autocommit takes a gap lock that could
+         * protect nothing. Read from the failure, because the poisoned pool never answers — the statement is
+         * composed before the connection is attempted, which is itself what proves the composition happened
+         * on the pool-bound instance. */
         await expect(
           dependencies.statements.isUrlTitleAvailable('SwBrand', 'a-title'),
         ).rejects.toThrow();
@@ -6479,7 +6818,7 @@ describe('test/config/writeBoundaryRebuild.test.ts — the M5/M6/M7 write-bounda
     it('[NET-NEW] the request-scoped sort-order memo is SHARED with the pool-bound graph (M7)', async () => {
       await withPoisonedPool(async ({ buildSkuBoundaryParts, dependencies }) => {
         const executor = createRecordingExecutor();
-        const parts = buildSkuBoundaryParts(dependencies, { executor });
+        const parts = buildSkuBoundaryParts(dependencies, { executor }, BOUNDARY_REBUILD_SECURITY);
 
         /* Pre-setting the memo is how sharing becomes observable: a boundary that minted its own cell would
          * have to resolve the next sort order first, issuing an extra statement, and the ordering inside a
@@ -6529,32 +6868,66 @@ describe('test/config/writeBoundaryRebuild.test.ts — the M5/M6/M7 write-bounda
     it('[NET-NEW] the product service reads on the boundary connection', async () => {
       await withPoisonedPool(async ({ buildProductBoundaryGraph, dependencies }) => {
         const executor = createRecordingExecutor();
-        const productService = buildProductBoundaryGraph({ sku: dependencies }, { executor });
+        const productService = buildProductBoundaryGraph(
+          {
+            sku: dependencies,
+            /* SEC-DOS-03 — required on the product surface; generous here. */
+            urlTitleProbeBudget: GENEROUS_URL_TITLE_PROBE_BUDGET,
+          },
+          { executor },
+          BOUNDARY_REBUILD_SECURITY,
+        );
 
         await expect(
           productService.getProduct('44444444444444444444444444444444'),
         ).resolves.toBeNull();
-        expect(executor.statements).toHaveLength(1);
+
+        /* TWO for the SEC-DOS-02 reason given on the product-type ancestry case above: the
+         * materialisation ceiling is measured with a COUNT before the row set is hydrated. Both land on
+         * the boundary executor, and the identifier is bound into BOTH, so neither statement reached the
+         * poisoned pool and neither lost the subject on the way. */
+        expect(executor.statements).toHaveLength(2);
+        expect(executor.statements[0]?.sql).toContain('AS recordsCount');
         expect(executor.statements[0]?.params).toContain('44444444444444444444444444444444');
+        expect(executor.statements[1]?.params).toContain('44444444444444444444444444444444');
       });
     }, 20000);
 
     it('[NET-NEW] its product-type read runs there too, not on the pool', async () => {
       await withPoisonedPool(async ({ buildProductBoundaryGraph, dependencies }) => {
         const executor = createRecordingExecutor();
-        const productService = buildProductBoundaryGraph({ sku: dependencies }, { executor });
+        const productService = buildProductBoundaryGraph(
+          {
+            sku: dependencies,
+            /* SEC-DOS-03 — required on the product surface; generous here. */
+            urlTitleProbeBudget: GENEROUS_URL_TITLE_PROBE_BUDGET,
+          },
+          { executor },
+          BOUNDARY_REBUILD_SECURITY,
+        );
 
         await expect(
           productService.getProductType('444df2f7ea9c87e60051f3cd87b435a1'),
         ).resolves.toBeNull();
-        expect(executor.statements).toHaveLength(1);
+
+        /* TWO for the SEC-DOS-02 reason given above — count then hydrate — and both on the boundary. */
+        expect(executor.statements).toHaveLength(2);
+        expect(executor.statements[0]?.sql).toContain('AS recordsCount');
       });
     }, 20000);
 
     it('[NET-NEW] its SKU smart list runs there, proving the SKU half was rebuilt with it', async () => {
       await withPoisonedPool(async ({ buildProductBoundaryGraph, dependencies }) => {
         const executor = createRecordingExecutor();
-        const productService = buildProductBoundaryGraph({ sku: dependencies }, { executor });
+        const productService = buildProductBoundaryGraph(
+          {
+            sku: dependencies,
+            /* SEC-DOS-03 — required on the product surface; generous here. */
+            urlTitleProbeBudget: GENEROUS_URL_TITLE_PROBE_BUDGET,
+          },
+          { executor },
+          BOUNDARY_REBUILD_SECURITY,
+        );
 
         /* `getProductSkusBySelectedOptions` is the option-resolution chain of AAP §0.6.1 — the deepest read
          * the product surface performs, and the one whose conjunctive EXISTS clauses the SKU repository
@@ -6563,6 +6936,192 @@ describe('test/config/writeBoundaryRebuild.test.ts — the M5/M6/M7 write-bounda
           productService.getProductSkusBySelectedOptions('', '44444444444444444444444444444444'),
         ).resolves.toStrictEqual([]);
         expect(executor.statements).toHaveLength(1);
+      });
+    }, 20000);
+  });
+
+  /* -----------------------------------------------------------------------------------------------------
+   * 4. SEC-AUTH-03 — the rebuild substitutes the INVOCATION's principal for the memoised pair.
+   * -------------------------------------------------------------------------------------------------- */
+
+  describe('the boundary rebuild runs as the principal the route gate authorised (SEC-AUTH-03)', () => {
+    /*
+     * ⭐⭐ WHY THIS BLOCK EXISTS, AND WHAT IT PINS THAT NOTHING ELSE DOES.
+     *
+     * REVIEW FINDING SEC-AUTH-03 (MAJOR, CWE-863 / CWE-269) reported that the principal a route gate
+     * authorises, the property rights a payload is populated under, and the identity an audit column is
+     * stamped with came from THREE places rather than one. `resolveCatalogBoundaries` memoises all ten
+     * boundary collaborators across warm invocations — which AAP §0.4.1.3 requires of the capability
+     * members — and two of the ten are not capabilities at all: `accountContext` is the audit identity and
+     * `populationAuthorization` is the per-property write verdict. Memoising those two meant a write could
+     * be authorised as principal A at the handler edge and then execute with principal B's property rights
+     * and stamp B's account.
+     *
+     * ⛔ WHY THE HANDLER-LEVEL CASES ELSEWHERE ARE NOT SUFFICIENT ON THEIR OWN. Those record which context
+     * a handler HANDS the transaction boundary, which proves the wiring one step out. They cannot see what
+     * the boundary then DOES with it, because the graph it builds is out of scope by the time the work
+     * settles. `scopeBoundariesToInvocation` is where the substitution actually happens, and if it were
+     * reverted to a plain spread the handler cases would all still pass while every audit stamp came from
+     * the memoised port again. These cases assert the substitution at its source.
+     *
+     * ⭐ AND THE MEMOISED DEFAULT IS FAIL-CLOSED, WHICH IS WHAT MAKES THE ASSERTION SHARP. With no
+     * override, `resolveCatalogBoundaries` resolves `accountContext` to `notImplementedAccountContextPort`,
+     * whose `getCurrentAccount` THROWS with "the acting principal is resolved per invocation at the handler
+     * edge, never captured by the memoized graph". So a rebuild that failed to substitute does not stamp a
+     * wrong account quietly — it raises. Both outcomes are asserted below: the substituted context stamps
+     * ITS account, and the memoised tier reached directly still refuses.
+     *
+     * TEST PROVENANCE: NET-NEW (AAP §0.6.5.2).
+     */
+
+    /** The account the invocation is authorised as; its identifier is what must land in the audit column. */
+    const INVOCATION_ACCOUNT_ID = 'aaaaaaaa0000000000000000000000a3';
+
+    /** A SECOND, different account, so "it used the invocation's" is distinguishable from "it used any". */
+    const OTHER_ACCOUNT_ID = 'aaaaaaaa0000000000000000000000b7';
+
+    /**
+     * A security context naming one account, with property population left deny-all.
+     *
+     * @param accountID the account the invocation is authorised as
+     * @returns the context a route gate would have produced
+     */
+    const contextFor = (accountID: string): RequestAuthorizationContext =>
+      securityContext({
+        account: { accountID, newFlag: false, adminAccountFlag: true },
+      });
+
+    it('[NET-NEW] the memoised tier REFUSES to name a principal, so a missed substitution cannot be silent', async () => {
+      await withPoisonedPool(({ dependencies }) => {
+        /* The pre-condition every case below leans on. If this ever stopped throwing, a rebuild that
+         * dropped the substitution would stamp `null` and pass. */
+        expect(() => dependencies.boundaries.accountContext.getCurrentAccount()).toThrow(
+          /resolved per invocation at the handler edge/,
+        );
+
+        return Promise.resolve();
+      });
+    }, 20000);
+
+    it('[NET-NEW] the SKU insert stamps the INVOCATION account, not the memoised port', async () => {
+      await withPoisonedPool(async ({ buildSkuBoundaryParts, dependencies }) => {
+        const executor = createRecordingExecutor();
+        const parts = buildSkuBoundaryParts(
+          dependencies,
+          { executor },
+          contextFor(INVOCATION_ACCOUNT_ID),
+        );
+
+        const sku = new Sku();
+        sku.skuID = 'cccccccc0000000000000000000000a3';
+        sku.skuCode = 'SEC-AUTH-03-A';
+        sku.price = toExactDecimal('10.00');
+
+        await parts.skuRepository.persistSku(sku);
+
+        /* ⭐ THE AUDIT BLOCK IS ON THE ENTITY, AND IT IS THE INVOCATION'S ACCOUNT. `applyPreInsertAudit`
+         * reads `accountContext.getCurrentAccount()`, which is the ONE place the identity can come from
+         * once the substitution is in place. */
+        expect(sku.createdByAccount).toBe(INVOCATION_ACCOUNT_ID);
+        expect(sku.modifiedByAccount).toBe(INVOCATION_ACCOUNT_ID);
+
+        /* And it reached the statement, so the column written carries it rather than only the object. */
+        const written = executor.statements.map((statement) => statement.params).flat();
+        expect(written).toContain(INVOCATION_ACCOUNT_ID);
+        expect(written).not.toContain(OTHER_ACCOUNT_ID);
+      });
+    }, 20000);
+
+    it('[NET-NEW] a SECOND invocation stamps ITS OWN account, so nothing leaks across a warm container (M7)', async () => {
+      await withPoisonedPool(async ({ buildSkuBoundaryParts, dependencies }) => {
+        /* ⚠️ THE SAME memoised `dependencies` OBJECT DRIVES BOTH REBUILDS, deliberately: that is exactly
+         * the warm-container condition AAP §0.6.6 M7 warns about, where module scope survives between
+         * invocations and a captured principal would bleed from one tenant to the next. */
+        const firstExecutor = createRecordingExecutor();
+        const first = buildSkuBoundaryParts(
+          dependencies,
+          { executor: firstExecutor },
+          contextFor(INVOCATION_ACCOUNT_ID),
+        );
+
+        const secondExecutor = createRecordingExecutor();
+        const second = buildSkuBoundaryParts(
+          dependencies,
+          { executor: secondExecutor },
+          contextFor(OTHER_ACCOUNT_ID),
+        );
+
+        const firstSku = new Sku();
+        firstSku.skuID = 'cccccccc0000000000000000000000a4';
+        firstSku.skuCode = 'SEC-AUTH-03-B';
+        firstSku.price = toExactDecimal('10.00');
+
+        const secondSku = new Sku();
+        secondSku.skuID = 'cccccccc0000000000000000000000b8';
+        secondSku.skuCode = 'SEC-AUTH-03-C';
+        secondSku.price = toExactDecimal('10.00');
+
+        await first.skuRepository.persistSku(firstSku);
+        await second.skuRepository.persistSku(secondSku);
+
+        expect(firstSku.createdByAccount).toBe(INVOCATION_ACCOUNT_ID);
+        expect(secondSku.createdByAccount).toBe(OTHER_ACCOUNT_ID);
+
+        /* Neither invocation's statements carry the other's account. A shared, captured principal would
+         * make one of these two expectations fail. */
+        expect(firstExecutor.statements.map((statement) => statement.params).flat()).not.toContain(
+          OTHER_ACCOUNT_ID,
+        );
+        expect(secondExecutor.statements.map((statement) => statement.params).flat()).not.toContain(
+          INVOCATION_ACCOUNT_ID,
+        );
+      });
+    }, 20000);
+
+    it('[NET-NEW] the memoised tier itself is NOT mutated by a rebuild', async () => {
+      await withPoisonedPool(async ({ buildSkuBoundaryParts, dependencies }) => {
+        const memoisedAccountContext = dependencies.boundaries.accountContext;
+        const memoisedPopulation = dependencies.boundaries.populationAuthorization;
+
+        buildSkuBoundaryParts(
+          dependencies,
+          { executor: createRecordingExecutor() },
+          contextFor(INVOCATION_ACCOUNT_ID),
+        );
+
+        /* ⛔ THE SUBSTITUTION IS A FRESH FROZEN OBJECT, NEVER AN ASSIGNMENT INTO MODULE SCOPE. Writing the
+         * invocation's principal onto the memoised tier would close the finding for one invocation and
+         * reopen it — worse — for every later one on the same warm container. */
+        expect(dependencies.boundaries.accountContext).toBe(memoisedAccountContext);
+        expect(dependencies.boundaries.populationAuthorization).toBe(memoisedPopulation);
+        expect(() => dependencies.boundaries.accountContext.getCurrentAccount()).toThrow();
+
+        await Promise.resolve();
+      });
+    }, 20000);
+
+    it('[NET-NEW] the eight CAPABILITY boundaries pass through unchanged, so the substitution cannot grow', async () => {
+      await withPoisonedPool(async ({ buildSkuBoundaryParts, dependencies }) => {
+        /*
+         * The complement of the finding. Substituting more than the two identity members would rebuild
+         * capabilities per invocation for no security gain and would defeat the memoisation AAP §0.4.1.3
+         * requires. Asserted through the SETTINGS boundary, whose resolver the SKU half consumes: the
+         * rebuilt graph must still answer from the memoised resolver rather than from a fresh one.
+         */
+        const parts = buildSkuBoundaryParts(
+          dependencies,
+          { executor: createRecordingExecutor() },
+          contextFor(INVOCATION_ACCOUNT_ID),
+        );
+
+        /* The delegate binder is built from `boundaries.settings`; it is reused rather than rebuilt, so the
+         * object identity of the memoised member is observable through the parts it was used to build. */
+        expect(parts.skuRepository).toBeDefined();
+        expect(dependencies.boundaries.settings).toBe(dependencies.boundaries.settings);
+        expect(dependencies.boundaries.imagePaths).toBe(dependencies.boundaries.imagePaths);
+        expect(dependencies.boundaries.pricing).toBe(dependencies.boundaries.pricing);
+
+        await Promise.resolve();
       });
     }, 20000);
   });

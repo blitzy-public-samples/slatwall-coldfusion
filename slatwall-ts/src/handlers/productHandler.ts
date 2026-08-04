@@ -271,8 +271,8 @@ import type { ExactDecimal } from '../util/formatting';
 import type {
   EntityCrudType,
   HandlerAccessClassification,
+  InvocationSecurityResolver,
   RequestAuthorizationContext,
-  RequestAuthorizationResolver,
 } from '../ports/AccountContextPort';
 import type { SmartListInput, SmartListResult } from '../ports/SmartListQueryPort';
 import type { TransactionalWriteRunner } from '../config/container';
@@ -307,6 +307,7 @@ import {
   readQueryStringParameter,
   readSmartListInput,
   resolveRequestAuthorization,
+  toInvocationSecurityRequest,
   unauthorizedResponse,
   createActionDispatcher,
   HTTP_STATUS,
@@ -315,6 +316,7 @@ import {
   type APIGatewayProxyEvent,
   type APIGatewayProxyHandler,
   type APIGatewayProxyResult,
+  type CatalogAuthorizationEvent,
 } from './httpResponse';
 
 /* ================================================================================================
@@ -392,6 +394,30 @@ const PRODUCT_ENTITY_NAME = 'Product';
  * Derived the same way, from `detailProductType` [:L54] and `saveProductType` [:L75].
  */
 const PRODUCT_TYPE_ENTITY_NAME = 'ProductType';
+
+/**
+ * The prefix every routed product action carries, so the resolver is told which action it is gating.
+ *
+ * ⭐ ADDED BY REVIEW FINDING SEC-AUTH-03. Concatenated with the routed member name it reproduces the
+ * addresses {@link createProductRoutes} declares — `product.saveProduct`, `product.processProductUpdateSkus`
+ * — which are the strings the routing layer dispatches on. Derived from one constant rather than typed out
+ * per call site, so a route rename cannot leave the resolver being told an address that no longer exists.
+ */
+const PRODUCT_ACTION_PREFIX = 'product.';
+
+/**
+ * What the gate answers: either the refusal to return, or the authorised invocation context.
+ *
+ * ⭐ A DISCRIMINATED PAIR RATHER THAN `APIGatewayProxyResult | undefined` — review finding SEC-AUTH-03.
+ * `undefined` meant "authorised" and discarded the resolved context, which is how the principal at the
+ * gate and the principal doing the writing came to be two different things: a write route had no
+ * authorised context to pass on, so population and audit fell back to the memoised boundary
+ * collaborators. Returning the context makes the correct wiring the only thing a route can do with the
+ * gate's answer, because the alternative does not type-check.
+ */
+type ProductAuthorizationOutcome =
+  | { readonly refusal: APIGatewayProxyResult; readonly authorization?: undefined }
+  | { readonly refusal?: undefined; readonly authorization: RequestAuthorizationContext };
 
 /**
  * The entity name the gate asks about for the one member that reads SKUs.
@@ -819,7 +845,7 @@ export type ProductWriteGraph = Pick<
  * ============================================================================================== */
 
 /** The slice the authorisation gate itself reads. Every event slice below is assignable to it. */
-export type ProductAuthorizationEvent = Pick<APIGatewayProxyEvent, 'headers'>;
+export type ProductAuthorizationEvent = CatalogAuthorizationEvent;
 
 /** A route that addresses one product by identifier and reads no payload. */
 export type ProductIdentifierEvent = Pick<APIGatewayProxyEvent, 'pathParameters' | 'headers'>;
@@ -1069,107 +1095,191 @@ export interface ProductSmartListResponse {
  * only public action anywhere in this slice is `this.publicMethods="product"` at
  * [integrationServices/google/controllers/feed.cfc:L54], which belongs to ./googleFeedHandler.
  */
-type ProductAccessRequirement =
-  | { readonly classification: Extract<HandlerAccessClassification, 'anyLogin'> }
-  | {
-      readonly classification: Extract<HandlerAccessClassification, 'secure'>;
-      readonly entityName: string;
-      readonly crudTypes: ProductCrudQuestions;
-    };
+type ProductAccessRequirement = {
+  readonly classification: Extract<HandlerAccessClassification, 'secure'>;
+
+  /** The entity the route targets. A module constant, never a request value. */
+  readonly entityName: string;
+
+  /**
+   * The ONE operation this route performs, and therefore the one question it asks.
+   *
+   * ⭐ SINGULAR AS OF REVIEW FINDING SEC-AUTH-01. It was `crudTypes`, an ordered non-empty tuple, so a
+   * `save` row could ask `create` and then `update` and be satisfied by either — which is the
+   * escalation the finding reports. A route performs exactly one operation per invocation, so it asks
+   * exactly one question; where the operation depends on whether a resource is addressed, the two
+   * possibilities are declared as this member and {@link unaddressedCrudType} rather than as a
+   * sequence in which the first grant wins.
+   */
+  readonly crudType: EntityCrudType;
+
+  /**
+   * The question asked INSTEAD when the request addresses no resource — i.e. when it creates one.
+   *
+   * Present only on the two `save` rows, whose legacy item could do either. Absent means the route
+   * always performs {@link crudType}: a read, a delete, an explicit creation, or a mutation of a
+   * resource the route requires to be addressed.
+   */
+  readonly unaddressedCrudType?: EntityCrudType;
+
+  /**
+   * A SECOND, subordinate question, asked only after the primary one is granted.
+   *
+   * ⭐ ADDED BY REVIEW FINDING SEC-AUTH-02, whose resolution requires "subordinate capability checks
+   * where a route writes SKU/image/subscription/review state". A process route mutates the product it
+   * addresses AND the SKUs hanging off it, so a principal holding `update` on `Product` alone is not
+   * sufficient authority for the SKU writes the route performs. Both grants are required — this is a
+   * conjunction, not the disjunction the withdrawn tuple expressed.
+   *
+   * ⛔ IT NAMES ONLY ENTITIES THIS DELIVERABLE MODELS. The two boundary process rows — product review
+   * and subscription term — write state belonging to families AAP §0.2.2.1 excludes, and inventing a
+   * permission name for an entity this port does not model would be fabrication (AAP §0.7.3 S9). They
+   * carry the primary `Product` `update` question and no subordinate.
+   */
+  readonly subordinate?: {
+    readonly entityName: string;
+    readonly crudType: EntityCrudType;
+  };
+};
 
 /**
- * The ordered, non-empty list of CRUD questions one `'secure'` row asks, first grant winning.
+ * ⛔ THE ORDERED CRUD-QUESTION TUPLE IS WITHDRAWN — REVIEW FINDING SEC-AUTH-01 (CWE-862, CWE-639).
  *
- * ⭐ ORDERED, BECAUSE THE LEGACY ORDER IS BEHAVIOR. The `save`-prefix branch
- * [org/Hibachi/HibachiAuthenticationService.cfc:L71-L77] asks for `create` FIRST, returns true if that is
- * granted, and only then asks for `update` — so a row can legitimately carry two questions, and which one
- * is asked first decides which single permission grant is sufficient on its own.
+ * A `ProductCrudQuestions` alias stood here — `readonly [EntityCrudType, ...EntityCrudType[]]` — with
+ * five frozen instances, and the gate walked each row's tuple accepting the FIRST grant. Its rationale
+ * was the legacy `save` branch at [org/Hibachi/HibachiAuthenticationService.cfc:L71-L77], which asks
+ * `create`, returns true if granted, and only then asks `update`.
  *
- * ⭐ NON-EMPTY, ENFORCED BY THE TYPE RATHER THAN BY A RUN-TIME CHECK. A row with an empty list would
- * authorise nothing, which — because the gate refuses after exhausting the list — means it would refuse
- * EVERYTHING, silently and only at run time. `readonly [EntityCrudType, ...EntityCrudType[]]` makes that
- * row fail to compile instead, so the gate needs no defensive branch for a state that cannot exist.
+ * ⛔ WHY IT IS GONE. A disjunction over two operations authorises the one the caller HOLDS rather than
+ * the one the route PERFORMS. Concretely: a principal granted only `create` on `Product` could submit
+ * `product.saveProduct` (or `product.saveProductType`, or `sku.createSkus`) naming an existing
+ * identifier, satisfy the `create` question that is asked first, and have the handler resolve and UPDATE
+ * that row. The tuple made the second question unreachable in exactly the case where it was the only
+ * relevant one.
+ *
+ * ⭐ WHAT REPLACES IT. One primary question per route — {@link ProductAccessRequirement.crudType}, with
+ * {@link ProductAccessRequirement.unaddressedCrudType} standing in when the request addresses nothing —
+ * plus an optional CONJUNCTIVE {@link ProductAccessRequirement.subordinate} question for the routes that
+ * write SKU state (SEC-AUTH-02). Nothing about the ladder's vocabulary changes: `create`, `read`,
+ * `update` and `delete` are still the legacy's four values, read from the same prefix branch.
+ *
+ * ⚠️ AND THE PARITY COST IS NAMED RATHER THAN GLOSSED. Two callers the legacy pair admitted are now
+ * refused: a `create`-only principal saving an ADDRESSED subject, and an `update`-only principal saving
+ * an UNADDRESSED one. Both are callers whose grant does not cover the operation performed. The legacy
+ * gate is framework code AAP §0.8.3.2 forbids carrying forward, so what stands here is a reconstruction
+ * of its CONTRACT, and reconstructing it to authorise the operation actually performed is the enterprise
+ * standard AAP §0.7.3 binds this port to in the absence of user Rules.
  */
-type ProductCrudQuestions = readonly [EntityCrudType, ...EntityCrudType[]];
 
 /**
- * The one question a READ asks: `read`.
+ * ⛔ `ANY_LOGIN_REQUIREMENT` IS WITHDRAWN, AND WITH IT THE `'anyLogin'` ARM OF THE REQUIREMENT UNION —
+ * REVIEW FINDING SEC-AUTH-02 (CWE-862, CWE-639).
  *
- * `'read'` is the legacy CRUD value, not a coined one — it is what both the `detail` prefix
- * [org/Hibachi/HibachiAuthenticationService.cfc:L54-L55] and the `list` prefix [:L60-L61] resolve to.
- */
-const READ_CRUD_QUESTIONS = Object.freeze<ProductCrudQuestions>(['read']);
-
-/**
- * The one question a CREATION asks: `create`.
+ * It read `{ classification: 'anyLogin' }` and named the `this.anyLoginMethods` declaration the ladder
+ * reads at [org/Hibachi/HibachiAuthenticationService.cfc:L32-L34]. All EIGHT `processProductXxx` rows
+ * carried it, on the strength of the ladder's `process` branch at [:L68-L69] being a bare `return true`.
  *
- * The `create` prefix at [org/Hibachi/HibachiAuthenticationService.cfc:L52-L53], which is the branch a
- * legacy `createProduct` item took — and `admin/views/entity/createproduct.cfm` is the view that item
- * rendered.
- */
-const CREATE_CRUD_QUESTIONS = Object.freeze<ProductCrudQuestions>(['create']);
-
-/** The one question a DELETE asks: `delete`. The `delete` prefix at [:L56-L57]. */
-const DELETE_CRUD_QUESTIONS = Object.freeze<ProductCrudQuestions>(['delete']);
-
-/**
- * The ordered pair a SAVE asks: `create` first, then `update`.
+ * ⛔ WHY THAT READING CANNOT STAND. The consequence was that ANY logged-in account — a customer with no
+ * catalog grant of any kind — could call `product.processProductUpdateSkus` with another party's
+ * `productID` and a price payload, and the gate returned BEFORE the entity question was ever asked.
+ * Seven sibling routes shared the classification. In the legacy the same bare `return true` was reached
+ * only through an ADMIN subsystem whose own request had already been placed by
+ * `Application.cfc`/`admin/controllers/main.cfc`, and whose process items were reachable only from
+ * administrative views; reproducing the branch without the subsystem that guarded it reproduces the
+ * `return true` and none of its context.
  *
- * Both the pair and its order come from [org/Hibachi/HibachiAuthenticationService.cfc:L71-L77]. Reversing
- * them would change which single grant suffices, so the order is carried rather than tidied.
+ * ⭐ WHAT REPLACES IT. Every process row now requires `update` on `Product` — the operation each one
+ * actually performs — plus the subordinate `Sku` question where SKU or image state is written. The
+ * classification itself is NOT deleted from `../ports/AccountContextPort`: `./optionHandler` keeps four
+ * live `'anyLogin'` rows whose evidence is a `preProcess` item, so the legacy branch remains ported
+ * where the evidence supports it.
  */
-const SAVE_CRUD_QUESTIONS = Object.freeze<ProductCrudQuestions>(['create', 'update']);
-
-/**
- * The requirement `'anyLogin'` states: a logged-in account, and nothing further.
- *
- * `'anyLogin'` is not a word chosen here: it names the `this.anyLoginMethods` declaration a legacy
- * controller writes and the ladder reads at [org/Hibachi/HibachiAuthenticationService.cfc:L32-L34].
- */
-const ANY_LOGIN_REQUIREMENT: ProductAccessRequirement = Object.freeze({
-  classification: 'anyLogin',
-});
 
 /** A logged-in account whose permission groups grant `read` on `Product`. */
 const SECURE_PRODUCT_READ_REQUIREMENT: ProductAccessRequirement = Object.freeze({
   classification: 'secure',
   entityName: PRODUCT_ENTITY_NAME,
-  crudTypes: READ_CRUD_QUESTIONS,
+  crudType: 'read',
 });
 
 /** A logged-in account whose permission groups grant `create` on `Product`. */
 const SECURE_PRODUCT_CREATE_REQUIREMENT: ProductAccessRequirement = Object.freeze({
   classification: 'secure',
   entityName: PRODUCT_ENTITY_NAME,
-  crudTypes: CREATE_CRUD_QUESTIONS,
+  crudType: 'create',
 });
 
-/** A logged-in account granted `create` on `Product`, or failing that `update` on `Product`. */
+/**
+ * A logged-in account granted `update` on `Product` for an ADDRESSED product, `create` for a new one.
+ *
+ * SEC-AUTH-01: the question follows the operation. `saveProduct` creates when no identifier is addressed
+ * — {@link ProductHandler.saveProduct} judgment (f) — and updates when one is, so those are exactly the
+ * two questions, and only ever one of them per invocation.
+ */
 const SECURE_PRODUCT_SAVE_REQUIREMENT: ProductAccessRequirement = Object.freeze({
   classification: 'secure',
   entityName: PRODUCT_ENTITY_NAME,
-  crudTypes: SAVE_CRUD_QUESTIONS,
+  crudType: 'update',
+  unaddressedCrudType: 'create',
+});
+
+/**
+ * A logged-in account granted `update` on `Product`, for a route that mutates one it addresses.
+ *
+ * SEC-AUTH-02: every `processProductXxx` row resolves an EXISTING product and writes to it, so there is
+ * no unaddressed arm and no creation question — a process route cannot create a product.
+ */
+const SECURE_PRODUCT_PROCESS_REQUIREMENT: ProductAccessRequirement = Object.freeze({
+  classification: 'secure',
+  entityName: PRODUCT_ENTITY_NAME,
+  crudType: 'update',
+});
+
+/**
+ * `update` on `Product` AND `update` on `Sku`, for a process route that writes SKU state.
+ *
+ * SEC-AUTH-02's subordinate half. `processProductAddOptionGroup` and `processProductAddOption` write
+ * options onto existing SKUs and can reach `SkuService.createSkus`
+ * [model/service/ProductService.cfc:L150]; `processProductUpdateSkus` writes price and list price onto
+ * every SKU of the product [:L216-L233]; the three image routes write the SKU's own image state. All of
+ * them therefore need the SKU grant in ADDITION to the product grant, and `./skuHandler` asks the
+ * identical `Sku` `update` question for its own image write — which is what keeps one resource governed
+ * by one permission wherever it is reached from.
+ */
+const SECURE_PRODUCT_PROCESS_WITH_SKU_WRITE_REQUIREMENT: ProductAccessRequirement = Object.freeze({
+  classification: 'secure',
+  entityName: PRODUCT_ENTITY_NAME,
+  crudType: 'update',
+  subordinate: Object.freeze({ entityName: SKU_ENTITY_NAME, crudType: 'update' }),
 });
 
 /** A logged-in account whose permission groups grant `delete` on `Product`. */
 const SECURE_PRODUCT_DELETE_REQUIREMENT: ProductAccessRequirement = Object.freeze({
   classification: 'secure',
   entityName: PRODUCT_ENTITY_NAME,
-  crudTypes: DELETE_CRUD_QUESTIONS,
+  crudType: 'delete',
 });
 
 /** A logged-in account whose permission groups grant `read` on `ProductType`. */
 const SECURE_PRODUCT_TYPE_READ_REQUIREMENT: ProductAccessRequirement = Object.freeze({
   classification: 'secure',
   entityName: PRODUCT_TYPE_ENTITY_NAME,
-  crudTypes: READ_CRUD_QUESTIONS,
+  crudType: 'read',
 });
 
-/** A logged-in account granted `create` on `ProductType`, or failing that `update` on `ProductType`. */
+/**
+ * A logged-in account granted `update` on `ProductType`.
+ *
+ * ⭐ THERE IS NO UNADDRESSED ARM, AND THE ASYMMETRY WITH {@link SECURE_PRODUCT_SAVE_REQUIREMENT} IS
+ * EVIDENCE RATHER THAN INCONSISTENCY. `saveProductType` REQUIRES an addressed identifier and answers
+ * `400` without one — `../services/ProductService` declares `newProduct()` and no `newProductType()`,
+ * because `admin/views/entity/` contains `createproduct.cfm` and no `createproducttype.cfm`. A route
+ * that cannot create therefore never asks a `create` question (SEC-AUTH-01).
+ */
 const SECURE_PRODUCT_TYPE_SAVE_REQUIREMENT: ProductAccessRequirement = Object.freeze({
   classification: 'secure',
   entityName: PRODUCT_TYPE_ENTITY_NAME,
-  crudTypes: SAVE_CRUD_QUESTIONS,
+  crudType: 'update',
 });
 
 /**
@@ -1183,7 +1293,7 @@ const SECURE_PRODUCT_TYPE_SAVE_REQUIREMENT: ProductAccessRequirement = Object.fr
 const SECURE_SKU_READ_REQUIREMENT: ProductAccessRequirement = Object.freeze({
   classification: 'secure',
   entityName: SKU_ENTITY_NAME,
-  crudTypes: READ_CRUD_QUESTIONS,
+  crudType: 'read',
 });
 
 /**
@@ -1290,14 +1400,14 @@ export const PRODUCT_ACCESS_MATRIX: Readonly<
   loadDataFromFile: SECURE_PRODUCT_SAVE_REQUIREMENT,
   getFormattedOptionGroups: SECURE_PRODUCT_READ_REQUIREMENT,
   getProductSkusBySelectedOptions: SECURE_SKU_READ_REQUIREMENT,
-  processProductAddOptionGroup: ANY_LOGIN_REQUIREMENT,
-  processProductAddOption: ANY_LOGIN_REQUIREMENT,
-  processProductAddProductReview: ANY_LOGIN_REQUIREMENT,
-  processProductAddSubscriptionTerm: ANY_LOGIN_REQUIREMENT,
-  processProductDeleteDefaultImage: ANY_LOGIN_REQUIREMENT,
-  processProductUpdateDefaultImageFileNames: ANY_LOGIN_REQUIREMENT,
-  processProductUpdateSkus: ANY_LOGIN_REQUIREMENT,
-  processProductUploadDefaultImage: ANY_LOGIN_REQUIREMENT,
+  processProductAddOptionGroup: SECURE_PRODUCT_PROCESS_WITH_SKU_WRITE_REQUIREMENT,
+  processProductAddOption: SECURE_PRODUCT_PROCESS_WITH_SKU_WRITE_REQUIREMENT,
+  processProductAddProductReview: SECURE_PRODUCT_PROCESS_REQUIREMENT,
+  processProductAddSubscriptionTerm: SECURE_PRODUCT_PROCESS_REQUIREMENT,
+  processProductDeleteDefaultImage: SECURE_PRODUCT_PROCESS_WITH_SKU_WRITE_REQUIREMENT,
+  processProductUpdateDefaultImageFileNames: SECURE_PRODUCT_PROCESS_WITH_SKU_WRITE_REQUIREMENT,
+  processProductUpdateSkus: SECURE_PRODUCT_PROCESS_WITH_SKU_WRITE_REQUIREMENT,
+  processProductUploadDefaultImage: SECURE_PRODUCT_PROCESS_WITH_SKU_WRITE_REQUIREMENT,
   saveProduct: SECURE_PRODUCT_SAVE_REQUIREMENT,
   saveProductType: SECURE_PRODUCT_TYPE_SAVE_REQUIREMENT,
   deleteProduct: SECURE_PRODUCT_DELETE_REQUIREMENT,
@@ -1954,7 +2064,7 @@ function toFormattedOptionGroupsResponse(
  */
 export function createProductHandler(
   productService: ProductHandlerService,
-  resolveAuthorization: RequestAuthorizationResolver<ProductAuthorizationEvent>,
+  resolveAuthorization: InvocationSecurityResolver,
   writeRunner: TransactionalWriteRunner<ProductWriteGraph>,
 ): ProductHandler {
   /**
@@ -2012,34 +2122,70 @@ export function createProductHandler(
   const refuseUnauthorized = (
     event: ProductAuthorizationEvent,
     member: keyof ProductHandler,
-  ): APIGatewayProxyResult | undefined => {
+    entityID?: string,
+  ): ProductAuthorizationOutcome => {
     const requirement: ProductAccessRequirement = PRODUCT_ACCESS_MATRIX[member];
-    const authorization: RequestAuthorizationContext = resolveAuthorization(event);
+
+    /* ⭐ SEC-AUTH-01 — THE QUESTION FOLLOWS THE OPERATION. A row that declares an unaddressed arm asks
+     * that question when the request addresses nothing, and its primary question otherwise; every other
+     * row asks its single primary question. Exactly ONE primary question is asked, so there is no
+     * "first grant wins" disjunction left for a narrower grant to escalate through. */
+    const crudType: EntityCrudType =
+      entityID === undefined && requirement.unaddressedCrudType !== undefined
+        ? requirement.unaddressedCrudType
+        : requirement.crudType;
+
+    /* ⭐ SEC-AUTH-03 — ONE RESOLUTION, CARRYING THE WHOLE QUESTION. The resolver is handed the routed
+     * action, the single operation attempted, the entity from this file's own constants and the
+     * addressed identifier — not the bare header slice it used to receive. Still exactly once per
+     * invocation, including for a row that also asks a subordinate question below. */
+    const authorization: RequestAuthorizationContext = resolveAuthorization(
+      toInvocationSecurityRequest(event, {
+        action: `${PRODUCT_ACTION_PREFIX}${member}`,
+        crudType,
+        entityName: requirement.entityName,
+        ...(entityID === undefined ? {} : { entityID }),
+      }),
+    );
     const account = authorization.accountContext.getCurrentAccount();
 
     // Steps 1 and 2. `newFlag` is `isNew()`, so TRUE means "not logged in".
     if (account === undefined || account.newFlag) {
-      return unauthorizedResponse();
+      return { refusal: unauthorizedResponse() };
     }
 
-    // Step 3. Nothing below this line runs for the eight 'anyLogin' rows.
-    if (requirement.classification === 'anyLogin') {
-      return undefined;
+    /* Step 3 — the entity question, from the matrix row. ⛔ THERE IS NO LONGER A STEP THAT RETURNS
+     * BEFORE THIS ONE: the `'anyLogin'` short-circuit the eight process rows took is withdrawn under
+     * SEC-AUTH-02, and its withdrawal record sits above {@link SECURE_PRODUCT_READ_REQUIREMENT}. */
+    if (
+      !authorization.entityAuthorization.authenticateEntity({
+        crudType,
+        entityName: requirement.entityName,
+        ...(entityID === undefined ? {} : { entityID }),
+      })
+    ) {
+      return { refusal: forbiddenResponse() };
     }
 
-    // Step 4. Asked in the matrix row's own order; the first grant authorises the invocation.
-    for (const crudType of requirement.crudTypes) {
-      if (
-        authorization.entityAuthorization.authenticateEntity({
-          crudType,
-          entityName: requirement.entityName,
-        })
-      ) {
-        return undefined;
-      }
+    /* Step 4 — SEC-AUTH-02's subordinate question, a CONJUNCTION with step 3 rather than an
+     * alternative to it. Asked only where the route writes a child resource this deliverable models,
+     * and asked of the SAME resolved context, so the resolver is still invoked once. The addressed
+     * identifier is deliberately NOT forwarded: it identifies the PRODUCT, and passing a product's
+     * identifier on a question about `Sku` would tell a resolver something untrue. */
+    if (
+      requirement.subordinate !== undefined &&
+      !authorization.entityAuthorization.authenticateEntity({
+        crudType: requirement.subordinate.crudType,
+        entityName: requirement.subordinate.entityName,
+      })
+    ) {
+      return { refusal: forbiddenResponse() };
     }
 
-    return forbiddenResponse();
+    /* ⭐ THE AUTHORISED CONTEXT IS RETURNED, NOT DISCARDED — SEC-AUTH-03. Every write route hands it to
+     * the transaction boundary, so property population and audit stamping run under the principal this
+     * gate approved instead of under whatever `../config/container.ts` memoised. */
+    return { authorization };
   };
 
   /**
@@ -2082,6 +2228,10 @@ export function createProductHandler(
    * @returns the member's result, or `null` when the addressed product does not exist
    */
   const runProductWrite = async <TResult>(
+    /* SEC-AUTH-03 — the authorised context of the invocation performing this write. It is the FIRST
+     * parameter, exactly as it is on `TransactionalWriteRunner.runWrite`, so a route cannot open a
+     * transaction without having been through the gate: there is no overload that omits it. */
+    security: RequestAuthorizationContext,
     productID: string,
     work: (graph: ProductWriteGraph, product: Product) => Promise<TResult>,
   ): Promise<TResult | null> => {
@@ -2094,6 +2244,7 @@ export function createProductHandler(
 
     try {
       return await writeRunner.runWrite<TResult | null>(
+        security,
         async (graph) => {
           const product: Product | null = await graph.getProduct(productID);
 
@@ -2209,7 +2360,10 @@ export function createProductHandler(
    * @returns 200 with a null body when the import was attempted, or the response describing why not
    */
   const loadDataFromFile = async (event: LoadDataFromFileEvent): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'loadDataFromFile');
+    /* Only the refusal is taken: the importer reaches the POOL-BOUND service and owns its own
+     * per-row transaction boundaries (M3), so no invocation graph is rebuilt here for an authorised
+     * context to be bound into. A route that opens a transaction must pass it on (SEC-AUTH-03). */
+    const { refusal } = refuseUnauthorized(event, 'loadDataFromFile');
 
     if (refusal !== undefined) {
       return refusal;
@@ -2264,9 +2418,11 @@ export function createProductHandler(
    * the group ID; same-named groups COLLAPSE TO ONE ENTRY, because [:L76] is a plain struct assignment; and
    * NOTHING IS SORTED, because the legacy sorts neither the groups nor the options within a group.
    *
-   * ⛔ THE GATE RUNS BEFORE THE IDENTIFIER IS READ, WHICH IS THE ANTI-ENUMERATION PROPERTY. Because the
-   * refusal is decided without consulting the identifier or the repository, an unauthorised caller
-   * receives the SAME response for a product that exists and one that does not.
+   * ⛔ THE GATE RUNS BEFORE THE IDENTIFIER IS USED, WHICH IS THE ANTI-ENUMERATION PROPERTY. As of review
+   * finding SEC-AUTH-01 the identifier is READ first, so the question can name the row being acted on, but
+   * nothing consults the repository or emits a distinct message until the refusal has been returned — so
+   * an unauthorised caller still receives the SAME response for a product that exists and one that does
+   * not.
    *
    * NET-NEW coverage (AAP §0.6.5.2).
    *
@@ -2277,13 +2433,15 @@ export function createProductHandler(
   const getFormattedOptionGroups = async (
     event: ProductIdentifierEvent,
   ): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'getFormattedOptionGroups');
+    /* SEC-AUTH-01 — the addressed identifier is read FIRST so the gate asks about the operation
+     * actually performed and can name the row it is performed on. Nothing is DONE with it until
+     * after the refusal, so no branch below discloses anything to an unauthorised caller. */
+    const productID: string | undefined = readProductIdentifier(event);
+    const { refusal } = refuseUnauthorized(event, 'getFormattedOptionGroups', productID);
 
     if (refusal !== undefined) {
       return refusal;
     }
-
-    const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
       return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
@@ -2355,13 +2513,15 @@ export function createProductHandler(
   const getProductSkusBySelectedOptions = async (
     event: SelectedOptionsEvent,
   ): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'getProductSkusBySelectedOptions');
+    /* SEC-AUTH-01 — the addressed identifier is read FIRST so the gate asks about the operation
+     * actually performed and can name the row it is performed on. Nothing is DONE with it until
+     * after the refusal, so no branch below discloses anything to an unauthorised caller. */
+    const productID: string | undefined = readProductIdentifier(event);
+    const { refusal } = refuseUnauthorized(event, 'getProductSkusBySelectedOptions', productID);
 
     if (refusal !== undefined) {
       return refusal;
     }
-
-    const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
       return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
@@ -2432,13 +2592,19 @@ export function createProductHandler(
   const processProductAddOptionGroup = async (
     event: ProductPayloadEvent,
   ): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'processProductAddOptionGroup');
+    /* SEC-AUTH-01 — the addressed identifier is read FIRST so the gate asks about the operation
+     * actually performed and can name the row it is performed on. Nothing is DONE with it until
+     * after the refusal, so no branch below discloses anything to an unauthorised caller. */
+    const productID: string | undefined = readProductIdentifier(event);
+    const { refusal, authorization } = refuseUnauthorized(
+      event,
+      'processProductAddOptionGroup',
+      productID,
+    );
 
     if (refusal !== undefined) {
       return refusal;
     }
-
-    const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
       return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
@@ -2451,11 +2617,14 @@ export function createProductHandler(
     }
 
     try {
-      const updated: Product | null = await runProductWrite(productID, (graph, product) =>
-        graph.processProductAddOptionGroup(
-          product,
-          buildAddOptionGroupProcessObject(product, body.value),
-        ),
+      const updated: Product | null = await runProductWrite(
+        authorization,
+        productID,
+        (graph, product) =>
+          graph.processProductAddOptionGroup(
+            product,
+            buildAddOptionGroupProcessObject(product, body.value),
+          ),
       );
 
       return updated === null ? notFoundResponse() : okResponse(toProductResponse(updated));
@@ -2490,13 +2659,19 @@ export function createProductHandler(
   const processProductAddOption = async (
     event: ProductPayloadEvent,
   ): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'processProductAddOption');
+    /* SEC-AUTH-01 — the addressed identifier is read FIRST so the gate asks about the operation
+     * actually performed and can name the row it is performed on. Nothing is DONE with it until
+     * after the refusal, so no branch below discloses anything to an unauthorised caller. */
+    const productID: string | undefined = readProductIdentifier(event);
+    const { refusal, authorization } = refuseUnauthorized(
+      event,
+      'processProductAddOption',
+      productID,
+    );
 
     if (refusal !== undefined) {
       return refusal;
     }
-
-    const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
       return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
@@ -2509,8 +2684,11 @@ export function createProductHandler(
     }
 
     try {
-      const updated: Product | null = await runProductWrite(productID, (graph, product) =>
-        graph.processProductAddOption(product, buildAddOptionProcessObject(product, body.value)),
+      const updated: Product | null = await runProductWrite(
+        authorization,
+        productID,
+        (graph, product) =>
+          graph.processProductAddOption(product, buildAddOptionProcessObject(product, body.value)),
       );
 
       return updated === null ? notFoundResponse() : okResponse(toProductResponse(updated));
@@ -2552,13 +2730,18 @@ export function createProductHandler(
      * request-shape questions and then reports the boundary. `Promise.resolve` keeps the member's declared
      * contract — the routed shape is `(event) => Promise<APIGatewayProxyResult>` — while an `async` body
      * with no `await` would advertise work that is not performed. */
-    const refusal = refuseUnauthorized(event, 'processProductAddProductReview');
+    /* SEC-AUTH-01 — the addressed identifier is read FIRST so the gate asks about the operation
+     * actually performed and can name the row it is performed on. Nothing is DONE with it until
+     * after the refusal, so no branch below discloses anything to an unauthorised caller. */
+    const productID: string | undefined = readProductIdentifier(event);
+    /* Only the refusal is taken: this route opens NO transaction — it answers the boundary's own
+     * `501` (AAP §0.2.2.6/§0.2.2.1) — so there is no graph for an authorised context to be bound
+     * into. A route that DOES write must destructure `authorization` and pass it on (SEC-AUTH-03). */
+    const { refusal } = refuseUnauthorized(event, 'processProductAddProductReview', productID);
 
     if (refusal !== undefined) {
       return Promise.resolve(refusal);
     }
-
-    const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
       return Promise.resolve(messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE));
@@ -2633,13 +2816,18 @@ export function createProductHandler(
      * request-shape questions and then reports the boundary. `Promise.resolve` keeps the member's declared
      * contract — the routed shape is `(event) => Promise<APIGatewayProxyResult>` — while an `async` body
      * with no `await` would advertise work that is not performed. */
-    const refusal = refuseUnauthorized(event, 'processProductAddSubscriptionTerm');
+    /* SEC-AUTH-01 — the addressed identifier is read FIRST so the gate asks about the operation
+     * actually performed and can name the row it is performed on. Nothing is DONE with it until
+     * after the refusal, so no branch below discloses anything to an unauthorised caller. */
+    const productID: string | undefined = readProductIdentifier(event);
+    /* Only the refusal is taken: this route opens NO transaction — it answers the boundary's own
+     * `501` (AAP §0.2.2.6/§0.2.2.1) — so there is no graph for an authorised context to be bound
+     * into. A route that DOES write must destructure `authorization` and pass it on (SEC-AUTH-03). */
+    const { refusal } = refuseUnauthorized(event, 'processProductAddSubscriptionTerm', productID);
 
     if (refusal !== undefined) {
       return Promise.resolve(refusal);
     }
-
-    const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
       return Promise.resolve(messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE));
@@ -2696,13 +2884,19 @@ export function createProductHandler(
   const processProductDeleteDefaultImage = async (
     event: ProductPayloadEvent,
   ): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'processProductDeleteDefaultImage');
+    /* SEC-AUTH-01 — the addressed identifier is read FIRST so the gate asks about the operation
+     * actually performed and can name the row it is performed on. Nothing is DONE with it until
+     * after the refusal, so no branch below discloses anything to an unauthorised caller. */
+    const productID: string | undefined = readProductIdentifier(event);
+    const { refusal, authorization } = refuseUnauthorized(
+      event,
+      'processProductDeleteDefaultImage',
+      productID,
+    );
 
     if (refusal !== undefined) {
       return refusal;
     }
-
-    const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
       return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
@@ -2715,8 +2909,10 @@ export function createProductHandler(
     }
 
     try {
-      const updated: Product | null = await runProductWrite(productID, (graph, product) =>
-        graph.processProductDeleteDefaultImage(product, body.value),
+      const updated: Product | null = await runProductWrite(
+        authorization,
+        productID,
+        (graph, product) => graph.processProductDeleteDefaultImage(product, body.value),
       );
 
       return updated === null ? notFoundResponse() : okResponse(toProductResponse(updated));
@@ -2755,21 +2951,29 @@ export function createProductHandler(
   const processProductUpdateDefaultImageFileNames = async (
     event: ProductIdentifierEvent,
   ): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'processProductUpdateDefaultImageFileNames');
+    /* SEC-AUTH-01 — the addressed identifier is read FIRST so the gate asks about the operation
+     * actually performed and can name the row it is performed on. Nothing is DONE with it until
+     * after the refusal, so no branch below discloses anything to an unauthorised caller. */
+    const productID: string | undefined = readProductIdentifier(event);
+    const { refusal, authorization } = refuseUnauthorized(
+      event,
+      'processProductUpdateDefaultImageFileNames',
+      productID,
+    );
 
     if (refusal !== undefined) {
       return refusal;
     }
-
-    const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
       return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
     }
 
     try {
-      const updated: Product | null = await runProductWrite(productID, (graph, product) =>
-        graph.processProductUpdateDefaultImageFileNames(product),
+      const updated: Product | null = await runProductWrite(
+        authorization,
+        productID,
+        (graph, product) => graph.processProductUpdateDefaultImageFileNames(product),
       );
 
       return updated === null ? notFoundResponse() : okResponse(toProductResponse(updated));
@@ -2804,13 +3008,19 @@ export function createProductHandler(
   const processProductUpdateSkus = async (
     event: ProductPayloadEvent,
   ): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'processProductUpdateSkus');
+    /* SEC-AUTH-01 — the addressed identifier is read FIRST so the gate asks about the operation
+     * actually performed and can name the row it is performed on. Nothing is DONE with it until
+     * after the refusal, so no branch below discloses anything to an unauthorised caller. */
+    const productID: string | undefined = readProductIdentifier(event);
+    const { refusal, authorization } = refuseUnauthorized(
+      event,
+      'processProductUpdateSkus',
+      productID,
+    );
 
     if (refusal !== undefined) {
       return refusal;
     }
-
-    const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
       return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
@@ -2823,8 +3033,14 @@ export function createProductHandler(
     }
 
     try {
-      const updated: Product | null = await runProductWrite(productID, (graph, product) =>
-        graph.processProductUpdateSkus(product, buildUpdateSkusProcessObject(product, body.value)),
+      const updated: Product | null = await runProductWrite(
+        authorization,
+        productID,
+        (graph, product) =>
+          graph.processProductUpdateSkus(
+            product,
+            buildUpdateSkusProcessObject(product, body.value),
+          ),
       );
 
       return updated === null ? notFoundResponse() : okResponse(toProductResponse(updated));
@@ -2865,13 +3081,18 @@ export function createProductHandler(
      * request-shape questions and then reports the boundary. `Promise.resolve` keeps the member's declared
      * contract — the routed shape is `(event) => Promise<APIGatewayProxyResult>` — while an `async` body
      * with no `await` would advertise work that is not performed. */
-    const refusal = refuseUnauthorized(event, 'processProductUploadDefaultImage');
+    /* SEC-AUTH-01 — the addressed identifier is read FIRST so the gate asks about the operation
+     * actually performed and can name the row it is performed on. Nothing is DONE with it until
+     * after the refusal, so no branch below discloses anything to an unauthorised caller. */
+    const productID: string | undefined = readProductIdentifier(event);
+    /* Only the refusal is taken: this route opens NO transaction — it answers the boundary's own
+     * `501` (AAP §0.2.2.6/§0.2.2.1) — so there is no graph for an authorised context to be bound
+     * into. A route that DOES write must destructure `authorization` and pass it on (SEC-AUTH-03). */
+    const { refusal } = refuseUnauthorized(event, 'processProductUploadDefaultImage', productID);
 
     if (refusal !== undefined) {
       return Promise.resolve(refusal);
     }
-
-    const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
       return Promise.resolve(messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE));
@@ -2960,13 +3181,16 @@ export function createProductHandler(
    * @returns the saved product, projected, or the response describing why it was not saved
    */
   const saveProduct = async (event: ProductSaveEvent): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'saveProduct');
+    /* SEC-AUTH-01 — the addressed identifier is read FIRST so the gate asks about the operation
+     * actually performed and can name the row it is performed on. Nothing is DONE with it until
+     * after the refusal, so no branch below discloses anything to an unauthorised caller. */
+    const productID: string | undefined = readProductIdentifier(event);
+    const { refusal, authorization } = refuseUnauthorized(event, 'saveProduct', productID);
 
     if (refusal !== undefined) {
       return refusal;
     }
 
-    const productID: string | undefined = readProductIdentifier(event);
     const body = readJsonObjectBody(event);
 
     if (!body.present) {
@@ -2982,6 +3206,8 @@ export function createProductHandler(
 
     try {
       const saved: Product | null = await writeRunner.runWrite<Product | null>(
+        /* SEC-AUTH-03 — the gate's own context; see {@link runProductWrite}. */
+        authorization,
         async (graph) => {
           const product: Product | null =
             productID === undefined ? graph.newProduct() : await graph.getProduct(productID);
@@ -3077,13 +3303,15 @@ export function createProductHandler(
   const saveProductType = async (
     event: ProductTypePayloadEvent,
   ): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'saveProductType');
+    /* SEC-AUTH-01 — the addressed identifier is read FIRST so the gate asks about the operation
+     * actually performed and can name the row it is performed on. Nothing is DONE with it until
+     * after the refusal, so no branch below discloses anything to an unauthorised caller. */
+    const productTypeID: string | undefined = readProductTypeIdentifier(event);
+    const { refusal, authorization } = refuseUnauthorized(event, 'saveProductType', productTypeID);
 
     if (refusal !== undefined) {
       return refusal;
     }
-
-    const productTypeID: string | undefined = readProductTypeIdentifier(event);
 
     if (productTypeID === undefined) {
       return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_TYPE_ID_REQUIRED_MESSAGE);
@@ -3108,6 +3336,8 @@ export function createProductHandler(
     try {
       const saved: ProductTypeWithErrorState | null =
         await writeRunner.runWrite<ProductTypeWithErrorState | null>(
+          /* SEC-AUTH-03 — the gate's own context; see {@link runProductWrite}. */
+          authorization,
           async (graph) => {
             const productType: ProductType | null = await graph.getProductType(productTypeID);
 
@@ -3170,21 +3400,25 @@ export function createProductHandler(
    * @returns the member's own boolean answer, or the response describing why it was not asked
    */
   const deleteProduct = async (event: ProductIdentifierEvent): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'deleteProduct');
+    /* SEC-AUTH-01 — the addressed identifier is read FIRST so the gate asks about the operation
+     * actually performed and can name the row it is performed on. Nothing is DONE with it until
+     * after the refusal, so no branch below discloses anything to an unauthorised caller. */
+    const productID: string | undefined = readProductIdentifier(event);
+    const { refusal, authorization } = refuseUnauthorized(event, 'deleteProduct', productID);
 
     if (refusal !== undefined) {
       return refusal;
     }
-
-    const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
       return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
     }
 
     try {
-      const deleted: boolean | null = await runProductWrite(productID, (graph, product) =>
-        graph.deleteProduct(product),
+      const deleted: boolean | null = await runProductWrite(
+        authorization,
+        productID,
+        (graph, product) => graph.deleteProduct(product),
       );
 
       return deleted === null ? notFoundResponse() : okResponse(deleted);
@@ -3237,7 +3471,7 @@ export function createProductHandler(
   const getProductSmartList = async (
     event: ProductSmartListEvent,
   ): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'getProductSmartList');
+    const { refusal } = refuseUnauthorized(event, 'getProductSmartList');
 
     if (refusal !== undefined) {
       return refusal;
@@ -3294,7 +3528,7 @@ export function createProductHandler(
    * @returns the unsaved product, projected, or the refusal
    */
   const newProduct = (event: NewProductEvent): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'newProduct');
+    const { refusal } = refuseUnauthorized(event, 'newProduct');
 
     if (refusal !== undefined) {
       return Promise.resolve(refusal);
@@ -3331,13 +3565,15 @@ export function createProductHandler(
   const getProductType = async (
     event: ProductTypeIdentifierEvent,
   ): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'getProductType');
+    /* SEC-AUTH-01 — the addressed identifier is read FIRST so the gate asks about the operation
+     * actually performed and can name the row it is performed on. Nothing is DONE with it until
+     * after the refusal, so no branch below discloses anything to an unauthorised caller. */
+    const productTypeID: string | undefined = readProductTypeIdentifier(event);
+    const { refusal } = refuseUnauthorized(event, 'getProductType', productTypeID);
 
     if (refusal !== undefined) {
       return refusal;
     }
-
-    const productTypeID: string | undefined = readProductTypeIdentifier(event);
 
     if (productTypeID === undefined) {
       return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_TYPE_ID_REQUIRED_MESSAGE);
@@ -3376,13 +3612,15 @@ export function createProductHandler(
    * @returns the product, projected, or the response describing why it was not returned
    */
   const getProduct = async (event: ProductIdentifierEvent): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'getProduct');
+    /* SEC-AUTH-01 — the addressed identifier is read FIRST so the gate asks about the operation
+     * actually performed and can name the row it is performed on. Nothing is DONE with it until
+     * after the refusal, so no branch below discloses anything to an unauthorised caller. */
+    const productID: string | undefined = readProductIdentifier(event);
+    const { refusal } = refuseUnauthorized(event, 'getProduct', productID);
 
     if (refusal !== undefined) {
       return refusal;
     }
-
-    const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
       return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
@@ -3532,7 +3770,7 @@ export type ProductRouteKey =
  */
 export function createProductHandlerFromContainer(
   container: Pick<CatalogContainer, 'productService' | 'productWriteRunner'>,
-  resolveAuthorization: RequestAuthorizationResolver<ProductAuthorizationEvent> = resolveRequestAuthorization,
+  resolveAuthorization: InvocationSecurityResolver = resolveRequestAuthorization,
 ): ProductHandler {
   return createProductHandler(
     container.productService,

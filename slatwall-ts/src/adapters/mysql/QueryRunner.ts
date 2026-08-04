@@ -299,6 +299,282 @@ const PHYSICAL_TABLE_NAMES = [
   'SwAlternateSkuCode',
 ] as const;
 
+/* ================================================================================================
+ * ⭐⭐ THE SCOPE CLASSIFICATION — REVIEW FINDING SEC-SQL-SCOPE-01 (CWE-284, CWE-250)
+ * ================================================================================================
+ * The finding measured two things and both are true: this registry admitted TWELVE tables where the
+ * AAP's own Catalog boundary names SEVEN, and `./MySqlSkuRepository.ts` emitted FOURTEEN FURTHER
+ * out-of-scope table literals from a private frozen object that never reached this registry at all.
+ * Its resolution: "Ratify the exact unavoidable schema surface, provision least-privilege credentials,
+ * and require every emitted table/column to pass one auditable registry."
+ *
+ * ⚠️ AND RATIFYING IT FOUND MORE THAN THE FINDING COUNTED. Auditing every emitted identifier against this
+ * registry — rather than only the two places the finding named — turned up a THIRD private literal object,
+ * in `./MySqlProductRepository.ts`, holding five further table names from the excluded `Attribute*` family.
+ * One of them, `SwAttributeValue`, is WRITTEN by the importer's custom-attribute step. A ratification that
+ * had stopped at the two modules the finding cited would have published a surface that was still incomplete
+ * and would have understated the required privilege from `SELECT` to `SELECT, INSERT, UPDATE`. The census
+ * below is therefore the whole of it, and {@link registeredTableScopes} exists so the next audit is a test
+ * rather than a re-reading.
+ *
+ * ⭐ WHAT WAS ACTUALLY WRONG WAS NOT THE COUNT — IT WAS THAT THE COUNT WAS UNKNOWABLE FROM ONE PLACE.
+ * Neither number was arbitrary. The twelve are the six Catalog entity tables, the four link tables
+ * `model/entity/Sku.cfc:L76-L79` declares, the one link table `model/entity/Product.cfc:L81` declares
+ * whose far side is also in scope, and the alternate-SKU-code table the code lookup joins. The fourteen
+ * are the tables the legacy existence chain and fetch branches genuinely reach. But a reviewer asking
+ * "what schema surface does this service require, and with what privileges" had to read two modules and
+ * reconcile a whitelist against a private literal object — and only ONE of the two was enforced.
+ *
+ * ⛔ SO THE REGISTRY IS NOT SHRUNK, IT IS CLASSIFIED. Shrinking it would be the wrong repair twice over.
+ * Removing the link tables would make relationships the in-scope entity OWNS unwriteable, which drops
+ * behaviour rather than respecting a boundary. Removing the cross-domain tables would delete the
+ * ten-way existence chain of `model/dao/SkuDAO.cfc:L53-L98`, whose RESULT is observable — it answers the
+ * `transactionExistsFlag` delete guard of `model/validation/Product.json` and `model/validation/Sku.json`.
+ * Both are required, and the honest response is to make the requirement legible and to bound what may be
+ * DONE with each name rather than to pretend the surface is smaller than it is.
+ *
+ * ⭐ THE FOUR CLASSES, AND WHY THE LINE FALLS WHERE IT DOES:
+ *
+ *   • `catalog-core` — the SEVEN the AAP §0.2.1.2 boundary names: the six entity tables plus
+ *     `SwSkuOption`, the option link table without which the option model is unusable. Fully writeable.
+ *
+ *   • `catalog-owned-link` — FOUR link tables whose OWNING side is an in-scope entity even though the far
+ *     side is not: `SwSkuAccessContent` and `SwSkuSubsBenefit` and `SwSkuRenewalSubsBenefit` from
+ *     `model/entity/Sku.cfc:L77-L79`, and `SwRelatedProduct` from `model/entity/Product.cfc:L81`, which is
+ *     the ONE of that entity's ten many-to-many collections with `SwProduct` on both sides. Writeable,
+ *     because writing a link row the in-scope entity owns is in-scope work; the far entity's own table is
+ *     never named anywhere in this subtree.
+ *
+ *   • `cross-domain-write` — ONE table, `SwAttributeValue`. It belongs to an excluded family and is
+ *     nonetheless written, because `model/dao/ProductDAO.cfc:L244` and `:L250` write it from the importer's
+ *     custom-attribute step and AAP §0.4.1.7 keeps the importer's behaviour. Given its own class rather
+ *     than folded into either neighbour, so the credential below grants `INSERT, UPDATE` on exactly one
+ *     table outside the Catalog and an auditor can see which one without reading any statement.
+ *
+ *   • `cross-domain-read-only` — every other table belonging to a family AAP §0.2.2.1 EXCLUDES: the
+ *     alternate-SKU-code table, the subscription term, the ten order, inventory, stock, physical-count,
+ *     stock-adjustment and vendor-order tables the existence chain traverses, and the four attribute-family
+ *     tables the attribute-set selection joins. Reached to ANSWER A QUESTION and never to write.
+ *
+ * ⚠️ `SwAttributeSetProductType` IS A LINK TABLE AND IS STILL READ-ONLY, which shows the middle class is a
+ * real test rather than a label for anything shaped like a link. The four `catalog-owned-link` members
+ * qualify because their OWNING side is an in-scope entity; this one's owning side is `AttributeSet`, and
+ * `SwProductType` appears only as the far column. Writing it would be writing a relationship the Catalog
+ * does not own.
+ *
+ * ⛔ AND THE CLASSIFICATION IS ENFORCED, NOT MERELY RECORDED — which is what makes this a fix rather than
+ * a comment. {@link assertWriteTableName} refuses a `cross-domain-read-only` name outright, so no write
+ * path in the subtree can compose a statement against an excluded family's table even by accident.
+ * {@link assertTableName} keeps its existing contract for reads. A future member that tried to INSERT into
+ * `SwOrderItem` would fail at composition with a message naming the classification, rather than succeeding
+ * and requiring a privilege the deployment should never have granted.
+ *
+ * ⭐ THE LEAST-PRIVILEGE CREDENTIAL THIS SERVICE NEEDS FOLLOWS MECHANICALLY, AND IS STATED SO A DEPLOYMENT
+ * CAN PROVISION IT — the second half of the finding's resolution. Granting it is an operator act and
+ * AAP §0.2.2.5 puts infrastructure outside this refactoring, so no DDL or GRANT is authored here:
+ *
+ *   ELEVEN Catalog tables — full DML:
+ *     GRANT SELECT, INSERT, UPDATE, DELETE ON <schema>.SwProduct                  TO '<user>'@'<host>';
+ *     … the same for SwSku, SwProductType, SwBrand, SwOption, SwOptionGroup, SwSkuOption,
+ *       SwSkuAccessContent, SwSkuSubsBenefit, SwSkuRenewalSubsBenefit, SwRelatedProduct
+ *
+ *   ONE cross-domain table — INSERT and UPDATE but DELIBERATELY NOT `DELETE`, because the importer's two
+ *   statements are an UPDATE and an INSERT and nothing in this subtree deletes an attribute value:
+ *     GRANT SELECT, INSERT, UPDATE ON <schema>.SwAttributeValue                   TO '<user>'@'<host>';
+ *
+ *   SIXTEEN cross-domain tables — `SELECT` and nothing more:
+ *     GRANT SELECT ON <schema>.SwAlternateSkuCode                                 TO '<user>'@'<host>';
+ *     … SELECT ONLY, likewise, on SwSubscriptionTerm, SwStock, SwOrderItem, SwInventory,
+ *       SwOrderDeliveryItem, SwPhysicalCountItem, SwStockAdjustmentDeliveryItem, SwStockAdjustmentItem,
+ *       SwStockHold, SwStockReceiverItem, SwVendorOrderItem, SwAttributeSet, SwAttribute,
+ *       SwAttributeSetProductType, SwType
+ *
+ * Nothing outside those TWENTY-EIGHT tables is required; no privilege beyond `SELECT` is required on sixteen
+ * of them, and no `DELETE` on the seventeenth. The enforcement above means a deployment that grants exactly
+ * this cannot be defeated by a later code change: the code refuses the write before the database would have
+ * to. {@link registeredTableScopes} answers the census in one call, so a provisioning script can be
+ * generated from the code rather than transcribed from this comment and drift away from it.
+ *
+ * ⚠️ WHAT THIS IS NOT. It is not a claim that the cross-domain reads are desirable. The finding's first
+ * clause — "Move out-of-scope checks behind narrowly privileged collaborators or approved read-only
+ * views" — asks for something this deliverable cannot supply: a view is a schema object (AAP §0.2.2.5), and
+ * a collaborator owned by the excluded family would have to be implemented by whoever owns that family,
+ * which is outside the entire AAP. The classification is the part that can be built here, and it is what
+ * makes either of those later moves a substitution at one seam rather than an audit of two modules.
+ * ============================================================================================== */
+
+/**
+ * How far outside the Catalog boundary a validated table name sits.
+ *
+ * A union rather than a boolean because the middle class is real and collapsing it would misreport it:
+ * a link table owned by an in-scope entity is not core Catalog, and it is not cross-domain either.
+ */
+export type TableScope =
+  'catalog-core' | 'catalog-owned-link' | 'cross-domain-write' | 'cross-domain-read-only';
+
+/**
+ * Every table this service may name, mapped to its scope.
+ *
+ * ⭐ ONE OBJECT, WHICH IS THE WHOLE OF THE FINDING'S "one auditable registry" CLAUSE. Twenty-eight entries:
+ * the twelve this module already declared, plus the eleven `./MySqlSkuRepository.ts` held privately (its
+ * fourteen minus `SwAlternateSkuCode`, `SwSkuAccessContent` and `SwSkuSubsBenefit`, which this module
+ * already had), plus the five `./MySqlProductRepository.ts` held privately. A reviewer answering "what
+ * schema surface does this service need, and with what privilege" reads this object and nothing else.
+ *
+ * ⚠️ EVERY CROSS-DOMAIN ENTRY CITES THE LEGACY DECLARATION IT WAS READ FROM AND THE STATEMENT THAT REACHES
+ * IT, because a name whose necessity cannot be re-verified is a name that should not be here. Each is a
+ * compile-time constant authored from that declaration; none derives from caller input, so none is an
+ * injection surface — S2 requires only that no caller-supplied string reach statement text except as a
+ * bound `?`, and that holds throughout.
+ */
+const TABLE_SCOPES = {
+  /* ── catalog-core: the SEVEN of AAP §0.2.1.2 ───────────────────────────────────────────────── */
+  SwProduct: 'catalog-core',
+  SwSku: 'catalog-core',
+  SwProductType: 'catalog-core',
+  SwBrand: 'catalog-core',
+  SwOption: 'catalog-core',
+  SwOptionGroup: 'catalog-core',
+  /** `model/entity/Sku.cfc:L76` `linktable="SwSkuOption"` — without it the option model is unusable. */
+  SwSkuOption: 'catalog-core',
+
+  /* ── catalog-owned-link: owning side in scope, far side not ────────────────────────────────── */
+  /** `model/entity/Sku.cfc:L77` `linktable="SwSkuAccessContent"`; far side `Content` excluded. */
+  SwSkuAccessContent: 'catalog-owned-link',
+  /** `model/entity/Sku.cfc:L78` `linktable="SwSkuSubsBenefit"`; far side `SubscriptionBenefit` excluded. */
+  SwSkuSubsBenefit: 'catalog-owned-link',
+  /** `model/entity/Sku.cfc:L79` `linktable="SwSkuRenewalSubsBenefit"`; same far family. */
+  SwSkuRenewalSubsBenefit: 'catalog-owned-link',
+  /** `model/entity/Product.cfc:L81` — the ONE of ten collections with `SwProduct` on BOTH sides. */
+  SwRelatedProduct: 'catalog-owned-link',
+
+  /* ── cross-domain-read-only: excluded families, reached to answer a question ────────────────── */
+  /** `model/entity/AlternateSkuCode.cfc:L49` — the SKU-code fallback at `model/dao/SkuDAO.cfc:L103`. */
+  SwAlternateSkuCode: 'cross-domain-read-only',
+  /** `model/entity/SubscriptionTerm.cfc` — the non-fetching join of `model/dao/SkuDAO.cfc:L159`. */
+  SwSubscriptionTerm: 'cross-domain-read-only',
+  /** `model/entity/Stock.cfc:L49` — the mediating table EIGHT of the ten existence tests traverse. */
+  SwStock: 'cross-domain-read-only',
+  /** `model/entity/OrderItem.cfc:L49` — `model/dao/SkuDAO.cfc:L66`. */
+  SwOrderItem: 'cross-domain-read-only',
+  /** `model/entity/Inventory.cfc:L49` — `model/dao/SkuDAO.cfc:L68`. */
+  SwInventory: 'cross-domain-read-only',
+  /** `model/entity/OrderDeliveryItem.cfc:L49` — `model/dao/SkuDAO.cfc:L70`. */
+  SwOrderDeliveryItem: 'cross-domain-read-only',
+  /** `model/entity/PhysicalCountItem.cfc:L49` — `model/dao/SkuDAO.cfc:L72`. */
+  SwPhysicalCountItem: 'cross-domain-read-only',
+  /** `model/entity/StockAdjustmentDeliveryItem.cfc:L49` — `model/dao/SkuDAO.cfc:L74`. */
+  SwStockAdjustmentDeliveryItem: 'cross-domain-read-only',
+  /** `model/entity/StockAdjustmentItem.cfc:L49` — reached TWICE, `model/dao/SkuDAO.cfc:L76` and `:L78`. */
+  SwStockAdjustmentItem: 'cross-domain-read-only',
+  /** `model/entity/StockHold.cfc:L49` — `model/dao/SkuDAO.cfc:L80`. */
+  SwStockHold: 'cross-domain-read-only',
+  /** `model/entity/StockReceiverItem.cfc:L49` — `model/dao/SkuDAO.cfc:L82`. */
+  SwStockReceiverItem: 'cross-domain-read-only',
+  /** `model/entity/VendorOrderItem.cfc:L49` — `model/dao/SkuDAO.cfc:L84`. */
+  SwVendorOrderItem: 'cross-domain-read-only',
+
+  /* ── the attribute family, reached by the importer and the attribute-set selection ──────────── */
+  /**
+   * `model/entity/AttributeSet.cfc:L49` — the root of the selection at `model/dao/ProductDAO.cfc:L53`,
+   * whose result IS the return of `ProductRepository.findAttributeSets`, a declared port member.
+   */
+  SwAttributeSet: 'cross-domain-read-only',
+  /** `model/entity/Attribute.cfc:L49` — the `activeFlag` existence test at `model/dao/ProductDAO.cfc:L54`. */
+  SwAttribute: 'cross-domain-read-only',
+  /**
+   * `model/entity/AttributeSet.cfc:L70` `linktable="SwAttributeSetProductType"` — the PHYSICAL
+   * relationship standing in for the association path `model/dao/ProductDAO.cfc:L58` names.
+   *
+   * ⚠️ READ-ONLY DESPITE BEING A LINK TABLE, because it fails the test the four `catalog-owned-link`
+   * members pass: its OWNING side is `AttributeSet`, an excluded entity. `SwProductType` appears only as
+   * the far column. Writing it would be writing a relationship the Catalog does not own.
+   */
+  SwAttributeSetProductType: 'cross-domain-read-only',
+  /** `model/entity/Type.cfc:L49` — reached through `attributeSetType` for its `systemCode`. */
+  SwType: 'cross-domain-read-only',
+  /**
+   * `model/entity/AttributeValue.cfc:L54` — the ONE cross-domain table this service WRITES.
+   *
+   * ⭐ THE SOLE MEMBER OF `cross-domain-write`, AND THE REASON THAT CLASS EXISTS RATHER THAN BEING FOLDED
+   * INTO EITHER NEIGHBOUR. `model/dao/ProductDAO.cfc:L244` UPDATEs it and `:L250` INSERTs it, from the
+   * importer's custom-attribute step — the values a caller asked to import. Classifying it read-only
+   * would delete behaviour AAP §0.4.1.7 requires the importer to keep; classifying it `catalog-owned-link`
+   * would misreport an excluded family's own entity table as Catalog-owned. So it is named for what it is:
+   * a boundary crossing that WRITES, called out separately so the credential an operator provisions grants
+   * `INSERT, UPDATE` on exactly one table outside the Catalog and on no other.
+   *
+   * ⚠️ NO `DELETE`. The legacy reaches this table through those two statements only, so the least-privilege
+   * grant below withholds `DELETE` on it even though the eleven Catalog tables have it.
+   */
+  SwAttributeValue: 'cross-domain-write',
+} as const satisfies Readonly<Record<string, TableScope>>;
+
+/**
+ * Any table name this service may name in a statement, of any scope.
+ *
+ * ⚠️ DISTINCT FROM BOTH {@link PhysicalTableName} AND {@link WriteableTableName}, AND ALL THREE
+ * DISTINCTIONS ARE LOAD-BEARING RATHER THAN BOOKKEEPING. `PhysicalTableName` is the twelve tables
+ * {@link TABLE_COLUMNS} maps; `WriteableTableName` is the twelve whose SCOPE permits writing; and the two
+ * are not the same twelve — see the note on `WriteableTableName` for the two names that differ. This type is
+ * the widest of the three, carrying all twenty-eight, so a READ path can name any of them while a write path
+ * structurally cannot receive one it may not write.
+ */
+export type RegisteredTableName = keyof typeof TABLE_SCOPES;
+
+/**
+ * The registered names carrying any of the given scopes.
+ *
+ * A mapped-and-indexed type rather than four hand-written unions, so the scope declared beside each entry
+ * in {@link TABLE_SCOPES} is the ONLY place a name's classification is stated. Re-classifying a table is a
+ * one-word edit there and every derived union follows; there is no second list to forget.
+ */
+type TableNamesScoped<S extends TableScope> = {
+  [K in RegisteredTableName]: (typeof TABLE_SCOPES)[K] extends S ? K : never;
+}[RegisteredTableName];
+
+/**
+ * A registered name this service is permitted to WRITE.
+ *
+ * ⭐ DERIVED FROM THE SCOPES, WHICH IS WHY IT IS NOT THE SAME TWELVE AS {@link PhysicalTableName}. Both
+ * unions happen to have twelve members and they differ in exactly two: this one excludes
+ * `SwAlternateSkuCode`, which {@link TABLE_COLUMNS} maps because the SKU-code fallback JOINS it but which
+ * belongs to an excluded family and must never be written; and it includes `SwAttributeValue`, which has no
+ * column map here because the importer names its columns from its own declaration.
+ *
+ * That the two unions are near-identical yet not identical is precisely why {@link assertWriteTableName}
+ * validates against this one and not against `PhysicalTableName`.
+ */
+export type WriteableTableName = TableNamesScoped<
+  'catalog-core' | 'catalog-owned-link' | 'cross-domain-write'
+>;
+
+/**
+ * Reports the scope of a table name already validated by {@link assertRegisteredTableName}.
+ *
+ * @param table - a registered physical name.
+ * @returns its scope, as declared in {@link TABLE_SCOPES}.
+ */
+export function tableScope(table: RegisteredTableName): TableScope {
+  return TABLE_SCOPES[table];
+}
+
+/**
+ * Every registered table name, for the audit a reviewer or a provisioning script performs.
+ *
+ * Exported deliberately: the finding asks that the schema surface be RATIFIED, and a surface nobody can
+ * enumerate cannot be ratified. A test asserts the census, so the set cannot grow unremarked.
+ *
+ * @returns the twenty-eight names paired with their scopes, frozen, in declaration order.
+ */
+export function registeredTableScopes(): readonly (readonly [RegisteredTableName, TableScope])[] {
+  return Object.freeze(
+    Object.entries(TABLE_SCOPES).map(
+      ([name, scope]) => Object.freeze([name, scope]) as readonly [RegisteredTableName, TableScope],
+    ),
+  );
+}
+
 /**
  * A physical `Sw*` table name that has been validated against the extracted schema.
  *
@@ -538,6 +814,93 @@ const TABLE_COLUMNS: Readonly<Record<PhysicalTableName, ReadonlySet<string>>> = 
 });
 
 /**
+ * A registered table that {@link TABLE_COLUMNS} does not map.
+ *
+ * Exactly the registered names outside {@link PhysicalTableName}, computed by the compiler rather than
+ * listed, so the two column registries below partition the registry with no name in both and none in
+ * neither.
+ */
+type ExtendedTableName = Exclude<RegisteredTableName, PhysicalTableName>;
+
+/**
+ * The columns this service names on each registered table that {@link TABLE_COLUMNS} does not map.
+ *
+ * ⭐⭐ THE OTHER HALF OF SEC-SQL-SCOPE-01's "every emitted table/column" CLAUSE. Classifying the TABLES was
+ * only half the finding: the sibling adapters also emitted cross-domain COLUMN literals from private frozen
+ * objects — six in `./MySqlSkuRepository.ts`, eleven in `./MySqlProductRepository.ts` — that reached no gate
+ * at all. Declaring them here means a reviewer auditing "what does this service touch" reads two objects in
+ * one module instead of four objects in three, and {@link assertRegisteredColumnName} makes the declaration
+ * enforced rather than advisory.
+ *
+ * ⛔ TOTALITY IS COMPILE-ENFORCED, WHICH IS THE PROPERTY THAT MAKES THIS A REGISTRY AND NOT A LIST. The
+ * annotation is a total `Record` over {@link ExtendedTableName}, so adding a name to {@link TABLE_SCOPES}
+ * without declaring the columns it needs FAILS THE BUILD. That is deliberate: the failure mode this finding
+ * describes is a surface that grew without anyone noticing, and the compiler is the only reviewer guaranteed
+ * to look every time.
+ *
+ * ⚠️ EACH SET IS THE COLUMNS ACTUALLY EMITTED, NOT THE ENTITY'S FULL DECLARATION. These are excluded
+ * families (AAP §0.2.2.1); enumerating their complete column lists would assert knowledge of tables this
+ * refactoring does not own and would invite a future statement to reach further. A narrow set is the point.
+ */
+const EXTENDED_TABLE_COLUMNS: Readonly<Record<ExtendedTableName, ReadonlySet<string>>> =
+  Object.freeze({
+    /* ── the ten-way existence chain of `model/dao/SkuDAO.cfc:L53-L98` ──────────────────────────── */
+    /* `model/entity/Stock.cfc` — the mediating table eight of the ten tests traverse: they name the
+     * association path `stock.sku`, which resolves to this table's own key plus its SKU foreign key. */
+    SwStock: new Set(['stockID', 'skuID']),
+    /* `model/entity/OrderItem.cfc:L49` — `model/dao/SkuDAO.cfc:L66`, keyed directly by SKU. */
+    SwOrderItem: new Set(['skuID']),
+    /* `model/entity/Inventory.cfc:L49` — `:L68`, mediated through stock. */
+    SwInventory: new Set(['stockID']),
+    /* `model/entity/OrderDeliveryItem.cfc:L49` — `:L70`, mediated through stock. */
+    SwOrderDeliveryItem: new Set(['stockID']),
+    /* `model/entity/PhysicalCountItem.cfc:L49` — `:L72`, mediated through stock. */
+    SwPhysicalCountItem: new Set(['stockID']),
+    /* `model/entity/StockAdjustmentDeliveryItem.cfc:L49` — `:L74`, mediated through stock. */
+    SwStockAdjustmentDeliveryItem: new Set(['stockID']),
+    /* `model/entity/StockAdjustmentItem.cfc:L57-L58` — reached TWICE, `:L76` via `fromStockID` and `:L78`
+     * via `toStockID`, which is why this is the one chain member carrying two stock keys. */
+    SwStockAdjustmentItem: new Set(['fromStockID', 'toStockID']),
+    /* `model/entity/StockHold.cfc:L49` — `:L80`, mediated through stock. */
+    SwStockHold: new Set(['stockID']),
+    /* `model/entity/StockReceiverItem.cfc:L49` — `:L82`, mediated through stock. */
+    SwStockReceiverItem: new Set(['stockID']),
+    /* `model/entity/VendorOrderItem.cfc:L49` — `:L84`, keyed directly by SKU. */
+    SwVendorOrderItem: new Set(['skuID']),
+
+    /* ── the non-fetching join of `model/dao/SkuDAO.cfc:L159` ───────────────────────────────────── */
+    /* `model/entity/SubscriptionTerm.cfc`, and `model/entity/Sku.cfc:L66` on the near side — the term key
+     * carries the same spelling on both, which is why one name serves the join. */
+    SwSubscriptionTerm: new Set(['subscriptionTermID']),
+
+    /* ── the attribute-set selection of `model/dao/ProductDAO.cfc:L52-L62` ──────────────────────── */
+    /* `model/entity/AttributeSet.cfc` — key :L52, `globalFlag` :L57, `sortOrder` :L61,
+     * `fkcolumn="attributeSetTypeID"` :L64. */
+    SwAttributeSet: new Set(['attributeSetID', 'globalFlag', 'sortOrder', 'attributeSetTypeID']),
+    /* `model/entity/Attribute.cfc` — key :L52, `activeFlag` :L53, `fkcolumn="attributeSetID"` :L67. */
+    SwAttribute: new Set(['attributeID', 'activeFlag', 'attributeSetID']),
+    /* `model/entity/AttributeSet.cfc:L70` — `fkcolumn="attributeSetID"`,
+     * `inversejoincolumn="productTypeID"`. */
+    SwAttributeSetProductType: new Set(['attributeSetID', 'productTypeID']),
+    /* `model/entity/Type.cfc` — key :L52, `systemCode` :L55, the bound filter and first sort term. */
+    SwType: new Set(['typeID', 'systemCode']),
+
+    /* ── the importer's custom-attribute step, `model/dao/ProductDAO.cfc:L244` and `:L250` ─────── */
+    /* `model/entity/AttributeValue.cfc` — key :L57, value :L58, `attributeValueType` :L60 (`notnull`,
+     * which is why the INSERT supplies it), `attributeID` :L78, `fkcolumn="productID"` :L70.
+     *
+     * ⚠️ THE ONLY SET HERE WHOSE COLUMNS ARE WRITTEN rather than only read; see the
+     * `cross-domain-write` note beside its entry in {@link TABLE_SCOPES}. */
+    SwAttributeValue: new Set([
+      'attributeValueID',
+      'attributeValue',
+      'attributeValueType',
+      'attributeID',
+      'productID',
+    ]),
+  });
+
+/**
  * Builds the case-insensitive lookup that resolves any accepted spelling to its physical name.
  *
  * Three keys are registered per table, mirroring the three vocabularies the legacy tree actually
@@ -610,6 +973,31 @@ function buildColumnLookup(
 /** The resolved table-name lookup, built once at module evaluation and never mutated. */
 const TABLE_NAME_LOOKUP: ReadonlyMap<string, PhysicalTableName> = buildTableNameLookup();
 
+/**
+ * The case-insensitive index of the ELEVEN cross-domain read-only names — SEC-SQL-SCOPE-01.
+ *
+ * Separate from {@link TABLE_NAME_LOOKUP} rather than merged into it, deliberately: that map is what
+ * {@link assertTableName} answers from, so merging would silently make every cross-domain table writeable
+ * through the existing gate and undo the classification. Derived from {@link TABLE_SCOPES} rather than
+ * listed again, so a name cannot appear in one and not the other.
+ *
+ * Only the physical spelling is indexed; see {@link assertRegisteredTableName} for why the logical and
+ * bare vocabularies do not apply to families this port models no entity for.
+ */
+const CROSS_DOMAIN_NAME_LOOKUP: ReadonlyMap<string, RegisteredTableName> = new Map(
+  /* ⚠️ FILTERED BY ABSENCE FROM THE SIBLING MAP, NOT BY SCOPE, AND THE DIFFERENCE IS A BUG THIS COMMENT
+   * EXISTS TO PREVENT RECURRING. An earlier revision filtered on `scope === 'cross-domain-read-only'`,
+   * which was correct only while that was the ONLY cross-domain class. Adding `cross-domain-write` for
+   * `SwAttributeValue` immediately made that name resolvable through NEITHER map — absent from
+   * `TABLE_NAME_LOOKUP` because it has no column map there, and excluded from this one by the scope test —
+   * so `assertRegisteredTableName` refused a name the registry had just ratified, and every statement the
+   * importer composes failed at module load. Partitioning by "is it in the other map" is total by
+   * construction: a name is in exactly one of the two, whatever scope it is later given. */
+  Object.entries(TABLE_SCOPES)
+    .filter(([name]) => !TABLE_NAME_LOOKUP.has(name.toLowerCase()))
+    .map(([name]) => [name.toLowerCase(), name as RegisteredTableName]),
+);
+
 /** The resolved per-table column indexes, built once at module evaluation and never mutated. */
 const TABLE_COLUMN_LOOKUP: Readonly<Record<PhysicalTableName, ReadonlyMap<string, string>>> =
   buildColumnLookup(TABLE_COLUMNS);
@@ -672,6 +1060,105 @@ export function assertTableName(candidate: string): PhysicalTableName {
   }
 
   return resolved;
+}
+
+/**
+ * Validates any REGISTERED table name — including a cross-domain one — for use in a READ.
+ *
+ * ⭐ THE SEC-SQL-SCOPE-01 READ GATE. {@link assertTableName} admits only the twelve names with a column map,
+ * which is right for every write path and too narrow for the reads the legacy genuinely performs: the ten-way
+ * existence chain of `model/dao/SkuDAO.cfc:L53-L98`, the SKU-code fallback at `:L103` and the two fetch
+ * branches at `:L155`/`:L160` all name tables belonging to families AAP §0.2.2.1 excludes. Before this gate
+ * existed those fourteen literals lived in a private frozen object in `./MySqlSkuRepository.ts`, and five
+ * more in a second such object in `./MySqlProductRepository.ts`, and every one passed through NO registry
+ * at all — which is exactly what the finding measured. Routing them here is what makes
+ * the registry the single auditable surface it claims to be.
+ *
+ * ⚠️ IT ACCEPTS THE SAME THREE VOCABULARIES AS ITS SIBLING for the twelve names that have all three, and
+ * only the physical spelling for the sixteen further registered names. That is not an oversight: the logical and
+ * bare forms exist because `org/Hibachi/HibachiDAO.cfc` SYNTHESISES them for ENTITIES this port models, and
+ * this port models none of the excluded families — no caller in the subtree holds a `SlatwallOrderItem`
+ * spelling to pass, because nothing here has an order entity to name.
+ *
+ * @param candidate - the name to validate, in any accepted vocabulary.
+ * @returns the canonical physical name.
+ * @throws {DomainError} when the name is in no scope at all, refused before any statement text exists.
+ */
+export function assertRegisteredTableName(candidate: string): RegisteredTableName {
+  const normalized = candidate.trim();
+  const writeable = TABLE_NAME_LOOKUP.get(normalized.toLowerCase());
+
+  if (writeable !== undefined) {
+    return writeable;
+  }
+
+  const crossDomain = CROSS_DOMAIN_NAME_LOOKUP.get(normalized.toLowerCase());
+
+  if (crossDomain === undefined) {
+    throw new DomainError(
+      'A statement named a table that is in neither the extracted Catalog schema nor the ratified ' +
+        'cross-domain read surface, so it was refused before any statement text was assembled.',
+      { context: { candidate } },
+    );
+  }
+
+  return crossDomain;
+}
+
+/**
+ * Validates a table name for a WRITE, refusing any table outside the Catalog boundary.
+ *
+ * ⭐⭐ THIS IS WHERE SEC-SQL-SCOPE-01's CLASSIFICATION IS ENFORCED RATHER THAN MERELY RECORDED, and it is
+ * the whole difference between this fix and a comment. The sixteen `cross-domain-read-only` tables are
+ * reached to ANSWER A QUESTION — an existence chain, a code fallback, a fetch branch, an attribute-set
+ * selection — and never to write. A write path that named one would require a privilege the least-privilege
+ * credential in the header does not grant, so it would fail at the database; refusing at COMPOSITION means
+ * it fails with a message naming the classification, before a connection is involved and before an
+ * over-granted deployment could let it through.
+ *
+ * ⚠️ VALIDATES AGAINST THE SCOPES, NOT AGAINST {@link TABLE_NAME_LOOKUP}, AND THE DIFFERENCE IS NOT
+ * COSMETIC. That map is keyed by {@link PhysicalTableName} — the twelve tables with a column map — which
+ * includes `SwAlternateSkuCode`, a table this service JOINS for the SKU-code fallback and must never write.
+ * Deriving the gate from `TABLE_SCOPES` instead refuses that name and admits `SwAttributeValue`, the one
+ * cross-domain table the importer legitimately writes. A gate built on the column map would have got both
+ * of those backwards while looking correct.
+ *
+ * @param candidate - the name to validate, in any accepted vocabulary.
+ * @returns the canonical physical name, guaranteed writeable.
+ * @throws {DomainError} when the name is unregistered, or is registered as `cross-domain-read-only`.
+ */
+export function assertWriteTableName(candidate: string): WriteableTableName {
+  const resolved = assertRegisteredTableName(candidate);
+
+  /* ⭐ THE PREDICATE IS THE GUARD, WHICH IS WHY THERE IS NO CAST ON THIS PATH. {@link isWriteableTableName}
+   * states the scope test to the compiler as a type predicate, so the narrowing below is CHECKED rather
+   * than asserted — and a name whose scope is later changed to read-only starts being refused here without
+   * any edit to this function. */
+  if (!isWriteableTableName(resolved)) {
+    throw new DomainError(
+      'A write statement named a table on the ratified cross-domain READ surface, which this service ' +
+        'reaches only to answer questions and never to modify. It was refused before any statement text ' +
+        'was assembled.',
+      { context: { table: resolved, scope: TABLE_SCOPES[resolved] } },
+    );
+  }
+
+  return resolved;
+}
+
+/**
+ * Type predicate narrowing a registered name to the writeable subset.
+ *
+ * Implemented by reading the name's declared scope, so this predicate and {@link WriteableTableName} are
+ * two views of the same one-word declaration in {@link TABLE_SCOPES} and cannot disagree.
+ *
+ * @param candidate - a registered physical name.
+ * @returns true when the name's scope permits writing.
+ */
+function isWriteableTableName(candidate: RegisteredTableName): candidate is WriteableTableName {
+  const scope: TableScope = TABLE_SCOPES[candidate];
+
+  return scope !== 'cross-domain-read-only';
 }
 
 /* ================================================================================================
@@ -756,6 +1243,51 @@ export function assertColumnName(table: PhysicalTableName, candidate: string): s
   }
 
   return resolved;
+}
+
+/**
+ * Validates a column on ANY registered table, Catalog or cross-domain.
+ *
+ * ⭐⭐ THE COLUMN HALF OF SEC-SQL-SCOPE-01's "require every emitted table/column to pass one auditable
+ * registry". {@link assertColumnName} covers only the twelve tables {@link TABLE_COLUMNS} maps, which left
+ * every cross-domain column — the existence chain's stock keys, the attribute family's set and value keys —
+ * emitted from private literals that no gate saw. This function closes that half by dispatching on which of
+ * the two registries owns the table, so ONE call site shape serves both and no caller has to know which
+ * registry a name lives in.
+ *
+ * ⚠️ THE DISPATCH IS EXHAUSTIVE BY CONSTRUCTION, not by a default branch. {@link ExtendedTableName} is
+ * defined as the registry MINUS {@link PhysicalTableName}, so the two maps partition the registry: a name
+ * is in exactly one, and the `in` test below therefore always resolves. That is why there is no unreachable
+ * `else` to write a placeholder into.
+ *
+ * @param table - a table name already validated by {@link assertRegisteredTableName}.
+ * @param candidate - the column name to validate.
+ * @returns the canonical column name as its declaration spells it.
+ * @throws {DomainError} when the table does not declare the column in this subtree's registry.
+ */
+export function assertRegisteredColumnName(table: RegisteredTableName, candidate: string): string {
+  if (table in TABLE_COLUMN_LOOKUP) {
+    return assertColumnName(table as PhysicalTableName, candidate);
+  }
+
+  const declared = EXTENDED_TABLE_COLUMNS[table as ExtendedTableName];
+  const normalized = candidate.trim();
+
+  /* Matched case-insensitively for the same reason `TABLE_COLUMN_LOOKUP` is: the legacy interpolates these
+   * names with inconsistent casing — `modifiedDatetime` at `model/dao/ProductDAO.cfc:L363` beside
+   * `CreatedByAccountID` at `:L365` — and got away with it because SQL identifiers are case-insensitive on
+   * the engines it targeted. Resolving to the DECLARED spelling removes the dependency on that leniency. */
+  for (const column of declared) {
+    if (column.toLowerCase() === normalized.toLowerCase()) {
+      return column;
+    }
+  }
+
+  throw new DomainError(
+    'A statement named a column that this service does not declare on the ratified cross-domain table ' +
+      'it was applied to, so it was refused before any statement text was assembled.',
+    { context: { table, candidate, scope: TABLE_SCOPES[table] } },
+  );
 }
 
 /* ================================================================================================
@@ -995,15 +1527,19 @@ function toCount(projected: unknown): number {
  * has to be the same wherever it happens, and that is why the translation lives in this shared module
  * rather than beside any one probe.
  *
- * ⛔ THIS PARAGRAPH USED TO DESCRIBE A PAIR. An earlier revision closed a check-then-write race on the
- * uniqueness path in two places: `./UniquePropertyChecker` serialized the check against the write with a
- * `FOR UPDATE` when it was transaction-scoped, and this helper translated the collision. The first half is
- * WITHDRAWN under the current review's finding F4, which holds that the single declared hardening
- * exception — D18, the importer's SQL parameter binding (AAP §0.6.7.7) — does not extend by analogy to a
- * locking read (AAP §0.1.2.1). This half SURVIVES on its own footing, which was never the locking one: it
- * changes no outcome and adds no control, it only classifies a failure the driver already raised. The race
- * itself is now carried on every path, exactly as the legacy carries it at
- * org/Hibachi/HibachiDAO.cfc:L130-L146.
+ * ⭐ THIS PARAGRAPH DESCRIBES A PAIR AGAIN — REVIEW FINDING SEC-RACE-01. The check-then-write race on the
+ * uniqueness path is closed in two places: `./UniquePropertyChecker` serialises the check against the write
+ * with a `FOR UPDATE` when it is transaction-scoped, and this helper classifies the collision for the
+ * writers a lock cannot bind. An intervening revision withdrew the first half, holding that "the single
+ * declared hardening exception — D18, the importer's SQL parameter binding (AAP §0.6.7.7) — does not extend
+ * by analogy to a locking read". SEC-RACE-01 reverses that: §0.6.7 is the DEFECT AND TODO CARRY-OVER
+ * REGISTER of twenty-one LEGACY BUSINESS-LOGIC defects, so it never spoke to the extracted service's data
+ * integrity under concurrency, and reading D18 as the sole licence to take a lock would make §0.6.7.7 say a
+ * faithful migration must reproduce a TOCTOU race. THE HALF IN THIS MODULE never rested on the locking
+ * argument and is unchanged in kind: it classifies a failure the driver already raised. The two are
+ * complementary rather than redundant — a lock serialises writers that take it, a constraint binds every
+ * writer including a legacy CFML request against the same schema, and this helper is what makes the second
+ * one's verdict legible.
  *
  * ⭐ THERE ARE EXACTLY TWO ROUTES TO THE DRIVER IN THIS SUBTREE, AND BOTH USE THIS ONE HELPER.
  * `QueryRunner.runStatement` below is the pool-bound route; `createExecutor`'s local `runStatement` in
@@ -1016,10 +1552,25 @@ function toCount(projected: unknown): number {
  * ⚠️ NOT A BEHAVIOUR CHANGE — SEE {@link UniqueConstraintViolationError} FOR THE FULL ADJUDICATION.
  * The same writes succeed, the same writes fail, at the same moment. A failure that previously escaped
  * as the driver's own object now escapes as a typed one that classifies itself as a request rejection
- * instead of an undisclosed service fault. No retry is added, no backoff, no second attempt and no
- * fallback write: a lost race is REPORTED, never papered over. Retrying would be exactly the invented
- * behaviour AAP §0.8.2 Guideline 4 forbids, and it would also be wrong, since the caller's own
- * validation verdict is stale by then.
+ * instead of an undisclosed service fault. No retry is PERFORMED here, no backoff, no second attempt and no
+ * fallback write: a lost race is REPORTED, never papered over. Performing a retry inside this module would
+ * be the invented behaviour AAP §0.8.2 Guideline 4 forbids, and it would also be wrong for a duplicate key,
+ * since the caller's own validation verdict is stale by the time the collision is known.
+ *
+ * ⭐ WHAT IS ADDED IS A CLASSIFICATION, WHICH IS NOT THE SAME AS A RETRY, AND THE DISTINCTION IS THE WHOLE
+ * OF SEC-RACE-01's "retry duplicate-key conflicts where semantics permit" CLAUSE. The finding asks that a
+ * conflict be retryABLE where the semantics permit — not that this module decide the semantics. It cannot:
+ * whether re-running is correct depends on what the caller was doing, and only the caller knows. So each
+ * translated failure now carries `retryable` in its context, set from the FAILURE MODE rather than guessed:
+ *   • a duplicate key is `retryable: false` — the value is taken, and asking again gets the same answer;
+ *   • a DEADLOCK (errno 1213) and a LOCK-WAIT TIMEOUT (errno 1205) are `retryable: true` — the transaction
+ *     was rolled back or timed out through no fault of its own, and the identical request may well succeed.
+ * The second pair is newly classified BECAUSE this port now takes locks. Introducing locks introduces those
+ * two failure modes; leaving them indistinguishable from a syntax error or a permission refusal would make
+ * the lock a net loss for a caller trying to behave correctly.
+ *
+ * ⛔ AND EVERY OTHER FAILURE STILL PASSES THROUGH UNTOUCHED — same object, same message, same stack, same
+ * identity under `instanceof`. Three error numbers are classified; nothing else is.
  * ============================================================================================== */
 
 /**
@@ -1039,6 +1590,37 @@ export const MYSQL_DUPLICATE_ENTRY_ERRNO = 1062;
 
 /** The driver's symbolic spelling of {@link MYSQL_DUPLICATE_ENTRY_ERRNO}. */
 const MYSQL_DUPLICATE_ENTRY_CODE = 'ER_DUP_ENTRY';
+
+/**
+ * MySQL's server error number for a transaction rolled back to break a deadlock: `ER_LOCK_DEADLOCK`.
+ *
+ * ⭐ CLASSIFIED BECAUSE THIS PORT NOW TAKES LOCKS — review finding SEC-RACE-01. Before the locking reads in
+ * `./UniquePropertyChecker` and `./UnitOfWork` this failure mode was not reachable from any statement this
+ * subtree emits. Introducing the locks makes it reachable, so naming it is part of introducing them rather
+ * than an unrelated addition: a caller that cannot tell a deadlock from a syntax error cannot behave
+ * correctly in the face of one.
+ *
+ * A MySQL fact, not an invented threshold (AAP §0.7.3 S9). The server rolls the victim transaction back
+ * ENTIRELY, which is exactly why the identical request may succeed on a second attempt — nothing of it
+ * survived to conflict with.
+ */
+export const MYSQL_LOCK_DEADLOCK_ERRNO = 1213;
+
+/** The driver's symbolic spelling of {@link MYSQL_LOCK_DEADLOCK_ERRNO}. */
+const MYSQL_LOCK_DEADLOCK_CODE = 'ER_LOCK_DEADLOCK';
+
+/**
+ * MySQL's server error number for a lock that could not be acquired in time: `ER_LOCK_WAIT_TIMEOUT`.
+ *
+ * The sibling of {@link MYSQL_LOCK_DEADLOCK_ERRNO} and classified for the same reason. It differs from a
+ * deadlock in one respect a caller may care about, which is why the two are separate constants rather than
+ * one: a timeout does NOT necessarily roll the whole transaction back, so a caller that retries must retry
+ * the transaction rather than the statement. The classification says only that the failure was transient.
+ */
+export const MYSQL_LOCK_WAIT_TIMEOUT_ERRNO = 1205;
+
+/** The driver's symbolic spelling of {@link MYSQL_LOCK_WAIT_TIMEOUT_ERRNO}. */
+const MYSQL_LOCK_WAIT_TIMEOUT_CODE = 'ER_LOCK_WAIT_TIMEOUT';
 
 /**
  * How many characters of a constraint name are retained in the internal account.
@@ -1064,15 +1646,52 @@ const CONSTRAINT_NAME_ECHO_LIMIT = 96;
  * @returns true when the value identifies itself as a duplicate-key rejection.
  */
 export function isDuplicateEntryFailure(cause: unknown): boolean {
+  return matchesMySqlFailure(cause, MYSQL_DUPLICATE_ENTRY_ERRNO, MYSQL_DUPLICATE_ENTRY_CODE);
+}
+
+/**
+ * Reports whether a caught value is one of MySQL's two TRANSIENT lock failures.
+ *
+ * ⭐ TRANSIENT MEANS "THE IDENTICAL REQUEST MAY SUCCEED", WHICH IS THE ONLY CLAIM MADE. It does not mean
+ * the request WILL succeed, and it does not mean this port retries anything — see the section header for
+ * why classifying and retrying are different acts and why only the caller can decide the second.
+ *
+ * Structural rather than `instanceof`, for the same three reasons {@link isDuplicateEntryFailure} is: the
+ * value arrives typed `unknown` under `useUnknownInCatchVariables`, the driver's error class is part of no
+ * contract this port declares, and a test double must be able to produce the condition without importing
+ * driver internals.
+ *
+ * @param cause - the caught value, of unknown type.
+ * @returns true when the value identifies itself as a deadlock or a lock-wait timeout.
+ */
+export function isTransientLockFailure(cause: unknown): boolean {
+  return (
+    matchesMySqlFailure(cause, MYSQL_LOCK_DEADLOCK_ERRNO, MYSQL_LOCK_DEADLOCK_CODE) ||
+    matchesMySqlFailure(cause, MYSQL_LOCK_WAIT_TIMEOUT_ERRNO, MYSQL_LOCK_WAIT_TIMEOUT_CODE)
+  );
+}
+
+/**
+ * The one structural match every failure predicate above shares.
+ *
+ * Extracted rather than written three times because the shape check — object, non-null, then two
+ * well-known fields — is identical in each case, and three copies are three chances for one to drift into
+ * accepting a value the others reject.
+ *
+ * @param cause - the caught value, of unknown type.
+ * @param errno - the server error number to match on `errno`.
+ * @param code - the driver's symbolic spelling to match on `code`.
+ * @returns true when either field identifies the failure. BOTH are checked because which fields a driver
+ *   populates is the driver's choice and not a contract this port can pin.
+ */
+function matchesMySqlFailure(cause: unknown, errno: number, code: string): boolean {
   if (typeof cause !== 'object' || cause === null) {
     return false;
   }
 
   const candidate = cause as { readonly errno?: unknown; readonly code?: unknown };
 
-  return (
-    candidate.errno === MYSQL_DUPLICATE_ENTRY_ERRNO || candidate.code === MYSQL_DUPLICATE_ENTRY_CODE
-  );
+  return candidate.errno === errno || candidate.code === code;
 }
 
 /**
@@ -1122,25 +1741,69 @@ export function describeDuplicateEntryConstraint(cause: unknown): string | undef
 }
 
 /**
- * Re-raises a caught driver failure, typing it when — and only when — it is a duplicate key.
+ * Re-raises a caught driver failure, typing it when — and only when — it is one of THREE known conditions.
  *
  * ⭐ EVERY OTHER FAILURE PASSES THROUGH COMPLETELY UNTOUCHED, by `throw cause` on the original value.
- * A connection reset, a deadlock, a lock-wait timeout, a syntax error and a permission refusal all
- * reach the caller exactly as they did before this helper existed — same object, same message, same
- * stack, same identity under `instanceof`. Narrowing the translation to one error number is what keeps
- * this a reporting change rather than a rewrite of the port's failure surface, and it is why the
- * helper re-throws rather than returning a value: its return type is `never`, so a caller cannot
- * accidentally continue past a failure it did not handle.
+ * A connection reset, a syntax error and a permission refusal all reach the caller exactly as they did
+ * before this helper existed — same object, same message, same stack, same identity under `instanceof`.
+ * Narrowing the translation to three error numbers is what keeps this a reporting change rather than a
+ * rewrite of the port's failure surface, and it is why the helper re-throws rather than returning a value:
+ * its return type is `never`, so a caller cannot accidentally continue past a failure it did not handle.
+ *
+ * ⭐ THE THIRD AND SECOND CONDITIONS ARE NEW WITH REVIEW FINDING SEC-RACE-01, AND THEY ARE NEW BECAUSE THE
+ * LOCKS ARE. A deadlock and a lock-wait timeout were formerly listed in this docblock among the failures
+ * that pass through untouched, and that was right while no statement this subtree emitted could provoke
+ * them. The locking reads in `./UniquePropertyChecker` and `./UnitOfWork` make both reachable, so both are
+ * now classified as RETRYABLE — the "retry duplicate-key conflicts where semantics permit" half of the
+ * finding's resolution, discharged by making retryability LEGIBLE rather than by retrying here. See the
+ * section header for why this module must not decide the semantics.
+ *
+ * ⚠️ ALL THREE ARRIVE AS `UniqueConstraintViolationError`, WHICH IS DELIBERATE AND WORTH DEFENDING. A new
+ * error class per failure mode would widen `src/errors/**` for a distinction every caller can already draw
+ * from `context.retryable`, and it would break the one thing callers do today — catching a concurrency
+ * conflict at the persistence boundary. The class says "the write lost a race with another writer", which is
+ * true of all three; the context says which kind of race and whether asking again could help.
  *
  * @param cause - the caught value, of unknown type.
  * @param parameterCount - how many values the failing statement bound. Recorded instead of the
  *   statement text and instead of the values, matching the sibling throw sites in this module, which
  *   record a count for the same reason: it is diagnostic without being disclosive.
  * @returns never — the function always throws.
- * @throws {UniqueConstraintViolationError} when the failure is a duplicate-key rejection.
+ * @throws {UniqueConstraintViolationError} when the failure is a duplicate-key rejection (`retryable:
+ *   false`), a deadlock or a lock-wait timeout (`retryable: true`).
  * @throws {unknown} the original caught value, unchanged, in every other case.
  */
 export function rethrowTranslatingDuplicateEntry(cause: unknown, parameterCount: number): never {
+  /* SEC-RACE-01 — the transient pair is checked FIRST, and the order is not arbitrary: the two predicates
+   * are disjoint by construction (three distinct error numbers), so either order gives the same answer, and
+   * checking the newer arm first keeps the older arm's body exactly as it was. */
+  if (isTransientLockFailure(cause)) {
+    const deadlocked = matchesMySqlFailure(
+      cause,
+      MYSQL_LOCK_DEADLOCK_ERRNO,
+      MYSQL_LOCK_DEADLOCK_CODE,
+    );
+
+    throw new UniqueConstraintViolationError(
+      deadlocked
+        ? 'The database rolled this transaction back to break a deadlock with another writer, so no ' +
+            'part of it was applied. The identical request may succeed if it is made again.'
+        : 'The database could not acquire a lock another writer was holding before the wait timed ' +
+            'out, so the write did not happen. The identical request may succeed if it is made again.',
+      {
+        cause,
+        context: {
+          parameterCount,
+          errno: deadlocked ? MYSQL_LOCK_DEADLOCK_ERRNO : MYSQL_LOCK_WAIT_TIMEOUT_ERRNO,
+          /* ⭐ THE CLASSIFICATION, NOT A DECISION. `true` says "asking again is not futile", which is what
+           * the server's own rollback establishes. Whether asking again is CORRECT is the caller's
+           * question, and this module deliberately does not answer it. */
+          retryable: true,
+        },
+      },
+    );
+  }
+
   if (!isDuplicateEntryFailure(cause)) {
     throw cause;
   }
@@ -1155,6 +1818,10 @@ export function rethrowTranslatingDuplicateEntry(cause: unknown, parameterCount:
       context: {
         parameterCount,
         errno: MYSQL_DUPLICATE_ENTRY_ERRNO,
+        /* ⛔ FALSE, AND STATED RATHER THAN OMITTED. The value is taken; asking again gets the same answer,
+         * and the caller's own validation verdict is stale by now. Recording it explicitly is what lets a
+         * caller branch on `retryable` alone instead of having to know which errno means what. */
+        retryable: false,
         ...(constraintName !== undefined ? { constraintName } : {}),
       },
     },

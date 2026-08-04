@@ -171,19 +171,31 @@ flag about which syntax may be left un-transpiled — and by the version stateme
 
 The pinned runtime line is out of upstream support, and this is surfaced rather than quietly retargeted.
 
-- Node.js 20 reached upstream end-of-life on **30 April 2026**, and AWS aligned the Lambda `nodejs20.x`
-  runtime deprecation to the same date. After it, AWS stops applying security patches and removes the
+- **Two independently sourced facts that coincide on one date** — stated as two, because each is verifiable
+  only against the body that owns it, and merging them is what makes the pair unauditable. (1) Node.js 20
+  reached upstream end-of-life on **30 April 2026**, per the Node.js Release working group's schedule
+  ([github.com/nodejs/Release](https://github.com/nodejs/Release)), whose `20.x` row ends in that date.
+  (2) AWS deprecated the Lambda `nodejs20.x` runtime on **30 April 2026**, per the AWS Lambda
+  supported-runtimes table. The dates match because AWS aligns managed-runtime deprecation to upstream
+  EOL — a consequence of that policy, not one fact counted twice, and not a guarantee that a future
+  runtime line repeats the pattern. After the date, AWS stops applying security patches and removes the
   runtime from the Console's creation list, though it remains selectable through the CLI, CloudFormation,
   SAM and CDK.
+  <br>📌 If a review proposes **24 March 2026** as the upstream EOL — it has been proposed twice — that
+  date appears in no column of the `20.x` row. Settle it by reading the schedule, which `tsconfig.json`
+  quotes in full, rather than by amending this line.
 - **The current control-plane gates are a single schedule**, from the AWS runtimes table as read on
   **3 August 2026**: creating a new function on `nodejs20.x` is blocked from **1 February 2027**, and
   updating an existing one from **3 March 2027**. Both are still ahead.
-- **Two earlier schedules are obsolete and are named only as superseded history.** An earlier revision of
-  this section presented three sets as live, unsettled alternatives; that framing has not survived contact
-  with the calendar, because both earlier pairs — **1 June / 1 July 2026** from the first AWS bulletin, and
-  **31 August / 30 September 2026** from the standard 30-day/60-day cadence — have now elapsed **without
-  taking effect**. They are previous revisions of a forecast that moved, not competing readings of a
-  present fact. AWS states that it is delaying these dates for some runtimes in response to customer
+- **Two earlier schedules are obsolete and are named only as superseded history — for two different
+  reasons.** An earlier revision of this section presented three sets as live, unsettled alternatives, and
+  its replacement over-corrected by claiming both earlier pairs had "now elapsed without taking effect".
+  That is true of only the first. **1 June / 1 July 2026**, from the first AWS bulletin, has elapsed and
+  observably without effect. **31 August / 30 September 2026**, from the standard 30-day/60-day cadence,
+  has **not** elapsed — as of the read date above both dates are still ahead, and what retires the pair is
+  AWS's current table stating the later 2027 dates, not the calendar. Re-check it against the table, and do
+  not read the arrival of 31 August 2026 as confirming or refuting anything. Both are previous revisions of
+  a forecast that moved, not competing readings of a present fact. AWS states that it is delaying these dates for some runtimes in response to customer
   feedback, that it will not begin blocking before the dates in its own tables, and that those dates are
   forecasts subject to change — so the revisions move **later, never earlier**, which is what makes an
   out-of-date entry here a conservative error rather than a dangerous one. `tsconfig.json` carries the full
@@ -193,10 +205,22 @@ The pinned runtime line is out of upstream support, and this is surfaced rather 
 - **The pin stands.** `nodejs20.x` and Node 20.x remain the stated target, because they are an express
   instruction (AAP §0.5.5, verbatim: "The pin stands."). Consistently, AAP §0.5.3.2 rejects a newer
   `@types/node` precisely so the type surface keeps matching the runtime rather than a later one.
-- **The blast radius of a later move is four artifacts.** `--target=node20` in `build/esbuild.mjs`; the
-  `engines` field together with `.nvmrc`; the `@types/node@20.19.43` pin; and the version statements in this
-  file. Because the hexagonal boundary confines all AWS coupling to `src/handlers/**`, migrating is
-  mechanical — **no change to `src/domain/**`, `src/services/**`, `src/ports/**` or `src/adapters/**`.**
+- **The blast radius of a later move is six artifacts.** `--target=node20` in `build/esbuild.mjs`; the
+  `engines` field together with `.nvmrc`; the `@types/node@20.19.43` pin; `tsconfig.json`'s `target`/`lib`
+  pair; the version statements in this file; and **`package-lock.json`**, which pins `@types/node` by
+  resolved URL and integrity hash. That last one is easy to miss and is the only one whose omission would
+  _silently defeat_ the uplift rather than just leave a stale document: `npm ci` installs from the lock, not
+  from the manifest, so editing `package.json` alone leaves the old type definitions resolving while the
+  bump appears applied. Review finding **SEC-RUNTIME-01** named it; it was absent from all three
+  enumerations in this subtree before that. Because the hexagonal boundary confines all AWS coupling to
+  `src/handlers/**`, migrating is mechanical — **no change to `src/domain/**`, `src/services/**`,
+  `src/ports/**` or `src/adapters/**`.**
+- ⚠️ **A clean `npm audit` is not evidence that this deployment is patched, and the two must not be read
+  as one signal.** §12 records `npm audit` reporting 0 vulnerabilities, and that statement is about the
+  **dependency tree** only. Runtime CVEs live in the Node binary and the managed runtime, which no package
+  advisory covers and no lockfile can fix. Since 30 April 2026 that binary receives no upstream security
+  patches, so the accurate reading is _dependencies clean, runtime unmaintained_ — a green audit alongside
+  an unpatched interpreter. Authorization to ship must weigh the second fact, not just the first.
 - `npm run build` prints a notice on every run recording exactly this, and **deliberately does not fail**: a
   green build means the artifact _packaged_, which is all the acceptance bar asks of it (§3), and is not by
   itself authorisation to ship.
@@ -373,7 +397,10 @@ reasoning survives it, both are recorded here.
   it was reachable transitively through the Jest toolchain, and its note named the condition for dropping
   it: that the graph resolve a fixed `brace-expansion` on its own. **Measured, on the manifest as it now
   stands: `npm ci` completes with 399 packages and `npm audit` reports 0 vulnerabilities**, with
-  `brace-expansion` resolving to 5.0.9, 2.1.4 and 1.1.18 and no advisory against any of them. The trigger is
+  `brace-expansion` resolving to 5.0.9, 2.1.4 and 1.1.18 and no advisory against any of them. (That result
+  is scoped to the **dependency tree**. It says nothing about the Node runtime itself, which has received no
+  upstream security patches since 30 April 2026 — see §2.2, where the two signals are deliberately kept
+  apart.) The trigger is
   met, so an unauthorised manifest key that no longer changes the audit result has no remaining
   justification — and keeping one on preference alone is what Refactor Discipline Guideline 4 forbids.
 
@@ -1087,16 +1114,25 @@ _When_ that validation happens differs by artifact, deliberately — §6 records
 | `SETTING_SKU_ELIGIBLE_CURRENCIES`          | no              | as above — the legacy computes it from the excluded `Currency*` family                                                                                                                                                                                                                                  |
 | `SETTING_SKU_ELIGIBLE_FULFILLMENT_METHODS` | no              | as above — the legacy computes it from the excluded `Fulfillment*` family                                                                                                                                                                                                                               |
 
-| `CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY` | no → unbounded | the largest number of records **one** smart-list query may materialise. Applied by **both** execution members of the query builder by counting before hydrating and **refusing** an over-budget selection rather than truncating it. **The anonymous feed route declines to serve without it** — see §8.1 |
-| `CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST` | no → unbounded | ⚠️ **read and validated, but NOT applied — see §8.1.** It would bound the SKU combinations one merchandise `createSkus` request may enumerate; the ceiling itself was withdrawn as an undeclared departure, so a stated value is accepted at load and reaches no collaborator |
-| `CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION` | no → unbounded | ⚠️ **read and validated, but NOT applied — see §8.1.** It would bound the uniqueness probes one URL-title derivation may issue; withdrawn on the same ground, so a stated value is accepted at load and reaches no collaborator |
+| `CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY` | no → **every read route refuses** | the largest number of records **one** smart-list query may materialise. Applied by **both** execution members of the query builder by counting before hydrating and **refusing** an over-budget selection rather than truncating it — see §8.1 |
+| `CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY` | no → **every read route refuses** | the largest number of query-**complexity** units one compiled statement may carry — one bound parameter plus one `ORDER BY` term plus one join. Bounds keyword cardinality, `FI:`/`FIR:` list cardinality, `OrderBy` cardinality, join count **and statement size** together — see §8.1 |
+| `CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST` | no → **`sku.createSkus` refuses** | the largest number of SKU combinations one merchandise `createSkus` request may enumerate. Applied between the count and the first SKU allocation, so an over-budget request constructs, attaches and validates nothing |
+| `CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION` | no → **the three save routes refuse** | the maximum number of uniqueness probes one URL-title derivation may issue. Bounds the **probe**, never the algorithm: the slug transformation and the `-2`-first suffix sequence are unchanged inside the budget |
+| `CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD` | no → **the feed refuses** | the largest number of `g:additional_image_link` elements one feed record may emit. Checked **before** the image loop, so an over-budget record resolves no path at all |
+| `CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES` | no → **the feed refuses** | the largest size in **bytes** the rendered feed document may reach. Measured on the finished document and **refused**, never truncated — a truncated RSS document is malformed, not smaller |
 
-**Sixteen names — six required and ten optional — read in exactly one file, documented in exactly one
+**Nineteen names — six required and thirteen optional — read in exactly one file, documented in exactly one
 template, and the two lists agree in both directions.** Verify the split rather than taking it on trust:
-`grep -o 'process\.env\.[A-Z_]*' src/config/env.ts | sort -u | wc -l` reports exactly **16** distinct names,
-each read exactly once (a bare `grep -c 'process.env'` reports 18 because two of the hits are prose in
-comments); the six bare `NAME=` lines in `.env.example` are the required set, and the ten commented lines are
-the optional set. A failure names the offending variable, carries it in `context`, and leaks **no supplied
+`grep -o 'process\.env\.[A-Z_]*' src/config/env.ts | sort -u | wc -l` reports exactly **19** distinct names,
+each read exactly once; the six bare `NAME=` lines in `.env.example` are the required set, and the thirteen
+commented lines are the optional set.
+
+⚠️ **"OPTIONAL" IS A STATEMENT ABOUT LOADING, NOT ABOUT SERVING, AND THE SIX RESOURCE BOUNDS MAKE THAT
+DISTINCTION MATTER.** None of the six is required for the module to load or for the graph to be composed —
+which is what keeps `tsc`, `eslint`, `esbuild` and the whole test suite runnable with no environment at all.
+Every one of them is required for the routes that apply it to SERVE. A deployment that states none of the six
+loads cleanly and then refuses every request, naming the variable each route needed. §8.1 sets out why that
+is the fail-closed direction the security review required. A failure names the offending variable, carries it in `context`, and leaks **no supplied
 value** into its message, context or stack. The **six** required variables have no default of any kind: a
 connection target, a schema and an identity cannot be guessed.
 
@@ -1105,44 +1141,112 @@ the required slot.** Review finding **F7** covers it; the same triplicated sente
 `src/config/env.ts` under finding **F11**, where three copies of it disagreed about whether six or ten were
 required.
 
-### 8.1 The three resource bounds — stateable, never invented
+### 8.1 The six resource bounds — required to serve, never invented
 
-Finding **SEC-1** (CWE-400) found that the three bounds already present in the code — a smart-list
-materialisation budget, a SKU combination budget and a URL-title probe budget — existed only as optional
-constructor arguments that **the composition root never supplied**, in the pool-bound graph or in the
-transaction-scoped rebuild. An operator who had measured a figure had nowhere to state it, and the anonymous
-public feed could be made to materialise an unbounded selection. The three names above are the route that was
-missing.
+Three findings in one place. **SEC-DOS-01** (CWE-400) reported unbounded — and potentially
+non-terminating — SKU combination generation. **SEC-DOS-02** (CWE-400) reported that
+"authenticated SmartList requests may run with no materialization budget", that large `keywords`, `FI:` lists
+and repeated `OrderBy` statements expand SQL before any row-count gate sees it, and that the anonymous feed
+buffered its whole document "with no image-count, byte or elapsed-time bound". **SEC-DOS-03** (CWE-400)
+reported unbounded URL-title collision probing. All three are now closed by APPLYING an operator-stated
+ceiling at each point, and by making each ceiling REQUIRED rather than optional.
 
-⚠️ **Only ONE of the three is wired today, and an earlier revision of this sentence claimed all three were.**
-`env.ts` reads and validates all three — that much is unchanged, and `.env.example` documents all three — but
-`src/config/container.ts` wires only `smartListMaximumRecordsPerQuery`, into **both** the pool-bound graph and
-the transaction-scoped rebuild. The **SKU combination ceiling** and the **URL-title probe ceiling** were each
-withdrawn by two independent review rounds: a capacity limit is a control
-`model/service/SkuService.cfc:L85-L89` cannot express, and a refused derivation is an outcome
-`model/service/DataService.cfc:L64`'s `while(!unique)` never produces — so wiring either would have been an
-undeclared behavioural departure (§13.4). The materialisation bound is **not** in that class: it guards the one
-anonymous unauthenticated route, it is stated by an operator with no default invented (IR-12), and no review
-withdrew it. The two residual exposures are flagged where they live — `src/services/SkuService.ts` for the
-unbounded odometer and `src/util/urlTitle.ts` for the unbounded probe loop — rather than closed, and
-`src/config/container.ts` carries the same record at the point the wiring would have happened.
+#### What changed, and what it costs
 
-**No figure is authored anywhere** — not in `env.ts`, not in the container, not in any collaborator. Absent
-means unbounded, which is the legacy's own behaviour; a stated value is one the deployment measured. That is
-the distinction the loader's own **DECISION H** records: the port rejects a **mandatory** figure, because
-obliging every deployment to invent one before the service will start relocates the fabrication rather than
-avoiding it, and it accepts a **stateable** one. A supplied value must be a positive safe integer — zero, a
-negative, a fraction, `NaN`, `Infinity`, a blank and any non-numeric text are each refused at load, by name.
-Zero is the dangerous one to admit silently, since a bound of zero would refuse every query rather than
-bounding it.
+| Before                                                                    | Now                                                                  |
+| ------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| One bound wired (`smartListMaximumRecordsPerQuery`), two read-and-ignored | **Six** bounds, every one applied                                    |
+| The collaborator was an **optional** constructor argument                 | **Required**, on the builder, both services and the feed builder     |
+| Unset meant **unbounded**                                                 | Unset means the routes that apply it **refuse**, naming the variable |
+| Only `google:feed.product` declined to serve                              | Every route that applies a bound declines to serve                   |
 
-**One route makes the materialisation bound mandatory, and it is the only one reachable without a principal.**
+⚠️ **The cost, named rather than buried: a deployment that states none of the six refuses every request.**
+That is the fail-closed direction, it is diagnosable — the refusal names the exact variable — and
+`.env.example` states it as a deployment requirement so nobody has to discover it from a `500`. The
+route-to-variable map is in that file.
+
+#### Why the earlier withdrawals do not stand
+
+The SKU combination ceiling and the URL-title probe ceiling were each added and withdrawn **twice**, and the
+optional materialisation budget was defended on the same reasoning. The decisive argument offered each time
+was cardinality: that AAP §0.6.7.7 licenses **exactly one** departure from behavioural preservation — D18,
+the importer's parameterised SQL — and that §0.8.2 guideline 4 admits no proportionality test.
+
+That argument misreads what §0.6.7 governs. **§0.6.7 is the _defect and TODO carry-over register_:** its
+twenty-one entries are legacy **business-logic** defects — a misnamed struct, an inverted cache guard, an
+unreachable private method — and D18 is the one member of _that register_ the port repairs. The availability
+of the extracted service is not an entry in it. Reading D18's exception as a licence to ship an exploitable
+resource-exhaustion path would make §0.6.7.7 say that a migration must reproduce a denial-of-service vector.
+Guideline 4 forbids enhancing **business logic**; none of these ceilings changes a single SKU, URL title,
+record or feed field for any request it admits.
+
+And AAP §0.7.3 affirmatively requires the other direction: with no user Rules (§0.7.1) the plan binds this
+port to §0.7.3's enterprise standards, and standard **S8** — flag mismatches rather than assume them away — is
+discharged by the `TODO(parity)` blocks that still record the **legacy** as unbounded. It is not discharged by
+leaving the port unbounded too.
+
+#### No figure is authored anywhere
+
+Not in `env.ts`, not in the container, not in any collaborator, and this is what answers the objection that
+withdrew the ceilings the first time. Every bound is carried by a **resolver**, asked at the moment the bound
+is applied:
+
+- a **stated** figure is validated once and answered;
+- an **unstated** figure produces a `ConfigurationError` that names the variable to set.
+
+So a required parameter obliges a composition root to supply the **seam**, never the **number**. A supplied
+value must be a positive safe integer — zero, a negative, a fraction, `NaN`, `Infinity`, a blank and any
+non-numeric text are each refused at load, by name. Zero is the dangerous one to admit silently, since a
+bound of zero would refuse every request rather than bounding it.
+
+#### Two bounds that need no operator figure at all
+
+- **A non-terminating combination product is refused unconditionally.** `Number.isSafeInteger` is false for a
+  fraction, for `NaN`, for `Infinity` and for any magnitude above 2⁵³ − 1 — the whole set of states in which
+  `model/service/SkuService.cfc:L89`'s loop condition can never become false. On such an input the legacy
+  defines **no** SKU set; it hangs. There is no legacy outcome to preserve, and `MAX_SAFE_INTEGER` is a
+  property of the platform's arithmetic rather than a capacity anybody chose.
+- **Statement size is bounded by the complexity figure, with no second figure.** No caller-supplied **value**
+  ever reaches the emitted SQL text: every one is bound through a `?` placeholder, and every identifier is
+  resolved from a registered entity's closed property vocabulary. So the only way a caller can lengthen a
+  statement is by adding predicate terms, ordering terms or joins — exactly what the complexity figure
+  counts. A megabyte-long `keyword` adds **one** unit and **zero** characters of SQL, and a test pins that.
+
+#### The one clause still open, flagged rather than guessed
+
+SEC-DOS-02 also asked for an **elapsed-time** bound on the feed and for streaming, asynchronous generation or
+a cached artefact. Neither is implemented, and the reason is recorded rather than passed over: AAP §0.6.6 **M2**
+states the mismatch behind `integrationServices/google/views/feed/product.cfm:L9`'s 360-second render budget
+and leaves "the choice between an asynchronous or streamed delivery model … as an explicit decision", while
+§0.8.3.6 requires such a mismatch be **flagged, not silently resolved**. There is also no figure to name:
+synchronous integration limits vary by gateway type, region and configuration, and no gateway is selected by
+this deliverable. Queues, caches and object storage are additionally unreachable — infrastructure as code is
+out of scope (AAP §0.2.2.5) and the dependency set is frozen at one runtime package with no AWS SDK
+(§0.5.2.1). The six bounds make the **work** finite, which is the security objective a bound can reach
+without settling the delivery model.
+
+A **pre-generated or cached feed artefact** is ruled out more specifically than by scope alone, and the
+citation is worth stating because an in-process cache is the one form of it that would need no new
+infrastructure. AAP §0.6.6 **M7** records that nothing survives between invocations except **module-scope**
+state, and directs that memoization be scoped to the **request** rather than the module precisely to avoid
+cross-request bleed on a warm container. A module-scope feed cache is therefore the one shape this port must
+not take: it would serve one caller's rendered catalog to the next, and "correct invalidation" would have to
+reach across container lifetimes it cannot observe. An external cache is the correct home for this clause,
+and an external cache is infrastructure.
+
+For the same reason, the SKU enumeration exposes a **cooperative cancellation seam** rather than a timer:
+`SkuCombinationBudget.hasBeenCancelled` is consulted before every combination allocates anything, the
+composition root's default never cancels, and a deployment holding the Lambda `Context` wires its own
+remaining-time policy into it. The invocation deadline stays the platform's, and M1/M2 stay flagged.
+
+#### The anonymous route still refuses earliest
+
 `integrationServices/google/controllers/feed.cfc:L54-L56` declares `this.publicMethods="product"`, so
-`google:feed.product` is the single anonymous action; every other catalog route answers `401` without a
-principal. With `CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY` unset, that one route answers **500** naming the
-variable, while every authenticated route continues to work unbounded at legacy parity. The refusal names no
-figure — it reports that none was named. It is evaluated **per invocation**, not at construction, so an
-unstated bound fails the feed alone rather than the whole router at module load.
+`google:feed.product` is the single action reachable with no principal; every other catalog route answers
+`401` without one. That route runs a gate **before** it composes a query or resolves an image path, and the
+gate demands all **four** figures the feed path applies — records, complexity, per-record images and response
+bytes — naming the first that is unset. It is evaluated **per invocation**, not at construction, so an
+unstated bound fails that route rather than the whole router at module load.
 
 A loopback development database is reached with:
 
@@ -1169,6 +1273,254 @@ name**, the handle the ColdFusion or Railo server resolves to a connection. It i
 the schema name is declared nowhere in legacy source, which is why `DB_NAME` above has no default and no
 suggested value. Everything else the legacy delegated to its application server, and
 `config/configORM.cfm:L3-L14` probed the live database at run time to choose a dialect (§10.6).
+
+### 8.2 Check-then-act: what the locks close, and what only a schema change can
+
+Three places in this subtree read a value and then write a decision based on it. Each is a
+**time-of-check-to-time-of-use** race (CWE-367), and each is now serialized by the database rather than left
+to chance:
+
+| Site                                           | The read                                                      | The write it decides                                            | Backstop if the lock is bypassed                                                                   |
+| ---------------------------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `src/adapters/mysql/UniquePropertyChecker.ts`  | both uniqueness probes, **only when transaction-scoped**      | any validated `save`                                            | a `unique="true"` column on **five of seven** rules; **none** for `optionCode` / `optionGroupCode` |
+| `src/adapters/mysql/UnitOfWork.ts`             | `COALESCE(max(sortOrder), 0)`                                 | `setSortOrder(top + 1)` at `org/Hibachi/HibachiEntity.cfc:L646` | **none at all**                                                                                    |
+| `src/adapters/mysql/MySqlProductRepository.ts` | the importer's option lookup and its `SwSkuOption` link probe | creating an option, inserting a link row                        | **none** for either                                                                                |
+
+**The uniqueness probes lock only inside a transaction, and that gate is deliberate.** A lock protects a
+check-then-write only when the check and the write share a connection — which is the finding's own
+requirement. On a pool-bound autocommit connection InnoDB releases the lock at statement end, so the value
+could be taken before the caller's write reaches a different connection: no protection, while still taking
+gap locks on every validation read the service performs. `withExecutor` is the one seam through which a
+boundary's executor arrives, so it is the one place the scope is known and the one place the lock is turned
+on. The sort-order read and the two importer probes lock **unconditionally** instead, because each takes its
+executor as a parameter and cannot know its scope, and each is reached only from inside an insert's own
+boundary.
+
+**A `FOR UPDATE` that matches nothing still protects an insert.** Under `REPEATABLE READ` it takes a **gap
+lock** over the range it scanned, so a second transaction cannot insert into that gap until the first
+finishes. That is what makes the protection apply to the case that matters most — the first option in a group,
+the first row with a given code — rather than only to rows that already exist.
+
+**Introducing locks introduces two new failure modes, and both are classified rather than left raw.**
+`src/adapters/mysql/QueryRunner.ts` now reports a deadlock (`errno 1213`) and a lock-wait timeout
+(`errno 1205`) as `UniqueConstraintViolationError` carrying `retryable: true`, alongside the duplicate key
+(`errno 1062`) it already reported, which carries `retryable: false`. **No retry is performed here.** The
+finding asks that conflicts be retry*able* "where semantics permit"; whether re-running is correct depends on
+what the caller was doing, and only the caller knows. Every other driver failure still passes through as the
+identical object.
+
+#### What the locks do not close
+
+A lock serializes writers that **both take it**. It cannot bind a writer that never asks — a legacy CFML
+request against the same schema, an administrative `INSERT`, or a future service that skips validation. Only a
+database constraint binds every writer, and four are missing:
+
+```sql
+ALTER TABLE SwOption      ADD UNIQUE INDEX uq_SwOption_optionCode           (optionCode);
+ALTER TABLE SwOptionGroup ADD UNIQUE INDEX uq_SwOptionGroup_optionGroupCode (optionGroupCode);
+ALTER TABLE SwOption      ADD UNIQUE INDEX uq_SwOption_group_sortOrder      (optionGroupID, sortOrder);
+ALTER TABLE SwOptionGroup ADD UNIQUE INDEX uq_SwOptionGroup_sortOrder       (sortOrder);
+ALTER TABLE SwSkuOption   ADD UNIQUE INDEX uq_SwSkuOption_pair              (optionID, skuID);
+```
+
+The two sort-order indexes differ in shape because the entities do: `model/entity/Option.cfc:L56` declares
+`sortContext="optionGroup"` so its uniqueness is per group, while `OptionGroup` declares none so its maximum
+is whole-table.
+
+**Authoring that DDL is forbidden, not overlooked.** AAP §0.2.2.5 places schema migration outside this
+refactoring entirely — "the `Sw*` tables are read and written as they are" — so the statements above are
+**stated for an operator to ratify** and appear nowhere in the deliverable as executable code. Stating them
+with the exact index shapes is the discharge AAP §0.7.3 **S8** asks for; claiming the gap closed would not be.
+
+#### Why the earlier withdrawal does not stand
+
+Every one of these locks existed in an earlier revision and was withdrawn on a single argument, which the
+source now records at each site: _"AAP §0.6.7.7 declares exactly ONE departure from behavioural preservation
+in this port — D18 — and it declares it so that a reviewer diffing behaviour has exactly one entry to check.
+A lock-wait is observable under concurrency, and §0.8.2 Guideline 4 admits no proportionality test."_
+
+That misreads its own citation. **§0.6.7 is the _defect and TODO carry-over register_** — twenty-one legacy
+**business-logic** defects, a misnamed struct, an inverted cache guard, an unreachable private method — of
+which D18 is the one member the port repairs. The extracted service's data integrity under concurrency is not
+an entry in it, so §0.6.7.7 never spoke to these locks at all. Reading D18's exception as the sole licence to
+take a lock anywhere would make §0.6.7.7 say that a faithful migration must reproduce a TOCTOU race.
+
+Guideline 4 forbids enhancing **business logic**, and a lock enhances none: `FOR UPDATE` selects precisely the
+rows the same predicate selects without it, so every verdict and every value is identical — the suites assert
+that on both the locked and the unlocked path. What changes is only when a **second concurrent** transaction
+may ask, and a second concurrent transaction is not an observable of the legacy's single-threaded behaviour.
+
+One further piece of evidence is worth recording, as corroboration rather than as licence: the legacy's own
+author serialized this exact pattern where they noticed it. `org/Hibachi/HibachiDAO.cfc:L182` wraps
+`updateRecordSortOrder`'s read-then-write over the same column in
+`<cflock timeout="60" name="updateSortOrder…">` around a `<cftransaction>`. That guards a **reorder**, not the
+**seed** this port carries, and `org/Hibachi/HibachiEntity.cfc:L637-L647` takes no lock at all — so the seeding
+path genuinely is unprotected upstream. This port serializes it with the database's own mechanism rather than
+importing an application lock from a member it never ported.
+
+### 8.3 The image write: what is gated, what is delegated, and what stays carried
+
+Review finding **SEC-FILE-01** (CWE-22, CWE-434) named a path-traversal and unrestricted-upload exposure on
+the SKU image contract. Its exploit: store or import `imageFile=../../../../tmp/payload.jpg`, then call
+`sku.processImageUpload`. Its mitigating fact is worth quoting, because it determines what the fix has to be
+— the shipped image adapter is `NotImplemented` and refuses, so no file write occurs today, and the
+vulnerability "becomes reachable as soon as a functional adapter is supplied **under the existing
+contract**." The defect was therefore never a byte this port writes. It was that the contract obliged
+nothing, so a future adapter author would have been conforming, and exposed.
+
+**The write path is closed at the point of use.** `SkuService.processImageUpload` screens the stored
+`imageFile` **before a path is composed**, against the one shape the legacy's own generator can produce.
+Order is the whole point: screening the composed path would mean the traversal had already been resolved
+against the prefix, and a check on the result would have to reason about where that prefix points — which is
+exactly the injected containment root this port declines to invent. A refused upload therefore reaches
+`ImagePathPort` **zero** times, so nothing downstream has to be trusted to refuse, and the suite asserts the
+empty call log rather than only the `false`.
+
+**The policy is transcribed, not invented.** `model/entity/Sku.cfc:L131-L139` filters every contributed
+segment through `reReplaceNoCase(…, "[^a-z0-9\-\_]", "", "all")` and appends one dot and one extension. The
+generator _is_ the policy; it was simply never re-checked at the point of use. One trap is guarded
+explicitly and a test proves it: because the legacy call is case-**insensitive**, that negated class spares
+`A`-`Z` too, so a pattern transcribed literally into JavaScript would refuse the generator's own uppercase
+output and break the ordinary case while looking faithful.
+
+**A correction to the record.** An earlier revision bounded this exposure by observing that "exactly two
+writers populate the column, and both assign the output of one generator". There is a **third**, and it takes
+arbitrary caller data: `model/dao/ProductDAO.cfc:L207` calls
+`saveImportData(data, r, "SlatwallSku", skuColumns, …)` with `skuColumns` derived from the uploaded file's own
+headings, so a `sku_imageFile` heading writes straight to the row — the "store/**import**" half of the
+exploit. That correction is why screening at the point of use is the right seam: it screens all three writers
+at once. The import itself is deliberately **not** gated — an imported row is a database write, not a file
+write, and refusing the heading would refuse an import the legacy accepts for no security gain.
+
+**What the contract now obliges an adapter to do.** No adapter for this port exists in the AAP's inventory
+(§0.4.1.7 enumerates none), which is precisely why these are stated on the contract rather than implemented
+in one. `ImagePathPort.saveImageFile` requires an implementation to (a) resolve and canonicalise the
+destination under its own storage root or object-key namespace and re-verify containment _after_
+canonicalisation; (b) refuse a destination that escapes that root, including via a symlink; (c) impose a byte
+limit and refuse rather than truncate; (d) verify the content is a permitted image type by inspecting the
+bytes, treating the extension list as **secondary**; (e) not silently overwrite; and (f) refuse by resolving
+`false` **without leaking destination detail**. These are obligations, not injected configuration — no root
+value, byte figure or MIME list is authored here, exactly as no resource-bound figure is.
+
+**The read path stays carried, and the asymmetry is deliberate.** `model/entity/Sku.cfc:L222` probes with
+`fileExists(expandPath(getImagePath()))`, which has a **defined** legacy result for every input, writes
+nothing and discloses one bit. Refusing to probe would replace a defined answer with a different one, so it
+keeps the legacy behaviour and its residual exposure is flagged for an operator to close in an adapter
+(§0.7.3 S8). The write path differs on exactly this point, and it is what licenses the gate: `saveImageFile`
+**does not exist anywhere in the legacy** — one call site, zero declarations, and the `save*` prefix routes
+the name to `onMissingSaveMethod`, which `org/Hibachi/HibachiService.cfc:L253` documents as
+"Ordered arguments only--named arguments not supported" while the call site passes only named arguments. The
+legacy has no well-defined result on that path for any input. Guideline 4 requires existing behaviour be
+preserved "exactly as-is"; where there is none, nothing is preserved and nothing is changed, so §0.6.7.7's
+single-exception clause is not engaged. This is not a second exception — it is a path that never had a first
+outcome.
+
+**The test double was part of the finding.** It answered `true` unconditionally and applied no
+`allowedExtensions` policy, which the review recorded as a permissive image-write double. The objection is
+not about strictness: a `true` from an unconditional double is evidence only that the service _asked_, never
+that a conforming implementation would have _stored_. It now applies the extension list it is handed — the
+one policy `model/service/SkuService.cfc:L212` passes across the boundary — so the two refusal mechanisms are
+distinguishable by their call log: the gate leaves it empty, the extension policy leaves both members in it.
+
+### 8.4 The ratified database surface, and the credential it implies
+
+A deployment needs to know exactly which tables this service touches and with what privilege. That question
+had two answers before review finding **SEC-SQL-SCOPE-01**, neither complete: a whitelist in
+`src/adapters/mysql/QueryRunner.ts`, and private frozen literal objects in two sibling adapters that reached
+no gate at all. It now has one. `TABLE_SCOPES` in `QueryRunner.ts` is the single registry, and
+`registeredTableScopes()` returns it, so a provisioning script can be **generated from the code** rather than
+transcribed from this table and left to drift from it.
+
+Ratifying the surface found more than the finding had counted. Auditing every emitted identifier — rather
+than only the two modules the finding cited — turned up a **third** private literal object, in
+`MySqlProductRepository.ts`, holding five further tables from the excluded `Attribute*` family. One of them,
+`SwAttributeValue`, is **written**. A ratification that had stopped where the finding stopped would have
+published a surface that was still incomplete, and would have understated the required privilege on that
+table from `SELECT` to `SELECT, INSERT, UPDATE`.
+
+**Twenty-eight tables, in four classes:**
+
+| Class                    | Count | Tables                                                                                                                                                                                                                                                                                                                         | Privilege required                         |
+| ------------------------ | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------ |
+| `catalog-core`           | 7     | `SwProduct`, `SwSku`, `SwProductType`, `SwBrand`, `SwOption`, `SwOptionGroup`, `SwSkuOption`                                                                                                                                                                                                                                   | `SELECT, INSERT, UPDATE, DELETE`           |
+| `catalog-owned-link`     | 4     | `SwSkuAccessContent`, `SwSkuSubsBenefit`, `SwSkuRenewalSubsBenefit`, `SwRelatedProduct`                                                                                                                                                                                                                                        | `SELECT, INSERT, UPDATE, DELETE`           |
+| `cross-domain-write`     | 1     | `SwAttributeValue`                                                                                                                                                                                                                                                                                                             | `SELECT, INSERT, UPDATE` — **no `DELETE`** |
+| `cross-domain-read-only` | 16    | `SwAlternateSkuCode`, `SwSubscriptionTerm`, `SwStock`, `SwOrderItem`, `SwInventory`, `SwOrderDeliveryItem`, `SwPhysicalCountItem`, `SwStockAdjustmentDeliveryItem`, `SwStockAdjustmentItem`, `SwStockHold`, `SwStockReceiverItem`, `SwVendorOrderItem`, `SwAttributeSet`, `SwAttribute`, `SwAttributeSetProductType`, `SwType` | `SELECT`                                   |
+
+The classes are not a relabelling of the same permission twice. `catalog-core` is the seven tables AAP
+§0.2.1.2 names. `catalog-owned-link` is the four link tables whose **owning** side is an in-scope entity even
+though the far side is not — `model/entity/Sku.cfc:L77-L79` and `model/entity/Product.cfc:L81`; writing a link
+row the in-scope entity owns is in-scope work, and the far entity's own table is never named anywhere in this
+subtree. `cross-domain-read-only` is reached only to **answer a question**: the ten-way existence chain of
+`model/dao/SkuDAO.cfc:L53-L98`, whose result answers the `transactionExistsFlag` delete guard; the SKU-code
+fallback at `:L103`; and the attribute-set selection of `model/dao/ProductDAO.cfc:L52-L62`, whose result is
+the return of a declared port member.
+
+Two entries in that last row are worth singling out, because both look like they belong elsewhere.
+`SwAttributeSetProductType` is a **link table and is still read-only** — it fails the test the four
+`catalog-owned-link` members pass, since its owning side is `AttributeSet`, an excluded entity, and
+`SwProductType` appears only as the far column. Writing it would be writing a relationship the Catalog does
+not own. And `SwAlternateSkuCode` is **column-mapped yet unwriteable**: the SKU-code fallback joins it, so
+`assertColumnName` knows its columns, but it belongs to an excluded family and no write may name it. Those two
+are why the write gate validates against the declared **scope** rather than against the column map — a gate
+built on the column map would have got both of them backwards while looking correct.
+
+**The credential to provision.** Granting it is an operator act and AAP §0.2.2.5 places schema and
+infrastructure outside this refactoring, so no `GRANT` is executed here — these are stated for ratification:
+
+```sql
+-- the eleven writeable Catalog tables
+GRANT SELECT, INSERT, UPDATE, DELETE ON <schema>.SwProduct               TO '<user>'@'<host>';
+GRANT SELECT, INSERT, UPDATE, DELETE ON <schema>.SwSku                   TO '<user>'@'<host>';
+GRANT SELECT, INSERT, UPDATE, DELETE ON <schema>.SwProductType           TO '<user>'@'<host>';
+GRANT SELECT, INSERT, UPDATE, DELETE ON <schema>.SwBrand                 TO '<user>'@'<host>';
+GRANT SELECT, INSERT, UPDATE, DELETE ON <schema>.SwOption                TO '<user>'@'<host>';
+GRANT SELECT, INSERT, UPDATE, DELETE ON <schema>.SwOptionGroup           TO '<user>'@'<host>';
+GRANT SELECT, INSERT, UPDATE, DELETE ON <schema>.SwSkuOption             TO '<user>'@'<host>';
+GRANT SELECT, INSERT, UPDATE, DELETE ON <schema>.SwSkuAccessContent      TO '<user>'@'<host>';
+GRANT SELECT, INSERT, UPDATE, DELETE ON <schema>.SwSkuSubsBenefit        TO '<user>'@'<host>';
+GRANT SELECT, INSERT, UPDATE, DELETE ON <schema>.SwSkuRenewalSubsBenefit TO '<user>'@'<host>';
+GRANT SELECT, INSERT, UPDATE, DELETE ON <schema>.SwRelatedProduct        TO '<user>'@'<host>';
+
+-- the one cross-domain table the importer writes; no DELETE, because nothing here deletes one
+GRANT SELECT, INSERT, UPDATE         ON <schema>.SwAttributeValue        TO '<user>'@'<host>';
+
+-- the sixteen read-only tables
+GRANT SELECT ON <schema>.SwAlternateSkuCode            TO '<user>'@'<host>';
+GRANT SELECT ON <schema>.SwSubscriptionTerm            TO '<user>'@'<host>';
+GRANT SELECT ON <schema>.SwStock                       TO '<user>'@'<host>';
+GRANT SELECT ON <schema>.SwOrderItem                   TO '<user>'@'<host>';
+GRANT SELECT ON <schema>.SwInventory                   TO '<user>'@'<host>';
+GRANT SELECT ON <schema>.SwOrderDeliveryItem           TO '<user>'@'<host>';
+GRANT SELECT ON <schema>.SwPhysicalCountItem           TO '<user>'@'<host>';
+GRANT SELECT ON <schema>.SwStockAdjustmentDeliveryItem TO '<user>'@'<host>';
+GRANT SELECT ON <schema>.SwStockAdjustmentItem         TO '<user>'@'<host>';
+GRANT SELECT ON <schema>.SwStockHold                   TO '<user>'@'<host>';
+GRANT SELECT ON <schema>.SwStockReceiverItem           TO '<user>'@'<host>';
+GRANT SELECT ON <schema>.SwVendorOrderItem             TO '<user>'@'<host>';
+GRANT SELECT ON <schema>.SwAttributeSet                TO '<user>'@'<host>';
+GRANT SELECT ON <schema>.SwAttribute                   TO '<user>'@'<host>';
+GRANT SELECT ON <schema>.SwAttributeSetProductType     TO '<user>'@'<host>';
+GRANT SELECT ON <schema>.SwType                        TO '<user>'@'<host>';
+```
+
+**The classification is enforced, not merely recorded** — which is what makes this a fix rather than a table
+in a README. `assertWriteTableName` refuses a `cross-domain-read-only` name outright, so a write path cannot
+compose a statement against an excluded family's table even by accident; it fails at **composition**, naming
+the classification, before a connection is involved and before an over-granted deployment could let it
+through. `assertRegisteredColumnName` does the same for columns, and it validates each name against the
+**table that declares it** rather than merely checking the spelling — which is the actual risk, since `skuID`
+is declared on nine of the twenty-eight tables and `stockID` on seven, so a mis-paired name would still be a
+real column composing SQL that parses and would simply answer the wrong question. `EXTENDED_TABLE_COLUMNS` is
+annotated as a **total** `Record` over the registered names outside the column map, so adding a table to the
+registry without declaring the columns it needs **fails the build**.
+
+**What this is not.** The finding's first clause — "move out-of-scope checks behind narrowly privileged
+collaborators or approved read-only views" — asks for something this deliverable cannot supply. A view is a
+schema object, and AAP §0.2.2.5 places schema migration out of scope; a collaborator owned by an excluded
+family would have to be implemented by whoever owns that family, which is outside the entire AAP. The
+classification is the part that can be built here, and it is what makes either of those later moves a
+substitution at **one** seam rather than an audit of three modules.
 
 ---
 
@@ -2086,12 +2438,13 @@ Lambda's 15-minute maximum function timeout — is a published ceiling, not a co
 > `src/handlers/googleFeedHandler.ts` and `src/adapters/mysql/SmartListQueryBuilder.ts` already said in
 > their own notes.
 
-**M2 is about TIME, and the row bound is a different question answered elsewhere.** Finding **SEC-1**
-(CWE-400) concerned how many _rows_ the anonymous feed can force a selection to hydrate. That gate is the
-operator-supplied `CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY` of §8, applied by both execution members of the
-query builder by counting before hydrating and **refusing** an over-budget selection rather than truncating
-it — and with no bound stated, the anonymous feed route declines to serve rather than materialising without
-limit. Leaving M2 open does **not** leave the row count unbounded, and the two must not be conflated.
+**M2 is about TIME, and the other four dimensions of the feed's work are bounded elsewhere.** Findings
+**SEC-1** and then **SEC-DOS-02** (both CWE-400) concerned how many _rows_ a selection can be forced to
+hydrate, how _complex_ a statement can be made, how many _images_ one record can expand into, and how many
+_bytes_ the buffered document can reach. All four are operator-supplied figures from §8, each applied
+fail-closed and each **refusing** rather than truncating; §8.1 sets them out. Leaving M2 open does **not**
+leave any of the four unbounded, and the five must not be conflated — nor does bounding the four settle M2,
+which is why the seam described in §8.1 stops short of naming a duration.
 
 Noted once, and deliberately **absent** from the inventory above: the legacy **60-second and 45-second
 session locks in `OrderService` and `PaymentService`** were to be noted but not implemented. Those services

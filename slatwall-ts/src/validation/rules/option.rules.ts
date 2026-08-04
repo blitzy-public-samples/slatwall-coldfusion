@@ -367,21 +367,33 @@ export const optionCodeRequiredConstraint = Object.freeze({
  * "THE SEVEN" in `../Validator` for the pinned polarity, for why the self-exclusion term is a no-op on
  * insert, and for all seven locators.
  *
- * ⛔ TODO(parity) — HOW WEAK THIS RULE IS UNDER CONCURRENCY, AND NOTHING STRENGTHENS IT (CWE-367). This
- * rule and its OptionGroup twin are the two with no `unique="true"` column behind them. The check is a
- * read followed by a write, so two concurrent saves can both be told `RED` was free, and unlike the five
- * code and title properties that DO carry a column there is no database constraint to refuse the second
- * write. Both writes land.
+ * ⭐ THIS RULE IS SERIALIZED INSIDE A TRANSACTION AND UNPROTECTED OUTSIDE ONE — review finding SEC-RACE-01
+ * (CWE-367). This rule and its OptionGroup twin are the two with no `unique="true"` column behind them, so
+ * the check is a read followed by a write with no database constraint to refuse a second write. Two things
+ * changed, and neither is a claim that the gap is closed:
  *
- * ⛔ A REVISION TOOK A LOCKING READ IN `../../adapters/mysql/UniquePropertyChecker.ts` — `FOR UPDATE`, on
- * a boundary-scoped instance only — and licensed it on the D18 footing on the ground that it orders
- * transactions and changes no verdict. THAT IS WITHDRAWN. AAP §0.6.7.7 authorises exactly ONE departure
+ *   • `../../adapters/mysql/UniquePropertyChecker.ts` appends `FOR UPDATE` when it has adopted a
+ *     boundary's executor, so a save inside a transaction asks the database to make the second concurrent
+ *     asker WAIT — and under REPEATABLE READ a no-match read takes a GAP lock, which is what protects the
+ *     insert case. It is gated on transaction scope because a lock on a pool-bound autocommit connection is
+ *     released at statement end and would protect nothing.
+ *   • A lost race that a constraint DOES convict now arrives typed, and a deadlock or lock-wait timeout
+ *     arrives classified `retryable: true`.
+ *
+ * ⛔ AN INTERVENING REVISION WITHDREW THE LOCK, ARGUING: "AAP §0.6.7.7 authorises exactly ONE departure
  * from behavioural preservation in this port, D18, so that a reviewer diffing behaviour has a fixed number
  * of entries to check; statement text is observable and AAP §0.8.2 Guideline 4 admits no proportionality
- * test. The obvious repair — adding the missing unique index on `SwOption.optionCode` — is forbidden
- * rather than forgotten: AAP §0.2.2.5 places schema migration outside this refactoring, so the `Sw*`
- * tables are read and written as they are. Flagged, not claimed closed (AAP §0.7.3 S8); the same residue
- * is recorded on `../../ports/UniquePropertyPort.ts`.
+ * test." §0.6.7 is the DEFECT AND TODO CARRY-OVER REGISTER of legacy BUSINESS-LOGIC defects — it never
+ * spoke to concurrent data integrity in the extracted service — and the lock changes no verdict this rule
+ * reaches.
+ *
+ * ⚠️ AND IT IS STILL ONLY PARTIAL, WHICH IS THE HONEST STATEMENT. A lock binds writers that take it, not a
+ * legacy CFML request against the same schema or an administrative INSERT. The remedy that binds every
+ * writer is
+ *     ALTER TABLE SwOption ADD UNIQUE INDEX uq_SwOption_optionCode (optionCode);
+ * and AUTHORING it is forbidden rather than forgotten: AAP §0.2.2.5 places schema migration outside this
+ * refactoring, so the `Sw*` tables are read and written as they are. Flagged with the exact remedy, not
+ * claimed closed (AAP §0.7.3 S8); the same residue is recorded on `../../ports/UniquePropertyPort.ts`.
  *
  * AN ABSENT VALUE PASSES, INDIRECTLY. `validate_unique`
  * (`org/Hibachi/HibachiValidationService.cfc:L467-L470`) contains NO absence guard: it delegates straight

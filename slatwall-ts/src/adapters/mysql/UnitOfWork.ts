@@ -217,6 +217,7 @@
  * ============================================================================================== */
 
 import { DataIntegrityError, DomainError } from '../../errors/DomainError';
+import type { RequestAuthorizationContext } from '../../ports/AccountContextPort';
 import type { TransactionalWriteRunner } from '../../ports/UniquePropertyPort';
 import {
   assertColumnName,
@@ -269,6 +270,22 @@ import type { MySqlRow } from './rowMappers';
  * {@link assertColumnName}: nothing in the schema is named after it.
  */
 const TOP_SORT_ORDER_ALIAS = 'topSortOrder';
+
+/**
+ * The clause that turns the sort-order maximum into a locking read — review finding SEC-RACE-01.
+ *
+ * A named constant for the same reason `TOP_SORT_ORDER_ALIAS` above is one: the text is part of the emitted
+ * statement, so it is declared once and the leading space is part of it, which is what stops a caller
+ * emitting `FROM SwOptionFOR UPDATE`.
+ *
+ * ⚠️ DECLARED HERE RATHER THAN IMPORTED FROM `./UniquePropertyChecker.ts`, WHICH HAS THE SAME CONSTANT.
+ * That is deliberate and it is the same discipline the two modules already keep over
+ * `assertTableName`-style helpers: this module does not import from that one in either direction, and
+ * creating an edge between two sibling adapters to share four characters of SQL would buy nothing and cost
+ * a dependency. The obligation the duplication creates is that both emit the identical text, and a test
+ * asserts the emitted suffix at each site rather than trusting one constant to cover both.
+ */
+const LOCKING_READ_SUFFIX = ' FOR UPDATE';
 
 /**
  * The error-state predicate for a boundary that has no error gate of its own.
@@ -1808,38 +1825,67 @@ export class UnitOfWork {
    * :L646 reaches an accessor the framework generates from the property declaration. Noted so nobody
    * hunts for a missing implementation.
    *
-   * ⛔ THE READ IS NOT LOCKING, AND THE READ-THEN-WRITE RACE IS CARRIED — TODO(parity), CWE-367.
+   * ⭐⭐ THE READ IS LOCKING — REVIEW FINDING SEC-RACE-01 (CWE-367)
    * ------------------------------------------------------------------------------------------------
-   * THE DEFECT. This is the READ half of a read-then-write: the caller reads the current maximum and
-   * then writes `maximum + 1` (`org/Hibachi/HibachiEntity.cfc:L646`). Two invocations that interleave
-   * between the read and the write both observe the same maximum and both seed the SAME position, so
-   * two options — or two option groups — silently share a place in the ordering. Nothing anywhere
-   * detects it: `sortOrder` carries no unique constraint in either entity, so there is no second
-   * mechanism behind the read, and the duplicate simply persists.
+   * THE DEFECT IT CLOSES. This is the READ half of a read-then-write: the caller reads the current maximum
+   * and then writes `maximum + 1` (`org/Hibachi/HibachiEntity.cfc:L646`). Two invocations that interleave
+   * between the read and the write both observe the same maximum and both seed the SAME position, so two
+   * options — or two option groups — silently share a place in the ordering. NOTHING ELSE DETECTS IT:
+   * `sortOrder` carries no unique constraint in either entity, so unlike five of the seven uniqueness
+   * rules there is no database backstop behind the read, and the duplicate simply persists. That makes
+   * this the WORST of SEC-RACE-01's three sites — the one with no second mechanism at all — and `sortOrder`
+   * is load-bearing rather than cosmetic: it is an EXPONENT in the sorted-SKU ordering at
+   * `model/dao/SkuDAO.cfc:L195`/`:L197`, so two options sharing a position corrupt SKU ordering.
    *
-   * ⛔ A REVISION APPENDED `FOR UPDATE` HERE AND DECLARED IT "D18-CLASS" ON THE GROUND THAT A LOCKING
-   * READ CHANGES NO RESULT. That ground is sound as far as it goes — `FOR UPDATE` returns precisely the
-   * row the same aggregate returns without it, and its only effect is that a second transaction asking
-   * the same question waits rather than reading past. It is withdrawn all the same, and the reason is the
-   * COUNT rather than the argument: AAP §0.6.7.7 declares exactly ONE departure from behavioural
-   * preservation in this port — D18, the importer's parameterised SQL — and it declares it so that a
-   * reviewer diffing behaviour has exactly one entry to check. The statement text of a ported read is
-   * observable and a lock-wait is observable under concurrency, and AAP §0.8.2 Guideline 4 admits no
-   * proportionality test while AAP §0.6.7 mandates preserve-and-annotate.
+   * ⛔ THIS POSITION HAS MOVED TWICE, SO BOTH MOVES ARE RECORDED.
+   *   1. A revision appended `FOR UPDATE` here and licensed it as "D18-CLASS" on the ground that a locking
+   *      read changes no result.
+   *   2. A later revision WITHDREW it, arguing: "the reason is the COUNT rather than the argument:
+   *      AAP §0.6.7.7 declares exactly ONE departure from behavioural preservation in this port — D18 — and
+   *      it declares it so that a reviewer diffing behaviour has exactly one entry to check."
+   *   3. SEC-RACE-01 IS THE CORRECTION, AND STEP 2 MISREAD ITS CITATION. §0.6.7 is the DEFECT AND TODO
+   *      CARRY-OVER REGISTER — twenty-one LEGACY BUSINESS-LOGIC defects, of which D18 is the one repaired.
+   *      Data integrity under concurrency is not an entry in it. Guideline 4 forbids enhancing BUSINESS
+   *      LOGIC, and this changes no value the aggregate returns: `FOR UPDATE` selects precisely the row the
+   *      same `COALESCE(max(sortOrder), 0)` selects without it. §0.7.3 S8 is discharged by recording what
+   *      the LEGACY leaves unprotected — which the next paragraph does — not by leaving the PORT unprotected.
    *
-   * ⚠️ THE LEGACY CODEBASE DOES SERIALIZE THIS KIND OF PATH, AND THAT IS RECORDED WITHOUT BEING ACTED ON.
+   * ⚠️ IT IS APPENDED UNCONDITIONALLY, UNLIKE THE UNIQUENESS PROBES, AND THE ASYMMETRY IS REASONED.
+   * `./UniquePropertyChecker.ts` gates its lock on transaction scope because it KNOWS its scope — the scope
+   * arrives through `withExecutor` — and because it is reached on every validation read, where pointless gap
+   * locks would be a real cost. This member takes its executor as a PARAMETER, so it cannot know; and it is
+   * reached only from `preInsert` seeding, which by construction happens inside the insert's own boundary.
+   * Locking always therefore protects every call that can be protected, and on a pool-bound autocommit
+   * connection the lock is released at statement end — no protection, but no harm and no retained lock.
+   *
+   * ⚠️ HOW IT PROTECTS AN EMPTY SCOPE. Under REPEATABLE READ a `FOR UPDATE` aggregate over a range that
+   * matches no rows still takes a GAP lock over the scanned range, so a second transaction cannot insert
+   * into it until the first commits. That is why the `COALESCE(…, 0)` case — the first option in a group —
+   * is protected too, which is exactly the case a row-level lock alone would miss.
+   *
+   * ⚠️ THE LEGACY CODEBASE DOES SERIALIZE THIS KIND OF PATH, WHICH IS CORROBORATION RATHER THAN LICENCE.
    * `updateRecordSortOrder`, the member three functions below the origin in the same file, wraps its own
    * read-then-write over the same column in `<cflock timeout="60" name="updateSortOrder#arguments.tableName#">`
    * at `org/Hibachi/HibachiDAO.cfc:L182`, around a `<cftransaction>` at `:L183`, closing at `:L263-L264`.
    * That lock protects a DIFFERENT member — a reorder, not a seed — and `org/Hibachi/HibachiEntity.cfc:L637-L647`
-   * takes no lock of any kind, so the seeding path this member ports is unprotected in the legacy too.
-   * Reproducing the sibling's lock here would be importing a control from a member that was not ported.
+   * takes no lock of any kind, so the seeding path this member ports IS unprotected in the legacy. The
+   * legacy's own author evidently judged the pattern to need serialising where they noticed it; this port
+   * serialises it at the site the finding names, using the database's own mechanism rather than importing
+   * the sibling's application lock.
    *
-   * ⭐ WHERE IT CAN LEGITIMATELY BE CLOSED. A unique index over `(sortOrder)` — or over the sort context
-   * and `sortOrder` together — would convict the duplicate, and AAP §0.2.2.5 places schema migration
-   * outside this refactoring entirely, so that is the operator's decision and not this port's. An
-   * application-level lock is the other option and belongs to whoever owns the deployment's concurrency
-   * story; either way it arrives as a stated requirement rather than inside a migration.
+   * ⚠️ THE COST, NAMED. A lock introduces lock-wait timeouts and deadlocks where there were none.
+   * `./QueryRunner.ts` classifies both as RETRYABLE and reports them as such, which is the other half of
+   * the finding's resolution.
+   *
+   * ⛔ WHAT IS STILL NOT CLOSED. A lock serialises writers that both take it; it cannot bind one that never
+   * asks — a legacy CFML request against the same schema, or an administrative `INSERT`. Only a constraint
+   * binds every writer, and the DDL a future migration would need is:
+   *     ALTER TABLE SwOption      ADD UNIQUE INDEX uq_SwOption_group_sortOrder (optionGroupID, sortOrder);
+   *     ALTER TABLE SwOptionGroup ADD UNIQUE INDEX uq_SwOptionGroup_sortOrder (sortOrder);
+   * matching each entity's sort SCOPE — `model/entity/Option.cfc:L56` declares `sortContext="optionGroup"`
+   * so its index must be composite, while `OptionGroup` declares none so its maximum is whole-table.
+   * AAP §0.2.2.5 places schema migration outside this refactoring — "the `Sw*` tables are read and written
+   * as they are" — so no DDL is authored here; it is stated for the operator to ratify.
    *
    * IT TAKES AN EXECUTOR RATHER THAN USING THE POOL, and that is the point. Seeding happens during an
    * insert, so passing a boundary's `scope.executor` both makes this read observe the sibling rows that
@@ -1922,9 +1968,11 @@ export class UnitOfWork {
       params.push(contextIDValue);
     }
 
-    /* ⛔ NOTHING IS APPENDED AFTER THE OPTIONAL `WHERE`. A `FOR UPDATE` was appended here for one
-     * revision; see THE READ IS NOT LOCKING on the first overload for why, and for the CWE-367 race that
-     * is consequently carried. */
+    /* ⭐ SEC-RACE-01 — THE LOCKING READ, APPENDED LAST, AFTER THE OPTIONAL `WHERE`. That is the only
+     * position MySQL accepts, and appending it here rather than inside either branch above means the
+     * whole-table and the scoped read are protected identically. See THE READ IS LOCKING on the first
+     * overload for the full adjudication and for the residual gap. */
+    sql += LOCKING_READ_SUFFIX;
 
     const rows = await executor.execute(sql, params);
 
@@ -2023,7 +2071,10 @@ export type UnitOfWorkRunner = Pick<UnitOfWork, 'run'>;
  *
  * @typeParam TGraph - The capability set the caller's write path declared.
  */
-export type TransactionGraphFactory<TGraph> = (scope: TransactionScope) => TGraph;
+export type TransactionGraphFactory<TGraph> = (
+  scope: TransactionScope,
+  security: RequestAuthorizationContext,
+) => TGraph;
 
 /**
  * Runs a caller's unit of work in one MySQL transaction, against a graph built for it.
@@ -2054,12 +2105,17 @@ export class MySqlTransactionalWriteRunner<TGraph> implements TransactionalWrite
    * @returns Whatever `work` produced, for a unit that committed.
    */
   public async runWrite<TResult>(
+    security: RequestAuthorizationContext,
     work: (graph: TGraph) => Promise<TResult>,
     hasErrors: () => boolean,
   ): Promise<TResult> {
     return this.unitOfWork.run<TResult>(
-      /* The graph is built INSIDE the transaction, from its scope, and is discarded with it. */
-      async (scope: TransactionScope): Promise<TResult> => work(this.buildGraph(scope)),
+      /* The graph is built INSIDE the transaction, from its scope AND from this invocation's authorised
+       * principal, and is discarded with it. ⭐ THE PRINCIPAL IS FORWARDED RATHER THAN STORED — review
+       * finding SEC-AUTH-03. It is a parameter of the call, never a field of this class, so a warm
+       * container cannot carry one invocation's identity into the next (M7); the factory is what binds it
+       * into the graph's population and audit collaborators. */
+      async (scope: TransactionScope): Promise<TResult> => work(this.buildGraph(scope, security)),
       hasErrors,
     );
   }

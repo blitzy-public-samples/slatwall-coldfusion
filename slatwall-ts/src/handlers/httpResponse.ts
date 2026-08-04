@@ -227,6 +227,8 @@ import {
 } from '../errors/DomainError';
 import { ValidationError, type ValidationErrors } from '../errors/ValidationError';
 import type {
+  EntityCrudType,
+  InvocationSecurityRequest,
   RequestAuthorizationContext,
   RequestAuthorizationResolver,
 } from '../ports/AccountContextPort';
@@ -2394,6 +2396,17 @@ export function createActionDispatcher<TRouteKey extends string>(
 const FAIL_CLOSED_AUTHORIZATION: RequestAuthorizationContext = Object.freeze({
   accountContext: Object.freeze({ getCurrentAccount: () => undefined }),
   entityAuthorization: Object.freeze({ authenticateEntity: () => false }),
+  /* ⭐ THE THIRD MEMBER ARRIVED WITH REVIEW FINDING SEC-AUTH-03, and its two answers are the
+   * fail-closed ones `../ports/AccountContextPort.ts` states for the port: `false` for the
+   * public-populate flag, because [org/Hibachi/HibachiScope.cfc:L22] initialises it false and only a
+   * public or frontend route sets it true, and `false` for the property verdict, because
+   * [org/Hibachi/HibachiTransient.cfc:L186] defaults to denial. Deny-all population is what makes
+   * "no principal" mean "writes no persistent property" rather than "writes with whatever rights the
+   * composition root happened to memoise". */
+  populationAuthorization: Object.freeze({
+    getPublicPopulateFlag: () => false,
+    authenticateEntityProperty: () => false,
+  }),
 });
 
 /**
@@ -2411,25 +2424,111 @@ export const resolveFailClosedAuthorization = (): RequestAuthorizationContext =>
   FAIL_CLOSED_AUTHORIZATION;
 
 /**
- * The narrowest request slice any surface's authorisation resolver receives.
+ * The request every surface's authorisation resolver receives.
  *
- * Every one of the four catalog surfaces declares its own authorisation event as
- * `Pick<APIGatewayProxyEvent, 'headers'>`, so this ONE shape is what a deployment's resolver has to
- * accept in order to serve all four. It is written as an indexed read of the platform type rather
- * than as a hand-rolled `{ headers?: … }` literal, so a change to the platform typing cannot silently
- * widen what a resolver is handed.
+ * ⭐ IT USED TO BE `Pick<APIGatewayProxyEvent, 'headers'>` AND REVIEW FINDING SEC-AUTH-03 REPLACED IT.
+ * The four catalog surfaces each passed their own event slice, which carried headers and nothing
+ * else, so a deployment's resolver could not see the action being invoked, the question being asked,
+ * the resource being addressed, or claims its own gateway authoriser had already verified. It is now
+ * the port's own {@link InvocationSecurityRequest} — declared in `../ports/AccountContextPort.ts`
+ * with no provider type in it — and every surface builds one from its event plus its OWN access-matrix
+ * row, so the resolver is told the same three things the gate asks about.
+ *
+ * The alias is kept rather than replaced at the call sites, because "the shape a deployment's
+ * resolver must accept to serve all four surfaces" is a statement about THIS folder, and a
+ * deployment that already imports it keeps compiling against a widened input.
  */
-export type CatalogAuthorizationRequest = Pick<APIGatewayProxyEvent, 'headers'>;
+export type CatalogAuthorizationRequest = InvocationSecurityRequest;
 
 /**
  * The resolver shape a deployment registers — see {@link registerRequestAuthorizationResolver}.
  *
- * Contravariance is what makes one registered resolver serve every surface: a function accepting
- * {@link CatalogAuthorizationRequest} is assignable to `RequestAuthorizationResolver<TRequest>` for
- * every `TRequest` that carries `headers`, which is all four of them.
+ * One registered resolver serves every surface because every surface now builds the SAME
+ * {@link CatalogAuthorizationRequest}: the four per-surface event slices no longer reach a resolver
+ * at all, so nothing depends on contravariance over four different shapes any more.
  */
 export type CatalogAuthorizationResolver =
   RequestAuthorizationResolver<CatalogAuthorizationRequest>;
+
+/**
+ * The event slice every surface reads in order to BUILD a {@link CatalogAuthorizationRequest}.
+ *
+ * `headers` is required, exactly as it was when it was the whole of the authorisation event. The two
+ * further members are `Partial`, and that is a compatibility decision with a security purpose rather
+ * than a convenience: `requestContext` is a REQUIRED member of the platform event, so requiring it
+ * here would oblige every hand-written double in the suite — and every deployment that composes a
+ * narrow object — to fabricate a whole request context in order to ask an authorisation question.
+ * Making the two optional lets the trusted-claims path exist for the deployments that have one
+ * without forcing a synthetic one on the deployments that do not, and an absent claim set is the
+ * fail-closed case either way (`../ports/AccountContextPort.ts`).
+ */
+export type CatalogAuthorizationEvent = Pick<APIGatewayProxyEvent, 'headers'> &
+  Partial<Pick<APIGatewayProxyEvent, 'httpMethod' | 'requestContext'>>;
+
+/**
+ * The question one routed member asks, as its own access matrix declares it.
+ *
+ * Separate from {@link CatalogAuthorizationEvent} because the two have different provenance, and
+ * keeping them apart is what makes the discipline checkable: everything in the event came from the
+ * CALLER, everything here came from the HANDLER's own module-level declarations — except
+ * {@link InvocationSecurityQuestion.entityID}, which is caller-supplied and is documented as such on
+ * `EntityAuthorizationRequest.entityID`.
+ */
+export interface InvocationSecurityQuestion {
+  /** The routed action, as the routing layer addresses it — `product.saveProduct`. */
+  readonly action: string;
+
+  /** The single operation this route attempts. See `EntityCrudType`. */
+  readonly crudType: EntityCrudType;
+
+  /** The entity the route targets, from the handler's own constant. */
+  readonly entityName: string;
+
+  /** The addressed resource, when the request addresses one. Absent means a creation. */
+  readonly entityID?: string;
+}
+
+/**
+ * Assembles the invocation's security request from its event and its route's own question.
+ *
+ * ⭐ IT EXISTS SO THE FOUR SURFACES CANNOT DISAGREE — review finding SEC-AUTH-03. Each surface used
+ * to hand its resolver a bare event slice; each now hands it a complete
+ * {@link CatalogAuthorizationRequest}, and assembling that in ONE place is what guarantees all four
+ * populate the same members from the same sources. A per-surface copy would be four opportunities to
+ * omit the trusted claims or the addressed identifier.
+ *
+ * ⛔ IT VERIFIES NOTHING AND TRUSTS NOTHING. It copies: headers through unchanged, the method through
+ * when the event carries one, and the gateway authoriser's claim object through when the event
+ * carries one that is a non-null object. No header is parsed, no token is decoded, no signature is
+ * checked and no claim is interpreted — those are the resolver's decisions, and §8 records why this
+ * folder introduces no authentication of its own.
+ *
+ * Members stay ABSENT rather than explicitly `undefined` under `exactOptionalPropertyTypes`, so a
+ * resolver can distinguish "the invocation carried no method" from "the method is unknown".
+ *
+ * @param event the invocation's event, or any object carrying its headers member
+ * @param question the route's own question, from its access matrix row
+ * @returns the frozen security request to hand to the resolver
+ */
+export function toInvocationSecurityRequest(
+  event: CatalogAuthorizationEvent,
+  question: InvocationSecurityQuestion,
+): CatalogAuthorizationRequest {
+  const authorizer: unknown = event.requestContext?.authorizer;
+  const method: unknown = event.httpMethod;
+
+  return Object.freeze({
+    action: question.action,
+    crudType: question.crudType,
+    entityName: question.entityName,
+    ...(question.entityID === undefined ? {} : { entityID: question.entityID }),
+    ...(typeof method === 'string' ? { httpMethod: method } : {}),
+    ...(typeof authorizer === 'object' && authorizer !== null
+      ? { authorizerClaims: authorizer as Readonly<Record<string, unknown>> }
+      : {}),
+    headers: event.headers ?? {},
+  });
+}
 
 /* =====================================================================================================
  * §8.1 — THE DEPLOYMENT SEAM, AND WHY THE SHIPPED ENTRY POINTS NEEDED ONE

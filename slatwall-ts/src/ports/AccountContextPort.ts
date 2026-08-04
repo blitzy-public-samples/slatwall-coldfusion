@@ -615,6 +615,34 @@ export interface EntityAuthorizationRequest {
    * string the permission tables behind the boundary are keyed on.
    */
   readonly entityName: string;
+
+  /**
+   * The identifier of the resource the request ADDRESSES, when it addresses one.
+   *
+   * ⭐ ADDED BY REVIEW FINDING SEC-AUTH-01 (CWE-862, CWE-639), AND IT IS THE HALF THAT MAKES THE
+   * FIXED GATE CHECKABLE. The finding's resolution requires that authorisation "bind … to the
+   * resolved entity ID"; without a member for it, a handler could ask a correctly narrowed
+   * `crudType` and still leave a deployment unable to tell WHICH row was being asked about, so a
+   * resolver could not implement per-resource rights even if it wanted to.
+   *
+   * ABSENT MEANS "NO RESOURCE IS ADDRESSED", which is exactly the CREATE case: the caller supplied
+   * no identifier, the handler is about to mint one, and there is no row for a resolver to consult.
+   * Present means the caller named an existing row — and the handler that names it has already
+   * narrowed `crudType` to `'update'` (or `'delete'`, or `'read'`) for that reason.
+   *
+   * ⛔ IT IS NEVER A SUBSTITUTE FOR `entityName`, AND A RESOLVER MUST NOT DERIVE ONE FROM IT. The
+   * entity name still comes from the handler's own module-level constant, never from the request —
+   * the discipline this file states for every call site is unchanged, and this member is subject to
+   * it too: it carries an identifier the handler read out of the path or query string, so a resolver
+   * that trusts it as anything other than "the row this invocation claims to address" would be
+   * trusting caller input. It exists so a deployment CAN scope a grant to a row, not so it must.
+   *
+   * OPTIONAL RATHER THAN `string | undefined`, so under `exactOptionalPropertyTypes` an unaddressed
+   * question omits the member entirely instead of carrying an explicit `undefined` — which keeps
+   * "no resource addressed" and "a resource whose identifier is unknown" from collapsing into one
+   * indistinguishable shape.
+   */
+  readonly entityID?: string;
 }
 
 /**
@@ -671,11 +699,42 @@ export interface EntityAuthorizationPort {
  * capture it — see {@link RequestAuthorizationResolver}.
  */
 export interface RequestAuthorizationContext {
-  /** Supplies the account this invocation is acting as, or `undefined` when there is none. */
+  /**
+   * Supplies the account this invocation is acting as, or `undefined` when there is none.
+   *
+   * ⭐ THIS IS ALSO THE AUDIT IDENTITY, AND THERE IS DELIBERATELY NO SECOND MEMBER FOR IT — review
+   * finding SEC-AUTH-03. `src/domain/base/AuditableEntity.ts` stamps `createdByAccount` and
+   * `modifiedByAccount` from the account an {@link AccountContextPort} reports, and the legacy did
+   * the same thing from the same scope object it authorised against
+   * [org/Hibachi/HibachiScope.cfc:L134-L135]. Declaring a separate `auditIdentity` member would make
+   * it possible to STATE two different principals for one invocation, which is precisely the defect
+   * the finding reports. One member means the gate's principal and the stamped principal cannot
+   * diverge, because there is only one of them.
+   */
   readonly accountContext: AccountContextPort;
 
   /** Supplies the resolved entity-level verdict. */
   readonly entityAuthorization: EntityAuthorizationPort;
+
+  /**
+   * Supplies the PROPERTY-level verdict population runs under.
+   *
+   * ⭐ ADDED BY REVIEW FINDING SEC-AUTH-03 (CWE-863, CWE-269), AND IT IS THE MEMBER THAT CLOSES IT.
+   * Before it, this context carried the two members above while `src/config/container.ts` resolved
+   * an INDEPENDENT, MEMOISED {@link PopulationAuthorizationPort} that `src/domain/base/populate.ts`
+   * actually consulted. A deployment could therefore authenticate principal A at the route while
+   * property population ran with principal B's rights — the route gate passing one principal and the
+   * write executing as another. Carrying it here means the three verdicts an invocation needs are
+   * one resolution: the account, the entity right, and the property right.
+   *
+   * ⛔ IT IS REQUIRED, NOT OPTIONAL, AND MUST NOT BE MADE OPTIONAL "FOR CONVENIENCE". An optional
+   * member would reintroduce the divergence by letting a caller omit it and fall back to whatever
+   * the composition root memoised. Requiring it means the compiler names every site that builds a
+   * context — including every test double — so none can be forgotten. The fail-closed value for a
+   * request with no principal is the deny-all pair this file's own examples declare:
+   * `{ getPublicPopulateFlag: () => false, authenticateEntityProperty: () => false }`.
+   */
+  readonly populationAuthorization: PopulationAuthorizationPort;
 }
 
 /**
@@ -705,6 +764,98 @@ export interface RequestAuthorizationContext {
 export type RequestAuthorizationResolver<TRequest> = (
   request: TRequest,
 ) => RequestAuthorizationContext;
+
+/**
+ * Everything a resolver is told about one invocation, in one immutable value.
+ *
+ * ⭐ INTRODUCED BY REVIEW FINDING SEC-AUTH-03. The finding's second half is about the resolver's
+ * INPUT rather than its output: the shape a handler used to pass was `Pick<…, 'headers'>` and
+ * nothing else, so a deployment "exposes only headers, not typed trusted gateway authorizer claims
+ * or the addressed action/resource". A resolver handed only headers cannot scope a grant to the
+ * action being invoked, cannot read a claim its gateway already verified without re-parsing a token
+ * itself, and cannot tell an update of row X from an update of row Y. Every one of those is a
+ * decision a deployment is entitled to make, and none of them was reachable.
+ *
+ * ⛔ NO PROVIDER TYPE APPEARS HERE, and none may. AAP §0.5.5 confines every cloud-provider type to
+ * `src/handlers/**` so a runtime migration touches four artifacts and no layer below the handlers;
+ * {@link headers} and {@link authorizerClaims} are therefore declared structurally, in shapes the
+ * provider's own event types are assignable to, rather than by naming them.
+ *
+ * ⛔ AND NOTHING HERE IS TRUSTED BY THIS PORT. This is the question, not the answer: the values
+ * below are what the invocation CLAIMS, except {@link authorizerClaims}, which is what a gateway
+ * the deployment trusts has already established. Deciding which of them to believe is the
+ * resolver's job, and a resolver that believes {@link headers} without verification is trusting
+ * caller input — the same warning {@link EntityAuthorizationRequest.entityID} carries.
+ */
+export interface InvocationSecurityRequest {
+  /**
+   * The routed action being invoked, as the routing layer addresses it — `product.saveProduct`,
+   * `sku.createSkus`, `google:feed.product`.
+   *
+   * The legacy equivalent is the `slatAction` the framework dispatched on, which
+   * `authenticateActionByAccount` receives as `arguments.action`
+   * [org/Hibachi/HibachiAuthenticationService.cfc:L10] and every classification test reads. So the
+   * ladder always knew which action it was authorising; this member restores that.
+   */
+  readonly action: string;
+
+  /** The operation being attempted on {@link entityName}. See {@link EntityCrudType}. */
+  readonly crudType: EntityCrudType;
+
+  /**
+   * The entity the operation targets, from the handler's own declaration — never from the request.
+   * See {@link EntityAuthorizationRequest.entityName}.
+   */
+  readonly entityName: string;
+
+  /**
+   * The addressed resource, when one is addressed. Absent means a creation.
+   * See {@link EntityAuthorizationRequest.entityID} for the full contract, which is the same one.
+   */
+  readonly entityID?: string;
+
+  /**
+   * The request's HTTP method, when the invocation carries one.
+   *
+   * Optional because a Lambda invocation need not have arrived over HTTP at all, and because the
+   * legacy routed on `slatAction` rather than on the method — `org/Hibachi/FW1/framework.cfc`
+   * dispatches the action irrespective of verb. It is offered so a resolver that DOES enforce a
+   * method policy (a CSRF origin/token policy, for instance) has the value without the handler
+   * having to widen its own event contract twice.
+   */
+  readonly httpMethod?: string;
+
+  /**
+   * The request headers, exactly as received and entirely unverified.
+   *
+   * Declared as a read-only string map so a provider's own header type is assignable to it. Absent
+   * values are admitted because a provider's header map declares them.
+   */
+  readonly headers: Readonly<Record<string, string | undefined>>;
+
+  /**
+   * Claims a gateway authoriser the deployment TRUSTS has already established for this invocation.
+   *
+   * ⭐ THIS IS THE ONLY MEMBER A RESOLVER MAY TREAT AS ESTABLISHED, and even then only because the
+   * deployment chose to put an authoriser in front of the function. It is `unknown`-valued because
+   * the shape is the authoriser's, not this port's: naming a claim set here would invent a token
+   * format the source describes nowhere (AAP §0.7.3 S9).
+   *
+   * Absent when no authoriser ran, which is the fail-closed case: a resolver with no trusted claims
+   * and no other trusted source must answer with the deny-all context rather than trusting a header.
+   */
+  readonly authorizerClaims?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * The resolver every routed member of this deliverable gates on, for one invocation.
+ *
+ * It is {@link RequestAuthorizationResolver} instantiated at {@link InvocationSecurityRequest} —
+ * named rather than written out at each call site, because SEC-AUTH-03 requires that ONE context
+ * shape reach handlers, population and audit, and a named type is what makes a divergence a compile
+ * error instead of a review finding.
+ */
+export type InvocationSecurityResolver = RequestAuthorizationResolver<InvocationSecurityRequest>;
 
 /**
  * The four access classifications the legacy declared on a controller, as a closed union.

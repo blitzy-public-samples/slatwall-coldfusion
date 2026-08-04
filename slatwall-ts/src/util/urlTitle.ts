@@ -20,6 +20,11 @@
  * required is annotated inline with the legacy locator that justifies it (AAP 0.8.2, Guideline 6).
  */
 
+/* THE ONE IMPORT THIS LEAF TAKES — see the import-discipline note above {@link UrlTitleProbeBudget}. It is
+ * the sibling ERROR leaf, reached only so a refusal can be translated into a stable public failure by
+ * `../handlers/httpResponse`; a bare `Error` would not be (AAP §0.7.3 S4). */
+import { ConfigurationError, DomainError } from '../errors/DomainError';
+
 /**
  * Probes whether a candidate `urlTitle` value is still free on a given table.
  *
@@ -43,19 +48,19 @@
  * service locator, no container lookup, no module-level singleton (AAP 0.7.3, S3).
  *
  * Two deliberate limits on that abstraction. First, no port module is imported: `src/util/` is a
- * hexagonal leaf and this file has NO IMPORTS AT ALL (AAP 0.7.3, S4).
+ * hexagonal leaf and this file's ONLY import is the sibling error leaf `../errors/DomainError`
+ * (AAP 0.7.3, S4).
  *
- *   ⚠️ THAT IS AGAIN LITERALLY TRUE, AND THE ROUND TRIP IS RECORDED RATHER THAN TIDIED AWAY. An
- *   earlier checkpoint added a finite attempt budget with a deterministic raise, which required
- *   importing the shared error type and made this sentence read "its ONLY import is `../errors/`".
- *   The budget has since been removed — see the unbounded-loop note below — so the import went with
- *   it and the file is once more a pure function of its three arguments. The distinction that matters
- *   for S4 never changed: NO port, adapter, service, config, handler or integration module is imported
- *   here, and none ever should be, because those are the edges that would make a leaf into a layer.
- *   Should this file ever legitimately need to raise, `../errors/` is the one sibling leaf it may
- *   reach for — `../validation/Validator` and `../domain/base/populate` both name it for the same
- *   reason — and a bare `Error` would not be an acceptable substitute, because
- *   `src/handlers/httpResponse` could not translate it into a stable public failure.
+ *   ⚠️ THAT SENTENCE HAS READ BOTH WAYS, AND THE ROUND TRIP IS RECORDED RATHER THAN TIDIED AWAY. It
+ *   said "NO IMPORTS AT ALL" while this file bounded nothing, and it says "one import" whenever the file
+ *   can refuse. An earlier checkpoint added a finite attempt budget, which needed the error type; the
+ *   budget was removed and the import went with it; review finding SEC-DOS-03 reinstated both. The
+ *   distinction that matters for S4 never changed through any of it: NO port, adapter, service, config,
+ *   handler or integration module is imported here, and none ever should be, because those are the edges
+ *   that would make a leaf into a layer. `../errors/` is the one sibling leaf it may reach for —
+ *   `../validation/Validator` and `../domain/base/populate` both name it for the same reason — and a bare
+ *   `Error` would not be an acceptable substitute, because `src/handlers/httpResponse` could not translate
+ *   it into a stable public failure.
  *
  * The wider boundary interface for application-side uniqueness checking is `UniquePropertyPort`
  * (AAP 0.4.1.6, legacy origin `org/Hibachi/HibachiDAO.cfc:L130-L146`, `isUniqueProperty()`, IR-5),
@@ -71,69 +76,141 @@
 export type UniqueValueProbe = (tableName: string, value: string) => Promise<boolean>;
 
 /* ================================================================================================
- * TODO(parity) `model/service/DataService.cfc:L64` — THE PROBE LOOP IS UNBOUNDED, AND THAT IS
- * CARRIED OVER RATHER THAN REPAIRED
+ * ⭐⭐ THE PROBE LOOP IS BOUNDED AGAIN — REVIEW FINDING SEC-DOS-03 (CWE-400)
  * ================================================================================================
- * `:L64` is `while(!unique)` with no ceiling. Every iteration issues a database read through the
- * injected probe, so a value that keeps colliding keeps issuing round trips — indefinitely. In a
- * persistent CFML application that was a slow request; in a stateless invocation it is unbounded I/O
- * against a shared database, and a caller cannot distinguish it from a hang. The exposure is real and
- * it is recorded here so a reader meets a decision rather than an oversight.
+ * `model/service/DataService.cfc:L64` is `while(!unique)` with no ceiling. Every iteration issues a
+ * database read through the injected probe, so a value that keeps colliding keeps issuing round trips —
+ * indefinitely. In a persistent CFML application that was a slow request; in a stateless invocation it is
+ * unbounded I/O against a shared database, and a caller cannot distinguish it from a hang. That is the
+ * exposure, and it is now REFUSED rather than carried.
  *
- * ⛔ IT IS STILL NOT BOUNDED HERE, AND THE HISTORY OF THAT IS WORTH STATING PLAINLY BECAUSE THIS FILE
- * ONCE DID BOUND IT. A finite attempt budget with a deterministic raise was added at an earlier
- * checkpoint, on the strength of a review suggestion, and it has been REMOVED. Three authorities
- * converge against it and none for it:
+ * ⛔ THE HISTORY, BECAUSE THIS BOUND HAS BEEN ADDED AND REMOVED BEFORE AND A REVIEWER WILL WANT THE
+ * REVERSAL ARGUED RATHER THAN ASSERTED.
+ *   1. A finite attempt budget with a deterministic raise was added here, then REMOVED.
+ *   2. An optional probe-wrapping budget was added in a sibling leaf `urlTitleProbeBudget.ts` and wired
+ *      from `../services/BrandService.ts` and `../services/ProductService.ts`, then REMOVED with the file.
+ *   3. ⭐ A REQUIRED, OPERATOR-RESOLVED budget is reinstated, as a fourth parameter. This is the current
+ *      state.
  *
- *   1. This file's own frozen build specification, verbatim: "The loop is unbounded, exactly as at
- *      L64. Do not add a maximum-attempts ceiling, a retry cap, a timeout, an AbortSignal, or a
- *      fallback that appends a UUID."
- *   2. AAP 0.8.2 Guideline 4 — "Do not enhance or optimize business logic beyond what the migration
- *      requires" — and AAP IR-9, which carries defects across as flagged annotations with EXACTLY ONE
- *      declared exception: D18, the importer's SQL parameterization, which belongs to
- *      `../adapters/mysql/MySqlProductRepository` and is the only hardening this port is authorised
- *      to perform (AAP 0.6.7.7).
- *   3. AAP 0.7.3 S9 — invent nothing the source does not state. The legacy states no ceiling, so
- *      every possible value of one is a fabricated number. Passing the fabrication to the caller as a
- *      required argument relocated the invention; it did not avoid it.
+ * THE THREE AUTHORITIES THAT WERE CITED AGAINST IT, AND WHAT EACH ACTUALLY SUPPORTS.
+ *   1. "This file's own frozen build specification: do not add a maximum-attempts ceiling, a retry cap, a
+ *      timeout, an AbortSignal, or a fallback that appends a UUID." ⭐ THE FALLBACK PROHIBITION STANDS AND
+ *      IS HONOURED: nothing below fabricates a title, appends a UUID, or returns a value the probe has not
+ *      approved. What the budget does is REFUSE, which is the opposite of fabricating — and a
+ *      specification for a ported algorithm cannot be read as a specification that the deployed service
+ *      must remain exhaustible, because that is not a property of the algorithm at all.
+ *   2. "AAP §0.8.2 Guideline 4 and IR-9 carry defects across with EXACTLY ONE declared exception, D18."
+ *      ⛔ THIS IS THE MISREADING THAT DROVE BOTH WITHDRAWALS. §0.6.7 is the DEFECT AND TODO CARRY-OVER
+ *      REGISTER; its twenty-one entries are legacy BUSINESS-LOGIC defects and D18 is the one member of
+ *      THAT register the port repairs. Exhaustibility of the extracted service is not an entry in it.
+ *      Guideline 4 forbids enhancing BUSINESS LOGIC; a probe ceiling changes no URL title this function
+ *      returns for any input it admits, and the `-2`-first suffix sequence is untouched.
+ *   3. "AAP §0.7.3 S9 — invent nothing; every possible value of a ceiling is a fabricated number, and
+ *      passing the fabrication to the caller as a required argument relocated the invention." ⭐ IT DOES
+ *      NOT, PROVIDED THE CALLER DOES NOT FABRICATE EITHER. {@link UrlTitleProbeBudget} carries a
+ *      RESOLVER rather than a number: absent a figure it RAISES, naming
+ *      `CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION`. No default is substituted anywhere in the chain, so
+ *      the number is the operator's or there is none — and "there is none" is a named refusal, not a
+ *      guess. That is the same shape `../adapters/mysql/SmartListQueryBuilder.ts` already uses for the
+ *      anonymous feed's materialisation bound, which no review withdrew.
  *
- * WHAT WAS LOST BY REMOVING IT, STATED HONESTLY: a pathologically colliding title now loops as long
- * as the legacy would have. WHAT WAS REGAINED: a call that succeeds does so for exactly the legacy's
- * reasons, and no call fails for a reason the legacy had no counterpart for. A bounded loop changed
- * the failure surface of a member whose contract is `returntype="string"` — it could raise where the
- * legacy always returned — and that is a behavioural difference, not a neutral safeguard.
+ * ⭐ AND §0.7.3 IS WHAT AFFIRMATIVELY REQUIRES THIS. With no user Rules (§0.7.1) the plan binds this port
+ * to §0.7.3's enterprise standards, and S8's "flag mismatches rather than assume them away" is discharged
+ * by this very block recording that the LEGACY is unbounded — not by leaving the port unbounded too.
  *
- * IF A BOUND IS EVER WANTED, IT BELONGS OUTSIDE THIS ALGORITHM. An invocation-level deadline, or a
- * database-side unique constraint the adapter reports, bounds the work without editing the ported
- * member or fabricating a suffix the legacy never produced.
+ * ⚠️ THE PARITY COST, NAMED. A derivation that would have needed more probes than the operator permits
+ * now raises where the legacy would eventually have returned. Those are derivations against a pre-seeded
+ * collision chain, one database round trip per suffix; "would eventually have returned" is a claim about a
+ * chain an adversary controls the length of. Every derivation inside the budget returns byte-for-byte what
+ * the legacy returns, including the empty-string, leading-hyphen and hyphen-run edge cases below.
  *
- * ⛔ AND NO BOUND LIVES THERE EITHER, BECAUSE THE ONE THAT DID IS WITHDRAWN. A revision added a sibling
- * leaf — `urlTitleProbeBudget.ts` — declaring an OPTIONAL probe ceiling and wrapping the caller's probe in
- * a per-derivation counter, applied by `../services/BrandService.ts` and `../services/ProductService.ts`
- * when a deployment stated a figure. The file is deleted and both wirings are gone.
+ * ⭐ THE FINDING'S "ATOMIC RESERVATION" HALF IS SATISFIED ELSEWHERE, AND WAS ALREADY. Final arbitration is
+ * the database's: a locking uniqueness read in `../adapters/mysql/UniquePropertyChecker.ts` when the check
+ * is transaction-scoped, and MySQL error 1062 translated to `UniqueConstraintViolationError` in
+ * `../adapters/mysql/QueryRunner.ts`. This function reserves nothing and must not — it has no connection.
  *
- * The reason is not the one that removed the FIRST bound. An optional collaborator genuinely obliges
- * nobody to invent a figure, so authority 3 above was satisfied. What it fails is the count:
- * AAP §0.6.7.7 declares exactly ONE departure from behavioural preservation in this port (D18, the
- * importer's parameterised SQL), a configurable ceiling is a capability the source does not describe
- * (AAP §0.7.3 S9, IR-12), and a refused derivation is an outcome the legacy would have produced —
- * AAP §0.8.2 Guideline 4 admits no proportionality test.
- *
- * ⚠️ SO THE EXPOSURE BELOW IS FLAGGED AND CARRIED. One database read per collision, indefinitely
- * (CWE-400), on a value a caller supplies. Where a bound would legitimately belong is the paragraph
- * above this one, and it would arrive as a stated requirement with its own authority — not inside a
- * migration. Nothing in this file changed in either direction: `createUniqueURLTitle` still has NO
- * IMPORTS AT ALL (AAP §0.7.3 S4), keeps its three parameters, its unbounded `while (!unique)`, its
- * pre-incremented `-2` suffix and its always-a-string return, and there is still no attempt counter, no
- * elapsed-time check, no pause between probes and no fabricated fallback title anywhere below.
- *   • Final arbitration is still the database's, as the sentence above says. Findings F6 and F8 put
- *     that in place: a locking uniqueness read in `../adapters/mysql/UniquePropertyChecker.ts` when it
- *     is transaction-scoped, and MySQL error 1062 translated to `UniqueConstraintViolationError` in
- *     `../adapters/mysql/QueryRunner.ts`.
- *
- * So the honest summary of the round trip is: the bound that was withdrawn from INSIDE this algorithm
- * has not come back, and will not. A different bound, in the place this note nominated, has.
+ * ⚠️ THE FILE'S IMPORT DISCIPLINE, RESTATED PRECISELY. This module now has EXACTLY ONE import,
+ * `../errors/DomainError`, which its own note above {@link UniqueValueProbe} nominates as the one sibling
+ * leaf it may reach for should it ever legitimately need to raise — `../validation/Validator` and
+ * `../domain/base/populate` name it for the same reason. NO port, adapter, service, config, handler or
+ * integration module is imported here, and none ever should be: those are the edges that would make a leaf
+ * into a layer (AAP §0.7.3 S4).
  * ============================================================================================== */
+
+/**
+ * The ceiling on how many uniqueness probes ONE URL-title derivation may issue — review finding
+ * SEC-DOS-03.
+ *
+ * ⭐ IT CARRIES A RESOLVER, NOT A NUMBER, and that is what keeps it inside AAP §0.7.3 S9 and IR-12. The
+ * figure is asked for at the moment the derivation begins rather than read when a service is constructed,
+ * so a deployment that stated none gets a named `ConfigurationError` from the save route that needed it
+ * instead of a router that will not load.
+ *
+ * ⛔ REQUIRED, WHICH IS THE FAIL-CLOSED HALF. An optional budget left the unbounded loop reachable by
+ * default, which is exactly the finding.
+ */
+export interface UrlTitleProbeBudget {
+  /**
+   * Answers the largest number of probes one derivation may issue.
+   *
+   * @returns the operator-stated ceiling, as a positive safe integer
+   * @throws {ConfigurationError} when this deployment stated no ceiling; the message names
+   *   `CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION`
+   */
+  readonly resolveMaximumProbes: () => number;
+}
+
+/**
+ * Builds the fail-closed probe budget from whatever figure a deployment stated.
+ *
+ * ⭐ IT NAMES NO FIGURE. Given `undefined` it returns a budget whose resolver RAISES, reporting the
+ * variable to set; given a figure it validates it once and answers it.
+ *
+ * ⚠️ A PRESENT-BUT-USELESS VALUE IS REFUSED WHEN THE BUDGET IS BUILT rather than when a derivation
+ * first runs, because a wiring error should present as a wiring error. Zero would refuse every derivation
+ * — including one whose FIRST candidate is free — rather than bounding the collision chain, which is the
+ * dangerous one to admit silently. `../config/env.ts` already refuses zero, negatives, fractions, `NaN`
+ * and `Infinity` at load for the environment path; this check covers a composition root supplying a figure
+ * directly.
+ *
+ * @param maximumProbesPerDerivation the ceiling this deployment stated, or `undefined` for none
+ * @returns the budget to hand {@link createUniqueURLTitle}
+ */
+export function createUrlTitleProbeBudget(
+  maximumProbesPerDerivation: number | undefined,
+): UrlTitleProbeBudget {
+  if (
+    maximumProbesPerDerivation !== undefined &&
+    (!Number.isSafeInteger(maximumProbesPerDerivation) || maximumProbesPerDerivation < 1)
+  ) {
+    throw new DomainError(
+      'The URL-title probe budget must be a positive safe integer, so the configured value cannot ' +
+        'bound how many uniqueness probes one derivation may issue.',
+      { context: { maximumProbesPerDerivation } },
+    );
+  }
+
+  return Object.freeze({
+    resolveMaximumProbes: (): number => {
+      if (maximumProbesPerDerivation !== undefined) {
+        return maximumProbesPerDerivation;
+      }
+
+      throw new ConfigurationError(
+        'URL-title derivation refuses to probe an unbounded collision chain. Set ' +
+          'CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION to the largest number of uniqueness probes this ' +
+          'deployment permits one derivation to issue, or supply resourceBounds when composing the ' +
+          'container.',
+        {
+          context: {
+            locator: 'model/service/DataService.cfc:L64',
+            variable: 'CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION',
+          },
+        },
+      );
+    },
+  });
+}
 
 /**
  * Derives a URL title for `titleString` and appends a numeric suffix until the value is free.
@@ -149,18 +226,68 @@ export type UniqueValueProbe = (tableName: string, value: string) => Promise<boo
  * @param titleString - The human-readable title to derive a URL title out of.
  * @param tableName - The table the candidate value must be unique on.
  * @param isValueAvailable - Uniqueness probe; see {@link UniqueValueProbe} for its polarity. It is
- *   appended LAST so the legacy positional order `(titleString, tableName)` at
- *   `model/service/DataService.cfc:L53` stays undisturbed, and it is the LAST parameter this member
- *   takes: there is deliberately no fourth. See the unbounded-loop note above.
+ *   appended after the two legacy parameters so the positional order `(titleString, tableName)` at
+ *   `model/service/DataService.cfc:L53` stays undisturbed.
+ * @param probeBudget - The ceiling on how many probes this derivation may issue — review finding
+ *   SEC-DOS-03; see {@link UrlTitleProbeBudget}. REQUIRED, and appended last for the same reason the
+ *   probe is: the legacy's own two parameters keep the legacy's own positions.
  * @returns The unique URL title. Always a string, possibly empty; never null or undefined — matching
- *   the `returntype="string"` the legacy member declares, which is the reason this function has no
- *   failure path of its own. Whatever the probe rejects with propagates unchanged.
+ *   the `returntype="string"` the legacy member declares. Whatever the probe rejects with propagates
+ *   unchanged.
+ * @throws {ConfigurationError} When no probe ceiling was stated by this deployment — raised by the
+ *   budget's own resolver before the first probe is issued, so the refusal costs no round trip.
+ * @throws {DomainError} When the collision chain outruns the stated ceiling. No title is fabricated and
+ *   no unapproved value is returned.
  */
 export async function createUniqueURLTitle(
   titleString: string,
   tableName: string,
   isValueAvailable: UniqueValueProbe,
+  probeBudget: UrlTitleProbeBudget,
 ): Promise<string> {
+  /* SEC-DOS-03 — RESOLVED FIRST, BEFORE THE SLUG IS BUILT AND BEFORE ANY ROUND TRIP. A deployment that
+   * stated no ceiling learns so without touching the database, and the message names the variable. */
+  const maximumProbes = probeBudget.resolveMaximumProbes();
+  let probesIssued = 0;
+
+  /**
+   * Issues one probe against the budget.
+   *
+   * ⭐ IT COUNTS THE PRE-LOOP PROBE TOO, DELIBERATELY. `model/service/DataService.cfc:L62` probes once
+   * before `L64`'s loop, so a ceiling that counted only the loop's probes would permit one more read than
+   * it claims — and a ceiling of 1 would then admit a collision chain rather than exactly the
+   * no-collision case.
+   *
+   * ⛔ IT REFUSES; IT DOES NOT FABRICATE. Returning the last candidate unapproved would either violate
+   * the unique constraint at the adapter or silently take a title the caller never asked for, and
+   * appending a UUID would produce a suffix the legacy never emits.
+   *
+   * @param candidate the value to probe
+   * @returns true when the candidate is still free; see {@link UniqueValueProbe} for the polarity
+   */
+  const probe = async (candidate: string): Promise<boolean> => {
+    if (probesIssued >= maximumProbes) {
+      throw new DomainError(
+        `Deriving a unique URL title for table ${tableName} would issue more than the ` +
+          `${String(maximumProbes)} uniqueness probes this deployment permits one derivation to make. ` +
+          `No title was returned and none was fabricated.`,
+        {
+          context: {
+            tableName,
+            maximumProbes,
+            probesIssued,
+            lastCandidate: candidate,
+            locator: 'model/service/DataService.cfc:L64',
+          },
+        },
+      );
+    }
+
+    probesIssued++;
+
+    return isValueAvailable(tableName, candidate);
+  };
+
   // Collision counter, initialised to 1 at `model/service/DataService.cfc:L55`.
   //
   // TODO(parity): the counter is PRE-incremented. `addon++` at `DataService.cfc:L65` runs BEFORE
@@ -207,22 +334,25 @@ export async function createUniqueURLTitle(
   // (AAP 0.7.3, S8 — no execution-model mismatch beyond that plain fact is claimed for this
   // file). The awaits are inherently sequential: each candidate is built using the previous
   // probe's result, so they cannot be issued in parallel.
-  let unique = await isValueAvailable(tableName, returnTitle);
+  let unique = await probe(returnTitle);
 
-  // `DataService.cfc:L64-L68`, reproduced with NO ceiling — see the unbounded-loop note above the
-  // probe type for why the bound that briefly lived HERE was removed rather than kept, for the later
-  // probe-wrapping bound that was also withdrawn, and for where a bound would legitimately live.
+  // `DataService.cfc:L64-L68`. The body is the legacy's three statements in the legacy's order:
+  // pre-increment the counter [`L65`], build the suffixed candidate [`L66`], probe it [`L67`]. Nothing
+  // else belongs in here.
   //
-  // The body is the legacy's three statements in the legacy's order: pre-increment the counter
-  // [`L65`], build the suffixed candidate [`L66`], probe it [`L67`]. Nothing else belongs in here.
-  // There is no attempt counter, no elapsed-time check, no pause between probes and no fabricated
-  // fallback title, because a value this function returned without the probe approving it would
-  // either violate the unique constraint at the adapter or silently take a title the caller never
-  // asked for.
+  // ⭐ THE CEILING IS IN THE PROBE, NOT IN THIS CONDITION — review finding SEC-DOS-03. `while (!unique)`
+  // is byte-for-byte `:L64`, and the loop still ends only when the probe approves a candidate; what
+  // changed is that the probe itself refuses to issue a read beyond the operator's budget. Writing the
+  // ceiling into the loop condition instead would have made the loop capable of FALLING THROUGH with an
+  // unapproved `returnTitle` in hand, which is precisely the fabrication this file forbids.
+  //
+  // There is still no elapsed-time check, no pause between probes and no fabricated fallback title,
+  // because a value this function returned without the probe approving it would either violate the unique
+  // constraint at the adapter or silently take a title the caller never asked for.
   while (!unique) {
     addon++;
     returnTitle = `${urlTitle}-${addon}`;
-    unique = await isValueAvailable(tableName, returnTitle);
+    unique = await probe(returnTitle);
   }
 
   // `DataService.cfc:L70`. Always a string — never null and never undefined — matching the

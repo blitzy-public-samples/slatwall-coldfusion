@@ -99,6 +99,7 @@
  */
 
 import {
+  DENY_ALL_POPULATION_AUTHORIZATION,
   buildOption,
   buildOptionGroup,
   buildProduct,
@@ -135,6 +136,8 @@ import {
   TEST_ADMIN_ACCOUNT_ID,
   TEST_NON_ADMIN_ACCOUNT_ID,
   type UrlTitleTableName,
+  GENEROUS_COMBINATION_BUDGET,
+  GENEROUS_URL_TITLE_PROBE_BUDGET,
 } from '../support/inMemoryRepositories';
 import {
   MERCHANDISE_PRODUCT_TYPE_ID,
@@ -204,7 +207,6 @@ import { manageEntity } from '../../src/domain/base/populate';
 import { PRODUCT_TYPE_ENTITY_METADATA } from '../../src/domain/product/ProductType';
 import type {
   LoadDataFromFileEvent,
-  ProductAuthorizationEvent,
   NewProductEvent,
   ProductHandler,
   ProductHandlerService,
@@ -220,10 +222,13 @@ import type {
 import type {
   AccountReference,
   EntityAuthorizationRequest,
-  RequestAuthorizationResolver,
+  InvocationSecurityRequest,
+  InvocationSecurityResolver,
+  RequestAuthorizationContext,
 } from '../../src/ports/AccountContextPort';
 import type { SmartListInput, SmartListResult } from '../../src/ports/SmartListQueryPort';
 import type { TransactionalWriteRunner } from '../../src/ports/UniquePropertyPort';
+import type { UrlTitleProbeBudget } from '../../src/util/urlTitle';
 
 /**
  * The physical tables the URL-title utility is asked about. `model/service/ProductService.cfc:L269`
@@ -661,6 +666,14 @@ interface HarnessOptions {
   readonly onImport?: ProductImportHandler;
   /** Replaces the validator. Used only where a landed boundary makes the real rule unreachable. */
   readonly validator?: ProductProcessValidator;
+
+  /**
+   * The URL-title probe ceiling this harness's service should carry — review finding SEC-DOS-03.
+   *
+   * Omitted means the generous fixture, so the cases that assert the slug transformation and the
+   * `-2`-first suffix sequence are unaffected. The block that asserts the ceiling states its own.
+   */
+  readonly urlTitleProbeBudget?: UrlTitleProbeBudget;
   /** Replaces the product base service, used to force a refused delete. */
   readonly baseService?: ProductBaseService;
   /** URL titles already taken, which drives the utility's collision suffix. */
@@ -896,6 +909,8 @@ function buildHarness(options: HarnessOptions = {}): Harness {
     validator,
     productTypeRoots.resolver,
     (sku: Sku) => createDefaultSkuDelegate(sku),
+    /* SEC-DOS-01 — generous, so no case in this suite depends on the ceiling. */
+    GENEROUS_COMBINATION_BUDGET,
   );
 
   const collaborators: ProductServiceCollaborators = {
@@ -914,6 +929,10 @@ function buildHarness(options: HarnessOptions = {}): Harness {
     productPropertyDescriptors: PRODUCT_PROPERTY_DESCRIPTORS,
     populationAuthorization: populationAuthorization.populationAuthorization,
     isUrlTitleAvailable,
+    /* SEC-DOS-03 — the probe ceiling both derivations resolve against; generous here, so the cases that
+     * assert the slug transformation and the suffix sequence are unaffected. The dedicated block that
+     * asserts the ceiling itself states its own figure. */
+    urlTitleProbeBudget: options.urlTitleProbeBudget ?? GENEROUS_URL_TITLE_PROBE_BUDGET,
     persistProduct: productPersister.persist,
     defaultSkuIdReader: (delegate: object): string => defaultSkuIdsByDelegate.get(delegate) ?? '',
     /*
@@ -5038,16 +5057,24 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
   function makeWriteRunner(graph: ProductWriteGraph): {
     readonly runner: TransactionalWriteRunner<ProductWriteGraph>;
     readonly decisions: ('commit' | 'rollback')[];
+    readonly securityContexts: RequestAuthorizationContext[];
   } {
     const decisions: ('commit' | 'rollback')[] = [];
+    /* SEC-AUTH-03 — every context the handler handed the boundary, in order. */
+    const securityContexts: RequestAuthorizationContext[] = [];
 
     return {
       decisions,
+      securityContexts,
       runner: {
         runWrite: async <TResult>(
+          /* SEC-AUTH-03 — see the identical note in BrandService.test.ts. */
+          security: RequestAuthorizationContext,
           work: (graph: ProductWriteGraph) => Promise<TResult>,
           hasErrors: () => boolean,
         ): Promise<TResult> => {
+          securityContexts.push(security);
+
           const result = await work(graph);
 
           if (hasErrors()) {
@@ -5066,10 +5093,14 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
   interface Probe {
     /** Every entity question asked, in order, so the legacy sequence is observable. */
     readonly asked: EntityAuthorizationRequest[];
+    /** Every request the resolver was HANDED — SEC-AUTH-03's widened input. */
+    readonly requests: InvocationSecurityRequest[];
     /** Every member reached, with its arguments and which object answered. */
     readonly calls: Invocation[];
     /** Every commit decision the runner took. */
     readonly decisions: ('commit' | 'rollback')[];
+    /** Every context handed to the write boundary — SEC-AUTH-03's propagation half. */
+    readonly securityContexts: readonly RequestAuthorizationContext[];
     readonly handler: ProductHandler;
   }
 
@@ -5077,33 +5108,54 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
    * @param account the principal the resolver reports, or `undefined` for "no principal at all"
    * @param grant   the entity CRUD types the permission model grants
    * @param options see {@link SurfaceOptions}
+   * @param refusedEntities entity names whose questions are REFUSED whatever the grant. ⭐ ADDED FOR
+   *   REVIEW FINDING SEC-AUTH-02: the subordinate question asks about a DIFFERENT entity, so a case that
+   *   wants "may update the product but not its SKUs" cannot express itself through `grant` alone.
    */
   function makeHandler(
     principal: AccountReference | undefined,
     grant: readonly string[],
     options: SurfaceOptions = {},
+    refusedEntities: readonly { readonly entityName: string }[] = [],
   ): Probe {
     const asked: EntityAuthorizationRequest[] = [];
+    const requests: InvocationSecurityRequest[] = [];
     const surface = makeSurface(options);
-    const { runner, decisions } = makeWriteRunner(surface.graph);
+    const { runner, decisions, securityContexts } = makeWriteRunner(surface.graph);
+    const refused = new Set(refusedEntities.map((entity) => entity.entityName));
 
-    const resolve: RequestAuthorizationResolver<ProductAuthorizationEvent> = () => ({
-      accountContext: { getCurrentAccount: () => principal },
-      entityAuthorization: {
-        authenticateEntity: (request: EntityAuthorizationRequest): boolean => {
-          asked.push(request);
-          return grant.includes(request.crudType);
+    const resolve: InvocationSecurityResolver = (request) => {
+      requests.push(request);
+
+      return {
+        accountContext: { getCurrentAccount: () => principal },
+        entityAuthorization: {
+          authenticateEntity: (question: EntityAuthorizationRequest): boolean => {
+            asked.push(question);
+            return !refused.has(question.entityName) && grant.includes(question.crudType);
+          },
         },
-      },
-    });
+        populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
+      };
+    };
 
     return {
       asked,
+      requests,
       calls: surface.calls,
       decisions,
+      securityContexts,
       handler: createProductHandler(surface.service, resolve, runner),
     };
   }
+
+  /**
+   * Another party's product identifier — the victim in SEC-AUTH-02's exploit.
+   *
+   * A distinct 32-character value, so an assertion that the addressed identifier reached the question
+   * cannot pass by coincidence with the fixture's own product.
+   */
+  const VICTIM_PRODUCT_ID = 'ffffffff000000000000000000000009';
 
   /** A handler admitting every request, for cases about routing rather than the gate. */
   function admitAll(options: SurfaceOptions = {}): Probe {
@@ -5123,6 +5175,16 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
   /** The event slice the payload routes declare. */
   function payloadEvent(body: string, productID: string = PRODUCT_ID): ProductPayloadEvent {
     return { body, pathParameters: { productID }, headers: {} };
+  }
+
+  /**
+   * The payload slice that addresses NO product, so `saveProduct` is a creation.
+   *
+   * ⭐ ADDED FOR REVIEW FINDING SEC-AUTH-01: the gate's question now follows the operation, so the create
+   * and update arms need two different events to tell them apart.
+   */
+  function unaddressedPayloadEvent(body: string): ProductPayloadEvent {
+    return { body, pathParameters: {}, headers: {} };
   }
 
   /** The event slice the product-type payload route declares. */
@@ -5232,43 +5294,134 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
       expect(probe.calls).toStrictEqual([]);
     });
 
-    it('NET-NEW — HibachiAuthenticationService.cfc:L68-L69 — every process member is anyLogin', async () => {
-      /* The ladder's `process` branch is a bare `return true`: `left(itemName,7)=="process"` short-
-       * circuits before any entity question. A logged-in principal with NO entity grant must therefore
-       * be admitted, and the permission model must not be consulted at all. */
+    /* ==============================================================================================
+     * ⭐⭐ REVIEW FINDING SEC-AUTH-02 (CWE-862, CWE-639) — THIS CASE USED TO REQUIRE THE VULNERABILITY
+     * ==============================================================================================
+     * It was named "every process member is anyLogin" and it required a logged-in account with NO entity
+     * grant to be ADMITTED to `processProductAddOptionGroup`, `processProductAddOption` and
+     * `processProductUpdateSkus`, with `probe.asked` left EMPTY to prove the permission model was never
+     * consulted. Its legacy citation is accurate — the ladder's `process` branch really is a bare
+     * `return true` — but in the legacy that branch was reached only through an administrative subsystem
+     * that had already placed the request; carrying the `return true` without the subsystem that guarded
+     * it reproduced the short-circuit and none of its context. The consequence was that ANY authenticated
+     * account could mutate ANY product by naming its identifier.
+     *
+     * The replacement below is the corrected contract: every process route requires `update` on `Product`,
+     * and the four that write SKU or image state additionally require `update` on `Sku`.
+     * `../../src/handlers/productHandler.ts` carries the full withdrawal record.
+     * ============================================================================================ */
+    it('NET-NEW — SEC-AUTH-02 — a grant-less account is REFUSED by every process route', async () => {
       const probe = makeHandler(account(), []);
 
       const processRoutes = [
         await probe.handler.processProductAddOptionGroup(payloadEvent('{"optionGroup":"g1"}')),
         await probe.handler.processProductAddOption(payloadEvent('{"option":"o1"}')),
         await probe.handler.processProductUpdateSkus(payloadEvent('{}')),
+        await probe.handler.processProductAddProductReview(payloadEvent('{}')),
+        await probe.handler.processProductAddSubscriptionTerm(payloadEvent('{}')),
+        await probe.handler.processProductDeleteDefaultImage(payloadEvent('{}')),
+        await probe.handler.processProductUpdateDefaultImageFileNames(payloadEvent('{}')),
+        await probe.handler.processProductUploadDefaultImage(payloadEvent('{}')),
       ];
 
+      /* 403, not 401: the principal IS authenticated. And not 200: the operation is not authorised. */
       for (const result of processRoutes) {
-        expect(result.statusCode).not.toBe(401);
-        expect(result.statusCode).not.toBe(403);
+        expect(result.statusCode).toBe(403);
       }
 
-      // ⛔ Removing the anyLogin short-circuit would have produced entity questions here.
-      expect(probe.asked).toStrictEqual([]);
-    });
-
-    it('NET-NEW — HibachiAuthenticationService.cfc:L71-L77 — save asks create THEN update, in order', async () => {
-      // A grant on `update` alone must still succeed, because either question granting is sufficient.
-      const probe = makeHandler(account(), ['update']);
-
-      await probe.handler.saveProduct(payloadEvent('{}'));
-
-      expect(probe.asked.map((request) => request.crudType)).toStrictEqual(['create', 'update']);
+      /* ⛔ AND THE PERMISSION MODEL WAS CONSULTED, which is the assertion whose inverse this case used to
+       * make. Every route asked `update` on `Product` — the operation it performs — before resolving
+       * anything. Nothing reached the service, so no victim product was read or written. */
+      expect(probe.asked).toHaveLength(processRoutes.length);
       expect(probe.asked.every((request) => request.entityName === 'Product')).toBe(true);
+      expect(probe.asked.every((request) => request.crudType === 'update')).toBe(true);
+      expect(probe.calls).toStrictEqual([]);
+      expect(probe.decisions).toStrictEqual([]);
     });
 
-    it('NET-NEW — the create grant SHORT-CIRCUITS, so update is never asked', async () => {
-      const probe = makeHandler(account(), ['create']);
+    it('NET-NEW — SEC-AUTH-02 — the addressed victim identifier travels with the question', async () => {
+      /* The exploit named another party's product in `pathParameters.productID`. The gate now asks about
+       * that identifier, so a deployment that scopes grants per row can refuse it — and a deployment that
+       * does not still refuses on the entity question above. */
+      const probe = makeHandler(account(), []);
 
-      await probe.handler.saveProduct(payloadEvent('{}'));
+      await probe.handler.processProductUpdateSkus(payloadEvent('{}', VICTIM_PRODUCT_ID));
 
-      expect(probe.asked.map((request) => request.crudType)).toStrictEqual(['create']);
+      expect(probe.asked).toStrictEqual([
+        { entityName: 'Product', crudType: 'update', entityID: VICTIM_PRODUCT_ID },
+      ]);
+    });
+
+    it('NET-NEW — SEC-AUTH-02 — Product update alone is not enough where SKU state is written', async () => {
+      /* The subordinate question is a CONJUNCTION. A principal that may update the product but not its
+       * SKUs is refused by the four routes that write SKU or image state, and admitted by the two whose
+       * writes belong to families this deliverable does not model. */
+      const productOnly = makeHandler(account(), ['update'], {}, [{ entityName: 'Sku' }]);
+
+      expect(
+        (await productOnly.handler.processProductUpdateSkus(payloadEvent('{}'))).statusCode,
+      ).toBe(403);
+      expect(productOnly.asked.map((request) => request.entityName)).toStrictEqual([
+        'Product',
+        'Sku',
+      ]);
+      expect(productOnly.calls).toStrictEqual([]);
+
+      /* The two boundary rows ask about `Product` and nothing else: inventing a permission name for an
+       * entity this port does not model would be fabrication (AAP §0.7.3 S9). They are admitted by the
+       * gate and then answer the boundary's own refusal. */
+      const boundary = makeHandler(account(), ['update'], {}, [{ entityName: 'Sku' }]);
+      const review = await boundary.handler.processProductAddProductReview(payloadEvent('{}'));
+      expect(review.statusCode).not.toBe(401);
+      expect(review.statusCode).not.toBe(403);
+      expect(boundary.asked.map((request) => request.entityName)).toStrictEqual(['Product']);
+    });
+
+    it('NET-NEW — SEC-AUTH-02 — both grants together admit a SKU-writing process route', async () => {
+      const granted = makeHandler(account(), ['update']);
+
+      const result = await granted.handler.processProductUpdateSkus(payloadEvent('{}'));
+
+      expect(result.statusCode).not.toBe(401);
+      expect(result.statusCode).not.toBe(403);
+      expect(granted.asked).toStrictEqual([
+        { entityName: 'Product', crudType: 'update', entityID: PRODUCT_ID },
+        { entityName: 'Sku', crudType: 'update' },
+      ]);
+    });
+
+    /* ==============================================================================================
+     * ⭐⭐ REVIEW FINDING SEC-AUTH-01 — THE OTHER TWO CASES THAT USED TO REQUIRE A VULNERABILITY
+     * ==============================================================================================
+     * "save asks create THEN update, in order" and "the create grant SHORT-CIRCUITS, so update is never
+     * asked" both required the ordered pair. Under that pair a `create`-only principal could name an
+     * existing product and have it UPDATED. The question now follows the operation.
+     * ============================================================================================ */
+    it('NET-NEW — SEC-AUTH-01 — saveProduct asks create when UNADDRESSED and update when ADDRESSED', async () => {
+      // Unaddressed — a creation. `create` alone grants it; `update` is never asked.
+      const creating = makeHandler(account(), ['create']);
+      await creating.handler.saveProduct(unaddressedPayloadEvent('{}'));
+      expect(creating.asked).toStrictEqual([{ entityName: 'Product', crudType: 'create' }]);
+
+      // Addressed — an update. `update` alone grants it; `create` is never asked.
+      const updating = makeHandler(account(), ['update']);
+      await updating.handler.saveProduct(payloadEvent('{}'));
+      expect(updating.asked).toStrictEqual([
+        { entityName: 'Product', crudType: 'update', entityID: PRODUCT_ID },
+      ]);
+    });
+
+    it('NET-NEW — SEC-AUTH-01 — a create-only principal can no longer UPDATE an addressed product', async () => {
+      const escalating = makeHandler(account(), ['create']);
+
+      const result = await escalating.handler.saveProduct(payloadEvent('{}'));
+
+      expect(result.statusCode).toBe(403);
+      expect(escalating.asked).toStrictEqual([
+        { entityName: 'Product', crudType: 'update', entityID: PRODUCT_ID },
+      ]);
+      expect(escalating.calls).toStrictEqual([]);
+      expect(escalating.decisions).toStrictEqual([]);
     });
 
     it('NET-NEW — AAP §0.4.2.1 — getProductSkusBySelectedOptions asks about Sku, not Product', async () => {
@@ -5282,22 +5435,38 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
         headers: {},
       });
 
-      expect(probe.asked).toStrictEqual([{ entityName: 'Sku', crudType: 'read' }]);
+      expect(probe.asked).toStrictEqual([
+        { entityName: 'Sku', crudType: 'read', entityID: PRODUCT_ID },
+      ]);
     });
 
     it('NET-NEW — the two product-type routes ask about ProductType, not Product', async () => {
       const read = makeHandler(account(), ['read']);
       await read.handler.getProductType(identifierEvent(PRODUCT_TYPE_ID));
-      expect(read.asked).toStrictEqual([{ entityName: 'ProductType', crudType: 'read' }]);
+      expect(read.asked).toStrictEqual([
+        { entityName: 'ProductType', crudType: 'read', entityID: PRODUCT_TYPE_ID },
+      ]);
 
-      const save = makeHandler(account(), ['create']);
+      /* SEC-AUTH-01: `saveProductType` has no creation path at all — an unaddressed request is a 400 —
+       * so it asks `update` and never `create`, and a `create`-only grant no longer reaches it. */
+      const save = makeHandler(account(), ['update']);
       await save.handler.saveProductType(productTypePayloadEvent('{}', PRODUCT_TYPE_ID));
-      expect(save.asked).toStrictEqual([{ entityName: 'ProductType', crudType: 'create' }]);
+      expect(save.asked).toStrictEqual([
+        { entityName: 'ProductType', crudType: 'update', entityID: PRODUCT_TYPE_ID },
+      ]);
+
+      const createOnly = makeHandler(account(), ['create']);
+      expect(
+        (await createOnly.handler.saveProductType(productTypePayloadEvent('{}', PRODUCT_TYPE_ID)))
+          .statusCode,
+      ).toBe(403);
     });
 
-    it('NET-NEW — loadDataFromFile is SECURE create-then-update on Product, not anyLogin', async () => {
+    it('NET-NEW — loadDataFromFile is SECURE on Product, not anyLogin', async () => {
       /* Its `load` prefix matches no branch of the legacy ladder, so it falls through to the terminal
-       * `return false` at [:L83] — i.e. it is NOT a process member and must not be admitted as one. */
+       * `return false` at [:L83] — i.e. it is NOT a process member and must not be admitted as one.
+       * SEC-AUTH-01: the importer addresses no single row, so the question is the CREATE arm of the save
+       * requirement, asked once rather than as an ordered pair. */
       const refused = makeHandler(account(), []);
       const result = await refused.handler.loadDataFromFile({
         queryStringParameters: { fileURL: 'https://example.test/products.txt' },
@@ -5306,8 +5475,7 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
 
       expect(result.statusCode).toBe(403);
       expect(refused.calls).toStrictEqual([]);
-      expect(refused.asked.map((request) => request.crudType)).toStrictEqual(['create', 'update']);
-      expect(refused.asked.every((request) => request.entityName === 'Product')).toBe(true);
+      expect(refused.asked).toStrictEqual([{ entityName: 'Product', crudType: 'create' }]);
     });
 
     it('NET-NEW — newProduct asks create ALONE, and deleteProduct asks delete ALONE', async () => {
@@ -5317,7 +5485,30 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
 
       const remove = makeHandler(account(), ['delete']);
       await remove.handler.deleteProduct(identifierEvent(PRODUCT_ID));
-      expect(remove.asked).toStrictEqual([{ entityName: 'Product', crudType: 'delete' }]);
+      expect(remove.asked).toStrictEqual([
+        { entityName: 'Product', crudType: 'delete', entityID: PRODUCT_ID },
+      ]);
+    });
+
+    it('NET-NEW — SEC-AUTH-03 — the resolver is told the action and the resolved context reaches the write', async () => {
+      const probe = makeHandler(account(), ['update']);
+
+      await probe.handler.processProductUpdateSkus(payloadEvent('{}'));
+
+      /* ONE resolution, carrying the routed action, the single operation and the addressed row. */
+      expect(probe.requests).toHaveLength(1);
+      expect(probe.requests[0]).toMatchObject({
+        action: 'product.processProductUpdateSkus',
+        crudType: 'update',
+        entityName: 'Product',
+        entityID: PRODUCT_ID,
+      });
+
+      /* And the write ran under THAT context rather than a memoised principal. */
+      expect(probe.securityContexts).toHaveLength(1);
+      expect(probe.securityContexts[0]?.accountContext.getCurrentAccount()).toStrictEqual(
+        account(),
+      );
     });
   });
 

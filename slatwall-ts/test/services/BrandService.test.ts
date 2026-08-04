@@ -200,13 +200,14 @@ import { BrandService } from '../../src/services/BrandService';
  * over-budget URL-title derivation by class; the optional probe ceiling that raised it is withdrawn, so no
  * case in this file has any error class to name. See the GROUP A2 IS GONE block below.
  */
-import { createUniqueURLTitle } from '../../src/util/urlTitle';
+import { createUniqueURLTitle, createUrlTitleProbeBudget } from '../../src/util/urlTitle';
 import {
   brandValidationRules,
   physicalCountsPropertyValidation,
   productsPropertyValidation,
 } from '../../src/validation/rules/brand.rules';
 import {
+  DENY_ALL_POPULATION_AUTHORIZATION,
   buildProduct,
   createBaseServicePersistenceDouble,
   createInMemoryBrandRepository,
@@ -215,13 +216,15 @@ import {
   createUrlTitleAvailabilityDouble,
   createValidatorHarness,
   physicalID,
+  GENEROUS_URL_TITLE_PROBE_BUDGET,
+  UNSTATED_URL_TITLE_PROBE_BUDGET,
 } from '../support/inMemoryRepositories';
 
 import type { BrandPropertyName } from '../../src/domain/product/Brand';
 import type { BrandRepository } from '../../src/ports/repositories/BrandRepository';
 import type { UniquePropertyPort } from '../../src/ports/UniquePropertyPort';
 import type { BrandBaseService, ManagedBrand } from '../../src/services/BrandService';
-import type { UniqueValueProbe } from '../../src/util/urlTitle';
+import type { UniqueValueProbe, UrlTitleProbeBudget } from '../../src/util/urlTitle';
 import type { ValidationContext } from '../../src/validation/Validator';
 import type {
   BaseServicePersistenceDouble,
@@ -239,7 +242,6 @@ import { manageEntity } from '../../src/domain/base/populate';
 import { Product } from '../../src/domain/product/Product';
 import { BRAND_ACCESS_MATRIX, createBrandHandler } from '../../src/handlers/brandHandler';
 import type {
-  BrandAuthorizationEvent,
   BrandHandler,
   BrandHandlerService,
   BrandIdentifierEvent,
@@ -248,7 +250,9 @@ import type {
 import type {
   AccountReference,
   EntityAuthorizationRequest,
-  RequestAuthorizationResolver,
+  InvocationSecurityRequest,
+  InvocationSecurityResolver,
+  RequestAuthorizationContext,
 } from '../../src/ports/AccountContextPort';
 import type { TransactionalWriteRunner } from '../../src/config/container';
 import { DomainError } from '../../src/errors/DomainError';
@@ -415,6 +419,14 @@ interface BrandHarnessOptions {
   readonly settingValuesUpdated?: number;
   /** Brands already stored, so a read or a delete has something to find. */
   readonly storedBrands?: readonly ManagedBrand[];
+  /**
+   * The SEC-DOS-03 probe ceiling this case states — see the GROUP A2 IS REINSTATED block below.
+   *
+   * Defaults to {@link GENEROUS_URL_TITLE_PROBE_BUDGET}, deliberately: every OTHER case in this file is
+   * about the derivation itself, and a case decided incidentally by a ceiling would be a case about the
+   * wrong thing. The ceiling's own behaviour is asserted only where a case states a tight figure here.
+   */
+  readonly urlTitleProbeBudget?: UrlTitleProbeBudget;
 }
 
 /** The service under test plus every observation point the real graph offers. */
@@ -499,7 +511,11 @@ function createBrandHarness(options: BrandHarnessOptions = {}): BrandHarness {
     baseService,
     brands,
     persistence,
-    service: new BrandService(brands.repository, baseService),
+    service: new BrandService(
+      brands.repository,
+      baseService,
+      options.urlTitleProbeBudget ?? GENEROUS_URL_TITLE_PROBE_BUDGET,
+    ),
     validation,
   };
 }
@@ -576,7 +592,7 @@ function createDelegationHarness(options: DelegationHarnessOptions = {}): Delega
     brands,
     deletes,
     saves,
-    service: new BrandService(brands.repository, baseService),
+    service: new BrandService(brands.repository, baseService, GENEROUS_URL_TITLE_PROBE_BUDGET),
   };
 }
 
@@ -600,7 +616,12 @@ describe('createUniqueURLTitle — the slug pipeline, in the legacy order', () =
    */
   async function slug(input: string): Promise<string> {
     const probe = createUrlTitleAvailabilityDouble();
-    return createUniqueURLTitle(input, BRAND_TABLE, brandUrlTitleProbe(probe));
+    return createUniqueURLTitle(
+      input,
+      BRAND_TABLE,
+      brandUrlTitleProbe(probe),
+      GENEROUS_URL_TITLE_PROBE_BUDGET,
+    );
   }
 
   it('NET-NEW — model/service/DataService.cfc:L57-L58 — trims, lowercases, strips, THEN collapses spaces', async () => {
@@ -687,7 +708,12 @@ describe('createUniqueURLTitle — the collision suffix sequence', () => {
     const probe = createUrlTitleAvailabilityDouble();
 
     await expect(
-      createUniqueURLTitle('My Brand', BRAND_TABLE, brandUrlTitleProbe(probe)),
+      createUniqueURLTitle(
+        'My Brand',
+        BRAND_TABLE,
+        brandUrlTitleProbe(probe),
+        GENEROUS_URL_TITLE_PROBE_BUDGET,
+      ),
     ).resolves.toBe('my-brand');
 
     /*
@@ -701,7 +727,12 @@ describe('createUniqueURLTitle — the collision suffix sequence', () => {
     const probe = createUrlTitleAvailabilityDouble(heldBrandTitles(['my-brand']));
 
     await expect(
-      createUniqueURLTitle('My Brand', BRAND_TABLE, brandUrlTitleProbe(probe)),
+      createUniqueURLTitle(
+        'My Brand',
+        BRAND_TABLE,
+        brandUrlTitleProbe(probe),
+        GENEROUS_URL_TITLE_PROBE_BUDGET,
+      ),
     ).resolves.toBe('my-brand-2');
 
     /*
@@ -718,7 +749,12 @@ describe('createUniqueURLTitle — the collision suffix sequence', () => {
     const probe = createUrlTitleAvailabilityDouble(heldBrandTitles(['my-brand', 'my-brand-2']));
 
     await expect(
-      createUniqueURLTitle('My Brand', BRAND_TABLE, brandUrlTitleProbe(probe)),
+      createUniqueURLTitle(
+        'My Brand',
+        BRAND_TABLE,
+        brandUrlTitleProbe(probe),
+        GENEROUS_URL_TITLE_PROBE_BUDGET,
+      ),
     ).resolves.toBe('my-brand-3');
 
     expect(probe.calls.map((call) => call.value)).toEqual(candidateRun('my-brand', 2));
@@ -734,7 +770,12 @@ describe('createUniqueURLTitle — the collision suffix sequence', () => {
       const held = candidateRun('x', collisions).slice(0, collisions);
       const probe = createUrlTitleAvailabilityDouble(heldBrandTitles(held));
 
-      const resolved = await createUniqueURLTitle('X', BRAND_TABLE, brandUrlTitleProbe(probe));
+      const resolved = await createUniqueURLTitle(
+        'X',
+        BRAND_TABLE,
+        brandUrlTitleProbe(probe),
+        GENEROUS_URL_TITLE_PROBE_BUDGET,
+      );
 
       expect(held).toHaveLength(collisions);
       expect(probe.calls).toHaveLength(collisions + 1);
@@ -759,7 +800,12 @@ describe('createUniqueURLTitle — the collision suffix sequence', () => {
     await expect(probe.probe.isUrlTitleAvailable(BRAND_TABLE, 'taken')).resolves.toBe(false);
     await expect(probe.probe.isUrlTitleAvailable(BRAND_TABLE, 'free')).resolves.toBe(true);
     await expect(
-      createUniqueURLTitle('Taken', BRAND_TABLE, brandUrlTitleProbe(probe)),
+      createUniqueURLTitle(
+        'Taken',
+        BRAND_TABLE,
+        brandUrlTitleProbe(probe),
+        GENEROUS_URL_TITLE_PROBE_BUDGET,
+      ),
     ).resolves.toBe('taken-2');
   });
 
@@ -782,7 +828,12 @@ describe('createUniqueURLTitle — the collision suffix sequence', () => {
      */
     const probe = createUrlTitleAvailabilityDouble(heldBrandTitles(['acme']));
 
-    await createUniqueURLTitle('ACME', BRAND_TABLE, brandUrlTitleProbe(probe));
+    await createUniqueURLTitle(
+      'ACME',
+      BRAND_TABLE,
+      brandUrlTitleProbe(probe),
+      GENEROUS_URL_TITLE_PROBE_BUDGET,
+    );
 
     expect(probe.calls).toEqual([
       { tableName: 'SwBrand', value: 'acme' },
@@ -834,7 +885,12 @@ describe('createUniqueURLTitle — the collision suffix sequence', () => {
     );
 
     await expect(
-      createUniqueURLTitle('My Brand', BRAND_TABLE, brandUrlTitleProbe(probe)),
+      createUniqueURLTitle(
+        'My Brand',
+        BRAND_TABLE,
+        brandUrlTitleProbe(probe),
+        GENEROUS_URL_TITLE_PROBE_BUDGET,
+      ),
     ).resolves.toBe('my-brand-501');
 
     // 501 round trips: the bare candidate plus `-2` through `-501`. One per iteration, no batching.
@@ -856,44 +912,203 @@ describe('createUniqueURLTitle — the collision suffix sequence', () => {
      */
     const slugged = createUrlTitleAvailabilityDouble(heldBrandTitles(['my-brand']));
     await expect(
-      createUniqueURLTitle('  My Brand!  ', BRAND_TABLE, brandUrlTitleProbe(slugged)),
+      createUniqueURLTitle(
+        '  My Brand!  ',
+        BRAND_TABLE,
+        brandUrlTitleProbe(slugged),
+        GENEROUS_URL_TITLE_PROBE_BUDGET,
+      ),
     ).resolves.toBe('my-brand-2');
     // The suffix hangs off `my-brand`, so the discarded `!` and the trimmed padding cannot reappear.
     expect(slugged.calls.map((call) => call.value)).toEqual(['my-brand', 'my-brand-2']);
 
     const empty = createUrlTitleAvailabilityDouble(heldBrandTitles(['']));
-    await expect(createUniqueURLTitle('!!!', BRAND_TABLE, brandUrlTitleProbe(empty))).resolves.toBe(
-      '-2',
-    );
+    await expect(
+      createUniqueURLTitle(
+        '!!!',
+        BRAND_TABLE,
+        brandUrlTitleProbe(empty),
+        GENEROUS_URL_TITLE_PROBE_BUDGET,
+      ),
+    ).resolves.toBe('-2');
   });
 });
 
 /* ================================================================================================
- * ⛔ GROUP A2 IS GONE — THE OPTIONAL PROBE CEILING IS WITHDRAWN
+ * ⭐ GROUP A2 IS REINSTATED — THE PROBE CEILING IS REQUIRED, NOT OPTIONAL AND NOT WITHDRAWN
  *
  * ⭐ THE BOUND IS NOT IN THE ALGORITHM, AND EVERY CASE HERE IS ORGANISED AROUND THAT. `:L64`'s
- * `while(!unique)` is ported verbatim and stays unbounded; the probe-budget section of `src/util/urlTitle.ts` wraps the
- * PROBE, `BrandService` applies the wrapper only when a deployment stated a figure, and the refusal
- * reaches the algorithm through the one channel it already declares — "whatever the probe rejects with
- * propagates unchanged".
- * A revision declared an optional `UrlTitleProbeBudget` third constructor parameter on `BrandService`
- * and a `boundUniqueValueProbe` wrapper in `src/util/urlTitleProbeBudget.ts`, and this file carried a
- * whole describe block — "saveBrand — the probe ceiling exists only when an operator states it" — pinning
- * the wired refusal, the at-ceiling admission, a ceiling of one, the per-derivation counter lifetime (M7)
- * and the mis-wiring refusal. Every one of those cases is deleted along with the mechanism.
+ * `while(!unique)` is ported verbatim and stays unbounded IN SHAPE; `src/util/urlTitle.ts` wraps the
+ * PROBE, and the refusal reaches the algorithm through the one channel it already declares — "whatever the
+ * probe rejects with propagates unchanged". The loop condition is untouched, which is why the suffix
+ * sequence below is byte-identical for every input inside the budget.
  *
- * WHY. `model/service/DataService.cfc:L64` is `while(!unique)` with no ceiling. An OPTIONAL ceiling
- * obliges no deployment to invent a figure — that objection is answered — but it still adds a capability
- * the source does not describe (AAP §0.7.3 S9, IR-12), and it still refuses derivations the legacy
- * completed, which is an outcome change. AAP §0.6.7.7 declares exactly ONE departure from behavioural
- * preservation in this port (D18, the importer's parameterised SQL) and AAP §0.8.2 Guideline 4 admits no
- * proportionality test.
+ * THE HISTORY, IN FULL, BECAUSE THIS POSITION HAS MOVED TWICE:
+ *  1. A revision declared an OPTIONAL `UrlTitleProbeBudget` third constructor parameter and pinned it here.
+ *  2. A later revision WITHDREW the parameter and the whole block, on this argument: "`DataService.cfc:L64`
+ *     is `while(!unique)` with no ceiling; an optional ceiling still adds a capability the source does not
+ *     describe (AAP §0.7.3 S9, IR-12) and still refuses derivations the legacy completed; AAP §0.6.7.7
+ *     declares exactly ONE departure from behavioural preservation (D18) and §0.8.2 Guideline 4 admits no
+ *     proportionality test."
+ *  3. THAT ARGUMENT IS WRONG, and this is the correction. §0.6.7 is the DEFECT AND TODO CARRY-OVER
+ *     REGISTER: its twenty-one entries are legacy BUSINESS-LOGIC defects — a misnamed struct, an inverted
+ *     cache guard, an unreachable private method — and D18 is the one member of THAT REGISTER the port
+ *     repairs. The availability of the extracted service is not an entry in it. Reading D18's exception as
+ *     a licence to ship an exploitable resource-exhaustion path would make §0.6.7.7 say that a migration
+ *     must reproduce a denial-of-service vector.
+ *  4. Guideline 4 forbids enhancing BUSINESS LOGIC. The ceiling changes not one derived title for any
+ *     input it admits: the slug, the pre-increment, the `-2`-first suffix sequence and the empty-string,
+ *     leading-hyphen and hyphen-run edge cases are all unchanged, and Group A's 501-probe parity run below
+ *     still passes because its budget admits it.
+ *  5. AAP §0.7.3 affirmatively requires the other direction. With no user Rules (§0.7.1) this port is bound
+ *     to §0.7.3's enterprise standards, and S8 — "flag mismatches rather than assume them away" — is
+ *     discharged by the `TODO(parity)` blocks that record the LEGACY as unbounded, not by leaving the PORT
+ *     unbounded too.
+ *  6. IR-12 AND S9 ARE HONOURED EXACTLY. The port authors no figure. `src/util/urlTitle.ts` takes a
+ *     RESOLVER, and given no operator figure that resolver raises a named `ConfigurationError` reporting
+ *     `CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION`. An unstated bound fails CLOSED. The only thing that
+ *     changed between step 1 and now is optional → REQUIRED, because an optional budget left the unbounded
+ *     loop reachable by default, which is precisely what review finding SEC-DOS-03 named.
  *
- * ⭐ WHAT SURVIVES, AND IT IS THE PART THAT MATTERS. Group A's 501-probe run above is the parity guard and
- * is unchanged: the algorithm probes once per collision, indefinitely, and this suite asserts it. The
- * unbounded probing is FLAGGED at `src/util/urlTitle.ts`, which records where a bound would legitimately
- * belong — an invocation-level deadline, or a database-side unique constraint the adapter reports.
+ * ⭐ WHAT THE CASES BELOW PIN, and note the fixtures state the figures rather than the port: a test IS the
+ * operator, so a fixture naming a ceiling exercises the mechanism instead of inventing a default.
  * ============================================================================================== */
+
+describe('saveBrand — the SEC-DOS-03 probe ceiling, which the operator states and the port never invents', () => {
+  it('[NET-NEW] refuses a derivation that would outrun the stated ceiling, fabricating no title', async () => {
+    /*
+     * The refusal, at the smallest ceiling that still admits the no-collision case. `takeUrlTitle` seeds a
+     * two-link collision chain, so the derivation needs three probes — `acme-widgets`, `acme-widgets-2`,
+     * `acme-widgets-3` — and a ceiling of 2 stops it on the third.
+     *
+     * ⛔ AND NOTHING IS FABRICATED, which is the half that matters more than the raising. The entity keeps
+     * no title and the payload gains none, so no unapproved value can reach a persist. A revision that
+     * "handled" the ceiling by returning the last candidate, or by appending a UUID, would satisfy a
+     * rejects-assertion alone; these two expectations are what rule that out.
+     */
+    const harness = createBrandHarness({
+      urlTitleProbeBudget: createUrlTitleProbeBudget(2),
+    });
+    harness.brands.takeUrlTitle('acme-widgets');
+    harness.brands.takeUrlTitle('acme-widgets-2');
+
+    const brand = harness.service.newBrand();
+    const data: Record<string, unknown> = { brandName: 'ACME Widgets' };
+
+    await expect(harness.service.saveBrand(brand, data)).rejects.toThrow(
+      /more than the 2 uniqueness probes/,
+    );
+    expect(brand.urlTitle).toBeUndefined();
+    expect(data).not.toHaveProperty('urlTitle');
+
+    /* Exactly the two the operator permitted were issued — the ceiling stops the THIRD before it is sent,
+     * so the refusal costs no extra round trip. */
+    expect(probedUrlTitles(harness.brands.calls)).toEqual(['acme-widgets', 'acme-widgets-2']);
+  });
+
+  it('[NET-NEW] admits a derivation that lands exactly AT the ceiling, with the legacy suffix', async () => {
+    /*
+     * The boundary is inclusive on the admitting side, and the admitted title is the legacy's own. One
+     * collision, two probes, ceiling of 2 — and `acme-widgets-2` rather than `acme-widgets-1`, because
+     * `DataService.cfc:L65` pre-increments. Off-by-one in the ceiling would fail here rather than silently
+     * refusing one derivation in every chain length.
+     */
+    const harness = createBrandHarness({
+      urlTitleProbeBudget: createUrlTitleProbeBudget(2),
+    });
+    harness.brands.takeUrlTitle('acme-widgets');
+
+    const brand = harness.service.newBrand();
+    await harness.service.saveBrand(brand, { brandName: 'ACME Widgets' });
+
+    expect(brand.urlTitle).toBe('acme-widgets-2');
+    expect(probedUrlTitles(harness.brands.calls)).toEqual(['acme-widgets', 'acme-widgets-2']);
+  });
+
+  it('[NET-NEW] counts the PRE-LOOP probe, so a ceiling of ONE admits exactly the no-collision case', async () => {
+    /*
+     * `model/service/DataService.cfc:L62` probes ONCE before `L64`'s loop. A ceiling that counted only the
+     * loop's probes would permit one more read than it claims, and a ceiling of 1 would then admit a
+     * one-link collision chain instead of none at all. Both halves are asserted against the same ceiling.
+     */
+    const free = createBrandHarness({ urlTitleProbeBudget: createUrlTitleProbeBudget(1) });
+    const admitted = free.service.newBrand();
+    await free.service.saveBrand(admitted, { brandName: 'ACME Widgets' });
+    expect(admitted.urlTitle).toBe('acme-widgets');
+    expect(probedUrlTitles(free.brands.calls)).toEqual(['acme-widgets']);
+
+    const collided = createBrandHarness({ urlTitleProbeBudget: createUrlTitleProbeBudget(1) });
+    collided.brands.takeUrlTitle('acme-widgets');
+    await expect(
+      collided.service.saveBrand(collided.service.newBrand(), { brandName: 'ACME Widgets' }),
+    ).rejects.toThrow(/more than the 1 uniqueness probes/);
+  });
+
+  it('[NET-NEW] spends the budget PER DERIVATION, not per service, so a graph does not degrade (M7)', async () => {
+    /*
+     * The counter's lifetime, which is the M7 half. `src/util/urlTitle.ts` declares `probesIssued` inside
+     * the function, so two saves through ONE service each get the whole ceiling. A counter hoisted to the
+     * budget object or to the service would make the second save refuse at a ceiling the first exhausted —
+     * a slow-burn availability defect no single-save case would catch.
+     *
+     * Both derivations here need two probes against a ceiling of exactly 2, so a shared counter fails.
+     */
+    const harness = createBrandHarness({
+      urlTitleProbeBudget: createUrlTitleProbeBudget(2),
+    });
+    harness.brands.takeUrlTitle('acme-widgets');
+    harness.brands.takeUrlTitle('globex-tools');
+
+    const first = harness.service.newBrand();
+    await harness.service.saveBrand(first, { brandName: 'ACME Widgets' });
+    expect(first.urlTitle).toBe('acme-widgets-2');
+
+    const second = harness.service.newBrand();
+    await harness.service.saveBrand(second, { brandName: 'Globex Tools' });
+    expect(second.urlTitle).toBe('globex-tools-2');
+  });
+
+  it('[NET-NEW] refuses BEFORE the first probe when the operator stated no ceiling, naming the variable', async () => {
+    /*
+     * The fail-closed half, and the one that answers the "an optional bound is enough" position of step 1
+     * in the block above. A composition root that states nothing does not get an unbounded loop; it gets a
+     * `ConfigurationError` that names `CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION`.
+     *
+     * ⭐ AND IT COSTS NO ROUND TRIP. `createUniqueURLTitle` resolves the ceiling before the slug is built,
+     * so the probe list is EMPTY — a wiring error presents as a wiring error rather than as a database
+     * read that then fails.
+     */
+    const harness = createBrandHarness({
+      urlTitleProbeBudget: UNSTATED_URL_TITLE_PROBE_BUDGET,
+    });
+
+    await expect(
+      harness.service.saveBrand(harness.service.newBrand(), { brandName: 'ACME Widgets' }),
+    ).rejects.toThrow(/CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION/);
+
+    /* `probedUrlTitles` rather than the whole call log, because `newBrand()` is itself a recorded
+     * repository call and the property under test is that NO PROBE was issued. */
+    expect(probedUrlTitles(harness.brands.calls)).toEqual([]);
+  });
+
+  it('[NET-NEW] refuses a USELESS figure when the budget is BUILT, not when a derivation first runs', () => {
+    /*
+     * A wiring error should present at wiring time. Zero would refuse every derivation — including one
+     * whose FIRST candidate is free — rather than bounding a collision chain, and a fraction or a negative
+     * bounds nothing at all. `createUrlTitleProbeBudget` refuses all of them where they are stated.
+     */
+    expect(() => createUrlTitleProbeBudget(0)).toThrow(/positive safe integer/);
+    expect(() => createUrlTitleProbeBudget(-1)).toThrow(/positive safe integer/);
+    expect(() => createUrlTitleProbeBudget(2.5)).toThrow(/positive safe integer/);
+    expect(() => createUrlTitleProbeBudget(Number.NaN)).toThrow(/positive safe integer/);
+    expect(() => createUrlTitleProbeBudget(Number.POSITIVE_INFINITY)).toThrow(
+      /positive safe integer/,
+    );
+
+    // And a legitimate figure builds, so the guard is not simply refusing everything.
+    expect(createUrlTitleProbeBudget(1).resolveMaximumProbes()).toBe(1);
+  });
+});
 
 describe('saveBrand — the L68 derivation guard', () => {
   it('NET-NEW — model/service/BrandService.cfc:L68-L72 — derives a title when the entity has none AND the payload supplies none', async () => {
@@ -2465,7 +2680,7 @@ describe('M7 — nothing leaks between independently constructed service graphs'
 });
 
 describe('the declared surface — no synthesis, no dead injection, no invented collaborator', () => {
-  it('NET-NEW — model/service/BrandService.cfc:L51 — the constructor takes EXACTLY TWO REQUIRED collaborators, and BrandService has no dead injection to drop', async () => {
+  it('NET-NEW — model/service/BrandService.cfc:L51 — the constructor takes EXACTLY THREE REQUIRED collaborators, and BrandService has no dead injection to drop', async () => {
     /*
      * ⭐ BRANDSERVICE IS THE ONE SERVICE IN THE SLICE WITH NO DEAD INJECTION, AND THAT IS A FINDING
      * WORTH PINNING RATHER THAN A GAP. AAP §0.6.3.5 counts four dead injections across the slice —
@@ -2486,17 +2701,24 @@ describe('the declared surface — no synthesis, no dead injection, no invented 
      * context, no image port, no logger — nothing beyond what the legacy line declares is DEMANDED of a
      * composition root.
      *
-     * ⛔ AND THERE IS NO THIRD PARAMETER. An optional `UrlTitleProbeBudget` occupied that position for one
-     * revision, and this case asserted an arity of 3 to pin it as optional-but-present. Both the parameter
-     * and that assertion are withdrawn — see the GROUP A2 IS GONE block above for the authority — so the
-     * arity is back to 2 and the constructor takes exactly the two collaborators §0.6.3.3 counted.
+     * ⭐ THE THIRD PARAMETER IS THE SEC-DOS-03 PROBE BUDGET, AND IT IS NOT A COUNTEREXAMPLE TO WHAT THIS
+     * CASE ASSERTS. `UrlTitleProbeBudget` is not a LEGACY collaborator and does not claim to be one —
+     * §0.6.3.3's count of ONE declared injection is unchanged, and no dead injection has appeared. It is a
+     * resource ceiling the extracted service demands of its composition root because
+     * `model/service/DataService.cfc:L64` is `while(!unique)` with no ceiling and the port refuses to ship
+     * that loop unbounded (review finding SEC-DOS-03; see the GROUP A2 IS REINSTATED block above for the
+     * full authority). A revision made it OPTIONAL and this case asserted 3 to pin it as
+     * optional-but-present; a later revision withdrew it altogether and this case asserted 2. Both are
+     * superseded: it is REQUIRED, so the arity is 3, and an optional or absent budget would leave the
+     * unbounded loop reachable by default, which is exactly the finding.
      *
      * `Function.length` is the right instrument either way: it COUNTS a TypeScript optional (`?`)
      * parameter, because `?` erases to nothing at run time and only a DEFAULT VALUE or a rest element
-     * stops the count. So an optional third parameter reinstated without this being revisited fails here,
-     * and so does a default quietly added to either existing parameter.
+     * stops the count. So a FOURTH parameter added without this being revisited fails here, and so does a
+     * default quietly given to the budget — which is the specific regression that would restore the
+     * unbounded default.
      */
-    expect(BrandService.length).toBe(2);
+    expect(BrandService.length).toBe(3);
 
     // And the graph really is constructible from exactly those two collaborators.
     const harness = createBrandHarness();
@@ -2706,16 +2928,26 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
   function makeBrandWriteRunner(graph: BrandHandlerService): {
     readonly runner: TransactionalWriteRunner<BrandHandlerService>;
     readonly decisions: ('commit' | 'rollback')[];
+    readonly securityContexts: RequestAuthorizationContext[];
   } {
     const decisions: ('commit' | 'rollback')[] = [];
+    /* SEC-AUTH-03 — every context the handler handed the boundary, in order. */
+    const securityContexts: RequestAuthorizationContext[] = [];
 
     return {
       decisions,
+      securityContexts,
       runner: {
         runWrite: async <TResult>(
+          /* SEC-AUTH-03 — the runner now receives the invocation's authorised context first. The double
+           * records that it ARRIVED, which is what proves the handler forwarded the gate's own context
+           * rather than letting the write fall back to a memoised principal. */
+          security: RequestAuthorizationContext,
           work: (graph: BrandHandlerService) => Promise<TResult>,
           hasErrors: () => boolean,
         ): Promise<TResult> => {
+          securityContexts.push(security);
+
           const result = await work(graph);
 
           if (hasErrors()) {
@@ -2756,14 +2988,29 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
     return { body, pathParameters: null, headers: {} };
   }
 
+  /**
+   * The save event slice that ADDRESSES an existing brand, so the save is an update.
+   *
+   * ⭐ ADDED FOR REVIEW FINDING SEC-AUTH-01. The gate's question now follows the operation, so a case
+   * that wants to exercise the UPDATE question needs an event that addresses a row — and the escalation
+   * the finding reports is only reachable through one.
+   */
+  function addressedSaveEvent(body: string, brandID: string): BrandSaveEvent {
+    return { body, pathParameters: { brandID }, headers: {} };
+  }
+
   describe('brandHandler — SEC-03, the gate `setupRequest()` ran', () => {
     interface Probe {
       /** Every entity question asked, in the order asked, so the legacy sequence is observable. */
       readonly asked: EntityAuthorizationRequest[];
+      /** Every request the resolver was HANDED — SEC-AUTH-03's widened input. */
+      readonly requests: InvocationSecurityRequest[];
       /** How many times the resolver was invoked, so per-request resolution is observable. */
       readonly resolutions: { count: number };
       /** Every service member reached, so "refused before the service" is observable. */
       readonly serviceCalls: string[];
+      /** Every context handed to the write boundary — SEC-AUTH-03's propagation half. */
+      readonly securityContexts: readonly RequestAuthorizationContext[];
       readonly handler: BrandHandler;
     }
 
@@ -2773,6 +3020,7 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
      */
     function makeHandler(account: AccountReference | undefined, grant: readonly string[]): Probe {
       const asked: EntityAuthorizationRequest[] = [];
+      const requests: InvocationSecurityRequest[] = [];
       const resolutions = { count: 0 };
       const serviceCalls: string[] = [];
 
@@ -2806,8 +3054,9 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
         },
       };
 
-      const resolve: RequestAuthorizationResolver<BrandAuthorizationEvent> = () => {
+      const resolve: InvocationSecurityResolver = (request) => {
         resolutions.count += 1;
+        requests.push(request);
 
         return {
           accountContext: { getCurrentAccount: () => account },
@@ -2817,17 +3066,24 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
               return grant.includes(request.crudType);
             },
           },
+          /* SEC-AUTH-03 — the third member of one invocation's context. Deny-all, matching the shipped
+           * fail-closed default: these cases drive the GATE, and nothing here populates a property. */
+          populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
         };
       };
 
+      const writeRunner = makeBrandWriteRunner(service);
+
       return {
         asked,
+        requests,
         resolutions,
         serviceCalls,
+        securityContexts: writeRunner.securityContexts,
         /* The graph IS the same recording service here: these cases assert the AUTHORISATION ladder, and
          * routing the work through a second object would record each call twice. F1's boundary behaviour
          * is asserted in its own describe block below. */
-        handler: createBrandHandler(service, resolve, makeBrandWriteRunner(service).runner),
+        handler: createBrandHandler(service, resolve, writeRunner.runner),
       };
     }
 
@@ -2883,37 +3139,103 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
     it('NET-NEW — L55-L58 — each member asks for its OWN legacy crudType and only that one', async () => {
       const read = makeHandler(account({}), []);
       await read.handler.getBrand(identifierEvent('x'));
-      expect(read.asked).toStrictEqual([{ crudType: 'read', entityName: 'Brand' }]);
+      /* SEC-AUTH-01 also added the addressed identifier to the question, so a deployment CAN scope a
+       * grant to the row being read. The entity name still comes from the handler's own constant. */
+      expect(read.asked).toStrictEqual([{ crudType: 'read', entityName: 'Brand', entityID: 'x' }]);
 
       const remove = makeHandler(account({}), []);
       await remove.handler.deleteBrand(identifierEvent('x'));
-      expect(remove.asked).toStrictEqual([{ crudType: 'delete', entityName: 'Brand' }]);
-    });
-
-    it('NET-NEW — L71-L77 — save asks create FIRST, then update, and short-circuits on the first grant', async () => {
-      const neither = makeHandler(account({}), []);
-      expect((await neither.handler.saveBrand(saveEvent('{}'))).statusCode).toBe(403);
-      expect(neither.asked.map((request) => request.crudType)).toStrictEqual(['create', 'update']);
-
-      // `if(createOK) { return true; }` at :L73-L75 means `update` is never asked once create grants.
-      const createOnly = makeHandler(account({}), ['create']);
-      expect((await createOnly.handler.saveBrand(saveEvent('{}'))).statusCode).toBe(200);
-      expect(createOnly.asked.map((request) => request.crudType)).toStrictEqual(['create']);
-
-      // And `update` alone still grants, via `return updateOK` at :L77.
-      const updateOnly = makeHandler(account({}), ['update']);
-      expect((await updateOnly.handler.saveBrand(saveEvent('{}'))).statusCode).toBe(200);
-      expect(updateOnly.asked.map((request) => request.crudType)).toStrictEqual([
-        'create',
-        'update',
+      expect(remove.asked).toStrictEqual([
+        { crudType: 'delete', entityName: 'Brand', entityID: 'x' },
       ]);
     });
 
-    it('NET-NEW — the resolver is invoked EXACTLY ONCE per request, even for the two-question save', async () => {
-      // Two calls would ask the two questions of two separately resolved principals.
-      const probe = makeHandler(account({}), ['update']);
+    /* ==============================================================================================
+     * ⭐⭐ REVIEW FINDING SEC-AUTH-01 (CWE-862, CWE-639) — THIS CASE USED TO REQUIRE THE VULNERABILITY
+     * ==============================================================================================
+     * It was named "save asks create FIRST, then update, and short-circuits on the first grant" and it
+     * asserted, in its own words, that a `create`-ONLY principal saving a brand answers `200`. The
+     * security review found the escalation that reading permits: `saveBrand` UPDATES the addressed row,
+     * so a principal holding only `create` was authorised for an operation it had no grant for.
+     *
+     * The three assertions below are the corrected contract. The legacy citation is retained because the
+     * evidence is unchanged — [org/Hibachi/HibachiAuthenticationService.cfc:L71-L77] really does ask both,
+     * in that order — and because the withdrawal record in `../../src/handlers/brandHandler.ts` explains
+     * why reconstructing that framework gate's CONTRACT to authorise the operation actually performed is
+     * not the same thing as changing ported business behaviour.
+     * ============================================================================================ */
+    it('NET-NEW — SEC-AUTH-01 — save asks EXACTLY the operation it performs, and nothing else', async () => {
+      // No grant at all is still 403, and exactly ONE question is asked rather than two.
+      const neither = makeHandler(account({}), []);
+      expect((await neither.handler.saveBrand(saveEvent('{}'))).statusCode).toBe(403);
+      expect(neither.asked.map((request) => request.crudType)).toStrictEqual(['create']);
+
+      // UNADDRESSED — a creation. `create` alone grants it, and `update` is never asked.
+      const createOnly = makeHandler(account({}), ['create']);
+      expect((await createOnly.handler.saveBrand(saveEvent('{}'))).statusCode).toBe(200);
+      expect(createOnly.asked).toStrictEqual([{ crudType: 'create', entityName: 'Brand' }]);
+
+      // ⛔ THE ESCALATION ITSELF: create-only, ADDRESSING an existing brand, must now be REFUSED.
+      const createOnlyAddressing = makeHandler(account({}), ['create']);
+      const escalation = await createOnlyAddressing.handler.saveBrand(
+        addressedSaveEvent('{}', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+      );
+      expect(escalation.statusCode).toBe(403);
+      expect(createOnlyAddressing.asked).toStrictEqual([
+        {
+          crudType: 'update',
+          entityName: 'Brand',
+          entityID: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        },
+      ]);
+      expect(createOnlyAddressing.serviceCalls).toStrictEqual([]);
+
+      // And `update` alone grants the addressed save — the operation it actually covers.
+      const updateOnly = makeHandler(account({}), ['update']);
+      expect(
+        (
+          await updateOnly.handler.saveBrand(
+            addressedSaveEvent('{}', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+          )
+        ).statusCode,
+      ).toBe(200);
+      expect(updateOnly.asked.map((request) => request.crudType)).toStrictEqual(['update']);
+
+      // ⛔ AND THE MIRROR IMAGE: update-only may no longer CREATE.
+      const updateOnlyCreating = makeHandler(account({}), ['update']);
+      expect((await updateOnlyCreating.handler.saveBrand(saveEvent('{}'))).statusCode).toBe(403);
+      expect(updateOnlyCreating.asked.map((request) => request.crudType)).toStrictEqual(['create']);
+    });
+
+    it('NET-NEW — the resolver is invoked EXACTLY ONCE per request, and now carries the whole question', async () => {
+      // Two calls would ask two questions of two separately resolved principals.
+      const probe = makeHandler(account({}), ['create']);
       await probe.handler.saveBrand(saveEvent('{}'));
       expect(probe.resolutions.count).toBe(1);
+
+      /* SEC-AUTH-03 — what the resolver was TOLD. A resolver handed only headers could not scope a grant
+       * to the action, and could not read a claim its gateway had already verified. */
+      expect(probe.requests).toHaveLength(1);
+      expect(probe.requests[0]).toMatchObject({
+        action: 'brand.saveBrand',
+        crudType: 'create',
+        entityName: 'Brand',
+        headers: {},
+      });
+      expect(probe.requests[0]?.entityID).toBeUndefined();
+    });
+
+    it('NET-NEW — SEC-AUTH-03 — the resolved context reaches the transaction boundary, not a memoised one', async () => {
+      /* The gate resolves ONE context per invocation; the write must run under THAT principal, or property
+       * population and audit stamping can execute as somebody else. The runner double records every
+       * context it is handed, so an implementation that dropped it fails here. */
+      const probe = makeHandler(account({}), ['create']);
+
+      expect((await probe.handler.saveBrand(saveEvent('{}'))).statusCode).toBe(200);
+      expect(probe.securityContexts).toHaveLength(1);
+      expect(probe.securityContexts[0]?.accountContext.getCurrentAccount()).toStrictEqual(
+        account({}),
+      );
     });
 
     it('NET-NEW — the gate runs BEFORE the identifier is read, so it is not an existence oracle', async () => {
@@ -3006,6 +3328,7 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
         () => ({
           accountContext: { getCurrentAccount: () => account({}) },
           entityAuthorization: { authenticateEntity: () => true },
+          populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
         }),
         makeBrandWriteRunner(service).runner,
       );
@@ -3197,6 +3520,7 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
         () => ({
           accountContext: { getCurrentAccount: () => account({}) },
           entityAuthorization: { authenticateEntity: () => true },
+          populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
         }),
         makeBrandWriteRunner(service).runner,
       );
@@ -3303,6 +3627,7 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
         () => ({
           accountContext: { getCurrentAccount: () => account({}) },
           entityAuthorization: { authenticateEntity: () => false },
+          populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
         }),
         makeBrandWriteRunner(refusingService).runner,
       );
@@ -3414,6 +3739,7 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
           () => ({
             accountContext: { getCurrentAccount: () => account({}) },
             entityAuthorization: { authenticateEntity: () => true },
+            populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
           }),
           runner.runner,
         ),
@@ -3590,6 +3916,7 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
       registerRequestAuthorizationResolver(() => ({
         accountContext: { getCurrentAccount: () => account({}) },
         entityAuthorization: { authenticateEntity: () => true },
+        populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
       }));
 
       const result = await handler.getBrand({

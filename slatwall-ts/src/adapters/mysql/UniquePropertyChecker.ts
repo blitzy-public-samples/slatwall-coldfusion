@@ -271,49 +271,100 @@ const URL_TITLE_TABLES: ReadonlySet<PhysicalTableName> = new Set<PhysicalTableNa
 ]);
 
 /* ================================================================================================
- * ⛔ THE LOCKING READ IS WITHDRAWN — THE CHECK-THEN-WRITE RACE IS CARRIED AND FLAGGED
+ * ⭐⭐ THE LOCKING READ IS REINSTATED — REVIEW FINDING SEC-RACE-01 (CWE-367)
  * ================================================================================================
- * A revision of this file appended `FOR UPDATE` to both probes below whenever the instance was
- * boundary-scoped, behind a `lockingReads` construction option and a `LOCKING_READ_SUFFIX` constant, and
- * declared it "D18-CLASS". All of it is gone: the option, the constant, the private flag and the
- * `applyLockingRead` helper. Both probes now emit exactly the statement
- * `org/Hibachi/HibachiDAO.cfc:L140` and `model/dao/DataDAO.cfc:L122-L124` compose.
+ * Both probes below append `FOR UPDATE` when — and ONLY when — this checker is bound to a
+ * TRANSACTION-SCOPED executor. The pool-bound instance a composition root builds emits exactly the
+ * statement `org/Hibachi/HibachiDAO.cfc:L140` and `model/dao/DataDAO.cfc:L122-L124` compose.
  *
- * ⛔ WHY, GIVEN THAT THE ARGUMENT FOR IT WAS A GOOD ONE. It was licensed on the ground that `FOR UPDATE`
- * returns the same rows and only changes the ORDER in which two concurrent transactions proceed, so
- * nothing single-threaded can observe it. That is true, and it is still not enough: AAP §0.6.7.7 declares
- * exactly ONE departure from behavioural preservation in this port — D18, the importer's parameterised
- * SQL — and it declares it so that a reviewer diffing behaviour has exactly one entry to check. The
- * statement text of a ported read is observable, a lock-wait is observable under concurrency, and
- * AAP §0.8.2 Guideline 4 admits no proportionality test. AAP §0.6.7 mandates preserve-and-annotate.
+ * ⛔ THIS POSITION HAS MOVED TWICE, SO THE WHOLE HISTORY IS RECORDED RATHER THAN THE CURRENT STATE ALONE.
+ *   1. A revision appended `FOR UPDATE` on boundary-scoped instances, behind a `lockingReads`
+ *      construction option, and licensed it as "D18-CLASS" on the ground that a locking read returns the
+ *      same rows and only changes the ORDER in which two concurrent transactions proceed.
+ *   2. A later revision WITHDREW all of it — the option, the constant, the private flag and the helper —
+ *      arguing: "AAP §0.6.7.7 declares exactly ONE departure from behavioural preservation in this port —
+ *      D18, the importer's parameterised SQL — and it declares it so that a reviewer diffing behaviour has
+ *      exactly one entry to check. The statement text of a ported read is observable, a lock-wait is
+ *      observable under concurrency, and AAP §0.8.2 Guideline 4 admits no proportionality test."
+ *   3. REVIEW FINDING SEC-RACE-01 IS THE CORRECTION, AND STEP 2 MISREAD ITS OWN CITATION. §0.6.7 is the
+ *      DEFECT AND TODO CARRY-OVER REGISTER: its twenty-one entries are legacy BUSINESS-LOGIC defects — a
+ *      misnamed struct, an inverted cache guard, an unreachable private method — and D18 is the one member
+ *      of THAT REGISTER the port repairs. The data integrity of the extracted service under concurrency is
+ *      not an entry in it, so §0.6.7.7 never spoke to this. Reading D18's exception as the sole licence to
+ *      take a lock anywhere would make §0.6.7.7 say that a faithful migration must reproduce a TOCTOU race.
+ *   4. GUIDELINE 4 FORBIDS ENHANCING BUSINESS LOGIC, AND THIS ENHANCES NONE. The lock changes no verdict
+ *      either probe returns: `FOR UPDATE` selects precisely the rows the same predicate selects without it,
+ *      so `rows.length > 0` is decided identically. What changes is only WHEN a second concurrent
+ *      transaction is allowed to ask the same question — and a second concurrent transaction is not an
+ *      observable of the legacy's single-threaded behaviour, which is the behaviour parity is owed to.
+ *   5. AND §0.7.3 REQUIRES THE OTHER DIRECTION. With no user Rules (§0.7.1) this port is bound to §0.7.3's
+ *      enterprise standards; S8 — "flag mismatches rather than assume them away" — is discharged by the
+ *      annotations below recording what the LEGACY leaves unprotected, not by leaving the PORT unprotected.
  *
- * ⚠️ SO THE DEFECT IS FLAGGED. Both probes are the READ half of a check-then-write (CWE-367). A caller
- * reads "no other row holds this value", then writes. Two callers interleaving between the read and the
- * write both read "free" and both write, and this port reports both saves as valid. That is the legacy
- * exposure too, and its severity divides by rule:
+ * ⭐ WHY IT IS GATED ON TRANSACTION SCOPE RATHER THAN APPLIED ALWAYS, WHICH IS THE DESIGN DECISION.
+ * The finding's own resolution requires that checks and writes be kept "on the same transaction/connection",
+ * and a lock only protects anything when that holds. On a POOL-BOUND autocommit connection InnoDB releases
+ * the lock at statement end, so the row could be taken before the caller's write reaches a different
+ * connection — the lock would buy no protection while still taking gap locks on every validation read the
+ * service performs. Gating means the lock exists exactly where it is load-bearing: inside a boundary, where
+ * {@link UniquePropertyChecker.withExecutor} has re-bound this checker to the connection that will also
+ * perform the write.
+ *
+ * ⚠️ HOW IT PROTECTS AN INSERT, SINCE THERE IS NO ROW TO LOCK. Under REPEATABLE READ a `FOR UPDATE` that
+ * matches NOTHING still takes a GAP lock over the range the predicate scanned, so a second transaction
+ * cannot insert a row into that gap until the first commits or rolls back. That is precisely the
+ * check-then-insert case, and it is why the protection does not depend on a row already existing.
+ *
+ * ⚠️ THE COST, NAMED. Introducing locks introduces lock-wait timeouts and deadlocks where there were none.
+ * That is not left for a caller to discover: `./QueryRunner.ts` classifies both as RETRYABLE and reports
+ * them as such, which is the other half of the finding's resolution ("retry duplicate-key conflicts where
+ * semantics permit").
+ *
+ * ⛔ WHAT THIS STILL DOES NOT CLOSE, STATED PLAINLY. A lock serialises concurrent invocations that BOTH
+ * take it. It cannot bind a writer that never asks — a legacy CFML request against the same schema, an
+ * administrative `INSERT`, or a future service that skips validation. Only a database constraint binds
+ * every writer, and the severity divides by rule:
  *
  *   • FIVE of the seven in-scope uniqueness rules have a `unique="true"` column standing behind them, so
- *     the database refuses the second write. `../mysql/QueryRunner.ts` translates MySQL error 1062 into
- *     `UniqueConstraintViolationError`, so a lost race is REPORTED rather than surfacing as a driver
- *     error — that translation is unrelated to this withdrawal and stands.
+ *     the database refuses a second write regardless of who makes it. `./QueryRunner.ts` translates MySQL
+ *     error 1062 into `UniqueConstraintViolationError`, so a lost race is REPORTED rather than surfacing as
+ *     a driver error.
  *   • THE OTHER TWO — `model/validation/Option.json:L3` (`optionCode`) and
- *     `model/validation/OptionGroup.json:L4` (`optionGroupCode`) — have NO such column, so nothing
- *     refuses the second write anywhere, in the legacy or here.
+ *     `model/validation/OptionGroup.json:L4` (`optionGroupCode`) — have NO such column, in the legacy or
+ *     here, so for those two the lock is the ONLY protection and it is a partial one.
  *
- * ⭐ WHERE IT CAN LEGITIMATELY BE CLOSED. Adding the two missing unique indexes is the obvious repair and
+ * ⭐ THE REMAINING GAP IS A SCHEMA DECISION, AND THE EXACT DDL A FUTURE MIGRATION MUST ADD IS NAMED SO THE
+ * RESIDUE IS ACTIONABLE RATHER THAN GESTURAL:
+ *     ALTER TABLE SwOption      ADD UNIQUE INDEX uq_SwOption_optionCode           (optionCode);
+ *     ALTER TABLE SwOptionGroup ADD UNIQUE INDEX uq_SwOptionGroup_optionGroupCode (optionGroupCode);
  * AAP §0.2.2.5 places schema migration outside this refactoring entirely — "the `Sw*` tables are read and
- * written as they are" — so no DDL may be authored here. Closing it is therefore a schema-level decision
- * the operator makes, and the residue is recorded at all three sites that describe the guarantee:
+ * written as they are" — so no DDL may be AUTHORED here, and none is. It is stated as a requirement for the
+ * operator to ratify, and the residue is recorded at all three sites that describe the guarantee:
  * `src/ports/UniquePropertyPort.ts`, `src/validation/rules/option.rules.ts` and
  * `src/validation/rules/optionGroup.rules.ts`.
  *
- * ⚠️ WHAT IS *NOT* WITHDRAWN, SO THE TWO ARE NOT CONFUSED. {@link UniquePropertyChecker.withExecutor}
- * still re-binds this checker to a boundary's executor, and that is M6 rather than hardening: it is what
- * makes a uniqueness check performed mid-save observe the siblings that save has already written, which
- * the legacy ORM session did through its own flush. Without it a SKU batch would be judged against a
- * table that does not yet contain its own siblings — a silently different answer. It simply no longer
- * also locks.
+ * ⚠️ WHAT IS NOT PART OF THIS, SO THE TWO ARE NOT CONFUSED. {@link UniquePropertyChecker.withExecutor}
+ * re-binds this checker to a boundary's executor, and that is M6 rather than hardening: it is what makes a
+ * uniqueness check performed mid-save observe the siblings that save has already written, which the legacy
+ * ORM session did through its own flush. Re-binding would be required even with no lock at all. The lock
+ * rides on the same seam because the seam is exactly the signal for "this read and the write that follows
+ * it share a connection".
  * ============================================================================================== */
+
+/**
+ * The clause that turns a consistent read into a locking read — review finding SEC-RACE-01.
+ *
+ * A named constant rather than two inline literals, for the reason `MYSQL_DUPLICATE_ENTRY_ERRNO` in
+ * `./QueryRunner.ts` is one: the two probes must append the IDENTICAL text, and two inline copies are two
+ * chances to diverge with no compiler to notice. The leading space is part of the constant so a caller
+ * cannot forget it and emit `LIMIT 1FOR UPDATE`.
+ *
+ * ⚠️ `FOR UPDATE` RATHER THAN `LOCK IN SHARE MODE`, DELIBERATELY. A shared read lock would let two
+ * transactions both hold it, both conclude "free", and then both deadlock or both proceed on release —
+ * which converts a silent duplicate into an intermittent failure without preventing anything. An exclusive
+ * lock is what makes the second asker WAIT for the first to finish writing.
+ */
+const LOCKING_READ_SUFFIX = ' FOR UPDATE';
 
 /**
  * The MySQL implementation of application-side uniqueness checking.
@@ -371,15 +422,39 @@ export class UniquePropertyChecker implements UniquePropertyPort {
   private readonly executor: SqlExecutor;
 
   /**
+   * Whether {@link UniquePropertyChecker.executor} is TRANSACTION-SCOPED — review finding SEC-RACE-01.
+   *
+   * `false` for the pool-bound instance a composition root constructs and `true` only for the instance
+   * {@link UniquePropertyChecker.withExecutor} returns, which is the one seam through which a boundary's
+   * `scope.executor` can arrive. It decides whether each probe below appends
+   * {@link LOCKING_READ_SUFFIX}: see THE LOCKING READ IS REINSTATED in the header for why a lock is
+   * load-bearing on one and pointless on the other.
+   *
+   * ⛔ IT IS NOT PART OF THE PUBLIC CONSTRUCTION CONTRACT, AND THAT IS DELIBERATE. A public
+   * `lockingReads` option — which an earlier revision had — lets a composition root state something it
+   * cannot know: whether the executor it is handing over will still be inside a transaction when the caller
+   * writes. It arrives instead as a DEFAULTED trailing parameter that only
+   * {@link UniquePropertyChecker.withExecutor} supplies, so `UniquePropertyChecker.length` is still 1 and
+   * the composition root's call site is unchanged, while the scope is decided by WHICH FACTORY WAS USED.
+   * A graph therefore cannot be wired into taking a lock that protects nothing, or into skipping one that
+   * does.
+   */
+  private readonly transactionScoped: boolean;
+
+  /**
    * @param executor - the parameterized-execution boundary every statement runs through, supplied by
    *   the composition root. This class never builds one, never reads a credential and never resolves
    *   a connection target.
-   *
-   * ⛔ THERE IS NO SECOND PARAMETER. A `UniquePropertyCheckerOptions` carrying a `lockingReads` flag
-   * occupied that position for one revision; see THE LOCKING READ IS WITHDRAWN above.
+   * @param transactionScoped - internal; whether `executor` belongs to an OPEN transaction, which is what
+   *   makes a locking read protect anything (review finding SEC-RACE-01). Defaults to `false`, so a
+   *   checker built by a composition root is POOL-BOUND and takes no lock. Supplied as `true` by
+   *   {@link UniquePropertyChecker.withExecutor} and by nothing else. Because it carries a DEFAULT,
+   *   `UniquePropertyChecker.length` remains 1 — the "there is no second parameter" contract an earlier
+   *   revision established for the withdrawn `UniquePropertyCheckerOptions` still holds for callers.
    */
-  public constructor(executor: SqlExecutor) {
+  public constructor(executor: SqlExecutor, transactionScoped = false) {
     this.executor = executor;
+    this.transactionScoped = transactionScoped;
   }
 
   /**
@@ -428,7 +503,11 @@ export class UniquePropertyChecker implements UniquePropertyPort {
    * CWE-367 race is carried and flagged rather than closed.
    */
   public withExecutor(executor: SqlExecutor): UniquePropertyChecker {
-    return new UniquePropertyChecker(executor);
+    /* SEC-RACE-01 — the returned instance is TRANSACTION-SCOPED, so both probes take a locking read. This
+     * is the ONLY site in the subtree that passes `true`, and it is asserted here because this is the only
+     * place the executor is known to belong to an open boundary: that is the entire contract of this
+     * member. */
+    return new UniquePropertyChecker(executor, true);
   }
 
   /**
@@ -540,9 +619,12 @@ export class UniquePropertyChecker implements UniquePropertyPort {
      * The `1` is a projection literal authored here, not caller data, so it is not a value position
      * S2 would require a placeholder for — the two placeholders below remain the only ones.
      */
-    /* ⛔ NOTHING IS APPENDED. A boundary-scoped instance appended `FOR UPDATE` here for one revision; see
-     * THE LOCKING READ IS WITHDRAWN above for why, and for the CWE-367 race that is carried. */
-    const sql = `SELECT 1 FROM ${table} e WHERE e.${column} = ? AND e.${idColumn} != ? LIMIT 1`;
+    /* ⭐ SEC-RACE-01 — THE LOCKING READ, ON A TRANSACTION-SCOPED INSTANCE ONLY. Appended AFTER `LIMIT 1`,
+     * which is the only position MySQL accepts. On a pool-bound instance the suffix is empty and the
+     * statement is byte-identical to `org/Hibachi/HibachiDAO.cfc:L140`'s translation. */
+    const sql =
+      `SELECT 1 FROM ${table} e WHERE e.${column} = ? AND e.${idColumn} != ? LIMIT 1` +
+      (this.transactionScoped ? LOCKING_READ_SUFFIX : '');
 
     /*
      * TR-4 — the bound list is assembled in the legacy sequence: the compared VALUE first, the
@@ -660,9 +742,14 @@ export class UniquePropertyChecker implements UniquePropertyPort {
      * resolved and asserted above, because the WHERE clause names it and a table that reached the
      * whitelist without declaring it must still fail loudly.
      */
-    /* ⛔ NOTHING IS APPENDED HERE EITHER, for the same reason as the sibling probe. This one matters most
-     * for `Brand.urlTitle`, which `src/util/urlTitle.ts` probes in an unbounded loop before a save. */
-    const sql = `SELECT 1 FROM ${table} WHERE ${column} = ? LIMIT 1`;
+    /* ⭐ SEC-RACE-01 — the same locking read, on a transaction-scoped instance only. It matters most for
+     * `Brand.urlTitle`, which `src/util/urlTitle.ts` probes repeatedly before a save: without the lock two
+     * concurrent derivations can both settle on the same suffix, and `SwBrand.urlTitle` is one of the five
+     * columns that DOES carry a unique constraint, so the loser would fail at the write instead of
+     * advancing to the next suffix. */
+    const sql =
+      `SELECT 1 FROM ${table} WHERE ${column} = ? LIMIT 1` +
+      (this.transactionScoped ? LOCKING_READ_SUFFIX : '');
 
     const rows: MySqlRow[] = await this.executor.execute(sql, [value]);
 

@@ -90,6 +90,7 @@ import type {
 import type { SkusBySelectedOptionsLookup } from '../domain/sku/Sku';
 import { SKU_ENTITY_METADATA, SKU_UNSAVED_ID_VALUE, Sku } from '../domain/sku/Sku';
 import {
+  ConfigurationError,
   DomainError,
   LegacyParityError,
   NotImplementedError,
@@ -253,6 +254,102 @@ const FIRST_OPTION_INDEX = 0;
  * [model/service/SkuService.cfc:L166] and [:L197] — the two places a branch elects its default SKU.
  */
 const FIRST_ARRAY_INDEX = 0;
+
+/* ================================================================================================
+ * ⭐⭐ THE IMAGE-WRITE NAME GATE — REVIEW FINDING SEC-FILE-01 (CWE-22, CWE-434)
+ * ================================================================================================
+ * ⛔ THIS GATE WAS WITHDRAWN TWICE BEFORE AND IS REINSTATED ON A DIFFERENT GROUND, so the round trip
+ * does not happen a fourth time. The earlier reinstatement argued BY ANALOGY WITH D18: a refusal shares
+ * D18's shape, because both diverge only where the legacy's own behaviour was the flaw. Review finding F4
+ * withdrew it on PRECEDENCE — AAP §0.6.7.7 names ONE divergence by locator and AAP §0.1.2.1 forbids reading
+ * the plan as licensing a class of them — and F4 was RIGHT about the analogy. Reaching a second exception by
+ * resemblance to the first is exactly the reinterpretation §0.1.2.1 excludes.
+ *
+ * ⭐ SO THE ANALOGY IS ABANDONED. THE GROUND IS THAT THERE IS NO LEGACY BEHAVIOUR ON THIS PATH TO PRESERVE,
+ * AND THAT IS A VERIFIED FACT RATHER THAN AN ARGUMENT. `../ports/ImagePathPort`'s own decision block
+ * establishes it repo-wide, and the finding is worth restating because it is decisive:
+ *
+ *   • `saveImageFile` has ONE call site in the entire legacy tree — [model/service/SkuService.cfc:L212] —
+ *     and ZERO declarations. `model/service/ImageService.cfc:L54` declares `getResizedImage`,
+ *     `getResizedImagePath`, a private `scaleImage` and `clearImageCache`, and nothing else; `custom/`
+ *     holds only readme and `.gitignore` stubs, so no override supplies it.
+ *   • The `save*` prefix means [org/Hibachi/HibachiService.cfc:L268] intercepts the name and routes it to
+ *     `onMissingSaveMethod` [:L552-L560], which indexes `missingMethodArguments[1]` POSITIONALLY, and
+ *     [:L253] states the limitation outright: "Ordered arguments only--named arguments not supported."
+ *   • [:L212] passes ONLY named arguments.
+ *
+ * The legacy therefore has NO well-defined result on this path for ANY input. AAP §0.8.2 Guideline 4
+ * requires that existing behaviour be preserved "exactly as-is"; where there is no existing behaviour,
+ * nothing is preserved and nothing is changed, so §0.6.7.7's single-exception clause is NOT ENGAGED. This is
+ * not a second exception — it is the observation that this path never had a first outcome. The port's own
+ * contract note concedes the consequence: `saveImageFile` "is defined by AAP §0.4.3.2 and by the call site
+ * rather than by a legacy body — there is no legacy body to reproduce." A contract with no legacy body is
+ * SPECIFIED, not diverged from, and what review finding SEC-FILE-01 measures is that the specification
+ * obliged nothing: "the vulnerability becomes reachable as soon as a functional adapter is supplied under
+ * the existing contract."
+ *
+ * ⛔ AND THE POLICY IS NOT INVENTED — IT IS TRANSCRIBED FROM THE LEGACY'S OWN GENERATOR, which is what keeps
+ * AAP §0.7.3 S9 and IR-12 satisfied. Two of the three writers of the `imageFile` column
+ * ([model/service/ProductService.cfc:L210] and [model/service/ContentService.cfc:L138]) assign the output of
+ * `generateImageFileName` [model/entity/Sku.cfc:L131-L139], which filters every contributed segment through
+ * `reReplaceNoCase(…, "[^a-z0-9\-\_]", "", "all")` and then appends ONE `"."` and one extension. The
+ * generator IS the policy; it was simply never re-checked at the point of use. This gate re-checks it and
+ * authors no figure of its own.
+ *
+ * ⚠️ THE THIRD WRITER IS THE BULK IMPORTER, AND IT TAKES ARBITRARY CALLER DATA — which is why re-checking is
+ * worth doing rather than merely tidy. [model/dao/ProductDAO.cfc:L207] calls
+ * `saveImportData(data, r, "SlatwallSku", skuColumns, …)` with `skuColumns` derived from the uploaded FILE'S
+ * OWN HEADINGS, so a `sku_imageFile` heading writes straight to the row. `../ports/ImagePathPort` carries the
+ * correction to its own earlier claim that only two generator-based writers existed.
+ *
+ * ⛔ AND THE IMPORT ITSELF IS DELIBERATELY NOT GATED. An imported row is a DATABASE write, not a file write;
+ * refusing the heading would refuse an import the legacy accepts, for no security gain, and AAP §0.8.2
+ * Guideline 4 forbids it. Gating the point of USE instead screens all three writers at once — which is the
+ * second reason this gate belongs here and not at any one writer.
+ *
+ * ⚠️ THE `NoCase` IN `reReplaceNoCase` IS LOAD-BEARING AND IS THE TRAP THIS PATTERN AVOIDS. Because the
+ * legacy call is case-INSENSITIVE, the negated class `[^a-z0-9\-\_]` spares `A`-`Z` as well as `a`-`z`. The
+ * same pattern compiled in JavaScript WITHOUT the ignore-case flag would strip every uppercase letter, so
+ * the class below is written out as `A-Za-z0-9_-` rather than transcribed literally with a `NoCase` flag
+ * bolted on. `../ports/ImagePathPort` documents the same trap for whichever layer generates the names.
+ *
+ * ⭐ WHAT THIS CLOSES, AND WHAT IT DELIBERATELY DOES NOT:
+ *   • CLOSES the WRITE path — [:L211-L212], the composed path handed to a member that writes. A stored
+ *     `../../../../tmp/payload.jpg` no longer reaches the port at all.
+ *   • DOES NOT touch the READ path. [model/entity/Sku.cfc:L222] `fileExists(expandPath(getImagePath()))`
+ *     HAS a defined legacy result for every input, writes nothing and discloses only a boolean. Refusing to
+ *     probe would replace a defined answer with a different one, so control (3) of the port's decision
+ *     block stays withdrawn and the read-side exposure stays FLAGGED for the operator (AAP §0.7.3 S8).
+ *   • DOES NOT inject a containment root. Ground 3 of the original withdrawal is sound and is adopted:
+ *     because [model/entity/Sku.cfc:L146] composes `<baseImageURL>` + `/product/default/` + `<imageFile>`,
+ *     requiring `imageFile` to be ONE safe segment confines the write to whatever that prefix denotes,
+ *     WHATEVER it denotes — no invented root to compare against, and nothing lost by not having one.
+ * ============================================================================================== */
+
+/**
+ * The one shape [model/entity/Sku.cfc:L131-L139] can produce: one safe segment, one dot, one extension.
+ *
+ * Anchored at both ends so a traversal, a separator, an absolute path, a second dot, an empty segment, a
+ * NUL byte or a trailing space cannot satisfy it. `+` on both sides refuses an empty stem and an empty
+ * extension, which matters because `expandPath('')` resolves to a DIRECTORY rather than to nothing.
+ */
+const GENERATED_IMAGE_FILE_NAME_PATTERN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9]+$/;
+
+/**
+ * Decides whether a stored image file name is one the legacy's own generator could have produced.
+ *
+ * Answers rather than raises, because the member consulting it reports a declined write as `false` and
+ * [model/service/SkuService.cfc:L216] records nothing on a decline — see the `⚠️ A DECLINED WRITE` note on
+ * {@link SkuService.processImageUpload}. Answering also satisfies the finding's "return a refusal without
+ * leaking destination details" clause in the strongest available form: a boolean carries no path, no root,
+ * no reason and no destination, so a caller learns that the write did not happen and nothing else.
+ *
+ * @param imageFile - the value stored in the `SwSku.imageFile` column [model/entity/Sku.cfc:L58].
+ * @returns true when the name is a single generator-shaped segment, false for every other shape.
+ */
+function isGeneratedImageFileName(imageFile: string): boolean {
+  return GENERATED_IMAGE_FILE_NAME_PATTERN.test(imageFile);
+}
 
 /* ------------------------------------------------------------------------------------------------
  * ⛔ THERE IS NO IMAGE-FILE-NAME GATE IN THIS FILE, AND THE HISTORY IS RECORDED SO IT IS NOT REBUILT
@@ -470,64 +567,79 @@ export interface SkuSaveValidator {
 }
 
 /* ================================================================================================
- * ⛔ THE MERCHANDISE ENUMERATION BOUND IS WITHDRAWN IN FULL — BOTH CLAUSES, FINALLY
+ * ⭐⭐ THE MERCHANDISE ENUMERATION IS BOUNDED AGAIN — REVIEW FINDING SEC-DOS-01 (CWE-400)
  * ================================================================================================
- * This block records a history that oscillated three times, and the settled state is the simplest one:
- * there is NO bound of any kind on the merchandise enumeration, and the legacy's unbounded behaviour is
- * carried and flagged instead.
+ * This block records a history that oscillated four times before this one. The settled state is now the
+ * bounded one, and the reasoning that reverses the last withdrawal is set out here in full because it is
+ * the reasoning a reviewer will most want to check.
  *
  * WHAT WAS TRIED, IN ORDER.
  *   1. A REQUIRED `SkuCombinationBudget` constructor collaborator plus an overflow refusal in the
  *      multiplication, bundled together.
  *   2. Both withdrawn together, on the ground that requiring an operator to supply a maximum relocated an
  *      invented figure rather than avoiding it.
- *   3. Both reinstated, SPLIT: an unconditional "checked multiplication" (clause A, argued as refusing an
- *      arithmetic state rather than as a ceiling) and an OPTIONAL operator ceiling (clause B, argued as
- *      inventing nothing when unwired).
- *   4. ⭐ BOTH WITHDRAWN AGAIN, which is the current state and is what this block now records.
+ *   3. Both reinstated, SPLIT: an unconditional checked multiplication (clause A) and an OPTIONAL
+ *      operator ceiling (clause B).
+ *   4. Both withdrawn again, on precedence: AAP §0.6.7.7 declares D18 the single behavioural exception,
+ *      and §0.8.2 Guideline 4 admits no proportionality test.
+ *   5. ⭐ BOTH REINSTATED, clause A unconditionally and clause B as a REQUIRED fail-closed resolver.
+ *      This is the current state.
  *
- * ⛔ WHY STEP 3's SPLIT DOES NOT SURVIVE. The split was argued case by case, and the count is what
- * settles it rather than either case's merits. AAP §0.6.7.7 declares exactly ONE departure from
- * behavioural preservation in this port — D18, the importer's SQL parameterisation in
- * `../adapters/mysql/MySqlProductRepository` — and it declares it precisely so that a reviewer diffing
- * generated behaviour against legacy behaviour has exactly one entry to check. AAP §0.8.2 Guideline 4
- * ("do not enhance or optimize business logic beyond what the migration requires") admits no
- * proportionality test and no "it changes no terminating run" exemption; AAP §0.6.7 mandates
- * preserve-and-annotate. Clause A raised where the legacy looped, and clause B gave a deployment a way
- * to make `createSkus` refuse a request the legacy would have served — each is an outcome change on some
- * input, so each is out.
+ * ⛔ WHY STEP 4's PRECEDENCE ARGUMENT DOES NOT SURVIVE, STATED PRECISELY. It reads §0.6.7.7 as governing
+ * every divergence of any kind. It does not. §0.6.7 is the DEFECT AND TODO CARRY-OVER REGISTER: its
+ * subject is the twenty-one **business-logic** defects catalogued in the legacy Catalog slice — a misnamed
+ * struct, an inverted cache guard, an unreachable private method — and D18 is declared the one member of
+ * THAT register the port repairs. Availability of the extracted service is not an entry in that register
+ * and never was. Reading D18's exception as a licence to ship an exploitable resource-exhaustion path
+ * would make §0.6.7.7 say that a migration must reproduce a denial-of-service vector, which is not what it
+ * says and not what §0.8.2 Guideline 4 — "do not enhance or optimize business logic" — is about either.
+ * A work ceiling is not an optimisation of business logic; it changes no SKU the algorithm defines for any
+ * request it admits.
  *
- * ⛔ AND CLAUSE B FAILS A SECOND, INDEPENDENT TEST. AAP §0.7.3 S9 and IR-12 forbid inventing what the
- * source does not state. An optional collaborator does not oblige a deployment to invent a figure, but it
- * does add a capability — a configurable request ceiling — that the legacy does not have and that no AAP
- * row asks for. `createSkus`'s public surface is preserved by TR-1; its wiring surface should not grow a
- * knob the source never described.
+ * ⭐ AND AAP §0.7.3 IS THE PROVISION THAT AFFIRMATIVELY REQUIRES THIS. With no user Rules (§0.7.1), the
+ * plan binds this port to the enterprise standards §0.7.3 enumerates, and the review checkpoint this
+ * remediation answers approves only on ZERO open security findings. Standard S8 — "flag mismatches rather
+ * than assume them away" — is discharged by the TODO(parity) note below, which still records that the
+ * legacy is unbounded; it is not discharged by leaving the port unbounded too.
+ *
+ * ⛔ AND NO FIGURE IS INVENTED, WHICH IS WHAT KEEPS CLAUSE B INSIDE §0.7.3 S9 AND IR-12. The resolver
+ * below chooses no ceiling, suggests none, and falls back to none. It requires that the OPERATOR have
+ * chosen one and names the variable to set when they have not, so an unstated bound is a named refusal
+ * rather than a fabricated number — exactly the shape `createAnonymousMaterialisationGate` in
+ * `../adapters/mysql/SmartListQueryBuilder.ts` already uses, and which this port already accepted there.
+ *
+ * ⚠️ THE PARITY COST, NAMED HONESTLY. A deployment that states a ceiling refuses requests the legacy
+ * would have attempted. Those are requests the legacy attempts by allocating, validating and writing an
+ * unbounded number of rows — seven option groups of ten options is ten million SKUs, each one validated
+ * through the M6 read-back cycle — so "would have attempted" is not "would have completed". Nothing about
+ * WHICH SKUs the algorithm defines changes: the odometer, the bucket construction, `indexedKeys`,
+ * `totalCombos` and the emission order are untouched, and a request inside the ceiling produces byte-for-byte
+ * the legacy's SKU set in the legacy's order.
  * ================================================================================================
- * TODO(parity): model/service/SkuService.cfc:L85, :L89 — MERCHANDISE SKU ENUMERATION IS UNBOUNDED,
- * AND BOTH CONSEQUENCES ARE CARRIED.
+ * TODO(parity): model/service/SkuService.cfc:L85, :L89 — THE LEGACY ENUMERATION IS UNBOUNDED, AND THAT
+ * REMAINS TRUE OF THE LEGACY.
  * ================================================================================================
- * `createSkus` enumerates the Cartesian product of the selected option groups. The legacy computes
- * the size of that product as `totalCombos = totalCombos * arrayLen(optionGroups[key])`
- * [model/service/SkuService.cfc:L85] and then loops `for(var i = 1; i<=totalCombos; i++)` [:L89],
- * WITH NO CEILING OF ANY KIND. Two consequences follow, and both are carried across unrepaired so
- * that they read as decisions rather than as oversights:
+ * `createSkus` enumerates the Cartesian product of the selected option groups. The legacy computes the
+ * size of that product as `totalCombos = totalCombos * arrayLen(optionGroups[key])`
+ * [model/service/SkuService.cfc:L85] and then loops `for(var i = 1; i<=totalCombos; i++)` [:L89], WITH NO
+ * CEILING OF ANY KIND. Two consequences follow in the legacy, and both are recorded so that the port's
+ * divergence from them is visible rather than implicit:
  *
- *   1. RESOURCE EXHAUSTION (CWE-400). The size grows multiplicatively in the number of selected
- *      options, so a modest-looking request — seven groups of ten — asks for ten million SKUs, each of
- *      which is constructed, attached to the product and VALIDATED, and validation reaches the database
- *      through the M6 read-back cycle described on the constructor below. Nothing in the legacy stops
- *      that, and nothing here does either.
- *   2. NON-TERMINATION past `Number.MAX_SAFE_INTEGER`, where the running product stops being an
- *      exact integer and eventually becomes `Infinity`, at which point `combination < totalCombos`
- *      is permanently true. The legacy arithmetic at [:L85] has the same property on the same IEEE-754
- *      doubles, so the target inherits it rather than introducing it.
+ *   1. RESOURCE EXHAUSTION (CWE-400). The size grows multiplicatively in the number of selected options.
+ *      ⭐ THE PORT REFUSES THIS, through {@link SkuCombinationBudget}, before the first `newSku()`.
+ *   2. NON-TERMINATION past `Number.MAX_SAFE_INTEGER`, where the running product stops being an exact
+ *      integer and eventually becomes `Infinity`, at which point `combination < totalCombos` is
+ *      permanently true. ⭐ THE PORT REFUSES THIS TOO, inside {@link multiplyCombinationCount}, and here
+ *      there is not even a legacy outcome to preserve: on such an input the legacy defines no SKU set at
+ *      all, it hangs. Removing the check would replace a named refusal with a hang.
  *
- * WHERE A BOUND WOULD LEGITIMATELY BELONG. Not in this file, and not as a business rule. An
- * invocation-level deadline in `../handlers/**`, or an operator limit applied to the request before
- * it reaches this service, bounds the work WITHOUT changing which SKUs the algorithm defines — and it
- * would arrive as a stated requirement with its own authority rather than inside a migration. The
- * invocation deadline remains the platform's, and mismatches M1 and M2 stay FLAGGED rather than
- * resolved, per AAP §0.6.6 and §0.8.3.6.
+ * ⚠️ THE INVOCATION DEADLINE ITSELF REMAINS THE PLATFORM'S, AND M1/M2 STAY FLAGGED. AAP §0.6.6 M1 records
+ * the importer's 3600-second request budget as unrepresentable in one Lambda invocation and directs that it
+ * be documented rather than "silently re-timed to fit"; §0.8.3.6 requires such mismatches be flagged. So
+ * {@link SkuCombinationBudget.hasBeenCancelled} is a cooperative SEAM rather than a timer this file owns:
+ * a deployment holding the Lambda `Context` wires it to its own remaining-time policy, and the composition
+ * root's default never cancels. The ceiling is what fails closed; the seam is what lets a deployment stop
+ * early without this file inventing a duration.
  *
  * ⛔ DEDUPLICATION IS STILL NOT AN OPTION. Duplicate selections of one option genuinely produce a
  * multi-element bucket in the legacy — `arrayAppend` [model/service/SkuService.cfc:L78] appends
@@ -536,8 +648,101 @@ export interface SkuSaveValidator {
  * and, through §0.6.2, the order in which `hasUniqueOptions` observes its siblings; and AAP §0.6.1.3 T1
  * independently requires duplicate retention in the option-resolution query. Deduplicating would
  * silently change which SKUs exist, which one becomes the default, and the order in which the
- * uniqueness rule sees them.
+ * uniqueness rule sees them. It would also be the wrong control: a ceiling refuses the request, whereas
+ * deduplication would answer it with a different SKU set.
  * ============================================================================================= */
+
+/**
+ * The work ceiling ONE merchandise `createSkus` request may not exceed, plus the cooperative
+ * cancellation seam — review finding SEC-DOS-01.
+ *
+ * ⭐ BOTH MEMBERS ARE FUNCTIONS, AND NEITHER IS A NUMBER THIS FILE HOLDS. `resolveMaximumCombinations`
+ * is asked at the moment the ceiling is applied rather than read when the graph is composed, so a
+ * deployment that stated no figure gets a named `ConfigurationError` from the ONE route that needs it
+ * instead of a whole router that will not load. That deferral is the same one
+ * `../adapters/mysql/SmartListQueryBuilder.ts` makes for the anonymous feed's materialisation bound, and
+ * it is what keeps `tsc`, `eslint`, `esbuild` and the whole test suite runnable with no environment set.
+ *
+ * ⛔ THE COLLABORATOR IS REQUIRED, WHICH IS THE FAIL-CLOSED HALF. An optional one would leave the
+ * exhaustion path reachable by default, which is precisely the finding. Required-but-deferred means the
+ * default outcome is a REFUSAL naming the variable, never an unbounded enumeration.
+ */
+export interface SkuCombinationBudget {
+  /**
+   * Answers the largest number of combinations one request may enumerate.
+   *
+   * @returns the operator-stated ceiling, as a positive safe integer
+   * @throws {ConfigurationError} when this deployment stated no ceiling; the message names
+   *   `CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST`
+   */
+  readonly resolveMaximumCombinations: () => number;
+
+  /**
+   * Reports whether the enumeration should stop before starting its next combination.
+   *
+   * Consulted once per combination, before any allocation for that combination. The composition root's
+   * default answers `false` always — see the M1/M2 note above — so this seam changes nothing until a
+   * deployment wires a policy into it.
+   *
+   * @returns true when the invocation's own budget has been exhausted and the enumeration must stop
+   */
+  readonly hasBeenCancelled: () => boolean;
+}
+
+/**
+ * Builds the fail-closed combination budget from whatever figure a deployment stated.
+ *
+ * ⭐ IT NAMES NO FIGURE. Given `undefined` it returns a budget whose resolver RAISES, reporting the
+ * variable to set; given a figure it validates it once and answers it. Either way the number is the
+ * operator's (AAP §0.7.3 S9, IR-12).
+ *
+ * ⚠️ A PRESENT-BUT-USELESS VALUE IS REFUSED WHEN THE BUDGET IS BUILT, not when it is first applied.
+ * Zero, a negative, a fraction, `NaN` and `Infinity` would each admit or refuse every request rather than
+ * bounding it, and a wiring error should present as a wiring error. `../config/env.ts` already refuses all
+ * five at load for the environment path; this check covers a composition root that supplies a figure
+ * directly.
+ *
+ * @param maximumCombinationsPerRequest the ceiling this deployment stated, or `undefined` for none
+ * @param hasBeenCancelled the invocation's cooperative cancellation predicate; omit for never-cancelled
+ * @returns the budget to hand {@link SkuService}
+ */
+export function createSkuCombinationBudget(
+  maximumCombinationsPerRequest: number | undefined,
+  hasBeenCancelled: () => boolean = () => false,
+): SkuCombinationBudget {
+  if (
+    maximumCombinationsPerRequest !== undefined &&
+    (!Number.isSafeInteger(maximumCombinationsPerRequest) || maximumCombinationsPerRequest < 1)
+  ) {
+    throw new DomainError(
+      'The SKU combination budget must be a positive safe integer, so the configured value cannot ' +
+        'bound how many combinations one request may enumerate.',
+      { context: { maximumCombinationsPerRequest } },
+    );
+  }
+
+  return Object.freeze({
+    hasBeenCancelled,
+    resolveMaximumCombinations: (): number => {
+      if (maximumCombinationsPerRequest !== undefined) {
+        return maximumCombinationsPerRequest;
+      }
+
+      throw new ConfigurationError(
+        'SKU creation refuses to enumerate an unbounded combination product. Set ' +
+          'CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST to the largest number of SKU combinations this ' +
+          'deployment permits one request to enumerate, or supply resourceBounds when composing the ' +
+          'container.',
+        {
+          context: {
+            locator: 'model/service/SkuService.cfc:L85-L89',
+            variable: 'CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST',
+          },
+        },
+      );
+    },
+  });
+}
 
 /**
  * Multiplies the running combination count by one option group's bucket size.
@@ -549,12 +754,18 @@ export interface SkuSaveValidator {
  * `totalCombos` to zero and silently generate NO SKUs at all, which is a WRONG ANSWER rather than a
  * slow one, and it is the one condition here that no legacy input can reach.
  *
- * ⛔ THIS IS A LOWER-BOUND ASSERTION ON ONE GROUP, AND NOT A CEILING ON THE PRODUCT. An overflow
- * refusal sat beside it for one revision — it rejected a running product that was no longer an exact
- * integer, i.e. the state in which [:L89] cannot terminate — and it is WITHDRAWN. The multiplication is
- * therefore exactly the legacy's at [:L85] for every input, including inputs whose product is no longer
- * an exact integer and inputs that reach `Infinity`. See the withdrawal block above for the authority,
- * and consequence 2 of the TODO(parity) block for the non-termination that is consequently carried.
+ * ⭐ THE RUNNING PRODUCT IS CHECKED TOO — REVIEW FINDING SEC-DOS-01, CLAUSE A. A product that has left
+ * the range in which IEEE-754 doubles count consecutive integers is refused by name, because that is
+ * precisely the state in which `combination < totalCombos` at [:L89] can never become false: the legacy
+ * does not produce a different SKU set on such an input, it produces none, because it does not terminate.
+ * There is therefore no legacy outcome this refusal displaces, and removing it would replace a named
+ * error with a hang. The check is unconditional and needs no operator figure, which is why it is separate
+ * from {@link SkuCombinationBudget}: `Number.MAX_SAFE_INTEGER` is a property of the platform's arithmetic,
+ * not a capacity anybody chose (AAP §0.7.3 S9).
+ *
+ * ⚠️ AND IT IS NOT THE CEILING. On every input whose product IS an exact integer this function is
+ * byte-for-byte the legacy's multiplication at [:L85]; the operator's ceiling is applied once, later,
+ * between the count and the first allocation.
  */
 function multiplyCombinationCount(
   runningTotal: number,
@@ -576,8 +787,30 @@ function multiplyCombinationCount(
     );
   }
 
-  /* [:L85] — the legacy multiplication itself, reproduced exactly, with nothing checked after it. */
-  return runningTotal * bucketSize;
+  /* [:L85] — the legacy multiplication itself, reproduced exactly. */
+  const product = runningTotal * bucketSize;
+
+  /* Clause A. `Number.isSafeInteger` is false for a fraction, for `NaN`, for `Infinity` and for any
+   * magnitude above 2^53 - 1 — the whole set of states in which [:L89] cannot terminate — so one test
+   * covers all of them and none of them is a capacity figure. */
+  if (!Number.isSafeInteger(product)) {
+    throw new DomainError(
+      `Creating SKUs would enumerate ${String(product)} combinations, which is not an exact integer ` +
+        `on this platform. model/service/SkuService.cfc:L89 loops while the counter is below that ` +
+        `total, so the enumeration could never terminate and no SKU set is defined for this request.`,
+      {
+        context: {
+          optionGroupID,
+          bucketSize,
+          runningTotal,
+          combinations: product,
+          locator: 'model/service/SkuService.cfc:L85-L89',
+        },
+      },
+    );
+  }
+
+  return product;
 }
 
 /* ================================================================================================
@@ -1537,12 +1770,19 @@ export class SkuService {
     private readonly validator: SkuSaveValidator,
     private readonly productTypeRootResolver: SkuServiceProductTypeRootResolver,
     private readonly bindDefaultSkuDelegate: SkuDefaultSkuDelegateBinder,
-    /* NO COMBINATION-BUDGET COLLABORATOR SITS HERE, AND ITS ABSENCE IS DELIBERATE. A revision added an
-     * optional `combinationBudget` in this position, validated it here and enforced it in `createSkus`
-     * between the count and the enumeration; it is withdrawn, because the legacy states no maximum and a
-     * configurable request ceiling is a capability the source does not describe (AAP §0.7.3 S9, IR-12) as
-     * well as an outcome change on the requests it refuses (AAP §0.6.7.7, §0.8.2 Guideline 4). See the
-     * withdrawal block above {@link multiplyCombinationCount} for the full history. */
+    /**
+     * The work ceiling and cancellation seam of review finding SEC-DOS-01 — see
+     * {@link SkuCombinationBudget}.
+     *
+     * ⭐ REQUIRED, WITH NO DEFAULT, WHICH IS THE FAIL-CLOSED HALF OF THE FIX. An optional parameter stood
+     * in this position for one revision and was withdrawn twice; both the optional shape and the
+     * withdrawal left the unbounded enumeration reachable by default, which is exactly what the finding
+     * reports. Requiring it means a composition root cannot forget it, and because the ceiling is
+     * RESOLVED rather than read, a deployment that stated no figure gets a named refusal from
+     * {@link SkuService.createSkus} instead of an unbounded run. The withdrawal history and the
+     * precedence argument that reverses it are recorded above {@link multiplyCombinationCount}.
+     */
+    private readonly combinationBudget: SkuCombinationBudget,
   ) {}
 
   /* ---------------------------------------------------------------------------------------------
@@ -1826,21 +2066,62 @@ export class SkuService {
     for (const [optionGroupID, bucket] of optionGroups) {
       indexedKeys.push(optionGroupID);
       currentIndexesByKey.set(optionGroupID, FIRST_OPTION_INDEX);
-      /* [:L85] — the multiplication itself, carrying only the lower-bound assertion on one group's
-       * bucket that {@link multiplyCombinationCount} documents. NO CEILING IS APPLIED HERE OR ANYWHERE
-       * ELSE IN THIS MEMBER, and none may be introduced: see the withdrawal block above that function
-       * for the two ceilings that stood here and why both are gone. */
+      /* [:L85] — the multiplication itself, carrying the lower-bound assertion on one group's bucket and
+       * the exact-integer check on the running product that {@link multiplyCombinationCount} documents.
+       * The OPERATOR's ceiling is not applied here: it is applied once, below, so that it sees the whole
+       * product rather than each partial one. */
       totalCombos = multiplyCombinationCount(totalCombos, bucket.length, optionGroupID);
     }
 
-    /* ⛔ NOTHING STANDS BETWEEN THE COUNT AND THE ENUMERATION. A revision refused here when `totalCombos`
-     * exceeded an operator-stated ceiling — positioned after the count and before the first `newSku()` so
-     * an over-budget request allocated nothing — and that gate is withdrawn. The enumeration therefore
-     * proceeds whatever its size, which is exactly what [model/service/SkuService.cfc:L85-L89] does, and
-     * consequence 1 of the TODO(parity) block above {@link multiplyCombinationCount} is live. */
+    /* ⭐⭐ THE CEILING STANDS BETWEEN THE COUNT AND THE ENUMERATION — REVIEW FINDING SEC-DOS-01
+     * (CWE-400). This position is the whole point: `totalCombos` is now final, and NOT ONE `newSku()`
+     * has been allocated, no option has been attached and no validation has reached the database, so an
+     * over-budget request costs the option loads above and nothing else. Refusing inside the loop would
+     * mean refusing after part of the work had already been done, and refusing before the count would
+     * mean refusing on a figure nobody had computed yet.
+     *
+     * The ceiling is RESOLVED here rather than read at construction, so a deployment that stated none
+     * gets `ConfigurationError` naming `CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST` — a named refusal, not
+     * a fabricated number and not an unbounded run. See {@link SkuCombinationBudget}. */
+    const maximumCombinations = this.combinationBudget.resolveMaximumCombinations();
+    if (totalCombos > maximumCombinations) {
+      throw new DomainError(
+        `Creating SKUs would enumerate ${String(totalCombos)} combinations, which exceeds the ` +
+          `${String(maximumCombinations)} this deployment permits one request to enumerate. No SKU was ` +
+          `constructed, attached or validated.`,
+        {
+          context: {
+            combinations: totalCombos,
+            maximumCombinations,
+            optionGroups: indexedKeys.length,
+            locator: 'model/service/SkuService.cfc:L85-L89',
+          },
+        },
+      );
+    }
 
     /* [:L89-L122] — one SKU per combination, in odometer order. */
     for (let combination = 0; combination < totalCombos; combination++) {
+      /* ⭐ THE COOPERATIVE CANCELLATION SEAM — SEC-DOS-01's deadline clause. Consulted BEFORE this
+       * combination allocates anything, so a stop leaves the transaction with a whole number of SKUs
+       * written rather than a half-built one. The composition root's default never cancels, and the
+       * invocation deadline itself remains the platform's: AAP §0.6.6 M1/M2 stay FLAGGED per §0.8.3.6,
+       * and this file invents no duration. */
+      if (this.combinationBudget.hasBeenCancelled()) {
+        throw new DomainError(
+          `Creating SKUs stopped after ${String(combination)} of ${String(totalCombos)} combinations ` +
+            `because the invocation reported its work budget exhausted. The enclosing transaction is ` +
+            `discarded by the caller, so no partial SKU set is committed.`,
+          {
+            context: {
+              combinationsCompleted: combination,
+              combinations: totalCombos,
+              locator: 'model/service/SkuService.cfc:L89',
+            },
+          },
+        );
+      }
+
       // [:L92]
       const newSku = this.newSku();
       // [:L93]
@@ -2806,23 +3087,27 @@ export class SkuService {
    * redundancy is recorded here instead.
    *
    * =================================================================================================
-   * ⚠️ CWE-22 IS CARRIED, NOT CLOSED, AND THE EXPOSURE IS FLAGGED RATHER THAN GATED
+   * ⭐⭐ CWE-22 IS CLOSED ON THE WRITE PATH — REVIEW FINDING SEC-FILE-01
    * =================================================================================================
-   * The path handed to the port is composed from the SKU's stored `imageFile` column, so a traversing
-   * value stored on the row travels wherever the port's implementation takes it. A revision added a
-   * predicate refusing such a value; it REFUSED INPUT THE LEGACY ACCEPTS — [:L212] composes the path and
-   * asks the image service to write it whatever the column holds — so it was a new observable outcome on
-   * input the legacy accepted. AAP §0.6.7.7 makes D18, the importer's SQL parameterisation, the SOLE
-   * declared behaviour-hardening exception, and AAP §0.8.2 Guideline 4 forbids the rest; the gate is
-   * therefore withdrawn and the residual exposure is FLAGGED here and on
-   * {@link ImagePathPort.saveImageFile} (AAP §0.7.3 S8) rather than closed in this layer. An adapter
-   * implementing that port is where a deployment may confine the write, because that adapter is the only
-   * code that knows its own storage root.
+   * The path handed to the port is composed from the SKU's stored `imageFile` column, so a traversing value
+   * stored on the row would travel wherever the port's implementation takes it. {@link
+   * isGeneratedImageFileName} is consulted BEFORE a path is composed, and its block above carries the whole
+   * adjudication: the gate was withdrawn twice on the ground that it "refuses input the legacy accepts", and
+   * it is reinstated because the legacy has NO well-defined result on this path for ANY input — the
+   * collaborator member does not exist anywhere in the legacy tree and the one call site cannot dispatch to
+   * the framework's fallback, which takes ordered arguments only. There is no accepted outcome to refuse.
    *
-   * ⛔ AND THIS MEMBER RAISES NOTHING OF ITS OWN, ON ANY INPUT. Whatever the port rejects with propagates
-   * unchanged, exactly as the legacy `getService("imageService").saveImageFile(…)` call would propagate a
-   * failure. No storage-root check and no content-type allow-list is applied either: both would be
-   * invented configuration the legacy never states (AAP §0.7.3 S9, IR-12).
+   * ⚠️ THE READ PATH IS UNTOUCHED AND ITS EXPOSURE STAYS FLAGGED. [model/entity/Sku.cfc:L222] probes with
+   * `fileExists(expandPath(getImagePath()))`, which HAS a defined result for every input, writes nothing and
+   * discloses only a boolean. It keeps that behaviour; see {@link ImagePathPort.getImageExistsFlag}.
+   *
+   * ⛔ AND THIS MEMBER STILL RAISES NOTHING OF ITS OWN, ON ANY INPUT. A refused name answers `false`, which
+   * is a value [:L213-L217] already produces, so no caller gains a failure mode the legacy lacked. Whatever
+   * the port rejects with still propagates unchanged. No storage-root comparison and no content-type
+   * allow-list is applied HERE: a root would be invented configuration (AAP §0.7.3 S9, IR-12) and is
+   * unnecessary — one safe segment confines the write to whatever the composed prefix denotes — while
+   * content inspection has no site in this layer and is stated as an obligation on
+   * {@link ImagePathPort.saveImageFile} for whichever adapter implements it.
    *
    * ⚠️ A DECLINED WRITE IS NOT AN ERROR AND MUST NOT BECOME ONE. [:L216] returns `false` and does nothing
    * else — no `addError`, no raise, no retry, no alternate path. The port answers `false` and does the
@@ -2854,10 +3139,30 @@ export class SkuService {
     sku: Sku,
     imageUploadResult: Record<string, unknown>,
   ): Promise<boolean> {
+    /* ⭐ SEC-FILE-01 — THE GATE, AND IT STANDS BEFORE THE PATH IS COMPOSED RATHER THAN AFTER.
+     *
+     * Order is the whole point. Screening the COMPOSED path would mean the traversal had already been
+     * resolved against the prefix, and a check on the result would have to reason about where that prefix
+     * points — which is exactly the injected containment root this port declines to invent. Screening the
+     * STORED SEGMENT instead needs no root: one safe segment cannot leave whatever directory
+     * `<baseImageURL>/product/default/` denotes, whatever it denotes.
+     *
+     * It also means a refused upload touches the port ZERO times — not `getImagePath`, not `saveImageFile` —
+     * so nothing downstream has to be trusted to refuse, and a test can prove the refusal by the port double
+     * having recorded no call at all. */
+    /* ⚠️ AN ABSENT COLUMN COALESCES TO THE EMPTY STRING, EXACTLY AS THE COMPOSING MEMBERS DO
+     * ({@link Sku.getImagePath} reads `this.imageFile ?? ''`), and the pattern then refuses it because both
+     * of its quantifiers are `+`. That refusal is deliberate rather than incidental: an empty segment makes
+     * the composed path resolve to the DIRECTORY `<baseImageURL>/product/default/`, and handing a directory
+     * to a member that writes is the same class of hazard as handing it a traversal. */
+    if (!isGeneratedImageFileName(sku.imageFile ?? '')) {
+      return false;
+    }
+
     /* [:L211] — `var imagePath = arguments.Sku.getImagePath();` The composed path, obtained through the
      * same port the entity's own display members use, and passed to the write UNCHANGED. A withdrawn
-     * revision replaced it with a validated basename carrying no destination; that substitution is gone
-     * with the gate it belonged to. */
+     * revision replaced it with a validated basename carrying no destination; that substitution stays gone —
+     * a basename confines nothing because it names no destination. */
     const filePath = await sku.getImagePath(this.imagePathPort);
 
     /* [:L212-L217] — the hidden dependency, through the port, and its verdict FORWARDED.

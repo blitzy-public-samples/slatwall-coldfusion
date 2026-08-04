@@ -125,6 +125,7 @@
  *     sections are both empty at [model/service/OptionService.cfc:L82-L88] — so importing either
  *     would manufacture coverage this service does not own.
  */
+import type { SmartListMaterialisationBudget } from '../../src/adapters/mysql/SmartListQueryBuilder';
 import { SmartListQueryBuilder } from '../../src/adapters/mysql/SmartListQueryBuilder';
 import { createCatalogAggregateLoaders } from '../../src/adapters/mysql/SmartListQueryBuilder';
 import { Option } from '../../src/domain/option/Option';
@@ -135,6 +136,7 @@ import {
   findProductOptionsByOptionGroup,
 } from '../../src/services/OptionService';
 import {
+  DENY_ALL_POPULATION_AUTHORIZATION,
   buildOption,
   buildOptionGroup,
   buildProduct,
@@ -142,6 +144,8 @@ import {
   createFanningSqlExecutorDouble,
   createInMemoryOptionRepository,
   createSmartListQueryDouble,
+  GENEROUS_SMART_LIST_BUDGET,
+  smartListBudgetWithRowCeiling,
 } from '../support/inMemoryRepositories';
 import type { SelectOption } from '../../src/services/OptionService';
 /* ⚠️ `BoundedReadResult` and `BoundedReadWindow` were imported here, for the two windowed companion
@@ -1616,7 +1620,7 @@ const SECOND_SKU_ID = '77777777777777777777777777777772';
  */
 function realBuilderOver(
   fanning: FanningSqlExecutorDoubleOptions,
-  budget?: { readonly maximumRecordsPerQuery: number },
+  budget?: SmartListMaterialisationBudget,
 ): { readonly builder: SmartListQueryBuilder; readonly executor: FanningSqlExecutorDouble } {
   const executor = createFanningSqlExecutorDouble(fanning);
   const loaders = createCatalogAggregateLoaders({
@@ -1628,7 +1632,15 @@ function realBuilderOver(
     },
   });
 
-  return { builder: new SmartListQueryBuilder(executor.executor, loaders, budget), executor };
+  return {
+    /* SEC-DOS-02 — the budget is REQUIRED now; a scenario stating none gets the generous fixture. */
+    builder: new SmartListQueryBuilder(
+      executor.executor,
+      loaders,
+      budget ?? GENEROUS_SMART_LIST_BUDGET,
+    ),
+    executor,
+  };
 }
 
 /**
@@ -1898,7 +1910,7 @@ describe('NET-NEW OptionService × the real SmartListQueryBuilder — fanning jo
           { matching: 'FROM SwOption associationFar', rows: GROUP_OPTION_ASSOCIATION_ROWS },
         ],
       },
-      { maximumRecordsPerQuery: 1 },
+      smartListBudgetWithRowCeiling(1),
     );
 
     await expect(findProductOptionGroups(builder, PRODUCT_ID)).rejects.toThrow(
@@ -2221,6 +2233,9 @@ describe('test/handlers/optionHandler.test.ts — the option surface final wirin
               return grant.includes(request.crudType);
             },
           },
+          /* SEC-AUTH-03 — the third member of one invocation's context. Deny-all, matching the shipped
+           * fail-closed default: these cases drive the GATE, and nothing here populates a property. */
+          populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
         };
       };
 

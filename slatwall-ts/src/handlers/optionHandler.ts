@@ -291,6 +291,7 @@ import {
   readPathParameter,
   readQueryStringParameter,
   resolveRequestAuthorization,
+  toInvocationSecurityRequest,
   unauthorizedResponse,
 } from './httpResponse';
 
@@ -300,13 +301,14 @@ import type {
   APIGatewayProxyEvent,
   APIGatewayProxyHandler,
   APIGatewayProxyResult,
+  CatalogAuthorizationEvent,
 } from './httpResponse';
 import type { OptionService } from '../services/OptionService';
 import type {
   EntityCrudType,
   HandlerAccessClassification,
+  InvocationSecurityResolver,
   RequestAuthorizationContext,
-  RequestAuthorizationResolver,
 } from '../ports/AccountContextPort';
 
 /* ================================================================================================
@@ -388,6 +390,14 @@ const OPTION_NAME_ENTRY_MEMBER = 'optionName';
  * would be an unused declaration (S9), so it is absent.
  */
 const OPTION_ENTITY_NAME = 'Option';
+
+/**
+ * The prefix every routed option action carries, so the resolver is told which action it is gating.
+ *
+ * ⭐ ADDED BY REVIEW FINDING SEC-AUTH-03; see {@link createOptionHandler}'s gate for what it is used for.
+ * Concatenated with the routed member name it reproduces the addresses {@link createOptionRoutes} declares.
+ */
+const OPTION_ACTION_PREFIX = 'option.';
 
 /* ================================================================================================
  * NEUTRAL FAILURE TEXTS
@@ -640,7 +650,7 @@ export type UnusedProductOptionGroupsEvent = Pick<
  * A deployment that carries its principal somewhere else — an authorizer context, for instance —
  * widens THIS single declaration, and the three members widen with it.
  */
-export type OptionAuthorizationEvent = Pick<APIGatewayProxyEvent, 'headers'>;
+export type OptionAuthorizationEvent = CatalogAuthorizationEvent;
 
 /**
  * What one routed option operation requires of a principal, in the legacy's own vocabulary.
@@ -921,7 +931,7 @@ export interface OptionHandler {
  */
 export function createOptionHandler(
   optionService: OptionSurface,
-  resolveAuthorization: RequestAuthorizationResolver<OptionAuthorizationEvent>,
+  resolveAuthorization: InvocationSecurityResolver,
 ): OptionHandler {
   /**
    * Runs the gate `setupRequest()` [org/Hibachi/Hibachi.cfc:L188] ran, for one routed member.
@@ -975,7 +985,27 @@ export function createOptionHandler(
     member: keyof OptionHandler,
   ): APIGatewayProxyResult | undefined => {
     const requirement: OptionAccessRequirement = OPTION_ACCESS_MATRIX[member];
-    const authorization: RequestAuthorizationContext = resolveAuthorization(event);
+
+    /* ⭐ SEC-AUTH-03 — ONE RESOLUTION, CARRYING THE WHOLE QUESTION. The resolver used to receive this
+     * surface's bare header slice; it now receives the port's own `InvocationSecurityRequest`, built from
+     * the event plus THIS row's declaration, so a deployment can scope a grant to the action invoked. An
+     * `'anyLogin'` row still asks no ENTITY question — the legacy branch that authorises it returns true
+     * without one [org/Hibachi/HibachiAuthenticationService.cfc:L32-L34] — so its request carries the CRUD
+     * type such a row would ask about if it were `'secure'`, which for every row here is `read`: this
+     * surface performs nothing but reads. No resource identifier is carried, because no member addresses
+     * one; both repository-backed members project a LIST.
+     *
+     * ⛔ THE `'anyLogin'` ROWS ARE NOT AFFECTED BY SEC-AUTH-02, and the difference from ./productHandler is
+     * evidence rather than inconsistency. Those product rows were `process` items that WROTE; these are
+     * `preProcess` items that READ, and the matrix rows carry the locators. Nothing here creates, updates
+     * or deletes anything, so there is no operation a narrower grant could escalate into. */
+    const authorization: RequestAuthorizationContext = resolveAuthorization(
+      toInvocationSecurityRequest(event, {
+        action: `${OPTION_ACTION_PREFIX}${member}`,
+        crudType: requirement.classification === 'secure' ? requirement.crudType : 'read',
+        entityName: OPTION_ENTITY_NAME,
+      }),
+    );
     const account = authorization.accountContext.getCurrentAccount();
 
     // Steps 1 and 2 of the ladder. `newFlag` is `isNew()`, so TRUE means "not logged in".
@@ -1262,7 +1292,7 @@ export type OptionRouteKey =
  */
 export function createOptionHandlerFromContainer(
   container: Pick<CatalogContainer, 'optionService'>,
-  resolveAuthorization: RequestAuthorizationResolver<OptionAuthorizationEvent> = resolveRequestAuthorization,
+  resolveAuthorization: InvocationSecurityResolver = resolveRequestAuthorization,
 ): OptionHandler {
   return createOptionHandler(container.optionService, resolveAuthorization);
 }

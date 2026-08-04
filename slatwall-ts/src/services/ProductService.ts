@@ -209,7 +209,7 @@ import type {
 import { buildIdentifierQuery, translateSmartListInput } from '../ports/SmartListQueryPort';
 import { createUniqueURLTitle } from '../util/urlTitle';
 import { toExactDecimal, type ExactDecimal } from '../util/formatting';
-import type { UniqueValueProbe } from '../util/urlTitle';
+import type { UniqueValueProbe, UrlTitleProbeBudget } from '../util/urlTitle';
 import type { BaseService, BaseServiceEntity, EntityPersister } from './BaseService';
 import { createProductOptionFinders } from './OptionService';
 import type { OptionService, SelectOption } from './OptionService';
@@ -774,13 +774,18 @@ export interface ProductServiceCollaborators {
    */
   readonly isUrlTitleAvailable: UniqueValueProbe;
 
-  /* ⛔ NO PROBE-CEILING COLLABORATOR IS DECLARED HERE, AND ITS ABSENCE IS DELIBERATE. A revision added an
-   * optional `urlTitleProbeBudget` that wrapped the probe above so one derivation could issue at most N
-   * uniqueness probes. It is withdrawn: `model/service/DataService.cfc:L64` is `while(!unique)` with no
-   * ceiling, a configurable ceiling is a capability the source does not describe (AAP §0.7.3 S9, IR-12),
-   * and refusing a derivation the legacy would have completed changes an outcome — and AAP §0.6.7.7
-   * declares exactly one departure in this port (D18). The unbounded probing is FLAGGED at
-   * `../util/urlTitle.ts` instead, which records where a bound would legitimately belong. */
+  /**
+   * The ceiling on how many uniqueness probes ONE URL-title derivation may issue — review finding
+   * SEC-DOS-03; see `../util/urlTitle`'s `UrlTitleProbeBudget`.
+   *
+   * ⭐ REQUIRED, AND IT CARRIES A RESOLVER RATHER THAN A NUMBER. Two earlier revisions declared it and two
+   * withdrew it — first as a relocated fabrication, then on AAP §0.6.7.7's single-departure count. Neither
+   * objection survives a resolver whose absent case is a named `ConfigurationError`: the figure is the
+   * operator's or there is none, no default is substituted anywhere in the chain, and `../util/urlTitle`
+   * argues the reversal in full. Both derivations this service performs — `SwProduct` and `SwProductType`
+   * — share the one budget, because both are one derivation each.
+   */
+  readonly urlTitleProbeBudget: UrlTitleProbeBudget;
 
   /**
    * OPTIONAL supplier of the invocation-scoped import controls
@@ -1426,6 +1431,9 @@ export class ProductService {
 
   private readonly isUrlTitleAvailable: UniqueValueProbe;
 
+  /** SEC-DOS-03 — see {@link ProductServiceCollaborators.urlTitleProbeBudget}. */
+  private readonly urlTitleProbeBudget: UrlTitleProbeBudget;
+
   private readonly persistProduct: EntityPersister<Product>;
 
   /** @see ProductServiceCollaborators.defaultSkuIdReader */
@@ -1467,6 +1475,7 @@ export class ProductService {
     this.productPropertyDescriptors = collaborators.productPropertyDescriptors;
     this.populationAuthorization = collaborators.populationAuthorization;
     this.isUrlTitleAvailable = collaborators.isUrlTitleAvailable;
+    this.urlTitleProbeBudget = collaborators.urlTitleProbeBudget;
     this.persistProduct = collaborators.persistProduct;
     this.defaultSkuIdReader = collaborators.defaultSkuIdReader;
   }
@@ -1746,23 +1755,31 @@ export class ProductService {
    * PRE-INCREMENTED so the first collision suffix is `-2` rather than `-1`. Nothing about the algorithm
    * is restated here; this member supplies the table discriminator and the injected probe.
    *
-   * THE UTILITY TAKES THREE ARGUMENTS AND THERE IS NO FOURTH, AND THE LOOP IS UNBOUNDED. The attempt
-   * budget an earlier checkpoint threaded through this service as a fourth argument stays removed, and
-   * `../util/urlTitle` records the three authorities behind that removal, the decisive one being that a
-   * REQUIRED ceiling relocates a fabricated number instead of avoiding it. ⛔ A LATER REVISION REINSTATED
-   * THE BOUND AROUND THE PROBE — optional, no default — AND THAT IS WITHDRAWN TOO: an optional ceiling
-   * obliges nobody to invent a figure, but it still adds a capability the source does not describe
-   * (AAP §0.7.3 S9, IR-12) and still refuses derivations the legacy completed, and AAP §0.6.7.7 declares
-   * exactly one departure in this port. Both derivations therefore probe exactly as `:L64` does, and the
-   * injected probe is handed over unwrapped.
+   * ⭐ THE UTILITY TAKES A FOURTH ARGUMENT AND THE LOOP IS BOUNDED — REVIEW FINDING SEC-DOS-03. The
+   * ceiling has been added and withdrawn twice before: first as a required bare number (withdrawn as a
+   * relocated fabrication), then as an optional probe wrapper (withdrawn on AAP §0.6.7.7's
+   * single-departure count). It is now a REQUIRED budget carrying a RESOLVER, so the figure is the
+   * operator's or the derivation refuses by name — `../util/urlTitle` argues that reversal in full.
+   * Both derivations below share the injected budget and each is one derivation, so neither can spend
+   * the other's allowance. Inside the budget both probe exactly as `:L64` does.
    */
   private createUniqueProductUrlTitle(titleString: string): Promise<string> {
-    return createUniqueURLTitle(titleString, PRODUCT_TABLE_NAME, this.isUrlTitleAvailable);
+    return createUniqueURLTitle(
+      titleString,
+      PRODUCT_TABLE_NAME,
+      this.isUrlTitleAvailable,
+      this.urlTitleProbeBudget,
+    );
   }
 
   /** The same derivation against `SwProductType` — `model/service/ProductService.cfc:L297`, `:L299`. */
   private createUniqueProductTypeUrlTitle(titleString: string): Promise<string> {
-    return createUniqueURLTitle(titleString, PRODUCT_TYPE_TABLE_NAME, this.isUrlTitleAvailable);
+    return createUniqueURLTitle(
+      titleString,
+      PRODUCT_TYPE_TABLE_NAME,
+      this.isUrlTitleAvailable,
+      this.urlTitleProbeBudget,
+    );
   }
 
   /**

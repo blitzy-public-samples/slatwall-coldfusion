@@ -246,10 +246,18 @@ function callsContaining(
  * THE STATEMENT FRAGMENTS THESE CASES PIN
  * ==============================================================================================
  * Written out as the adapter composes them, so a drift in either direction is visible here rather
- * than only in a failing expectation. The out-of-scope tables in the existence chain
- * (`SwOrderItem`, `SwStock`, …) are NOT on the physical-name whitelist `assertTableName` guards —
- * they belong to excluded domain families — so they are spelled as the implementation spells them
- * and no name is fabricated.
+ * than only in a failing expectation.
+ *
+ * ⭐ THE CROSS-DOMAIN NAMES ARE NOW REGISTERED, WHICH REVERSES WHAT THIS BLOCK USED TO SAY. It previously
+ * recorded that the existence chain's tables (`SwOrderItem`, `SwStock`, …) were "NOT on the physical-name
+ * whitelist `assertTableName` guards" and were therefore spelled here as the implementation spells them.
+ * That was accurate and was the defect review finding SEC-SQL-SCOPE-01 measured: those fourteen names lived
+ * in a private literal object that reached no gate at all. `QueryRunner.ts` now classifies every one of them
+ * `cross-domain-read-only`, `assertRegisteredTableName` admits them for reads, and `assertWriteTableName`
+ * refuses them for writes. They are still spelled literally in the FRAGMENTS below — a fragment is the text
+ * this suite pins, and resolving a name through the gate to build an expectation would make the expectation
+ * agree with the implementation by construction — but `./schemaScopeRegistry.test.ts` asserts the census and
+ * the gates directly, so no name here is unratified.
  * ============================================================================================== */
 
 /** `model/dao/SkuDAO.cfc:L115-L119` — one correlated existence test per selected option. */
@@ -1153,11 +1161,16 @@ describe('NET-NEW transactionExists — the ten OR-ed existence predicates', () 
   /*
    * `model/dao/SkuDAO.cfc:L65-L85`. TEN predicates across NINE entity families, because
    * `StockAdjustmentItem` is tested twice — once through its FROM stock and once through its TO stock.
-   * Every table and column below is spelled exactly as the implementation spells it; none is
-   * fabricated. Note that these tables belong to explicitly excluded domain families (Order, Stock,
-   * Inventory, Physical, Vendor), so they are deliberately NOT run through `assertTableName` — that
-   * whitelist guards the in-scope catalogue names, and widening it to admit out-of-scope tables would
-   * be a change to a file this suite has no business changing.
+   * Every table and column below is spelled exactly as the implementation spells it; none is fabricated.
+   *
+   * ⭐ AND EVERY ONE IS NOW RATIFIED, WHICH THIS COMMENT USED TO DENY. It previously reasoned that these
+   * tables are "deliberately NOT run through `assertTableName`" because "widening it to admit out-of-scope
+   * tables would be a change to a file this suite has no business changing". The premise was right — these
+   * do belong to excluded families — but the conclusion left the service with two declarations of its own
+   * schema surface, only one of which was enforced. Review finding SEC-SQL-SCOPE-01 required one auditable
+   * registry, so `QueryRunner.ts` gained a SCOPE for each name rather than a wider whitelist: reads are
+   * admitted, writes are refused, and the privilege each name needs is legible from the registry. The
+   * spellings below are unchanged, and `./schemaScopeRegistry.test.ts` proves the registry agrees with them.
    */
   it('NET-NEW — contains all ten predicates, in legacy order', async () => {
     const harness = makeTransactionExistsHarness();
@@ -3322,9 +3335,83 @@ describe('test/adapters/UnitOfWork.test.ts — the transaction boundary the SKU 
     it('NET-NEW — EVERY OTHER driver failure passes through as the identical object', async () => {
       /*
        * The narrowing that keeps this a reporting change rather than a rewrite of the failure surface.
-       * A deadlock, a lock-wait timeout, a connection reset and a syntax error must reach the caller with
-       * the same identity, message and stack they had before the translation existed — asserted by
-       * reference equality, which no re-wrapping can satisfy.
+       * A connection reset, a syntax error and a permission refusal must reach the caller with the same
+       * identity, message and stack they had before the translation existed — asserted by reference
+       * equality, which no re-wrapping can satisfy.
+       *
+       * ⛔ THE VECTOR THIS CASE USES CHANGED WITH SEC-RACE-01, AND SO DID ITS PROSE. It used a LOCK-WAIT
+       * TIMEOUT and described "a deadlock, a lock-wait timeout, a connection reset and a syntax error" as
+       * the untranslated set. Both lock failures are now translated — see the sibling cases below — because
+       * the port now takes locks and therefore now provokes them. A connection reset stands in instead: it
+       * is genuinely outside the three classified numbers and is a failure no lock can cause, so it tests
+       * the narrowing rather than the classification.
+       */
+      const connectionReset = Object.assign(new Error('read ECONNRESET'), {
+        errno: -104,
+        code: 'ECONNRESET',
+      });
+      const driver = createDriverDouble(() => {
+        throw connectionReset;
+      });
+      const runner = new QueryRunner(driver.pool);
+
+      const rejection: unknown = await runner
+        .executeMutation('UPDATE SwOption SET sortOrder = ? WHERE optionID = ?', [2, 'option-1'])
+        .then(
+          () => undefined,
+          (failure: unknown) => failure,
+        );
+
+      expect(rejection).toBe(connectionReset);
+      expect(rejection).not.toBeInstanceOf(UniqueConstraintViolationError);
+    });
+
+    it('[NET-NEW] a DEADLOCK is classified as RETRYABLE — SEC-RACE-01', async () => {
+      /*
+       * ⭐ CLASSIFIED BECAUSE THE PORT NOW TAKES LOCKS. Before the locking reads in `UniquePropertyChecker`
+       * and `UnitOfWork` this failure mode was unreachable from any statement the subtree emits, which is
+       * why the case above used to list it among the untranslated. Introducing the locks introduces the
+       * failure, so classifying it is part of introducing them rather than an unrelated addition — a caller
+       * that cannot tell a deadlock from a syntax error cannot behave correctly in the face of one.
+       *
+       * ⛔ CLASSIFYING IS NOT RETRYING, AND THE DISTINCTION IS THE FINDING'S OWN. SEC-RACE-01 asks that
+       * conflicts be retryABLE "where semantics permit"; whether re-running is correct depends on what the
+       * caller was doing, and only the caller knows. So `retryable: true` is reported and NO retry is
+       * performed — asserted below by the driver having been called exactly once.
+       */
+      const deadlock = Object.assign(new Error('Deadlock found when trying to get lock'), {
+        errno: 1213,
+        code: 'ER_LOCK_DEADLOCK',
+      });
+      const driver = createDriverDouble(() => {
+        throw deadlock;
+      });
+      const runner = new QueryRunner(driver.pool);
+
+      const rejection: unknown = await runner
+        .executeMutation('UPDATE SwOption SET sortOrder = ? WHERE optionID = ?', [2, 'option-1'])
+        .then(
+          () => undefined,
+          (failure: unknown) => failure,
+        );
+
+      expect(rejection).toBeInstanceOf(UniqueConstraintViolationError);
+      expect((rejection as UniqueConstraintViolationError).context).toMatchObject({
+        errno: 1213,
+        retryable: true,
+      });
+      /* The driver's own error is retained as the cause, so nothing diagnostic is lost in translation. */
+      expect((rejection as UniqueConstraintViolationError).cause).toBe(deadlock);
+      /* ONE call: the classification did not silently retry. */
+      expect(driver.calls).toHaveLength(1);
+    });
+
+    it('[NET-NEW] a LOCK-WAIT TIMEOUT is classified as RETRYABLE, and distinctly from a deadlock', async () => {
+      /*
+       * The sibling failure, and the two are classified separately rather than as one condition because they
+       * differ in a way a caller may act on: a deadlock rolls the WHOLE transaction back, while a timeout
+       * need not, so a caller that retries must retry the transaction rather than the statement. The
+       * `errno` distinguishes them; `retryable` says only that the failure was transient.
        */
       const lockWaitTimeout = Object.assign(new Error('Lock wait timeout exceeded'), {
         errno: 1205,
@@ -3342,8 +3429,45 @@ describe('test/adapters/UnitOfWork.test.ts — the transaction boundary the SKU 
           (failure: unknown) => failure,
         );
 
-      expect(rejection).toBe(lockWaitTimeout);
-      expect(rejection).not.toBeInstanceOf(UniqueConstraintViolationError);
+      expect(rejection).toBeInstanceOf(UniqueConstraintViolationError);
+      expect((rejection as UniqueConstraintViolationError).context).toMatchObject({
+        errno: 1205,
+        retryable: true,
+      });
+      expect((rejection as UniqueConstraintViolationError).message).toMatch(/lock/i);
+      expect(driver.calls).toHaveLength(1);
+    });
+
+    it('[NET-NEW] a DUPLICATE KEY is classified as NOT retryable, which is the opposite verdict', async () => {
+      /*
+       * ⭐ THE ASYMMETRY IS THE WHOLE VALUE OF THE CLASSIFICATION. All three failures arrive as the same
+       * class — see the helper's docblock for why a new class per mode would widen `src/errors/**` for a
+       * distinction the context already draws — so `retryable` is the field that makes them actionable. For
+       * a duplicate key it is FALSE: the value is taken, asking again gets the same answer, and the caller's
+       * own validation verdict is stale by now. A revision that classified everything as retryable, or that
+       * omitted the field, would pass the two cases above and fail here.
+       */
+      const duplicate = Object.assign(
+        new Error("Duplicate entry 'RED' for key 'uq_SwOption_optionCode'"),
+        { errno: 1062, code: 'ER_DUP_ENTRY' },
+      );
+      const driver = createDriverDouble(() => {
+        throw duplicate;
+      });
+      const runner = new QueryRunner(driver.pool);
+
+      const rejection: unknown = await runner
+        .executeMutation('INSERT INTO SwOption (optionCode) VALUES (?)', ['RED'])
+        .then(
+          () => undefined,
+          (failure: unknown) => failure,
+        );
+
+      expect(rejection).toBeInstanceOf(UniqueConstraintViolationError);
+      expect((rejection as UniqueConstraintViolationError).context).toMatchObject({
+        errno: 1062,
+        retryable: false,
+      });
     });
 
     it('NET-NEW — a deliberate `DomainError` from the guard is never re-examined as a driver failure', async () => {
@@ -3913,15 +4037,23 @@ describe("test/adapters/UnitOfWorkSortOrder.test.ts — the sort-order maximum r
        * `sortContext`, so `org/Hibachi/HibachiEntity.cfc:L644` supplies neither and this is the shape it
        * gets: the maximum across the ENTIRE table.
        *
-       * ⛔ AND NOTHING TRAILS IT. A revision appended ` FOR UPDATE` here to close the read-then-write race
-       * at `org/Hibachi/HibachiEntity.cfc:L646`; the suffix is WITHDRAWN because AAP §0.6.7.7 authorises
-       * exactly one behavioural departure in this port (D18) and AAP §0.8.2 Guideline 4 admits no
-       * proportionality test. The CWE-367 exposure is carried and flagged on the member itself. So this case
-       * asserts exactly what it always asserted about the SHAPE, with nothing added: one statement, no
-       * `WHERE`, no bound value, no clause after the table name.
+       * ⭐ AND IT IS A LOCKING READ — REVIEW FINDING SEC-RACE-01. This case previously asserted the
+       * OPPOSITE, on this reasoning: "A revision appended ` FOR UPDATE` here to close the read-then-write
+       * race at `org/Hibachi/HibachiEntity.cfc:L646`; the suffix is WITHDRAWN because AAP §0.6.7.7
+       * authorises exactly one behavioural departure in this port (D18) and AAP §0.8.2 Guideline 4 admits no
+       * proportionality test." §0.6.7 is the DEFECT AND TODO CARRY-OVER REGISTER of legacy BUSINESS-LOGIC
+       * defects, so it never spoke to a concurrent read-then-write in the extracted service; and the lock
+       * changes no VALUE the aggregate returns, which is why `top` is still 7 below. This is the worst of
+       * SEC-RACE-01's three sites because `sortOrder` carries NO unique constraint, so nothing else would
+       * ever convict a duplicate.
+       *
+       * ⚠️ APPENDED UNCONDITIONALLY HERE, unlike the uniqueness probes, which gate on transaction scope.
+       * This member takes its executor as a parameter and cannot know its scope; it is reached only from
+       * `preInsert` seeding, which is inside the insert's boundary by construction. The full asymmetry
+       * argument is on the member itself.
        */
       expect(collapse(harness.calls[0]?.sql ?? '')).toBe(
-        'SELECT COALESCE(max(sortOrder), 0) as topSortOrder FROM SwOptionGroup',
+        'SELECT COALESCE(max(sortOrder), 0) as topSortOrder FROM SwOptionGroup FOR UPDATE',
       );
       expect(harness.calls[0]?.params).toEqual([]);
       expect(harness.calls).toHaveLength(1);
@@ -3945,12 +4077,13 @@ describe("test/adapters/UnitOfWorkSortOrder.test.ts — the sort-order maximum r
        * The COLUMN is an identifier and travels through `assertColumnName`, which is why it appears in the
        * text rather than as a marker.
        *
-       * ⛔ AND THE STATEMENT ENDS AT THE `WHERE`. The withdrawn locking suffix was appended after it, which
-       * is the only place MySQL accepts one; with the suffix gone the bound clause is the last thing in the
-       * statement, asserted byte-for-byte here and positionally in `UnitOfWork.test.ts`.
+       * ⭐ AND THE LOCK COMES AFTER THE `WHERE` — SEC-RACE-01. That is the only position MySQL accepts, and
+       * appending it once at the end of composition rather than inside either branch is what makes the
+       * scoped read and the whole-table read above protected identically. The bound value is unaffected: a
+       * lock is not a parameter, so the parameter list below is exactly what it was.
        */
       expect(collapse(harness.calls[0]?.sql ?? '')).toBe(
-        'SELECT COALESCE(max(sortOrder), 0) as topSortOrder FROM SwOption WHERE optionGroupID = ?',
+        'SELECT COALESCE(max(sortOrder), 0) as topSortOrder FROM SwOption WHERE optionGroupID = ? FOR UPDATE',
       );
       expect(harness.calls[0]?.params).toEqual(['cccccccccccccccccccccccccccc0001']);
       expect(top).toBe(3);
@@ -4037,8 +4170,11 @@ describe("test/adapters/UnitOfWorkSortOrder.test.ts — the sort-order maximum r
       expect(assigned).toBe(5);
       expect(optionGroup.sortOrder).toBe(5);
 
+      /* SEC-RACE-01 — the read that feeds the arithmetic now LOCKS, and the arithmetic is unchanged by it:
+       * `assigned` is still 5 for a maximum of 4. That the value survives the lock is the point, because it
+       * is what makes the lock a concurrency control rather than a behaviour change. */
       expect(collapse(harness.calls[0]?.sql ?? '')).toBe(
-        'SELECT COALESCE(max(sortOrder), 0) as topSortOrder FROM SwOptionGroup',
+        'SELECT COALESCE(max(sortOrder), 0) as topSortOrder FROM SwOptionGroup FOR UPDATE',
       );
       expect(harness.calls[0]?.params).toEqual([]);
     });
@@ -4103,14 +4239,22 @@ describe("test/adapters/UnitOfWorkSortOrder.test.ts — the sort-order maximum r
         collapse(scoped.calls[0]?.sql ?? ''),
       ];
 
-      /* ⛔ NEITHER STATEMENT TRAILS ANYTHING. A revision appended ` FOR UPDATE` to both and this comparison
-       * had to lift the suffix off before comparing; with the suffix withdrawn the two statements differ by
-       * exactly one clause and one bound value, and that is asserted directly. */
-      expect(unscopedSql).toBe(
+      /* ⭐ BOTH STATEMENTS TRAIL THE SEC-RACE-01 LOCK, so the comparison lifts the suffix off both sides
+       * before comparing — which is what keeps this case about the SCOPE divergence rather than about the
+       * lock. Doing it by derivation rather than by two literals means neither statement can drift
+       * independently and still pass. */
+      const LOCK = ' FOR UPDATE';
+      expect(unscopedSql.endsWith(LOCK)).toBe(true);
+      expect(scopedSql.endsWith(LOCK)).toBe(true);
+
+      const unscopedBody = unscopedSql.slice(0, -LOCK.length);
+      const scopedBody = scopedSql.slice(0, -LOCK.length);
+
+      expect(unscopedBody).toBe(
         'SELECT COALESCE(max(sortOrder), 0) as topSortOrder FROM SwOptionGroup',
       );
-      expect(scopedSql).toBe(
-        `${unscopedSql.replace('SwOptionGroup', 'SwOption')} WHERE optionGroupID = ?`,
+      expect(scopedBody).toBe(
+        `${unscopedBody.replace('SwOptionGroup', 'SwOption')} WHERE optionGroupID = ?`,
       );
     });
 

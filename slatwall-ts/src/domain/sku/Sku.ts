@@ -403,12 +403,12 @@ export interface SkuResizedImagePathRequest {
  * forwards the composed path to the probe, exactly as [:L222] does. `src/ports/ImagePathPort.ts`
  * DECISION I-1 control (3) carries the adjudication and the flagged residual exposure.
  *
- * ⛔ AND THE WRITE HALF OF THAT SAME CONTROL IS WITHDRAWN TOO, WHICH AGAIN NEEDS NO CHANGE HERE. A name
- * gate over the stored `imageFile` briefly stood at the one member that writes, `processImageUpload` in
+ * ⭐ AND THE WRITE HALF IS NOW GATED, WHICH AGAIN NEEDS NO CHANGE HERE. Under review finding SEC-FILE-01 a
+ * name gate over the stored `imageFile` stands at the one member that writes, `processImageUpload` in
  * `src/services/SkuService.ts` — which the paragraph three above already establishes is unreachable from
- * this entity — and review finding F4 withdrew it, because it refused input the legacy ACCEPTS and AAP
- * §0.6.7.7 declares D18 the sole behaviour-hardening exception. The three READ members declared below were
- * never gated and still are not, and stay byte-compatible with [:L147], [:L195] and [:L222].
+ * this entity, so the gate is invisible to it. The three READ members declared below were never gated and
+ * still are not, and stay byte-compatible with [:L147], [:L195] and [:L222]. That asymmetry is deliberate:
+ * the read members have defined legacy outcomes to preserve and the write member has none.
  *
  * ⛔ NO RUNTIME VALUE IS IMPORTED AND NONE IS NEEDED. This entity never mints a brand: it FORWARDS the
  * {@link ImageWebPath} it received from {@link SkuImagePathResolver.getImagePath}. The tag function
@@ -1052,14 +1052,17 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * reach this field through a populate-and-save path, and NOTHING here refuses it. That is [:L58]'s
    * behaviour and AAP §0.8.2 guideline 4 keeps it.
    *
-   * ⚠️ NOR IS IT CHECKED AT THE ONE PLACE THE DELIVERABLE TURNS THIS VALUE INTO A WRITE DESTINATION.
-   * `SkuService.processImageUpload` briefly gated the stored name before any member of `ImagePathPort` was
-   * reached; review finding F4 withdrew that gate, because it refused input the legacy ACCEPTS and AAP
-   * §0.6.7.7 declares D18 the sole behaviour-hardening exception in this port. So the CWE-22 exposure is
-   * carried on the write path as well as the read paths, FLAGGED on `ImagePathPort.saveImageFile` for the
-   * adapter that can legitimately confine it (AAP §0.7.3 S8). Neither {@link Sku.getImagePath} nor
-   * {@link Sku.getImageExistsFlag} nor {@link Sku.getImageExtension} inspects it, and none of them should
-   * start — an entity is not where a storage policy belongs.
+   * ⭐ IT *IS* CHECKED AT THE ONE PLACE THE DELIVERABLE TURNS THIS VALUE INTO A WRITE DESTINATION.
+   * `SkuService.processImageUpload` gates the stored name before any member of `ImagePathPort` is reached
+   * (review finding SEC-FILE-01), so a traversal cannot become a write destination. It is NOT gated on the
+   * read paths, where the legacy has a defined outcome for every input; that exposure stays carried and
+   * FLAGGED on `ImagePathPort.getImageExistsFlag` (AAP §0.7.3 S8).
+   *
+   * ⚠️ AND THE CHECK IS NOT HERE, WHICH IS THE POINT OF THIS PARAGRAPH. Neither {@link Sku.getImagePath} nor
+   * {@link Sku.getImageExistsFlag} nor {@link Sku.getImageExtension} inspects the field, and none of them
+   * should start: an entity is not where a storage policy belongs, and the three of them are reached by
+   * display surfaces — the Google feed and admin — that must render whatever is stored. The gate belongs at
+   * the write, and it is at the write.
    */
   declare imageFile?: string;
 
@@ -2760,9 +2763,11 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * and that test is genuinely not met HERE: [:L222] answers a boolean about whatever the composed path
    * resolves to, which is a well-defined, intended result even for a traversed file, on an operation that
    * writes nothing and discloses one bit. The conclusion stands; the ground behind it does not. A revision
-   * used the corrected test to reinstate a gate on the WRITE — which this member is not — and review
-   * finding F4 withdrew even that, on the precedence ground that §0.6.7.7 declares ONE exception rather than
-   * a class of them.
+   * used the corrected test to reinstate a gate on the WRITE — which this member is not — review finding F4
+   * withdrew even that on the precedence ground that §0.6.7.7 declares ONE exception rather than a class of
+   * them, and review finding SEC-FILE-01 reinstated it on a ground that needs no exception: the write path
+   * has NO defined legacy outcome, because its collaborator member does not exist in the legacy at all. That
+   * ground does not reach this member, and this member stays ungated — which is why the two now differ.
    *
    * ⚠️ THE ANSWERS ARE STILL ONLY `true` ([:L223]) AND `false` ([:L225]) — the legacy member yields no
    * third state and raises nothing, and neither does this one. An absent `imageFile` reads as the empty

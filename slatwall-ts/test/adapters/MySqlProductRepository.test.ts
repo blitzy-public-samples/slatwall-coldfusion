@@ -99,22 +99,24 @@ import type {
   ValidatedProductImportSource,
 } from '../../src/ports/repositories/ProductRepository';
 import {
+  GENEROUS_SMART_LIST_BUDGET,
+  TEST_ADMIN_ACCOUNT_ID,
+  buildSku,
   createAbsentAccountContextDouble,
   createAccountContextDouble,
+  createBaseServicePersistenceDouble,
+  createPopulationAuthorizationDouble,
+  createSettingResolverDouble,
   createSqlExecutorDouble,
+  createUniquePropertyDouble,
   createUnitOfWorkDouble,
+  createUrlTitleAvailabilityDouble,
   persistedAdminAccount,
   physicalID,
   sqlAffectedRows,
   sqlFailure,
   sqlRows,
-  TEST_ADMIN_ACCOUNT_ID,
-  buildSku,
-  createPopulationAuthorizationDouble,
-  createBaseServicePersistenceDouble,
-  createUniquePropertyDouble,
-  createSettingResolverDouble,
-  createUrlTitleAvailabilityDouble,
+  GENEROUS_URL_TITLE_PROBE_BUDGET,
 } from '../support/inMemoryRepositories';
 import type {
   SqlExecutorCall,
@@ -1875,10 +1877,20 @@ describe('NET-NEW — importFromFile, and D18: the declared hardening of every f
 
     /* `:L218-L221` then `:L230-L234` — the link is probed, and inserted only when absent. Both bind the
      * two identifiers positionally and neither composes one into text. The probe stops at one row
-     * because `:L221` reads nothing but the record count. */
+     * because `:L221` reads nothing but the record count.
+     *
+     * ⭐ AND IT IS A LOCKING READ — REVIEW FINDING SEC-RACE-01, which named "duplicate link rows" among its
+     * exploits explicitly. This probe DECIDES the insert two lines below it, and `SwSkuOption` has no DDL to
+     * appeal to: `model/entity/Sku.cfc:L76` declares only a `many-to-many` `linktable="SwSkuOption"` with no
+     * unique index over the pair, so two concurrent imports both reading no match both insert and nothing
+     * convicts the duplicate. `FOR UPDATE` returns precisely the rows the same predicate returns — the
+     * verdict below is unchanged, and the sibling case that seeds a match still skips the insert — while
+     * under REPEATABLE READ the no-match case takes a gap lock over the scanned range. It is safe to hold
+     * inside an import because `model/dao/ProductDAO.cfc:L176-L177` opens the transaction INSIDE the record
+     * loop (AAP §0.6.6 M3), so the lock spans one row rather than the whole file. */
     const linkProbe = only(harness, 'SELECT 1 FROM SwSkuOption');
     expect(collapse(linkProbe.sql)).toBe(
-      'SELECT 1 FROM SwSkuOption WHERE optionID = ? AND skuID = ? LIMIT 1',
+      'SELECT 1 FROM SwSkuOption WHERE optionID = ? AND skuID = ? LIMIT 1 FOR UPDATE',
     );
     expect(linkProbe.params[0]).toBe(physicalID('opt-1'));
     expect(linkProbe.params).toHaveLength(2);
@@ -3336,6 +3348,21 @@ describe('NET-NEW — the query discipline every statement in this adapter is he
      * handler concern that no single invocation of the target runtime can represent, and neither is
      * expressible in a statement. So no statement here sets a timeout, a batch size, a retry count, a
      * pool size or an isolation level, and this suite asserts none of those either.
+     *
+     * ⛔ `FOR UPDATE` WAS ON THIS LIST AND IS DELIBERATELY OFF IT — REVIEW FINDING SEC-RACE-01. It never
+     * belonged with the others, and its presence here was a category error worth naming rather than quietly
+     * correcting. Everything else on the list is a CAPACITY or SERVICE-LEVEL number: a timeout, a batch
+     * size, a retry count, a row cache hint. IR-12 and AAP §0.7.3 S9 forbid the port from authoring those
+     * because it would be choosing a figure on an operator's behalf. A lock is not a figure. It carries no
+     * number to invent, it states no service level, and it changes no value any statement returns — it says
+     * only that a second writer asking the same question must wait for the first to finish. So the finding's
+     * "duplicate link rows are also possible" is closed by the locks on the two importer probes, and this
+     * list keeps every genuinely invented-number prohibition it had.
+     *
+     * ⭐ `LOCK IN SHARE MODE` STAYS FORBIDDEN, AND THE ASYMMETRY IS THE POINT. A shared read lock lets two
+     * transactions both hold it and both conclude "free", which converts a silent duplicate into an
+     * intermittent failure without preventing anything. Only the exclusive lock serialises. Keeping the
+     * shared spellings on the list is what stops a well-meaning substitution from undoing the mechanism.
      */
     for (const forbidden of [
       'SET SESSION',
@@ -3344,10 +3371,39 @@ describe('NET-NEW — the query discipline every statement in this adapter is he
       'SLEEP(',
       'ISOLATION LEVEL',
       'LOCK IN SHARE MODE',
-      'FOR UPDATE',
+      'FOR SHARE',
       'SQL_NO_CACHE',
     ]) {
       expect(text).not.toContain(forbidden);
+    }
+
+    /*
+     * ⭐ AND THE LOCK APPEARS ONLY WHERE SEC-RACE-01 PUT IT: the two check-then-act probes of
+     * `model/dao/ProductDAO.cfc:L212-L214` and `:L218-L220`, each of which DECIDES an insert. Asserted as an
+     * exact set rather than as "at least these", so a revision that sprinkled `FOR UPDATE` across the
+     * adapter's read surface — where it would take locks that protect nothing and invite deadlocks — fails
+     * here even though every individual statement would still be syntactically fine.
+     *
+     * ⚠️ DE-DUPLICATED, BECAUSE THE COUNT OF EMISSIONS IS NOT THE COUNT OF SHAPES. The option lookup is
+     * issued once per option column per row, so a fixture with two option columns emits it twice; that is
+     * `:L212-L215` re-running the lookup for every row × every surviving group, which the adapter reproduces
+     * deliberately. What this case is about is which STATEMENTS lock, so the set is compared rather than the
+     * log.
+     */
+    const locking = [
+      ...new Set(
+        statements
+          .map((statement) => collapse(statement.sql))
+          .filter((sql) => sql.includes('FOR UPDATE')),
+      ),
+    ];
+
+    expect(locking).toHaveLength(2);
+    expect(locking.filter((sql) => sql.includes('LEFT JOIN SwOption'))).toHaveLength(1);
+    expect(locking.filter((sql) => sql.includes('FROM SwSkuOption'))).toHaveLength(1);
+    /* Each ENDS with the clause, which is the only position MySQL accepts. */
+    for (const sql of locking) {
+      expect(sql.endsWith('FOR UPDATE')).toBe(true);
     }
   });
 
@@ -5466,6 +5522,7 @@ describe('SmartListQueryBuilder aggregate materialization — INT-02, the SKU ro
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     const result = await builder.execute({ entityName: 'SlatwallSku' });
@@ -5485,6 +5542,7 @@ describe('SmartListQueryBuilder aggregate materialization — INT-02, the SKU ro
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     const result = await builder.execute({ entityName: 'SlatwallSku' });
@@ -5507,6 +5565,7 @@ describe('SmartListQueryBuilder aggregate materialization — INT-02, the SKU ro
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(binder.dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     const result = await builder.execute({ entityName: 'SlatwallSku' });
@@ -5523,6 +5582,7 @@ describe('SmartListQueryBuilder aggregate materialization — INT-02, the SKU ro
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     const result = await builder.execute({ entityName: 'SlatwallSku' });
@@ -5545,6 +5605,7 @@ describe('SmartListQueryBuilder aggregate materialization — INT-02, the SKU ro
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     await builder.execute({ entityName: 'SlatwallSku' });
@@ -5574,6 +5635,7 @@ describe('SmartListQueryBuilder aggregate materialization — INT-02, the SKU ro
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     const result = await builder.execute({ entityName: 'SlatwallSku' });
@@ -5589,6 +5651,7 @@ describe('SmartListQueryBuilder aggregate materialization — INT-02, the SKU ro
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     const result = await builder.execute({ entityName: 'SlatwallSku' });
@@ -5604,6 +5667,7 @@ describe('SmartListQueryBuilder aggregate materialization — INT-02, the SKU ro
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     await builder.execute({ entityName: 'SlatwallSku' });
@@ -5626,6 +5690,7 @@ describe('SmartListQueryBuilder aggregate materialization — DATA-02, the optio
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     const result = await builder.execute({ entityName: 'SlatwallOption' });
@@ -5646,6 +5711,7 @@ describe('SmartListQueryBuilder aggregate materialization — DATA-02, the optio
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(binder.dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     await builder.execute({ entityName: 'SlatwallOption' });
@@ -5662,6 +5728,7 @@ describe('SmartListQueryBuilder aggregate materialization — DATA-02, the optio
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     const result = await builder.execute({ entityName: 'SlatwallOption' });
@@ -5703,6 +5770,7 @@ describe('SmartListQueryBuilder aggregate materialization — DATA-03, the produ
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     const result = await builder.execute({ entityName: 'SlatwallProduct' });
@@ -5720,6 +5788,7 @@ describe('SmartListQueryBuilder aggregate materialization — DATA-03, the produ
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     const result = await builder.execute({ entityName: 'SlatwallProduct' });
@@ -5757,6 +5826,7 @@ describe('SmartListQueryBuilder aggregate materialization — DATA-03, the produ
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     /*
@@ -5803,6 +5873,7 @@ describe('SmartListQueryBuilder aggregate materialization — DATA-03, the produ
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     await builder.execute({ entityName: 'SlatwallProduct' });
@@ -5821,6 +5892,7 @@ describe('SmartListQueryBuilder aggregate materialization — DATA-03, the produ
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     const result = await builder.execute({ entityName: 'SlatwallProduct' });
@@ -5899,6 +5971,7 @@ describe('SmartListQueryBuilder aggregate materialization — DATA-03, the produ
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     const result = await builder.execute({ entityName: 'SlatwallProduct' });
@@ -5922,6 +5995,7 @@ describe('SmartListQueryBuilder aggregate materialization — DATA-03, the produ
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     const result = await builder.execute({ entityName: 'SlatwallProduct' });
@@ -5947,6 +6021,7 @@ describe('SmartListQueryBuilder aggregate materialization — DATA-03, the produ
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     const result = await builder.execute({ entityName: 'SlatwallProduct' });
@@ -5976,6 +6051,7 @@ describe('SmartListQueryBuilder aggregate materialization — DATA-03, the produ
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     await builder.execute({ entityName: 'SlatwallProduct' });
@@ -6003,6 +6079,7 @@ describe('SmartListQueryBuilder aggregate materialization — the roots that dec
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     const result = await builder.execute({ entityName: 'SlatwallBrand' });
@@ -6174,6 +6251,7 @@ describe('F2 — the joined option fetch emits a statement a real server accepts
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     await builder.execute({ entityName: 'SlatwallProduct' });
@@ -6291,6 +6369,7 @@ describe('OptionService relationship hydration through the real builder (finding
     const builder = new SmartListQueryBuilder(
       executor,
       createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+      GENEROUS_SMART_LIST_BUDGET,
     );
 
     return { service: new OptionService(UNREACHED_OPTION_REPOSITORY, builder), statements };
@@ -7550,6 +7629,7 @@ describe('the four ProductService seams the adapter fills (DATA-03)', () => {
        * `model/service/DataService.cfc:L53` declares `createUniqueURLTitle(titleString, tableName)`.
        * The double's own probe narrows that first parameter to its table union, so it is adapted here
        * rather than the utility's contract being widened. */
+      urlTitleProbeBudget: GENEROUS_URL_TITLE_PROBE_BUDGET,
       isUrlTitleAvailable: (tableName: string, value: string): Promise<boolean> =>
         urlTitleProbe.probe.isUrlTitleAvailable(tableName as UrlTitleTableName, value),
       persistProduct: (product: Product) => adapter.saveProduct(product),
@@ -7764,6 +7844,7 @@ describe('F10 — a hydrated product type inherits its parent’s products', () 
       productPropertyDescriptors: PRODUCT_PROPERTY_DESCRIPTORS,
       populationAuthorization: createPopulationAuthorizationDouble({ publicPopulateFlag: true })
         .populationAuthorization,
+      urlTitleProbeBudget: GENEROUS_URL_TITLE_PROBE_BUDGET,
       isUrlTitleAvailable: (): Promise<boolean> => Promise.resolve(true),
       persistProduct: UNREACHED_COLLABORATOR,
       defaultSkuIdReader: (): string => {
@@ -8002,6 +8083,7 @@ describe('ProductService.getProduct returns a materialised aggregate (DATA-03)',
           getImageExistsFlag: (): boolean => false,
         }),
       }),
+      GENEROUS_SMART_LIST_BUDGET,
     );
   }
 
@@ -8027,6 +8109,7 @@ describe('ProductService.getProduct returns a materialised aggregate (DATA-03)',
        * `model/service/DataService.cfc:L53` declares `createUniqueURLTitle(titleString, tableName)`.
        * The double's own probe narrows that first parameter to its table union, so it is adapted here
        * rather than the utility's contract being widened. */
+      urlTitleProbeBudget: GENEROUS_URL_TITLE_PROBE_BUDGET,
       isUrlTitleAvailable: (tableName: string, value: string): Promise<boolean> =>
         urlTitleProbe.probe.isUrlTitleAvailable(tableName as UrlTitleTableName, value),
       persistProduct: (product: Product) => adapter.saveProduct(product),
@@ -9013,6 +9096,7 @@ describe('test/adapters/MySqlProductPersistence.test.ts — the WRITE surface fo
          * `model/service/DataService.cfc:L53` declares `createUniqueURLTitle(titleString, tableName)`.
          * The double's own probe narrows that first parameter to its table union, so it is adapted here
          * rather than the utility's contract being widened. */
+        urlTitleProbeBudget: GENEROUS_URL_TITLE_PROBE_BUDGET,
         isUrlTitleAvailable: (tableName: string, value: string): Promise<boolean> =>
           urlTitleProbe.probe.isUrlTitleAvailable(tableName as UrlTitleTableName, value),
         persistProduct: (product: Product) => adapter.saveProduct(product),
@@ -9167,6 +9251,7 @@ describe('test/adapters/MySqlProductPersistence.test.ts — the WRITE surface fo
             getImageExistsFlag: (): boolean => false,
           }),
         }),
+        GENEROUS_SMART_LIST_BUDGET,
       );
     }
 
@@ -9192,6 +9277,7 @@ describe('test/adapters/MySqlProductPersistence.test.ts — the WRITE surface fo
          * `model/service/DataService.cfc:L53` declares `createUniqueURLTitle(titleString, tableName)`.
          * The double's own probe narrows that first parameter to its table union, so it is adapted here
          * rather than the utility's contract being widened. */
+        urlTitleProbeBudget: GENEROUS_URL_TITLE_PROBE_BUDGET,
         isUrlTitleAvailable: (tableName: string, value: string): Promise<boolean> =>
           urlTitleProbe.probe.isUrlTitleAvailable(tableName as UrlTitleTableName, value),
         persistProduct: (product: Product) => adapter.saveProduct(product),

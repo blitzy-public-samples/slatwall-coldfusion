@@ -193,7 +193,7 @@
 import type { Product } from '../../domain/product/Product';
 import type { ProductType } from '../../domain/product/ProductType';
 import type { Sku } from '../../domain/sku/Sku';
-import { DataIntegrityError, DomainError } from '../../errors/DomainError';
+import { ConfigurationError, DataIntegrityError, DomainError } from '../../errors/DomainError';
 /* `ImageWebPath` and `SaveImageFileRequest` were imported for the two withdrawn memo decorators, which
  * had to re-declare every member of {@link ImagePathPort} in order to delegate the three they did not
  * wrap. With no wrapper left, this file names only the port it is handed and the one request shape it
@@ -1618,6 +1618,115 @@ function renderEffectiveDateEndpoint(value: Date | '', utcHourOffset: string): s
  * });
  * ```
  */
+/**
+ * The two ceilings one rendered feed document may not exceed — review finding SEC-DOS-02.
+ *
+ * ⭐⭐ WHY THE ROW CEILING IS NOT ENOUGH, WHICH IS THE FINDING'S OWN POINT. The materialisation budget on
+ * `../../adapters/mysql/SmartListQueryBuilder.ts` bounds how many RECORDS reach this builder. It says
+ * nothing about how large a record renders: `integrationServices/google/views/feed/product.cfm:L24` loops
+ * the product's whole image collection inside the per-SKU loop with no ceiling, so one product carrying
+ * many images expands one record without bound, and the finished document is buffered whole before it is
+ * answered. The finding names both gaps — "no image-count, byte or elapsed-time bound" — and these are the
+ * first two.
+ *
+ * ⭐ BOTH MEMBERS ARE RESOLVERS, SO NEITHER CARRIES A FIGURE THIS FILE CHOSE (AAP §0.7.3 S9, IR-12). A
+ * deployment that stated no figure gets a named `ConfigurationError` from the one anonymous route, which is
+ * the same shape the anonymous materialisation gate already had and which no review withdrew.
+ *
+ * ⚠️ THE ELAPSED-TIME BOUND IS THE ONE CLAUSE STILL UNRESOLVED, AND IT IS FLAGGED RATHER THAN GUESSED.
+ * AAP §0.6.6 M2 records `product.cfm:L9`'s 360-second render budget as a delivery-model mismatch and leaves
+ * "the choice between an asynchronous or streamed delivery model as an explicit decision"; §0.8.3.6 requires
+ * such a mismatch be flagged, not silently resolved. `../../handlers/googleFeedHandler.ts` owns that
+ * decision and records that there is no synchronous-integration figure to name, because no gateway is
+ * selected by this deliverable. The two bounds here make the WORK finite, which is the security objective a
+ * bound can reach without settling the delivery model.
+ */
+export interface ProductFeedRenderBudget {
+  /**
+   * Answers the largest number of `g:additional_image_link` elements one record may emit.
+   *
+   * @returns the operator-stated ceiling, as a positive safe integer
+   * @throws {ConfigurationError} when this deployment stated no ceiling; the message names
+   *   `CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD`
+   */
+  readonly resolveMaximumImagesPerRecord: () => number;
+
+  /**
+   * Answers the largest number of BYTES the rendered document may reach.
+   *
+   * ⚠️ BYTES, NOT CHARACTERS, and the distinction is load-bearing rather than pedantic: the document is
+   * answered over HTTP as UTF-8, where one character can be four bytes, so a character ceiling would not
+   * bound what is actually transmitted. `Buffer.byteLength` is the measure.
+   *
+   * @returns the operator-stated ceiling, as a positive safe integer
+   * @throws {ConfigurationError} when this deployment stated no ceiling; the message names
+   *   `CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES`
+   */
+  readonly resolveMaximumResponseBytes: () => number;
+}
+
+/**
+ * Builds the fail-closed render budget from whatever figures a deployment stated.
+ *
+ * ⭐ IT NAMES NO FIGURE. Given `undefined` a resolver RAISES, reporting the variable to set; given a figure
+ * it validates it once and answers it. Validation happens here rather than at the point of use so a wiring
+ * error presents as a wiring error — zero would refuse every feed rather than bounding it.
+ *
+ * @param maximumImagesPerRecord the per-record image ceiling this deployment stated, or `undefined`
+ * @param maximumResponseBytes the document byte ceiling this deployment stated, or `undefined`
+ * @returns the budget to hand {@link ProductFeedBuilder}
+ */
+export function createProductFeedRenderBudget(
+  maximumImagesPerRecord: number | undefined,
+  maximumResponseBytes: number | undefined,
+): ProductFeedRenderBudget {
+  const requirePositiveSafeInteger = (value: number | undefined, member: string): void => {
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
+      throw new DomainError(
+        `The product-feed ${member} must be a positive safe integer, so the configured value cannot ` +
+          `bound a render.`,
+        { context: { member, value } },
+      );
+    }
+  };
+
+  requirePositiveSafeInteger(maximumImagesPerRecord, 'image ceiling');
+  requirePositiveSafeInteger(maximumResponseBytes, 'byte ceiling');
+
+  const resolve = (value: number | undefined, variable: string, refusal: string): number => {
+    if (value !== undefined) {
+      return value;
+    }
+
+    throw new ConfigurationError(
+      `${refusal} Set ${variable}, or supply resourceBounds when composing the container.`,
+      {
+        context: {
+          locator: 'integrationServices/google/views/feed/product.cfm:L16-L62',
+          variable,
+        },
+      },
+    );
+  };
+
+  return Object.freeze({
+    resolveMaximumImagesPerRecord: (): number =>
+      resolve(
+        maximumImagesPerRecord,
+        'CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD to the largest number of additional image links ' +
+          'this deployment permits one feed record to emit',
+        'The anonymous product feed refuses to expand a record by an unbounded number of images.',
+      ),
+    resolveMaximumResponseBytes: (): number =>
+      resolve(
+        maximumResponseBytes,
+        'CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES to the largest document size in bytes this deployment ' +
+          'permits the product feed to answer',
+        'The anonymous product feed refuses to buffer a document of unbounded size.',
+      ),
+  });
+}
+
 export class ProductFeedBuilder {
   /**
    * @param imagePaths resolves the primary and additional resized image paths — the ONLY route to
@@ -1625,11 +1734,15 @@ export class ProductFeedBuilder {
    * @param pricing resolves sale-price detail across the excluded pricing boundary (TR-5); handed
    *   straight to the domain entity's sale-price members, which is where the legacy fallback lives
    * @param settings resolves configuration keys SYNCHRONOUSLY (M8) — never awaited (TR-5)
+   * @param renderBudget the per-record image ceiling and the document byte ceiling of review finding
+   *   SEC-DOS-02 — REQUIRED, and fail-closed when the operator stated no figure; see
+   *   {@link ProductFeedRenderBudget}
    */
   public constructor(
     private readonly imagePaths: ImagePathPort,
     private readonly pricing: PricingPort,
     private readonly settings: SettingResolverPort,
+    private readonly renderBudget: ProductFeedRenderBudget,
   ) {}
 
   /**
@@ -1740,7 +1853,37 @@ export class ProductFeedBuilder {
 
     lines.push(`${INDENT_UNIT}</channel>`, '</rss>');
 
-    return lines.join('\n');
+    const document = lines.join('\n');
+
+    /* ⭐⭐ THE DOCUMENT BYTE CEILING — REVIEW FINDING SEC-DOS-02's response-size clause (CWE-400).
+     *
+     * Measured on the FINISHED document, which is the only place it can be measured honestly: the legacy
+     * view buffers the whole feed too, and a per-record estimate would refuse documents that fit and admit
+     * documents that do not. Bytes rather than characters, because the response is UTF-8 on the wire.
+     *
+     * ⛔ IT REFUSES; IT DOES NOT TRUNCATE. A truncated RSS document is not a smaller feed, it is a
+     * malformed one — the closing `</channel></rss>` would be missing and a merchant processor would
+     * reject it or, worse, act on a partial catalog. So the refusal names the size it measured, and the
+     * caller learns the document could not be answered rather than receiving a document that lies. */
+    const maximumResponseBytes = this.renderBudget.resolveMaximumResponseBytes();
+    const documentBytes = Buffer.byteLength(document, 'utf8');
+
+    if (documentBytes > maximumResponseBytes) {
+      throw new DomainError(
+        'The rendered product feed exceeded the configured response-byte budget, so it was refused ' +
+          'rather than answered as a truncated, malformed document.',
+        {
+          context: {
+            documentBytes,
+            maximumResponseBytes,
+            records: records.length,
+            locator: 'integrationServices/google/views/feed/product.cfm:L16-L62',
+          },
+        },
+      );
+    }
+
+    return document;
   }
 
   /**
@@ -1951,6 +2094,33 @@ export class ProductFeedBuilder {
      * and `:L120-L146` — set NO resize method at all, where `model/entity/Sku.cfc:L186` and `:L214`
      * both set `scaleBest`. The divergence is preserved: the request built below carries no resize
      * method, so the image service's own default applies, exactly as it does for the legacy image. */
+    /* ⭐⭐ THE PER-RECORD IMAGE CEILING — REVIEW FINDING SEC-DOS-02's per-record clause (CWE-400).
+     *
+     * Applied BEFORE the loop, so an over-budget record resolves NO path and calls the port ZERO times
+     * rather than n-plus-one times before refusing. `:L24` iterates the product's whole image collection
+     * with no ceiling, and this loop issues one port resolution per image per SKU, so the cost of a single
+     * record is `images` port calls — which is the quantity being bounded.
+     *
+     * ⛔ IT REFUSES THE RECORD, IT DOES NOT EMIT THE FIRST N IMAGES. A silently shortened image list is a
+     * feed that misrepresents the catalog, which is the same reason the row gate on
+     * `../../adapters/mysql/SmartListQueryBuilder.ts` refuses rather than trimming. */
+    const maximumImagesPerRecord = this.renderBudget.resolveMaximumImagesPerRecord();
+
+    if (record.productImages.length > maximumImagesPerRecord) {
+      throw new DomainError(
+        'A product feed record carries more images than the configured per-record image budget ' +
+          'admits, so the record was refused before any image path was resolved rather than emitted ' +
+          'with a silently shortened image list.',
+        {
+          context: {
+            images: record.productImages.length,
+            maximumImagesPerRecord,
+            locator: 'integrationServices/google/views/feed/product.cfm:L24',
+          },
+        },
+      );
+    }
+
     for (const image of record.productImages) {
       /* SEC-07 / ImagePathPort DECISION I-1: the port's request now types `imagePath` as
        * `ImageWebPath`, so a raw `string` cannot be handed to it and the URL-versus-file-system

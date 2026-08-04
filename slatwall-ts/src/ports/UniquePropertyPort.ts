@@ -43,33 +43,47 @@
  * and the constraints vanish rather than degrading to a database guarantee. Carried as observed:
  * no `unique="true"` is proposed and no compensating behaviour is invented (AAP §0.7.3 S7).
  *
- * ⛔ TODO(parity) — THIS PREDICATE IS THE READ HALF OF A CHECK-THEN-WRITE, AND NOTHING SERIALIZES IT
- * (CWE-367, TOCTOU). Two concurrent saves can both be told a value is free and both commit it. One
- * thing, and only one, sits behind it, and it is a REPORTING change rather than a serialization one:
+ * ⭐ THIS PREDICATE IS THE READ HALF OF A CHECK-THEN-WRITE (CWE-367, TOCTOU), AND TWO THINGS NOW SIT
+ * BEHIND IT — review finding SEC-RACE-01. Without them two concurrent saves can both be told a value is
+ * free and both commit it:
  *
- *   REPORTING, AT THE EXECUTION BOUNDARY. A write that loses the race against a real database
- *   constraint arrives as a typed `UniqueConstraintViolationError` classified as a request rejection,
- *   instead of as an unclassified driver error indistinguishable from a service fault. The same writes
- *   succeed and fail, at the same moment; only the classification of the failure differs.
+ *   1. SERIALIZATION, INSIDE A TRANSACTION. `src/adapters/mysql/UniquePropertyChecker.ts` appends
+ *      `FOR UPDATE` when — and only when — it has adopted a boundary's executor, so the read and the write
+ *      that follows it share one transaction and one connection and a second asker WAITS. Under REPEATABLE
+ *      READ a no-match read still takes a GAP lock, which is what protects the INSERT case specifically. It
+ *      is gated on transaction scope because a lock on a pool-bound autocommit connection is released at
+ *      statement end and would protect nothing while still locking on every validation read.
  *
- * ⛔ A REVISION ALSO TOOK A LOCKING READ IN THE ADAPTER — `FOR UPDATE`, on the boundary-scoped instance
- * only — and licensed it on the D18 footing on the ground that a locking read returns exactly the rows
- * the same statement returns without one and merely orders concurrent transactions. THAT IS WITHDRAWN.
- * The ground was sound; the objection is the COUNT. AAP §0.6.7.7 authorises exactly ONE departure from
- * behavioural preservation in this port — D18, the importer's parameterised SQL — and says so precisely
- * to give a reviewer diffing behaviour a fixed number of entries to check. Statement text is observable,
- * a lock-wait is observable under concurrency, and AAP §0.8.2 Guideline 4 admits no proportionality test.
- * That the legacy framework serializes an ANALOGOUS sort-order read-then-write at
- * org/Hibachi/HibachiDAO.cfc:L182 does not license it either: that lock guards a different member, which
- * this port does not carry, and importing a control from an unported member is still an addition.
+ *   2. REPORTING, AT THE EXECUTION BOUNDARY. A write that loses the race against a real database
+ *      constraint arrives as a typed `UniqueConstraintViolationError` classified as a request rejection,
+ *      instead of as an unclassified driver error indistinguishable from a service fault. Since the locks
+ *      exist, a deadlock and a lock-wait timeout are classified too, and carry `retryable: true` so a
+ *      caller can act on a transient conflict — the classification is reported; no retry is performed here.
  *
- * ⚠️ SO THE EXPOSURE IS CARRIED IN FULL, AND DIVERGENCE 1 MAKES IT WORSE ON TWO PROPERTIES. Five of the
- * seven ported rules have a `unique="true"` column behind them, so the database convicts the losing
- * write and the reporting change above gives it a name. `optionCode` and `optionGroupCode` have NO such
- * column, so on those two a lost race is arbitrated by nothing at all — before this port and after it.
- * The repair that would close it — adding the two missing unique indexes — is FORBIDDEN, not overlooked:
- * AAP §0.2.2.5 places schema migration outside this refactoring entirely, and the `Sw*` tables are read
- * and written as they are. Flagged, not claimed closed (AAP §0.7.3 S8).
+ * ⛔ AN INTERVENING REVISION WITHDREW (1) AND THE REASONING IS RECORDED BECAUSE IT WAS WRONG. It held:
+ * "AAP §0.6.7.7 authorises exactly ONE departure from behavioural preservation in this port — D18, the
+ * importer's parameterised SQL — and says so precisely to give a reviewer diffing behaviour a fixed number
+ * of entries to check. Statement text is observable, a lock-wait is observable under concurrency, and
+ * AAP §0.8.2 Guideline 4 admits no proportionality test." §0.6.7 is the DEFECT AND TODO CARRY-OVER
+ * REGISTER: twenty-one LEGACY BUSINESS-LOGIC defects, of which D18 is the one repaired. The extracted
+ * service's data integrity under concurrency is not an entry in it, so §0.6.7.7 never spoke to this, and
+ * reading D18 as the sole licence to take a lock would make it say a faithful migration must reproduce a
+ * TOCTOU race. Guideline 4 forbids enhancing BUSINESS LOGIC and the lock enhances none: the same verdict is
+ * returned for the same data, which the adapter's suite asserts on both paths.
+ *
+ * ⚠️ WHAT THE LOCK DOES NOT CLOSE, AND DIVERGENCE 1 MAKES IT WORSE ON TWO PROPERTIES. A lock serialises
+ * writers that BOTH take it; it cannot bind one that never asks — a legacy CFML request against the same
+ * schema, or an administrative INSERT. Five of the seven ported rules have a `unique="true"` column behind
+ * them, so the database convicts the losing write whoever makes it and the reporting above gives it a name.
+ * `optionCode` and `optionGroupCode` have NO such column, so on those two the lock is the ONLY arbiter and
+ * it is a partial one.
+ *
+ * ⭐ THE DDL A FUTURE MIGRATION MUST ADD IS NAMED, SO THE RESIDUE IS ACTIONABLE RATHER THAN GESTURAL:
+ *     ALTER TABLE SwOption      ADD UNIQUE INDEX uq_SwOption_optionCode           (optionCode);
+ *     ALTER TABLE SwOptionGroup ADD UNIQUE INDEX uq_SwOptionGroup_optionGroupCode (optionGroupCode);
+ * AUTHORING it is FORBIDDEN, not overlooked: AAP §0.2.2.5 places schema migration outside this refactoring
+ * entirely, and the `Sw*` tables are read and written as they are. STATING it is the discharge §0.7.3 S8
+ * asks for — flagged with the exact remedy, not claimed closed.
  *
  * CONSUMERS. src/validation/Validator.ts evaluates the `unique` constraint through this port, and
  * src/services/** runs validation before delegating to `BaseService.save`. That mirrors the legacy
@@ -95,6 +109,9 @@
  * Flagged, not solved: resolution belongs to src/adapters/mysql/UnitOfWork.ts (AAP §0.4.1.7), and
  * NO transaction handle, session object or unit-of-work parameter is added to the signature below.
  */
+
+/* The one type-only import in this file; see THE FOLD's own note for why it exists and why it is safe. */
+import type { RequestAuthorizationContext } from './AccountContextPort';
 
 /**
  * The single field of a property's metadata that the uniqueness check consumes.
@@ -396,10 +413,18 @@ export interface UniquePropertyPort {
  * siblings the same unit is still writing — is the exact point at which the two meet, so a reader who
  * needs one almost always needs the other.
  *
- * ⛔ NO IMPORT WAS ADDED, AND NO CYCLE IS POSSIBLE. This file imported nothing before the fold and the
- * folded section imported nothing either: it is one generic interface over a caller's graph type. The
- * handler layer therefore still imports a PORT and never an adapter, which is the property the section's
- * own doc record spends its length defending.
+ * ⛔ NO ADAPTER IMPORT WAS ADDED, AND NO CYCLE IS POSSIBLE. The fold itself added nothing: it is one
+ * generic interface over a caller's graph type. The handler layer therefore still imports a PORT and
+ * never an adapter, which is the property the section's own doc record spends its length defending.
+ *
+ * ⚠️ ONE TYPE-ONLY IMPORT NOW EXISTS, ADDED BY REVIEW FINDING SEC-AUTH-03, AND THIS PARAGRAPH USED TO
+ * SAY THERE WERE NONE. `RequestAuthorizationContext` is imported from `./AccountContextPort` — a
+ * SIBLING PORT that itself imports nothing at all, so the direction cannot reverse and no cycle is
+ * reachable — because {@link TransactionalWriteRunner.runWrite} now takes the invocation's authorised
+ * principal as its first argument. Re-declaring that shape structurally here was the alternative and
+ * was rejected: two declarations of one security context are exactly how the principal at the gate and
+ * the principal doing the writing came to differ in the first place. The import is `import type`, so it
+ * is erased at emit and the "not one runtime byte" property of both ports still holds.
  *
  * ⚠️ THE FOLD CHANGES ONLY THE IMPORT PATH ITS CONSUMERS WRITE — `src/handlers/skuHandler.ts`,
  * `src/handlers/productHandler.ts`, `src/config/container.ts`, `src/adapters/mysql/UnitOfWork.ts` and two
@@ -476,6 +501,16 @@ export interface UniquePropertyPort {
  */
 export interface TransactionalWriteRunner<TGraph> {
   /**
+   * @param security - The invocation's resolved security context, from the route gate that authorised
+   *   this write. ⭐ REQUIRED, AND FIRST, BY REVIEW FINDING SEC-AUTH-03 (CWE-863, CWE-269). An
+   *   implementation MUST build its graph so that property population and audit stamping run under THIS
+   *   principal — `RequestAuthorizationContext.accountContext` and `.populationAuthorization` — rather
+   *   than under any collaborator a composition root memoised at build time. Before it existed, a
+   *   deployment could authenticate principal A at the route while the write executed with principal B's
+   *   property rights and stamped B's identity into `createdByAccount`. It is the FIRST parameter so
+   *   that "there is no write without an authorised principal" is the first thing a call site states,
+   *   and so that a pre-existing two-argument implementation fails to type-check rather than silently
+   *   ignoring it.
    * @param work - The writes, run inside an open transaction against a graph bound to it.
    * @param hasErrors - The commit gate, evaluated ONCE after `work` settles successfully. `true` rolls
    *   the transaction back and reports the roll-back to the caller as a failure; `false` commits. It must
@@ -493,6 +528,7 @@ export interface TransactionalWriteRunner<TGraph> {
    *   than returned to the pool, per the disposal rule above.
    */
   runWrite<TResult>(
+    security: RequestAuthorizationContext,
     work: (graph: TGraph) => Promise<TResult>,
     hasErrors: () => boolean,
   ): Promise<TResult>;

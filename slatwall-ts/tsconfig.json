@@ -24,17 +24,37 @@
      * ⚠️ RUNTIME LIFECYCLE DISCLOSURE — THE NODE 20 TARGET IS KNOWN TO BE OUT OF SUPPORT, AND
      * THE PIN STANDS ANYWAY. This is a deliberate, cited decision, not an oversight, and it is
      * recorded here as well as in the plan so that a reader of the configuration finds it without
-     * having to read the plan first. The verified dates:
-     *   - Node.js 20 reached upstream end-of-life on 2026-04-30. (An earlier revision of this
-     *     comment recorded 2026-03-24; that was wrong and is corrected here. The mistake was a
-     *     plausible one — it read as a date distinct from the AWS one — so the correction is worth
-     *     stating rather than quietly applying: there is only ONE date, and both the upstream EOL
-     *     and the AWS deprecation fall on it.)
-     *   - AWS deprecated the Lambda `nodejs20.x` managed runtime on 2026-04-30 — the SAME day, by
-     *     alignment to the upstream EOL, not a coincidence. After that date AWS stops applying
-     *     security patches, functions on the runtime lose technical-support eligibility, and the
-     *     runtime is removed from the console's creation list, though it stays selectable through
-     *     the CLI, CloudFormation, SAM and CDK, and already-deployed functions remain invocable.
+     * having to read the plan first.
+     *
+     * TWO INDEPENDENT FACTS THAT HAPPEN TO COINCIDE — read them as two, not as one. They come from
+     * two different authorities and each is verifiable against its own; the shared date is AWS's
+     * deliberate alignment to upstream, not one fact counted twice. Collapsing them into "the
+     * lifecycle date" is what makes the pair impossible to audit, so each is stated with the
+     * authority that owns it:
+     *   - FACT 1, upstream. Node.js 20 reached end-of-life on 2026-04-30. AUTHORITY: the Node.js
+     *     Release working group's schedule (github.com/nodejs/Release, mirrored as schedule.json),
+     *     whose 20.x row reads — codename Iron, released 2023-04-18, Active LTS 2023-10-24,
+     *     Maintenance 2024-10-22, END-OF-LIFE 2026-04-30. The final column is the EOL date.
+     *   - FACT 2, the managed runtime. AWS deprecated the Lambda `nodejs20.x` runtime on
+     *     2026-04-30. AUTHORITY: the AWS Lambda supported-runtimes table (the deprecation column,
+     *     not the block-function columns, which are separate and later — see below). AWS aligns
+     *     managed-runtime deprecation to upstream EOL, which is WHY this date equals Fact 1's; it
+     *     is a consequence of the alignment policy rather than a coincidence, and it is also why a
+     *     future runtime line will not necessarily repeat the pattern. After this date AWS stops
+     *     applying security patches, functions on the runtime lose technical-support eligibility,
+     *     and the runtime is removed from the console's creation list, though it stays selectable
+     *     through the CLI, CloudFormation, SAM and CDK, and already-deployed functions remain
+     *     invocable.
+     *
+     *   📌 A NOTE ON 2026-03-24, WHICH IS THE ONE THING TO CHECK BEFORE "CORRECTING" FACT 1. That
+     *     date does not appear in the 20.x row quoted above in any column, and it has now surfaced
+     *     twice in this file's history: an earlier revision of this comment recorded it as the EOL,
+     *     a later one replaced it with 2026-04-30 but justified the change only by asserting the
+     *     first was "wrong", and the review round after that proposed it again. An unsourced
+     *     correction is why it came back. The primary-source row is
+     *     therefore quoted here in full so the next reader can settle it by reading the schedule
+     *     rather than by trusting either revision of this comment. If the schedule itself is ever
+     *     amended, THAT is the thing to cite; dates there are explicitly subject to change.
      *   - THE CURRENT CONTROL-PLANE GATES, from the AWS runtimes table as read on 2026-08-03, are
      *     a single schedule and are recorded here as one:
      *       block function create  2027-02-01
@@ -43,12 +63,22 @@
      *     there is exactly one copy of these dates in the subtree.
      *   - TWO EARLIER SCHEDULES ARE OBSOLETE, AND ARE RETAINED ONLY AS SUPERSEDED HISTORY. An
      *     earlier revision of this comment presented three sets as live, unsettled alternatives.
-     *     That framing has not survived contact with the calendar: both of the earlier pairs have
-     *     now elapsed WITHOUT taking effect, so they are not competing readings of a present fact —
-     *     they are previous revisions of a forecast that moved.
-     *       superseded  block create 2026-06-01, block update 2026-07-01 — the earliest AWS bulletin;
+     *     That framing is wrong, but so was its replacement's reason for saying so: the replacement
+     *     claimed BOTH earlier pairs had "now elapsed without taking effect", and that is true of
+     *     only the first of them. The two are superseded for DIFFERENT reasons, and conflating those
+     *     reasons is the same class of error as merging the two dates above:
+     *       superseded  block create 2026-06-01, block update 2026-07-01 — the earliest AWS
+     *                   bulletin. ELAPSED, and observably without effect: both dates are behind us
+     *                   and neither gate closed. The calendar alone retires this pair.
      *       superseded  block create 2026-08-31, block update 2026-09-30 — the "30 days / 60 days
      *                   after deprecation" cadence of the standard runtime-deprecation policy.
+     *                   ⚠️ NOT YET ELAPSED. As of this comment's read date both of these dates are
+     *                   still AHEAD. What retires this pair is not the calendar but AWS's own
+     *                   current table, which states the later 2027 dates instead; it is a
+     *                   superseded FORECAST REVISION, not an expired one. Anyone re-checking must
+     *                   compare it against the table rather than against today's date, and must not
+     *                   read "nothing happened on 2026-08-31" as confirmation of anything, because
+     *                   that date has not arrived.
      *     THE MECHANISM BEHIND THE REVISIONS IS KNOWN, WHICH IS WHY THE OLD PAIRS ARE MARKED RATHER
      *     THAN DELETED. AWS states that for some runtimes it is delaying the block-function-create
      *     and block-function-update dates beyond the usual 30 and 60 days in response to customer
@@ -83,20 +113,31 @@
      *   2. the `engines` field of package.json together with .nvmrc;
      *   3. the @types/node pin, which AAP 0.5.3.2 requires to track the runtime;
      *   4. this "target"/"lib" pair;
-     *   5. the Toolchain section of slatwall-ts/README.md, which states the pinned versions.
-     * Items 1, 2, 3 and 5 are the four AAP 0.5.5 enumerates; item 4 is an additional one measured
-     * here that the plan does not name, and it is listed because a reader auditing the couplings
-     * before a bump has to find every one of them, not only the documented four.
+     *   5. the Toolchain section of slatwall-ts/README.md, which states the pinned versions;
+     *   6. package-lock.json, which pins @types/node 20.19.43 by resolved URL AND integrity hash.
+     *      Item 3 cannot move without it: editing package.json alone leaves the lock disagreeing and
+     *      `npm ci` — which installs FROM the lock, not from the manifest — would keep resolving the
+     *      old definitions, so the bump would appear applied while changing nothing.
+     * Items 1, 2, 3 and 5 are the four AAP 0.5.5 enumerates; items 4 and 6 are additional ones
+     * measured here that the plan does not name, and they are listed because a reader auditing the
+     * couplings before a bump has to find every one of them, not only the documented four.
      * ⚠️ ITEM 5 WAS PREVIOUSLY RECORDED AS A GAP, AND NOW EXISTS. AAP 0.2.1.7 and 0.4.1.2 declare
      * slatwall-ts/README.md as a CREATE target, but it had not been generated, so an earlier
      * revision of this note dropped it from the list rather than leave a reader hunting for a
      * version statement that was nowhere — the only README in the subtree then being
      * src/integrations/google/README.md, which states no version. The file has since been authored
-     * with the version statements AAP 0.5.5 requires, so the entry is restored and the count is
-     * five. build/esbuild.mjs carries the identical list.
+     * with the version statements AAP 0.5.5 requires, so the entry is restored.
+     *
+     * ⚠️ ITEM 6 WAS MISSING FROM THIS LIST ENTIRELY UNTIL REVIEW FINDING SEC-RUNTIME-01 NAMED IT.
+     * The finding's resolution enumerates the lockfile among the artifacts an uplift must move, and
+     * it was absent from every enumeration in the subtree — this one, build/esbuild.mjs's identical
+     * list, and README.md's. It is the one coupling whose omission would have silently DEFEATED the
+     * uplift rather than merely left a stale document behind, which is why it is called out here
+     * rather than quietly appended. The count is therefore six, and build/esbuild.mjs and
+     * README.md carry the same six.
      *
      * The hexagonal boundary confines every AWS type to src/handlers/**, so a bump touches those
-     * five and nothing under src/domain/**, src/ports/**, src/services/** or src/adapters/**. None
+     * six and nothing under src/domain/**, src/ports/**, src/services/** or src/adapters/**. None
      * of the above is a performance, latency, throughput or availability claim; no such figure is
      * stated anywhere in this port (AAP IR-12).
      *

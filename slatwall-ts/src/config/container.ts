@@ -196,6 +196,7 @@ import type {
 import {
   SmartListQueryBuilder,
   createAnonymousMaterialisationGate,
+  createSmartListMaterialisationBudget,
   createCatalogAggregateLoaders,
 } from '../adapters/mysql/SmartListQueryBuilder';
 import { UniquePropertyChecker } from '../adapters/mysql/UniquePropertyChecker';
@@ -233,10 +234,17 @@ import type {
   ProductFeedImage,
   ProductFeedRecord,
 } from '../integrations/google/ProductFeedBuilder';
-import { ProductFeedBuilder } from '../integrations/google/ProductFeedBuilder';
+import {
+  ProductFeedBuilder,
+  createProductFeedRenderBudget,
+} from '../integrations/google/ProductFeedBuilder';
 import { ProductFeedQuery } from '../integrations/google/ProductFeedQuery';
 import type { AccessContentPort } from '../ports/AccessContentPort';
-import type { AccountContextPort, PopulationAuthorizationPort } from '../ports/AccountContextPort';
+import type {
+  AccountContextPort,
+  PopulationAuthorizationPort,
+  RequestAuthorizationContext,
+} from '../ports/AccountContextPort';
 import type { ImagePathPort } from '../ports/ImagePathPort';
 import type { PricingPort } from '../ports/PricingPort';
 import type { SettingResolverPort } from '../ports/SettingResolverPort';
@@ -259,9 +267,10 @@ import type { ManagedBrand } from '../services/BrandService';
 import { BrandService } from '../services/BrandService';
 import { OptionService } from '../services/OptionService';
 import { ProductService } from '../services/ProductService';
-import type { ProductWithErrorState } from '../services/SkuService';
-import { SkuService } from '../services/SkuService';
-import type { UniqueValueProbe } from '../util/urlTitle';
+import type { ProductWithErrorState, SkuCombinationBudget } from '../services/SkuService';
+import { SkuService, createSkuCombinationBudget } from '../services/SkuService';
+import type { UniqueValueProbe, UrlTitleProbeBudget } from '../util/urlTitle';
+import { createUrlTitleProbeBudget } from '../util/urlTitle';
 import { Validator } from '../validation/Validator';
 import { brandValidationRules } from '../validation/rules/brand.rules';
 import { productValidationRuleSet } from '../validation/rules/product.rules';
@@ -703,12 +712,60 @@ export interface CatalogBoundaries {
 }
 
 /**
+ * Re-binds the two principal-bearing boundaries to ONE invocation's authorised security context.
+ *
+ * ⭐⭐ THIS FUNCTION IS THE WHOLE OF REVIEW FINDING SEC-AUTH-03's REMEDY IN THIS FILE (CWE-863,
+ * CWE-269). Everything else in this tier is memoised across warm invocations by design (AAP §0.4.1.3),
+ * and two of the ten boundaries carry an IDENTITY rather than a capability:
+ *
+ *   - `accountContext`, which `../domain/base/AuditableEntity.ts` stamps `createdByAccount` and
+ *     `modifiedByAccount` from, and
+ *   - `populationAuthorization`, which `../domain/base/populate.ts` consults for every persistent
+ *     property a payload tries to write.
+ *
+ * Memoising those two meant the route gate could authorise principal A — resolved per invocation at the
+ * handler edge — while the write executed with principal B's property rights and stamped B's identity.
+ * The finding calls that "principal, population privileges and audit identity are disconnected", and it
+ * is disconnected precisely because there were TWO places a principal could come from. There is now one:
+ * the {@link RequestAuthorizationContext} the gate produced, which the write runner forwards into every
+ * boundary-scoped rebuild, and which this function substitutes for the memoised pair.
+ *
+ * ⛔ IT SUBSTITUTES EXACTLY TWO MEMBERS AND MUST NOT GROW. The other eight are capabilities, not
+ * identities — a settings resolver, an image adapter, a pricing adapter, two cleanups — and rebuilding
+ * them per invocation would defeat the memoisation the AAP requires without closing anything.
+ *
+ * ⛔ AND IT HOLDS NOTHING. It is called inside a transaction, from a parameter, and its result lives and
+ * dies with that transaction's graph; nothing here is assigned to module scope, which is what keeps M7
+ * intact while a principal crosses the boundary.
+ *
+ * @param boundaries the memoised tier, whose eight capability members pass straight through
+ * @param security this invocation's authorised context, from the route gate
+ * @returns a frozen boundary tier whose account and population members are this invocation's
+ */
+function scopeBoundariesToInvocation(
+  boundaries: CatalogBoundaries,
+  security: RequestAuthorizationContext,
+): CatalogBoundaries {
+  return Object.freeze({
+    ...boundaries,
+    accountContext: security.accountContext,
+    populationAuthorization: security.populationAuthorization,
+  });
+}
+
+/**
  * Resolves TIER 1 from a caller's substitutions, falling back to the production collaborator for each.
  *
  * ⭐ IT PERFORMS NO I/O AND HOLDS NO STATE. Every expression is either a frozen literal declared above
  * or one `new StaticSettingResolver(config.settings)` over configuration `./env` has already read and
  * frozen — which is what lets `tsc`, `eslint`, `esbuild`, a cold artifact load and the whole test suite
  * run with no `.env` file and no environment variable set.
+ *
+ * ⚠️ THE TWO PRINCIPAL-BEARING SLOTS RESOLVED HERE ARE FAIL-CLOSED DEFAULTS, NOT THE INVOCATION'S
+ * IDENTITY — review finding SEC-AUTH-03. `accountContext` falls back to a port that refuses and
+ * `populationAuthorization` to one that denies every property, so a write that never reaches
+ * {@link scopeBoundariesToInvocation} cannot silently run as somebody. The identity a write actually runs
+ * as is substituted per invocation by that function.
  *
  * @param overrides substitutions for any boundary; omit it entirely for the production tier
  * @returns the ten resolved boundary collaborators
@@ -894,26 +951,29 @@ export type ProductAggregateReader = (productID: string) => Promise<Product | nu
  * hydrated row carry its many-to-one associations — which is why the default-SKU delegate binder is a
  * REQUIRED dependency of the loaders and therefore a required parameter here.
  *
- * ⭐ THE MATERIALISATION BUDGET IS OPTIONAL AND DEFAULTLESS — REVIEW FINDING SEC-1 (CWE-400). An earlier
- * revision omitted the parameter entirely, on the reasoning that a REQUIRED finite budget converts work the
- * legacy performs into a bounded FAILURE, which AAP §0.8.2 guideline 4 forbids as enhancement beyond the
- * migration's need. That reasoning holds against a MANDATORY bound with a default and is preserved: nothing
- * here authors a figure. What it does not justify is leaving the bound UNREACHABLE, which is what SEC-1
- * found — an operator who had measured a ceiling had no way to state it, and the anonymous public feed
- * could be driven to materialise an unbounded selection. So the budget is threaded, and under
- * `exactOptionalPropertyTypes` an omitted argument stays ABSENT rather than `undefined`: a deployment that
- * states no figure gets exactly the graph it got before — the legacy's unbounded materialisation.
+ * ⭐⭐ THE MATERIALISATION BUDGET IS REQUIRED — REVIEW FINDING SEC-DOS-02 (CWE-400), REVERSING SEC-1's
+ * OPTIONAL SHAPE. It was omitted entirely, then made OPTIONAL on the reasoning that "a REQUIRED finite
+ * budget converts work the legacy performs into a bounded FAILURE, which AAP §0.8.2 guideline 4 forbids as
+ * enhancement beyond the migration's need". SEC-DOS-02 measured what the optional shape produced:
+ * "Authenticated SmartList requests may run with no materialization budget" — unbounded materialisation
+ * reachable by any authenticated caller, with only the anonymous feed refusing.
+ *
+ * ⭐ THE OBJECTION IS ANSWERED BY THE SHAPE RATHER THAN OVERRULED. The budget carries RESOLVERS, so a
+ * required parameter obliges a composition root to supply the SEAM, never a NUMBER: a deployment that
+ * stated no figures gets a named `ConfigurationError` from the route that needed one. Nothing here authors
+ * a figure, which was the whole of the original concern (AAP §0.7.3 S9, IR-12).
  *
  * @param executor the statement executor; a pool-bound runner outside a transaction, or the boundary's
  *   own executor inside one, which is the M6 requirement expressed as a parameter
  * @param dependencies the aggregate loaders' collaborators — currently the default-SKU delegate binder
- * @param materialisationBudget the operator-stated ceiling, or omitted for the legacy's unbounded path
+ * @param materialisationBudget the row and complexity ceilings; REQUIRED, and fail-closed when the
+ *   operator stated no figure
  * @returns the query port
  */
 export function createSmartListQueryPort(
   executor: SqlExecutor,
   dependencies: CatalogAggregateDependencies,
-  materialisationBudget?: SmartListMaterialisationBudget,
+  materialisationBudget: SmartListMaterialisationBudget,
 ): SmartListQueryPort {
   return new SmartListQueryBuilder(
     executor,
@@ -1109,6 +1169,16 @@ export interface BrandSurfaceDependencies {
   readonly brandRepository?: BrandRepository;
 
   /**
+   * The URL-title probe ceiling — review finding SEC-DOS-03; see `../util/urlTitle`'s
+   * `UrlTitleProbeBudget`.
+   *
+   * ⭐ REQUIRED, AND CARRIED HERE SO THE BOUNDARY REBUILD APPLIES IT TOO. `saveBrand` derives its title
+   * inside the write transaction, and {@link buildBrandBoundaryGraph} reconstructs the service there; a
+   * ceiling wired only into the pool-bound service would silently vanish for exactly the path that probes.
+   */
+  readonly urlTitleProbeBudget: UrlTitleProbeBudget;
+
+  /**
    * A substitute for the brand write boundary, as a WHOLE runner.
    *
    * ⚠️ IT IS NOT DECOMPOSABLE, for the reason {@link CatalogContainerOverrides} states for the other two
@@ -1180,11 +1250,15 @@ export function composeBrandSurface(dependencies: BrandSurfaceDependencies): Bra
   return {
     brandRepository,
     brandBaseService,
-    brandService: new BrandService(brandRepository, brandBaseService),
+    brandService: new BrandService(
+      brandRepository,
+      brandBaseService,
+      dependencies.urlTitleProbeBudget,
+    ),
     brandWriteRunner:
       dependencies.brandWriteRunner ??
-      new MySqlTransactionalWriteRunner<BrandService>(statements.unitOfWork, (scope) =>
-        buildBrandBoundaryGraph(dependencies, scope),
+      new MySqlTransactionalWriteRunner<BrandService>(statements.unitOfWork, (scope, security) =>
+        buildBrandBoundaryGraph(dependencies, scope, security),
       ),
   };
 }
@@ -1215,8 +1289,12 @@ export function composeBrandSurface(dependencies: BrandSurfaceDependencies): Bra
 export function buildBrandBoundaryGraph(
   dependencies: BrandSurfaceDependencies,
   scope: TransactionScope,
+  security: RequestAuthorizationContext,
 ): BrandService {
-  const { boundaries, statements } = dependencies;
+  const { statements } = dependencies;
+  /* SEC-AUTH-03 — the write runs as the principal the route gate authorised, not as the memoised pair.
+   * See {@link scopeBoundariesToInvocation}. */
+  const boundaries = scopeBoundariesToInvocation(dependencies.boundaries, security);
   const { executor } = scope;
 
   const boundaryStatements = createBoundaryStatements(statements.uniquePropertyChecker, executor);
@@ -1236,7 +1314,13 @@ export function buildBrandBoundaryGraph(
     commentCleanup: boundaries.commentCleanup,
   });
 
-  return new BrandService(boundaryBrandRepository, boundaryBrandBaseService);
+  /* SEC-DOS-03 — the SAME budget the pool-bound service holds, so the write path that actually probes is
+   * bounded and not merely the read path. */
+  return new BrandService(
+    boundaryBrandRepository,
+    boundaryBrandBaseService,
+    dependencies.urlTitleProbeBudget,
+  );
 }
 
 /**
@@ -1283,6 +1367,11 @@ export function createBrandSurfaceGraph(): BrandSurfaceGraph {
   const { brandService, brandWriteRunner } = composeBrandSurface({
     boundaries: resolveCatalogBoundaries(),
     statements: createCatalogStatements(),
+    /* SEC-DOS-03 — built from whatever figure this deployment stated. Stating none is legal and yields a
+     * budget whose resolver refuses BY NAME the first time a title would have been derived. */
+    urlTitleProbeBudget: createUrlTitleProbeBudget(
+      config.resourceBounds.urlTitleMaximumProbesPerDerivation,
+    ),
   });
 
   return Object.freeze({
@@ -1406,9 +1495,16 @@ export function createOptionSurfaceGraph(): OptionSurfaceGraph {
 
   const { optionService } = composeOptionSurface({
     statements,
-    smartListQueryPort: createSmartListQueryPort(statements.queryRunner, {
-      bindDefaultSkuDelegate: createDefaultSkuDelegateBinder(boundaries.settings),
-    }),
+    smartListQueryPort: createSmartListQueryPort(
+      statements.queryRunner,
+      { bindDefaultSkuDelegate: createDefaultSkuDelegateBinder(boundaries.settings) },
+      /* SEC-DOS-02 — the narrow option artifact is bounded exactly as the aggregate is; a budget wired
+       * into one entry and not another is the partial-wiring failure mode. */
+      createSmartListMaterialisationBudget(
+        config.resourceBounds.smartListMaximumRecordsPerQuery,
+        config.resourceBounds.smartListMaximumPredicatesPerQuery,
+      ),
+    ),
   });
 
   return Object.freeze({
@@ -1508,11 +1604,21 @@ export function composeFeedSurface(dependencies: FeedSurfaceDependencies): FeedS
       boundaries.imagePaths,
       boundaries.pricing,
       boundaries.settings,
+      /* SEC-DOS-02 — the per-record image ceiling and the document byte ceiling, built from whatever
+       * figures this deployment stated. Both fail closed: the one anonymous route refuses by name rather
+       * than buffering an unbounded document. */
+      createProductFeedRenderBudget(
+        dependencies.resourceBounds.googleFeedMaximumImagesPerRecord,
+        dependencies.resourceBounds.googleFeedMaximumResponseBytes,
+      ),
     ),
     productFeedImages: dependencies.productFeedImages ?? productFeedImagesFromDomain,
-    assertAnonymousMaterialisationBounded: createAnonymousMaterialisationGate(
-      dependencies.resourceBounds.smartListMaximumRecordsPerQuery,
-    ),
+    assertAnonymousMaterialisationBounded: createAnonymousMaterialisationGate({
+      maximumRecordsPerQuery: dependencies.resourceBounds.smartListMaximumRecordsPerQuery,
+      maximumPredicatesPerQuery: dependencies.resourceBounds.smartListMaximumPredicatesPerQuery,
+      maximumImagesPerRecord: dependencies.resourceBounds.googleFeedMaximumImagesPerRecord,
+      maximumResponseBytes: dependencies.resourceBounds.googleFeedMaximumResponseBytes,
+    }),
   };
 }
 
@@ -1559,13 +1665,14 @@ export function createFeedSurfaceGraph(): FeedSurfaceGraph {
   const boundaries = resolveCatalogBoundaries();
   const statements = createCatalogStatements();
 
-  /* The narrow artifact is bounded exactly as the aggregate is — SEC-1's second half. A budget wired into
-   * one graph and not the other is the partial-wiring failure mode: it compiles, and the bound silently
-   * does not apply on whichever entry was missed. This entry IS the anonymous one. */
-  const materialisationBudget: SmartListMaterialisationBudget | undefined =
-    config.resourceBounds.smartListMaximumRecordsPerQuery === undefined
-      ? undefined
-      : { maximumRecordsPerQuery: config.resourceBounds.smartListMaximumRecordsPerQuery };
+  /* The narrow artifact is bounded exactly as the aggregate is — SEC-1's second half, now SEC-DOS-02's. A
+   * budget wired into one graph and not the other is the partial-wiring failure mode: it compiles, and the
+   * bound silently does not apply on whichever entry was missed. This entry IS the anonymous one. */
+  const materialisationBudget: SmartListMaterialisationBudget =
+    createSmartListMaterialisationBudget(
+      config.resourceBounds.smartListMaximumRecordsPerQuery,
+      config.resourceBounds.smartListMaximumPredicatesPerQuery,
+    );
 
   const {
     productFeedQuery,
@@ -1687,7 +1794,21 @@ export interface SkuSurfaceDependencies {
    * executor; a bound wired only into the pool-bound port would silently vanish for every write — the same
    * partial-rebuild failure mode that section's header warns about, in a new place.
    */
-  readonly materialisationBudget?: SmartListMaterialisationBudget;
+  readonly materialisationBudget: SmartListMaterialisationBudget;
+
+  /**
+   * The SKU combination ceiling and cancellation seam — review finding SEC-DOS-01 (CWE-400).
+   *
+   * ⭐ REQUIRED, AND CARRIED HERE FOR THE SAME REASON `materialisationBudget` IS: `buildSkuBoundaryParts`
+   * reconstructs the SKU service over the boundary's own executor, and a ceiling wired only into the
+   * pool-bound service would silently vanish for exactly the write path the finding is about. That is the
+   * partial-rebuild failure mode this section's header warns about, in a third place.
+   *
+   * The figure inside it is the OPERATOR's or absent; when absent the budget's own resolver raises a named
+   * `ConfigurationError` at the moment `createSkus` would have enumerated, so nothing here fabricates a
+   * capacity (AAP §0.7.3 S9, IR-12).
+   */
+  readonly combinationBudget: SkuCombinationBudget;
 
   /** A caller-supplied SKU repository, honoured in place of the MySQL adapter (S6). */
   readonly skuRepository?: SkuRepository;
@@ -1798,8 +1919,12 @@ export interface SkuBoundaryParts {
 export function buildSkuBoundaryParts(
   dependencies: SkuSurfaceDependencies,
   scope: TransactionScope,
+  security: RequestAuthorizationContext,
 ): SkuBoundaryParts {
-  const { boundaries, statements, bindDefaultSkuDelegate, optionGroupSortOrderMemo } = dependencies;
+  const { statements, bindDefaultSkuDelegate, optionGroupSortOrderMemo, combinationBudget } =
+    dependencies;
+  /* SEC-AUTH-03 — see {@link scopeBoundariesToInvocation}. */
+  const boundaries = scopeBoundariesToInvocation(dependencies.boundaries, security);
   const { executor } = scope;
 
   const boundaryStatements = createBoundaryStatements(statements.uniquePropertyChecker, executor);
@@ -1840,6 +1965,9 @@ export function buildSkuBoundaryParts(
       boundaryStatements.validator,
       boundaryProductTypeRoots,
       bindDefaultSkuDelegate,
+      /* SEC-DOS-01 — the SAME budget the pool-bound service holds, so the ceiling applies to the write
+       * path the finding names and not merely to reads. */
+      combinationBudget,
     ),
   };
 }
@@ -1847,11 +1975,12 @@ export function buildSkuBoundaryParts(
 /**
  * Wires the SKU surface from resolved dependencies — the pool-bound graph and the write boundary.
  *
- * ⚠️ THE TENTH `SkuService` CONSTRUCTOR ARGUMENT — A MAXIMUM COMBINATION COUNT — IS DELIBERATELY OMITTED.
- * `../../services/SkuService.ts` says a composition root that supplies one has RELOCATED a fabrication
- * rather than avoided it: the legacy states no such ceiling, and S9 forbids inventing one. Under
- * `exactOptionalPropertyTypes` an omitted argument is ABSENT rather than `undefined`, which is what keeps
- * the parity path — the legacy's unbounded enumeration — the default.
+ * ⭐ THE TENTH `SkuService` CONSTRUCTOR ARGUMENT — THE COMBINATION BUDGET — IS NOW SUPPLIED, AND IT IS
+ * REQUIRED. It was omitted for several revisions on the argument that a composition root supplying a
+ * ceiling had RELOCATED a fabrication rather than avoided it. Review finding SEC-DOS-01 reverses that: the
+ * budget carries no figure of its own, it carries whatever the OPERATOR stated and RAISES by name when
+ * they stated nothing, so the default outcome is a refusal rather than an unbounded enumeration. The full
+ * precedence argument is recorded above `multiplyCombinationCount` in `../services/SkuService.ts`.
  *
  * @param dependencies the resolved tiers, the shared memo and the optional substitutions
  * @returns the SKU collaborators, the pool-bound product reader and the write boundary
@@ -1864,6 +1993,7 @@ export function composeSkuSurface(dependencies: SkuSurfaceDependencies): SkuSurf
     productTypeRootResolver,
     bindDefaultSkuDelegate,
     optionGroupSortOrderMemo,
+    combinationBudget,
   } = dependencies;
 
   const skuRepository: SkuRepository =
@@ -1889,6 +2019,8 @@ export function composeSkuSurface(dependencies: SkuSurfaceDependencies): SkuSurf
     statements.validator,
     productTypeRootResolver,
     bindDefaultSkuDelegate,
+    /* SEC-DOS-01 — the operator's ceiling, or a resolver that refuses by name when none was stated. */
+    combinationBudget,
   );
 
   return {
@@ -1899,14 +2031,17 @@ export function composeSkuSurface(dependencies: SkuSurfaceDependencies): SkuSurf
     resolveProduct: createProductAggregateReader(smartListQueryPort),
     skuWriteRunner:
       dependencies.skuWriteRunner ??
-      new MySqlTransactionalWriteRunner<CatalogSkuWriteGraph>(statements.unitOfWork, (scope) => {
-        const boundary = buildSkuBoundaryParts(dependencies, scope);
+      new MySqlTransactionalWriteRunner<CatalogSkuWriteGraph>(
+        statements.unitOfWork,
+        (scope, security) => {
+          const boundary = buildSkuBoundaryParts(dependencies, scope, security);
 
-        /* The write graph is the NARROW view of the rebuild: the aggregate reader and the SKU service, and
-         * nothing else. `./productSurface.ts` takes the same parts and adds the product half, which is why
-         * the rebuild answers more than this runner needs. */
-        return { resolveProduct: boundary.resolveProduct, skuService: boundary.skuService };
-      }),
+          /* The write graph is the NARROW view of the rebuild: the aggregate reader and the SKU service,
+           * and nothing else. `./productSurface.ts` takes the same parts and adds the product half, which
+           * is why the rebuild answers more than this runner needs. */
+          return { resolveProduct: boundary.resolveProduct, skuService: boundary.skuService };
+        },
+      ),
   };
 }
 
@@ -1951,9 +2086,16 @@ export function createSkuSurfaceGraph(): SkuSurfaceGraph {
   const boundaries = resolveCatalogBoundaries();
   const statements = createCatalogStatements();
   const bindDefaultSkuDelegate = createDefaultSkuDelegateBinder(boundaries.settings);
-  const smartListQueryPort = createSmartListQueryPort(statements.queryRunner, {
-    bindDefaultSkuDelegate,
-  });
+  /* SEC-DOS-02 — every entry carries the same required budget; see {@link createSmartListQueryPort}. */
+  const materialisationBudget = createSmartListMaterialisationBudget(
+    config.resourceBounds.smartListMaximumRecordsPerQuery,
+    config.resourceBounds.smartListMaximumPredicatesPerQuery,
+  );
+  const smartListQueryPort = createSmartListQueryPort(
+    statements.queryRunner,
+    { bindDefaultSkuDelegate },
+    materialisationBudget,
+  );
   const optionGroupSortOrderMemo = createOptionGroupSortOrderMemo();
 
   const { skuService, resolveProduct, skuWriteRunner } = composeSkuSurface({
@@ -1963,6 +2105,13 @@ export function createSkuSurfaceGraph(): SkuSurfaceGraph {
     productTypeRootResolver: createProductTypeRootResolver(smartListQueryPort),
     bindDefaultSkuDelegate,
     optionGroupSortOrderMemo,
+    materialisationBudget,
+    /* SEC-DOS-01 — built from whatever figure this deployment stated. Stating none is legal and yields a
+     * budget whose resolver refuses BY NAME the first time `createSkus` would have enumerated, which is
+     * why constructing it here reads no environment beyond the already-loaded configuration. */
+    combinationBudget: createSkuCombinationBudget(
+      config.resourceBounds.skuMaximumCombinationsPerRequest,
+    ),
   });
 
   return Object.freeze({
@@ -2017,6 +2166,16 @@ export interface ProductSurfaceDependencies {
    * transaction identical to the ordering outside it.
    */
   readonly sku: SkuSurfaceDependencies;
+
+  /**
+   * The URL-title probe ceiling — review finding SEC-DOS-03; see `../util/urlTitle`'s
+   * `UrlTitleProbeBudget`.
+   *
+   * ⭐ REQUIRED, AND IT SITS HERE RATHER THAN ON `sku` BECAUSE THE PRODUCT SERVICE IS WHAT DERIVES TITLES.
+   * `saveProduct` [model/service/ProductService.cfc:L269] and `saveProductType` [:L297, :L299] are the two
+   * derivations; the SKU half performs none, and its own ceiling is `sku.combinationBudget`.
+   */
+  readonly urlTitleProbeBudget: UrlTitleProbeBudget;
 
   /** A caller-supplied product repository, honoured in place of the MySQL adapter (S6). */
   readonly productRepository?: ProductRepository;
@@ -2291,6 +2450,7 @@ function assembleProductService(collaborators: {
   readonly optionService: OptionService;
   readonly productBaseService: BaseService<Product, ProductPropertyName>;
   readonly productTypeBaseService: BaseService<ManagedEntity<ProductType>, ProductTypePropertyName>;
+  readonly urlTitleProbeBudget: UrlTitleProbeBudget;
 }): ProductService {
   const { boundaries } = collaborators.dependencies;
 
@@ -2310,6 +2470,8 @@ function assembleProductService(collaborators: {
     productPropertyDescriptors: PRODUCT_PROPERTY_DESCRIPTORS,
     populationAuthorization: boundaries.populationAuthorization,
     isUrlTitleAvailable: collaborators.statements.isUrlTitleAvailable,
+    /* SEC-DOS-03 — the ceiling the two derivations probe against, resolved when a derivation runs. */
+    urlTitleProbeBudget: collaborators.urlTitleProbeBudget,
     persistProduct: (product) => collaborators.persistence.saveProduct(product),
     defaultSkuIdReader: readDefaultSkuIdOrRefuse,
 
@@ -2349,11 +2511,15 @@ function assembleProductService(collaborators: {
 export function buildProductBoundaryGraph(
   dependencies: ProductSurfaceDependencies,
   scope: TransactionScope,
+  security: RequestAuthorizationContext,
 ): ProductService {
   const { executor } = scope;
-  const { boundaries, statements } = dependencies.sku;
+  const { statements } = dependencies.sku;
+  /* SEC-AUTH-03 — see {@link scopeBoundariesToInvocation}. The SKU half below is rebuilt from the SAME
+   * context, so one invocation cannot end up with two principals across the two halves of one graph. */
+  const boundaries = scopeBoundariesToInvocation(dependencies.sku.boundaries, security);
 
-  const boundarySku = buildSkuBoundaryParts(dependencies.sku, scope);
+  const boundarySku = buildSkuBoundaryParts(dependencies.sku, scope, security);
   const boundaryStatements = createBoundaryStatements(statements.uniquePropertyChecker, executor);
   const { productRepository, productPersistence } = composeProductWriteSurface(
     executor,
@@ -2371,6 +2537,9 @@ export function buildProductBoundaryGraph(
 
   return assembleProductService({
     dependencies: dependencies.sku,
+    /* SEC-DOS-03 — the same ceiling the pool-bound service holds; the derivation runs INSIDE this
+     * transaction, so a budget wired only outside it would not bound the path that probes. */
+    urlTitleProbeBudget: dependencies.urlTitleProbeBudget,
     productRepository,
     persistence: productPersistence,
     statements: boundaryStatements,
@@ -2424,6 +2593,8 @@ export function composeProductSurface(
     skuParts,
     productService: assembleProductService({
       dependencies: dependencies.sku,
+      /* SEC-DOS-03 — see the boundary rebuild above; both graphs carry the one ceiling. */
+      urlTitleProbeBudget: dependencies.urlTitleProbeBudget,
       productRepository,
       persistence: productPersistence,
       statements,
@@ -2437,8 +2608,8 @@ export function composeProductSurface(
     }),
     productWriteRunner:
       dependencies.productWriteRunner ??
-      new MySqlTransactionalWriteRunner<ProductService>(statements.unitOfWork, (scope) =>
-        buildProductBoundaryGraph(dependencies, scope),
+      new MySqlTransactionalWriteRunner<ProductService>(statements.unitOfWork, (scope, security) =>
+        buildProductBoundaryGraph(dependencies, scope, security),
       ),
   };
 }
@@ -2478,9 +2649,16 @@ export function createProductSurfaceGraph(): ProductSurfaceGraph {
   const boundaries = resolveCatalogBoundaries();
   const statements = createCatalogStatements();
   const bindDefaultSkuDelegate = createDefaultSkuDelegateBinder(boundaries.settings);
-  const smartListQueryPort = createSmartListQueryPort(statements.queryRunner, {
-    bindDefaultSkuDelegate,
-  });
+  /* SEC-DOS-02 — every entry carries the same required budget; see {@link createSmartListQueryPort}. */
+  const materialisationBudget = createSmartListMaterialisationBudget(
+    config.resourceBounds.smartListMaximumRecordsPerQuery,
+    config.resourceBounds.smartListMaximumPredicatesPerQuery,
+  );
+  const smartListQueryPort = createSmartListQueryPort(
+    statements.queryRunner,
+    { bindDefaultSkuDelegate },
+    materialisationBudget,
+  );
   const optionGroupSortOrderMemo = createOptionGroupSortOrderMemo();
 
   const { productService, productWriteRunner } = composeProductSurface({
@@ -2491,7 +2669,17 @@ export function createProductSurfaceGraph(): ProductSurfaceGraph {
       productTypeRootResolver: createProductTypeRootResolver(smartListQueryPort),
       bindDefaultSkuDelegate,
       optionGroupSortOrderMemo,
+      materialisationBudget,
+      /* SEC-DOS-01 — the product surface reaches `createSkus` through `saveProduct`
+       * [model/service/ProductService.cfc:L279], so it carries the same ceiling as the SKU entry. */
+      combinationBudget: createSkuCombinationBudget(
+        config.resourceBounds.skuMaximumCombinationsPerRequest,
+      ),
     },
+    /* SEC-DOS-03 — `saveProduct` and `saveProductType` are the two derivations in the slice. */
+    urlTitleProbeBudget: createUrlTitleProbeBudget(
+      config.resourceBounds.urlTitleMaximumProbesPerDerivation,
+    ),
   });
 
   return Object.freeze({
@@ -2938,20 +3126,29 @@ export interface CatalogContainerOverrides {
   readonly brandWriteRunner?: TransactionalWriteRunner<BrandService>;
 
   /**
-   * The three finite resource bounds, overriding {@link AppConfig.resourceBounds} — review finding SEC-1.
+   * The SIX resource bounds, overriding {@link AppConfig.resourceBounds} — review findings SEC-1,
+   * SEC-DOS-01, SEC-DOS-02 and SEC-DOS-03.
    *
    * ⭐ WHY AN OVERRIDE SLOT EXISTS FOR A CONFIGURATION SECTION. `../config/env.ts` reads its variables once
-   * at module load and offers no reload, so a caller that needs a different bound — a test proving the gate
+   * at module load and offers no reload, so a caller that needs a different bound — a test proving a ceiling
    * fires, or a deployment composing a graph for one operation — cannot get there through the environment.
    * The slot is the seam, and it is the same shape as the section it replaces so there is no adaptation.
    *
    * ⚠️ IT REPLACES THE SECTION WHOLE, NOT MEMBER BY MEMBER. A partial override would make "absent" ambiguous
    * between "the operator stated nothing" and "this caller did not mention it", and absent has a specific
-   * meaning here: unbounded, at legacy parity. Supplying `{}` therefore states that NOTHING is bounded, which
-   * is a legitimate and explicit choice.
+   * meaning: this deployment stated no figure.
    *
-   * ⛔ AND NO MEMBER OF IT IS EVER DEFAULTED. There is no figure in this file, in `../config/env.ts` or in
-   * any collaborator (AAP §0.7.3 S9, IR-12).
+   * ⛔ AND "ABSENT" NO LONGER MEANS UNBOUNDED — REVIEW FINDINGS SEC-DOS-01/02/03. This docblock read "absent
+   * has a specific meaning here: unbounded, at legacy parity. Supplying `{}` therefore states that NOTHING is
+   * bounded, which is a legitimate and explicit choice." That was the defect. Absent now means FAIL CLOSED:
+   * every bound is reached through a resolver that raises a named `ConfigurationError` naming the variable to
+   * set, so `{}` states that no bounded route will serve rather than that every route runs unbounded. The
+   * three bounds this section carried when that sentence was written were also only three of six.
+   *
+   * ⭐ AND STILL NO MEMBER OF IT IS EVER DEFAULTED. There is no figure in this file, in `../config/env.ts`
+   * or in any collaborator (AAP §0.7.3 S9, IR-12) — the port declines to serve rather than choosing for an
+   * operator, which is the distinction that keeps the fail-closed behaviour inside IR-12 rather than in
+   * tension with it.
    */
   readonly resourceBounds?: ResourceBoundsConfig;
 
@@ -3282,25 +3479,48 @@ export function createCatalogContainer(
    * -------------------------------------------------------------------------------------------- */
   const resourceBounds: ResourceBoundsConfig = overrides.resourceBounds ?? config.resourceBounds;
 
-  /* ⛔ TWO FURTHER BOUNDS WERE DERIVED HERE AND BOTH ARE WITHDRAWN, LEAVING ONLY THE MATERIALISATION ONE.
-   * A revision read `skuMaximumCombinationsPerRequest` into a `SkuCombinationBudget` and
-   * `urlTitleMaximumProbesPerDerivation` into a `UrlTitleProbeBudget`, and wired each into both graphs. Two
-   * independent code reviews withdrew them — the combination ceiling because a capacity limit is a control
-   * `model/service/SkuService.cfc:L85-L89` cannot express, the probe ceiling because a refused derivation is
-   * an outcome `model/service/DataService.cfc:L64`'s `while(!unique)` never produces — and the decisive
-   * argument for both was CARDINALITY rather than merits: AAP §0.6.7.7 licenses EXACTLY ONE departure from
-   * behavioural preservation (D18, the importer's parameterised SQL) so that a reviewer comparing generated
-   * behaviour against legacy behaviour has exactly one entry to check, and §0.8.2 Guideline 4 admits no
-   * proportionality test. The materialisation bound below is NOT in that class: it guards the one
-   * anonymous, unauthenticated route, it is stated by an operator with no default invented (IR-12), and
-   * neither review withdrew it. The two residual exposures are flagged where they live —
-   * `../services/SkuService.ts` for the unbounded odometer and `../util/urlTitle.ts` for the unbounded
-   * probe loop — rather than closed here. */
+  /* ⭐⭐ ALL THREE BOUNDS ARE DERIVED HERE AGAIN — REVIEW FINDINGS SEC-DOS-01, SEC-DOS-02 AND SEC-DOS-03.
+   *
+   * ⛔ THE WITHDRAWAL THIS REVERSES, RECORDED SO THE REVERSAL IS CHECKABLE. Two revisions read
+   * `skuMaximumCombinationsPerRequest` into a `SkuCombinationBudget` and
+   * `urlTitleMaximumProbesPerDerivation` into a `UrlTitleProbeBudget`, wired each into both graphs, and were
+   * withdrawn twice — the combination ceiling because "a capacity limit is a control
+   * `model/service/SkuService.cfc:L85-L89` cannot express", the probe ceiling because "a refused derivation
+   * is an outcome `model/service/DataService.cfc:L64`'s `while(!unique)` never produces". The decisive
+   * argument offered for both was CARDINALITY rather than merits: that AAP §0.6.7.7 licenses exactly ONE
+   * departure from behavioural preservation, D18.
+   *
+   * ⛔ WHY THAT ARGUMENT DOES NOT HOLD. §0.6.7 is the DEFECT AND TODO CARRY-OVER REGISTER, and its
+   * twenty-one entries are legacy BUSINESS-LOGIC defects; D18 is the one member of that register the port
+   * repairs. Availability of the extracted service is not an entry in it. With no user Rules (§0.7.1) the
+   * plan binds this port to §0.7.3's enterprise standards, and the security checkpoint this remediation
+   * answers approves only on zero open findings. Standard S8's "flag rather than assume away" is discharged
+   * by the TODO(parity) notes that still record the legacy as unbounded — not by leaving the port unbounded.
+   *
+   * ⭐ AND NO FIGURE IS INVENTED BY REINSTATING THEM, WHICH IS WHAT KEEPS ALL THREE INSIDE §0.7.3 S9 AND
+   * IR-12. Each bound is built from `resourceBounds`, whose three members are the OPERATOR's or absent, and
+   * each collaborator RESOLVES its figure at the moment it is applied: absent yields a named
+   * `ConfigurationError` reporting the variable to set, never a default and never an unbounded run. The
+   * refusal is the consequence of an absent decision rather than a substitute for one.
+   *
+   * ⚠️ EVERY BOUND IS WIRED IN BOTH GRAPHS, AND THAT IS THE HALF SEC-1 CALLED OUT SEPARATELY. TIER 7
+   * rebuilds the smart-list builder, both services and the validator against the boundary's own executor,
+   * so a bound wired only here would silently vanish for every write — the same partial-rebuild failure
+   * mode the TIER 7 header warns about, in a new place. */
 
-  const materialisationBudget: SmartListMaterialisationBudget | undefined =
-    resourceBounds.smartListMaximumRecordsPerQuery === undefined
-      ? undefined
-      : { maximumRecordsPerQuery: resourceBounds.smartListMaximumRecordsPerQuery };
+  const combinationBudget: SkuCombinationBudget = createSkuCombinationBudget(
+    resourceBounds.skuMaximumCombinationsPerRequest,
+  );
+
+  const urlTitleProbeBudget: UrlTitleProbeBudget = createUrlTitleProbeBudget(
+    resourceBounds.urlTitleMaximumProbesPerDerivation,
+  );
+
+  const materialisationBudget: SmartListMaterialisationBudget =
+    createSmartListMaterialisationBudget(
+      resourceBounds.smartListMaximumRecordsPerQuery,
+      resourceBounds.smartListMaximumPredicatesPerQuery,
+    );
 
   /* ----------------------------------------------------------------------------------------------
    * THE READ TIER — DYNAMIC QUERIES AND THE COLLABORATORS BUILT FROM AN EXECUTOR
@@ -3365,16 +3585,22 @@ export function createCatalogContainer(
     optionGroupSortOrderMemo,
     optionService: optionParts.optionService,
     optionRepository: optionParts.optionRepository,
-    /* SEC-1 — conditional spread rather than a plain assignment, because `exactOptionalPropertyTypes`
-     * distinguishes an ABSENT member from one present and `undefined`, and an absent one is what keeps
-     * the legacy's unbounded path when no operator stated a figure. */
-    ...(materialisationBudget === undefined ? {} : { materialisationBudget }),
+    /* SEC-DOS-01 — REQUIRED, so there is no conditional spread here and no absent case: a container is
+     * always built with a budget, and it is the budget's own resolver that decides whether this deployment
+     * stated a figure. That is the difference between this member and `materialisationBudget` below. */
+    combinationBudget,
+    /* SEC-DOS-02 — a PLAIN assignment now, because the budget is required and always constructed. The
+     * conditional spread that stood here existed to keep an ABSENT member absent under
+     * `exactOptionalPropertyTypes`, which was how "no figure stated" became "unbounded"; the budget's own
+     * resolvers now carry that distinction and answer it with a named refusal instead. */
+    materialisationBudget,
     ...(overrides.skuRepository === undefined ? {} : { skuRepository: overrides.skuRepository }),
     ...(overrides.skuWriteRunner === undefined ? {} : { skuWriteRunner: overrides.skuWriteRunner }),
   };
 
   const productParts = composeProductSurface({
     sku: skuDependencies,
+    urlTitleProbeBudget,
     ...(overrides.productRepository === undefined
       ? {}
       : { productRepository: overrides.productRepository }),
@@ -3387,6 +3613,7 @@ export function createCatalogContainer(
   const brandParts = composeBrandSurface({
     boundaries,
     statements,
+    urlTitleProbeBudget,
     ...(overrides.brandRepository === undefined
       ? {}
       : { brandRepository: overrides.brandRepository }),

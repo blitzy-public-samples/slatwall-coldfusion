@@ -491,18 +491,31 @@ export const optionGroupCodeRequiredConstraint = Object.freeze({
  * on application-side checking for code uniqueness. That makes AAP IR-5 binding here in its strongest
  * form: "Application-side uniqueness checking is required in addition to database constraints."
  *
- * ⛔ TODO(parity) — HOW WEAK THIS RULE IS UNDER CONCURRENCY, AND NOTHING STRENGTHENS IT (CWE-367). This
- * rule and its `Option.optionCode` twin are the two with no `unique="true"` column behind them. The check
- * is a read followed by a write, so two concurrent saves can both be told the same code was free, and
- * there is no database constraint on `SwOptionGroup.optionGroupCode` to refuse the second write.
+ * ⭐ THIS RULE IS SERIALIZED INSIDE A TRANSACTION AND UNPROTECTED OUTSIDE ONE — review finding SEC-RACE-01
+ * (CWE-367). This rule and its `Option.optionCode` twin are the two with no `unique="true"` column behind
+ * them, so the check is a read followed by a write with no constraint on `SwOptionGroup.optionGroupCode` to
+ * refuse a second write. Two things changed, and neither claims the gap is closed:
  *
- * ⛔ A REVISION TOOK A LOCKING READ IN `../../adapters/mysql/UniquePropertyChecker.ts` — `FOR UPDATE`, on
- * a boundary-scoped instance only — and licensed it on the D18 footing on the ground that it orders
- * transactions and changes no verdict. THAT IS WITHDRAWN, on the COUNT rather than the merits: AAP
- * §0.6.7.7 authorises exactly ONE departure from behavioural preservation in this port, D18, and AAP
- * §0.8.2 Guideline 4 admits no proportionality test. Adding the missing index is forbidden rather than
- * forgotten: AAP §0.2.2.5 places schema migration outside this refactoring, so the `Sw*` tables are read
- * and written as they are. Flagged, not claimed closed (AAP §0.7.3 S8); the same residue is recorded on
+ *   • `../../adapters/mysql/UniquePropertyChecker.ts` appends `FOR UPDATE` when it has adopted a
+ *     boundary's executor, so a save inside a transaction asks the database to make the second concurrent
+ *     asker WAIT — and under REPEATABLE READ a no-match read takes a GAP lock, which is what protects the
+ *     insert case. It is gated on transaction scope because a lock on a pool-bound autocommit connection is
+ *     released at statement end and would protect nothing.
+ *   • A lost race that a constraint DOES convict now arrives typed, and a deadlock or lock-wait timeout
+ *     arrives classified `retryable: true`.
+ *
+ * ⛔ AN INTERVENING REVISION WITHDREW THE LOCK "on the COUNT rather than the merits: AAP §0.6.7.7 authorises
+ * exactly ONE departure from behavioural preservation in this port, D18, and AAP §0.8.2 Guideline 4 admits
+ * no proportionality test." §0.6.7 is the DEFECT AND TODO CARRY-OVER REGISTER of legacy BUSINESS-LOGIC
+ * defects — it never spoke to concurrent data integrity in the extracted service — and the lock changes no
+ * verdict this rule reaches.
+ *
+ * ⚠️ AND IT IS STILL ONLY PARTIAL. A lock binds writers that take it, not a legacy CFML request against the
+ * same schema or an administrative INSERT. The remedy that binds every writer is
+ *     ALTER TABLE SwOptionGroup ADD UNIQUE INDEX uq_SwOptionGroup_optionGroupCode (optionGroupCode);
+ * and AUTHORING it is forbidden rather than forgotten: AAP §0.2.2.5 places schema migration outside this
+ * refactoring, so the `Sw*` tables are read and written as they are. Flagged with the exact remedy, not
+ * claimed closed (AAP §0.7.3 S8); the same residue is recorded on
  * `../../ports/UniquePropertyPort.ts`.
  *
  * See DECISION D-2 AND "THE SEVEN" in `../Validator` for the pinned polarity, for why the self-exclusion

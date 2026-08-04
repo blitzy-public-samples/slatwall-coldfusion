@@ -712,7 +712,7 @@ export interface SettingsConfig {
 }
 
 /**
- * The three FINITE RESOURCE BOUNDS a deployment may state, so the composition root can wire them.
+ * The SIX FINITE RESOURCE BOUNDS a deployment must state, so the composition root can wire them.
  *
  * ⭐ WHY THIS SECTION EXISTS: REVIEW FINDING SEC-1 (CWE-400). Three bounds already existed in the code —
  * `SmartListMaterialisationBudget`, `SkuCombinationBudget` and `UrlTitleProbeBudget` — each as an OPTIONAL
@@ -722,20 +722,36 @@ export interface SettingsConfig {
  * materialise an unbounded selection. This section is the missing route from an operator's decision to the
  * graph.
  *
- * ⭐ AND IT INVENTS NOTHING, WHICH IS THE CONSTRAINT THAT SHAPES EVERY MEMBER BELOW (AAP §0.7.3 S9,
- * IR-12). Every member is OPTIONAL and there is NO DEFAULT, NO FALLBACK and NO SUGGESTED VALUE anywhere in
- * this file or in the container. An absent variable leaves the corresponding collaborator exactly as the
- * legacy behaved — unbounded — and a present one states a figure the DEPLOYMENT measured. The distinction
- * matters because it is what separates this section from the three loaders withdrawn below: those required
- * a deployment to supply a number before the module would build at all, which made the number a
- * fabrication with a different author. Making a bound STATEABLE is not the same as making it MANDATORY.
+ * ⛔⭐ WHY IT IS SIX AND MANDATORY, NOT THREE AND OPTIONAL — REVIEW FINDINGS SEC-DOS-01, SEC-DOS-02 AND
+ * SEC-DOS-03. This docblock previously argued the opposite, and the argument is worth quoting because it is
+ * the one a reader will otherwise reconstruct: "An absent variable leaves the corresponding collaborator
+ * exactly as the legacy behaved — unbounded — and a present one states a figure the DEPLOYMENT measured. …
+ * Making a bound STATEABLE is not the same as making it MANDATORY." The premise is right and the conclusion
+ * was wrong. IR-12 and AAP §0.7.3 S9 forbid this PORT from authoring a capacity figure; they do not oblige it
+ * to SERVE unbounded when an operator has authored none. Those are different propositions, and conflating
+ * them turned a documentation rule into an availability defect on every route.
  *
- * ⚠️ ONE PLACE DOES MAKE A BOUND MANDATORY, AND IT IS SCOPED TO THE ROUTE THAT NEEDS IT.
- * `../handlers/googleFeedHandler.ts` refuses to render for an ANONYMOUS caller unless
- * {@link ResourceBoundsConfig.smartListMaximumRecordsPerQuery} is stated, because `google:feed.product` is
- * the one route reachable with no principal and SEC-1's exposure is specifically unbounded ANONYMOUS
- * materialisation. That refusal names no figure either — it requires the operator to have named one — and
- * it is deferred to invocation so an unstated bound fails the feed alone rather than the whole router.
+ * ⭐ SO THE INVENTS-NOTHING CONSTRAINT IS UNCHANGED AND STILL SHAPES EVERY MEMBER BELOW. Every member is
+ * OPTIONAL IN THIS TYPE and there is NO DEFAULT, NO FALLBACK and NO SUGGESTED VALUE anywhere in this file or
+ * in the container. What changed is what ABSENCE means downstream: each bound is now reached through a
+ * RESOLVER that raises a named `ConfigurationError` reporting the variable to set, so an unstated bound FAILS
+ * CLOSED at the route that needed it rather than running unbounded. The port declines to serve instead of
+ * choosing for an operator, which is precisely how a mandatory bound stays inside IR-12.
+ *
+ * ⚠️ WHICH ROUTES REFUSE FOR WHICH MEMBER — the map, so an operator can act on a refusal:
+ *  • `smartListMaximumRecordsPerQuery` and `smartListMaximumPredicatesPerQuery` — EVERY smart-list-backed
+ *    read on every surface, because both are resolved by the same required collaborator.
+ *  • `skuMaximumCombinationsPerRequest` — `sku.createSkus`, and `product.saveProduct` through it.
+ *  • `urlTitleMaximumProbesPerDerivation` — `product.saveProduct`, `product.saveProductType`,
+ *    `brand.saveBrand`.
+ *  • `googleFeedMaximumImagesPerRecord` and `googleFeedMaximumResponseBytes` — `google:feed.product`.
+ *
+ * ⚠️ THE ANONYMOUS ROUTE ALSO CHECKS AHEAD OF ITSELF, AND STILL NAMES NO FIGURE.
+ * `../handlers/googleFeedHandler.ts` refuses to render for an anonymous caller unless all FOUR figures its
+ * render path needs are stated — the two smart-list bounds and the two feed bounds — because
+ * `google:feed.product` is the one route reachable with no principal. The check is deferred to invocation so
+ * an unstated bound fails that route alone rather than the whole router, and it reports the first missing
+ * variable in APPLY order so the one an operator is told about is the one the route would have needed first.
  *
  * ⛔ AND EVERY VALUE GOES THROUGH {@link optionalResourceBoundValue}, SO A PRESENT-BUT-USELESS VALUE FAILS
  * AT LOAD. Zero, a negative, a fraction, `NaN`, `Infinity` and a non-numeric string are all refused by
@@ -747,10 +763,30 @@ export interface ResourceBoundsConfig {
    * The largest number of records ONE smart-list query may materialise — the figure
    * `../adapters/mysql/SmartListQueryBuilder.ts` applies in `execute` AND `executeRecords`.
    *
-   * From `CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY`. This is the bound the anonymous feed reads through,
-   * so it is the one member a deployment must state before `google:feed.product` will serve.
+   * From `CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY`. EVERY smart-list-backed read on every surface declines
+   * to serve without it — review finding SEC-DOS-02, which measured that only the anonymous feed refused and
+   * that "authenticated SmartList requests may run with no materialization budget". It is resolved by the
+   * same required collaborator as
+   * {@link ResourceBoundsConfig.smartListMaximumPredicatesPerQuery}, so a deployment states both or no
+   * smart-list route serves.
    */
   readonly smartListMaximumRecordsPerQuery?: number;
+
+  /**
+   * The largest number of QUERY-COMPLEXITY units ONE compiled smart-list statement may carry — review
+   * finding SEC-DOS-02's second half.
+   *
+   * From `CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY`. A unit is one bound parameter plus one `ORDER BY`
+   * term plus one registered join, summed over the compiled records statement, so this ONE figure bounds
+   * keyword cardinality, `FI:`/`FIR:` list cardinality, `OrderBy` cardinality and join count together.
+   * `../adapters/mysql/SmartListQueryBuilder.ts` sets out the unit and the argument that it also bounds
+   * statement SIZE — no caller-supplied VALUE ever reaches the emitted text, so the only way a caller can
+   * lengthen a statement is by adding terms.
+   *
+   * ⚠️ LIKE THE ROW BOUND, EVERY SMART-LIST ROUTE DECLINES TO SERVE WITHOUT IT. The two are resolved by
+   * the same required collaborator, so a deployment states both or neither serves.
+   */
+  readonly smartListMaximumPredicatesPerQuery?: number;
 
   /**
    * The largest number of SKU combinations ONE merchandise `createSkus` request may enumerate — the figure
@@ -764,17 +800,40 @@ export interface ResourceBoundsConfig {
   readonly skuMaximumCombinationsPerRequest?: number;
 
   /**
-   * The maximum number of uniqueness probes ONE URL-title derivation may issue.
+   * The maximum number of uniqueness probes ONE URL-title derivation may issue — review finding
+   * SEC-DOS-03.
    *
-   * ⛔ NOTHING READS IT. The `UrlTitleProbeBudget` that applied it, and the `../util/urlTitleProbeBudget.ts`
-   * leaf it lived in, are both WITHDRAWN — see the withdrawal record above. The member is retained only so an
-   * operator's existing setting is still parsed rather than silently rejected.
+   * ⭐ IT IS READ AND APPLIED AGAIN. `../util/urlTitle.ts`'s `UrlTitleProbeBudget` resolves it, and
+   * `../services/ProductService.ts` and `../services/BrandService.ts` carry it as a REQUIRED collaborator;
+   * an earlier revision withdrew both, and that withdrawal is argued against in full above
+   * `createUrlTitleProbeBudget`.
    *
-   * From `CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION`. It bounds the probe rather than the algorithm:
-   * `../util/urlTitle.ts` is untouched, so the `-2`-first suffix sequence of
-   * [model/service/DataService.cfc:L53-L71] is unchanged for every derivation that stays in budget.
+   * From `CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION`. It bounds the PROBE rather than the algorithm:
+   * the slug transformation and the `-2`-first suffix sequence of
+   * [model/service/DataService.cfc:L53-L71] are unchanged for every derivation that stays in budget.
    */
   readonly urlTitleMaximumProbesPerDerivation?: number;
+
+  /**
+   * The largest number of `g:additional_image_link` elements ONE feed record may emit — review finding
+   * SEC-DOS-02's per-record clause.
+   *
+   * From `CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD`. `integrationServices/google/views/feed/product.cfm`
+   * loops over every product image with no ceiling, so one product carrying many images expands one feed
+   * record without bound. The anonymous feed route declines to serve without this figure.
+   */
+  readonly googleFeedMaximumImagesPerRecord?: number;
+
+  /**
+   * The largest number of BYTES the rendered product feed document may reach — review finding SEC-DOS-02's
+   * response-size clause.
+   *
+   * From `CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES`. The feed is buffered whole before it is answered, which
+   * is what `integrationServices/google/views/feed/product.cfm` does too; bounding the buffer is what makes
+   * the anonymous response finite in the one dimension the row ceiling does not cover, since one record's
+   * size is not fixed. The anonymous feed route declines to serve without this figure.
+   */
+  readonly googleFeedMaximumResponseBytes?: number;
 }
 
 export interface AppConfig {
@@ -1950,13 +2009,30 @@ function loadResourceBoundsConfig(): ResourceBoundsConfig {
     'CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION',
     process.env.CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION,
   );
+  const smartListMaximumPredicatesPerQuery = optionalResourceBoundValue(
+    'CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY',
+    process.env.CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY,
+  );
+  const googleFeedMaximumImagesPerRecord = optionalResourceBoundValue(
+    'CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD',
+    process.env.CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD,
+  );
+  const googleFeedMaximumResponseBytes = optionalResourceBoundValue(
+    'CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES',
+    process.env.CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES,
+  );
 
   return Object.freeze({
     ...(smartListMaximumRecordsPerQuery === undefined ? {} : { smartListMaximumRecordsPerQuery }),
+    ...(smartListMaximumPredicatesPerQuery === undefined
+      ? {}
+      : { smartListMaximumPredicatesPerQuery }),
     ...(skuMaximumCombinationsPerRequest === undefined ? {} : { skuMaximumCombinationsPerRequest }),
     ...(urlTitleMaximumProbesPerDerivation === undefined
       ? {}
       : { urlTitleMaximumProbesPerDerivation }),
+    ...(googleFeedMaximumImagesPerRecord === undefined ? {} : { googleFeedMaximumImagesPerRecord }),
+    ...(googleFeedMaximumResponseBytes === undefined ? {} : { googleFeedMaximumResponseBytes }),
   });
 }
 

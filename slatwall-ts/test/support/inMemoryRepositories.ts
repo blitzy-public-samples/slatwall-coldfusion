@@ -116,7 +116,9 @@ import type {
   EntityAuthorizationPort,
   EntityAuthorizationRequest,
   EntityPropertyAuthorizationRequest,
+  InvocationSecurityRequest,
   PopulationAuthorizationPort,
+  RequestAuthorizationContext,
 } from '../../src/ports/AccountContextPort';
 import type {
   ImagePathPort,
@@ -188,6 +190,14 @@ import type {
   TestMerchandiseProductData,
   TestMerchandiseProductDataOverrides,
 } from '../fixtures/testProduct';
+import type { SmartListMaterialisationBudget } from '../../src/adapters/mysql/SmartListQueryBuilder';
+import { createSmartListMaterialisationBudget } from '../../src/adapters/mysql/SmartListQueryBuilder';
+import type { ProductFeedRenderBudget } from '../../src/integrations/google/ProductFeedBuilder';
+import { createProductFeedRenderBudget } from '../../src/integrations/google/ProductFeedBuilder';
+import type { SkuCombinationBudget } from '../../src/services/SkuService';
+import { createSkuCombinationBudget } from '../../src/services/SkuService';
+import type { UrlTitleProbeBudget } from '../../src/util/urlTitle';
+import { createUrlTitleProbeBudget } from '../../src/util/urlTitle';
 
 /* =================================================================================================
  * PHYSICALLY VALID TEST IDENTIFIERS — REVIEW FINDING 16
@@ -3295,13 +3305,20 @@ export function createSettingResolverDouble(
  * (`src/ports/ImagePathPort.ts` DECISION I-1 control (4)). This double therefore keys existence on the
  * composed path and records the `filePath` it was handed.
  *
- * ⭐ THE WRITE IS NEVERTHELESS GATED NOW — UPSTREAM OF THIS DOUBLE, WHICH IS WHY THIS DOUBLE DID NOT
- * CHANGE. Review finding F6 screens the stored `imageFile` in `src/services/SkuService.ts` BEFORE a path is
- * composed, so a name the legacy's own generator could not have produced never reaches `getImagePath` or
- * `saveImageFile` here at all — a refused upload leaves `calls` empty. Note the consequence for tests:
- * `saveImageFile` below answers `true` UNCONDITIONALLY and enforces no `allowedExtensions` policy of its
- * own, so a `true` from this double has never been evidence that the legacy would have stored the file. It
- * is evidence only that the service asked.
+ * ⭐ THE WRITE IS GATED UPSTREAM OF THIS DOUBLE, AND THIS DOUBLE NOW ENFORCES ITS OWN CONTRACT TOO —
+ * SEC-FILE-01 required both halves. Upstream: `src/services/SkuService.ts` screens the stored `imageFile`
+ * BEFORE a path is composed, so a name the legacy's own generator could not have produced never reaches
+ * `getImagePath` or `saveImageFile` here at all, and a refused upload leaves `calls` EMPTY. That emptiness is
+ * itself the assertion several cases make, because it proves the refusal needs nothing downstream to be
+ * trusted.
+ *
+ * Here: `saveImageFile` below applies the `allowedExtensions` list it is handed, instead of answering `true`
+ * unconditionally as it did when the review recorded it as a "permissive image-write double". The objection
+ * was not about strictness — it was that a `true` from an unconditional double is evidence only that the
+ * service ASKED, never that a conforming implementation would have STORED, so any case reading `true` as
+ * "the write happened" was reading something the double could not tell it. The two mechanisms answer `false`
+ * for different reasons, and a case can tell them apart by the call log: the gate leaves it empty, the
+ * extension policy leaves `getImagePath` and `saveImageFile` in it.
  *
  * No `getImageDirectory` member is invented on the SKU side, and no extension is added to the
  * `jpg,jpeg,png,gif` list the upload seam carries — this double records the list it is handed so a test
@@ -3340,14 +3357,18 @@ export const TEST_IMAGE_BASE_URL = '/assets/images';
  * `model/entity/Sku.cfc:L145` composes, so a path a test asserts on is the one the production
  * composition would produce rather than a look-alike string.
  *
- * ⛔ IT IS A PLAIN STRING, AND IT IS NOT A CONTAINMENT ROOT. A revision branded this value through a
- * `toImageStorageRoot` helper and wired it into `SkuService` as an eleventh constructor parameter, so
- * that writes could be required to land beneath it. Both are withdrawn: the legacy never checks
- * containment and had no such value to derive, so the root and its enforcement were invented
- * configuration (AAP §0.7.3 S9, IR-12). Nor is a narrower name gate enforced anywhere — the write-side
- * predicate that briefly stood in `src/services/SkuService.ts` is withdrawn under review finding F4,
- * because it refused input `model/service/SkuService.cfc:L212` accepts. This constant survives only as the
- * base for composing expected paths.
+ * ⛔ IT IS A PLAIN STRING, AND IT IS STILL NOT A CONTAINMENT ROOT — that part of the record stands.
+ * A revision branded this value through a `toImageStorageRoot` helper and wired it into `SkuService` as an
+ * extra constructor parameter so writes could be required to land beneath it. Both stay withdrawn, and
+ * SEC-FILE-01 did not reinstate either: the legacy never checks containment and had no such value to derive,
+ * so a root and its enforcement would be invented configuration (AAP §0.7.3 S9, IR-12).
+ *
+ * ⭐ AND NOTHING IS LOST BY NOT HAVING ONE, WHICH IS WHY THE FINDING CLOSES WITHOUT IT. Because
+ * `model/entity/Sku.cfc:L146` composes `<baseImageURL>` + `/product/default/` + `<imageFile>`, requiring
+ * `imageFile` to be ONE generator-shaped segment confines the write to whatever that prefix denotes,
+ * WHATEVER it denotes — a relative confinement that derives entirely from the legacy's own composition and
+ * needs no root to compare against. That is the gate `src/services/SkuService.ts` applies; this constant
+ * survives only as the base for composing expected paths.
  */
 export const TEST_IMAGE_STORAGE_ROOT = `${TEST_IMAGE_BASE_URL}${SKU_IMAGE_PATH_SEGMENT}`;
 
@@ -3366,7 +3387,14 @@ export interface ImagePathDoubleOptions {
    * value may list the bare file name and still match.
    */
   readonly existingImageFiles?: readonly string[];
-  /** Answer for `saveImageFile`. Defaults to `true`. */
+  /**
+   * Answer for `saveImageFile` when the requested extension is permitted. Defaults to `true`.
+   *
+   * ⚠️ NO LONGER THE WHOLE ANSWER (SEC-FILE-01). The double also applies the `allowedExtensions` list it is
+   * handed, so `true` here means "store it IF the extension is permitted" rather than "store it". Set it
+   * `false` to decline a write whose extension IS permitted — the storage-failure case, which the extension
+   * policy cannot express.
+   */
   readonly saveSucceeds?: boolean;
   /**
    * Park every read until the test settles it, instead of answering on the next microtask.
@@ -3494,7 +3522,38 @@ export function createImagePathDouble(options: ImagePathDoubleOptions = {}): Ima
         calls.push(Object.freeze({ member: 'saveImageFile', request }));
         const describe = `saveImageFile:${request.filePath}`;
 
-        return settleThroughGate(pending, describe, saveSucceeds, note(describe));
+        /* ⭐ SEC-FILE-01 — THE DOUBLE NOW ENFORCES THE ONE POLICY THE CONTRACT CARRIES EXPLICITLY.
+         *
+         * It previously answered `saveSucceeds` unconditionally and applied no `allowedExtensions` policy of
+         * its own, which the review recorded as a "permissive image-write double". The objection is sound
+         * and is not about strictness for its own sake: a `true` from an unconditional double is evidence
+         * only that the service ASKED, never that a conforming implementation would have STORED — so any
+         * case reading `true` as "the write happened" was reading something the double could not tell it.
+         *
+         * `allowedExtensions` is the one policy `model/service/SkuService.cfc:L212` passes across this
+         * boundary, so honouring it is reproducing the contract rather than inventing a rule. The remaining
+         * obligations {@link ImagePathPort.saveImageFile} states — containment, byte limit, content type,
+         * no-overwrite — are NOT simulated here: they need a filesystem and a storage root, and this double
+         * touches neither. That division is deliberate and is why `saveSucceeds` survives below.
+         *
+         * ⚠️ COMPARED CASE-INSENSITIVELY, because CFML list membership is. `productImageDefaultExtension`
+         * (`model/service/SettingService.cfc:L191`) is an OPEN text setting, so an operator can store `JPG`,
+         * and `generateImageFileName`'s `reReplaceNoCase` preserves upper case — a case-SENSITIVE double
+         * would refuse the legacy generator's own output. */
+        const permitted = request.allowedExtensions
+          .split(',')
+          .map((extension) => extension.trim().toLowerCase())
+          .filter((extension) => extension !== '');
+        const lastDot = request.filePath.lastIndexOf('.');
+        const extension = lastDot === -1 ? '' : request.filePath.slice(lastDot + 1).toLowerCase();
+        const extensionPermitted = permitted.includes(extension);
+
+        return settleThroughGate(
+          pending,
+          describe,
+          saveSucceeds && extensionPermitted,
+          note(describe),
+        );
       },
     },
     addExistingImageFile: (imageFile: string): void => {
@@ -3959,6 +4018,75 @@ export function createEntityAuthorizationDouble(
       },
     },
   };
+}
+
+/*
+ * 10.6.1 The invocation security context — REVIEW FINDING SEC-AUTH-03.
+ *
+ * ⭐ WHY A SHARED FACTORY RATHER THAN A LITERAL PER CASE. `RequestAuthorizationContext` now carries THREE
+ * members — the account, the entity verdict and the PROPERTY verdict — because a route gate, property
+ * population and audit stamping must all run under one principal. A suite that assembled the context
+ * inline could satisfy the type while pairing one case's account with another case's property rights,
+ * which is precisely the divergence the finding is about. One factory means one shape.
+ *
+ * ⭐ AND THE DEFAULT PROPERTY VERDICT IS DENY-ALL, matching `../../src/handlers/httpResponse.ts`'s
+ * fail-closed context and the port's own documented default: `getPublicPopulateFlag()` is initialised
+ * false at [org/Hibachi/HibachiScope.cfc:L22] and the property gate defaults to denial at
+ * [org/Hibachi/HibachiTransient.cfc:L186]. A case that needs population to succeed passes its own port,
+ * usually from {@link createPopulationAuthorizationDouble}.
+ */
+
+/** The deny-all property verdict — the fail-closed default of {@link securityContext}. */
+export const DENY_ALL_POPULATION_AUTHORIZATION: PopulationAuthorizationPort = Object.freeze({
+  getPublicPopulateFlag: (): boolean => false,
+  authenticateEntityProperty: (): boolean => false,
+});
+
+/**
+ * Build the request a resolver receives — the INPUT half of the seam SEC-AUTH-03 widened.
+ *
+ * The three members the port declares as required are defaulted to a harmless read of `Sku`, so a case
+ * that only cares about headers states only headers. Anything else a case names overrides the default.
+ *
+ * @param overrides the members this case wants to state
+ * @returns a complete `InvocationSecurityRequest`
+ */
+export function securityRequest(
+  overrides: Partial<InvocationSecurityRequest> = {},
+): InvocationSecurityRequest {
+  return {
+    action: 'sku.getSkuBySkuCode',
+    crudType: 'read',
+    entityName: 'Sku',
+    headers: {},
+    ...overrides,
+  };
+}
+
+/** What one case wants to state about the invocation it is driving. */
+export interface SecurityContextOptions {
+  /** The acting principal, or `undefined` for an unauthenticated invocation. */
+  readonly account?: AccountReference | undefined;
+  /** The entity verdict. Defaults to permitting everything, which most non-gate cases want. */
+  readonly entityAuthorization?: EntityAuthorizationPort;
+  /** The property verdict. Defaults to {@link DENY_ALL_POPULATION_AUTHORIZATION}. */
+  readonly populationAuthorization?: PopulationAuthorizationPort;
+}
+
+/**
+ * Build one invocation's security context — the value a handler gate resolves and a write runner receives.
+ *
+ * @param options what this case states about the invocation; every member has a fail-safe default
+ * @returns the frozen three-member context
+ */
+export function securityContext(options: SecurityContextOptions = {}): RequestAuthorizationContext {
+  const account = options.account;
+
+  return Object.freeze({
+    accountContext: { getCurrentAccount: (): AccountReference | undefined => account },
+    entityAuthorization: options.entityAuthorization ?? { authenticateEntity: (): boolean => true },
+    populationAuthorization: options.populationAuthorization ?? DENY_ALL_POPULATION_AUTHORIZATION,
+  });
 }
 
 /*
@@ -5494,4 +5622,132 @@ export function createProductSkuOptionFinderDouble(
       },
     },
   };
+}
+
+/* ================================================================================================
+ * RESOURCE-BOUND FIXTURES — review findings SEC-DOS-01, SEC-DOS-02 and SEC-DOS-03
+ * ================================================================================================
+ * ⭐⭐ WHY A TEST FIXTURE MAY STATE A FIGURE WHERE THE PORT MAY NOT. AAP §0.7.3 S9 and IR-12 forbid the
+ * PORT from authoring a capacity number, and nothing in `src/**` does: every bound is carried by a
+ * resolver that RAISES when nobody stated a figure. A test, by construction, is standing in for the
+ * OPERATOR — it is the party that states the figure — so a fixture supplying one is exercising the
+ * mechanism rather than inventing a default. The figures below are deliberately far larger than any
+ * assertion in the suite needs, so no existing case's outcome depends on their exact value.
+ *
+ * ⛔ AND THE FIXTURES COME IN PAIRS, WHICH IS THE POINT. For each bound there is a GENEROUS budget for
+ * cases about something else, and an UNSTATED budget whose resolver refuses — so the fail-closed half
+ * of each finding is directly assertable rather than merely documented.
+ * ============================================================================================== */
+
+/**
+ * A generous smart-list budget, for the many cases that assert something other than the bound.
+ *
+ * Both figures are far above anything the suite's fixtures produce, so a case that reaches them was
+ * asserting the wrong thing.
+ */
+export const GENEROUS_SMART_LIST_BUDGET: SmartListMaterialisationBudget =
+  createSmartListMaterialisationBudget(1_000_000, 10_000);
+
+/**
+ * A smart-list budget whose figures were never stated, so every resolver refuses.
+ *
+ * ⭐ THIS IS THE SEC-DOS-02 FAIL-CLOSED FIXTURE. Before that finding the equivalent state was an ABSENT
+ * optional argument, which produced an UNBOUNDED query rather than a refusal.
+ */
+export const UNSTATED_SMART_LIST_BUDGET: SmartListMaterialisationBudget =
+  createSmartListMaterialisationBudget(undefined, undefined);
+
+/**
+ * Builds a smart-list budget with an exact row ceiling and a generous complexity ceiling.
+ *
+ * Used by the cases that assert the ROW gate specifically, so they can name their own figure without
+ * also having to state a complexity figure they do not care about.
+ *
+ * @param maximumRecordsPerQuery the row ceiling this case is asserting
+ * @returns the budget
+ */
+export function smartListBudgetWithRowCeiling(
+  maximumRecordsPerQuery: number,
+): SmartListMaterialisationBudget {
+  return createSmartListMaterialisationBudget(maximumRecordsPerQuery, 10_000);
+}
+
+/**
+ * Builds a smart-list budget with an exact complexity ceiling and a generous row ceiling.
+ *
+ * @param maximumPredicatesPerQuery the complexity ceiling this case is asserting
+ * @returns the budget
+ */
+export function smartListBudgetWithComplexityCeiling(
+  maximumPredicatesPerQuery: number,
+): SmartListMaterialisationBudget {
+  return createSmartListMaterialisationBudget(1_000_000, maximumPredicatesPerQuery);
+}
+
+/** A generous SKU combination budget that never cancels — SEC-DOS-01. */
+export const GENEROUS_COMBINATION_BUDGET: SkuCombinationBudget =
+  createSkuCombinationBudget(1_000_000);
+
+/** A combination budget whose figure was never stated, so `createSkus` refuses — SEC-DOS-01. */
+export const UNSTATED_COMBINATION_BUDGET: SkuCombinationBudget =
+  createSkuCombinationBudget(undefined);
+
+/**
+ * Builds a combination budget with an exact ceiling and an optional cancellation predicate.
+ *
+ * @param maximumCombinations the ceiling this case is asserting
+ * @param hasBeenCancelled the cooperative cancellation predicate; omit for never-cancelled
+ * @returns the budget
+ */
+export function combinationBudget(
+  maximumCombinations: number,
+  hasBeenCancelled?: () => boolean,
+): SkuCombinationBudget {
+  return hasBeenCancelled === undefined
+    ? createSkuCombinationBudget(maximumCombinations)
+    : createSkuCombinationBudget(maximumCombinations, hasBeenCancelled);
+}
+
+/** A generous URL-title probe budget — SEC-DOS-03. */
+export const GENEROUS_URL_TITLE_PROBE_BUDGET: UrlTitleProbeBudget =
+  createUrlTitleProbeBudget(1_000_000);
+
+/** A probe budget whose figure was never stated, so every derivation refuses — SEC-DOS-03. */
+export const UNSTATED_URL_TITLE_PROBE_BUDGET: UrlTitleProbeBudget =
+  createUrlTitleProbeBudget(undefined);
+
+/**
+ * Builds a probe budget with an exact ceiling.
+ *
+ * @param maximumProbes the ceiling this case is asserting
+ * @returns the budget
+ */
+export function urlTitleProbeBudget(maximumProbes: number): UrlTitleProbeBudget {
+  return createUrlTitleProbeBudget(maximumProbes);
+}
+
+/** A generous feed render budget — SEC-DOS-02's per-record and byte clauses. */
+export const GENEROUS_FEED_RENDER_BUDGET: ProductFeedRenderBudget = createProductFeedRenderBudget(
+  1_000,
+  100_000_000,
+);
+
+/** A feed render budget whose figures were never stated, so the feed refuses — SEC-DOS-02. */
+export const UNSTATED_FEED_RENDER_BUDGET: ProductFeedRenderBudget = createProductFeedRenderBudget(
+  undefined,
+  undefined,
+);
+
+/**
+ * Builds a feed render budget with exact figures.
+ *
+ * @param maximumImagesPerRecord the per-record image ceiling this case is asserting
+ * @param maximumResponseBytes the document byte ceiling this case is asserting
+ * @returns the budget
+ */
+export function feedRenderBudget(
+  maximumImagesPerRecord: number,
+  maximumResponseBytes: number,
+): ProductFeedRenderBudget {
+  return createProductFeedRenderBudget(maximumImagesPerRecord, maximumResponseBytes);
 }

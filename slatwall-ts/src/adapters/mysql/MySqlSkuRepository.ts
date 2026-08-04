@@ -135,7 +135,12 @@ import { DataIntegrityError, DomainError } from '../../errors/DomainError';
  * windowed member this adapter implemented has been withdrawn, and the port no longer declares it. */
 import type { SkuRepository, SkuRow, SkuSearchRow } from '../../ports/repositories/SkuRepository';
 import type { PhysicalTableName, SqlMutationExecutor } from './QueryRunner';
-import { assertColumnName, assertTableName } from './QueryRunner';
+import {
+  assertColumnName,
+  assertRegisteredColumnName,
+  assertRegisteredTableName,
+  assertTableName,
+} from './QueryRunner';
 import { attachFetchedSkuAssociations } from './SmartListQueryBuilder';
 import { applyPreInsertAudit, applyPreUpdateAudit } from '../../domain/base/AuditableEntity';
 import type { AccountContextPort } from '../../ports/AccountContextPort';
@@ -358,54 +363,77 @@ const PRODUCT_COLUMN = Object.freeze({
 });
 
 /* ================================================================================================
- * OUT-OF-SCOPE PHYSICAL IDENTIFIERS — AUTHORED LITERALS, DECLARED ONCE, FLAGGED
+ * ⭐⭐ CROSS-DOMAIN PHYSICAL IDENTIFIERS — EVERY ONE VALIDATED THROUGH THE ONE REGISTRY
  * ================================================================================================
- * ⚠️ BOUNDARY CROSSING, FLAGGED HERE: every name below belongs to a family AAP §0.2.2.1 excludes, so
- * none of them is in `QueryRunner.ts`'s whitelist and none may be added to it. They are nonetheless
- * required, because the legacy statements this file ports reach them and the RESULT of reaching them
- * is observable through the port: the existence chain answers a delete guard, the fallback decides
- * which SKU a code resolves to, and two fetch branches change which SKUs come back.
+ * ⛔ THIS SECTION USED TO BE THE FINDING. Review finding SEC-SQL-SCOPE-01 measured that this file
+ * "additionally emit[s] 14 out-of-scope table literals … outside the registry", and it was right: the
+ * object below was a private frozen literal map, and its header stated flatly that "none of them is in
+ * `QueryRunner.ts`'s whitelist and none may be added to it". That made the service's true schema surface
+ * unknowable from any one place — a reviewer had to read two modules and reconcile an enforced whitelist
+ * against an unenforced literal — and it left eleven table identifiers reaching statement text through no
+ * gate at all.
  *
- * Each is a compile-time constant authored here from the entity declaration cited beside it. None
- * is derived from caller input, so none is an injection surface: S2's requirement is that no
- * caller-supplied string reaches statement text except as a bound `?`, and that holds throughout.
+ * ⭐ THE FIX IS NOT TO REMOVE THEM. They are required, and the RESULT of reaching them is observable
+ * through the port: the ten-way existence chain of `model/dao/SkuDAO.cfc:L53-L98` answers the
+ * `transactionExistsFlag` delete guard of `model/validation/Product.json` and `model/validation/Sku.json`,
+ * the fallback at `:L103` decides which SKU a code resolves to, and the two fetch branches at `:L155` and
+ * `:L160` change which SKUs come back. Deleting any of them would drop behaviour.
+ *
+ * ⭐ THE FIX IS THAT EVERY ONE NOW PASSES `assertRegisteredTableName`, and `QueryRunner.ts` classifies each
+ * as `cross-domain-read-only`. Three things follow that did not hold before:
+ *   • the schema surface is enumerable from ONE object, which is what lets it be ratified at all;
+ *   • the least-privilege credential is derivable from that object — these eleven need `SELECT` and nothing
+ *     more, which the registry's header states as a `GRANT` an operator can provision;
+ *   • `assertWriteTableName` REFUSES every one of them, so no write path in the subtree can compose a
+ *     statement against an excluded family's table even by accident.
+ *
+ * ⚠️ THE VALIDATION IS NOT DECORATION. A name here that the registry does not carry raises at MODULE LOAD
+ * — these are module-scope constants — so a typo or an unratified addition fails the import rather than
+ * surfacing as a malformed statement at run time. That is strictly stronger than the frozen literal was.
+ *
+ * Each remains a compile-time constant authored from the entity declaration cited beside it. None derives
+ * from caller input, so none is an injection surface: S2 requires only that no caller-supplied string reach
+ * statement text except as a bound `?`, and that holds throughout.
  * ============================================================================================== */
 
 /**
  * Tables reached only to answer a question about SKUs, never to project a column of their own.
  *
- * Frozen so nothing can extend the set at run time. Every entry cites the `entityname`/`table`
- * declaration it was read from, so a reviewer can re-verify each one against the legacy tree.
+ * ⭐ EVERY VALUE IS THE RETURN OF `assertRegisteredTableName`, so the registry — not this object — is the
+ * authority for what may be named. The keys are local aliases for readability; the values are canonical
+ * physical names the registry resolved and classified. Frozen so nothing can extend the set at run time,
+ * and every entry still cites the `entityname`/`table` declaration it was read from so a reviewer can
+ * re-verify each one against the legacy tree.
  */
 const OUT_OF_SCOPE_TABLE = Object.freeze({
   /** `model/entity/AlternateSkuCode.cfc:L49` — reached by the SKU-code fallback at `model/dao/SkuDAO.cfc:L103`. */
-  alternateSkuCode: 'SwAlternateSkuCode',
+  alternateSkuCode: assertRegisteredTableName('SwAlternateSkuCode'),
   /** `model/entity/Sku.cfc:L77` `linktable="SwSkuAccessContent"` — the contentAccess fetch branch, `model/dao/SkuDAO.cfc:L155`. */
-  skuAccessContent: 'SwSkuAccessContent',
+  skuAccessContent: assertRegisteredTableName('SwSkuAccessContent'),
   /** `model/entity/Sku.cfc:L78` `linktable="SwSkuSubsBenefit"` — the subscription fetch branch, `model/dao/SkuDAO.cfc:L160`. */
-  skuSubscriptionBenefit: 'SwSkuSubsBenefit',
+  skuSubscriptionBenefit: assertRegisteredTableName('SwSkuSubsBenefit'),
   /** `model/entity/SubscriptionTerm.cfc` — the non-fetching join of the subscription branch, `model/dao/SkuDAO.cfc:L159`. */
-  subscriptionTerm: 'SwSubscriptionTerm',
+  subscriptionTerm: assertRegisteredTableName('SwSubscriptionTerm'),
   /** `model/entity/Stock.cfc:L49` — the mediating table eight of the ten existence tests traverse. */
-  stock: 'SwStock',
+  stock: assertRegisteredTableName('SwStock'),
   /** `model/entity/OrderItem.cfc:L49` — `model/dao/SkuDAO.cfc:L66`. */
-  orderItem: 'SwOrderItem',
+  orderItem: assertRegisteredTableName('SwOrderItem'),
   /** `model/entity/Inventory.cfc:L49` — `model/dao/SkuDAO.cfc:L68`. */
-  inventory: 'SwInventory',
+  inventory: assertRegisteredTableName('SwInventory'),
   /** `model/entity/OrderDeliveryItem.cfc:L49` — `model/dao/SkuDAO.cfc:L70`. */
-  orderDeliveryItem: 'SwOrderDeliveryItem',
+  orderDeliveryItem: assertRegisteredTableName('SwOrderDeliveryItem'),
   /** `model/entity/PhysicalCountItem.cfc:L49` — `model/dao/SkuDAO.cfc:L72`. */
-  physicalCountItem: 'SwPhysicalCountItem',
+  physicalCountItem: assertRegisteredTableName('SwPhysicalCountItem'),
   /** `model/entity/StockAdjustmentDeliveryItem.cfc:L49` — `model/dao/SkuDAO.cfc:L74`. */
-  stockAdjustmentDeliveryItem: 'SwStockAdjustmentDeliveryItem',
+  stockAdjustmentDeliveryItem: assertRegisteredTableName('SwStockAdjustmentDeliveryItem'),
   /** `model/entity/StockAdjustmentItem.cfc:L49` — reached TWICE, `model/dao/SkuDAO.cfc:L76` and `:L78`. */
-  stockAdjustmentItem: 'SwStockAdjustmentItem',
+  stockAdjustmentItem: assertRegisteredTableName('SwStockAdjustmentItem'),
   /** `model/entity/StockHold.cfc:L49` — `model/dao/SkuDAO.cfc:L80`. */
-  stockHold: 'SwStockHold',
+  stockHold: assertRegisteredTableName('SwStockHold'),
   /** `model/entity/StockReceiverItem.cfc:L49` — `model/dao/SkuDAO.cfc:L82`. */
-  stockReceiverItem: 'SwStockReceiverItem',
+  stockReceiverItem: assertRegisteredTableName('SwStockReceiverItem'),
   /** `model/entity/VendorOrderItem.cfc:L49` — `model/dao/SkuDAO.cfc:L84`. */
-  vendorOrderItem: 'SwVendorOrderItem',
+  vendorOrderItem: assertRegisteredTableName('SwVendorOrderItem'),
 });
 
 /**
@@ -418,10 +446,21 @@ const OUT_OF_SCOPE_TABLE = Object.freeze({
  * is why the legacy text works at all; native SQL performs no equivalent resolution, so a
  * path-for-path transcription would either fail to parse or resolve against the wrong table. Every
  * path is therefore made EXPLICIT against the physical foreign key here.
+ *
+ * ⭐ AND EACH IS VALIDATED AGAINST THE TABLE THAT DECLARES IT, through the one registry gate that accepts
+ * any registered table and dispatches to whichever of the two column maps owns it.
+ *
+ * Spelling a name correctly was never the risk; PAIRING IT WITH THE WRONG TABLE was. `skuID` is declared on
+ * NINE of the twenty-eight registered tables and `stockID` on SEVEN, so a mis-paired name would still be a
+ * real column and would still compose SQL that parses — it would simply answer the wrong question. The gate
+ * is what makes the intended table explicit and checks the pairing at module load.
  */
 const OUT_OF_SCOPE_COLUMN = Object.freeze({
   /** `model/entity/AlternateSkuCode.cfc:L53` — the code itself. */
-  alternateSkuCode: 'alternateSkuCode',
+  alternateSkuCode: assertRegisteredColumnName(
+    OUT_OF_SCOPE_TABLE.alternateSkuCode,
+    'alternateSkuCode',
+  ),
   /**
    * `model/entity/AlternateSkuCode.cfc:L57`, `model/entity/Sku.cfc:L77` (`SwSkuAccessContent`) and
    * `:L78` (`SwSkuSubsBenefit`) — all keyed by SKU, all declaring `fkcolumn="skuID"`.
@@ -430,15 +469,18 @@ const OUT_OF_SCOPE_COLUMN = Object.freeze({
    * over the DIFFERENT link table `SwSkuRenewalSubsBenefit`, which no member of this adapter joins.
    * `../../ports/SubscriptionTermPort` is the module that legitimately cites `:L79`.
    */
-  skuID: 'skuID',
+  skuID: assertRegisteredColumnName(OUT_OF_SCOPE_TABLE.alternateSkuCode, 'skuID'),
   /** `model/entity/Stock.cfc` primary key, and the target of every mediated join below. */
-  stockID: 'stockID',
+  stockID: assertRegisteredColumnName(OUT_OF_SCOPE_TABLE.stock, 'stockID'),
   /** `model/entity/StockAdjustmentItem.cfc:L57` `fkcolumn="fromStockID"`. */
-  fromStockID: 'fromStockID',
+  fromStockID: assertRegisteredColumnName(OUT_OF_SCOPE_TABLE.stockAdjustmentItem, 'fromStockID'),
   /** `model/entity/StockAdjustmentItem.cfc:L58` `fkcolumn="toStockID"`. */
-  toStockID: 'toStockID',
+  toStockID: assertRegisteredColumnName(OUT_OF_SCOPE_TABLE.stockAdjustmentItem, 'toStockID'),
   /** `model/entity/Sku.cfc:L66` and `model/entity/SubscriptionTerm.cfc` — the term key on both sides. */
-  subscriptionTermID: 'subscriptionTermID',
+  subscriptionTermID: assertRegisteredColumnName(
+    OUT_OF_SCOPE_TABLE.subscriptionTerm,
+    'subscriptionTermID',
+  ),
 });
 
 /* ================================================================================================

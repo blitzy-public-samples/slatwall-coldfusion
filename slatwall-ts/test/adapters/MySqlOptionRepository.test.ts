@@ -104,7 +104,14 @@
  */
 import { MySqlOptionRepository } from '../../src/adapters/mysql/MySqlOptionRepository';
 import { assertColumnName, assertTableName } from '../../src/adapters/mysql/QueryRunner';
-import { createSqlExecutorDouble, sqlRows } from '../support/inMemoryRepositories';
+import {
+  GENEROUS_SMART_LIST_BUDGET,
+  UNSTATED_SMART_LIST_BUDGET,
+  smartListBudgetWithComplexityCeiling,
+  createSqlExecutorDouble,
+  smartListBudgetWithRowCeiling,
+  sqlRows,
+} from '../support/inMemoryRepositories';
 
 import type { SqlExecutor } from '../../src/adapters/mysql/QueryRunner';
 import type {
@@ -138,7 +145,46 @@ import type {
   SmartListQuery,
   SmartListQueryPort,
 } from '../../src/ports/SmartListQueryPort';
-import { createAnonymousMaterialisationGate } from '../../src/adapters/mysql/SmartListQueryBuilder';
+import {
+  createAnonymousMaterialisationGate,
+  createSmartListMaterialisationBudget,
+} from '../../src/adapters/mysql/SmartListQueryBuilder';
+import type { SmartListMaterialisationBudget } from '../../src/adapters/mysql/SmartListQueryBuilder';
+
+/**
+ * The four figures the anonymous feed gate demands, none of them stated — review finding SEC-DOS-02.
+ *
+ * The gate demanded ONE figure when it was written; SEC-DOS-02 added the complexity, per-record image and
+ * response-byte ceilings the feed path also applies, so it now demands four and names the first that is
+ * unset. These fixtures make that visible rather than incidental.
+ */
+const UNSTATED_FEED_GATE_BOUNDS = Object.freeze({
+  maximumRecordsPerQuery: undefined,
+  maximumPredicatesPerQuery: undefined,
+  maximumImagesPerRecord: undefined,
+  maximumResponseBytes: undefined,
+});
+
+/**
+ * Builds a fully stated gate input from one row figure, so a case asserting the ROW clause need not restate
+ * the other three.
+ *
+ * @param maximumRecordsPerQuery the row figure the case is asserting
+ * @returns the four figures, all stated
+ */
+function feedGateBoundsOf(maximumRecordsPerQuery: number): {
+  readonly maximumRecordsPerQuery: number;
+  readonly maximumPredicatesPerQuery: number;
+  readonly maximumImagesPerRecord: number;
+  readonly maximumResponseBytes: number;
+} {
+  return {
+    maximumRecordsPerQuery,
+    maximumPredicatesPerQuery: 10_000,
+    maximumImagesPerRecord: 1_000,
+    maximumResponseBytes: 100_000_000,
+  };
+}
 import { ConfigurationError } from '../../src/errors/DomainError';
 
 /* ===============================================================================================
@@ -1792,10 +1838,19 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
   }
 
   /** A builder over an executor that answers nothing, for the cases that only compile statements. */
-  function compileOnly(): BuilderScenario {
+  /**
+   * A builder over an executor that answers nothing, for the cases that only COMPILE.
+   *
+   * @param budget the SEC-DOS-02 materialisation budget this case states; defaults to the generous one,
+   *   so a case about identifier safety or clause shape is never decided by a ceiling
+   * @returns the builder and its call log, which every compile-only case asserts is empty
+   */
+  function compileOnly(
+    budget: SmartListMaterialisationBudget = GENEROUS_SMART_LIST_BUDGET,
+  ): BuilderScenario {
     const { executor, calls } = createSqlExecutorDouble({});
 
-    return { builder: new SmartListQueryBuilder(executor, makeAggregateLoaders()), calls };
+    return { builder: new SmartListQueryBuilder(executor, makeAggregateLoaders(), budget), calls };
   }
 
   /** Compile one query and return the three statements plus the executor call log. */
@@ -2111,7 +2166,11 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
     });
 
     return {
-      builder: new SmartListQueryBuilder(fanning.executor, makeAggregateLoaders()),
+      builder: new SmartListQueryBuilder(
+        fanning.executor,
+        makeAggregateLoaders(),
+        GENEROUS_SMART_LIST_BUDGET,
+      ),
       fanning,
     };
   }
@@ -2222,10 +2281,21 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
       expect(fanned).toHaveLength(3);
       expect(collapsed).toHaveLength(2);
 
-      /* With no budget wired, neither reading issues a counting statement, so the divergence above is
-       * observed with exactly one statement per run and cannot be an artefact of a count. */
-      expect(withoutFlag.fanning.calls).toHaveLength(1);
-      expect(withFlag.fanning.calls).toHaveLength(1);
+      /* TWO statements per run — the SEC-DOS-02 materialisation count, then the record projection — and
+       * the divergence above is therefore observed against the SAME statement shape in both runs rather
+       * than being an artefact of one run counting and the other not.
+       *
+       * ⛔ THE EARLIER EXPECTATION OF ONE WAS THE FINDING, NOT A DETAIL. It read "with no budget wired,
+       * neither reading issues a counting statement", which is exactly the hole SEC-DOS-02 named: the
+       * records-only path returned before measuring whenever a budget was absent, so an authenticated
+       * caller could materialise an arbitrarily wide row set. The budget is now REQUIRED and the count is
+       * unconditional, so the divergence is asserted at two statements per run.
+       *
+       * The count is FIRST, because a row set cannot be refused after it has already been hydrated. */
+      expect(withoutFlag.fanning.calls).toHaveLength(2);
+      expect(withFlag.fanning.calls).toHaveLength(2);
+      expect(withoutFlag.fanning.calls[0]?.sql).toContain('AS recordsCount');
+      expect(withFlag.fanning.calls[0]?.sql).toContain('AS recordsCount');
     });
   });
 
@@ -2497,7 +2567,11 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
           sqlRows([BRAND_ROWS[0] ?? {}]),
         ],
       });
-      const builder = new SmartListQueryBuilder(executor, makeAggregateLoaders());
+      const builder = new SmartListQueryBuilder(
+        executor,
+        makeAggregateLoaders(),
+        GENEROUS_SMART_LIST_BUDGET,
+      );
 
       const result = await builder.execute({
         entityName: 'SlatwallBrand',
@@ -2516,7 +2590,11 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
       const { executor } = createSqlExecutorDouble({
         outcomes: [sqlRows([{ recordsCount: 3 }]), sqlRows(BRAND_ROWS), sqlRows(BRAND_ROWS)],
       });
-      const builder = new SmartListQueryBuilder(executor, makeAggregateLoaders());
+      const builder = new SmartListQueryBuilder(
+        executor,
+        makeAggregateLoaders(),
+        GENEROUS_SMART_LIST_BUDGET,
+      );
 
       const result = await builder.execute({
         entityName: 'SlatwallBrand',
@@ -2539,7 +2617,11 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
       const { executor, calls } = createSqlExecutorDouble({
         outcomes: [sqlRows([{ recordsCount: 2 }]), sqlRows(BRAND_ROWS)],
       });
-      const builder = new SmartListQueryBuilder(executor, makeAggregateLoaders());
+      const builder = new SmartListQueryBuilder(
+        executor,
+        makeAggregateLoaders(),
+        GENEROUS_SMART_LIST_BUDGET,
+      );
 
       await builder.execute({ entityName: 'SlatwallBrand' });
 
@@ -2555,7 +2637,11 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
       const { executor, calls } = createSqlExecutorDouble({
         outcomes: [sqlRows([{ recordsCount: 2 }]), sqlRows(BRAND_ROWS)],
       });
-      const builder = new SmartListQueryBuilder(executor, makeAggregateLoaders());
+      const builder = new SmartListQueryBuilder(
+        executor,
+        makeAggregateLoaders(),
+        GENEROUS_SMART_LIST_BUDGET,
+      );
 
       const result = await builder.execute({ entityName: 'SlatwallBrand' });
 
@@ -2575,7 +2661,11 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
           sqlRows([BRAND_ROWS[0] ?? {}]),
         ],
       });
-      const builder = new SmartListQueryBuilder(executor, makeAggregateLoaders());
+      const builder = new SmartListQueryBuilder(
+        executor,
+        makeAggregateLoaders(),
+        GENEROUS_SMART_LIST_BUDGET,
+      );
 
       const result = await builder.execute({
         entityName: 'SlatwallBrand',
@@ -2598,7 +2688,11 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
           sqlRows([BRAND_ROWS[1] ?? {}]),
         ],
       });
-      const builder = new SmartListQueryBuilder(executor, makeAggregateLoaders());
+      const builder = new SmartListQueryBuilder(
+        executor,
+        makeAggregateLoaders(),
+        GENEROUS_SMART_LIST_BUDGET,
+      );
 
       /* The reuse test is start-one AND rows-within-window. A later start fails the first half even when
        * the row count would fit, because the window no longer begins at the first record. */
@@ -2611,25 +2705,38 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
       expect(calls[2]?.params).toEqual(['10', '1']);
     });
 
-    it('[NET-NEW] executeRecords issues exactly ONE statement when NO budget is wired', async () => {
-      const { executor, calls } = createSqlExecutorDouble({ outcomes: [sqlRows(BRAND_ROWS)] });
-      const builder = new SmartListQueryBuilder(executor, makeAggregateLoaders());
+    it('[NET-NEW] executeRecords issues a COUNT then the projection, and never a LIMIT', async () => {
+      const { executor, calls } = createSqlExecutorDouble({
+        outcomes: [sqlRows([{ recordsCount: 2 }]), sqlRows(BRAND_ROWS)],
+      });
+      const builder = new SmartListQueryBuilder(
+        executor,
+        makeAggregateLoaders(),
+        GENEROUS_SMART_LIST_BUDGET,
+      );
 
       const records = await builder.executeRecords({ entityName: 'SlatwallBrand' });
 
-      /* This is the member the Google feed reaches through `getSkuSmartList`. It needs neither a total
-       * nor a page, and with no budget wired there is nothing for a count to be compared against — so
-       * counting or bounding would be work the feed then discards. ONE statement is also exactly what
-       * `getRecords()` issues at `org/Hibachi/HibachiSmartList.cfc:L751-L755`, so this is the parity
-       * shape. The budgeted shape is asserted separately below; the two differ ONLY by the count.
+      /* This is the member the Google feed reaches through `getSkuSmartList`. It needs no PAGE, which is
+       * why there is still no `LIMIT` — that half is unchanged parity with `getRecords()` at
+       * `org/Hibachi/HibachiSmartList.cfc:L751-L755`.
+       *
+       * ⛔ BUT IT DOES COUNT, AND THE EARLIER EXPECTATION THAT IT DID NOT WAS REVIEW FINDING SEC-DOS-02.
+       * This case was titled "issues exactly ONE statement when NO budget is wired" and reasoned that
+       * "with no budget wired there is nothing for a count to be compared against — so counting would be
+       * work the feed then discards". The premise no longer holds: the budget is REQUIRED, so there is
+       * always a ceiling to compare against, and the count is how the ceiling is enforced BEFORE the
+       * driver materialises objects out of the rows. Measuring afterwards would let the exhaustion happen
+       * and then report it.
        *
        * ⚠️ THE MEMBER NAMED HERE USED TO BE `getSkuSmartListRecords`, AND THAT NAME NO LONGER EXISTS.
        * It was an additive records-only sibling; AAP §0.4.2.2 fixes `SkuService` at nine ported members
-       * plus `newSku`, so it was withdrawn from the service. The SHAPE this case asserts is unchanged —
-       * it is the builder's, not the service's — and `getSkuSmartList` is the surviving route to it. */
-      expect(calls).toHaveLength(1);
-      expect(calls[0]?.sql).not.toContain('COUNT(');
+       * plus `newSku`, so it was withdrawn from the service. `getSkuSmartList` is the surviving route. */
+      expect(calls).toHaveLength(2);
+      expect(calls[0]?.sql).toContain('AS recordsCount');
+      expect(calls[1]?.sql).not.toContain('COUNT(');
       expect(calls[0]?.sql).not.toContain('LIMIT');
+      expect(calls[1]?.sql).not.toContain('LIMIT');
       expect(records).toHaveLength(2);
       expect(records[0]?.brandName).toBe('Alpha');
       expect(records[1]?.brandName).toBe('Beta');
@@ -2637,7 +2744,11 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
 
     it('[NET-NEW] a counting statement that returns no row is refused, not read as zero', async () => {
       const { executor } = createSqlExecutorDouble({ outcomes: [sqlRows([])] });
-      const builder = new SmartListQueryBuilder(executor, makeAggregateLoaders());
+      const builder = new SmartListQueryBuilder(
+        executor,
+        makeAggregateLoaders(),
+        GENEROUS_SMART_LIST_BUDGET,
+      );
 
       /* Treating an absent row as zero would report an empty smart list for a populated table. */
       await expect(builder.execute({ entityName: 'SlatwallBrand' })).rejects.toThrow(
@@ -2652,6 +2763,7 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
       const acceptedResult = await new SmartListQueryBuilder(
         accepted.executor,
         makeAggregateLoaders(),
+        GENEROUS_SMART_LIST_BUDGET,
       ).execute({ entityName: 'SlatwallBrand' });
 
       /* Drivers may hand back a count as a string or a bigint depending on column width, so the numeric
@@ -2662,7 +2774,11 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
         outcomes: [sqlRows([{ recordsCount: 'not-a-number' }])],
       });
       await expect(
-        new SmartListQueryBuilder(refused.executor, makeAggregateLoaders()).execute({
+        new SmartListQueryBuilder(
+          refused.executor,
+          makeAggregateLoaders(),
+          GENEROUS_SMART_LIST_BUDGET,
+        ).execute({
           entityName: 'SlatwallBrand',
         }),
       ).rejects.toThrow(/returned a value that is not a number/);
@@ -2672,9 +2788,11 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
       const { executor, calls } = createSqlExecutorDouble({
         outcomes: [sqlRows([{ recordsCount: 9 }])],
       });
-      const builder = new SmartListQueryBuilder(executor, makeAggregateLoaders(), {
-        maximumRecordsPerQuery: 5,
-      });
+      const builder = new SmartListQueryBuilder(
+        executor,
+        makeAggregateLoaders(),
+        smartListBudgetWithRowCeiling(5),
+      );
 
       await expect(builder.execute({ entityName: 'SlatwallBrand' })).rejects.toThrow(
         /matched more records than the configured materialisation budget admits/,
@@ -2688,9 +2806,11 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
       const { executor, calls } = createSqlExecutorDouble({
         outcomes: [sqlRows([{ recordsCount: 2 }]), sqlRows(BRAND_ROWS)],
       });
-      const builder = new SmartListQueryBuilder(executor, makeAggregateLoaders(), {
-        maximumRecordsPerQuery: 2,
-      });
+      const builder = new SmartListQueryBuilder(
+        executor,
+        makeAggregateLoaders(),
+        smartListBudgetWithRowCeiling(2),
+      );
 
       // The comparison is strictly greater-than, so a count exactly at the budget is admitted.
       const result = await builder.execute({ entityName: 'SlatwallBrand' });
@@ -2699,16 +2819,22 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
       expect(calls).toHaveLength(2);
     });
 
-    it('[NET-NEW] the constructor refuses a budget that is not a positive whole number', () => {
+    it('[NET-NEW] SEC-DOS-02 — the budget FACTORY refuses a figure that is not a positive whole number', () => {
+      /*
+       * ⛔ THE CHECK MOVED, AND THE ASSERTION MOVED WITH IT. It used to live in the builder's constructor,
+       * because the builder took a plain `{ maximumRecordsPerQuery }` object. Review finding SEC-DOS-02
+       * replaced that with a resolver-carrying budget built by `createSmartListMaterialisationBudget`, so the
+       * validation belongs where the figure is accepted — which is still BEFORE any query runs, which was the
+       * whole point of validating at construction rather than at the point of use.
+       */
       for (const maximum of [0, -1, 1.5, Number.NaN]) {
-        const { executor } = createSqlExecutorDouble({});
-
-        expect(
-          () =>
-            new SmartListQueryBuilder(executor, makeAggregateLoaders(), {
-              maximumRecordsPerQuery: maximum,
-            }),
-        ).toThrow(/materialisation budget must be a positive safe integer/);
+        expect(() => createSmartListMaterialisationBudget(maximum, 10)).toThrow(
+          /materialisation budget must be a positive safe integer/,
+        );
+        /* And the complexity figure is held to the same rule, by the same helper. */
+        expect(() => createSmartListMaterialisationBudget(10, maximum)).toThrow(
+          /complexity budget must be a positive safe integer/,
+        );
       }
     });
   });
@@ -2732,9 +2858,11 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
       const { executor, calls } = createSqlExecutorDouble({
         outcomes: [sqlRows([{ recordsCount: 9 }])],
       });
-      const builder = new SmartListQueryBuilder(executor, makeAggregateLoaders(), {
-        maximumRecordsPerQuery: 5,
-      });
+      const builder = new SmartListQueryBuilder(
+        executor,
+        makeAggregateLoaders(),
+        smartListBudgetWithRowCeiling(5),
+      );
 
       const rejection: unknown = await builder.executeRecords({ entityName: 'SlatwallBrand' }).then(
         () => undefined,
@@ -2784,9 +2912,11 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
       const { executor, calls } = createSqlExecutorDouble({
         outcomes: [sqlRows([{ recordsCount: 5000 }])],
       });
-      const builder = new SmartListQueryBuilder(executor, makeAggregateLoaders(), {
-        maximumRecordsPerQuery: 250,
-      });
+      const builder = new SmartListQueryBuilder(
+        executor,
+        makeAggregateLoaders(),
+        smartListBudgetWithRowCeiling(250),
+      );
 
       const rejection: unknown = await builder.executeRecords(feedQuery(feedJoins())).then(
         () => undefined,
@@ -2810,15 +2940,22 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
       const { executor, calls } = createSqlExecutorDouble({
         outcomes: [sqlRows([{ recordsCount: 2 }]), sqlRows(BRAND_ROWS)],
       });
-      const builder = new SmartListQueryBuilder(executor, makeAggregateLoaders(), {
-        maximumRecordsPerQuery: 2,
-      });
+      const builder = new SmartListQueryBuilder(
+        executor,
+        makeAggregateLoaders(),
+        smartListBudgetWithRowCeiling(2),
+      );
 
       const records = await builder.executeRecords({ entityName: 'SlatwallBrand' });
 
-      /* TWO statements when a budget is wired, ONE when it is not, and the difference is precisely the
-       * count — so the parity claim above is exact rather than approximate. A count exactly AT the budget
-       * is admitted, because the comparison is strictly greater-than on both paths. */
+      /* TWO statements — the count, then the unpaged projection — and a count exactly AT the budget is
+       * ADMITTED, because the comparison is strictly greater-than on both the count path and the
+       * post-hydration row-length path. Off-by-one in either would fail here.
+       *
+       * ⚠️ THE SHAPE NO LONGER VARIES WITH WHETHER A BUDGET IS WIRED. An earlier revision of this comment
+       * read "TWO statements when a budget is wired, ONE when it is not, and the difference is precisely
+       * the count"; the second half was review finding SEC-DOS-02. The budget is REQUIRED now, so there is
+       * no unbudgeted shape left to differ from — every records-only read counts first. */
       expect(calls).toHaveLength(2);
       expect(calls[0]?.sql).toContain('COUNT(DISTINCT');
       expect(calls[1]?.sql.startsWith('SELECT aslatwallbrand.*')).toBe(true);
@@ -2839,9 +2976,11 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
           ]),
         ],
       });
-      const builder = new SmartListQueryBuilder(executor, makeAggregateLoaders(), {
-        maximumRecordsPerQuery: 2,
-      });
+      const builder = new SmartListQueryBuilder(
+        executor,
+        makeAggregateLoaders(),
+        smartListBudgetWithRowCeiling(2),
+      );
 
       await expect(builder.executeRecords({ entityName: 'SlatwallBrand' })).rejects.toThrow(
         /returned more rows than the configured materialisation budget/,
@@ -2853,7 +2992,7 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
       expect(calls).toHaveLength(2);
     });
 
-    it('[NET-NEW] with no budget wired an arbitrarily wide row set is materialised, not refused', async () => {
+    it('[NET-NEW] with NO figure stated the read is REFUSED before any statement, naming the variable', async () => {
       const wideRows = Object.freeze(
         Array.from({ length: 25 }, (_unused, index) => ({
           brandID: `brand${String(index).padStart(27, '0')}`,
@@ -2861,16 +3000,210 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
         })),
       );
       const { executor, calls } = createSqlExecutorDouble({ outcomes: [sqlRows(wideRows)] });
-      const builder = new SmartListQueryBuilder(executor, makeAggregateLoaders());
+      const builder = new SmartListQueryBuilder(
+        executor,
+        makeAggregateLoaders(),
+        UNSTATED_SMART_LIST_BUDGET,
+      );
 
-      const records = await builder.executeRecords({ entityName: 'SlatwallBrand' });
+      /* ⛔ THIS CASE IS THE REVERSAL OF REVIEW FINDING SEC-DOS-02, AND THE WHOLE OF ITS OWN HISTORY IS
+       * WORTH KEEPING. It was titled "with no budget wired an arbitrarily wide row set is materialised, not
+       * refused", it asserted twenty-five hydrated records off one statement, and it argued: "THE UNBOUNDED
+       * DEFAULT IS DELIBERATE AND IS ASSERTED, NOT MERELY DOCUMENTED. The legacy names no maximum anywhere,
+       * and IR-12 with AAP §0.7.3 S9 forbid inventing one — so an operator who wires no figure gets exactly
+       * what `org/Hibachi/HibachiSmartList.cfc` gives."
+       *
+       * ⭐ THE PREMISE WAS RIGHT AND THE CONCLUSION WAS WRONG. IR-12 and S9 forbid the PORT from authoring a
+       * figure. They do not oblige it to SERVE unbounded when an operator has authored none — those are
+       * different propositions, and conflating them is what turned a documentation rule into an
+       * availability defect. The port still authors nothing: the ceiling is reached through a RESOLVER, and
+       * given no operator figure that resolver raises a named `ConfigurationError` reporting
+       * `CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY`. Unstated now fails CLOSED instead of open.
+       *
+       * ⛔ AND IT REFUSES BEFORE THE FIRST STATEMENT. The call log is EMPTY, so the refusal costs no round
+       * trip and a wiring error presents as a wiring error rather than as a read that succeeds and is then
+       * thrown away. That is also what makes this the anti-default guard the old case wanted to be: a
+       * revision that reinstated ANY silent default — twenty-five or otherwise — would hydrate here and
+       * fail on the empty call log.
+       *
+       * ⭐ THE VARIABLE NAMED IS THE COMPLEXITY ONE, AND THE ORDER IS WORTH PINNING. `executeRecords`
+       * COMPILES before it counts, so with both figures unstated the compile-time ceiling is reached first
+       * and reports `CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY`. The second expectation supplies a
+       * complexity figure and withholds only the row figure, which is what proves the ROW resolver is
+       * fail-closed in its own right rather than merely shadowed by the other. */
+      await expect(builder.executeRecords({ entityName: 'SlatwallBrand' })).rejects.toThrow(
+        /CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY/,
+      );
+      expect(calls).toHaveLength(0);
 
-      /* ⛔ THE UNBOUNDED DEFAULT IS DELIBERATE AND IS ASSERTED, NOT MERELY DOCUMENTED. The legacy names no
-       * maximum anywhere, and IR-12 with AAP §0.7.3 S9 forbid inventing one — so an operator who wires no
-       * figure gets exactly what `org/Hibachi/HibachiSmartList.cfc` gives. This case is what stops a later
-       * revision from quietly introducing a default: any default at all under twenty-five fails here. */
-      expect(records).toHaveLength(25);
-      expect(calls).toHaveLength(1);
+      const rowsUnstated = createSqlExecutorDouble({ outcomes: [sqlRows(wideRows)] });
+      const rowsUnstatedBuilder = new SmartListQueryBuilder(
+        rowsUnstated.executor,
+        makeAggregateLoaders(),
+        createSmartListMaterialisationBudget(undefined, 10_000),
+      );
+
+      await expect(
+        rowsUnstatedBuilder.executeRecords({ entityName: 'SlatwallBrand' }),
+      ).rejects.toThrow(/CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY/);
+      expect(rowsUnstated.calls).toHaveLength(0);
+    });
+
+    it('[NET-NEW] the COMPLEXITY ceiling refuses at composition time, before any statement', () => {
+      /* SEC-DOS-02's second half: the finding required capping "keyword/list/order cardinality and
+       * statement size", not only the row count. `build()` sums the bound parameters, the ORDER BY terms
+       * and the joins into one complexity figure and refuses over the operator's ceiling.
+       *
+       * ⭐ ONE FIGURE BOUNDS STATEMENT SIZE TOO, and that is a property of this port rather than an
+       * assumption. No caller-supplied VALUE ever reaches the emitted text — every one is a `?` placeholder
+       * and every identifier comes from a registered entity's closed vocabulary — so the length of the SQL
+       * is a function of how many predicates, orders and joins were composed and of nothing else. The
+       * megabyte-keyword case below is the direct demonstration.
+       *
+       * ⛔ REFUSED AFTER COMPOSITION AND BEFORE EXECUTION, which is why the call log is empty: the builder
+       * must finish resolving identifiers to know the true count, and nothing is sent once it does.
+       *
+       * THE ARITHMETIC, STATED SO THE FIGURES BELOW ARE NOT MAGIC: four bound parameters, no ordering
+       * terms, and ONE source — the base entity is itself a unit, because it contributes a `FROM` term and
+       * an alias — for five units against a ceiling of four. The reported breakdown is asserted rather than
+       * only the refusal, so a regression that refused for the wrong reason cannot pass. */
+      const scenario = compileOnly(smartListBudgetWithComplexityCeiling(4));
+
+      const rejection = ((): unknown => {
+        try {
+          scenario.builder.build({
+            entityName: 'SlatwallBrand',
+            whereGroups: [
+              {
+                filters: [
+                  { propertyIdentifier: 'brandName', value: 'a' },
+                  { propertyIdentifier: 'brandWebsite', value: 'b' },
+                  { propertyIdentifier: 'urlTitle', value: 'c' },
+                  { propertyIdentifier: 'activeFlag', value: '1' },
+                ],
+              },
+            ],
+          });
+
+          return undefined;
+        } catch (failure: unknown) {
+          return failure;
+        }
+      })();
+
+      expect(rejection).toBeInstanceOf(DomainError);
+      expect((rejection as DomainError).message).toMatch(/complexity budget/);
+      expect((rejection as DomainError).context).toMatchObject({
+        entityName: 'SlatwallBrand',
+        complexityUnits: 5,
+        maximumPredicatesPerQuery: 4,
+        boundParameters: 4,
+        orderingTerms: 0,
+        sources: 1,
+      });
+      expect(scenario.calls).toHaveLength(0);
+    });
+
+    it('[NET-NEW] a request exactly AT the complexity ceiling is admitted, so the bound is inclusive', () => {
+      /* The admitting side of the same boundary: three predicates plus the one base source is four units
+       * against a ceiling of four, and it compiles. So the ceiling BOUNDS rather than simply refusing, and
+       * the comparison is strictly greater-than rather than greater-or-equal. */
+      const scenario = compileOnly(smartListBudgetWithComplexityCeiling(4));
+
+      const statement = scenario.builder.build({
+        entityName: 'SlatwallBrand',
+        whereGroups: [
+          {
+            filters: [
+              { propertyIdentifier: 'brandName', value: 'a' },
+              { propertyIdentifier: 'brandWebsite', value: 'b' },
+              { propertyIdentifier: 'urlTitle', value: 'c' },
+            ],
+          },
+        ],
+      });
+
+      expect(statement.records.params).toHaveLength(3);
+      expect(statement.records.sql).toContain('SwBrand');
+    });
+
+    it('[NET-NEW] ORDERING terms and JOINS are counted too, not only filters', () => {
+      /* The finding named "repeated valid `OrderBy` statements" and join breadth alongside filter lists, so
+       * all three arms of the sum are exercised rather than only the one that is easiest to reach.
+       *
+       * One filter plus two ordering terms plus the base source is four units, which a ceiling of three
+       * refuses; the same query with the ordering removed is two units and compiles. That difference is
+       * attributable to the ordering alone. */
+      const ordered = compileOnly(smartListBudgetWithComplexityCeiling(3));
+
+      expect(() =>
+        ordered.builder.build({
+          entityName: 'SlatwallBrand',
+          whereGroups: [{ filters: [{ propertyIdentifier: 'brandName', value: 'a' }] }],
+          orders: [
+            { propertyIdentifier: 'brandName', direction: 'ASC' },
+            { propertyIdentifier: 'urlTitle', direction: 'DESC' },
+          ],
+        }),
+      ).toThrow(/complexity budget/);
+
+      const unordered = compileOnly(smartListBudgetWithComplexityCeiling(3)).builder.build({
+        entityName: 'SlatwallBrand',
+        whereGroups: [{ filters: [{ propertyIdentifier: 'brandName', value: 'a' }] }],
+      });
+
+      /* The DEFAULT ordering is still emitted — `createdDateTime ASC`, which the legacy applies when a
+       * caller states none — so the assertion is that the two CALLER-STATED terms are gone rather than that
+       * no ordering exists. The default costs nothing against the ceiling either, because the sum reads
+       * `query.orders` rather than the emitted clause: only what a caller supplied is charged to it. */
+      expect(unordered.records.sql).toContain('ORDER BY aslatwallbrand.createdDateTime ASC');
+      expect(unordered.records.sql).not.toContain('urlTitle');
+    });
+
+    it('[NET-NEW] a MEGABYTE-long filter value adds ONE complexity unit and ZERO characters of SQL', () => {
+      /* The property the paragraph above claims, asserted rather than only argued — and the reason the
+       * finding's "statement size" clause needs no second figure.
+       *
+       * A one-megabyte value is bound, not interpolated. So it costs exactly one unit of complexity, the
+       * emitted text is byte-identical to the same filter carrying a one-character value, and an attacker
+       * cannot inflate the statement the server parses by inflating what they send. Compare against the
+       * short-value statement rather than a hard-coded length, so the property survives any future change
+       * to the emitted shape.
+       *
+       * The ceiling is TWO — one filter plus the one base source — which is the tightest budget that admits
+       * this query at all. So the megabyte is admitted by a budget that would refuse a single extra
+       * predicate, which is the sharpest available demonstration that size and cardinality are different
+       * axes and that only cardinality needs bounding here. */
+      const scenario = compileOnly(smartListBudgetWithComplexityCeiling(2));
+      const enormous = 'x'.repeat(1_000_000);
+
+      const wide = scenario.builder.build({
+        entityName: 'SlatwallBrand',
+        whereGroups: [{ filters: [{ propertyIdentifier: 'brandName', value: enormous }] }],
+      });
+      const narrow = compileOnly(smartListBudgetWithComplexityCeiling(2)).builder.build({
+        entityName: 'SlatwallBrand',
+        whereGroups: [{ filters: [{ propertyIdentifier: 'brandName', value: 'x' }] }],
+      });
+
+      expect(wide.records.sql).toBe(narrow.records.sql);
+      expect(wide.records.sql).not.toContain(enormous);
+      expect(wide.records.params).toStrictEqual([enormous]);
+      expect(scenario.calls).toHaveLength(0);
+    });
+
+    it('[NET-NEW] a request with NO complexity figure stated is refused, naming the variable', () => {
+      /* Fail-closed on the second bound as well as the first, and for the same reason: an unstated ceiling
+       * that admitted everything would leave the predicate cardinality unbounded by default. */
+      const scenario = compileOnly(UNSTATED_SMART_LIST_BUDGET);
+
+      expect(() =>
+        scenario.builder.build({
+          entityName: 'SlatwallBrand',
+          whereGroups: [{ filters: [{ propertyIdentifier: 'brandName', value: 'a' }] }],
+        }),
+      ).toThrow(/CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY/);
+      expect(scenario.calls).toHaveLength(0);
     });
   });
 
@@ -3232,7 +3565,7 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
      * group — while the record statements answer three rows, which is what the fan-out returns.
      */
     function makeFanningBuilder(options?: {
-      readonly materialisationBudget?: { readonly maximumRecordsPerQuery: number };
+      readonly materialisationBudget?: SmartListMaterialisationBudget;
       readonly recordsCount?: number;
     }): BuilderScenario {
       const countedTotal = options?.recordsCount ?? 1;
@@ -3256,7 +3589,9 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
         builder: new SmartListQueryBuilder(
           executor,
           makeAggregateLoaders(),
-          options?.materialisationBudget,
+          /* SEC-DOS-02 — the budget is REQUIRED now, so a scenario that states no ceiling gets the generous
+           * fixture rather than an absent argument. A scenario asserting the ceiling states its own. */
+          options?.materialisationBudget ?? GENEROUS_SMART_LIST_BUDGET,
         ),
         calls,
       };
@@ -3298,7 +3633,7 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
        */
       const scenario = makeFanningBuilder({
         recordsCount: 5,
-        materialisationBudget: { maximumRecordsPerQuery: 4 },
+        materialisationBudget: smartListBudgetWithRowCeiling(4),
       });
 
       await expect(scenario.builder.execute(FANNING_QUERY)).rejects.toThrow(
@@ -3320,7 +3655,7 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
        * to issue all four statements, which an equality-boundary case over a bare query cannot show. */
       const scenario = makeFanningBuilder({
         recordsCount: 4,
-        materialisationBudget: { maximumRecordsPerQuery: 4 },
+        materialisationBudget: smartListBudgetWithRowCeiling(4),
       });
 
       const result = await scenario.builder.execute(FANNING_QUERY);
@@ -3341,14 +3676,17 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
        * would report itself budgeted while admitting everything. `Number.isSafeInteger` rejects it.
        */
       for (const maximumRecordsPerQuery of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
-        expect(() =>
-          makeFanningBuilder({ materialisationBudget: { maximumRecordsPerQuery } }),
-        ).toThrow(/materialisation budget must be a positive safe integer/);
+        /* SEC-DOS-02 — the check now lives in the budget FACTORY rather than the builder's constructor,
+         * because the builder takes a resolver-carrying budget. It is still refused BEFORE any query runs,
+         * which is what this case is about. */
+        expect(() => smartListBudgetWithRowCeiling(maximumRecordsPerQuery)).toThrow(
+          /materialisation budget must be a positive safe integer/,
+        );
       }
 
       /* The positive control, without which this case would still pass if the guard rejected everything. */
       expect(() =>
-        makeFanningBuilder({ materialisationBudget: { maximumRecordsPerQuery: 1 } }),
+        makeFanningBuilder({ materialisationBudget: smartListBudgetWithRowCeiling(1) }),
       ).not.toThrow();
     });
 
@@ -3469,7 +3807,7 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
      */
 
     it('[NET-NEW] SEC-1 raises when no bound was stated, and names the variable to set', () => {
-      const gate = createAnonymousMaterialisationGate(undefined);
+      const gate = createAnonymousMaterialisationGate(UNSTATED_FEED_GATE_BOUNDS);
 
       expect(() => gate()).toThrow(ConfigurationError);
 
@@ -3508,7 +3846,7 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
        * would put one rule in two places.
        */
       for (const bound of [1, 2, 1000, Number.MAX_SAFE_INTEGER]) {
-        expect(() => createAnonymousMaterialisationGate(bound)()).not.toThrow();
+        expect(() => createAnonymousMaterialisationGate(feedGateBoundsOf(bound))()).not.toThrow();
       }
     });
 
@@ -3520,8 +3858,8 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
        * A gate that answered once and cached would quietly turn that per-invocation check back into a
        * construction-time one.
        */
-      const refusing = createAnonymousMaterialisationGate(undefined);
-      const permitting = createAnonymousMaterialisationGate(1);
+      const refusing = createAnonymousMaterialisationGate(UNSTATED_FEED_GATE_BOUNDS);
+      const permitting = createAnonymousMaterialisationGate(feedGateBoundsOf(1));
 
       for (let attempt = 0; attempt < 3; attempt += 1) {
         expect(() => refusing()).toThrow(ConfigurationError);

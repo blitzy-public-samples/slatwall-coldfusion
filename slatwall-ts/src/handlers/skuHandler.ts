@@ -244,8 +244,8 @@ import type { Sku } from '../domain/sku/Sku';
 import type {
   EntityCrudType,
   HandlerAccessClassification,
+  InvocationSecurityResolver,
   RequestAuthorizationContext,
-  RequestAuthorizationResolver,
 } from '../ports/AccountContextPort';
 import type { SmartListInput, SmartListResult } from '../ports/SmartListQueryPort';
 import type { TransactionalWriteRunner } from '../config/container';
@@ -295,6 +295,7 @@ import {
   readQueryStringParameter,
   readSmartListInput,
   resolveRequestAuthorization,
+  toInvocationSecurityRequest,
   unauthorizedResponse,
   createActionDispatcher,
   HTTP_STATUS,
@@ -303,6 +304,7 @@ import {
   type APIGatewayProxyEvent,
   type APIGatewayProxyHandler,
   type APIGatewayProxyResult,
+  type CatalogAuthorizationEvent,
 } from './httpResponse';
 import type { ExactDecimal } from '../util/formatting';
 
@@ -448,6 +450,25 @@ const SKU_ENTITY_NAME = 'Sku';
 
 /** The legacy CFML component name — `model/entity/Product.cfc`. */
 const PRODUCT_ENTITY_NAME = 'Product';
+
+/**
+ * The prefix every routed SKU action carries, so the resolver is told which action it is gating.
+ *
+ * ⭐ ADDED BY REVIEW FINDING SEC-AUTH-03. Concatenated with the routed member name it reproduces the
+ * addresses {@link createSkuRoutes} declares — `sku.createSkus`, `sku.processImageUpload`.
+ */
+const SKU_ACTION_PREFIX = 'sku.';
+
+/**
+ * What the gate answers: either the refusal to return, or the authorised invocation context.
+ *
+ * ⭐ A DISCRIMINATED PAIR RATHER THAN `APIGatewayProxyResult | undefined` — review finding SEC-AUTH-03.
+ * Returning the context is what lets the writing route hand the transaction boundary the principal this
+ * gate approved, instead of leaving population and audit on whatever the composition root memoised.
+ */
+type SkuAuthorizationOutcome =
+  | { readonly refusal: APIGatewayProxyResult; readonly authorization?: undefined }
+  | { readonly refusal?: undefined; readonly authorization: RequestAuthorizationContext };
 
 /* ================================================================================================
  * CFML BOOLEAN LITERALS
@@ -699,7 +720,10 @@ type _SkuServiceSatisfiesSkuSurface = AssertAssignable<SkuService, SkuSurface>;
  * against the stale shape and the divergence would surface only at run time.
  */
 type _WriteRunnerGateMatchesUnitOfWork = AssertAssignable<
-  Parameters<TransactionalWriteRunner<SkuWriteGraph>['runWrite']>[1],
+  /* Index 2, not 1: `runWrite` takes the invocation's authorised security context FIRST as of review
+   * finding SEC-AUTH-03, so the gate is the THIRD parameter. `UnitOfWork.run` is unchanged — it never saw
+   * a principal and still does not — which is why only the left index moved. */
+  Parameters<TransactionalWriteRunner<SkuWriteGraph>['runWrite']>[2],
   Parameters<UnitOfWork['run']>[1]
 >;
 
@@ -996,7 +1020,7 @@ export type SkuSmartListEvent = Pick<APIGatewayProxyEvent, 'queryStringParameter
  * A deployment that carries its principal somewhere else — an authorizer context, for instance — widens
  * THIS single declaration, and the nine members widen with it.
  */
-export type SkuAuthorizationEvent = Pick<APIGatewayProxyEvent, 'headers'>;
+export type SkuAuthorizationEvent = CatalogAuthorizationEvent;
 
 /* ================================================================================================
  * RESPONSE SHAPES
@@ -1124,8 +1148,9 @@ export interface SkuSmartListResponse {
  * `never` and every literal below stops compiling. Restating `'secure'` as a bare literal would let the
  * two vocabularies drift silently in opposite directions.
  *
- * ⭐ `crudTypes` IS A NON-EMPTY TUPLE, NOT AN ARRAY, AND IS ASKED IN ORDER — see
- * {@link SkuCrudQuestions}.
+ * ⭐ `crudType` IS SINGULAR AS OF REVIEW FINDING SEC-AUTH-01. It was `crudTypes`, an ordered non-empty
+ * tuple asked until one grant answered; the withdrawal record sits immediately below this interface,
+ * above {@link SECURE_SKU_IMAGE_WRITE_REQUIREMENT}.
  *
  * ⭐ `entityName` IS PART OF THE ROW BECAUSE THIS FILE ASKS ABOUT TWO ENTITIES. See the note above
  * {@link SKU_ENTITY_NAME} for the evidence; it is the one structural difference between this matrix and
@@ -1161,113 +1186,101 @@ export interface SkuSmartListResponse {
 type SkuAccessRequirement = {
   readonly classification: Extract<HandlerAccessClassification, 'secure'>;
   readonly entityName: string;
-  readonly crudTypes: SkuCrudQuestions;
+
+  /** The ONE operation this route performs, and therefore the one question it asks (SEC-AUTH-01). */
+  readonly crudType: EntityCrudType;
+
+  /**
+   * A SECOND, subordinate question, asked only after the primary one is granted — SEC-AUTH-02's
+   * conjunctive half.
+   *
+   * `createSkus` addresses an existing PRODUCT and CREATES SKUs under it, so `update` on `Product`
+   * alone is not authority for the SKU inserts: both grants are required. This is a conjunction, never
+   * an alternative — the withdrawn tuple expressed the opposite.
+   */
+  readonly subordinate?: {
+    readonly entityName: string;
+    readonly crudType: EntityCrudType;
+  };
 };
 
 /**
- * The ordered, non-empty list of CRUD questions one `'secure'` row asks, first grant winning.
+ * ⛔ THE ORDERED CRUD-QUESTION TUPLE IS WITHDRAWN — REVIEW FINDING SEC-AUTH-01 (CWE-862, CWE-639).
  *
- * ⭐ ORDERED, BECAUSE THE LEGACY ORDER IS BEHAVIOR. The `save`-prefix branch
- * [org/Hibachi/HibachiAuthenticationService.cfc:L71-L77] asks for `create` FIRST, returns true if that is
- * granted, and only then asks for `update` — so a row can legitimately carry two questions, and which one
- * is asked first decides which permission grant is sufficient on its own.
+ * A `SkuCrudQuestions` alias stood here — `readonly [EntityCrudType, ...EntityCrudType[]]` — with three
+ * frozen instances (`READ_CRUD_QUESTIONS`, `SAVE_CRUD_QUESTIONS`, `IMAGE_WRITE_CRUD_QUESTIONS`), and the
+ * gate walked each row's tuple accepting the FIRST grant. Its rationale was the legacy `save` branch at
+ * [org/Hibachi/HibachiAuthenticationService.cfc:L71-L77], which asks `create`, returns true if granted,
+ * and only then asks `update`.
  *
- * ⭐ NON-EMPTY, ENFORCED BY THE TYPE RATHER THAN BY A RUN-TIME CHECK. A row with an empty list would
- * authorise nothing, which — because the gate refuses after exhausting the list — means it would refuse
- * EVERYTHING, silently and only at run time. `readonly [EntityCrudType, ...EntityCrudType[]]` makes that
- * row fail to compile instead, so the gate needs no defensive branch for a state that cannot exist.
+ * ⛔ WHY IT IS GONE. On `createSkus` the pair authorised the operation the caller HELD rather than the one
+ * the route PERFORMS: a principal granted only `create` on `Product` could name an existing product,
+ * satisfy the `create` question asked first, and have the route resolve that product and write SKUs into
+ * it. The `update` question — the only one describing what actually happens — was unreachable in exactly
+ * the case where it mattered.
  *
- * The element type is the port's own union, so a CRUD vocabulary change there is a compile error here.
+ * ⭐ WHAT REPLACES IT. One primary question per row ({@link SkuAccessRequirement.crudType}), plus an
+ * optional CONJUNCTIVE {@link SkuAccessRequirement.subordinate} question where a second resource is
+ * written. The four CRUD literals are unchanged: they are still the legacy's, read from the same prefix
+ * branch, and the `read` rows and the image-write row ask exactly what they asked before.
+ *
+ * ⚠️ THE PARITY COST, NAMED. A `create`-only principal can no longer drive `sku.createSkus` against an
+ * existing product. That is a caller whose grant does not cover the operation performed; the legacy gate
+ * is framework code AAP §0.8.3.2 forbids carrying forward, so what stands here is a reconstruction of its
+ * CONTRACT, and reconstructing it to authorise the operation actually performed is the enterprise standard
+ * AAP §0.7.3 binds this port to in the absence of user Rules.
  */
-type SkuCrudQuestions = readonly [EntityCrudType, ...EntityCrudType[]];
 
-/**
- * The one question every SKU READ asks: `read`.
- *
- * `'read'` is the legacy CRUD value, not a coined one — it is what both the `detail` prefix
- * [org/Hibachi/HibachiAuthenticationService.cfc:L55-L56] and the `list` prefix [:L61-L62] resolve to.
- * Frozen, so the tuple inside the frozen requirement object is immutable at run time too (AAP 0.6.6 M7);
- * the explicit type argument is what keeps it a NON-EMPTY TUPLE rather than widening to an array.
- */
-const READ_CRUD_QUESTIONS = Object.freeze<SkuCrudQuestions>(['read']);
-
-/**
- * The ordered pair a SAVE asks: `create` first, then `update`.
- *
- * Both the pair and its order come from [org/Hibachi/HibachiAuthenticationService.cfc:L71-L77]. Reversing
- * them would change which single grant suffices, so the order is carried rather than tidied.
- */
-const SAVE_CRUD_QUESTIONS = Object.freeze<SkuCrudQuestions>(['create', 'update']);
-
-/**
- * The one question an image WRITE asks: `update`.
- *
- * ⭐ SEC-HARDENING (D18-CLASS) — review finding F2, CWE-434's least-privilege half.
- *
- * `'update'` is the legacy CRUD value and this is the legacy's own single-question shape: the `edit`
- * prefix [org/Hibachi/HibachiAuthenticationService.cfc:L59-L60] resolves to exactly one
- * `authenticateEntityCrudByAccount(crudType="update", …)` call and nothing more. It is deliberately NOT
- * {@link SAVE_CRUD_QUESTIONS}: that pair exists because a `save` item cannot know whether the record is
- * new [:L71-L77], whereas this member CANNOT create anything — it resolves an existing SKU by code and
- * answers `notFoundResponse()` when there is none, so `create` is a question with no situation behind it.
- *
- * Frozen, and typed as {@link SkuCrudQuestions} so it stays a NON-EMPTY TUPLE, for the reasons recorded at
- * {@link READ_CRUD_QUESTIONS}.
- */
-const IMAGE_WRITE_CRUD_QUESTIONS = Object.freeze<SkuCrudQuestions>(['update']);
-
-/**
- * The requirement the SKU IMAGE WRITE states: a logged-in account whose permission groups grant `update`
- * on `Sku`.
- *
- * ⭐ SEC-HARDENING (D18-CLASS) — review finding F2 (CWE-22 + CWE-434), AND WHY THIS IS NOT A BEHAVIOUR
- * CHANGE. The full evidence, and the earlier `'anyLogin'` reading it replaces, are recorded at the
- * `processImageUpload` row of {@link SKU_ACCESS_MATRIX}. The short form: the set of callers the legacy
- * admitted to this member is EMPTY — measured, not assumed — so a tighter requirement refuses nobody.
- *
- * The question is recorded at {@link IMAGE_WRITE_CRUD_QUESTIONS} and the ENTITY is `Sku`, because the SKU
- * is the record this member modifies: the ladder derives the entity from the item name at
- * [org/Hibachi/HibachiAuthenticationService.cfc:L60], and the addressed record here is the one whose
- * `imageFile` names the file being written [model/service/SkuService.cfc:L211].
- */
 const SECURE_SKU_IMAGE_WRITE_REQUIREMENT: SkuAccessRequirement = Object.freeze({
   classification: 'secure',
   entityName: SKU_ENTITY_NAME,
-  crudTypes: IMAGE_WRITE_CRUD_QUESTIONS,
+  crudType: 'update',
 });
 
 /**
  * The requirement every SKU READ states: a logged-in account whose permission groups grant `read` on
  * `Sku`.
  *
- * The question it asks, and the lines that establish it, are recorded at {@link READ_CRUD_QUESTIONS}.
- * Shared by the seven read rows because all seven carry the identical requirement.
+ * The question it asks is the legacy's own: the `detail` and `list` branches of
+ * [org/Hibachi/HibachiAuthenticationService.cfc:L55-L56, :L61-L62] both resolve to `read`. Shared by the
+ * seven read rows because all seven carry the identical requirement.
  */
 const SECURE_SKU_READ_REQUIREMENT: SkuAccessRequirement = Object.freeze({
   classification: 'secure',
   entityName: SKU_ENTITY_NAME,
-  crudTypes: READ_CRUD_QUESTIONS,
+  crudType: 'read',
 });
 
 /**
- * The requirement SKU CREATION states: a logged-in account whose permission groups grant `create` on
- * `Product`, or failing that `update` on `Product`.
+ * The requirement SKU CREATION states: a logged-in account whose permission groups grant `update` on
+ * `Product` AND `create` on `Sku`.
  *
- * The pair and its order are recorded at {@link SAVE_CRUD_QUESTIONS}, and the ENTITY comes from the item
- * name that reaches `createSkus`: its only legacy call sites are `ProductService.saveProduct`
- * [model/service/ProductService.cfc:L279] and `ProductService.processProduct_addOption` [:L150], and the
- * ladder derives the entity name from the item name at [:L75]. A `saveProduct` item therefore asks about
+ * THE ENTITY of the primary question comes from the item name that reaches `createSkus`: its only legacy
+ * call sites are `ProductService.saveProduct` [model/service/ProductService.cfc:L279] and
+ * `ProductService.processProduct_addOption` [:L150], and the ladder derives the entity name from the item
+ * name at [org/Hibachi/HibachiAuthenticationService.cfc:L75]. A `saveProduct` item therefore asks about
  * `Product`.
  *
- * ⚠️ IT DOES NOT DEPEND ON WHETHER THE PRODUCT ALREADY EXISTS. The legacy action name carried no such
- * information, so the legacy asked both questions regardless. Deriving the CRUD type from the state of
- * the addressed product would be tidier and would be a DIFFERENT policy — an account permitted only to
- * create could no longer act on a product it would previously have been allowed to act on.
+ * ⭐ THE PRIMARY QUESTION IS `update`, NOT `create`, AND THAT IS SEC-AUTH-01's WHOLE POINT. This route
+ * ADDRESSES an existing product — `productID` is a required path parameter and the product is resolved
+ * inside the transaction before `createSkus` runs — so the operation performed on the `Product` is an
+ * update in every reachable case. Asking `create` first (the withdrawn tuple did) authorised the
+ * operation the caller HELD rather than the one the route PERFORMS; the record above
+ * {@link SkuAccessRequirement} sets out the escalation that made possible.
+ *
+ * ⭐ AND THE SUBORDINATE QUESTION IS CONJUNCTIVE, NEVER AN ALTERNATIVE. The route writes SKU rows, so
+ * `create` on `Sku` is required in addition to the product update. `../handlers/skuHandler`'s image write
+ * asks `update` on the same entity, which keeps one resource governed by one permission wherever it is
+ * reached from.
  */
 const SECURE_PRODUCT_SAVE_REQUIREMENT: SkuAccessRequirement = Object.freeze({
   classification: 'secure',
   entityName: PRODUCT_ENTITY_NAME,
-  crudTypes: SAVE_CRUD_QUESTIONS,
+  crudType: 'update',
+  /* SEC-AUTH-02's subordinate half: the route CREATES SKUs under the product it updates, and ./skuHandler
+   * asks the same `Sku` question for its own image write, so one resource stays governed by one
+   * permission wherever it is reached from. */
+  subordinate: Object.freeze({ entityName: SKU_ENTITY_NAME, crudType: 'create' }),
 });
 
 /**
@@ -1296,9 +1309,10 @@ const SECURE_PRODUCT_SAVE_REQUIREMENT: SkuAccessRequirement = Object.freeze({
  *
  * THE ROWS, AND THE EVIDENCE FOR EACH
  * -----------------------------------
- *   `createSkus` — SECURE, `create` then `update` on `Product`. Reached only from a Product `save` item;
- *     see {@link SECURE_PRODUCT_SAVE_REQUIREMENT}. It is the one row that asks about a SECOND ENTITY, and
- *     the one that asks TWO questions. An earlier wording called it "the one row in this file that WRITES",
+ *   `createSkus` — SECURE, `update` on `Product` AND `create` on `Sku`. Reached only from a Product
+ *     `save` item; see {@link SECURE_PRODUCT_SAVE_REQUIREMENT}. It is the one row that asks about a SECOND
+ *     ENTITY, and the one that asks TWO questions — conjunctively as of SEC-AUTH-01, where the two were
+ *     once alternatives. An earlier wording called it "the one row in this file that WRITES",
  *     which was true while `processImageUpload` was classified as `'anyLogin'` and is not true now that
  *     the image write is a permission-checked write too.
  *
@@ -1949,7 +1963,7 @@ function toSkuSmartListResponse(result: SmartListResult<Sku>): SkuSmartListRespo
 export function createSkuHandler(
   skuService: RoutedSkuSurface,
   resolveProduct: ProductResolver,
-  resolveAuthorization: RequestAuthorizationResolver<SkuAuthorizationEvent>,
+  resolveAuthorization: InvocationSecurityResolver,
   writeRunner: TransactionalWriteRunner<SkuWriteGraph>,
 ): SkuHandler {
   /**
@@ -1979,11 +1993,20 @@ export function createSkuHandler(
    * file no longer has such a row, so the step is gone rather than retained as an unreachable branch — see
    * {@link SkuAccessRequirement} for why the classification arm went with it.
    *
-   * ⭐ THE CRUD TYPES ARE ASKED IN ORDER AND THE FIRST GRANT WINS, WHICH IS THE `save` BRANCH'S OWN
-   * SHAPE. [:L71-L77] asks for `create` first, returns true if that is granted, and only then asks for
-   * `update`. The loop below is that behaviour generalised over a non-empty tuple, so the single-question
-   * rows and the two-question row take the same path. Because the tuple type forbids an empty list, a
-   * row cannot silently authorise nothing.
+   * ⛔ THE CRUD TYPES WERE ONCE ASKED IN ORDER WITH THE FIRST GRANT WINNING — REVIEW FINDING SEC-AUTH-01
+   * (CWE-862, CWE-639). That reading came from the `save` branch's own shape: [:L71-L77] asks for
+   * `create` first, returns true if that is granted, and only then asks for `update`. The gate looped over
+   * a non-empty tuple so the single-question rows and the two-question row took the same path.
+   *
+   * ⛔ WHY IT IS GONE. On `createSkus` the loop authorised the operation the caller HELD rather than the
+   * one the route PERFORMS: a `create`-only principal named an existing product, satisfied the `create`
+   * question asked first, and had the route write SKUs into it. What replaces the loop is ONE primary
+   * question per row plus an optional CONJUNCTIVE subordinate one — steps 3 and 4 below — so a row can no
+   * longer express "either grant will do", and a row still cannot silently authorise nothing because
+   * `crudType` is required by {@link SkuAccessRequirement}.
+   *
+   * ⭐ THE SUBORDINATE QUESTION IS A CONJUNCTION, NOT AN ALTERNATIVE, and it is asked of the SAME
+   * resolved context, so the resolver is still invoked exactly once per invocation.
    *
    * ⭐ THE ENTITY NAME COMES FROM THE MATRIX ROW, NEVER FROM THE REQUEST. ../ports/AccountContextPort
    * requires exactly that of every call site: "no request-supplied value ever reaches this member". The
@@ -2009,34 +2032,64 @@ export function createSkuHandler(
    *
    * @param event the invocation's event, or any object carrying its headers member
    * @param member the routed member being invoked, whose requirement is read from the matrix
-   * @returns the refusal to return to the caller, or nothing when the invocation is authorised
+   * @param entityID the addressed row, when the route addresses one; it names the PRIMARY question's
+   *   entity and is deliberately not forwarded to the subordinate question
+   * @returns the refusal to return to the caller, or the authorised context when it is admitted
    */
   const refuseUnauthorized = (
     event: SkuAuthorizationEvent,
     member: keyof SkuHandler,
-  ): APIGatewayProxyResult | undefined => {
+    entityID?: string,
+  ): SkuAuthorizationOutcome => {
     const requirement: SkuAccessRequirement = SKU_ACCESS_MATRIX[member];
-    const authorization: RequestAuthorizationContext = resolveAuthorization(event);
+
+    /* ⭐ SEC-AUTH-03 — ONE RESOLUTION, CARRYING THE WHOLE QUESTION: the routed action, the single
+     * operation attempted, the entity from this file's own constants, and the addressed identifier when
+     * the route addresses one. Still exactly once per invocation, including for the row that also asks a
+     * subordinate question below. */
+    const authorization: RequestAuthorizationContext = resolveAuthorization(
+      toInvocationSecurityRequest(event, {
+        action: `${SKU_ACTION_PREFIX}${member}`,
+        crudType: requirement.crudType,
+        entityName: requirement.entityName,
+        ...(entityID === undefined ? {} : { entityID }),
+      }),
+    );
     const account = authorization.accountContext.getCurrentAccount();
 
     // Steps 1 and 2. `newFlag` is `isNew()`, so TRUE means "not logged in".
     if (account === undefined || account.newFlag) {
-      return unauthorizedResponse();
+      return { refusal: unauthorizedResponse() };
     }
 
-    // Step 3. Asked in the matrix row's own order; the first grant authorises the invocation.
-    for (const crudType of requirement.crudTypes) {
-      if (
-        authorization.entityAuthorization.authenticateEntity({
-          crudType,
-          entityName: requirement.entityName,
-        })
-      ) {
-        return undefined;
-      }
+    /* Step 3 — the row's single primary question (SEC-AUTH-01). The addressed identifier travels with it
+     * so a deployment may scope the grant to the row being acted on. */
+    if (
+      !authorization.entityAuthorization.authenticateEntity({
+        crudType: requirement.crudType,
+        entityName: requirement.entityName,
+        ...(entityID === undefined ? {} : { entityID }),
+      })
+    ) {
+      return { refusal: forbiddenResponse() };
     }
 
-    return forbiddenResponse();
+    /* Step 4 — SEC-AUTH-02's subordinate question, a CONJUNCTION with step 3. Asked of the SAME resolved
+     * context, so the resolver is still invoked once. The addressed identifier is deliberately NOT
+     * forwarded: it identifies the PRODUCT, and attaching it to a question about `Sku` would tell a
+     * resolver something untrue. */
+    if (
+      requirement.subordinate !== undefined &&
+      !authorization.entityAuthorization.authenticateEntity({
+        crudType: requirement.subordinate.crudType,
+        entityName: requirement.subordinate.entityName,
+      })
+    ) {
+      return { refusal: forbiddenResponse() };
+    }
+
+    /* ⭐ THE AUTHORISED CONTEXT IS RETURNED, NOT DISCARDED — SEC-AUTH-03; see ./productHandler's gate. */
+    return { authorization };
   };
 
   /**
@@ -2072,10 +2125,17 @@ export function createSkuHandler(
    * first. It travels out as a failure through {@link errorResponse} with its message preserved by the
    * service, which raises it as `LegacyParityError` so the pass-through applies.
    *
-   * ⛔ THE GATE RUNS BEFORE THE IDENTIFIER IS READ AND BEFORE THE BODY IS PARSED. This is the file's
-   * one WRITING row and the only one that asks about `Product` ({@link SKU_ACCESS_MATRIX}); refusing
-   * first reproduces the legacy order and means an unauthorised caller cannot use the distinct
+   * ⛔ THE GATE RUNS BEFORE ANYTHING IS DONE WITH THE REQUEST, AND BEFORE THE BODY IS PARSED. This is
+   * the file's one WRITING row and the only one that asks about `Product` ({@link SKU_ACCESS_MATRIX});
+   * refusing first reproduces the legacy order and means an unauthorised caller cannot use the distinct
    * bad-request texts below to discover the request shape, nor learn whether a product exists.
+   *
+   * ⭐ THE ADDRESSED IDENTIFIER IS *READ* BEFORE THE GATE AS OF REVIEW FINDING SEC-AUTH-01, WHICH IS NOT
+   * THE SAME AS BEING ACTED ON. It is read so the question can name the row about to be written, and
+   * nothing else observes it until the refusal has been returned: no table is touched, no body is parsed
+   * and no distinct message is emitted for a malformed identifier. The anti-enumeration property is
+   * therefore intact — an unauthorised caller receives the same 401 or 403 whatever it addresses, which a
+   * test pins by asking for a product identifier that exists in no fixture.
    *
    * ⭐ AND IT IS THE ONE MEMBER THAT RUNS INSIDE A TRANSACTION BOUNDARY — judgment (o), MISMATCH M5.
    * The product resolution and the service call BOTH run against the connection the injected
@@ -2088,13 +2148,15 @@ export function createSkuHandler(
    * @returns the service's unconditional `true`, or the response describing why it was not attempted
    */
   const createSkus = async (event: CreateSkusEvent): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'createSkus');
+    /* SEC-AUTH-01 — the addressed product is read FIRST so the gate asks about the operation
+     * actually performed (an UPDATE of that product, plus the SKU creations under it) and can name
+     * the row it is performed on. Nothing is DONE with it until after the refusal. */
+    const productID: string | undefined = readProductIdentifier(event);
+    const { refusal, authorization } = refuseUnauthorized(event, 'createSkus', productID);
 
     if (refusal !== undefined) {
       return refusal;
     }
-
-    const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
       return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
@@ -2136,6 +2198,9 @@ export function createSkuHandler(
 
     try {
       const created: boolean | null = await writeRunner.runWrite(
+        /* SEC-AUTH-03 — the gate's own context, so the SKU inserts, their property population and their
+         * audit stamps all run as the principal this route just authorised. */
+        authorization,
         async (graph: SkuWriteGraph): Promise<boolean | null> => {
           /* Read through the TRANSACTION's scope, never the captured resolver — see {@link SkuWriteGraph}
            * for why the sibling set the uniqueness rule observes depends on it (M6). */
@@ -2255,7 +2320,7 @@ export function createSkuHandler(
   const processImageUpload = async (
     event: ProcessImageUploadEvent,
   ): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'processImageUpload');
+    const { refusal } = refuseUnauthorized(event, 'processImageUpload');
 
     if (refusal !== undefined) {
       return refusal;
@@ -2345,7 +2410,7 @@ export function createSkuHandler(
    * @returns the projected SKUs, or the response describing why they could not be returned
    */
   const getProductSkus = async (event: ProductSkusEvent): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'getProductSkus');
+    const { refusal } = refuseUnauthorized(event, 'getProductSkus');
 
     if (refusal !== undefined) {
       return refusal;
@@ -2428,7 +2493,7 @@ export function createSkuHandler(
   const getSortedProductSkus = async (
     event: SortedProductSkusEvent,
   ): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'getSortedProductSkus');
+    const { refusal } = refuseUnauthorized(event, 'getSortedProductSkus');
 
     if (refusal !== undefined) {
       return refusal;
@@ -2490,7 +2555,7 @@ export function createSkuHandler(
   const searchSkusByProductType = async (
     event: SearchSkusEvent,
   ): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'searchSkusByProductType');
+    const { refusal } = refuseUnauthorized(event, 'searchSkusByProductType');
 
     if (refusal !== undefined) {
       return refusal;
@@ -2552,7 +2617,7 @@ export function createSkuHandler(
   const getSkuStocksDeletableFlag = async (
     event: SkuIdentifierEvent,
   ): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'getSkuStocksDeletableFlag');
+    const { refusal } = refuseUnauthorized(event, 'getSkuStocksDeletableFlag');
 
     if (refusal !== undefined) {
       return refusal;
@@ -2634,7 +2699,7 @@ export function createSkuHandler(
   const getTransactionExistsFlag = async (
     event: TransactionExistsEvent,
   ): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'getTransactionExistsFlag');
+    const { refusal } = refuseUnauthorized(event, 'getTransactionExistsFlag');
 
     if (refusal !== undefined) {
       return refusal;
@@ -2717,7 +2782,7 @@ export function createSkuHandler(
    *   service failure the legacy itself produces for that call shape
    */
   const getSkuBySkuCode = async (event: SkuCodeEvent): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'getSkuBySkuCode');
+    const { refusal } = refuseUnauthorized(event, 'getSkuBySkuCode');
 
     if (refusal !== undefined) {
       return refusal;
@@ -2776,7 +2841,7 @@ export function createSkuHandler(
    * @returns the projected page, or the refusal
    */
   const getSkuSmartList = async (event: SkuSmartListEvent): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'getSkuSmartList');
+    const { refusal } = refuseUnauthorized(event, 'getSkuSmartList');
 
     if (refusal !== undefined) {
       return refusal;
@@ -2919,7 +2984,7 @@ export function createSkuHandlerFromContainer(
      * aggregate read it supplies is the SAME statement `ProductService.getProduct` compiles. */
     readonly productService: Pick<CatalogContainer['productService'], 'getProduct'>;
   },
-  resolveAuthorization: RequestAuthorizationResolver<SkuAuthorizationEvent> = resolveRequestAuthorization,
+  resolveAuthorization: InvocationSecurityResolver = resolveRequestAuthorization,
 ): SkuHandler {
   return createSkuHandler(
     container.skuService,

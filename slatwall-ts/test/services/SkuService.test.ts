@@ -94,9 +94,6 @@
  *
  */
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-
 import type { BaseProductType } from '../../src/domain/BaseProductType';
 import { Option } from '../../src/domain/option/Option';
 import type { OptionGroup } from '../../src/domain/option/OptionGroup';
@@ -146,7 +143,7 @@ import { UniquePropertyChecker } from '../../src/adapters/mysql/UniquePropertyCh
 import { UnitOfWork } from '../../src/adapters/mysql/UnitOfWork';
 import { Validator } from '../../src/validation/Validator';
 import { OptionService } from '../../src/services/OptionService';
-import type { ManagedSku } from '../../src/services/SkuService';
+import type { ManagedSku, SkuCombinationBudget } from '../../src/services/SkuService';
 import {
   SkuService,
   collectSkuBatchErrors,
@@ -203,6 +200,16 @@ import {
   createTransactionExistenceChecker,
   createValidatorHarness,
   TEST_IMAGE_STORAGE_ROOT,
+  /* SEC-AUTH-03 — the deny-all property verdict every hand-built security context carries. */
+  DENY_ALL_POPULATION_AUTHORIZATION,
+  /* SEC-AUTH-03 — the authorised-context and security-request factories. */
+  persistedAdminAccount,
+  securityContext,
+  /* SEC-DOS-01 — the operator-stated combination ceiling and the cancellation seam. A fixture states a
+   * figure because a test IS the operator; `src/**` states none (AAP §0.7.3 S9). */
+  combinationBudget,
+  GENEROUS_COMBINATION_BUDGET,
+  UNSTATED_COMBINATION_BUDGET,
 } from '../support/inMemoryRepositories';
 import { MySqlTransactionalWriteRunner } from '../../src/adapters/mysql/UnitOfWork';
 import { manageEntity } from '../../src/domain/base/populate';
@@ -220,7 +227,11 @@ import type {
   SkuSurface,
   SkuWriteGraph,
 } from '../../src/handlers/skuHandler';
-import type { RequestAuthorizationResolver } from '../../src/ports/AccountContextPort';
+import type {
+  InvocationSecurityResolver,
+  RequestAuthorizationContext,
+  RequestAuthorizationResolver,
+} from '../../src/ports/AccountContextPort';
 import type { TransactionalWriteRunner } from '../../src/ports/UniquePropertyPort';
 import type { ProductWithErrorState } from '../../src/services/SkuService';
 
@@ -425,7 +436,44 @@ interface HarnessOptions {
     readonly skuID: string;
     readonly alternateSkuCode: string;
   }[];
+
+  /**
+   * The combination ceiling the harness's service should carry — review finding SEC-DOS-01.
+   *
+   * Omitted means {@link GENEROUS_MAXIMUM_COMBINATIONS}, which is far above anything any fixture in this
+   * suite enumerates, so no case's outcome depends on it unless the case states its own figure.
+   */
+  readonly maximumCombinations?: number;
+
+  /**
+   * The cooperative cancellation predicate the harness's service should carry — SEC-DOS-01's deadline seam.
+   *
+   * Omitted means never-cancelled, which is the composition root's own default: the invocation deadline
+   * stays the platform's, and AAP §0.6.6 M1/M2 remain flagged rather than resolved.
+   */
+  readonly hasBeenCancelled?: () => boolean;
+
+  /**
+   * A whole {@link SkuCombinationBudget} to use INSTEAD of deriving one from the two options above.
+   *
+   * Exists for the one property those cannot express: a budget whose figure was never STATED, whose
+   * resolver therefore raises. `maximumCombinations` takes a number, so it can say "small" but never
+   * "absent", and absent is the fail-closed case SEC-DOS-01 turns on. Supplying this ignores both
+   * {@link HarnessOptions.maximumCombinations} and {@link HarnessOptions.hasBeenCancelled}.
+   */
+  readonly combinationBudget?: SkuCombinationBudget;
 }
+
+/**
+ * The combination ceiling the harness applies when a case states none — review finding SEC-DOS-01.
+ *
+ * ⭐ A FIXTURE MAY STATE A FIGURE WHERE `src/**` MAY NOT. AAP §0.7.3 S9 and IR-12 forbid the PORT from
+ * authoring a capacity number, and none does — every bound is a resolver that refuses when nobody stated a
+ * figure. A test is standing in for the OPERATOR, so stating one here exercises the mechanism. This value is
+ * far above the largest product any fixture in this suite builds (the biggest is four combinations), so no
+ * existing assertion depends on it.
+ */
+const GENEROUS_MAXIMUM_COMBINATIONS = 1_000_000;
 
 /** Live handles onto everything the harness wired, so a case can assert against the real collaborators. */
 interface Harness {
@@ -583,6 +631,14 @@ function buildHarness(options: HarnessOptions = {}): Harness {
 
       return createDefaultSkuDelegate(sku);
     },
+    /* SEC-DOS-01 — the tenth argument, generous by default so no harness case reaches it. A case asserting
+     * the ceiling states `maximumCombinations`; a case asserting the UNSTATED-figure refusal supplies a
+     * whole budget through `combinationBudget`, because a number cannot express absence. */
+    options.combinationBudget ??
+      combinationBudget(
+        options.maximumCombinations ?? GENEROUS_MAXIMUM_COMBINATIONS,
+        options.hasBeenCancelled,
+      ),
   );
 
   return {
@@ -1985,6 +2041,7 @@ describe('SkuService.createSkus — M6: the validation read-back contract (AAP �
           new Validator(poolBoundChecker.withExecutor(scope.executor)),
           harness.productTypeRoots.resolver,
           createDefaultSkuDelegate,
+          GENEROUS_COMBINATION_BUDGET,
         );
       },
       (service) =>
@@ -2095,6 +2152,7 @@ describe('SkuService.createSkus — M6: the validation read-back contract (AAP �
             harness.validation.validator,
             harness.productTypeRoots.resolver,
             createDefaultSkuDelegate,
+            GENEROUS_COMBINATION_BUDGET,
           ),
         (service) =>
           service.createSkus(product, {
@@ -2508,6 +2566,7 @@ describe('SkuService.createSkus — M6: the validation read-back contract (AAP �
         harness.validation.validator,
         harness.productTypeRoots.resolver,
         createDefaultSkuDelegate,
+        GENEROUS_COMBINATION_BUDGET,
       );
 
       const created = await service.createSkus(product, {
@@ -3000,38 +3059,35 @@ describe('SkuService.processImageUpload', () => {
     expect(saveCall.request.allowedExtensions).toBe(IMAGE_UPLOAD_ALLOWED_EXTENSIONS);
   });
 
-  it('NET-NEW an ABSENT image file still composes and still WRITES — nothing guards either (finding F4)', async () => {
+  it('[NET-NEW] SEC-FILE-01 refuses an ABSENT image file, while COMPOSITION stays ungated', async () => {
     /*
-     * ⚠️ THIS CASE HAS BEEN INVERTED TWICE, AND BOTH CLAIMS ARE PRESERVED SO THE HISTORY IS LEGIBLE.
-     * Its original claim was: `model/entity/Sku.cfc:L145` builds the path from `getImageFile()` with NO
-     * null guard, so a SKU with no image file still produces a path — one with nothing in the file
-     * position — and guarding COMPOSITION would be a repair. A revision then added a WRITE gate which
-     * refused the empty name, and this case asserted that refusal.
+     * ⚠️ THIS CASE HAS BEEN INVERTED THREE TIMES, AND EVERY CLAIM IS PRESERVED SO THE HISTORY IS LEGIBLE.
+     *   1. Original claim: `model/entity/Sku.cfc:L145` builds the path from `getImageFile()` with NO null
+     *      guard, so a SKU with no image file still produces a path — one with nothing in the file position
+     *      — and guarding COMPOSITION would be a repair.
+     *   2. A revision added a WRITE gate refusing the empty name; this case asserted that refusal.
+     *   3. Review finding F4 withdrew the gate; the case asserted the port being reached again.
      *
-     * Review finding F4 withdrew the gate, so the original claim is restored and now covers BOTH the
-     * composition and the write: the legacy composes a path ending at the directory and hands it to
-     * [:L212] with `allowedExtensions="jpg,jpeg,png,gif"`, and it is the IMAGE SERVICE — behind the port,
-     * out of scope — that decides such a path carries no permitted extension. This port does not decide it
-     * early, because deciding it early refuses input the legacy accepts.
+     * ⭐ THE GATE IS BACK, ON THE GROUND THAT THIS PATH HAS NO LEGACY BEHAVIOUR TO PRESERVE (see the block
+     * header), AND THE EMPTY NAME IS REFUSED FOR A REASON WORTH STATING ON ITS OWN. An empty file position
+     * makes the composed path resolve to the DIRECTORY `<baseImageURL>/product/default/`, and handing a
+     * directory to a member that writes is the same class of hazard as handing it a traversal. Both
+     * quantifiers in the pattern are `+`, so the empty stem is refused on shape rather than by a special
+     * case.
      *
-     * ⭐ SO THE ASSERTION IS THAT THE PORT IS REACHED, which is the sharper claim: a re-added gate would
-     * fail here by name rather than by a changed return value.
+     * ⭐ AND CLAIM 1 SURVIVES UNCHANGED, WHICH IS THE OTHER HALF OF THIS CASE. Composition is NOT gated:
+     * `Sku.getImagePath` still coalesces an absent column to `''` and still asks the port, exactly as
+     * [:L145] interpolates whatever is there. The gate lives at the WRITE, not at the composition, so the
+     * two assertions below are deliberately about different members.
      */
     const harness = buildHarness();
     const sku = buildSku({ skuID: ID.existingSku, price: 10 });
 
-    await expect(harness.service.processImageUpload(sku, {})).resolves.toBe(
-      SAVE_IMAGE_SUCCEEDS_BY_DEFAULT,
-    );
-    /* Composed AND asked to write, with the empty file position intact. */
-    expect(harness.imagePaths.calls.map((call) => call.member)).toEqual([
-      'getImagePath',
-      'saveImageFile',
-    ]);
-    const composed = requireAt(harness.imagePaths.calls, 0, 'the image-path read');
-    expect(composed.member === 'getImagePath' && composed.imageFile).toBe('');
+    await expect(harness.service.processImageUpload(sku, {})).resolves.toBe(false);
+    /* Neither member of the port was reached — not even the composition. */
+    expect(harness.imagePaths.calls).toEqual([]);
 
-    /* The original claim, re-pointed at the member where it was always true. */
+    /* Claim 1, re-pointed at the member where it was always true: COMPOSITION still composes. */
     const composing = buildHarness();
     await expect(
       buildSku({ skuID: ID.existingSku, price: 10 }).getImagePath(composing.imagePaths.imagePaths),
@@ -4119,7 +4175,7 @@ describe('SkuService — parity, scope and negative checks', () => {
    * survives one service instance.
    */
 
-  it('NET-NEW declares exactly the nine live collaborators, with no dead productService injection', async () => {
+  it('NET-NEW declares exactly the ten required collaborators, with no dead productService injection', async () => {
     /*
      * AAP §0.6.3.2 counted the call sites behind every declared and dynamic dependency of
      * `model/service/SkuService.cfc:L51-L56`. The result:
@@ -4148,20 +4204,33 @@ describe('SkuService — parity, scope and negative checks', () => {
      * that AAP §0.6.7.7 declares D18 the SINGLE behaviour-hardening exception in this port. NOTHING gates
      * the write now; the exposure is carried and flagged on `ImagePathPort.saveImageFile`.
      *
-     * ⛔ A TENTH — AN OPTIONAL `combinationBudget` — ALSO SAT LAST FOR ONE REVISION, AND IT IS WITHDRAWN
-     * TOO. It let an operator state a ceiling on how many combinations one `createSkus` request may
-     * enumerate. A configurable request ceiling is a capability the legacy does not have and no AAP row
-     * asks for (AAP §0.7.3 S9, IR-12), and it changed the outcome of every request it refused
-     * (AAP §0.6.7.7, §0.8.2 Guideline 4). The unbounded enumeration below asserts what stands in its
-     * place, and `SkuService.createSkus — the enumeration is unbounded, exactly as the legacy leaves it`
-     * carries the flagged consequences.
+     * ⭐ THE TENTH IS `combinationBudget`, IT IS REQUIRED, AND ITS POSITION HAS MOVED TWICE — SO THE WHOLE
+     * HISTORY IS KEPT HERE RATHER THAN THE CURRENT STATE ALONE.
+     *   1. It first sat last as an OPTIONAL parameter, letting an operator state a ceiling on how many
+     *      combinations one `createSkus` request may enumerate.
+     *   2. A revision WITHDREW it, arguing: "A configurable request ceiling is a capability the legacy does
+     *      not have and no AAP row asks for (AAP §0.7.3 S9, IR-12), and it changed the outcome of every
+     *      request it refused (AAP §0.6.7.7, §0.8.2 Guideline 4)."
+     *   3. THAT ARGUMENT IS WRONG, and review finding SEC-DOS-01 is the correction. §0.6.7 is the DEFECT
+     *      AND TODO CARRY-OVER REGISTER — twenty-one LEGACY BUSINESS-LOGIC defects, of which D18 is the one
+     *      the port repairs. The availability of the extracted service is not an entry in it, and reading
+     *      D18's exception as the sole licence to bound anything would make §0.6.7.7 say that a migration
+     *      must reproduce a resource-exhaustion vector. Guideline 4 forbids enhancing BUSINESS LOGIC; the
+     *      ceiling changes not one generated SKU for any request it admits. And §0.7.3 S8 — "flag mismatches
+     *      rather than assume them away" — is discharged by the `TODO(parity)` blocks recording the LEGACY
+     *      as unbounded, not by leaving the PORT unbounded.
+     *   4. IR-12 AND S9 ARE HONOURED EXACTLY, WHICH IS WHY IT IS A BUDGET AND NOT A NUMBER. The port
+     *      authors no figure: the ceiling is reached through a RESOLVER that raises a named
+     *      `ConfigurationError` reporting `CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST` when a deployment
+     *      stated none. The only change from step 1 is optional → REQUIRED, because an optional budget left
+     *      the unbounded enumeration reachable by default, which is precisely the finding.
      *
-     * NINE parameters, every one required and positional. `Function.length` counts the leading parameters
-     * up to the first one carrying a DEFAULT, so nine is the checkable form of the claim, and it also
+     * TEN parameters, every one required and positional. `Function.length` counts the leading parameters
+     * up to the first one carrying a DEFAULT, so ten is the checkable form of the claim, and it also
      * proves no parameter acquired a default — which would let a caller silently construct the service
-     * without a collaborator it needs.
+     * without a collaborator it needs, and in the budget's case would restore the unbounded default.
      */
-    expect(SkuService.length).toBe(9);
+    expect(SkuService.length).toBe(10);
 
     /*
      * The dead injection is absent BEHAVIOURALLY as well as structurally: a full merchandise batch
@@ -4856,24 +4925,47 @@ describe('SkuService.createSkus — exact decimal fidelity of price and list pri
   });
 });
 
-describe('SkuService.createSkus — the enumeration is unbounded, exactly as the legacy leaves it', () => {
+describe('SkuService.createSkus — the enumeration is bounded by the operator, never by the port', () => {
   /*
-   * ⛔ THIS DESCRIBE HAS CARRIED THREE DIFFERENT CONTRACTS, AND THE UNBOUNDED ONE IS FINAL.
+   * ⛔⭐ THIS DESCRIBE HAS CARRIED FOUR CONTRACTS. THE BOUNDED ONE IS CORRECT AND THE THIRD WAS THE
+   * FINDING, SO ALL FOUR ARE RECORDED RATHER THAN SILENTLY SUPERSEDED.
    *
    * `model/service/SkuService.cfc:L58-L208` has NO size gate of any kind: no limit on the number of option
-   * groups, none on options per group, and none on the product of the two. A revision added an
-   * operator-stated ceiling plus an unconditional overflow refusal and re-titled this block "the
-   * combination ceiling exists only when an operator states it"; both are withdrawn, and the reasoning is
-   * recorded once, beside the code, in the withdrawal block above `multiplyCombinationCount` in
-   * `src/services/SkuService.ts`.
+   * groups, none on options per group, and none on the product of the two.
+   *   1. The port first mirrored that exactly, unbounded.
+   *   2. A revision added an operator-stated ceiling plus an unconditional overflow refusal, and titled
+   *      this block "the combination ceiling exists only when an operator states it".
+   *   3. A later revision WITHDREW both, re-titled the block "the enumeration is unbounded, exactly as the
+   *      legacy leaves it", and argued in this very header that "a bound is not forbidden by them — it is
+   *      forbidden by AAP §0.6.7.7 for this deliverable, and belongs to a separately authorised piece of
+   *      work that would revise the AAP register first."
+   *   4. REVIEW FINDING SEC-DOS-01 IS THE CORRECTION, AND STEP 3 MISREAD ITS OWN CITATION. §0.6.7 is the
+   *      DEFECT AND TODO CARRY-OVER REGISTER: twenty-one LEGACY BUSINESS-LOGIC defects — a misnamed struct,
+   *      an inverted cache guard, an unreachable private method — of which D18 is the single member the port
+   *      repairs. The availability of the extracted service is not an entry in that register, so §0.6.7.7
+   *      never spoke to it. Reading D18's exception as the sole licence to bound anything at all would make
+   *      §0.6.7.7 say that a faithful migration must reproduce a denial-of-service vector, which is not a
+   *      reading any section of the AAP supports.
    *
-   * ⚠️ THESE CASES ARE NOT "TESTS THAT FAIL IF A BOUND IS INTRODUCED" IN THE SENSE THAT WOULD MAKE
-   * SECURITY TEST-BREAKING, and the distinction is worth stating because an earlier revision of this
-   * header worried about exactly that. They assert the legacy's behaviour, which is what a parity port
-   * owes. A bound is not forbidden by them — it is forbidden by AAP §0.6.7.7 for this deliverable, and
-   * belongs to a separately authorised piece of work that would revise the AAP register first. Where such
-   * a bound legitimately lives is recorded in the same withdrawal block: an invocation-level deadline in
-   * `src/handlers/**`, or an operator limit applied before the request reaches this service.
+   * ⭐ AND §0.7.3 REQUIRES THE OTHER DIRECTION. With no user Rules (§0.7.1) this port is bound to §0.7.3's
+   * enterprise standards. S8 — "flag mismatches rather than assume them away" — is discharged by the
+   * `TODO(parity)` blocks that record the LEGACY as unbounded, not by shipping the PORT unbounded. S9 and
+   * IR-12 forbid the port from AUTHORING a figure, and nothing in `src/**` does: the ceiling is reached
+   * through a RESOLVER that raises a named `ConfigurationError` reporting
+   * `CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST` when a deployment stated none. An unstated bound fails
+   * CLOSED.
+   *
+   * ⚠️ WHAT PARITY STILL MEANS HERE, PRECISELY. Guideline 4 forbids enhancing BUSINESS LOGIC, and the
+   * ceiling changes not one generated SKU for any request it ADMITS: the odometer order, the default-SKU
+   * election, the per-SKU validation and the `true` return are all untouched, and the 256-combination and
+   * 2,187-combination runs below still pass unchanged because their fixtures state a ceiling that admits
+   * them. What changed is that a request the operator's figure does not admit is REFUSED before it
+   * allocates its first SKU, instead of being served at whatever cost it happens to have.
+   *
+   * ⛔ THE FIXTURES STATE THE FIGURES, AND THAT IS THE POINT. A test IS the operator — the party a
+   * deployment expects to state a ceiling — so a fixture naming one exercises the mechanism rather than
+   * introducing a default. `GENEROUS_MAXIMUM_COMBINATIONS` is the default for every case about something
+   * else, so no existing assertion is decided by a bound.
    */
 
   const buildUniverse = (
@@ -4962,41 +5054,188 @@ describe('SkuService.createSkus — the enumeration is unbounded, exactly as the
     expect(harness.skuRepository.persisted).toHaveLength(2187);
   });
 
-  it('NET-NEW UNWIRED — an uncountable combination product is NOT refused, and the non-termination is carried', () => {
+  it('[NET-NEW] refuses an over-ceiling request BEFORE it allocates a single SKU', async () => {
     /*
-     * ⛔ THE ONE REFUSAL THAT SURVIVED THE FIRST WITHDRAWAL IS ALSO GONE NOW, and this case records it
-     * from the static side rather than by executing it.
+     * ⭐ THE HEART OF SEC-DOS-01, AND THE ORDERING IS THE WHOLE FIX. The ceiling is applied between the
+     * combination COUNT and the first `newSku()`, so an over-budget request writes nothing at all — not a
+     * partial batch, not one SKU, not a default-SKU election. Refusing part-way through would leave the
+     * product holding an arbitrary prefix of a batch nobody asked for, which is worse than either
+     * extreme.
      *
-     * A revision refused a running combination product that had left the exactly-representable integer
-     * range — fifty-three groups of two options is 2^53 = `MAX_SAFE_INTEGER + 1` — on the ground that
-     * `combination < totalCombos` can then stop advancing while remaining true, so no run exists to
-     * preserve. It was argued as "not a capacity limit" and needed no wiring. It is withdrawn all the
-     * same: AAP §0.6.7.7 declares exactly ONE departure from behavioural preservation in this port (D18)
-     * and AAP §0.8.2 Guideline 4 admits no proportionality test, so the multiplication at
-     * [model/service/SkuService.cfc:L85] is now the legacy's for EVERY input.
-     *
-     * ⚠️ WHY THIS IS ASSERTED STATICALLY. The behaviour that is carried is NON-TERMINATION: a run that
-     * reaches 2^53 combinations enters a loop that cannot finish, so a case that invoked `createSkus`
-     * would hang the suite rather than report anything. The check is therefore on the module's executable
-     * text — no ceiling constant, no threshold comparison and no budget symbol remains anywhere in it — so
-     * the case fails if either refusal is reinstated, which is the mutation this pins.
+     * Three groups of four is 64 combinations against a stated ceiling of 63.
      */
-    const source = readFileSync(
-      join(__dirname, '..', '..', 'src', 'services', 'SkuService.ts'),
-      'utf8',
+    const { options, selection } = buildUniverse(3, 4);
+    const harness = buildHarness({ resolvableOptions: options, maximumCombinations: 63 });
+    const product = buildEmptyProduct(
+      buildSeededProductType(
+        MERCHANDISE_PRODUCT_TYPE.systemCode,
+        MERCHANDISE_PRODUCT_TYPE.productTypeID,
+      ),
     );
 
-    /* Each of these is a CODE construct rather than a word, so the prose of the withdrawal blocks — which
-     * names every withdrawn symbol on purpose — cannot satisfy or defeat the check. */
-    expect(source).not.toContain('Number.MAX_SAFE_INTEGER,');
-    expect(source).not.toContain('Number.isSafeInteger(product)');
-    expect(source).not.toContain('maximumCountableCombinations');
-    expect(source).not.toContain('this.combinationBudget');
-    expect(source).not.toContain('throw new RequestBudgetExhaustedError');
-    expect(source).not.toContain("RequestBudgetExhaustedError,\n} from '../errors/DomainError'");
+    await expect(
+      harness.service.createSkus(product, {
+        price: TEST_MERCHANDISE_PRODUCT_PRICE,
+        options: selection,
+      }),
+    ).rejects.toThrow(/64/);
 
-    /* And the multiplication itself is a bare product returned with nothing checked after it. */
-    expect(source).toContain('return runningTotal * bucketSize;');
+    /* NOTHING was allocated, persisted or attached. Each of the three is a separate observation point, and
+     * a fix that refused after the loop would fail on all three rather than on a message. */
+    expect(harness.skuRepository.persisted).toHaveLength(0);
+    expect(product.skus).toHaveLength(0);
+    expect(product.defaultSku).toBeUndefined();
+  });
+
+  it('[NET-NEW] admits a request landing exactly AT the ceiling, and generates the whole batch', async () => {
+    /*
+     * The admitting side, so the ceiling BOUNDS rather than simply refusing. Sixty-four combinations
+     * against a ceiling of sixty-four: every SKU is written and the odometer is undisturbed, which is the
+     * concrete form of "the ceiling changes no admitted request".
+     */
+    const { options, selection } = buildUniverse(3, 4);
+    const harness = buildHarness({ resolvableOptions: options, maximumCombinations: 64 });
+    const product = buildEmptyProduct(
+      buildSeededProductType(
+        MERCHANDISE_PRODUCT_TYPE.systemCode,
+        MERCHANDISE_PRODUCT_TYPE.productTypeID,
+      ),
+    );
+
+    await expect(
+      harness.service.createSkus(product, {
+        price: TEST_MERCHANDISE_PRODUCT_PRICE,
+        options: selection,
+      }),
+    ).resolves.toBe(true);
+    expect(harness.skuRepository.persisted).toHaveLength(64);
+
+    /* The odometer is undisturbed too: the FIRST combination still wins the default-SKU election, and it
+     * is asserted through `defaultSkuBindings` rather than by identity because `Product.defaultSku` holds
+     * a delegate rather than the `Sku` itself. */
+    expect(harness.defaultSkuBindings).toEqual([product.skus[0]]);
+  });
+
+  it('[NET-NEW] refuses with NO ceiling stated, naming the variable, before allocating anything', async () => {
+    /*
+     * The fail-closed half, and the answer to the "an optional ceiling would suffice" position of step 2 in
+     * this block's header. A composition root that states nothing does not get the unbounded odometer; it
+     * gets a `ConfigurationError` naming `CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST`.
+     *
+     * A DELIBERATELY TINY request — two combinations — so the case cannot pass because the request happened
+     * to be large. The refusal is about the ABSENCE of a figure, not about the size of the work.
+     */
+    const { options } = buildColorAndSizeOptions();
+    const harness = buildHarness({
+      resolvableOptions: options,
+      combinationBudget: UNSTATED_COMBINATION_BUDGET,
+    });
+    const product = buildEmptyProduct(
+      buildSeededProductType(
+        MERCHANDISE_PRODUCT_TYPE.systemCode,
+        MERCHANDISE_PRODUCT_TYPE.productTypeID,
+      ),
+    );
+
+    await expect(
+      harness.service.createSkus(product, {
+        price: TEST_MERCHANDISE_PRODUCT_PRICE,
+        options: `${ID.red},${ID.small}`,
+      }),
+    ).rejects.toThrow(/CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST/);
+    expect(harness.skuRepository.persisted).toHaveLength(0);
+    expect(product.skus).toHaveLength(0);
+  });
+
+  it('[NET-NEW] refuses an UNCOUNTABLE combination product, which is a non-termination rather than a size', async () => {
+    /*
+     * ⭐ THIS REFUSAL IS NOT A CAPACITY LIMIT, AND THE DISTINCTION MATTERS FOR THE PARITY ARGUMENT.
+     * `model/service/SkuService.cfc:L89` advances the odometer while `combination < totalCombos`. Once
+     * `totalCombos` leaves the exactly-representable integer range — fifty-three groups of two options is
+     * 2^53, `MAX_SAFE_INTEGER + 1` — the increment can stop advancing the value while the comparison stays
+     * true, so the loop CANNOT TERMINATE. There is no legacy outcome to preserve for such an input: the
+     * legacy does not return a different answer, it hangs. Refusing the state is therefore the only thing
+     * a port can do with it, and it is why this guard needs no operator figure of its own.
+     *
+     * ⚠️ THIS CASE COULD NOT BE WRITTEN BEHAVIOURALLY BEFORE. A revision asserted the ABSENCE of this
+     * guard by reading `src/services/SkuService.ts` as TEXT and checking that no threshold comparison
+     * appeared in it, precisely because invoking `createSkus` on such a product would hang the suite
+     * instead of reporting. With the guard in place the run terminates in milliseconds, so the property is
+     * asserted by execution — which is strictly stronger than a source-text grep, and cannot be satisfied
+     * or defeated by prose.
+     *
+     * ⛔ AND IT IS REACHED BEFORE THE CEILING, deliberately. `Number.isSafeInteger` is checked inside the
+     * multiplication, so a product that is not merely large but UNCOUNTABLE is refused as such rather than
+     * being reported as an over-ceiling request — the two diagnoses are different problems for an operator.
+     * The ceiling here is `Number.MAX_SAFE_INTEGER`, the largest figure anyone could state, so no capacity
+     * limit can be what fires.
+     */
+    const { options, selection } = buildUniverse(53, 2);
+    const harness = buildHarness({
+      resolvableOptions: options,
+      maximumCombinations: Number.MAX_SAFE_INTEGER,
+    });
+    const product = buildEmptyProduct(
+      buildSeededProductType(
+        MERCHANDISE_PRODUCT_TYPE.systemCode,
+        MERCHANDISE_PRODUCT_TYPE.productTypeID,
+      ),
+    );
+
+    await expect(
+      harness.service.createSkus(product, {
+        price: TEST_MERCHANDISE_PRODUCT_PRICE,
+        options: selection,
+      }),
+    ).rejects.toThrow(/cannot be counted exactly|safe integer|terminate/i);
+    expect(harness.skuRepository.persisted).toHaveLength(0);
+  });
+
+  it('[NET-NEW] stops on a CANCELLED invocation mid-enumeration, without completing the batch', async () => {
+    /*
+     * SEC-DOS-01's third clause — "honor an invocation cancellation/deadline". The seam is a predicate the
+     * service consults BEFORE each combination allocates, so a handler that knows its invocation is out of
+     * time can stop the enumeration rather than being unable to interrupt it.
+     *
+     * ⭐ IT IS A SEAM, NOT A DEADLINE, AND AAP §0.6.6 M1/M2 STAY FLAGGED. This port does not invent an
+     * elapsed-time budget: the legacy's 3600-second importer timeout and 360-second feed timeout have no
+     * single-Lambda equivalent and remain recorded as mismatches. What the seam provides is the ABILITY for
+     * whatever owns the deadline to be honoured; the composition root's default never cancels, so no
+     * request's outcome changes until something states otherwise.
+     *
+     * Cancellation is announced after four combinations of a sixty-four-combination batch. Fewer than the
+     * whole batch was written, which is what proves the enumeration was interrupted rather than completed
+     * and then reported.
+     */
+    let allocations = 0;
+    const { options, selection } = buildUniverse(3, 4);
+    const harness = buildHarness({
+      resolvableOptions: options,
+      maximumCombinations: 64,
+      hasBeenCancelled: (): boolean => {
+        allocations += 1;
+
+        return allocations > 4;
+      },
+    });
+    const product = buildEmptyProduct(
+      buildSeededProductType(
+        MERCHANDISE_PRODUCT_TYPE.systemCode,
+        MERCHANDISE_PRODUCT_TYPE.productTypeID,
+      ),
+    );
+
+    await expect(
+      harness.service.createSkus(product, {
+        price: TEST_MERCHANDISE_PRODUCT_PRICE,
+        options: selection,
+      }),
+    ).rejects.toThrow(/reported its work budget exhausted/);
+
+    /* Interrupted, not completed: strictly fewer than the sixty-four an admitted batch produces. The exact
+     * figure is not asserted, because it is an artefact of where the predicate was told to flip rather
+     * than a contract. */
+    expect(harness.skuRepository.persisted.length).toBeLessThan(64);
   });
 });
 
@@ -5269,34 +5508,53 @@ describe('SkuService.getSkuSmartList — unresolvable caller keys are dropped si
   });
 });
 
-describe('SkuService — the image write, the composition and the probe: NOTHING is gated', () => {
+describe('SkuService — the image WRITE is gated, the composition and the probe are not (SEC-FILE-01)', () => {
   /*
-   * ⛔ WHAT THIS BLOCK ASSERTS AFTER REVIEW FINDING F4, AND WHY IT ASSERTS AN ABSENCE. SEC-07 was
-   * reinstated at the WRITE boundary once and is withdrawn again. `src/ports/ImagePathPort.ts`
-   * DECISION I-1 adjudicates all six controls; every one of them is now withdrawn, and this block pins the
-   * consequence in both directions:
-   *   • the WRITE is NOT gated. `processImageUpload` composes from whatever the stored column holds and
-   *     asks the port to write it, exactly as `model/service/SkuService.cfc:L211-L212` does — including for
-   *     a traversing name.
-   *   • COMPOSITION and the existence PROBE were never gated. `model/entity/Sku.cfc:L145-L147` interpolates
-   *     whatever is stored, and `model/entity/Sku.cfc:L222` probes whatever that resolves to — including a
-   *     traversed file — and answers a boolean about THAT file.
+   * ⭐⭐ THIS BLOCK HAS NOW BEEN WRITTEN FOUR TIMES, AND THE HISTORY IS THE POINT. Its title alone has been
+   * "NOTHING is gated" twice. A reader who does not see the sequence will assume the current state is
+   * arbitrary, so here it is:
    *
-   * ⛔ WHY THE GATE WENT, GIVEN THAT ITS SECURITY ARGUMENT WAS SOUND. It admitted every value the legacy's
-   * two writers can store (`model/service/ProductService.cfc:L210` and
-   * `model/service/ContentService.cfc:L138` both assign `sku.generateImageFileName()`), and it refused only
-   * values that reached the column by another route — so it did share D18's shape. Sharing D18's shape is
-   * not the same as BEING D18: AAP §0.6.7.7 declares the importer's SQL parameterisation "the single place
-   * where the port intentionally does not preserve legacy behavior exactly", AAP §0.8.2 Guideline 4 forbids
-   * the rest, and AAP §0.1.2.1 makes the plan frozen and not reinterpretable. A second exception reached by
-   * analogy is exactly that reinterpretation.
+   *   1. A gate stood at the write boundary. Cases asserted `resolves.toBe(false)` and `calls === []`.
+   *   2. It was withdrawn; the cases were INVERTED to assert the traversal reaching the port.
+   *   3. It was reinstated by analogy with D18 — both diverge only where the legacy's behaviour WAS the
+   *      flaw — and the cases were inverted back.
+   *   4. Review finding F4 withdrew it again on PRECEDENCE, and F4 WAS RIGHT ABOUT THE ANALOGY: AAP
+   *      §0.6.7.7 names ONE divergence by locator and AAP §0.1.2.1 forbids reading the plan as licensing a
+   *      CLASS of them. A second exception reached by resemblance is exactly that reinterpretation.
    *
-   * ⚠️ SO THE CWE-22 / CWE-434 EXPOSURE IS CARRIED, ON BOTH PATHS, AND IT IS ASSERTED HERE RATHER THAN
-   * LEFT UNTESTED. The cases below drive a traversal vector through the write and through the probe and
-   * assert that both proceed. That is deliberate: a future revision that silently re-adds a gate fails
-   * these cases by name, and a reviewer reading them sees the carried exposure stated as a fact about the
-   * port rather than buried in a comment. The confinement notice for an adapter lives on
-   * `ImagePathPort.saveImageFile`.
+   * ⭐ SO THE ANALOGY IS ABANDONED AND THE GATE IS REINSTATED ON A DIFFERENT GROUND — one that needs no
+   * exception at all, because it does not diverge from anything. Verified repo-wide in
+   * `src/ports/ImagePathPort.ts` and restated at the gate in `src/services/SkuService.ts`:
+   *
+   *     `saveImageFile` DOES NOT EXIST ANYWHERE IN THE LEGACY. One call site
+   *     (`model/service/SkuService.cfc:L212`), zero declarations. The `save*` prefix routes the name to
+   *     `org/Hibachi/HibachiService.cfc:L268` → `onMissingSaveMethod` [:L552-L560], which indexes
+   *     `missingMethodArguments[1]` POSITIONALLY, and [:L253] states "Ordered arguments only--named
+   *     arguments not supported." [:L212] passes ONLY named arguments.
+   *
+   * The legacy has NO well-defined result on this path for ANY input. AAP §0.8.2 Guideline 4 requires
+   * existing behaviour be preserved "exactly as-is"; where there is none, nothing is preserved and nothing
+   * is changed. §0.6.7.7 is NOT ENGAGED — this is not a second exception, it is a path that never had a
+   * first outcome. The port's own note concedes it: the contract "is defined by AAP §0.4.3.2 and by the
+   * call site rather than by a legacy body — there is no legacy body to reproduce."
+   *
+   * ⛔ AND THE POLICY IS TRANSCRIBED, NOT INVENTED, which is what keeps AAP §0.7.3 S9 and IR-12 satisfied.
+   * The legacy's own two writers (`model/service/ProductService.cfc:L210`,
+   * `model/service/ContentService.cfc:L138`) both assign `sku.generateImageFileName()`, and that generator
+   * `model/entity/Sku.cfc:L131-L139` filters every segment through
+   * `reReplaceNoCase(…, "[^a-z0-9\-\_]", "", "all")` then appends ONE dot and one extension. The generator
+   * IS the policy; the gate re-checks it at the point of use, where it was never checked.
+   *
+   * ⚠️ WHAT THIS BLOCK ASSERTS, IN BOTH DIRECTIONS:
+   *   • the WRITE is GATED. A name the generator could not have produced answers `false` and reaches the
+   *     port ZERO times — not `getImagePath`, not `saveImageFile`.
+   *   • every name the generator DOES produce still crosses UNCHANGED, byte for byte. That is the half that
+   *     must never regress, and it is what makes the gate a re-check rather than a new rule.
+   *   • COMPOSITION and the existence PROBE stay ungated. `model/entity/Sku.cfc:L145-L147` interpolates
+   *     whatever is stored and `model/entity/Sku.cfc:L222` probes whatever that resolves to — including a
+   *     traversed file — answering a boolean about THAT file. Those HAVE defined legacy results, write
+   *     nothing, and disclose only a boolean, so control (3) stays withdrawn and the read-side exposure
+   *     stays FLAGGED for the operator (AAP §0.7.3 S8).
    *
    * WHY ENTITY-LEVEL CASES SIT IN A SERVICE TEST FILE. `test/domain/Sku.test.ts` is the eventual owner
    * of `Sku`'s own assertions, and its mandate is far broader than this boundary — the D1/D2/D3 accessor
@@ -5323,38 +5581,34 @@ describe('SkuService — the image write, the composition and the probe: NOTHING
       ? buildSku({ skuID: ID.existingSku, price: 10 })
       : buildSku({ skuID: ID.existingSku, price: 10, imageFile });
 
-  it('NET-NEW WRITES a traversal name through to the port, unrefused and unrewritten (finding F4)', async () => {
+  it('[NET-NEW] SEC-FILE-01 REFUSES a traversal name, and the port is never reached at all', async () => {
     /*
-     * ⛔ THIS CASE ASSERTS THE CARRIED EXPOSURE, AND IT IS THE INVERSE OF THE CASE THAT STOOD HERE. That
-     * case asserted `resolves.toBe(false)` and `calls).toEqual([])` — the gate refusing before the port was
-     * reached. The gate is withdrawn, so the legacy behaviour is restored: [:L211] composes from the stored
-     * column and [:L212] asks the image service to write THAT path.
+     * ⭐ THE CENTRAL CASE OF THE FINDING, whose exploit reads: "Store/import
+     * `imageFile=../../../../tmp/payload.jpg`, then call `sku.processImageUpload`."
      *
-     * ⛔ AND THE PATH CROSSES UNREWRITTEN, WHICH IS THE OTHER HALF. A revision replaced the composed path
-     * with a validated basename; that stays withdrawn on its own merits (DECISION I-1 control (4)) because a
-     * basename carries no destination — substituting one destroyed the write rather than confining it.
+     * ⭐ ZERO PORT CALLS IS THE STRONGER ASSERTION, and it is why the gate stands BEFORE the path is
+     * composed rather than after. Had it screened the composed path, the traversal would already have been
+     * resolved against the prefix and `getImagePath` would appear in this log. An empty log proves the
+     * refusal needs nothing downstream to be trusted — no adapter, no root comparison, no port double
+     * behaviour.
      */
     const harness = buildHarness({
       imagePathsByImageFile: { [TRAVERSAL_VECTOR]: `${IMAGE_BASE}${TRAVERSAL_VECTOR}` },
     });
     const sku = buildSkuWithImageFile(TRAVERSAL_VECTOR);
 
-    await expect(harness.service.processImageUpload(sku, {})).resolves.toBe(
-      SAVE_IMAGE_SUCCEEDS_BY_DEFAULT,
-    );
-    expect(harness.imagePaths.calls.map((call) => call.member)).toEqual([
-      'getImagePath',
-      'saveImageFile',
-    ]);
-    const saveCall = requireAt(harness.imagePaths.calls, 1, 'the save request');
-    if (saveCall.member !== 'saveImageFile') {
-      throw new Error('The second image-port call was expected to be the save request.');
-    }
-    expect(saveCall.request.filePath).toBe(`${IMAGE_BASE}${TRAVERSAL_VECTOR}`);
+    await expect(harness.service.processImageUpload(sku, {})).resolves.toBe(false);
+    expect(harness.imagePaths.calls).toEqual([]);
+
     /*
-     * The stored column is left exactly as it was — the port neither refuses nor rewrites — and nothing was
-     * recorded against the entity. `Sku` declares no error surface at all, so "no error recorded" is
-     * structural here rather than merely observed.
+     * ⚠️ AND THE REFUSAL LEAKS NO DESTINATION, which is the finding's own last clause: "return a refusal
+     * without leaking destination details." A bare `false` carries no path, no root, no reason and no
+     * candidate — a caller learns the write did not happen and nothing else.
+     *
+     * The stored column is left exactly as it was: refusing the write is not a repair of the row, and
+     * nothing is recorded against the entity. `Sku` declares no error surface at all, so "no error
+     * recorded" is structural here rather than merely observed — and AAP §0.8.2 Guideline 4 is satisfied
+     * because [model/service/SkuService.cfc:L216] also returns `false` and records nothing.
      */
     expect(sku.imageFile).toBe(TRAVERSAL_VECTOR);
     expect('errors' in sku).toBe(false);
@@ -5388,41 +5642,121 @@ describe('SkuService — the image write, the composition and the probe: NOTHING
     }
   });
 
-  it('NET-NEW forwards each shape the generator CANNOT emit too — separator, second dot, extension, bare traversal', async () => {
+  it('[NET-NEW] SEC-FILE-01 refuses every shape the generator CANNOT emit — six distinct vectors', async () => {
     /*
-     * ⛔ FOUR VECTORS THAT THE WITHDRAWN GATE REFUSED, NOW ASSERTED TO REACH THE PORT. The list is kept
-     * intact rather than deleted, because each one names a distinct way the column can hold a value the
-     * legacy's own generator could not have produced — and each is a value
-     * `model/service/SkuService.cfc:L212` nonetheless composes and forwards:
+     * ⭐ SIX VECTORS, EACH NAMING A DISTINCT WAY THE COLUMN CAN HOLD WHAT THE GENERATOR COULD NOT PRODUCE.
+     * The list is the one that stood here when the gate was withdrawn, kept intact and extended, with each
+     * entry's provenance in the legacy sanitiser preserved:
      *
      *   'evil/x.jpg'    — a separator. `reReplaceNoCase(…, "[^a-z0-9\-\_]", "", "all")` at
      *                     `model/entity/Sku.cfc:L135-L137` strips `/`, so no generated stem contains one.
-     *                     This is the traversal case, and it is CARRIED.
-     *   'shirt.tar.jpg' — a second separator. [:L138] appends exactly one.
-     *   'payload.php'   — a disallowed extension. This one is refused ANYWAY, but by the image service
-     *                     behind the port: [:L212] passes `allowedExtensions="jpg,jpeg,png,gif"`, and that
-     *                     decision belongs to the out-of-scope collaborator, not to this port. The double
-     *                     accepts, so what is asserted here is only that the port is REACHED with it.
+     *                     This is the traversal class, and it is now REFUSED.
+     *   'shirt.tar.jpg' — a second dot. [:L138] appends exactly one.
      *   '..'            — the bare traversal token, carrying no extension at all.
+     *   '/etc/passwd'   — an ABSOLUTE path. Anchoring at `^` is what refuses it; an unanchored pattern
+     *                     would have matched the tail and admitted the whole string.
+     *   'shirt.jpg\u0000.php' — a NUL byte, the classic truncation vector. The character class admits no
+     *                     control character, so it is refused on shape rather than on a special case.
+     *   'shirt.jpg '    — a TRAILING SPACE. Refused because the pattern is anchored at `$`, and worth its
+     *                     own entry: some filesystems silently strip it, so an admitted value here could
+     *                     resolve to a different file than the one screened.
+     *
+     * ⚠️ `'payload.php'` IS DELIBERATELY NOT IN THIS LIST, and its absence is the finding's "treat extension
+     * checks as secondary" clause honoured rather than ignored. A disallowed EXTENSION is not a traversal:
+     * [:L212] passes `allowedExtensions="jpg,jpeg,png,gif"` and that decision belongs to the collaborator
+     * behind the port, not to this layer. The gate screens the SHAPE of the name, so `payload.php` passes
+     * this gate — it is a single safe segment — and is refused downstream by the extension list. The case
+     * below asserts exactly that division of labour, so neither check is mistaken for the other.
      */
-    for (const forwarded of ['evil/x.jpg', 'shirt.tar.jpg', 'payload.php', '..']) {
-      const harness = buildHarness({
-        imagePathsByImageFile: { [forwarded]: `${IMAGE_BASE}${forwarded}` },
-      });
-      const sku = buildSkuWithImageFile(forwarded);
+    const refusedVectors = [
+      'evil/x.jpg',
+      'shirt.tar.jpg',
+      '..',
+      '/etc/passwd',
+      'shirt.jpg\u0000.php',
+      'shirt.jpg ',
+    ];
 
-      await expect(harness.service.processImageUpload(sku, {})).resolves.toBe(
-        SAVE_IMAGE_SUCCEEDS_BY_DEFAULT,
-      );
+    for (const refused of refusedVectors) {
+      const harness = buildHarness({
+        imagePathsByImageFile: { [refused]: `${IMAGE_BASE}${refused}` },
+      });
+      const sku = buildSkuWithImageFile(refused);
+
+      await expect(harness.service.processImageUpload(sku, {})).resolves.toBe(false);
+      /* Zero port calls for every one of them, so no vector is refused only by luck downstream. */
+      expect(harness.imagePaths.calls).toEqual([]);
+    }
+  });
+
+  it("[NET-NEW] SEC-FILE-01 passes a disallowed EXTENSION through, because that is the port's decision", async () => {
+    /*
+     * ⭐ THE DIVISION OF LABOUR, ASSERTED SO NEITHER CHECK IS MISTAKEN FOR THE OTHER. `payload.php` is a
+     * single generator-shaped segment — one safe stem, one dot, one alphanumeric extension — so the SHAPE
+     * gate admits it and the port IS reached, carrying `allowedExtensions="jpg,jpeg,png,gif"` exactly as
+     * [model/service/SkuService.cfc:L212] carries it. Refusing it here would move a decision the legacy
+     * delegates to the image service into this layer.
+     *
+     * The finding asks that extension checks be "secondary", and this is what secondary means in practice:
+     * the shape gate is the primary control and cannot be satisfied by a traversal, while the extension list
+     * travels to the layer that owns it.
+     */
+    const harness = buildHarness({
+      imagePathsByImageFile: { 'payload.php': `${IMAGE_BASE}payload.php` },
+    });
+    const sku = buildSkuWithImageFile('payload.php');
+
+    /*
+     * ⭐ THE PORT IS REACHED — which is the claim — AND THEN THE PORT DECLINES. The final answer is `false`,
+     * and it is `false` for a completely different reason than the traversal cases above: those never
+     * reached the port at all, this one reached it and was refused BY IT. Reading only the return value
+     * cannot tell the two apart, which is exactly why the call log is asserted alongside it.
+     *
+     * The double declines because it now applies the `allowedExtensions` list it is handed rather than
+     * answering `true` unconditionally (see `test/support/inMemoryRepositories.ts`). That change is what
+     * makes this assertion mean anything: against the old permissive double this case could only ever have
+     * shown the port being ASKED, never a conforming implementation's verdict.
+     */
+    await expect(harness.service.processImageUpload(sku, {})).resolves.toBe(false);
+    expect(harness.imagePaths.calls.map((call) => call.member)).toEqual([
+      'getImagePath',
+      'saveImageFile',
+    ]);
+    const saveCall = requireAt(harness.imagePaths.calls, 1, 'the save request');
+    if (saveCall.member !== 'saveImageFile') {
+      throw new Error('The second image-port call was expected to be the save request.');
+    }
+    /* BYTE-EXACT against the legacy literal at [model/service/SkuService.cfc:L215]. */
+    expect(saveCall.request.allowedExtensions).toBe('jpg,jpeg,png,gif');
+    expect(saveCall.request.allowedExtensions).toBe(IMAGE_UPLOAD_ALLOWED_EXTENSIONS);
+  });
+
+  it('[NET-NEW] SEC-FILE-01 admits UPPERCASE stems, because `reReplaceNoCase` spares them', async () => {
+    /*
+     * ⭐⭐ THE TRAP THIS GATE HAD TO AVOID, ASSERTED RATHER THAN TRUSTED. The legacy sanitiser is
+     * `reReplaceNoCase(…, "[^a-z0-9\-\_]", …)` — and because the call is case-INSENSITIVE, that negated
+     * class spares `A`-`Z` as well as `a`-`z`. The same pattern compiled in JavaScript WITHOUT the
+     * ignore-case flag would refuse every uppercase letter, so a gate transcribed literally would reject
+     * the generator's own output and break the ordinary case while looking faithful.
+     *
+     * `src/ports/ImagePathPort.ts` documents this trap for whichever layer generates names; this case is the
+     * proof that the gate did not fall into it. Both names below are outputs `test/domain/Sku.test.ts`
+     * separately asserts `generateImageFileName()` produces.
+     */
+    for (const generated of GENERATED_NAMES) {
+      expect(generated).toMatch(/[A-Z]/);
+
+      const harness = buildHarness({
+        imagePathsByImageFile: { [generated]: `${IMAGE_BASE}${generated}` },
+      });
+
+      await expect(
+        harness.service.processImageUpload(buildSkuWithImageFile(generated), {}),
+      ).resolves.toBe(SAVE_IMAGE_SUCCEEDS_BY_DEFAULT);
       expect(harness.imagePaths.calls.map((call) => call.member)).toEqual([
         'getImagePath',
         'saveImageFile',
       ]);
-      const saveCall = requireAt(harness.imagePaths.calls, 1, 'the save request');
-      if (saveCall.member !== 'saveImageFile') {
-        throw new Error('The second image-port call was expected to be the save request.');
-      }
-      expect(saveCall.request.filePath).toBe(`${IMAGE_BASE}${forwarded}`);
     }
   });
 
@@ -5709,6 +6043,7 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
       }),
     },
     entityAuthorization: { authenticateEntity: (): boolean => true },
+    populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
   });
 
   /**
@@ -5748,16 +6083,24 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
   function makeWriteRunner(graph: SkuWriteGraph): {
     readonly runner: TransactionalWriteRunner<SkuWriteGraph>;
     readonly decisions: ('commit' | 'rollback')[];
+    readonly securityContexts: RequestAuthorizationContext[];
   } {
     const decisions: ('commit' | 'rollback')[] = [];
+    /* SEC-AUTH-03 — every context the handler handed the boundary, in order. */
+    const securityContexts: RequestAuthorizationContext[] = [];
 
     return {
       decisions,
+      securityContexts,
       runner: {
         runWrite: async <TResult>(
+          /* SEC-AUTH-03 — see the identical note in BrandService.test.ts. */
+          security: RequestAuthorizationContext,
           work: (graph: SkuWriteGraph) => Promise<TResult>,
           hasErrors: () => boolean,
         ): Promise<TResult> => {
+          securityContexts.push(security);
+
           const result = await work(graph);
 
           if (hasErrors()) {
@@ -6168,6 +6511,7 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
             }),
           },
           entityAuthorization: { authenticateEntity: (): boolean => false },
+          populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
         }),
         makeWriteRunner({
           resolveProduct: () => Promise.resolve(null),
@@ -6230,15 +6574,22 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
       const { unitOfWork } = makeUnitOfWork();
       const seen: TransactionScope[] = [];
 
+      const seenSecurity: RequestAuthorizationContext[] = [];
       const runner = new MySqlTransactionalWriteRunner(
         unitOfWork,
-        (transactionScope: TransactionScope) => {
+        (transactionScope: TransactionScope, security: RequestAuthorizationContext) => {
           seen.push(transactionScope);
+          /* SEC-AUTH-03 — the factory receives the invocation's authorised principal ALONGSIDE the scope,
+           * which is what lets `../../src/config/container.ts` substitute it for the memoised account and
+           * population ports when it rebuilds a graph. */
+          seenSecurity.push(security);
           return { executor: transactionScope.executor };
         },
       );
 
+      const invocationSecurity = securityContext({ account: persistedAdminAccount() });
       const graph = await runner.runWrite(
+        invocationSecurity,
         (builtGraph: { readonly executor: TransactionScope['executor'] }) =>
           Promise.resolve(builtGraph),
         () => false,
@@ -6249,6 +6600,11 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
        * roll-back would leave them behind with nothing reporting a problem. */
       expect(seen).toEqual([scope]);
       expect(graph.executor).toBe(scope.executor);
+
+      /* SEC-AUTH-03 — forwarded unchanged and unwrapped, and NOT stored on the runner: the class holds no
+       * principal of its own, which is what keeps a warm container from carrying one invocation's identity
+       * into the next (M7). */
+      expect(seenSecurity).toStrictEqual([invocationSecurity]);
     });
 
     it('NET-NEW — the commit gate is forwarded UNCHANGED, so the decision lives in one place', async () => {
@@ -6256,6 +6612,7 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
       const runner = new MySqlTransactionalWriteRunner(unitOfWork, () => ({}));
 
       await runner.runWrite(
+        securityContext({ account: persistedAdminAccount() }),
         () => Promise.resolve('done'),
         () => true,
       );
@@ -6274,10 +6631,12 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
       });
 
       await runner.runWrite(
+        securityContext({ account: persistedAdminAccount() }),
         () => Promise.resolve(1),
         () => false,
       );
       await runner.runWrite(
+        securityContext({ account: persistedAdminAccount() }),
         () => Promise.resolve(2),
         () => false,
       );
@@ -6492,6 +6851,282 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
     });
   });
 
+  describe('SkuHandler.createSkus — the write asks BOTH questions, conjunctively (SEC-AUTH-01, SEC-AUTH-02)', () => {
+    /*
+     * ⭐ REVIEW FINDING SEC-AUTH-01 (CRITICAL, CWE-862 / CWE-639) AND SEC-AUTH-02's CONJUNCTIVE HALF.
+     *
+     * WHAT WAS WRONG. `SKU_ACCESS_MATRIX.createSkus` carried an ORDERED TUPLE, `['create', 'update']` on
+     * `Product`, and the gate walked it accepting the FIRST grant. So a principal holding only `create` on
+     * `Product` — the grant a catalog author needs to add a NEW product — could name an EXISTING product in
+     * `pathParameters.productID`, satisfy the `create` question asked first, and have the route resolve that
+     * product inside the transaction and write SKU rows into it. The `update` question, the only one
+     * describing what the route performs on an addressed product, was never reached in exactly that case.
+     * And no `Sku` question was asked at all, even though SKU rows are what the route inserts.
+     *
+     * WHAT IS ASSERTED NOW. One primary question, `update` on `Product`, and one CONJUNCTIVE subordinate
+     * question, `create` on `Sku`. Both must be granted; either alone is refused. The addressed product
+     * travels with the primary question so a deployment may scope the grant to the row.
+     *
+     * ⛔ WHY THE PERMISSIVE `ADMIT_EVERY_REQUEST` RESOLVER ABOVE COULD NOT CATCH THIS. It answers `true` to
+     * every question, so it passes under the vulnerable tuple and under the fixed conjunction identically.
+     * These cases record the QUESTIONS rather than only the verdict, because which question is asked is the
+     * entire substance of the finding.
+     *
+     * TEST PROVENANCE: NET-NEW. AAP §0.6.5.2 — no legacy test covers any service in this slice, and no
+     * legacy equivalent of a Lambda authorisation boundary exists at all.
+     */
+
+    /** The entity name the primary question names — the CFML component name, not the smart-list root. */
+    const PRODUCT_COMPONENT_NAME = 'Product';
+
+    /** The entity name the subordinate question names. */
+    const SUBORDINATE_SKU_NAME = 'Sku';
+
+    /**
+     * A resolver recording every entity question, answering each from `grants`.
+     *
+     * The `entityID` is recorded alongside, because SEC-AUTH-01's second half is that the question must be
+     * bound to the row being written: a question that named no identifier would pass a "did it ask about
+     * `update`" test while still authorising the write against any product in the catalog.
+     */
+    const resolverGrantingProduct = (
+      grants: readonly { readonly crudType: string; readonly entityName: string }[],
+      options: { readonly loggedIn: boolean } = { loggedIn: true },
+    ): {
+      /* ⭐ TYPED AS THE INVOCATION RESOLVER, NOT THE HEADER-ONLY SHAPE — review finding SEC-AUTH-03. The
+       * sibling helpers in this file still take `RequestAuthorizationResolver<{ headers: unknown }>`, which
+       * is assignable at the call site but hides the request: these cases assert on the ACTION and the
+       * QUESTION the boundary sends, so the narrower type would not compile against them. */
+      readonly resolver: InvocationSecurityResolver;
+      readonly questions: { crudType: string; entityName: string; entityID?: string }[];
+      readonly requests: { action: string; crudType: string; entityName: string }[];
+      readonly contexts: RequestAuthorizationContext[];
+    } => {
+      const questions: { crudType: string; entityName: string; entityID?: string }[] = [];
+      const requests: { action: string; crudType: string; entityName: string }[] = [];
+      const contexts: RequestAuthorizationContext[] = [];
+
+      return {
+        questions,
+        requests,
+        contexts,
+        resolver: (request): RequestAuthorizationContext => {
+          requests.push({
+            action: request.action,
+            crudType: request.crudType,
+            entityName: request.entityName,
+          });
+
+          const context: RequestAuthorizationContext = {
+            accountContext: {
+              getCurrentAccount: () =>
+                options.loggedIn
+                  ? {
+                      accountID: 'aaaaaaaa000000000000000000000003',
+                      newFlag: false,
+                      adminAccountFlag: false,
+                    }
+                  : undefined,
+            },
+            entityAuthorization: {
+              authenticateEntity: (question): boolean => {
+                questions.push({
+                  crudType: question.crudType,
+                  entityName: question.entityName,
+                  ...(question.entityID === undefined ? {} : { entityID: question.entityID }),
+                });
+                return grants.some(
+                  (grant) =>
+                    grant.crudType === question.crudType &&
+                    grant.entityName === question.entityName,
+                );
+              },
+            },
+            populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
+          };
+
+          contexts.push(context);
+          return context;
+        },
+      };
+    };
+
+    /** A handler whose write graph counts the SKU creations it is asked for. */
+    const handlerCounting = (
+      resolver: InvocationSecurityResolver,
+    ): {
+      readonly handler: ReturnType<typeof createSkuHandler>;
+      readonly creations: { productID: string }[];
+      readonly securityContexts: RequestAuthorizationContext[];
+    } => {
+      const creations: { productID: string }[] = [];
+      const { runner, securityContexts } = makeWriteRunner({
+        resolveProduct: (productID: string) => Promise.resolve(makeProduct2(productID)),
+        skuService: {
+          createSkus: (product) => {
+            creations.push({ productID: product.productID ?? '' });
+            return Promise.resolve(true);
+          },
+        },
+      });
+
+      return {
+        creations,
+        securityContexts,
+        handler: createSkuHandler(
+          makeSkuSurface({}),
+          () => {
+            throw new Error('the CAPTURED product resolver must not be used by the write path');
+          },
+          resolver,
+          runner,
+        ),
+      };
+    };
+
+    /** A product carrying an arbitrary identifier, so the addressed row can be asserted. */
+    const makeProduct2 = (productID: string): ProductWithErrorState => {
+      const product = new Product();
+      product.productID = productID;
+      return product;
+    };
+
+    it('NET-NEW — the matrix row asks `update` on `Product` with a CONJUNCTIVE `create` on `Sku`', () => {
+      /*
+       * Asserted on the exported table rather than only through the route, so the classification cannot be
+       * loosened without a named failure even if every route case below were deleted. `create` must NOT be
+       * the primary `crudType`: that is precisely the tuple ordering SEC-AUTH-01 withdrew.
+       */
+      expect(SKU_ACCESS_MATRIX.createSkus).toEqual({
+        classification: 'secure',
+        entityName: PRODUCT_COMPONENT_NAME,
+        crudType: 'update',
+        subordinate: { entityName: SUBORDINATE_SKU_NAME, crudType: 'create' },
+      });
+    });
+
+    it('NET-NEW — SEC-AUTH-01 — `create` on `Product` ALONE no longer reaches the write', async () => {
+      /*
+       * ⭐ THE ESCALATION CASE, AND THE ONE THAT WOULD HAVE PASSED BEFORE THE FIX. Under the withdrawn
+       * tuple this principal was admitted: `create` was asked first and granted, and the route then wrote
+       * SKUs into a product it held no authority to modify. It must now be refused, and the write must
+       * never be entered.
+       */
+      const { resolver, questions } = resolverGrantingProduct([
+        { crudType: 'create', entityName: PRODUCT_COMPONENT_NAME },
+        { crudType: 'create', entityName: SUBORDINATE_SKU_NAME },
+      ]);
+      const { handler, creations, securityContexts } = handlerCounting(resolver);
+
+      const response = await handler.createSkus(createSkusEvent());
+
+      expect(response.statusCode).toBe(403);
+      // ⭐ NOT MERELY A STATUS: no transaction is opened and no SKU is created.
+      expect(creations).toEqual([]);
+      expect(securityContexts).toEqual([]);
+      /* Exactly ONE question is asked, and it is the primary one — the subordinate is not reached, because
+       * the conjunction short-circuits on the first refusal. */
+      expect(questions).toEqual([
+        { crudType: 'update', entityName: PRODUCT_COMPONENT_NAME, entityID: PRODUCT_ID },
+      ]);
+    });
+
+    it('NET-NEW — SEC-AUTH-02 — `update` on `Product` alone is NOT authority for the SKU inserts', async () => {
+      /*
+       * The conjunctive half. This principal may legitimately edit the product, but holds no grant over the
+       * SKU rows the route inserts, so the route refuses. Under the withdrawn tuple no `Sku` question
+       * existed at all and this principal was admitted.
+       */
+      const { resolver, questions } = resolverGrantingProduct([
+        { crudType: 'update', entityName: PRODUCT_COMPONENT_NAME },
+      ]);
+      const { handler, creations } = handlerCounting(resolver);
+
+      const response = await handler.createSkus(createSkusEvent());
+
+      expect(response.statusCode).toBe(403);
+      expect(creations).toEqual([]);
+      /* BOTH questions are asked, in order — the primary is granted, so the subordinate is reached and
+       * refuses. This is what proves the second question exists rather than being merely declared.
+       *
+       * ⭐ AND THE SUBORDINATE CARRIES NO `entityID`, DELIBERATELY. The addressed identifier names the
+       * PRODUCT; attaching it to a question about `Sku` would tell a resolver something untrue, and a
+       * deployment scoping grants per row would then match a Product UUID against SKU rows. The SKUs this
+       * route inserts do not exist yet, so there is no SKU row to name. */
+      expect(questions).toEqual([
+        { crudType: 'update', entityName: PRODUCT_COMPONENT_NAME, entityID: PRODUCT_ID },
+        { crudType: 'create', entityName: SUBORDINATE_SKU_NAME },
+      ]);
+    });
+
+    it('NET-NEW — BOTH grants admit the write, and the authorised context reaches the boundary', async () => {
+      const { resolver, questions, requests, contexts } = resolverGrantingProduct([
+        { crudType: 'update', entityName: PRODUCT_COMPONENT_NAME },
+        { crudType: 'create', entityName: SUBORDINATE_SKU_NAME },
+      ]);
+      const { handler, creations, securityContexts } = handlerCounting(resolver);
+
+      const response = await handler.createSkus(createSkusEvent());
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toBe(true);
+      expect(creations).toEqual([{ productID: PRODUCT_ID }]);
+      expect(questions).toEqual([
+        { crudType: 'update', entityName: PRODUCT_COMPONENT_NAME, entityID: PRODUCT_ID },
+        // No `entityID` on the subordinate — see the note in the preceding case.
+        { crudType: 'create', entityName: SUBORDINATE_SKU_NAME },
+      ]);
+
+      /* ⭐ SEC-AUTH-03 — ONE RESOLUTION PER INVOCATION, carrying the routed action and the primary
+       * question, and the resolved context is the one handed to the transaction boundary. Before the fix
+       * the boundary received no context at all and the graph read a MEMOISED principal instead. */
+      expect(requests).toEqual([
+        {
+          action: 'sku.createSkus',
+          crudType: 'update',
+          entityName: PRODUCT_COMPONENT_NAME,
+        },
+      ]);
+      expect(securityContexts).toHaveLength(1);
+      expect(securityContexts[0]).toBe(contexts[0]);
+    });
+
+    it('NET-NEW — an anonymous request is refused 401 before any question is asked', async () => {
+      const { resolver, questions } = resolverGrantingProduct([], { loggedIn: false });
+      const { handler, creations } = handlerCounting(resolver);
+
+      const response = await handler.createSkus(createSkusEvent());
+
+      expect(response.statusCode).toBe(401);
+      /* Steps 1 and 2 of the ladder answer before step 3, so no permission question is reached. */
+      expect(questions).toEqual([]);
+      expect(creations).toEqual([]);
+    });
+
+    it('NET-NEW — SEC-AUTH-01 — the question names the VICTIM product, not a placeholder', async () => {
+      /*
+       * CWE-639's half of the finding. Asking `update` on the entity CLASS while ignoring which row is
+       * addressed authorises a write against every product in the catalog. The identifier the caller
+       * supplied must be the identifier the question carries, so a deployment that scopes grants per row can
+       * actually refuse.
+       */
+      const victimProductID = 'bbbbbbbb00000000000000000000dead';
+      const { resolver, questions } = resolverGrantingProduct([]);
+      const { handler } = handlerCounting(resolver);
+
+      const response = await handler.createSkus({
+        body: JSON.stringify({ price: 10 }),
+        pathParameters: { productID: victimProductID },
+        headers: {},
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(questions).toEqual([
+        { crudType: 'update', entityName: PRODUCT_COMPONENT_NAME, entityID: victimProductID },
+      ]);
+    });
+  });
+
   describe('SkuHandler.processImageUpload — the image write is permission-checked (finding F2)', () => {
     /*
      * ⭐ SEC-HARDENING (D18-CLASS) — review finding F2, CWE-434's least-privilege half.
@@ -6575,6 +7210,7 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
               );
             },
           },
+          populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
         }),
       };
     };
@@ -6608,10 +7244,13 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
        * not appear: it is the question the seven sibling rows ask, and reusing it here would grant the one
        * write in the file to every reader.
        */
+      /* SEC-AUTH-01 renamed the member from the ordered tuple `crudTypes` to the single `crudType`, so a
+       * row can no longer express "either of these two grants will do". The question this row asks is
+       * unchanged. */
       expect(SKU_ACCESS_MATRIX.processImageUpload).toEqual({
         classification: 'secure',
         entityName: SKU_COMPONENT_NAME,
-        crudTypes: ['update'],
+        crudType: 'update',
       });
     });
 

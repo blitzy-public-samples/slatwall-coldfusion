@@ -52,8 +52,10 @@ import { join } from 'node:path';
  * nothing to select, and no constant or union to name. */
 import {
   ProductFeedBuilder,
+  createProductFeedRenderBudget,
   type ProductFeedImage,
   type ProductFeedRecord,
+  type ProductFeedRenderBudget,
   type ProductFeedRenderContext,
 } from '../../src/integrations/google/ProductFeedBuilder';
 import { DataIntegrityError, DomainError, NotImplementedError } from '../../src/errors/DomainError';
@@ -84,6 +86,7 @@ import type { ExactDecimal } from '../../src/util/formatting';
 import { MERCHANDISE_PRODUCT_TYPE, MERCHANDISE_PRODUCT_TYPE_ID } from '../fixtures/productTypes';
 import { createTestMerchandiseProductData } from '../fixtures/testProduct';
 import {
+  GENEROUS_SMART_LIST_BUDGET,
   buildBrand,
   buildProduct,
   buildProductType,
@@ -98,6 +101,8 @@ import {
   type SettingResolverDouble,
   type SettingSeed,
   type SmartListQueryDouble,
+  GENEROUS_FEED_RENDER_BUDGET,
+  UNSTATED_FEED_RENDER_BUDGET,
 } from '../support/inMemoryRepositories';
 import { SmartListQueryBuilder } from '../../src/adapters/mysql/SmartListQueryBuilder';
 import { createCatalogAggregateLoaders } from '../../src/adapters/mysql/QueryRunner';
@@ -733,6 +738,16 @@ interface ScenarioSeed {
   readonly deferImages?: boolean;
   readonly brand?: 'present' | 'absent';
   readonly brandName?: string;
+
+  /**
+   * The SEC-DOS-02 render budget this case states — the per-record image ceiling and the document byte
+   * ceiling.
+   *
+   * Defaults to {@link GENEROUS_FEED_RENDER_BUDGET}, deliberately: every OTHER case in this file is about
+   * the serializer, and a case decided incidentally by a ceiling would be a case about the wrong thing.
+   * Each ceiling's own behaviour is asserted only where a case states a tight figure here.
+   */
+  readonly renderBudget?: ProductFeedRenderBudget;
 }
 
 interface RenderRequest {
@@ -863,7 +878,12 @@ function createScenario(seed: ScenarioSeed = {}): FeedScenario {
     product,
   });
 
-  const builder = new ProductFeedBuilder(images.imagePaths, pricing.pricing, settings.resolver);
+  const builder = new ProductFeedBuilder(
+    images.imagePaths,
+    pricing.pricing,
+    settings.resolver,
+    seed.renderBudget ?? GENEROUS_FEED_RENDER_BUDGET,
+  );
 
   const context: ProductFeedRenderContext = {
     host: seed.host ?? RENDER_HOST,
@@ -1556,6 +1576,7 @@ function createSequencingHarness(): SequencingHarness {
     gateResizedImagePaths(images.imagePaths, operations),
     gateSalePriceReads(pricing.pricing, operations),
     settings.resolver,
+    GENEROUS_FEED_RENDER_BUDGET,
   );
 
   const buildRecord = (
@@ -4089,6 +4110,222 @@ async function captureRejection(work: Promise<string>): Promise<Error> {
   throw new Error('The builder resolved a document where a rejection was required.');
 }
 
+/* =====================================================================================================
+ * ⭐⭐ THE TWO FEED RENDER BOUNDS — REVIEW FINDING SEC-DOS-02's PER-RECORD AND RESPONSE-SIZE CLAUSES
+ * =====================================================================================================
+ * The finding required, verbatim, that the port "cap per-record image expansion and response bytes". Both
+ * are bounded here, both by an OPERATOR-STATED figure, and neither by a number this port authors.
+ *
+ * ⛔ WHY THIS MATTERS MORE ON THIS ROUTE THAN ANY OTHER. `google:feed.product` is the ONE anonymous address
+ * in the slice [`integrationServices/google/controllers/feed.cfc:L54-L56`] — the single route an
+ * unauthenticated caller can reach at all — and `integrationServices/google/views/feed/product.cfm:L9` asks
+ * for a 360-second render budget, which AAP §0.6.6 M2 records as unmappable to a synchronous invocation.
+ * Unbounded work on the only anonymous route is the worst combination available.
+ *
+ * ⭐ IR-12 AND AAP §0.7.3 S9 ARE HONOURED, NOT WORKED AROUND. `../../src/config/env.ts` declares both
+ * variables OPTIONAL with NO default, and each is reached through a RESOLVER that raises a named
+ * `ConfigurationError` when a deployment stated nothing. So the port invents no capacity figure and an
+ * unstated bound fails CLOSED. The fixtures below state figures because a TEST IS THE OPERATOR.
+ *
+ * ⚠️ AND NEITHER BOUND TRUNCATES. That is the design decision both cases turn on, and it is the opposite of
+ * what a naive "cap" would do: a shortened image list is a feed that misrepresents the catalog, and a
+ * shortened document is not a smaller feed but a malformed one — the closing `</channel></rss>` would be
+ * missing and a merchant processor would either reject it or act on a partial catalog.
+ * ================================================================================================== */
+
+describe('NET-NEW ProductFeedBuilder — the SEC-DOS-02 per-record image ceiling', () => {
+  /**
+   * Builds `count` additional product images, each with a distinct path.
+   *
+   * @param count how many images the record should carry
+   * @returns the image list, in input order
+   */
+  function manyImages(count: number): readonly ProductFeedImage[] {
+    return Object.freeze(
+      Array.from({ length: count }, (_unused, index) => ({
+        imagePath: `/custom/images/product/extra-${String(index)}.jpg`,
+      })),
+    );
+  }
+
+  it('[NET-NEW] refuses an over-ceiling record BEFORE resolving a single image path', async () => {
+    /*
+     * ⭐ THE ORDERING IS THE FIX, NOT THE REFUSAL. `product.cfm:L24` iterates the product's whole image
+     * collection with no ceiling, and this port issues ONE image-port resolution per image per record — so
+     * the cost of a single record is `images` port calls. The ceiling is therefore applied BEFORE the loop,
+     * and an over-budget record calls the port ZERO times rather than n-plus-one times before refusing.
+     *
+     * Four images against a stated ceiling of three.
+     */
+    const scenario = createScenario({ renderBudget: createProductFeedRenderBudget(3, 10_000_000) });
+
+    const error = await captureRejection(scenario.render({ productImages: manyImages(4) }));
+
+    expect(error).toBeInstanceOf(DomainError);
+    expect((error as DomainError).context).toMatchObject({
+      images: 4,
+      maximumImagesPerRecord: 3,
+      locator: 'integrationServices/google/views/feed/product.cfm:L24',
+    });
+
+    /* ⛔ ZERO of the RECORD'S OWN IMAGES were resolved. This is the assertion the case exists for: a ceiling
+     * checked INSIDE the loop would have made three port calls before refusing, so it would satisfy a
+     * rejects-assertion and still leave most of the cost unbounded.
+     *
+     * The `extra-` filter is deliberate rather than a blanket count. The ONE resize request the port does
+     * receive is for the SKU's own `g:image_link` at `product.cfm:L23`, which is a different field composed
+     * before the additional-image loop of `:L24` and is not what this ceiling bounds. Asserting zero
+     * requests overall would make this case fail for the wrong reason if that unrelated field ever moved. */
+    const extraRequests = resizeRequests(scenario.images).filter((request) =>
+      request.imagePath.includes('extra-'),
+    );
+    expect(extraRequests).toHaveLength(0);
+  });
+
+  it('[NET-NEW] admits a record landing exactly AT the ceiling, emitting every image in input order', async () => {
+    /*
+     * The admitting side, so the ceiling BOUNDS rather than refuses, and the admitted document is
+     * byte-identical to the unbudgeted one: three images, three `g:additional_image_link` elements, in the
+     * order they were supplied. That is the concrete form of "the ceiling changes no admitted request".
+     */
+    const scenario = createScenario({ renderBudget: createProductFeedRenderBudget(3, 10_000_000) });
+
+    const xml = await scenario.render({ productImages: manyImages(3) });
+    const items = parseFeedItems(xml);
+    const [item] = items;
+    expect(item).toBeDefined();
+    if (item === undefined) {
+      throw new Error('The feed document carries no first item.');
+    }
+
+    const emitted = childrenNamed(item, 'g:additional_image_link');
+    expect(emitted).toHaveLength(3);
+    expect(emitted.map((element) => element.text)).toStrictEqual([
+      `${ABSOLUTE_URL_PREFIX}/custom/images/product/extra-0.jpg`,
+      `${ABSOLUTE_URL_PREFIX}/custom/images/product/extra-1.jpg`,
+      `${ABSOLUTE_URL_PREFIX}/custom/images/product/extra-2.jpg`,
+    ]);
+  });
+
+  it('[NET-NEW] refuses with NO image ceiling stated, naming the variable, resolving nothing', async () => {
+    /*
+     * The fail-closed half. A DELIBERATELY TINY record — one image — so the case cannot pass because the
+     * record happened to be large: the refusal is about the ABSENCE of a figure, not the size of the work.
+     */
+    const scenario = createScenario({ renderBudget: UNSTATED_FEED_RENDER_BUDGET });
+
+    const error = await captureRejection(scenario.render({ productImages: manyImages(1) }));
+
+    expect((error as { message: string }).message).toMatch(
+      /CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD/,
+    );
+    expect(
+      resizeRequests(scenario.images).filter((request) => request.imagePath.includes('extra-')),
+    ).toHaveLength(0);
+  });
+
+  it('[NET-NEW] refuses a USELESS figure when the budget is BUILT, not when a render first runs', () => {
+    /* A wiring error should present at wiring time. Zero would refuse every record — including one with no
+     * additional images at all — rather than bounding the expansion. */
+    expect(() => createProductFeedRenderBudget(0, 10)).toThrow(/positive safe integer/);
+    expect(() => createProductFeedRenderBudget(-1, 10)).toThrow(/positive safe integer/);
+    expect(() => createProductFeedRenderBudget(1.5, 10)).toThrow(/positive safe integer/);
+    expect(() => createProductFeedRenderBudget(10, 0)).toThrow(/positive safe integer/);
+    expect(() => createProductFeedRenderBudget(10, Number.NaN)).toThrow(/positive safe integer/);
+    expect(() => createProductFeedRenderBudget(10, Number.POSITIVE_INFINITY)).toThrow(
+      /positive safe integer/,
+    );
+
+    // And a legitimate pair builds, so the guard is not simply refusing everything.
+    const budget = createProductFeedRenderBudget(1, 1);
+    expect(budget.resolveMaximumImagesPerRecord()).toBe(1);
+    expect(budget.resolveMaximumResponseBytes()).toBe(1);
+  });
+});
+
+describe('NET-NEW ProductFeedBuilder — the SEC-DOS-02 document byte ceiling', () => {
+  it('[NET-NEW] REFUSES an over-budget document rather than truncating it', async () => {
+    /*
+     * ⛔ THE ASSERTION THAT MATTERS IS THAT NOTHING IS RETURNED. A "cap" that truncated would answer a
+     * document missing its closing `</channel></rss>`, which a merchant processor either rejects outright
+     * or — worse — acts on as a partial catalog. So the ceiling refuses and names the size it measured.
+     *
+     * One byte is the tightest possible ceiling and no real document fits it, which keeps the case about
+     * the refusal rather than about any particular document size.
+     */
+    const scenario = createScenario({ renderBudget: createProductFeedRenderBudget(100, 1) });
+
+    const error = await captureRejection(scenario.render());
+
+    expect(error).toBeInstanceOf(DomainError);
+    expect((error as DomainError).message).toMatch(/truncated, malformed document/);
+
+    /* The measured size and the ceiling are both reported, so an operator can pick a figure rather than
+     * guess one — and the measured size is the REAL byte length, greater than the ceiling it broke. */
+    const context = (error as DomainError).context as Record<string, unknown>;
+    expect(context.maximumResponseBytes).toBe(1);
+    expect(typeof context.documentBytes).toBe('number');
+    expect(context.documentBytes as number).toBeGreaterThan(1);
+    expect(context.records).toBe(1);
+  });
+
+  it('[NET-NEW] measures BYTES rather than characters, so multi-byte content is charged honestly', async () => {
+    /*
+     * The response goes out as UTF-8, so a ceiling measured in JavaScript string LENGTH would under-charge
+     * every non-ASCII document — a product name in Japanese costs three bytes per character and one unit of
+     * length. The case states a ceiling BETWEEN the two measures and requires a refusal: it passes only if
+     * bytes are what is counted.
+     */
+    const multiByteTitle = 'あ'.repeat(400);
+    const scenario = createScenario({
+      calculatedTitle: multiByteTitle,
+      renderBudget: createProductFeedRenderBudget(100, 1200),
+    });
+
+    const error = await captureRejection(scenario.render());
+    const context = (error as DomainError).context as Record<string, unknown>;
+
+    /* Four hundred three-byte characters is 1,200 bytes of title alone, so the finished document is over the
+     * 1,200-byte ceiling on byte measurement and comfortably under it on character measurement. */
+    expect(context.documentBytes as number).toBeGreaterThan(1200);
+  });
+
+  it('[NET-NEW] admits a document under the ceiling, byte-for-byte unchanged', async () => {
+    /*
+     * The admitting side, and the strongest available form of "the ceiling changes no admitted response":
+     * the SAME scenario rendered with a generous ceiling and with a ceiling just above the measured size
+     * produces the IDENTICAL document. So the bound is a gate and never a filter.
+     */
+    const unbudgeted = await createScenario().render();
+    const measured = Buffer.byteLength(unbudgeted, 'utf8');
+
+    const tight = await createScenario({
+      renderBudget: createProductFeedRenderBudget(100, measured),
+    }).render();
+
+    expect(tight).toBe(unbudgeted);
+
+    /* And exactly-at-the-ceiling is ADMITTED — the comparison is strictly greater-than — while one byte
+     * less refuses. Off-by-one in either direction fails one of these two. */
+    await expect(
+      createScenario({ renderBudget: createProductFeedRenderBudget(100, measured - 1) }).render(),
+    ).rejects.toThrow(/truncated, malformed document/);
+  });
+
+  it('[NET-NEW] refuses with NO byte ceiling stated, naming the variable', async () => {
+    /*
+     * Fail-closed on the second feed bound too. The image ceiling is stated here and only the byte ceiling
+     * withheld, which is what proves the byte resolver is fail-closed in its own right rather than merely
+     * shadowed by the image one — the image ceiling is reached FIRST, per record.
+     */
+    const scenario = createScenario({
+      renderBudget: createProductFeedRenderBudget(100, undefined),
+    });
+
+    await expect(scenario.render()).rejects.toThrow(/CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES/);
+  });
+});
+
 describe('NET-NEW ProductFeedBuilder — render guards', () => {
   it('[NET-NEW] rejects a selected SKU that carries no product', async () => {
     const scenario = createScenario();
@@ -5538,6 +5775,16 @@ const FEED_WIRING_VARIABLE_NAMES: readonly string[] = Object.freeze([
   'SETTING_APPLICATION_ROOT_MAPPING_PATH',
   'SETTING_SKU_ELIGIBLE_CURRENCIES',
   'SETTING_SKU_ELIGIBLE_FULFILLMENT_METHODS',
+
+  /* The six resource bounds of README §8.1, listed for the same exhaustiveness reason as the rest: a figure
+   * left behind by the ambient environment could otherwise decide whether a bounded route here serves or
+   * refuses. Values in {@link FEED_WIRING_ENVIRONMENT}. */
+  'CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY',
+  'CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY',
+  'CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST',
+  'CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION',
+  'CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD',
+  'CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES',
 ]);
 
 /**
@@ -5573,7 +5820,31 @@ const FEED_WIRING_ENVIRONMENT: Readonly<Record<string, string>> = Object.freeze(
    * nothing is stated, rendering when something is — is asserted by the two dedicated SEC-1 cases in the
    * handler section below rather than here. This value is only what lets these cases reach the serializer.
    */
+  /*
+   * ⭐⭐ SEC-DOS-01/02/03 — THE SIX RESOURCE BOUNDS, AND WHY A FIXTURE MAY STATE THEM.
+   *
+   * `../../src/config/env.ts` declares all six OPTIONAL with NO default, because IR-12 and AAP §0.7.3 S9
+   * forbid this port from AUTHORING a capacity figure. What the port does instead is refuse to serve a
+   * bounded route until an operator states one: each bound is reached through a RESOLVER that raises a
+   * named `ConfigurationError` when the variable is unset, so an unstated bound fails CLOSED rather than
+   * silently unbounded.
+   *
+   * ⛔ THIS FIXTURE IS THE OPERATOR. A test supplying a figure is not introducing a production default; it
+   * is standing in for the deployment that must state one, which is the only way to exercise the mechanism.
+   * Every figure is deliberately GENEROUS so that no case in this section is decided by a ceiling — these
+   * cases are about the SERIALIZER and the wiring. Each bound's own refuse-at-the-ceiling behaviour is
+   * asserted by dedicated cases that state a deliberately TIGHT figure.
+   *
+   * The two feed bounds matter most here, because `google:feed.product` is the route these cases drive:
+   * `..._MAX_IMAGES_PER_RECORD` bounds the per-record `g:additional_image_link` expansion, and
+   * `..._MAX_RESPONSE_BYTES` bounds the finished document.
+   */
   CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY: '5000',
+  CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY: '250',
+  CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST: '10000',
+  CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION: '500',
+  CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD: '100',
+  CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES: '10000000',
 });
 
 /** The two shipped factories, loaded against {@link FEED_WIRING_ENVIRONMENT}. */
@@ -6296,6 +6567,7 @@ describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTI
       const builder = new SmartListQueryBuilder(
         executor,
         createCatalogAggregateLoaders({ bindDefaultSkuDelegate: bindDelegate }),
+        GENEROUS_SMART_LIST_BUDGET,
       );
 
       return { result: makeFeedQuery(builder).getFeedSkus(), statements };
@@ -6374,25 +6646,38 @@ describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTI
       }
     });
 
-    it('NET-NEW — the emitted statements include NO count query, which is what the legacy issues', async () => {
+    it('NET-NEW — the emitted statements carry NO page window, and exactly ONE count', async () => {
       const { result, statements } = runFeed();
       await result;
 
       /*
-       * ⭐ THE SQL-LEVEL HALF OF THE PERF-02 GUARD. The case in the previous section proves the feed calls
-       * the records-only PORT MEMBER; this one proves what that means at the driver: not one statement in
-       * the emitted set projects `recordsCount`, and none carries a `LIMIT`/`OFFSET` page window. The
-       * legacy feed reads `getRecords()` alone and the framework materialises a view only on first read
-       * [org/Hibachi/HibachiSmartList.cfc:L751-L755, :L771], so a count on this path would be work the
-       * system being replaced never does.
+       * ⭐ THE SQL-LEVEL HALF OF THE PERF-02 GUARD, NARROWED TO THE HALF THAT STILL HOLDS. Not one statement
+       * in the emitted set carries a `LIMIT`/`OFFSET` page window: the feed reads the records-only port
+       * member, `getRecords()` at `org/Hibachi/HibachiSmartList.cfc:L751-L755` reads no page, and a page on
+       * this path would silently shorten a merchant feed.
        *
-       * ⚠️ THE SECOND STATEMENT IS NOT A COUNT AND IS NOT WASTE. `src/adapters/mysql/SmartListQueryBuilder.ts`
-       * resolves the roots' product aggregates in ONE batched read per association set, which is what makes
-       * `sku.product.brand` navigable for `ProductFeedBuilder`; the case below asserts that navigation.
+       * ⛔ THE COUNT HALF IS WITHDRAWN — REVIEW FINDING SEC-DOS-02. This case was titled "the emitted
+       * statements include NO count query, which is what the legacy issues" and asserted that none projected
+       * `recordsCount`, reasoning that "a count on this path would be work the system being replaced never
+       * does." True, and beside the point: the count is how the operator's materialisation ceiling is
+       * enforced BEFORE the driver hydrates objects out of the rows, and `google:feed.product` is the one
+       * ANONYMOUS address in the slice — the single route an unauthenticated caller can reach. Leaving it
+       * uncounted is what made the ceiling unenforceable exactly where it was needed most.
+       *
+       * ⚠️ THE PARITY COST IS ONE EXTRA STATEMENT PER FEED RENDER, AND IT IS NAMED RATHER THAN HIDDEN. It
+       * returns exactly one row whatever the catalog holds and it changes not one `<item>` in the document.
+       *
+       * EXACTLY ONE count, asserted as a count rather than as "at least one", so a regression that counted
+       * per record — or per association batch — fails here. The remaining statements are the record
+       * projection and the batched product-aggregate reads that make `sku.product.brand` navigable for
+       * `ProductFeedBuilder`; the case below asserts that navigation.
        */
       expect(statements.length).toBeGreaterThan(0);
+      expect(statements.filter((statement) => statement.sql.includes('recordsCount'))).toHaveLength(
+        1,
+      );
+      expect(statements[0]?.sql).toContain('AS recordsCount');
       for (const statement of statements) {
-        expect(statement.sql).not.toContain('recordsCount');
         expect(statement.sql).not.toContain('LIMIT');
         expect(statement.sql).not.toContain('OFFSET');
       }
@@ -8100,7 +8385,12 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       },
     };
 
-    const builder = new ProductFeedBuilder(images.imagePaths, pricing.pricing, settings.resolver);
+    const builder = new ProductFeedBuilder(
+      images.imagePaths,
+      pricing.pricing,
+      settings.resolver,
+      GENEROUS_FEED_RENDER_BUDGET,
+    );
 
     const imageReaderCalls: string[] = [];
     const materialisationGateCalls: { count: number } = { count: 0 };
@@ -9405,11 +9695,18 @@ const END_TO_END_ENVIRONMENT: Readonly<Record<string, string>> = Object.freeze({
   DB_CONNECT_TIMEOUT_MS: '1000',
   GOOGLE_FEED_HOST: END_TO_END_HOST,
 
-  /* SEC-1 — the anonymous route requires a stated ceiling, and these cases drive the SHIPPED route through
-   * the real router, so the gate runs. The figure is the fixture's; `../../src/config/env.ts` declares the
-   * variable OPTIONAL with no default (IR-12), and the gate's refusing behaviour is asserted by the two
-   * dedicated SEC-1 cases rather than incidentally here. */
+  /* SEC-1 / SEC-DOS-01/02/03 — the anonymous route requires stated ceilings, and these cases drive the
+   * SHIPPED route through the real router, so every gate runs. The figures are the fixture's, and generous:
+   * `../../src/config/env.ts` declares all six OPTIONAL with no default (IR-12, AAP §0.7.3 S9), each is
+   * reached through a resolver that raises when unset, and each bound's refusing behaviour is asserted by
+   * dedicated cases stating a tight figure rather than incidentally here. See the block on
+   * {@link FEED_WIRING_ENVIRONMENT} for the full argument. */
   CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY: '5000',
+  CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY: '250',
+  CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST: '10000',
+  CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION: '500',
+  CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD: '100',
+  CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES: '10000000',
 });
 
 /** Distinct 32-character identifiers, so a crossed association is visible rather than coincidental. */
@@ -9625,6 +9922,7 @@ async function dispatchEndToEndFeed(action = 'google:feed.product'): Promise<End
   const builder = new SmartListQueryBuilder(
     executor,
     createCatalogAggregateLoaders({ bindDefaultSkuDelegate: bindEndToEndDefaultSku }),
+    GENEROUS_SMART_LIST_BUDGET,
   );
   const queries: SmartListQuery[] = [];
 
@@ -9777,18 +10075,24 @@ describe('NET-NEW — the feed end to end, from the public route to the document
     const { statements } = await dispatchEndToEndFeed();
 
     /*
-     * The record projection, and it is statement 0 — THERE IS NO COUNT.
+     * The record projection is statement 1, BEHIND THE MATERIALISATION COUNT AT STATEMENT 0.
      *
-     * ⭐ REVIEW FINDING PERF-02. The feed reads through `SmartListQueryBuilder.executeRecords`, the
-     * records-only member, so the selection issues ONE statement rather than a count followed by a page.
-     * `product.cfm:L16` loops the UNPAGED collection and never reads a total, so the count answered a
-     * question the feed does not ask. An earlier revision of this case indexed `statements[1]` past a count
-     * that no longer exists; the index is the assertion's own subject now, so it is stated rather than
-     * assumed.
+     * ⛔ THE INDEX HAS MOVED TWICE, SO BOTH MOVES ARE RECORDED. Review finding PERF-02 removed a count from
+     * this path, and this case then read `statements[0]` with the note that "an earlier revision indexed
+     * `statements[1]` past a count that no longer exists". Review finding SEC-DOS-02 puts a count back, for
+     * a different reason than the one PERF-02 removed: not to answer a question the feed asks — it still
+     * asks none, and no total reaches the document — but to measure the row set against the operator's
+     * materialisation ceiling BEFORE the driver hydrates it. `google:feed.product` is the one ANONYMOUS
+     * address in the slice, so it is the route where an unenforceable ceiling mattered most.
+     *
+     * ⚠️ WHAT PERF-02 STILL GUARANTEES, AND IT IS ASSERTED BELOW RATHER THAN ASSUMED: no PAGE window. The
+     * feed loops the UNPAGED collection at `product.cfm:L16`, so a `LIMIT` would silently truncate a
+     * merchant feed. The count carries no `LIMIT` either.
      */
-    expect(statements[0]?.sql).toContain('FROM SwSku');
-    expect(statements[0]?.sql).not.toContain('COUNT(');
-    const projection = statements[0]?.sql ?? '';
+    expect(statements[0]?.sql).toContain('AS recordsCount');
+    expect(statements[1]?.sql).toContain('FROM SwSku');
+    expect(statements[1]?.sql).not.toContain('COUNT(');
+    const projection = statements[1]?.sql ?? '';
 
     /*
      * SIX DECLARED, FIVE EMITTED, AND THE ARITHMETIC IS THE ASSERTION. Two layers contribute joins to one
@@ -9885,23 +10189,30 @@ describe('NET-NEW — the feed end to end, from the public route to the document
     expect(response.headers?.['Content-Type']).toBe(XML_CONTENT_TYPE);
 
     /*
-     * FIVE STATEMENTS: the record projection, then ONE lookup per aggregate — product, product type,
-     * brand, default SKU. Four lookups for two records is the point: the loaders batch by identifier
-     * rather than issuing a statement per row, which is what keeps a whole-catalog feed from degenerating
-     * into a statement storm.
+     * SIX STATEMENTS: the SEC-DOS-02 materialisation count, the record projection, then ONE lookup per
+     * aggregate — product, product type, brand, default SKU. Four lookups for two records is the point: the
+     * loaders batch by identifier rather than issuing a statement per row, which is what keeps a
+     * whole-catalog feed from degenerating into a statement storm.
      *
-     * ⭐ IT WAS SIX, AND THE SIXTH WAS A COUNT — REVIEW FINDING PERF-02 REMOVED IT. The feed reads through
-     * the records-only member, because `product.cfm:L16` loops the UNPAGED collection and never reads a
-     * total, so the count answered a question the feed does not ask. The figure is asserted here rather
-     * than left implicit precisely because it is one statement fewer than an earlier revision expected.
+     * ⛔ THE CENSUS HAS BEEN SIX, THEN FIVE, AND IS SIX AGAIN — FOR TWO DIFFERENT REASONS, SO BOTH ARE KEPT.
+     * Review finding PERF-02 removed a count on the ground that "the feed reads through the records-only
+     * member, because `product.cfm:L16` loops the UNPAGED collection and never reads a total, so the count
+     * answered a question the feed does not ask". Review finding SEC-DOS-02 restores one on a ground PERF-02
+     * did not consider: the count is how an operator's materialisation ceiling is ENFORCED, and enforcing it
+     * after the rows are hydrated is not enforcing it. No total reaches the document either way, so PERF-02's
+     * observation about what the feed asks for is still true and no longer decisive.
+     *
+     * The exact figure is asserted rather than left implicit precisely because it has moved; a regression
+     * that counted per RECORD rather than once per read would show as eight here.
      */
-    expect(statements).toHaveLength(5);
-    expect(statements[0]?.sql).not.toContain('COUNT(');
-    expect(statements[1]?.sql).toContain('FROM SwProduct WHERE productID IN (?)');
-    expect(statements[2]?.sql).toContain('FROM SwProductType WHERE productTypeID IN (?)');
-    expect(statements[3]?.sql).toContain('FROM SwBrand WHERE brandID IN (?)');
-    expect(statements[4]?.sql).toContain('FROM SwSku WHERE skuID IN (?)');
-    expect(statements[4]?.params).toStrictEqual([END_TO_END_ID.defaultSku]);
+    expect(statements).toHaveLength(6);
+    expect(statements[0]?.sql).toContain('AS recordsCount');
+    expect(statements[1]?.sql).not.toContain('COUNT(');
+    expect(statements[2]?.sql).toContain('FROM SwProduct WHERE productID IN (?)');
+    expect(statements[3]?.sql).toContain('FROM SwProductType WHERE productTypeID IN (?)');
+    expect(statements[4]?.sql).toContain('FROM SwBrand WHERE brandID IN (?)');
+    expect(statements[5]?.sql).toContain('FROM SwSku WHERE skuID IN (?)');
+    expect(statements[5]?.params).toStrictEqual([END_TO_END_ID.defaultSku]);
 
     const items = parseFeedItems(response.body);
     expect(items).toHaveLength(2);
