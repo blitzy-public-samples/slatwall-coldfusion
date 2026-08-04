@@ -4193,37 +4193,27 @@ describe('SkuService — parity, scope and negative checks', () => {
      * without a call site to justify it; a missing one would mean a live collaborator had been folded into
      * another.
      *
-     * ⛔ A TENTH REQUIRED COLLABORATOR, `imageStorageRoot`, ONCE SAT AFTER THE IMAGE PORT, AND IT IS
-     * WITHDRAWN. It bounded the one WRITE this service performs against a configured root. That root had no
-     * legacy counterpart to derive a value from — the legacy COMPOSES image paths but never CHECKS
-     * containment anywhere — so it was invented configuration (AAP §0.7.3 S9, IR-12), and its refusal
-     * RAISED where `model/service/SkuService.cfc:L210-L218` returns only `true` or `false`. A narrower
-     * successor — a predicate over the stored name, transcribing the rule
-     * `model/entity/Sku.cfc:L131-L139` already states — then answered the same CWE-22/CWE-434 concern
-     * without a root and without raising, and review finding F4 withdrew that too, on the precedence ground
-     * that AAP §0.6.7.7 declares D18 the SINGLE behaviour-hardening exception in this port. NOTHING gates
-     * the write now; the exposure is carried and flagged on `ImagePathPort.saveImageFile`.
+     * ⛔ THERE IS NO `imageStorageRoot` COLLABORATOR, AND ONE MUST NOT BE ADDED. A configured containment
+     * root has no legacy counterpart to derive a value from — the legacy COMPOSES image paths but never
+     * CHECKS containment anywhere — so it would be invented configuration (AAP §0.7.3 S9, IR-12), and a
+     * root-based refusal RAISES where `model/service/SkuService.cfc:L210-L218` returns only `true` or
+     * `false`. The write is protected instead by a predicate over the STORED NAME, transcribing the rule
+     * `model/entity/Sku.cfc:L131-L139` already states: it needs no root, raises nothing, and answers
+     * `false` — the shape the legacy already produces. The cases further below drive it end to end, and the
+     * residual READ/PROBE exposure is carried and flagged on `ImagePathPort.saveImageFile`.
      *
-     * ⭐ THE TENTH IS `combinationBudget`, IT IS REQUIRED, AND ITS POSITION HAS MOVED TWICE — SO THE WHOLE
-     * HISTORY IS KEPT HERE RATHER THAN THE CURRENT STATE ALONE.
-     *   1. It first sat last as an OPTIONAL parameter, letting an operator state a ceiling on how many
-     *      combinations one `createSkus` request may enumerate.
-     *   2. A revision WITHDREW it, arguing: "A configurable request ceiling is a capability the legacy does
-     *      not have and no AAP row asks for (AAP §0.7.3 S9, IR-12), and it changed the outcome of every
-     *      request it refused (AAP §0.6.7.7, §0.8.2 Guideline 4)."
-     *   3. THAT ARGUMENT IS WRONG, and review finding SEC-DOS-01 is the correction. §0.6.7 is the DEFECT
-     *      AND TODO CARRY-OVER REGISTER — twenty-one LEGACY BUSINESS-LOGIC defects, of which D18 is the one
-     *      the port repairs. The availability of the extracted service is not an entry in it, and reading
-     *      D18's exception as the sole licence to bound anything would make §0.6.7.7 say that a migration
-     *      must reproduce a resource-exhaustion vector. Guideline 4 forbids enhancing BUSINESS LOGIC; the
-     *      ceiling changes not one generated SKU for any request it admits. And §0.7.3 S8 — "flag mismatches
-     *      rather than assume them away" — is discharged by the `TODO(parity)` blocks recording the LEGACY
-     *      as unbounded, not by leaving the PORT unbounded.
-     *   4. IR-12 AND S9 ARE HONOURED EXACTLY, WHICH IS WHY IT IS A BUDGET AND NOT A NUMBER. The port
-     *      authors no figure: the ceiling is reached through a RESOLVER that raises a named
-     *      `ConfigurationError` reporting `CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST` when a deployment
-     *      stated none. The only change from step 1 is optional → REQUIRED, because an optional budget left
-     *      the unbounded enumeration reachable by default, which is precisely the finding.
+     * ⭐ THE TENTH IS `combinationBudget`, AND IT IS REQUIRED RATHER THAN OPTIONAL. An optional budget would
+     * leave the unbounded enumeration reachable by default, which is precisely what review finding
+     * SEC-DOS-01 reports. ⛔ AND THE OBJECTION MOST LIKELY TO BE RAISED AGAINST IT DOES NOT HOLD: §0.6.7 is
+     * the DEFECT AND TODO CARRY-OVER REGISTER — twenty-one LEGACY BUSINESS-LOGIC defects, of which D18 is
+     * the one the port repairs — so the availability of the extracted service is not an entry in it, and
+     * reading D18's exception as the sole licence to bound anything would make §0.6.7.7 say that a migration
+     * must reproduce a resource-exhaustion vector. Guideline 4 forbids enhancing BUSINESS LOGIC; the ceiling
+     * changes not one generated SKU for any request it admits. §0.7.3 S8 — "flag mismatches rather than
+     * assume them away" — is discharged by the `TODO(parity)` blocks recording the LEGACY as unbounded, not
+     * by leaving the PORT unbounded. And §0.7.3 S9 / IR-12 are honoured because it is a BUDGET rather than a
+     * NUMBER: the ceiling is reached through a RESOLVER that raises a named `ConfigurationError` reporting
+     * `CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST` when a deployment stated none.
      *
      * TEN parameters, every one required and positional. `Function.length` counts the leading parameters
      * up to the first one carrying a DEFAULT, so ten is the checkable form of the claim, and it also
@@ -5563,15 +5553,15 @@ describe('SkuService — the image WRITE is gated, the composition and the probe
    * file's member, so the pair stays together rather than being split across two files.
    */
 
-  /** The traversal vector the withdrawn gate refused, kept verbatim so the carried exposure stays visible. */
+  /** The traversal vector the live write gate refuses, and that the read and probe paths still compose. */
   const TRAVERSAL_VECTOR = '../../../../tmp/payload.jpg';
   /* The SAME value the service is wired with, not a look-alike literal, so a path assertion below can
    * never pass for the wrong reason. */
   const IMAGE_BASE: string = TEST_IMAGE_STORAGE_ROOT;
 
   /**
-   * Two names the legacy generator demonstrably produces. They were the ADMIT direction of the withdrawn
-   * gate; they are kept because they are still the ordinary case, and both are the exact outputs
+   * Two names the legacy generator demonstrably produces — the ADMIT direction of the write gate. They are
+   * the ordinary case that must never regress, and both are the exact outputs
    * `test/domain/Sku.test.ts` already asserts `generateImageFileName()` returns.
    */
   const GENERATED_NAMES = ['CatalogProduct-1_LgSize.jpg', 'CatalogProduct-1-Lg.png'] as const;

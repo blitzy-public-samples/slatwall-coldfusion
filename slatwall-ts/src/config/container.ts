@@ -2723,30 +2723,31 @@ export function getProductSurfaceGraph(): ProductSurfaceGraph {
  * THE WIRED GRAPH
  * ============================================================================================== */
 
-/**
- * The transaction-scoped collaborators the SKU-creation write path runs against — RE-EXPORTED.
- *
- * ⭐ WHY THE COMPOSITION ROOT DECLARES THIS SHAPE RATHER THAN IMPORTING THE HANDLER'S. This file's own
- * header fixes the direction: `handlers/**` imports the container, and the container imports no handler,
- * no AWS type and no AWS SDK. `src/handlers/skuHandler.ts` declares an equivalent `SkuWriteGraph`
- * structurally for the mirror-image reason — `src/adapters/mysql/* ================================================================================================
- * THE WRITE-BOUNDARY CONTRACT — DECLARED HERE, IMPLEMENTED BY `../adapters/mysql/UnitOfWork.ts`
+/* ================================================================================================
+ * THE WRITE-BOUNDARY CONTRACT — WHO DECLARES IT, WHO RE-EXPORTS IT, WHO IMPLEMENTS IT
  * ------------------------------------------------------------------------------------------------
  * The transaction boundary a write path runs inside — the port that replaces the legacy's request-end
- * commit.
+ * commit. Its three owners, stated once so no reader has to infer them:
+ *
+ *   DECLARED   `TransactionalWriteRunner<TGraph>` in `../ports/UniquePropertyPort.ts`, which is where
+ *              AAP §0.4.1's frozen inventory leaves it. The full contract — the lifecycle and disposal
+ *              rules an implementation must honour — is documented at that declaration.
+ *   RE-EXPORTED by THIS file, unchanged in name and shape, a few statements below. That re-export is what
+ *              lets a handler reach the contract without importing an adapter, and it is why no consumer
+ *              import has to move.
+ *   IMPLEMENTED by `../adapters/mysql/UnitOfWork.ts`, which owns the connection, the `BEGIN`, and the
+ *              commit-or-rollback decision.
  *
  * AAP authority: AAP §0.3.3 lists **Unit of Work** as the pattern that replaces "the implicit
  * request-end commit gated on `getORMHasErrors()`", and AAP §0.4.4 authorises
- * `slatwall-ts/src/ports/**` | CREATE. `../adapters/mysql/UnitOfWork.ts` already implements the
- * mechanism; THIS declaration is what lets a handler reach it without importing an adapter.
+ * `slatwall-ts/src/ports/**` | CREATE.
  *
- * ⭐ IT LIVES IN THE COMPOSITION ROOT, AND THAT PLACEMENT IS REVIEW FINDING F5's. A module of its own
- * under `src/ports/` is not one of the port files AAP §0.3.1 enumerates, and the finding required the
- * production graph to consist only of AAP-listed files. This file already declares
- * {@link CatalogSkuWriteGraph} for the mirror-image reason — the handler layer and the adapter layer meet
- * structurally in the routing layer, and the composition root is the one module allowed to name both
- * sides — so the runner contract belongs beside it. Every handler already imports {@link CatalogContainer}
- * from here, so no new edge is created.
+ * ⭐ WHY THE RE-EXPORT SITS IN THE COMPOSITION ROOT. A module of its own under `src/ports/` is not one of
+ * the port files AAP §0.3.1 enumerates, and the review required the production graph to consist only of
+ * AAP-listed files. This file already declares {@link CatalogSkuWriteGraph} for the mirror-image reason —
+ * the handler layer and the adapter layer meet structurally in the routing layer, and the composition root
+ * is the one module allowed to name both sides — so the runner's re-export belongs beside it. Every handler
+ * already imports {@link CatalogContainer} from here, so no new edge is created.
  *
  * =================================================================================================
  * WHY A PORT AND NOT A DIRECT CALL TO `UnitOfWork`
@@ -3198,8 +3199,12 @@ export interface CatalogContainerOverrides {
  * two runners of TIER 7 rather than by a single adapter.
  *
  * 📐 THE PORT INVENTORY IS THIRTEEN FILES, AND THE COUNT IS AUDITABLE BY LISTING THE TWO FOLDERS.
- * `../ports/` holds EIGHT — the eight boundary ports AAP §0.2.2.7 enumerates — and
- * `../ports/repositories/` holds FIVE: one per catalog DAO, plus `BrandRepository.ts`, because
+ * `../ports/` holds EIGHT, from TWO provisions rather than one: the SEVEN boundary-gap ports AAP §0.2.2.7
+ * enumerates — `SettingResolverPort`, `ImagePathPort`, `SubscriptionTermPort`, `AccessContentPort`,
+ * `PricingPort`, `AccountContextPort`, `SmartListQueryPort` — plus `UniquePropertyPort`, which comes from
+ * IR-5 and is listed separately at AAP §0.4.1.6 because it stands for a facility the retired FRAMEWORK
+ * provided rather than for an excluded domain. And `../ports/repositories/` holds FIVE: one per catalog DAO,
+ * plus `BrandRepository.ts`, because
  * `BrandService` has no legacy DAO at all and relied entirely on the CRUD surface `onMissingMethod`
  * synthesized (IR-1), so its repository has to be declared explicitly. 8 + 5 = 13.
  *
@@ -3214,8 +3219,10 @@ export interface CatalogContainerOverrides {
  * above counts files, which is what a reader can check.
  *
  * ⚠️ THE SENTENCE ABOVE THIS ONE STILL SAYS "NINE BOUNDARY PORTS", AND THAT IS DELIBERATE: it counts
- * CONTRACTS, and there are nine — the eight AAP §0.2.2.7 names plus the folded transactional-write
- * contract. Contracts and files are different counts here, and both are stated rather than conflated.
+ * CONTRACTS, and there are nine — the SEVEN boundary-gap contracts AAP §0.2.2.7 names, plus
+ * `UniquePropertyPort` from IR-5 / AAP §0.4.1.6, plus the folded transactional-write contract. Contracts
+ * and files are different counts here, and both are stated rather than conflated. ⛔ §0.2.2.7 ENUMERATES
+ * SEVEN, NOT EIGHT (review finding F9) — do not fold `UniquePropertyPort` back into that seven.
  *
  * ⚠️ NOTHING WAS WEAKENED IN THE MOVE, AND NOTHING WAS DUPLICATED. Every stub still raises rather than
  * answering a plausible value (S9), every stub still genuinely implements its port with no `as unknown as`
@@ -3479,18 +3486,17 @@ export function createCatalogContainer(
    * -------------------------------------------------------------------------------------------- */
   const resourceBounds: ResourceBoundsConfig = overrides.resourceBounds ?? config.resourceBounds;
 
-  /* ⭐⭐ ALL THREE BOUNDS ARE DERIVED HERE AGAIN — REVIEW FINDINGS SEC-DOS-01, SEC-DOS-02 AND SEC-DOS-03.
+  /* ⭐⭐ ALL THREE BOUNDS ARE DERIVED HERE — REVIEW FINDINGS SEC-DOS-01, SEC-DOS-02 AND SEC-DOS-03.
+   * `skuMaximumCombinationsPerRequest` becomes a `SkuCombinationBudget` and
+   * `urlTitleMaximumProbesPerDerivation` a `UrlTitleProbeBudget`, each wired into both graphs.
    *
-   * ⛔ THE WITHDRAWAL THIS REVERSES, RECORDED SO THE REVERSAL IS CHECKABLE. Two revisions read
-   * `skuMaximumCombinationsPerRequest` into a `SkuCombinationBudget` and
-   * `urlTitleMaximumProbesPerDerivation` into a `UrlTitleProbeBudget`, wired each into both graphs, and were
-   * withdrawn twice — the combination ceiling because "a capacity limit is a control
-   * `model/service/SkuService.cfc:L85-L89` cannot express", the probe ceiling because "a refused derivation
-   * is an outcome `model/service/DataService.cfc:L64`'s `while(!unique)` never produces". The decisive
-   * argument offered for both was CARDINALITY rather than merits: that AAP §0.6.7.7 licenses exactly ONE
-   * departure from behavioural preservation, D18.
+   * ⛔ ONE OBJECTION IS RAISED AGAINST BOTH AND IT DOES NOT HOLD — recorded here because acting on it would
+   * remove a live control. The objection is CARDINALITY: that AAP §0.6.7.7 licenses exactly ONE departure
+   * from behavioural preservation, D18, so "a capacity limit is a control
+   * `model/service/SkuService.cfc:L85-L89` cannot express" and "a refused derivation is an outcome
+   * `model/service/DataService.cfc:L64`'s `while(!unique)` never produces".
    *
-   * ⛔ WHY THAT ARGUMENT DOES NOT HOLD. §0.6.7 is the DEFECT AND TODO CARRY-OVER REGISTER, and its
+   * ⛔ WHY IT DOES NOT HOLD. §0.6.7 is the DEFECT AND TODO CARRY-OVER REGISTER, and its
    * twenty-one entries are legacy BUSINESS-LOGIC defects; D18 is the one member of that register the port
    * repairs. Availability of the extracted service is not an entry in it. With no user Rules (§0.7.1) the
    * plan binds this port to §0.7.3's enterprise standards, and the security checkpoint this remediation

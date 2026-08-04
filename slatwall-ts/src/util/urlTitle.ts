@@ -51,11 +51,9 @@ import { ConfigurationError, DomainError } from '../errors/DomainError';
  * hexagonal leaf and this file's ONLY import is the sibling error leaf `../errors/DomainError`
  * (AAP 0.7.3, S4).
  *
- *   ⚠️ THAT SENTENCE HAS READ BOTH WAYS, AND THE ROUND TRIP IS RECORDED RATHER THAN TIDIED AWAY. It
- *   said "NO IMPORTS AT ALL" while this file bounded nothing, and it says "one import" whenever the file
- *   can refuse. An earlier checkpoint added a finite attempt budget, which needed the error type; the
- *   budget was removed and the import went with it; review finding SEC-DOS-03 reinstated both. The
- *   distinction that matters for S4 never changed through any of it: NO port, adapter, service, config,
+ *   ⚠️ ONE IMPORT, NOT ZERO, AND THE REASON IS THE REFUSAL. A file that can refuse needs a classified
+ *   error type, so the probe budget of review finding SEC-DOS-03 is what makes `../errors/DomainError`
+ *   necessary here. The distinction that matters for S4 is unaffected: NO port, adapter, service, config,
  *   handler or integration module is imported here, and none ever should be, because those are the edges
  *   that would make a leaf into a layer. `../errors/` is the one sibling leaf it may reach for —
  *   `../validation/Validator` and `../domain/base/populate` both name it for the same reason — and a bare
@@ -84,15 +82,13 @@ export type UniqueValueProbe = (tableName: string, value: string) => Promise<boo
  * unbounded I/O against a shared database, and a caller cannot distinguish it from a hang. That is the
  * exposure, and it is now REFUSED rather than carried.
  *
- * ⛔ THE HISTORY, BECAUSE THIS BOUND HAS BEEN ADDED AND REMOVED BEFORE AND A REVIEWER WILL WANT THE
- * REVERSAL ARGUED RATHER THAN ASSERTED.
- *   1. A finite attempt budget with a deterministic raise was added here, then REMOVED.
- *   2. An optional probe-wrapping budget was added in a sibling leaf `urlTitleProbeBudget.ts` and wired
- *      from `../services/BrandService.ts` and `../services/ProductService.ts`, then REMOVED with the file.
- *   3. ⭐ A REQUIRED, OPERATOR-RESOLVED budget is reinstated, as a fourth parameter. This is the current
- *      state.
+ * ⭐ THE CONTROL: a REQUIRED, operator-resolved {@link UrlTitleProbeBudget}, taken as the FOURTH parameter
+ * of {@link createUniqueURLTitle} and consulted once per probe. It lives here, in the leaf that owns the
+ * loop, rather than in a wrapper module or in either calling service, so every caller is bounded by
+ * construction and no caller can opt out.
  *
- * THE THREE AUTHORITIES THAT WERE CITED AGAINST IT, AND WHAT EACH ACTUALLY SUPPORTS.
+ * ⛔ THREE AUTHORITIES ARE ROUTINELY CITED AGAINST HOLDING A BOUND HERE AT ALL, AND THE ANSWER TO EACH IS
+ * RECORDED SO THE CONTROL IS NOT REMOVED ON ONE OF THEM. What each actually supports:
  *   1. "This file's own frozen build specification: do not add a maximum-attempts ceiling, a retry cap, a
  *      timeout, an AbortSignal, or a fallback that appends a UUID." ⭐ THE FALLBACK PROHIBITION STANDS AND
  *      IS HONOURED: nothing below fabricates a title, appends a UUID, or returns a value the probe has not
@@ -100,9 +96,9 @@ export type UniqueValueProbe = (tableName: string, value: string) => Promise<boo
  *      specification for a ported algorithm cannot be read as a specification that the deployed service
  *      must remain exhaustible, because that is not a property of the algorithm at all.
  *   2. "AAP §0.8.2 Guideline 4 and IR-9 carry defects across with EXACTLY ONE declared exception, D18."
- *      ⛔ THIS IS THE MISREADING THAT DROVE BOTH WITHDRAWALS. §0.6.7 is the DEFECT AND TODO CARRY-OVER
- *      REGISTER; its twenty-one entries are legacy BUSINESS-LOGIC defects and D18 is the one member of
- *      THAT register the port repairs. Exhaustibility of the extracted service is not an entry in it.
+ *      ⛔ THIS IS A MISREADING, AND IT IS THE ONE MOST LIKELY TO BE ACTED ON. §0.6.7 is the DEFECT AND
+ *      TODO CARRY-OVER REGISTER; its twenty-one entries are legacy BUSINESS-LOGIC defects and D18 is the
+ *      one member of THAT register the port repairs. Exhaustibility of the extracted service is not an entry in it.
  *      Guideline 4 forbids enhancing BUSINESS LOGIC; a probe ceiling changes no URL title this function
  *      returns for any input it admits, and the `-2`-first suffix sequence is untouched.
  *   3. "AAP §0.7.3 S9 — invent nothing; every possible value of a ceiling is a fabricated number, and

@@ -778,49 +778,22 @@ export interface ProductServiceCollaborators {
    * The ceiling on how many uniqueness probes ONE URL-title derivation may issue — review finding
    * SEC-DOS-03; see `../util/urlTitle`'s `UrlTitleProbeBudget`.
    *
-   * ⭐ REQUIRED, AND IT CARRIES A RESOLVER RATHER THAN A NUMBER. Two earlier revisions declared it and two
-   * withdrew it — first as a relocated fabrication, then on AAP §0.6.7.7's single-departure count. Neither
-   * objection survives a resolver whose absent case is a named `ConfigurationError`: the figure is the
-   * operator's or there is none, no default is substituted anywhere in the chain, and `../util/urlTitle`
-   * argues the reversal in full. Both derivations this service performs — `SwProduct` and `SwProductType`
-   * — share the one budget, because both are one derivation each.
+   * ⭐ REQUIRED, AND IT CARRIES A RESOLVER RATHER THAN A NUMBER, WHICH IS WHAT ANSWERS BOTH STANDING
+   * OBJECTIONS TO IT — that a required ceiling relocates a fabricated figure, and that AAP §0.6.7.7 counts
+   * only one departure. A resolver whose absent case is a named `ConfigurationError` fabricates nothing: the
+   * figure is the operator's or there is none, and no default is substituted anywhere in the chain.
+   * `../util/urlTitle` carries the authority in full. Both derivations this service performs — `SwProduct`
+   * and `SwProductType` — share the one budget, because both are one derivation each.
    */
   readonly urlTitleProbeBudget: UrlTitleProbeBudget;
 
-  /**
-   * OPTIONAL supplier of the invocation-scoped import controls
-   * {@link ProductService.loadDataFromFile} forwards to the port.
-   *
-   * ⭐ WHY IT IS A COLLABORATOR AND NOT A THIRD PARAMETER, WHICH IS THE WHOLE POINT OF ITS EXISTENCE.
-   * `loadDataFromFile` briefly took `options?: ProductImportOptions` as a THIRD argument. AAP §0.4.2.1
-   * declares the member as `loadDataFromFile(fileURL: string, textQualifier?: string)` — two arguments —
-   * and a code review classified the third as a MAJOR interface-parity defect, directing that the exact
-   * public arity be restored and that "extra controls" move "behind private collaborators or distinct
-   * non-parity APIs". This is that private collaborator: the controls now arrive through the graph
-   * instead of through the preserved signature, so §0.8.3.1's member-by-member parity claim holds and
-   * the capability is not lost.
-   *
-   * ⛔ IT SUPPLIES NOTHING BY DEFAULT, AND THE DEFAULT IS THE LEGACY. Omit it and the member forwards
-   * `undefined`, which is what `model/dao/ProductDAO.cfc:L73` — two arguments, run to completion or die
-   * with the request — does. `src/config/container.ts` does NOT wire it, so no deployment inherits a
-   * cancellation policy or a back-fill deferral this port chose (AAP §0.7.3 S9). A deployment that
-   * orchestrates the importer out of band (mismatch M1) supplies a provider that reads ITS OWN
-   * per-invocation controls.
-   *
-   * ⚠️ IT IS A FUNCTION RATHER THAN A VALUE, AND THAT IS MISMATCH M7. A stored `ProductImportOptions`
-   * would carry one invocation's `AbortSignal` into every later invocation on a warm container — a
-   * signal already aborted, cancelling imports that were never asked to stop. Reading it per call is what
-   * keeps the controls request-scoped.
-   */
-  /* ⛔ AN `importOptions` COLLABORATOR STOOD HERE AND IS WITHDRAWN WITH THE CONTROLS IT CARRIED. It was
-   * added to hold the importer's cancellation signal and deferred-backfill switch behind a private read,
-   * after a review classified those as an unapproved THIRD public parameter on `loadDataFromFile` — the
-   * arity AAP §0.4.2.2 tabulates is two. Moving them behind a collaborator satisfied the parity finding but
-   * left the controls themselves in place, and two other reviews withdrew the controls outright:
-   * `model/service/ProductService.cfc:L65-L68` sets a request timeout and nothing else, so there is no
-   * legacy counterpart for a caller-supplied cancellation, and AAP §0.6.7.7 licenses exactly one
-   * behavioural departure (D18). With nothing left to carry, the channel goes too — and the public member
-   * is two parameters, which is what the parity finding asked for in the first place. */
+  /* ⛔ THERE IS NO `importOptions` COLLABORATOR AND NO THIRD PARAMETER ON `loadDataFromFile`, AND NEITHER
+   * MAY BE ADDED. AAP §0.4.2.1 tabulates the member as `loadDataFromFile(fileURL, textQualifier?)` — two
+   * arguments — and §0.8.3.1 makes that arity the artefact a reviewer checks. A cancellation signal or a
+   * deferred-backfill switch has no legacy counterpart either: `model/service/ProductService.cfc:L65-L68`
+   * sets a request timeout and nothing else, so a caller-supplied control would be a capability the source
+   * does not describe (AAP §0.7.3 S9, IR-12). A deployment that must orchestrate the importer out of band
+   * does so at the handler layer, where mismatch M1 is flagged. */
 
   /**
    * The direct persister behind `getHibachiDAO().save(target=arguments.product)` at
@@ -1755,13 +1728,12 @@ export class ProductService {
    * PRE-INCREMENTED so the first collision suffix is `-2` rather than `-1`. Nothing about the algorithm
    * is restated here; this member supplies the table discriminator and the injected probe.
    *
-   * ⭐ THE UTILITY TAKES A FOURTH ARGUMENT AND THE LOOP IS BOUNDED — REVIEW FINDING SEC-DOS-03. The
-   * ceiling has been added and withdrawn twice before: first as a required bare number (withdrawn as a
-   * relocated fabrication), then as an optional probe wrapper (withdrawn on AAP §0.6.7.7's
-   * single-departure count). It is now a REQUIRED budget carrying a RESOLVER, so the figure is the
-   * operator's or the derivation refuses by name — `../util/urlTitle` argues that reversal in full.
-   * Both derivations below share the injected budget and each is one derivation, so neither can spend
-   * the other's allowance. Inside the budget both probe exactly as `:L64` does.
+   * ⭐ THE UTILITY TAKES A FOURTH ARGUMENT AND THE LOOP IS BOUNDED — REVIEW FINDING SEC-DOS-03. That
+   * argument is a REQUIRED budget carrying a RESOLVER, so the figure is the operator's or the derivation
+   * refuses by name; `../util/urlTitle` carries the authority for holding the bound there and answers the
+   * two objections usually raised against it. Both derivations below share the injected budget and each is
+   * one derivation, so neither can spend the other's allowance. Inside the budget both probe exactly as
+   * `:L64` does.
    */
   private createUniqueProductUrlTitle(titleString: string): Promise<string> {
     return createUniqueURLTitle(
@@ -1840,35 +1812,28 @@ export class ProductService {
    * `model/dao/ProductDAO.cfc:L87`.
    *
    * ==============================================================================================
-   * ⛔ SEC-08 IS WITHDRAWN — THE LOCATION IS NOT GATED HERE, AND IT IS NOT GATED ANYWHERE ELSE EITHER
+   * ⛔ SEC-08 — THE LOCATION IS DELIBERATELY NOT GATED *HERE*, AND IT IS GATED AT THE RETRIEVAL SINK
    * ==============================================================================================
-   * This decision went through four revisions and the account is kept in full, because a future revision
-   * that wants to reinstate the gate should have to answer the reason it was withdrawn rather than
-   * re-derive the reasons it was attractive. Revision 1 ran the caller's `fileURL` through a
-   * `validateProductImportSource` gate against an injected allow-list policy in THIS member. Revision 2
-   * removed all of it — the gate, the policy collaborator, the branded source type and the four
-   * address-level obligations the port laid on an adapter. Revision 3 reinstated the refusal, moved it to
-   * the sink, and made it an obligation of every implementation of the port. REVISION 4 WITHDRAWS THE
-   * REFUSAL ENTIRELY: no scheme, credential or address-literal check exists in this subtree.
+   * ⭐ WHERE THE REFUSAL LIVES, SO NOBODY LOOKS FOR IT IN THIS MEMBER AND CONCLUDES THERE IS NONE.
+   * `ProductImportSourcePolicy.validateSource` is declared on `src/ports/repositories/ProductRepository.ts`
+   * as a REQUIRED member of any retrieving reader, and `MySqlProductRepository.importFromFile` calls it ONCE
+   * — before any transaction opens and before any read member can be reached — minting the branded
+   * `ValidatedProductImportSource` those read members are the only accepted argument for. A reader therefore
+   * CANNOT be reached with a location that never met a policy; the guarantee is structural rather than
+   * documentary.
    *
-   * ⛔ WHY, WHEN REVISION 3'S ARGUMENT WAS A GOOD ONE. It rested on a real fact —
-   * `model/dao/ProductDAO.cfc:L87` retrieves through `getService("utilityTagService")`, no such bean is
-   * declared anywhere in the legacy repository, and the `new http()` block at `:L89-L98` is commented out,
-   * so the set of locations the legacy would actually fetch is EMPTY and refusing one alters no legacy
-   * outcome. The withdrawal does not dispute that. It rests on the COUNT: AAP §0.6.7.7 authorises exactly
-   * ONE departure from behavioural preservation in this port — D18, the importer's parameterised SQL — and
-   * says so precisely to give a reviewer diffing behaviour a fixed number of entries to check. AAP §0.8.2
-   * Guideline 4 forbids enhancement beyond what the migration requires and admits no proportionality test,
-   * and AAP §0.6.7 mandates preserve-and-annotate rather than repair.
+   * ⭐ AND THAT COSTS NO BEHAVIOURAL DEPARTURE, WHICH IS WHY IT DOES NOT ENGAGE §0.6.7.7's COUNT. The port
+   * names no scheme, no host, no address range and no number: a permissive implementation that admits
+   * whatever it is given reproduces `model/dao/ProductDAO.cfc:L87` exactly. What the policy decides is the
+   * OPERATOR's, arriving with the retrieving reader they inject, so nothing here invents a rule (AAP §0.7.3
+   * S9, IR-12) and no location the legacy would have fetched is refused by this port's own choice.
    *
-   * ⭐ WHAT REMAINS BENEATH THIS MEMBER IS A WIRING SHAPE, NOT A REFUSAL. `ProductImportSourcePolicy` on
-   * `src/ports/repositories/ProductRepository.ts` is a REQUIRED member of any retrieving reader, so an
-   * operator who supplies retrieval supplies a policy with it — but it names no scheme, no host, no
-   * address range and no number, and a permissive implementation that admits whatever it is given
-   * reproduces `:L87` exactly. The only reader this subtree ships retrieves nothing and declines every
-   * member. This service could not hold the policy in any case: it may not import `src/adapters/**` (S4).
+   * ⛔ IT COULD NOT LIVE IN THIS SERVICE IN ANY CASE, AND MUST NOT BE MOVED HERE. This module may not import
+   * `src/adapters/**` (S4), and gating above the sink would mean gating a string that is then normalised
+   * further downstream — the classic normalise-then-validate bypass. The only reader this subtree ships
+   * retrieves nothing and declines every member, so the shipped default fetches no location at all.
    *
-   * ⚠️ WHAT THIS MEMBER OWES IS STILL A NEGATIVE OBLIGATION, AND THE WITHDRAWAL DOES NOT WEAKEN IT. It
+   * ⚠️ WHAT THIS MEMBER OWES IS THEREFORE A NEGATIVE OBLIGATION, AND IT IS THE STRICTER HALF OF THE FIX. It
    * must forward `fileURL` BYTE-FOR-BYTE — no trim, no normalisation, no re-encoding, no rewriting of any
    * kind. Two independent reasons now: `model/dao/ProductDAO.cfc:L74` derives the delimiter from the RAW
    * string, so a rewrite here could change which delimiter the import chooses; and whatever an operator's
@@ -1887,9 +1852,9 @@ export class ProductService {
    * has no test either (AAP §0.6.5.2).
    *
    * @param fileURL - The location the caller asks to import from, forwarded to the repository UNTOUCHED
-   *   and UNCHECKED, exactly as `:L67` forwards it. Forwarding it unmodified is what lets the delimiter be
-   *   derived from the string the caller actually wrote, and what lets any policy an operator injects be
-   *   evaluated against that same string.
+   *   and UNINSPECTED BY THIS MEMBER, exactly as `:L67` forwards it. Forwarding it unmodified is what lets
+   *   the delimiter be derived from the string the caller actually wrote, and what lets the policy the
+   *   repository applies be evaluated against that same string.
    * @param textQualifier - The optional text qualifier, defaulting to the empty string as `:L65` does.
    * @returns Nothing. `model/dao/ProductDAO.cfc:L73` reports no row count and no error summary, and
    *   inventing one would be inventing information the legacy never produced.
@@ -1903,9 +1868,10 @@ export class ProductService {
      * evaluated against that same string. Trimming or normalising it here would hand whatever is
      * downstream a value the caller never supplied.
      *
-     * ⛔ AND NOTHING DOWNSTREAM REFUSES IT. A revision gated the location at the retrieval seam; that gate
-     * is withdrawn (AAP §0.6.7.7 authorises one behavioural departure, D18), so the whole CWE-918 surface
-     * is carried as mismatch M4.
+     * ⭐ AND THE SINK DOES REFUSE IT, WHICH IS WHY NOTHING HERE HAS TO. `importFromFile` puts the location
+     * through `ProductImportSourcePolicy.validateSource` before any read member can see it; what that
+     * policy admits is the operator's decision, so the residual CWE-918 surface stays flagged as mismatch
+     * M4 rather than closed by this port on the operator's behalf.
      *
      * ⚠️ NO RETRIEVER SHIPS, AND THAT IS DELIBERATE RATHER THAN AN OVERSIGHT. The only implementation in
      * the subtree is `unresolvableProductImportSourceReader` in

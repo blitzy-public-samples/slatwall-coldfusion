@@ -945,7 +945,7 @@ describe('meta/tests/unit/IssuesTest.cfc — catalog issue regressions', () => {
    *    which raw `entitySave` never did — a consequence of using the service, not a property of issue
    *    1097. Keeping the product identified holds the regression on its actual subject.
    */
-  it('issue_1097', async () => {
+  it('TRACEABLE issue_1097 — meta/tests/unit/IssuesTest.cfc:L51', async () => {
     const subjectProductID = 'issue-1097-subject';
     const otherProductID = 'issue-1097-other';
     const merchandiseProductType = buildProductType({
@@ -1171,7 +1171,7 @@ describe('meta/tests/unit/IssuesTest.cfc — catalog issue regressions', () => {
    * a plain `SELECT aslatwallproduct.*`, faithfully. That is asserted below rather than assumed, and the
    * following case asserts what the absent flag WOULD cost if the query ever did fan.
    */
-  it('issue_1296', async () => {
+  it('TRACEABLE issue_1296 — meta/tests/unit/IssuesTest.cfc:L73', async () => {
     const pageOneRun = realProductSmartList(ISSUE_1296_ROWS);
     const pageTwoRun = realProductSmartList(ISSUE_1296_ROWS);
 
@@ -1335,7 +1335,7 @@ describe('meta/tests/unit/IssuesTest.cfc — catalog issue regressions', () => {
    * identifier. The excluded non-persistent `qats` member is never named or read — the boundary in
    * AAP section 0.2.2.6 holds.
    */
-  it('issue_1329', async () => {
+  it('TRACEABLE issue_1329 — meta/tests/unit/IssuesTest.cfc:L91', async () => {
     const harness = buildHarness({
       smartListOutcomes: [{ kind: 'page', metrics: {} }],
     });
@@ -1375,7 +1375,7 @@ describe('meta/tests/unit/IssuesTest.cfc — catalog issue regressions', () => {
    * The process itself is never executed. Availability is what :L106 asks about, so the D14
    * first-option-only defect and the image-filename chain are correctly out of this regression's reach.
    */
-  it('issue_1331', async () => {
+  it('TRACEABLE issue_1331 — meta/tests/unit/IssuesTest.cfc:L101', async () => {
     const contentAccessProductType = buildProductType({
       productTypeID: CONTENT_ACCESS_PRODUCT_TYPE_ID,
       productTypeName: 'Content Access',
@@ -1482,7 +1482,7 @@ describe('meta/tests/unit/IssuesTest.cfc — catalog issue regressions', () => {
    * messages are RAW CONSTRUCTED KEYS, not translated sentences. No resource bundle is consulted, no
    * `_missing` suffix is appended, and no case, spacing or pluralisation normalisation is applied.
    */
-  it('issue_1335', async () => {
+  it('TRACEABLE issue_1335 — meta/tests/unit/IssuesTest.cfc:L110', async () => {
     const productID = 'issue-1335-product';
     const product = buildProduct({ productID });
     const repository = createInMemorySkuRepository({});
@@ -1553,7 +1553,7 @@ describe('meta/tests/unit/IssuesTest.cfc — catalog issue regressions', () => {
    *   :L137  assert(sku.hasError('price'));
    *   :L138  assert(right(sku.getError('price')[1],8) neq "_missing");
    */
-  it('issue_1348', async () => {
+  it('TRACEABLE issue_1348 — meta/tests/unit/IssuesTest.cfc:L126', async () => {
     const productID = 'issue-1348-product';
     const product = buildProduct({ productID });
     const repository = createInMemorySkuRepository({});
@@ -1678,7 +1678,7 @@ describe('meta/tests/unit/IssuesTest.cfc — catalog issue regressions', () => {
    *     `org/Hibachi/HibachiScope.cfc` facade; the target reaches the same two seams directly, through
    *     explicit constructor injection rather than a string-keyed scope lookup.
    */
-  it('issue_1690', async () => {
+  it('TRACEABLE issue_1690 — meta/tests/unit/IssuesTest.cfc:L192', async () => {
     const harness = buildHarness({ settings: [PRODUCT_TITLE_STRING_SETTING] });
 
     // The caller from :L196-:L200, written once and exercised down both branches. It is the only place
@@ -1783,7 +1783,7 @@ describe('meta/tests/unit/IssuesTest.cfc — catalog issue regressions', () => {
    * `BaseService` raise reaches the caller untouched. The divergence is a legacy structural difference
    * between the two services, faithfully carried, not an inconsistency in the port.
    */
-  it('issue_1690_2', async () => {
+  it('TRACEABLE issue_1690_2 — meta/tests/unit/IssuesTest.cfc:L203', async () => {
     const harness = buildHarness({ settings: [PRODUCT_TITLE_STRING_SETTING] });
 
     // :L204-:L205 — straight to save, with no guard and an empty payload.
@@ -3524,7 +3524,7 @@ describe('test/handlers/httpResponse.test.ts — the shared response shaping eve
    * ============================================================================================== */
 
   describe('readQueryStringParameter — the container payload format 2.0 omits most often', () => {
-    it('NET-NEW — the container key ABSENT answers `undefined` instead of raising a TypeError', () => {
+    it('NET-NEW — an absent queryStringParameters answers `undefined`, never a TypeError', () => {
       expect(readQueryStringParameter({}, 'fileURL')).toBeUndefined();
     });
 
@@ -4841,10 +4841,12 @@ describe('test/handlers/entrySurface.test.ts — the six Lambda entry artifacts,
    * and these cases are what keep them doing so. A re-export deleted as "unused" would compile, lint, pass
    * every other suite, and silently restore the defect.
    *
-   * WHAT IS ASSERTED: that each gated entry publishes the SHARED declaration rather than a copy; that the
-   * ungated feed entry publishes none, because it gates nothing; that a resolver registered THROUGH an
-   * entry's own export changes what that entry answers, on a dispatcher already built; and that a second
-   * registration still raises, so re-exporting the registrar did not weaken its one-owner rule.
+   * WHAT IS ASSERTED: that each gated entry publishes the SHARED registrar rather than a copy; that NONE of
+   * them publishes the test-only reset (review finding F13, asserted by name, because `clear` then
+   * `register` re-points the gate); that the ungated feed entry publishes neither, because it gates nothing;
+   * that a resolver registered THROUGH an entry's own export changes what that entry answers, on a
+   * dispatcher already built; and that a second registration still raises, so re-exporting the registrar did
+   * not weaken its one-owner rule.
    *
    * ⚠️ NO DATABASE IS REACHED HERE EITHER, AND THE ADDRESS BELOW IS CHOSEN FOR THAT REASON. `brand.saveBrand`
    * runs its gate first and parses the body second, so an authorised invocation carrying NO body is refused
@@ -4856,9 +4858,19 @@ describe('test/handlers/entrySurface.test.ts — the six Lambda entry artifacts,
    * contains no controller or routing test of any kind, and the legacy had no such seam to test.
    * ================================================================================================== */
 
-  /** The registration seam a gated entry must publish, narrowed for the requires below. */
-  interface AuthorizationSeamModule {
+  /**
+   * The registration seam a gated entry must publish: the REGISTRAR, and nothing else.
+   *
+   * ⛔ THE RESET IS DELIBERATELY NOT PART OF THIS SHAPE — review finding F13. `clear` followed by `register`
+   * re-points the gate, which is what the registrar's single-shot refusal exists to prevent, so no gated
+   * artifact publishes the reset and the case below asserts its ABSENCE by name.
+   */
+  interface GatedEntryAuthorizationSurface {
     readonly registerRequestAuthorizationResolver: (resolver: CatalogAuthorizationResolver) => void;
+  }
+
+  /** The shared declaration site, which additionally publishes the TEST-ONLY reset. */
+  interface AuthorizationSeamModule extends GatedEntryAuthorizationSurface {
     readonly clearRequestAuthorizationResolver: () => void;
   }
 
@@ -4889,9 +4901,9 @@ describe('test/handlers/entrySurface.test.ts — the six Lambda entry artifacts,
 
   describe('NET-NEW entry surface — every gated entry publishes the deployment registration seam', () => {
     it.each(GATED_ENTRIES.map((entry) => [entry.name, entry.path] as const))(
-      '[NET-NEW] %s re-exports the shared registrar itself, not a copy of it',
+      '[NET-NEW] %s re-exports the shared registrar itself — and not the test-only reset (F13)',
       (_name, modulePath) => {
-        const entry = jest.requireActual<AuthorizationSeamModule>(modulePath);
+        const entry = jest.requireActual<GatedEntryAuthorizationSurface>(modulePath);
         const shared = jest.requireActual<AuthorizationSeamModule>(
           '../../src/handlers/httpResponse',
         );
@@ -4903,10 +4915,17 @@ describe('test/handlers/entrySurface.test.ts — the six Lambda entry artifacts,
         expect(entry.registerRequestAuthorizationResolver).toBe(
           shared.registerRequestAuthorizationResolver,
         );
-        expect(entry.clearRequestAuthorizationResolver).toBe(
-          shared.clearRequestAuthorizationResolver,
-        );
         expect(entry.registerRequestAuthorizationResolver).toHaveLength(1);
+
+        /* ⛔ AND THE RESET IS ABSENT FROM THE ARTIFACT'S SURFACE — review finding F13, asserted here because
+         * a re-export added back as a convenience would compile, lint and pass every other case. With the
+         * reset published, `clear` then `register` walks around the single-shot refusal asserted below, and
+         * anything holding the artifact can drop or swap the deployment's resolver in process. It stays
+         * reachable from `src/handlers/httpResponse` alone, which is not an esbuild entry point. */
+        const surface = jest.requireActual<Record<string, unknown>>(modulePath);
+
+        expect(surface['clearRequestAuthorizationResolver']).toBeUndefined();
+        expect(typeof shared.clearRequestAuthorizationResolver).toBe('function');
       },
     );
 
@@ -4923,7 +4942,10 @@ describe('test/handlers/entrySurface.test.ts — the six Lambda entry artifacts,
     });
 
     it('[NET-NEW] a second registration still raises, so one declaration owns the gate', () => {
-      const entry = jest.requireActual<AuthorizationSeamModule>('../../src/handlers/skuHandler');
+      const entry = jest.requireActual<GatedEntryAuthorizationSurface>(
+        '../../src/handlers/skuHandler',
+      );
+      const shared = jest.requireActual<AuthorizationSeamModule>('../../src/handlers/httpResponse');
 
       try {
         entry.registerRequestAuthorizationResolver(admitEverything);
@@ -4935,7 +4957,10 @@ describe('test/handlers/entrySurface.test.ts — the six Lambda entry artifacts,
           entry.registerRequestAuthorizationResolver(admitEverything);
         }).toThrow(/already registered/);
       } finally {
-        entry.clearRequestAuthorizationResolver();
+        /* The reset comes from the SHARED module, not from the artifact: F13 is why the artifact has none,
+         * and a suite that could only reach it through an entry point would be an argument for republishing
+         * it there. */
+        shared.clearRequestAuthorizationResolver();
       }
     });
   });
@@ -4963,9 +4988,10 @@ describe('test/handlers/entrySurface.test.ts — the six Lambda entry artifacts,
 
     it('[NET-NEW] brandHandler answers 401 before registration and passes its gate after', async () => {
       const capture = captureErrorStream();
-      const entry = jest.requireActual<LambdaEntryModule & AuthorizationSeamModule>(
+      const entry = jest.requireActual<LambdaEntryModule & GatedEntryAuthorizationSurface>(
         '../../src/handlers/brandHandler',
       );
+      const shared = jest.requireActual<AuthorizationSeamModule>('../../src/handlers/httpResponse');
 
       try {
         /* Fail-closed first, from the artifact's own default resolver — the state every deployment starts
@@ -4992,16 +5018,17 @@ describe('test/handlers/entrySurface.test.ts — the six Lambda entry artifacts,
         /* Neither answer is a failure, so nothing is written to the error stream. */
         expect(capture.lines).toEqual([]);
       } finally {
-        entry.clearRequestAuthorizationResolver();
+        shared.clearRequestAuthorizationResolver();
         capture.restore();
       }
     });
 
-    it('[NET-NEW] clearing through the artifact restores the fail-closed answer', async () => {
+    it('[NET-NEW] the reset restores the fail-closed answer, and is reachable only off-artifact (F13)', async () => {
       const capture = captureErrorStream();
-      const entry = jest.requireActual<LambdaEntryModule & AuthorizationSeamModule>(
+      const entry = jest.requireActual<LambdaEntryModule & GatedEntryAuthorizationSurface>(
         '../../src/handlers/brandHandler',
       );
+      const shared = jest.requireActual<AuthorizationSeamModule>('../../src/handlers/httpResponse');
 
       try {
         entry.registerRequestAuthorizationResolver(admitEverything);
@@ -5009,16 +5036,21 @@ describe('test/handlers/entrySurface.test.ts — the six Lambda entry artifacts,
           HTTP_STATUS.BAD_REQUEST,
         );
 
-        entry.clearRequestAuthorizationResolver();
+        /* ⛔ THE ARTIFACT CANNOT DO THIS, AND THAT IS THE POINT OF F13. The reset is not on the entry's
+         * surface — asserted by name in the identity case above — so a deployment holding
+         * `dist/handlers/brandHandler.js` has no route back to the fail-closed state except a fresh module
+         * registry. The suite reaches it through the shared module instead. */
+        shared.clearRequestAuthorizationResolver();
 
-        /* The only thing clearing can do is take the gate AWAY: the cell returns to absent, which is the
-         * fail-closed state, so it can never be used to install a principal or relax a refusal. */
+        /* And the only thing the reset can do is take the gate AWAY: the cell returns to absent, which is
+         * the fail-closed state, so it can never install a principal or relax a refusal. What it CAN do,
+         * followed by a second `register`, is re-point the gate — which is why it is not published. */
         expect((await entry.handler(eventFor('brand.saveBrand'))).statusCode).toBe(
           HTTP_STATUS.UNAUTHORIZED,
         );
         expect(capture.lines).toEqual([]);
       } finally {
-        entry.clearRequestAuthorizationResolver();
+        shared.clearRequestAuthorizationResolver();
         capture.restore();
       }
     });
@@ -5050,32 +5082,30 @@ describe('test/handlers/entrySurface.test.ts — the six Lambda entry artifacts,
  * WHY THIS FILE EXISTS AT ALL. Before it, `GOOGLE_FEED_HOST` appeared NOWHERE under test/ — a grep for
  * the name returned nothing — so the variable that composes every absolute URL in the anonymous public
  * Google feed had no coverage of any kind, and `.env.example` described a trust boundary no code enforced.
- * The suite outlived the rule it was written for, and that is the point of keeping it: it is now what pins
- * the ABSENCE of the rule, in both directions, so the document and the loader cannot drift apart again.
+ * It now pins the loader's rule in BOTH directions, so the document and the loader cannot drift apart.
  *
- * ⛔ WHAT THE RULE WAS, AND WHY IT IS GONE. A `requireHostAuthorityValue` reader transcribed RFC 3986
- * §3.2.2's `host` production with §3.2.3's optional `port` — RFC 9110 §7.2 defines the HTTP `Host` field
- * as exactly that, and the legacy view composed its URLs from `CGI.HTTP_HOST`, so a value outside the
- * production could never have been the input the legacy was designed to accept. The transcription was
- * accurate and its citations check out. It is WITHDRAWN all the same, because AAP §0.6.7.7 authorises
- * exactly ONE departure from behavioural preservation in this port — D18, the importer's parameterised
- * SQL — and names it so that a reviewer diffing behaviour has exactly one entry to check; AAP §0.7.1
- * records the plan as FROZEN and AAP §0.8.2 Guideline 4 admits no proportionality test. The current review
- * names feed "host rejection" among the unauthorised changes and directs its removal.
+ * ⭐ WHAT THE RULE IS. `requireHostAuthorityValue` transcribes RFC 3986 §3.2.2's `host` production with
+ * §3.2.3's optional `port`. Review finding F8 directs it, classifying an unvalidated read as a MAJOR defect
+ * (CWE-20 feeding CWE-601). ⛔ AND IT ENTERS NO DIVERGENCE REGISTER, which is the objection it has to answer:
+ * RFC 9110 §7.2 DEFINES the HTTP `Host` field — what `CGI.HTTP_HOST` carries — as exactly that production, so
+ * a value outside it could never have been the input the legacy was designed to accept. A rule that admits
+ * every value the legacy input could hold and refuses only values it could not FORECLOSES NO LEGACY OUTCOME,
+ * so AAP §0.6.7.7's count of one departure (D18) is untouched by it.
  *
- * ⭐ WHAT THIS SUITE NOW ASSERTS ABOUT THAT VARIABLE. Presence and non-blankness are still required — a
- * configuration-COMPLETENESS rule, and the legacy has no environment variable to leave empty, so it
- * diverges from nothing. Everything else is accepted and stored VERBATIM, and §2 asserts that for the
- * exact fourteen shapes the withdrawn grammar used to refuse, so a reinstatement fails loudly here.
+ * ⭐ WHAT THIS SUITE ASSERTS ABOUT THAT VARIABLE. §1 that every value inside the production is ACCEPTED and
+ * stored verbatim; §2 and §3 that each of the fourteen shapes outside it is REFUSED, by name, so a
+ * withdrawal of the rule fails loudly here; and that presence and non-blankness are required as a separate
+ * configuration-COMPLETENESS rule.
  *
- * ⭐ AND `DB_HOST` IS DIFFERENT, WHICH §4 PINS. It stands in for the `Slatwall` datasource DEFINITION at
- * `config/configApplication.cfm:L2` rather than for a value the legacy emitted, and a host outside the
+ * ⭐ AND `DB_HOST` HAS ITS OWN GRAMMAR, WHICH §4 PINS. It stands in for the `Slatwall` datasource DEFINITION
+ * at `config/configApplication.cfm:L2` rather than for a value the legacy emitted, and a host outside the
  * production cannot be connected to under either system — so refusing it at load forecloses no successful
- * legacy outcome and its grammar survives.
+ * legacy outcome either.
  *
- * ⛔ WHAT THIS SUITE DOES NOT ASSERT. That the configured feed host is the RIGHT host, or a legal one. The
- * whole origin-rebasing and XML-corruption exposure is carried and flagged at
- * `src/integrations/google/ProductFeedBuilder.ts`'s THERE IS NO `validateFeedHostAuthority` note.
+ * ⛔ WHAT THIS SUITE DOES NOT ASSERT. That the configured feed host is the RIGHT host, or one the deployment
+ * controls. No allowlist of permitted feed hosts exists anywhere, and that residual origin-rebasing exposure
+ * is carried and flagged at `src/integrations/google/ProductFeedBuilder.ts` beside
+ * `validateFeedHostAuthority`, which enforces the SHAPE and decides no identity.
  *
  * HOW THE MODULE IS REACHED. `src/config/env.ts` exports one value — `config` — and builds it as a
  * MODULE-LOAD SIDE EFFECT, with no reload, override or reset entry point. That is deliberate in the
@@ -5125,12 +5155,21 @@ describe('test/config/env.test.ts — the configuration loader, which every laye
     'SETTING_APPLICATION_ROOT_MAPPING_PATH',
     'SETTING_SKU_ELIGIBLE_CURRENCIES',
     'SETTING_SKU_ELIGIBLE_FULFILLMENT_METHODS',
-    /* The three finite resource bounds of DECISION H, added by review finding SEC-1 (CWE-400). They belong in
-     * this list for the same reason as every other name: `loadConfigWith` deletes each one before applying a
-     * case's overrides, so a value left in the ambient environment cannot leak between cases. */
+    /* The six finite resource bounds of DECISION H. They belong in this list for the same reason as every
+     * other name: `loadConfigWith` deletes each one before applying a case's overrides, so a value left in
+     * the ambient environment cannot leak between cases.
+     *
+     * ⚠️ THREE OF THE SIX WERE MISSING HERE, WHICH IS THE DRIFT REVIEW FINDING F5 REPORTED SHOWING UP IN THE
+     * HARNESS RATHER THAN IN THE PROSE. `CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY` and the two
+     * `CATALOG_GOOGLE_FEED_*` ceilings were read by the loader and not cleared here, so an ambient value
+     * could have decided a case. The last case in this section now pins this list against the loader's own
+     * census, so the two cannot part company again. */
     'CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY',
+    'CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY',
     'CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST',
     'CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION',
+    'CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD',
+    'CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES',
   ];
 
   /**
@@ -5315,10 +5354,11 @@ describe('test/config/env.test.ts — the configuration loader, which every laye
    * it could not is ALIGNMENT of a port-introduced variable with the value space of the legacy input it
    * replaces, and it enters no divergence register.
    *
-   * ⚠️ WHAT DOES ENTER THE REGISTER IS THE SCHEME, AND IT IS NOT ASSERTED HERE. The serializer emits
-   * `https://` where all five legacy lines hard-code `http://`; that is the port's second and only other
-   * declared divergence beside D18, it is directed by the same finding F8 (CWE-319), and
-   * `../integrations/ProductFeedBuilder.test.ts` pins it at the sink that makes it.
+   * ⛔ AND NOTHING ABOUT THE FEED ENTERS THE REGISTER, THE SCHEME INCLUDED. The serializer writes the same
+   * `http://` all five legacy lines hard-code, so D18 remains the port's single entry; the cleartext
+   * exposure that follows is carried as an annotated TODO(parity) at
+   * `src/integrations/google/ProductFeedBuilder.ts`'s `FEED_SCHEME_PREFIX`, and
+   * `../integrations/ProductFeedBuilder.test.ts` pins the parity at the sink that emits it.
    * ================================================================================================== */
 
   describe('NET-NEW env — F8: GOOGLE_FEED_HOST refuses everything outside the authority production', () => {
@@ -5748,13 +5788,21 @@ describe('test/config/env.test.ts — the configuration loader, which every laye
     it('[NET-NEW] still says plainly that host IDENTITY is not checked anywhere', () => {
       /*
        * ⚠️ The residual exposure must stay documented. A rule that checks SHAPE is not a rule that checks
-       * WHICH host, and an operator who reads the new grammar paragraph as "the host is verified" would be
+       * WHICH host, and an operator who reads the grammar paragraph as "the host is verified" would be
        * misled in the opposite direction from the original defect. Overclaiming is the same class of
        * documentation failure as underclaiming.
+       *
+       * ⭐ ASSERTED ON THE SUBSTANCE RATHER THAN ON A HEADING. This case used to require the string
+       * `NOT ENFORCED`, which review finding F6 then made ambiguous: the same heading had been used to
+       * claim, falsely, that NO syntax rule ran either. The document now separates the two — the grammar
+       * IS enforced, the identity is NOT — so this case pins the half that must stay a documented gap.
        */
       const envExample = readEnvExample();
 
-      expect(envExample).toContain('NOT ENFORCED');
+      expect(envExample).toContain('THE IDENTITY OF THE HOST');
+      expect(envExample).toContain('whether the authority you name is one you control');
+      /* And it must not have quietly acquired an allowlist claim in the process. */
+      expect(envExample).toContain('no allowlist of permitted feed hosts');
     });
   });
 
@@ -5997,12 +6045,145 @@ describe('test/config/env.test.ts — the configuration loader, which every laye
 
       for (const name of [
         'CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY',
+        'CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY',
         'CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST',
         'CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION',
+        'CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD',
+        'CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES',
       ]) {
         expect(example).toContain(`# ${name}=`);
         /* No uncommented assignment, and therefore no committed value. */
         expect(example).not.toMatch(new RegExp(`^${name}=`, 'mu'));
+      }
+    });
+  });
+
+  /* =====================================================================================================
+   * §9 — The variable census is exhaustive, and it agrees with the loader rather than with itself.
+   * -----------------------------------------------------------------------------------------------------
+   * ⭐ WHY THIS SECTION EXISTS. Review finding F5 measured that `src/config/env.ts` stated "SIXTEEN
+   * variables / SIX required / TEN optional" in five places — including one runtime error message an
+   * operator reads and one comment that cited a `grep` as proof — while the loader read NINETEEN. A count
+   * that a reader is invited to trust and cannot check is worse than no count, so the module now declares
+   * the inventory as DATA and asserts its own arithmetic at load. That closes the internal half.
+   *
+   * ⛔ THIS SECTION CLOSES THE OTHER HALF, WHICH THE MODULE CANNOT CLOSE FOR ITSELF. An internally
+   * consistent census can still be wrong about the loader. These cases read the loader's SOURCE, extract
+   * every `process.env.X` access from it, and require the census to be exactly that set — so adding a read
+   * without amending the census, or the reverse, fails here rather than being discovered by the next
+   * review.
+   * ================================================================================================== */
+
+  describe('NET-NEW env — F5: the variable census matches the loader it documents', () => {
+    /** The loader's own source, read from disk rather than imported, so the reads can be counted. */
+    const ENV_SOURCE = readFileSync(join(__dirname, '..', '..', 'src', 'config', 'env.ts'), 'utf8');
+
+    /** One census entry, as the loader reports it. */
+    interface CensusEntry {
+      readonly name: string;
+      readonly required: boolean;
+      readonly loader: string;
+    }
+
+    /**
+     * The loader's own census, read from a freshly loaded module.
+     *
+     * ⚠️ IT GOES THROUGH `loadConfigWith` RATHER THAN A STATIC IMPORT, FOR THE SAME REASON EVERY OTHER CASE
+     * IN THIS SECTION DOES. `src/config/env.ts` builds `config` as a load-time side effect, so a static
+     * import at the top of this file would demand a valid environment of the WHOLE suite. `loadConfigWith`
+     * installs the valid base, resets the registry and requires the module; requiring it again here answers
+     * from that same fresh registry, so the census and the configuration come from one module instance.
+     *
+     * @returns one entry per variable the loader reads
+     */
+    function environmentVariableCensus(): readonly CensusEntry[] {
+      loadConfigWith();
+
+      /* Same rule, same reason, same single-expression scope as `loadConfigWith`'s own require. */
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const loaded = require(ENV_MODULE_PATH) as {
+        readonly environmentVariableCensus: () => readonly CensusEntry[];
+      };
+
+      return loaded.environmentVariableCensus();
+    }
+
+    /**
+     * Every `process.env.NAME` access the loader performs.
+     *
+     * ⚠️ MATCHED ON THE DOTTED FORM ONLY, AND THAT IS THE POINT RATHER THAN A LIMITATION. The module's own
+     * contract is that each key is a literal dotted access so the key set is statically visible in one
+     * search (standard S3); a computed `process.env[name]` would defeat both that contract and this case,
+     * which is why finding one would be a failure worth having.
+     */
+    function environmentReadsInLoaderSource(): readonly string[] {
+      return [...ENV_SOURCE.matchAll(/process\.env\.([A-Z][A-Z0-9_]*)/gu)]
+        .map((match) => match[1])
+        .filter((name): name is string => name !== undefined);
+    }
+
+    it('[NET-NEW] F5 the census names exactly the variables the loader reads, and no others', () => {
+      const declared = [...environmentVariableCensus()].map((entry) => entry.name).sort();
+      const read = [...new Set(environmentReadsInLoaderSource())].sort();
+
+      expect(declared).toStrictEqual(read);
+    });
+
+    it('[NET-NEW] F5 the census is nineteen names, six required and thirteen optional', () => {
+      const census = environmentVariableCensus();
+      const required = census.filter((entry) => entry.required).map((entry) => entry.name);
+
+      expect(census).toHaveLength(19);
+      expect(required).toStrictEqual([
+        'DB_HOST',
+        'DB_PORT',
+        'DB_NAME',
+        'DB_USER',
+        'DB_PASSWORD',
+        'GOOGLE_FEED_HOST',
+      ]);
+      expect(census.filter((entry) => !entry.required)).toHaveLength(13);
+    });
+
+    it('[NET-NEW] F5 every census entry names a real loader, and the per-loader split is 9/1/3/6', () => {
+      const census = environmentVariableCensus();
+      const perLoader = (loader: string): number =>
+        census.filter((entry) => entry.loader === loader).length;
+
+      expect(perLoader('loadDatabaseConfig')).toBe(9);
+      expect(perLoader('loadGoogleFeedConfig')).toBe(1);
+      expect(perLoader('loadSettingsConfig')).toBe(3);
+      expect(perLoader('loadResourceBoundsConfig')).toBe(6);
+    });
+
+    it('[NET-NEW] F5 the census is frozen, so no caller can rewrite the inventory it audits', () => {
+      const census = environmentVariableCensus();
+
+      expect(Object.isFrozen(census)).toBe(true);
+      expect(new Set(census.map((entry) => entry.name)).size).toBe(census.length);
+    });
+
+    it("[NET-NEW] F5 this harness's own clear-list is the census, so no ambient value can leak", () => {
+      /* THE DEFECT THIS CASE PREVENTS WAS REAL. `LOADER_VARIABLE_NAMES` omitted three of the six resource
+       * bounds, so `loadConfigWith` left whatever the ambient environment held for them in place and an
+       * operator running the suite in a configured shell could have got a different result from CI. */
+      expect([...LOADER_VARIABLE_NAMES].sort()).toStrictEqual(
+        [...environmentVariableCensus()].map((entry) => entry.name).sort(),
+      );
+    });
+
+    it('[NET-NEW] F5 .env.example declares every census name, required ones blank and optional ones commented', () => {
+      const example = readFileSync(ENV_EXAMPLE_PATH, 'utf8');
+
+      for (const { name, required } of environmentVariableCensus()) {
+        if (required) {
+          /* A required name is present and EMPTY, because it has to be filled in. */
+          expect(example).toMatch(new RegExp(`^${name}=$`, 'mu'));
+        } else {
+          /* An optional name is COMMENTED OUT, because a present-but-blank optional value is an error. */
+          expect(example).toContain(`# ${name}=`);
+          expect(example).not.toMatch(new RegExp(`^${name}=`, 'mu'));
+        }
       }
     });
   });

@@ -496,11 +496,18 @@ export class UniquePropertyChecker implements UniquePropertyPort {
    * a silently different answer from the legacy, where the ORM session made the pending rows visible.
    * Bound to `scope.executor` it sees them. That is the whole of M6.
    *
-   * ⛔ AND THE RETURNED INSTANCE DOES *NOT* ALSO TAKE A LOCKING READ. It did for one revision, and that
-   * is withdrawn — see THE LOCKING READ IS WITHDRAWN above. Adopting the boundary's connection makes the
-   * check see the boundary's own pending rows (M6), which is this member's whole purpose; it does NOT
-   * stop a CONCURRENT boundary reading past this one between its check and its write, and that residual
-   * CWE-367 race is carried and flagged rather than closed.
+   * ⭐ AND THE RETURNED INSTANCE ALSO TAKES A LOCKING READ — see THE LOCKING READ IS REINSTATED in the
+   * header. This member is the ONLY site in the subtree that constructs a transaction-scoped checker, so
+   * it is the only site where `FOR UPDATE` is load-bearing rather than merely gap-locking a pooled
+   * autocommit read. Adopting the boundary's connection is what makes the check see the boundary's own
+   * pending rows (M6) — this member's original purpose — and the lock is what stops a CONCURRENT boundary
+   * reading past this one between its check and its write.
+   *
+   * ⛔ WHAT THE LOCK STILL DOES NOT CLOSE. It binds only writers that take it too. A legacy CFML request
+   * against the same schema, an administrative `INSERT`, or a future service that skips validation is
+   * unbound, and for `optionCode` and `optionGroupCode` — the two rules with no `unique="true"` column
+   * behind them — the application-side check is the only check. That residual CWE-367 exposure is carried
+   * and flagged rather than closed; the header's "WHAT THIS STILL DOES NOT CLOSE" block divides it by rule.
    */
   public withExecutor(executor: SqlExecutor): UniquePropertyChecker {
     /* SEC-RACE-01 — the returned instance is TRANSACTION-SCOPED, so both probes take a locking read. This

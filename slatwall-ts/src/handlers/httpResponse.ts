@@ -2558,10 +2558,22 @@ export function toInvocationSecurityRequest(
  * DEPLOYMENT wrote — from its gateway authorizer, its own edge service, or whatever else it already
  * trusts — and calls it. Deny-all remains the answer until it does.
  *
- * ⚠️ REGISTRATION IS DELIBERATELY NOT REVOCABLE AND NOT RE-POINTABLE. A second call raises rather than
- * replacing the first: two modules each believing they own the gate is a configuration fault, and
- * silently letting the last one win is how a deployment ends up enforcing a resolver it did not
- * intend. Nothing in this subtree calls it, so a graph built by this port alone stays fail-closed.
+ * ⚠️ THE LIFECYCLE, EXACTLY AS SHIPPED — ONE REGISTRATION PER MODULE REGISTRY. {@link
+ * registerRequestAuthorizationResolver} RAISES on a second call rather than replacing the first: two modules
+ * each believing they own the gate is a configuration fault, and silently letting the last one win is how a
+ * deployment ends up enforcing a resolver it did not intend. So from a PACKAGED ARTIFACT the registration is
+ * neither revocable nor re-pointable — the only route back to the fail-closed state is a fresh module
+ * registry, which for a Lambda deployment means a fresh execution environment.
+ *
+ * ⛔ AND THAT IS A PROPERTY OF THE EXPORT SURFACE, NOT MERELY OF THE REGISTRAR (review finding F13).
+ * {@link clearRequestAuthorizationResolver} resets the cell to absent, and `clear` FOLLOWED BY `register`
+ * would re-point the gate — defeating the single-shot refusal and giving anything holding the artifact a way
+ * to swap or drop the deployment's resolver in process. It is therefore exported from THIS module, which the
+ * suite imports directly and which is NOT one of the six esbuild entry points, and it is re-exported by NO
+ * entry point: `./router.ts` and the four per-surface entries publish the registrar and the two types and
+ * nothing else. A test-only reset must stay test-only, so ⛔ DO NOT ADD IT TO AN ENTRY POINT'S EXPORT LIST.
+ *
+ * Nothing in this subtree calls either function, so a graph built by this port alone stays fail-closed.
  * ================================================================================================== */
 
 /**
@@ -2602,12 +2614,19 @@ export function registerRequestAuthorizationResolver(resolver: CatalogAuthorizat
 }
 
 /**
- * Discards the registered resolver.
+ * Discards the registered resolver. TEST-ONLY: reachable from this module, and from no shipped entry point.
  *
- * ⚠️ IT EXISTS FOR THE SUITE, AND ITS SHAPE IS WHAT KEEPS THAT HONEST. A registration that could not
- * be undone would make the seam untestable in a single module registry, so `test/handlers/**` clears
- * it between cases. It resets to ABSENT — the fail-closed state — and can therefore never be used to
- * install a principal or to relax a gate; the only thing it can do is take a gate away.
+ * ⚠️ IT EXISTS FOR THE SUITE, AND ITS REACH IS WHAT KEEPS THAT HONEST. A registration that could not be
+ * undone would make the seam untestable in a single module registry, so the suites clear it between cases by
+ * importing THIS module. It resets to ABSENT — the fail-closed state — so on its own it can never install a
+ * principal or relax a gate.
+ *
+ * ⛔ BUT `clear` FOLLOWED BY `register` RE-POINTS THE GATE, WHICH IS WHY IT IS NOT RE-EXPORTED ANYWHERE.
+ * Review finding F13 measured that: with the reset on every gated artifact's surface, the registrar's
+ * single-shot refusal could be walked around, and anything holding the artifact could drop or swap the
+ * deployment's resolver in process. `./router.ts` and the four per-surface entries therefore publish the
+ * registrar alone — see §8.1 — and this function is exported here only because `./httpResponse` is not an
+ * esbuild entry point and so reaches no packaged artifact's public surface.
  */
 export function clearRequestAuthorizationResolver(): void {
   deploymentAuthorization.resolve = undefined;

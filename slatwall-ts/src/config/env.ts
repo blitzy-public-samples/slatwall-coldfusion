@@ -257,53 +257,38 @@ import { ConfigurationError } from '../errors/DomainError';
  * completeness rule the five required connection facts obey. It is a configuration-completeness rule,
  * NOT a security control.
  *
- * ⭐ THE SYNTAX RULE IS IN FORCE, IN TWO PLACES, AND THE FOUR-REVISION HISTORY IS KEPT
+ * ⭐ THE SYNTAX RULE IS IN FORCE, IN TWO PLACES, AND THIS IS WHAT IT RESTS ON
  * ------------------------------------------------------------------------------------------
- * This section has been rewritten four times. The history is kept because each revision's argument is worth
- * having on record, and because a future revision proposing to withdraw the rule again should have to
- * answer the one that decided it.
+ * {@link requireHostAuthorityValue} here transcribes RFC 3986 §3.2.2 `host` with §3.2.3's optional `port`,
+ * and `validateFeedHostAuthority` in src/integrations/google/ProductFeedBuilder.ts re-applies the same rule
+ * per render. Review finding F8 classifies an unvalidated read of this variable as a MAJOR security defect —
+ * CWE-20 feeding CWE-601 — and directs that the value be validated as `host [ ":" port ]`.
  *
- * ⛔ REVISION 1 said "no syntax rule runs anywhere", on the ground that the legacy view performs no check
- * and that refusing a configured host is an outcome change forbidden by AAP §0.8.2 Guideline 4.
+ * ⛔ AND IT IS NOT A BEHAVIOURAL DEPARTURE, WHICH IS THE OBJECTION THIS RULE HAS TO ANSWER AND DOES.
+ * `GOOGLE_FEED_HOST` is a variable this port INTRODUCED to stand in for `CGI.HTTP_HOST`, and RFC 9110 §7.2
+ * defines the HTTP `Host` field value as EXACTLY that production — so a value outside it could never have
+ * reached `product.cfm:L14`, `:L15`, `:L22`, `:L23` or `:L24` in the first place. A rule that admits every
+ * value the legacy input could hold and refuses only values it could not hold FORECLOSES NO LEGACY OUTCOME,
+ * so there is no behaviour on either side of it to enter in a register, and AAP §0.6.7.7's count of one
+ * (D18) is untouched by it. This is alignment of a new input with an old value space, not a second exception.
  *
- * ⛔ REVISION 2 answered that this bundled two separable things and rejected the bundle: an INVENTED
- * authority policy (a character allowlist of its own devising, a 63-octet DNS-label ceiling the source
- * states nowhere, a fail-closed `allowedHosts` membership gate) and a TRANSCRIBED grammar with a published
- * source. It kept the first withdrawn and reinstated the second in two places: a
- * `requireHostAuthorityValue` reader here transcribing RFC 3986 §3.2.2 `host` with §3.2.3's optional
- * `port` — RFC 9110 §7.2 defines the HTTP `Host` field value as exactly that, and `CGI.HTTP_HOST` IS that
- * field value, so a value outside the production could never have reached `:L14`, `:L15`, `:L22`, `:L23`
- * or `:L24` — and a deny check at the serializer's sink. It also corrected the D18 reading revision 1
- * relied on, and that correction is right and is preserved: parameterised SQL does NOT return the same rows
- * as interpolated SQL for an input containing a quote, so D18's real test is that the divergence falls only
- * where the legacy's own behaviour was the flaw.
+ * ⚠️ A RELATED READING OF D18 IS WORTH KEEPING STRAIGHT WHILE HERE, BECAUSE IT IS EASY TO GET BACKWARDS:
+ * parameterised SQL does NOT return the same rows as interpolated SQL for an input containing a quote, so
+ * D18's real test is not "same output for all inputs" but that the divergence falls only where the legacy's
+ * own behaviour was the flaw.
  *
- * ⛔ REVISION 3 ACCEPTED ALL OF REVISION 2'S ANALYSIS AND WITHDREW BOTH RULES ANYWAY, on the CARDINALITY
- * of the register rather than the shape of the divergence: AAP §0.6.7.7 does not license departures OF A
- * KIND, it names exactly ONE — D18 — so that a reviewer diffing behaviour has exactly one entry to check.
+ * ⛔ AND NOTHING ABOUT THE FEED ENTERS THE REGISTER, THE SCHEME INCLUDED. `product.cfm:L14`, `:L15`,
+ * `:L22`, `:L23` and `:L24` hard-code `http://`, and src/integrations/google/ProductFeedBuilder.ts writes
+ * that same literal, so D18 remains the port's single entry. The cleartext exposure that follows from
+ * reproducing it is carried there as an annotated observation, beside the scheme it belongs to, because
+ * this module composes no URL.
  *
- * ⭐ REVISION 4, THIS ONE, REINSTATES REVISION 2'S TWO RULES, AND THE CARDINALITY OBJECTION DOES NOT
- * REACH THEM. Review finding F8 classifies the unvalidated read as a MAJOR security defect — CWE-20
- * feeding CWE-601 — and directs that the value be validated as `host [ ":" port ]`. Revision 3's count
- * argument presumes the rule IS a behavioural departure, and on the evidence revision 2 itself assembled it
- * is not: `GOOGLE_FEED_HOST` is a variable this port INTRODUCED, and RFC 9110 §7.2 already defines the
- * legacy value it stands in for as precisely this production. A rule that admits every value the legacy
- * input could hold and refuses only values it could not hold FORECLOSES NO LEGACY OUTCOME, so there is no
- * behaviour on either side of it to enter in a register. It is alignment of a new input with an old value
- * space, and AAP §0.6.7.7's count is untouched by it.
- *
- * ⚠️ WHAT DOES ENTER THE REGISTER IS THE SCHEME. `product.cfm:L14`, `:L15`, `:L22`, `:L23` and `:L24`
- * hard-code `http://`, and the port emits `https://`. THAT is a genuine behavioural divergence, it is
- * directed by finding F8 (CWE-319), and it is declared as such — the second and only other entry beside
- * D18 — in src/integrations/google/ProductFeedBuilder.ts and in slatwall-ts/README.md. It is recorded
- * where the divergence is made, not here, because this module composes no URL.
- *
- * ⛔ AND THE INVENTED POLICIES OF REVISION 2'S FIRST GROUP STAY WITHDRAWN, ON THEIR OWN STRONGER GROUND.
- * A character allowlist and a 63-octet ceiling are figures the source states nowhere (standard S9,
- * IR-12), and an `allowedHosts` membership gate additionally refuses hosts a conforming deployment may
- * legitimately name. Those fail two tests rather than one, and the distinction is worth keeping: a future
- * proposal should say which of the three it is. {@link requireHostAuthorityValue} transcribes the grammar
- * and stops there.
+ * ⛔ AND THREE THINGS THAT LOOK LIKE PART OF THE SAME RULE ARE DELIBERATELY ABSENT, ON A STRONGER GROUND
+ * THAN THE GRAMMAR'S. A character allowlist of this port's own devising and a 63-octet DNS-label ceiling are
+ * figures the source states nowhere (standard S9, IR-12), and an `allowedHosts` membership gate additionally
+ * refuses hosts a conforming deployment may legitimately name. Those fail two tests rather than one, and the
+ * distinction is worth keeping: a proposal to add one should say which of the three it is.
+ * {@link requireHostAuthorityValue} transcribes the published grammar and stops there.
  *
  * ✅ SO WHAT RUNS IS {@link requireNonBlankValue} FOR COMPLETENESS AND
  * {@link requireHostAuthorityValue} FOR SHAPE, AT LOAD, ONCE. And the serializer's
@@ -349,45 +334,32 @@ import { ConfigurationError } from '../errors/DomainError';
  * member is ABSENT rather than `undefined`, and {@link loadSettingsConfig} preserves that
  * distinction by never writing an absent key.
  *
- * ⛔ THREE FURTHER SECTIONS ONCE STOOD UNDER THIS DECISION AND ARE ALL WITHDRAWN, because the
- * REQUIRED, no-default collaborator each one fed has itself been withdrawn on AAP authority. The
- * reason belongs to each withdrawing file, so each is quoted in its own words:
- *   - src/util/urlTitle.ts, on its removed `UrlTitleAttemptBudget`: "The legacy states no ceiling,
- *     so every possible value of one is a fabricated number. Passing the fabrication to the caller
- *     as a required argument relocated the invention; it did not avoid it." The collision loop at
- *     model/service/DataService.cfc:L64 is unbounded in the legacy and is unbounded in the port.
- *     ⭐ AND A BOUND HAS SINCE BEEN REINSTATED FOR THAT LOOP TOO, by review finding F5 — but NOT inside
- *     the algorithm and NOT as configuration. the probe-budget section of `src/util/urlTitle.ts` wraps the injected PROBE,
- *     optionally, with no default, and `src/util/urlTitle.ts` is unchanged. THE DECISION IN THIS FILE IS
- *     UNAFFECTED for the same reason as the budget below: an optional collaborator obliges no deployment
- *     to state a figure, so there is still nothing here to load.
- *     ⚠️ A BOUND WAS BRIEFLY REINSTATED FOR THAT LOOP — outside the algorithm, wrapping the injected
- *     probe — and it has been WITHDRAWN AGAIN, so the loop is unbounded once more and there is still
- *     nothing here to load. THE DECISION IN THIS FILE IS UNAFFECTED either way.
- *   - src/services/SkuService.ts, on its then-removed `SkuCombinationBudget`: "Requiring the composition
- *     root to supply the maximum RELOCATED the fabrication rather than avoiding it: the number still
- *     had to be invented by somebody before the graph could be built at all."
- *   - src/ports/repositories/ProductRepository.ts, on the `ProductImportSourcePolicy` its SEC-08 gate
- *     was configured by: an implementation "must still NOT invent a host allow-list, a byte cap, a
- *     timeout or a redirect count. The source names no host and states no figure, so every possible
- *     value of each is a fabrication that AAP §0.7.3 standard 9 and IR-12 forbid."
+ * ⛔ THREE CONTROLS SIT NEARBY AND ARE DELIBERATELY NOT CONFIGURED FROM THIS SECTION. Each is a live,
+ * INJECTED collaborator wired in `src/config/container.ts`, not a value this loader reads:
+ *   - the URL-title probe ceiling — `UrlTitleProbeBudget`, declared and applied in `src/util/urlTitle.ts`,
+ *     taken as the FOURTH argument of `createUniqueURLTitle` and REQUIRED, so the collision loop at
+ *     model/service/DataService.cfc:L64 is bounded in the port even though it is unbounded in the legacy.
+ *   - the SKU combination ceiling — `SkuCombinationBudget`, declared and applied in
+ *     `src/services/SkuService.ts` and REQUIRED there, consulted before the first `newSku()`.
+ *   - the import-source policy — `ProductImportSourcePolicy`, declared on
+ *     `src/ports/repositories/ProductRepository.ts` and consulted unconditionally at the retrieval seam in
+ *     `src/adapters/mysql/MySqlProductRepository.ts`. Its CONTENT is the operator's: an implementation
+ *     "must still NOT invent a host allow-list, a byte cap, a timeout or a redirect count. The source names
+ *     no host and states no figure, so every possible value of each is a fabrication that AAP §0.7.3
+ *     standard 9 and IR-12 forbid."
  *
- * ⚠️ THE THIRD ENTRY WAS RE-ADJUDICATED BY REVIEW FINDING F8, AND THE CONCLUSION HERE SURVIVES IT
- * UNCHANGED. The SEC-08 gate is no longer withdrawn — a hostile import location IS refused — but every
- * control that came back is a FIXED LITERAL rather than a configurable value: the approved schemes are
- * what `cfhttp` can speak, and the blocked address ranges are defined by RFCs 1122, 1918, 3927, 4193 and
- * 4291. The four things a deployment would have had to supply are precisely the four that STAYED
- * withdrawn, which is why no `ProductImportConfig` returns with the gate and the quotation above is
- * taken from the clause that still forbids them.
+ * ⛔ SO SEVEN ENVIRONMENT NAMES THAT ONCE STOOD HERE ARE GONE AND MUST NOT COME BACK IN THIS FORM — five
+ * import-policy values, one URL-title budget and one combination budget. Under DECISION C's fail-fast
+ * contract each was MANDATORY AT LOAD, so every deployment had to state seven figures before the service
+ * could start, including for behaviour it would never reach. That is a relocated invention rather than an
+ * avoided one, and it is the shape §0.7.3 S9 and IR-12 forbid.
  *
- * KEEPING THEIR LOADERS AFTER THE COLLABORATORS WENT WOULD HAVE BEEN THE SAME RELOCATION ALL THREE
- * REJECT. Seven environment variables — five import-policy values, one URL-title budget, one
- * combination budget — would have stayed MANDATORY under DECISION C's fail-fast contract, so every
- * deployment would have had to invent seven numbers before the service could start, to configure
- * behaviour no collaborator in this subtree can reach. Reading a value nothing consumes is not a
- * harmless leftover; it is an invented policy with a longer commute. Their shapes and loaders are
- * therefore removed and recorded in place — see the note above {@link SettingsConfig} and the loader
- * note above {@link loadSettingsConfig}.
+ * ⭐ WHERE AN OPERATOR'S FIGURE LEGITIMATELY ENTERS IS DECISION H, AND THE DIFFERENCE IS *WHEN* IT IS
+ * DEMANDED. The six CATALOG_* names below are read at load but demanded only by the ROUTE that applies
+ * them, and an unstated one produces a named refusal from that route rather than a failure to start. No
+ * PRODUCT_IMPORT_* name returns at all: three of the five were properties of a retrieval CLIENT this
+ * subtree does not ship, and the other two are the policy's own content, supplied to the collaborator
+ * directly.
  *
  * WHY THE SHAPE IS RESTATED LOCALLY INSTEAD OF IMPORTED
  * ----------------------------------------------------
@@ -409,60 +381,56 @@ import { ConfigurationError } from '../errors/DomainError';
  *     variable here would look like a resolution of a mismatch this port deliberately surfaces.
  *   - No figure for the feed's 360-second render budget
  *     [integrationServices/google/views/feed/product.cfm:L9] — mismatch M2, same reasoning.
- *   - No numeric policy of any kind. Every number this module reads is a connection fact of
- *     DECISION E; the three values read under this decision are strings the legacy computed, and no
- *     layer below receives a bound, a ceiling or a budget from here.
+ *   - No numeric policy AUTHORED here. Every number this module reads is a figure the OPERATOR stated:
+ *     the four connection facts of DECISION E and the six resource bounds of DECISION H. This module
+ *     validates each one and carries it onward; it chooses none, defaults none and suggests none, and
+ *     when a bound is unstated it stays unstated (standard S9, IR-12).
  *   - No default the operator has to guess at. The SIX required variables are fatal when absent
  *     (DECISION B, DECISION E, DECISION F) and every one of them appears blank in
- *     slatwall-ts/.env.example so it has to be filled in; the TEN optional ones are commented out
- *     there and are genuinely absent-or-present, with each fallback documented beside its own name and
- *     no number authored by this port.
- *     DECISION E; the three values read under this decision are strings the legacy computed.
- *     ⭐ THIS LAST CLAUSE USED TO END "and no layer below receives a bound, a ceiling or a budget from
- *     here", AND DECISION H HAS SINCE QUALIFIED IT. Review finding SEC-1 (CWE-400) found that the three
- *     bounds which already existed in the code were UNREACHABLE, because no route carried an operator's
- *     figure to the composition root. DECISION H opens exactly that route, for exactly three optional
- *     names, and it is consistent with this decision rather than an exception to it: this module still
- *     AUTHORS no number. It carries one an operator states, and states nothing when they state nothing.
- *   - No default for anything. The TEN required variables are fatal when absent (DECISION B,
- *     DECISION E, DECISION F) and every one of them is blank in slatwall-ts/.env.example; the SIX
- *     optional inputs — three setting values and three resource bounds — are absent-or-present and are
- *     never substituted when absent.
+ *     slatwall-ts/.env.example so it has to be filled in; the THIRTEEN optional ones are commented out
+ *     there and are genuinely absent-or-present, with each absent-behaviour documented beside its own
+ *     name. An absent-behaviour is not a default invented here: each is either omission of the option
+ *     onward so the driver's own documented behaviour governs, the one value that avoids selecting the
+ *     driver's unbounded arrangement silently, a per-name classified error at resolution time, or —
+ *     for a resource bound — a fail-closed refusal at the route that would have applied it, naming the
+ *     variable to set (DECISION H).
  * ============================================================================================
  *
- * DECISION H — THE THREE FINITE RESOURCE BOUNDS ARE STATEABLE, AND STILL NEVER INVENTED
+ * DECISION H — THE SIX FINITE RESOURCE BOUNDS ARE STATEABLE, AND STILL NEVER INVENTED
  *
- * Review finding SEC-1 (CWE-400): `SmartListMaterialisationBudget`, `SkuCombinationBudget` and
- * `UrlTitleProbeBudget` all existed as optional constructor arguments, and `src/config/container.ts`
- * supplied NONE of them — in the pool-bound graph and in the transaction-scoped rebuild alike. The bounds
- * were therefore unreachable: an operator who had measured a figure had nowhere to put it, and the
- * anonymous public feed could be made to materialise an unbounded selection.
+ * Review finding SEC-1 (CWE-400) measured that the work ceilings which already existed in the code were
+ * UNREACHABLE: they were optional constructor arguments and `src/config/container.ts` supplied none of
+ * them, so an operator who had measured a figure had nowhere to put it and the anonymous public feed could
+ * be made to materialise an unbounded selection.
  *
- * ⭐ THE FIX IS A ROUTE, NOT A NUMBER. Three OPTIONAL variables — see {@link ResourceBoundsConfig} — carry
- * a figure the DEPLOYMENT measured into the graph. Absent means absent: unbounded, which is the legacy's
- * own behaviour and the state every earlier revision of this file preserved.
+ * ⭐ THE ROUTE THIS DECISION OPENS CARRIES A NUMBER; IT NEVER CHOOSES ONE. Six OPTIONAL variables — see
+ * {@link ResourceBoundsConfig} — carry a figure the DEPLOYMENT measured into the graph. This module
+ * validates each one and passes it on. It authors none, defaults none and suggests none (standard S9,
+ * IR-12).
  *
- * ⚠️ WHY THIS IS NOT THE THING THE THREE WITHDRAWN LOADERS WERE. `loadSkuCombinationConfig` and its two
- * siblings made a deployment supply a number before this module would build AT ALL, because loading is
- * fail-fast by DECISION C — so the number had to be invented by somebody, and relocating an invention is
- * not avoiding it. These three are optional, so no deployment is obliged to author anything. Making a bound
- * STATEABLE and making it MANDATORY are different decisions, and the withdrawal notes below reject only the
- * second.
+ * ⚠️ OPTIONAL HERE MEANS "NOT REQUIRED AT LOAD", NOT "UNBOUNDED WHEN ABSENT" — and the distinction is the
+ * whole of the design, so it is stated rather than left to be discovered. Loading succeeds with all six
+ * absent, which is what keeps `tsc`, `eslint`, `esbuild` and the whole suite runnable with no environment
+ * set. What an ABSENT bound produces is a FAIL-CLOSED REFUSAL at the one route that needs it, naming the
+ * variable to set: `createSmartListMaterialisationBudget`, `createSkuCombinationBudget`,
+ * `createUrlTitleProbeBudget` and `createProductFeedRenderBudget` each answer a `ConfigurationError`
+ * carrying the variable name rather than an invented ceiling. So an unstated bound costs the operator one
+ * named diagnostic on one route; it never silently admits unbounded work, and it never fails the whole
+ * router at module load.
  *
- * ⚠️ ONE ROUTE DOES REQUIRE A STATED BOUND, AND THE ASYMMETRY IS DELIBERATE.
- * `src/handlers/googleFeedHandler.ts` declines to render for an ANONYMOUS caller with no
- * `CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY` stated, because `google:feed.product` is the one route
- * reachable with no principal and SEC-1's exposure is unbounded ANONYMOUS materialisation specifically.
- * That refusal names no figure — it requires the operator to have named one — and it is applied at
- * INVOCATION rather than at load, so an unstated bound fails the feed alone and not the other 33 routes.
- *   - No default for anything the operator must decide. The SIX required variables are fatal when
- *     absent (DECISION B, DECISION E, DECISION F) and every one of them is blank in
- *     slatwall-ts/.env.example; the THREE optional setting inputs read under this decision are
- *     absent-or-present and are never substituted when absent. The four optional transport and
- *     resource values of DECISION E do have declared absent-behaviour, which is a different thing
- *     from a default invented here — each is either omitted onward so the driver's own documented
- *     behaviour governs, or set to the one value that avoids selecting the driver's unbounded
- *     arrangement silently. DECISION E states each case in full.
+ * ⚠️ WHICH IS ALSO WHY THIS IS NOT THE THING THE THREE ABSENT LOADERS WOULD HAVE BEEN.
+ * `loadSkuCombinationConfig` and its two siblings would have made a deployment supply a number before this
+ * module would build AT ALL, because
+ * loading is fail-fast by DECISION C — so the number had to be invented by somebody before anything ran,
+ * and relocating an invention is not avoiding it. Deferring the demand to the route that needs it is a
+ * different decision, and it is the one in force.
+ *
+ * ⚠️ ONE ROUTE REFUSES EARLIER THAN THE OTHERS, AND THE ASYMMETRY IS DELIBERATE.
+ * `src/handlers/googleFeedHandler.ts` declines to render for an ANONYMOUS caller unless the four bounds its
+ * gate reads are stated, because `google:feed.product` is the one route reachable with no principal and
+ * SEC-1's exposure is unbounded ANONYMOUS materialisation specifically. That refusal names no figure — it
+ * requires the operator to have named one — and it is applied at INVOCATION rather than at load, so an
+ * unstated bound fails the feed alone and not the other 33 routes.
  * ============================================================================================ */
 
 /**
@@ -584,11 +552,14 @@ export interface GoogleFeedConfig {
    * replacement for the legacy `CGI.HTTP_HOST` reads at
    * integrationServices/google/views/feed/product.cfm:L14, :L15, :L22, :L23 and :L24.
    *
-   * Typed as a plain string HERE and NOT validated anywhere, on purpose. This module checks presence
-   * and non-blankness only; the authority-syntax rule that used to run in the serializer is WITHDRAWN,
-   * because the legacy performs no check and refusing a configured host is an outcome change. The
-   * residual injection and origin-rebasing exposure is FLAGGED rather than closed (S8). See DECISION F
-   * for the full argument and for why the arrow does not point upward from config into integrations.
+   * Typed as a plain `string` because the TYPE carries no rule; the RULE runs at the reader.
+   * {@link loadGoogleFeedConfig} admits this value only through {@link requireHostAuthorityValue}, which
+   * requires `host [ ":" port ]` per RFC 3986 §3.2.2/§3.2.3, and `validateFeedHostAuthority` in
+   * src/integrations/google/ProductFeedBuilder.ts re-applies the same rule per render because a caller can
+   * assemble a render context without passing through this module. What is NOT decided anywhere is the host's
+   * IDENTITY — no allowlist says which authority a deployment may name — so that residual exposure stays
+   * FLAGGED rather than closed (S8). See DECISION F for the full argument and for why the arrow does not
+   * point upward from config into integrations.
    *
    * IT IS CONFIGURATION RATHER THAN A REQUEST HEADER because a stateless invocation has no request
    * scope — an execution-model adaptation (IR-10), not a control.
@@ -597,67 +568,38 @@ export interface GoogleFeedConfig {
 }
 
 /*
- * ⛔ THREE CONFIG SHAPES ONCE STOOD HERE — `ProductImportConfig`, `UrlTitleConfig` and
- * `SkuCombinationConfig` — AND ALL THREE ARE REMOVED WITH THEIR LOADERS. Each mirrored a REQUIRED,
- * no-default collaborator input below the config layer, and every one of those inputs has since been
- * withdrawn on AAP authority: the URL-title attempt budget and the SKU combination budget as invented
- * ceilings the legacy states nowhere (AAP §0.8.2 guideline 4, §0.7.3 standard 9, IR-12), and the
- * importer's `ProductImportSourcePolicy` along with the branded source type its SEC-08 gate produced.
+ * ⛔ THERE IS NO `ProductImportConfig`, `UrlTitleConfig` OR `SkuCombinationConfig` HERE, AND NO LOADER FOR
+ * ONE. Each would have mirrored a collaborator input that lives BELOW the config layer, and each would have
+ * made a deployment state a figure at LOAD — for behaviour some deployments never reach — which is the
+ * relocated invention AAP §0.7.3 S9 and IR-12 forbid rather than an avoided one.
  *
- * ⚠️ AND THE IMPORT ENTRY NEEDS ITS REASON RESTATED, BECAUSE THE ONE ORIGINALLY GIVEN HERE HAS BEEN
- * DISPROVED. This said the gate went "because refusing a location the legacy would have fetched changes
- * an outcome and D18 is the SOLE declared behaviour-preservation exception (AAP §0.6.7.7)". Review
- * finding F8 re-opened that: the legacy CANNOT fetch any location at all, because the
- * `utilityTagService` bean its retrieval calls does not exist anywhere in the legacy tree, so there was
- * no outcome for a refusal to change. The gate is therefore back, and
- * `src/ports/repositories/ProductRepository.ts` carries the full re-adjudication.
+ * ⭐ WHAT IS ACTUALLY IN THE TREE, SO THIS NOTE CANNOT BE READ AS SAYING THE CONTROLS ARE ABSENT:
  *
- * ⭐ WHAT DID NOT COME BACK IS EXACTLY WHAT THIS FILE WOULD HAVE HAD TO SUPPLY. The reinstated controls
- * are fixed literals — the schemes `cfhttp` can speak, and address ranges defined by RFCs 1122, 1918,
- * 3927, 4193 and 4291 — while the host allow-list, byte cap, timeout and redirect count stayed withdrawn
- * as invented figures. A `ProductImportConfig` would have had nothing left to carry, so none is
- * reinstated and this removal stands.
- *
- * ⚠️ THE WITHDRAWALS LISTED ABOVE HAVE BEEN REVERSED AND PARTLY RE-WITHDRAWN BELOW THE CONFIG LAYER, AND
- * THE LIST IS CORRECTED HERE RATHER THAN LEFT TO CONTRADICT THE CODE. What is actually in the tree now:
- *
- *   `SkuCombinationBudget`            WITHDRAWN AGAIN (finding F4). It was reinstated for a time, exported
- *                                     from ../services/SkuService.ts as an OPTIONAL constructor parameter
- *                                     with no default; the withdrawal rests on AAP §0.6.7.7 declaring D18
- *                                     the single behavioural exception in this port, not on the objection
- *                                     that killed its earlier REQUIRED form.
- *   `UrlTitleProbeBudget`             REINSTATED (finding F5) in ../util/urlTitle.ts (probe-budget section), wrapped
- *                                     around the injected probe so the ported algorithm in
- *                                     ../util/urlTitle.ts is untouched.
- * ⚠️ THE WITHDRAWALS LISTED ABOVE HAVE OSCILLATED BELOW THE CONFIG LAYER, AND THE LIST IS CORRECTED HERE
- * RATHER THAN LEFT TO CONTRADICT THE CODE. What is actually in the tree now:
- *
- *   `SkuCombinationBudget`            GONE. Reinstated once as an OPTIONAL constructor parameter on
- *                                     ../services/SkuService.ts and withdrawn again: AAP §0.6.7.7 declares
- *                                     exactly one departure in this port (D18) and an optional ceiling is
- *                                     still a capability the source does not describe.
- *   `UrlTitleProbeBudget`            GONE, with the whole of ../util/urlTitleProbeBudget.ts, on the same
- *                                     ground. ../util/urlTitle.ts records the exposure that is carried.
- *   `ProductImportSourcePolicy`       REINSTATED (findings F8, F9) and, unlike the two budgets, REQUIRED
- *                                     rather than optional — ../ports/repositories/ProductRepository.ts
- *                                     calls it "THE REQUIRED CONTRACT SEC-08 DESCRIBES", and
+ *   `SkuCombinationBudget`            LIVE and REQUIRED, declared and applied in ../services/SkuService.ts.
+ *                                     Consulted before the first `newSku()`; carries a RESOLVER, not a
+ *                                     number.
+ *   `UrlTitleProbeBudget`             LIVE and REQUIRED, declared and applied in ../util/urlTitle.ts as the
+ *                                     fourth argument of `createUniqueURLTitle`, so every caller is bounded
+ *                                     by construction.
+ *   `ProductImportSourcePolicy`       LIVE and REQUIRED — ../ports/repositories/ProductRepository.ts
+ *                                     declares it as a member of any retrieving reader and
  *                                     ../adapters/mysql/MySqlProductRepository.ts declares
- *                                     `readonly sourcePolicy` with no `?`.
- *   `ValidatedProductImportSource`    NOT withdrawn: it is declared and exported by that same port and is
- *                                     what `validateSource` returns. AAP §0.4.2.6 ratifies a plain
- *                                     `string` for the public ARGUMENT, and that is unchanged; the brand
- *                                     is the internal evidence that the argument was checked, and it is
- *                                     unforgeable outside the module because its key is never exported.
+ *                                     `readonly sourcePolicy` with no `?`, calling `validateSource` once
+ *                                     before any read member can be reached.
+ *   `ValidatedProductImportSource`    A TYPE, declared and exported by that same port and returned by
+ *                                     `validateSource`. AAP §0.4.2.6 ratifies a plain `string` for the
+ *                                     public ARGUMENT and that is unchanged; the brand is the internal
+ *                                     evidence that the argument was checked, unforgeable outside the
+ *                                     module because its key is never exported.
  *
- * ⭐ AND NOT ONE OF THE FOUR CHANGES THIS FILE'S DECISION, WHICH IS WHY THE CORRECTION COSTS THE LOADER
- * NOTHING. Two are optional and oblige no deployment to state anything. The third is required, but it is
- * required of the COMPOSITION ROOT as a constructor collaborator, not of the ENVIRONMENT as a variable to
- * read — the operator hands over an object, and every scheme, host, address range and bound inside it is
- * the operator's own. The fourth is a type, not a value. So `loadProductImportConfig` stays removed and
- * no environment name returns for any of them.
+ * ⭐ AND NOT ONE OF THE FOUR PUTS A VARIABLE BACK IN THIS SECTION, WHICH IS WHY THE ABSENCE ABOVE COSTS THE
+ * SERVICE NOTHING. The two budgets are constructor collaborators of the composition root that resolve their
+ * figure through DECISION H's six CATALOG_* names — read at load, but DEMANDED only by the route that
+ * applies one, so an unstated bound is a named refusal from that route rather than a failure to start. The
+ * policy is an object the operator hands over, with every scheme, host, address range and bound inside it
+ * the operator's own; this file supplies none of them. The fourth is a type, not a value.
  *
- * See the loader note further down for each withdrawing file's own words, and DECISION G for the one
- * collaborator that still reads from here.
+ * See DECISION G for the one collaborator that still reads from here, and DECISION H for the six bounds.
  */
 
 /**
@@ -803,10 +745,9 @@ export interface ResourceBoundsConfig {
    * The maximum number of uniqueness probes ONE URL-title derivation may issue — review finding
    * SEC-DOS-03.
    *
-   * ⭐ IT IS READ AND APPLIED AGAIN. `../util/urlTitle.ts`'s `UrlTitleProbeBudget` resolves it, and
-   * `../services/ProductService.ts` and `../services/BrandService.ts` carry it as a REQUIRED collaborator;
-   * an earlier revision withdrew both, and that withdrawal is argued against in full above
-   * `createUrlTitleProbeBudget`.
+   * ⭐ IT IS READ AND APPLIED. `../util/urlTitle.ts`'s `UrlTitleProbeBudget` resolves it, and
+   * `../services/ProductService.ts` and `../services/BrandService.ts` carry it as a REQUIRED collaborator.
+   * The authority for bounding this loop at all is argued in full above `createUrlTitleProbeBudget`.
    *
    * From `CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION`. It bounds the PROBE rather than the algorithm:
    * the slug transformation and the `-2`-first suffix sequence of
@@ -853,7 +794,7 @@ export interface AppConfig {
   readonly settings: SettingsConfig;
 
   /**
-   * The three optional finite resource bounds — see {@link ResourceBoundsConfig} and review finding SEC-1.
+   * The six optional finite resource bounds — see {@link ResourceBoundsConfig} and DECISION H.
    *
    * Present as its own section for the same reason the feed and database sections are separate: a bound is
    * a POLICY fact an operator measured, not a connection fact and not a presentation fact. The section is
@@ -890,36 +831,28 @@ export interface AppConfig {
  * are connection facts — `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` — and ONE is the
  * Google feed host (DECISION F).
  *
- * TEN FURTHER VARIABLES ARE OPTIONAL, which brings the key set this module reads to SIXTEEN names in
- * total: the transport mode and the three pool bounds of DECISION E (`DB_TLS_MODE`,
+ * THIRTEEN FURTHER VARIABLES ARE OPTIONAL, which brings the key set this module reads to NINETEEN names
+ * in total. {@link ENVIRONMENT_VARIABLE_CENSUS} is that inventory as data — one entry per name, with its
+ * loader and whether it is required — and {@link assertEnvironmentVariableCensus} checks the arithmetic at
+ * module load, so this paragraph cannot drift from the code again without the module failing to load. The
+ * thirteen are the transport mode and three pool bounds of DECISION E (`DB_TLS_MODE`,
  * `DB_CONNECTION_LIMIT`, `DB_QUEUE_LIMIT`, `DB_CONNECT_TIMEOUT_MS`), the three run-time-computed setting
- * inputs of {@link SettingsConfig} (DECISION G), and the three finite resource bounds of
- * {@link ResourceBoundsConfig} (DECISION H). Optional means genuinely absent-or-present: an omitted one
- * takes the fallback documented at its own reader — a safe direction or the driver's own default, never a
- * figure authored here — and a present-but-blank one is still an error, since blank cannot be what an
- * operator meant by supplying the name at all. That last rule is why every optional name in
- * slatwall-ts/.env.example is commented out rather than left as a bare empty assignment.
- *
- * ⚠️ THE COUNT HAS MOVED TWICE AND BOTH MOVES ARE RECORDED, because a census a reader cannot trust is
- * worse than none. It first read "TEN required and THREE optional", treating all nine connection facts as
- * required; review finding F7 corrected that to SIX and SEVEN, readable straight off the `require*` and
- * `optional*` helper calls. Review finding SEC-1 then added {@link loadResourceBoundsConfig}'s three
- * `CATALOG_*` names, all optional and all defaultless, taking the totals to SIX and TEN. Two of those three
- * bounds — the SKU combination ceiling and the URL-title probe ceiling — are read but no longer APPLIED,
- * their budgets having been withdrawn; they are still parsed so that an operator's existing setting is not
- * silently rejected, and they still count toward the key set this module reads.
+ * inputs of {@link SettingsConfig} (DECISION G), and the six finite resource bounds of
+ * {@link ResourceBoundsConfig} (DECISION H).
  *
  * ⚠️ OPTIONAL IS NOT LENIENT, AND IT DOES NOT MEAN ONE RULE. An omitted variable is never replaced by
  * a value chosen arbitrarily: each optional name has a DECLARED behaviour when absent — the verified
  * transport mode for `DB_TLS_MODE`, omission of the pool option entirely for the connection limit and
  * the connect timeout, the lowest permitted bound for `DB_QUEUE_LIMIT` because the driver reads unset
- * as unlimited, and a per-name classified error at resolution time for the three settings. A
- * present-but-BLANK value remains an error for every one of the sixteen, since blank cannot be what
- * an operator meant by supplying the name at all.
+ * as unlimited, a per-name classified error at resolution time for the three settings, and a fail-closed
+ * `ConfigurationError` naming the variable at the one route that needs it for each of the six resource
+ * bounds (DECISION H). A present-but-BLANK value remains an error for every one of the nineteen, since
+ * blank cannot be what an operator meant by supplying the name at all — which is why every optional name in
+ * slatwall-ts/.env.example is commented out rather than left as a bare empty assignment.
  *
-The loader uses `require*` helpers for exactly six names and `optional*` helpers for the
- * other ten, so the count is readable straight off {@link loadDatabaseConfig},
- * {@link loadGoogleFeedConfig}, {@link loadSettingsConfig} and {@link loadResourceBoundsConfig}.
+ * The loader uses `require*` helpers for exactly six names and `optional*` helpers for the other thirteen,
+ * so the split is readable straight off {@link loadDatabaseConfig}, {@link loadGoogleFeedConfig},
+ * {@link loadSettingsConfig} and {@link loadResourceBoundsConfig} as well as off the census.
  * ============================================================================================ */
 
 /**
@@ -957,7 +890,7 @@ const HIGHEST_ADDRESSABLE_TCP_PORT = 65535;
  * substance of the bound, because zero is the driver's documented no-limit sentinel for the queue
  * (DECISION E). No corresponding ceiling exists here, deliberately — see DECISION E for why one
  * would be a capacity figure with no source. It is the floor for all three numbers this module
- * reads and, since the withdrawal recorded immediately below, the ONLY floor.
+ * reads and, since the zero floor recorded immediately below no longer exists, the ONLY floor.
  */
 const LOWEST_PERMITTED_RESOURCE_BOUND = 1;
 
@@ -987,7 +920,8 @@ const MAX_MYSQL_IDENTIFIER_LENGTH = 64;
 /*
  * ⛔ A `LOWEST_PERMITTED_HOP_BOUND` OF ZERO ONCE STOOD HERE, AS THE ONE ASYMMETRY IN THE NUMERIC
  * READERS, AND THE FLOOR PARAMETER THAT CARRIED IT IS GONE WITH IT. The zero floor existed solely so
- * the withdrawn import policy's redirect count could accept "follow none"; with that shape removed
+ * the import policy's ENVIRONMENT-SUPPLIED redirect count could accept "follow none"; with that value no
+ * longer read here
  * — see DECISION G and the note above {@link SettingsConfig} — all three surviving numeric reads are
  * resource bounds that must admit something. So {@link requireResourceBoundValue} applies
  * {@link LOWEST_PERMITTED_RESOURCE_BOUND} itself rather than taking a floor argument that every
@@ -998,7 +932,7 @@ const MAX_MYSQL_IDENTIFIER_LENGTH = 64;
 /*
  * ⛔ A `LIST_DELIMITER` COMMA ONCE STOOD HERE, AND SO DID THE `requireDelimitedListValue` READER
  * FURTHER DOWN THAT WAS ITS ONLY USER. Both are removed, because the two allowlists they split were
- * the withdrawn import policy's schemes and hosts (DECISION G). The two delimited setting values
+ * the import policy's ENVIRONMENT-SUPPLIED schemes and hosts (DECISION G). The two delimited setting values
  * that remain are read WHOLE and never split here: their legacy consumers read them with CFML list
  * functions [model/entity/Sku.cfc:L373, :L375], so splitting them at the boundary would hand the
  * setting adapter a shape the legacy never produced.
@@ -1041,8 +975,8 @@ const LOOPBACK_HOST_NAMES: readonly string[] = [
  *
  * ⭐ {@link requireDatabaseHostValue} FOR `DB_HOST`, AND {@link requireHostAuthorityValue} FOR
  * `GOOGLE_FEED_HOST` — the latter adding RFC 3986 §3.2.3's optional `port`, because an HTTP authority may
- * carry one where a `mysql2` host may not (`DB_PORT` is its own variable). The feed reader was WITHDRAWN for
- * one revision and review finding F8 reinstated it; the adjudication is at {@link
+ * carry one where a `mysql2` host may not (`DB_PORT` is its own variable). Review finding F8 directed the
+ * feed reader; the adjudication is at {@link
  * requireHostAuthorityValue}, and turns on `GOOGLE_FEED_HOST` standing in for `CGI.HTTP_HOST`, which
  * RFC 9110 §7.2 already DEFINES as exactly this production — so the rule aligns a port-introduced variable
  * with the value space of the legacy input it replaces rather than diverging from any legacy outcome.
@@ -1063,17 +997,16 @@ const LOOPBACK_HOST_NAMES: readonly string[] = [
  *
  * WHAT IS DELIBERATELY STILL ACCEPTED. RFC 3986 `reg-name` admits percent-encoding and every
  * sub-delimiter, which includes `&` and `'`. Narrowing those away would be invention, so they are accepted
- * here — and they stay accepted even though the serializer no longer escapes them. An earlier revision of
- * src/integrations/google/ProductFeedBuilder.ts escaped every dynamic text node, so an accepted `&` reached
- * the feed as `&amp;`; that escape is withdrawn at the raw sinks under the current review's finding F4, and
- * an accepted `&` now reaches the feed verbatim, leaving the document without a defined parse exactly as
- * the legacy leaves it. This boundary still owns only the GRAMMAR. Tightening it to cover a withdrawn
- * encoding would move a serializer's policy into a configuration loader, which is the coupling both files
- * exist to avoid.
- * ⚠️ AND NO ENCODING RUNS DOWNSTREAM EITHER, WHICH AN EARLIER VERSION OF THIS BLOCK RELIED ON. It said the
- * serializer "escapes every dynamic text node it emits", so an accepted `&` would land as `&amp;`. That
- * broadened escape is withdrawn: `src/integrations/google/ProductFeedBuilder.ts` escapes the SIX sinks
- * `product.cfm` escapes and no others, and neither host sink is among them.
+ * here: this boundary owns only the GRAMMAR.
+ *
+ * ⚠️ AND WHAT HAPPENS TO SUCH A HOST DOWNSTREAM BELONGS TO THE SERIALIZER, NOT HERE.
+ * src/integrations/google/ProductFeedBuilder.ts escapes the SIX sinks `product.cfm` escapes and no others;
+ * neither host sink is among them, so a host is emitted as stored — except that
+ * `renderRawFeedNode` REFUSES `&`, `<` and `]]>` at every raw sink, which is where a host containing `&`
+ * is turned away rather than published. That refusal is argued in that file, on the ground that the legacy
+ * document had no defined XML parse for such a value either. Restating the rule here, or tightening this
+ * grammar to pre-empt it, would move a serializer's policy into a configuration loader — the coupling both
+ * files exist to avoid.
  * ============================================================================================ */
 
 /**
@@ -1147,30 +1080,23 @@ function requirePresentValue(variableName: string, rawValue: string | undefined)
   if (typeof rawValue !== 'string') {
     throw new ConfigurationError(
       /* The second sentence is deliberately variable-agnostic, because this helper answers for more
-       * than one KIND of variable: it began as a database-only reader whose message said "Every
-       * database connection value", and the feed host of `loadGoogleFeedConfig` then began reading
-       * through it too, which left a connection-flavoured sentence answering for a value that is not a
-       * connection setting at all.
+       * than one KIND of variable: it reads the five connection identities AND the feed host of
+       * `loadGoogleFeedConfig`, so a connection-flavoured sentence would answer for a value that is not
+       * a connection setting at all. It is also scoped to the REQUIRED set, which is the only set that
+       * reaches this failure path.
        *
-       * ⚠️ IT IS ALSO SCOPED TO THE REQUIRED SET, WHICH IT PREVIOUSLY WAS NOT. The sentence used to
-       * read "Every configuration value this service reads must be supplied by the environment; it
-       * defaults none of them" — true of the ten-required contract this module started with, and false
-       * once four connection values and the three DECISION G setting values became optional with
-       * documented fallbacks. An earlier review round recorded the drift. The message now says only what
-       * is true of the six variables that actually reach this helper's failure path, and the named
-       * variable still tells an operator exactly which one is missing.
-       *
-       * ⚠️ THE OPTIONAL COUNT IN THIS MESSAGE WAS WRONG, AND IT WAS WRONG WHERE AN OPERATOR READS IT.
-       * It said "The other seven are optional" while the module reads SIXTEEN names of which SIX are
-       * required — so ten are optional, not seven. The figure is the arithmetic complement of two numbers
-       * in the same sentence, which is why it read as plausible. Review finding F11 reported the same
-       * miscount in this file's header prose and in the subtree README; the count here is the last copy of
-       * it. Measured, and the command is worth keeping because it settles the question in one line:
-       * `grep -o 'process\.env\.[A-Z_]*' src/config/env.ts | sort -u | wc -l` reports 16. */
+       * ⚠️ THE THREE FIGURES ARE INTERPOLATED FROM THE CENSUS, NOT WRITTEN OUT. Every hand-written copy
+       * of this split in the subtree had drifted — this message itself once told an operator the module
+       * read sixteen names of which ten were optional, and cited a `grep` that did not support it. Reading
+       * {@link ENVIRONMENT_VARIABLE_TOTAL} and its two siblings means the sentence an operator sees cannot
+       * disagree with {@link ENVIRONMENT_VARIABLE_CENSUS}, which
+       * {@link assertEnvironmentVariableCensus} in turn refuses to let drift from the loaders. */
       `Required environment variable ${variableName} is not set. ` +
-        'This service reads SIXTEEN environment variables, of which SIX are required and have no ' +
+        `This service reads ${String(ENVIRONMENT_VARIABLE_TOTAL)} environment variables, of which ` +
+        `${String(ENVIRONMENT_VARIABLE_REQUIRED_TOTAL)} are required and have no ` +
         'default of any kind: DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD and GOOGLE_FEED_HOST. ' +
-        'The other TEN are optional and fall back as slatwall-ts/.env.example documents.',
+        `The other ${String(ENVIRONMENT_VARIABLE_OPTIONAL_TOTAL)} are optional and fall back as ` +
+        'slatwall-ts/.env.example documents.',
       { context: { variable: variableName } },
     );
   }
@@ -1209,8 +1135,8 @@ function requireNonBlankValue(variableName: string, rawValue: string | undefined
       `Environment variable ${variableName} is set but blank. A blank value is not a way to say ` +
         '"unset": this service substitutes nothing for either, so a required variable must carry a ' +
         'real value and an optional one must be left out entirely rather than left empty. ' +
-        'slatwall-ts/.env.example states which of the thirteen names are required and which are ' +
-        'optional, and comments the optional ones out for this reason.',
+        `slatwall-ts/.env.example states which of the ${String(ENVIRONMENT_VARIABLE_TOTAL)} names are ` +
+        'required and which are optional, and comments the optional ones out for this reason.',
       { context: { variable: variableName } },
     );
   }
@@ -1341,13 +1267,10 @@ function findHostPortSeparatorIndex(value: string): number {
  * not a behavioural divergence, and so it does not consume the single departure AAP §0.6.7.7 authorises
  * (D18, the importer's parameterised SQL).
  *
- * ⚠️ AN EARLIER REVISION WITHDREW THIS READER ON THE OPPOSITE READING, AND REVIEW FINDING F8 REVERSED IT.
- * That revision counted the rule as a second departure and cited AAP §0.6.7.7's count. The current review
- * classifies the unvalidated read as a MAJOR security defect — CWE-20 feeding CWE-601 — because
- * `good.example@evil.example` silently moves the origin of every URL in the document while
- * `evil.example#` collapses all five onto one page. The distinction above is what resolves the two
- * readings: this reader judges the SYNTAX of a variable the legacy does not have, against the production
- * the legacy's own source value is defined by, so there is no legacy outcome on either side of it.
+ * ⚠️ AND THE EXPOSURE IT CLOSES IS CONCRETE, WHICH IS WHY THE READER IS NOT MERELY TIDY.
+ * `good.example@evil.example` silently moves the origin of every URL in the rendered document (CWE-20
+ * feeding CWE-601), and `evil.example#` collapses all five onto one page. Both are refused here, at load,
+ * by name.
  *
  * ⛔ AND IT INVENTS NO POLICY BEYOND THAT PRODUCTION. No allowlist, no denylist of names, no length
  * ceiling, no label-count rule, no DNS lookup, no reachability probe and no scheme handling: the check is
@@ -1407,8 +1330,9 @@ function requireHostAuthorityValue(variableName: string, rawValue: string | unde
  * enforced because any ceiling would be a capacity figure with no source (standard S9).
  *
  * THE FLOOR IS {@link LOWEST_PERMITTED_RESOURCE_BOUND} AND IS APPLIED HERE RATHER THAN PASSED IN.
- * It was a parameter while a second, zero floor existed for the withdrawn import policy's redirect
- * count; with that shape gone (DECISION G) every caller would pass the same constant, so the reader
+ * It was a parameter while a second, zero floor existed for the import policy's environment-supplied
+ * redirect count; with that value no longer read here (DECISION G) every caller would pass the same
+ * constant, so the reader
  * names it directly. One numeric reader with one message is still the point — the same consolidation
  * {@link requirePresentValue} records in its own body comment — and the constant is now part of the
  * contract rather than an argument each call site restates.
@@ -1438,13 +1362,11 @@ function requireResourceBoundValue(variableName: string, rawValue: string | unde
   // and silently acting on a different number than the operator wrote is worse than refusing.
   if (!Number.isSafeInteger(bound) || bound < LOWEST_PERMITTED_RESOURCE_BOUND) {
     throw new ConfigurationError(
-      /* The sentence naming the driver's sentinel is kept, and kept SCOPED to the one variable it is
-       * about. It was an unqualified claim while this reader served only the three pool numbers, was
-       * qualified when the withdrawn DECISION G policy numbers briefly read through it — where "the
-       * driver reads it as no limit" would have been asserted about a redirect count and a byte cap
-       * the driver never sees — and stays qualified now that those callers are gone, because the
-       * connection limit and the timeout are not queue sentinels either. Same reasoning as the
-       * message generalisation recorded in the body of {@link requirePresentValue}. */
+      /* ⚠️ THE SENTENCE NAMING THE DRIVER'S SENTINEL IS SCOPED TO THE ONE VARIABLE IT IS ABOUT, AND MUST
+       * STAY THAT WAY. This reader serves every numeric bound in the module, and "the driver reads it as
+       * no limit" is true of `DB_QUEUE_LIMIT` alone — not of the connection limit, not of the timeout and
+       * not of any CATALOG_* bound the driver never sees. Same reasoning as the message generalisation
+       * recorded in the body of {@link requirePresentValue}. */
       `Environment variable ${variableName} must be an exactly representable integer of at ` +
         `least ${LOWEST_PERMITTED_RESOURCE_BOUND}. A bound below its floor admits nothing at all, ` +
         'and for DB_QUEUE_LIMIT in particular the driver reads zero as "no limit", which is the ' +
@@ -1506,12 +1428,12 @@ function optionalNonBlankValue(
 /*
  * ⛔ `requireDelimitedListValue` ONCE STOOD HERE — the reader that required a variable to be PRESENT,
  * accepted a blank whole value as the empty list, refused a blank entry inside a non-empty one, and
- * returned the entries frozen and verbatim. It is removed with its only two callers: the withdrawn
- * import policy's scheme and host allowlists (DECISION G). Its asymmetry was specific to those two
+ * returned the entries frozen and verbatim. It is removed with its only two callers: the import policy's
+ * ENVIRONMENT-SUPPLIED scheme and host allowlists (DECISION G). Its asymmetry was specific to those two
  * variables — presence required, blank permitted, because "no location at all" was one of the answers
  * the operator was being asked for — so nothing that survives here wants it. See the note where
  * `LIST_DELIMITER` stood for why the two delimited setting values that remain are read WHOLE rather
- * than split, and DECISION G for the withdrawal itself.
+ * than split, and DECISION G for why those two variables are not read here at all.
  */
 
 /**
@@ -1809,9 +1731,9 @@ function requireTlsModeValue(
  * Reads and validates the database section, then freezes it.
  *
  * The nine environment reads below are the complete set for the DATABASE section — the service as a
- * whole reads SIXTEEN names: these nine, the Google feed host in `loadGoogleFeedConfig()`
- * (DECISION F), the three OPTIONAL run-time-computed setting inputs of DECISION G, and the three OPTIONAL
- * resource bounds of DECISION H.
+ * whole reads NINETEEN names: these nine, the Google feed host in `loadGoogleFeedConfig()`
+ * (DECISION F), the three OPTIONAL run-time-computed setting inputs of DECISION G, and the six OPTIONAL
+ * resource bounds of DECISION H. {@link ENVIRONMENT_VARIABLE_CENSUS} is that inventory as data.
  * They are written as literal dotted accesses so that the key set is statically visible in one
  * search and so that no key is resolved through a computed string (standard S3).
  *
@@ -1898,45 +1820,25 @@ function loadGoogleFeedConfig(): GoogleFeedConfig {
 }
 
 /*
- * ⛔ THREE LOADERS ONCE STOOD HERE — `loadProductImportConfig`, `loadUrlTitleConfig` and
- * `loadSkuCombinationConfig` — AND ALL THREE ARE REMOVED. Each read a value that no collaborator asks
- * for any more, and each of the three withdrawing files says in its own words that leaving the value
- * here would RELOCATE an invented number rather than avoid it:
+ * ⛔ THERE IS NO `loadProductImportConfig`, `loadUrlTitleConfig` OR `loadSkuCombinationConfig`, AND NONE MAY
+ * BE ADDED IN THAT FORM. Each would have read a figure at LOAD, under DECISION C's fail-fast contract, so a
+ * deployment would have had to state SEVEN values — five import-policy values plus two budgets — before this
+ * module would build at all, including for behaviour it never reaches. That RELOCATES an invented number
+ * instead of avoiding it (AAP §0.7.3 S9, IR-12).
  *
- *   - `src/util/urlTitle.ts` on its removed `UrlTitleAttemptBudget`: "The legacy states no ceiling, so
- *     every possible value of one is a fabricated number. Passing the fabrication to the caller as a
- *     required argument relocated the invention; it did not avoid it."
- *     ⭐ AND A BOUND HAS SINCE BEEN REINSTATED FOR THAT LOOP TOO, by review finding F5 — but NOT inside
- *     the algorithm and NOT as configuration. the probe-budget section of `src/util/urlTitle.ts` wraps the injected PROBE,
- *     optionally, with no default, and `src/util/urlTitle.ts` is unchanged. THE DECISION IN THIS FILE IS
- *     UNAFFECTED for the same reason as the budget below: an optional collaborator obliges no deployment
- *     to state a figure, so there is still nothing here to load.
- *     ⚠️ A BOUND WAS BRIEFLY REINSTATED FOR THAT LOOP — outside the algorithm, wrapping the injected
- *     probe — and it has been WITHDRAWN AGAIN, so the loop is unbounded once more and there is still
- *     nothing here to load. THE DECISION IN THIS FILE IS UNAFFECTED either way.
- *   - `src/services/SkuService.ts` on its then-removed `SkuCombinationBudget`: "Requiring the composition
- *     root to supply the maximum RELOCATED the fabrication rather than avoiding it: the number still
- *     had to be invented by somebody before the graph could be built at all."
- *   - `src/ports/repositories/ProductRepository.ts` on the four controls its re-adjudicated SEC-08 gate
- *     still refuses to invent. It says this in two places, and they are quoted separately here rather
- *     than run together, because they are not adjacent in that file: at its member note, an
- *     implementation "must still NOT invent a host allow-list, a byte cap, a timeout or a redirect
- *     count"; and in its head block, "The source names no host and states no figure, so every possible
- *     value of each is a fabrication that AAP §0.7.3 standard 9 and IR-12 forbid."
+ * ⭐ THE CONTROLS THEMSELVES ARE LIVE, AND EACH TAKES ITS FIGURE THE OTHER WAY ROUND — see the block above
+ * {@link SettingsConfig} for the full inventory. In short: `../util/urlTitle.ts` and
+ * `../services/SkuService.ts` each hold a REQUIRED budget that RESOLVES its figure when the route needs it,
+ * through DECISION H's CATALOG_* names, so an unstated bound is a named refusal from that route rather than a
+ * failure to start; and `../ports/repositories/ProductRepository.ts` requires a `ProductImportSourcePolicy`
+ * OBJECT whose content is entirely the operator's — "must still NOT invent a host allow-list, a byte cap, a
+ * timeout or a redirect count", because "the source names no host and states no figure, so every possible
+ * value of each is a fabrication that AAP §0.7.3 standard 9 and IR-12 forbid".
  *
- * ⚠️ THE THIRD FILE NO LONGER WITHDRAWS ITS GATE, ONLY THE CONFIGURABLE PART OF IT — AND THAT IS STILL
- * THE WHOLE OF WHAT THIS LOADER WOULD HAVE READ. Review finding F8 reinstated the scheme, credential and
- * address-literal refusals as fixed literals; the four values a deployment would have had to supply are
- * exactly the four that remain withdrawn. So `loadProductImportConfig` would still have nothing to load,
- * and its removal is unaffected.
- *
- * Keeping the loaders would also have made a deployment supply SEVEN environment variables — five
- * import-policy values plus the two budgets — before this module would build at all, for no
- * behavioural effect anywhere, because `loadConfig` is fail-fast by DECISION C. `loadSettingsConfig`
- * below survives on its own merits: `../adapters/settings/StaticSettingResolver`'s
- * `StaticSettingResolverConfiguration` is a live contract and its three names are the setting values
- * whose LEGACY default is computed at run time, so a deployment-supplied value replaces a computation
- * rather than inventing a ceiling.
+ * ⭐ `loadSettingsConfig` BELOW SURVIVES ON ITS OWN MERITS, WHICH IS THE DISTINCTION THAT MATTERS.
+ * `../adapters/settings/StaticSettingResolver`'s `StaticSettingResolverConfiguration` is a live contract and
+ * its three names are the setting values whose LEGACY default is COMPUTED AT RUN TIME, so a
+ * deployment-supplied value replaces a computation rather than inventing a ceiling.
  */
 
 /**
@@ -1973,7 +1875,7 @@ function loadSettingsConfig(): SettingsConfig {
 }
 
 /**
- * Reads the three optional finite resource bounds, then freezes them — review finding SEC-1 (CWE-400).
+ * Reads the six optional finite resource bounds, then freezes them — DECISION H.
  *
  * ⭐ AN ABSENT VARIABLE OMITS ITS KEY RATHER THAN WRITING `undefined` INTO IT, exactly as
  * {@link loadSettingsConfig} does and for the same `exactOptionalPropertyTypes` reason: the collaborators
@@ -1981,20 +1883,21 @@ function loadSettingsConfig(): SettingsConfig {
  * `undefined` is not assignable to an optional member. The conditional spreads are what keep ABSENT and
  * `undefined` apart, and they are why this cannot be a flat object literal.
  *
- * ⭐ AND ABSENT IS A REAL, SUPPORTED STATE RATHER THAN A DEGRADED ONE. An operator who has measured no
- * figure states none, and the graph is wired exactly as it was before this section existed: unbounded, which
- * is the legacy's own behaviour. No default is substituted, no floor is promoted to a default, and nothing
- * in this loader suggests a value (AAP §0.7.3 S9, IR-12). The ONE consequence of stating nothing is that
- * the anonymous feed route declines to serve — see {@link ResourceBoundsConfig} — and that consequence is
- * a refusal, not a fabricated number.
+ * ⭐ ABSENT IS A REAL, LOAD-TIME-SUPPORTED STATE, AND IT IS NOT "UNBOUNDED". An operator who has measured
+ * no figure states none and this loader omits the key: no default is substituted, no floor is promoted to a
+ * default, and nothing here suggests a value (AAP §0.7.3 S9, IR-12). Loading succeeds with all six absent,
+ * which is what keeps the build, the linter and the whole suite runnable with no environment set. What an
+ * absent bound produces is a FAIL-CLOSED REFUSAL at the route that would have applied it — a
+ * `ConfigurationError` naming the variable, raised by the budget's own resolver — never unbounded work. The
+ * anonymous feed route refuses earliest, before it composes a query; see {@link ResourceBoundsConfig}.
  *
  * ⚠️ EVERY READ GOES THROUGH {@link optionalResourceBoundValue}, SO A PRESENT VALUE IS VALIDATED AT LOAD
  * and a mis-typed bound is a named configuration failure rather than a run-time surprise. That helper
  * enforces {@link LOWEST_PERMITTED_RESOURCE_BOUND} as a floor and refuses zero, negatives, fractions,
  * `NaN`, `Infinity` and non-numeric text. Note that it does NOT fall back the way
  * {@link optionalBoundedQueueValue} does: the queue bound must fall back because `mysql2` reads its own
- * default of zero as "unbounded", so omitting the option SELECTS something; these three bounds have no such
- * sentinel, so omitting them genuinely declines to choose.
+ * default of zero as "unbounded", so omitting the option SELECTS something; these six bounds have no such
+ * sentinel, so omitting them genuinely declines to choose and the decision is deferred to the route.
  */
 function loadResourceBoundsConfig(): ResourceBoundsConfig {
   const smartListMaximumRecordsPerQuery = optionalResourceBoundValue(
@@ -2060,12 +1963,157 @@ function loadResourceBoundsConfig(): ResourceBoundsConfig {
  * applies to every value equally.
  */
 function loadConfig(): AppConfig {
+  /* The documented split is checked before any variable is read, so a census that has drifted from the
+   * loaders is reported as the documentation fault it is rather than as a missing variable. */
+  assertEnvironmentVariableCensus();
+
   return Object.freeze({
     database: loadDatabaseConfig(),
     googleFeed: loadGoogleFeedConfig(),
     settings: loadSettingsConfig(),
     resourceBounds: loadResourceBoundsConfig(),
   });
+}
+
+/* ================================================================================================
+ * THE VARIABLE CENSUS, AS DATA RATHER THAN AS PROSE
+ * ------------------------------------------------------------------------------------------------
+ * ⭐ WHY THIS EXISTS AT ALL. Every prose census in this file and in slatwall-ts/.env.example had drifted
+ * from the loaders — a review pass found "SIXTEEN names, SIX required, TEN optional" stated in five
+ * places while the loaders read NINETEEN, and one of those statements claimed a `grep` had confirmed the
+ * figure. A number a reader is invited to trust and cannot check is worse than no number. So the
+ * inventory is declared ONCE, here, as data; {@link assertEnvironmentVariableCensus} checks it against
+ * itself at module load; and every prose statement of the split points at it.
+ *
+ * ⛔ IT IS NOT A REGISTRY AND NOTHING READS THE ENVIRONMENT THROUGH IT. The loaders below still name
+ * their own variables at their own `process.env` reads, because that is what makes each read legible
+ * beside the rule it is held to. This is the AUDIT of those reads, kept honest by the one thing a
+ * comment cannot do: failing.
+ * ============================================================================================== */
+
+/** One environment variable this module reads, with the loader that reads it. */
+interface EnvironmentVariableCensusEntry {
+  /** The variable name, spelled exactly as the `process.env` read spells it. */
+  readonly name: string;
+  /** Whether absence is fatal at load. */
+  readonly required: boolean;
+  /** The loader that reads it, so a reader can go straight to the rule it is held to. */
+  readonly loader:
+    | 'loadDatabaseConfig'
+    | 'loadGoogleFeedConfig'
+    | 'loadSettingsConfig'
+    | 'loadResourceBoundsConfig';
+}
+
+/**
+ * Every environment variable this module reads — the whole key set, in loader order.
+ *
+ * NINETEEN entries: nine connection facts (five required), one feed host (required), three
+ * run-time-computed setting inputs, and six resource bounds.
+ */
+const ENVIRONMENT_VARIABLE_CENSUS: readonly EnvironmentVariableCensusEntry[] = Object.freeze([
+  { name: 'DB_HOST', required: true, loader: 'loadDatabaseConfig' },
+  { name: 'DB_PORT', required: true, loader: 'loadDatabaseConfig' },
+  { name: 'DB_NAME', required: true, loader: 'loadDatabaseConfig' },
+  { name: 'DB_USER', required: true, loader: 'loadDatabaseConfig' },
+  { name: 'DB_PASSWORD', required: true, loader: 'loadDatabaseConfig' },
+  { name: 'DB_TLS_MODE', required: false, loader: 'loadDatabaseConfig' },
+  { name: 'DB_CONNECTION_LIMIT', required: false, loader: 'loadDatabaseConfig' },
+  { name: 'DB_QUEUE_LIMIT', required: false, loader: 'loadDatabaseConfig' },
+  { name: 'DB_CONNECT_TIMEOUT_MS', required: false, loader: 'loadDatabaseConfig' },
+  { name: 'GOOGLE_FEED_HOST', required: true, loader: 'loadGoogleFeedConfig' },
+  { name: 'SETTING_APPLICATION_ROOT_MAPPING_PATH', required: false, loader: 'loadSettingsConfig' },
+  { name: 'SETTING_SKU_ELIGIBLE_CURRENCIES', required: false, loader: 'loadSettingsConfig' },
+  {
+    name: 'SETTING_SKU_ELIGIBLE_FULFILLMENT_METHODS',
+    required: false,
+    loader: 'loadSettingsConfig',
+  },
+  {
+    name: 'CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY',
+    required: false,
+    loader: 'loadResourceBoundsConfig',
+  },
+  {
+    name: 'CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY',
+    required: false,
+    loader: 'loadResourceBoundsConfig',
+  },
+  {
+    name: 'CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST',
+    required: false,
+    loader: 'loadResourceBoundsConfig',
+  },
+  {
+    name: 'CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION',
+    required: false,
+    loader: 'loadResourceBoundsConfig',
+  },
+  {
+    name: 'CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD',
+    required: false,
+    loader: 'loadResourceBoundsConfig',
+  },
+  {
+    name: 'CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES',
+    required: false,
+    loader: 'loadResourceBoundsConfig',
+  },
+]);
+
+/** The totals every prose statement of the split in this subtree quotes. */
+const ENVIRONMENT_VARIABLE_TOTAL = 19;
+/** How many of them are fatal when absent. */
+const ENVIRONMENT_VARIABLE_REQUIRED_TOTAL = 6;
+/** How many are absent-or-present. */
+const ENVIRONMENT_VARIABLE_OPTIONAL_TOTAL = 13;
+
+/**
+ * Checks the census against itself at module load, so the documented split cannot drift again.
+ *
+ * ⚠️ IT IS DELIBERATELY A RUN-TIME CHECK AS WELL AS A TYPED ONE. A `readonly` tuple would pin the LENGTH
+ * at compile time, but the three totals quoted in prose are the thing that drifted, and an arithmetic
+ * relation between four numbers is not something a type can hold. Raising here means the module cannot
+ * load while its own census is inconsistent — the failing this comment could not otherwise do.
+ *
+ * @throws {ConfigurationError} when the census carries a duplicate name, or when its totals disagree
+ */
+function assertEnvironmentVariableCensus(): void {
+  const names = ENVIRONMENT_VARIABLE_CENSUS.map((entry) => entry.name);
+  const requiredCount = ENVIRONMENT_VARIABLE_CENSUS.filter((entry) => entry.required).length;
+  const optionalCount = ENVIRONMENT_VARIABLE_CENSUS.length - requiredCount;
+
+  if (new Set(names).size !== names.length) {
+    throw new ConfigurationError(
+      'The environment-variable census names the same variable twice, so its totals cannot be trusted.',
+    );
+  }
+
+  if (
+    names.length !== ENVIRONMENT_VARIABLE_TOTAL ||
+    requiredCount !== ENVIRONMENT_VARIABLE_REQUIRED_TOTAL ||
+    optionalCount !== ENVIRONMENT_VARIABLE_OPTIONAL_TOTAL
+  ) {
+    throw new ConfigurationError(
+      `The environment-variable census reports ${String(names.length)} names, of which ` +
+        `${String(requiredCount)} are required and ${String(optionalCount)} optional, while this module ` +
+        `documents ${String(ENVIRONMENT_VARIABLE_TOTAL)}, ` +
+        `${String(ENVIRONMENT_VARIABLE_REQUIRED_TOTAL)} and ` +
+        `${String(ENVIRONMENT_VARIABLE_OPTIONAL_TOTAL)}. Update slatwall-ts/.env.example and every ` +
+        'census in this file together with the loader that changed.',
+    );
+  }
+}
+
+/**
+ * Reports the environment-variable inventory this module reads, for documentation and for tests.
+ *
+ * Returned frozen, so a caller can audit the split without being able to alter it.
+ *
+ * @returns one entry per variable, in loader order
+ */
+export function environmentVariableCensus(): readonly EnvironmentVariableCensusEntry[] {
+  return ENVIRONMENT_VARIABLE_CENSUS;
 }
 
 /**
@@ -2075,25 +2123,20 @@ function loadConfig(): AppConfig {
  * override, set or reset entry point, by design (see WHY THERE IS NO CROSS-INVOCATION CACHE in
  * the file header).
  *
- * SIXTEEN variables are read — the count is measured from the `process.env` reads in this file, not
- * recalled — as **SIX required**: `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` and
- * `GOOGLE_FEED_HOST`; and **TEN optional**: `DB_TLS_MODE`, `DB_CONNECTION_LIMIT`, `DB_QUEUE_LIMIT`,
- * `DB_CONNECT_TIMEOUT_MS`, the three DECISION G `SETTING_*` values and the three DECISION H `CATALOG_*`
- * bounds. Loading this module with any of the SIX missing or malformed — or with any of the TEN optional
- * ones PRESENT BUT BLANK — throws a {@link ConfigurationError} naming the offending variable: the
- * fail-fast contract inherited from config/configORM.cfm:L4-L7 and set out in DECISION C. Per loader that
- * is five required plus four optional in `loadDatabaseConfig`, one required in `loadGoogleFeedConfig`,
- * three optional in `loadSettingsConfig` and three optional in the DECISION H reader, and
- * slatwall-ts/.env.example states the same split for an operator who never opens this file.
- * Blank-is-an-error is why every optional name in that template is commented out rather than left as a
- * bare empty assignment.
+ * NINETEEN variables are read, as **SIX required**: `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`,
+ * `DB_PASSWORD` and `GOOGLE_FEED_HOST`; and **THIRTEEN optional**: `DB_TLS_MODE`,
+ * `DB_CONNECTION_LIMIT`, `DB_QUEUE_LIMIT`, `DB_CONNECT_TIMEOUT_MS`, the three DECISION G `SETTING_*`
+ * values and the six DECISION H `CATALOG_*` bounds. Per loader that is five required plus four optional in
+ * `loadDatabaseConfig`, one required in `loadGoogleFeedConfig`, three optional in `loadSettingsConfig` and
+ * six optional in `loadResourceBoundsConfig`. The split is not recalled here: it is
+ * {@link ENVIRONMENT_VARIABLE_CENSUS}, and {@link assertEnvironmentVariableCensus} refuses to let this
+ * module load if the two disagree. slatwall-ts/.env.example states the same split for an operator who
+ * never opens this file.
  *
- * ⚠️ THIS PARAGRAPH CARRIED THREE MUTUALLY CONTRADICTORY COPIES OF ITSELF AND NOW CARRIES ONE. An
- * earlier version said "TEN required ... THREE optional" — the contract before the four pool and transport
- * values were made optional — and a correction was APPENDED rather than substituted, twice, leaving two
- * further fragments that began mid-sentence ("the file header). Loading this module with any of the TEN
- * required variables...") and disagreed with each other about the required count. Review finding F11
- * reported the residue. There is now exactly one statement of the split, and it is the executable one.
+ * Loading this module with any of the SIX missing or malformed — or with any of the THIRTEEN optional ones
+ * PRESENT BUT BLANK — throws a {@link ConfigurationError} naming the offending variable: the fail-fast
+ * contract inherited from config/configORM.cfm:L4-L7 and set out in DECISION C. Blank-is-an-error is why
+ * every optional name in the template is commented out rather than left as a bare empty assignment.
  *
  * Consumed by constructor injection only, and the feed's route to this value is INDIRECT.
  * src/config/database.ts reads it to create the module-scope pool. src/config/container.ts wires the

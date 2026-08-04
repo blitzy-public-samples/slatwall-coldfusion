@@ -294,29 +294,35 @@ the repeated additional-image elements, and the shipping-weight element assemble
 `L40-L57` and `L59-L61` — remain commented in the port with their element names intact, because
 deleting them would lose the record of an intended surface.
 
-#### 6.3.1 The one declared behavioural divergence: the URL scheme
+#### 6.3.1 The URL scheme: parity, and the cleartext exposure carried with it
 
 All five absolute URLs of the legacy template hard-code `http://` — `product.cfm:L14`, `:L15`, `:L22`,
 `:L23` and `:L24` — with no `https` branch, no setting behind it and no request-scheme read. **This port
-emits `https://`.**
+emits the same `http://`,** from the single constant `FEED_SCHEME_PREFIX`, and
+`CHANNEL_DESCRIPTION_PREFIX` spells the same scheme out because the legacy literal does, so the channel
+link and the channel description can never disagree.
 
-That is a genuine behavioural divergence and it is declared as such: it is the **second and only other entry
-in the port's divergence register** beside D18 (AAP §0.6.7.7, the importer's parameterised SQL). The current
-review's finding F8 classifies the hard-coded cleartext as **CWE-319** and directs the remedy in terms —
-"emit HTTPS or enforce an equivalent mandatory boundary". Every URL in this document is fetched by a merchant
-feed processor over the public internet, and the "equivalent mandatory boundary" would have to be
-infrastructure this deliverable explicitly does not author (AAP §0.2.2.5), so emitting the secure scheme is
-the only remedy available inside the deliverable.
+**There is therefore no divergence entry for this folder.** D18 (AAP §0.6.7.7, the importer's parameterised
+SQL) remains the port's one departure from byte-for-byte preservation. An earlier revision emitted `https://`
+here on a security review's **CWE-319** direction and declared itself a second entry; a later review reversed
+that on precedence — AAP §0.6.7.7 is titled "The One Declared Departure", AAP §0.8.2 Guideline 4 admits no
+proportionality test, and AAP §0.4.1.10 requires of the builder that "every field mapping [be] preserved".
 
-The scheme is **not configurable**: a setting or environment variable for it would invent an input the source
-does not have (AAP §0.7.3 S9) and would reopen the outcome the finding closes. One constant,
-`FEED_SCHEME_PREFIX`, reaches all five URLs, and `CHANNEL_DESCRIPTION_PREFIX` carries the same scheme by
-construction so the channel link and description can never disagree.
+⚠️ **The exposure is carried, not repaired, and it is annotated where it lives.** A merchant feed processor
+that honours the document as written fetches every URL in cleartext. `ProductFeedBuilder.ts` carries that as
+a `TODO(parity)` on `FEED_SCHEME_PREFIX`, with the legacy locators and the reasoning. It closes in the
+**deployment**, not in this folder: terminate TLS at the host `GOOGLE_FEED_HOST` names and redirect cleartext
+to it, and every URL upgrades on first contact without the port emitting a different byte. That is the
+"equivalent mandatory boundary" the security review named as its own alternative remedy, and it is the half
+of the pair this deliverable may point at rather than author (AAP §0.2.2.5 puts infrastructure out of scope).
+
+The scheme is **not configurable** either: a setting or environment variable for it would invent an input the
+source does not have (AAP §0.7.3 S9, IR-12).
 
 ⚠️ **The `g:` namespace URI stays `http://base.google.com/ns/1.0` and must.** A namespace URI is an
 identifier compared by exact string equality, not a fetch target; rewriting it would declare a different
 namespace and every `g:` element would cease to be a Google feed element. The scheme census in the test suite
-measures `http://` occurrences against that constant rather than requiring zero.
+therefore accounts for that constant separately from the URLs the feed publishes.
 
 #### 6.3.2 Escaping is the template's own, at the template's own six fields
 
@@ -667,14 +673,16 @@ carries the association projection described in §6.2 — the mechanism that rep
 session fetch — which is why its row above names composition **and** materialisation rather than
 composition alone.
 
-The ports inventory stands at **fifteen files**, and **this folder creates no new port**. If a future
+The ports inventory stands at **thirteen files**, and **this folder creates no new port**. If a future
 change to the feed appears to need one, that is a scope decision to be taken deliberately, not a file to
 add here.
 
-📐 **Thirteen port files, and the count is auditable by listing the folder.** `src/ports/` holds the
-eight boundary ports AAP §0.2.2.7 enumerates — `SettingResolverPort`, `ImagePathPort`,
-`SubscriptionTermPort`, `AccessContentPort`, `PricingPort`, `AccountContextPort`, `UniquePropertyPort` and
-`SmartListQueryPort` — and `src/ports/repositories/` holds **five**: one per catalog DAO, plus
+📐 **Thirteen port files, and the count is auditable by listing the folder.** `src/ports/` holds **eight**,
+from two AAP provisions rather than one: the **seven boundary-gap ports** §0.2.2.7 enumerates —
+`SettingResolverPort`, `ImagePathPort`, `SubscriptionTermPort`, `AccessContentPort`, `PricingPort`,
+`AccountContextPort` and `SmartListQueryPort` — plus **`UniquePropertyPort`**, which comes from **IR-5** and
+is listed separately at §0.4.1.6, because it stands for a facility the retired framework provided rather than
+for an excluded domain. `src/ports/repositories/` holds **five**: one per catalog DAO, plus
 `BrandRepository.ts`, because `BrandService` has no legacy DAO at all and relies entirely on the CRUD
 surface `onMissingMethod` synthesized (**IR-1**), so its repository has to be declared explicitly. 8 + 5 =
 **13**.
@@ -793,7 +801,8 @@ the label travels with the test rather than living only here. It arrives as **fi
 executable suite**: `test/integrations/ProductFeedBuilder.test.ts` is the only suite file, and the four others
 were folded into it under `FOLDED IN FROM` banners when AAP §0.4.1.12's declared plan was restored (see
 `slatwall-ts/README.md` §12.1). An earlier revision of this list called them "five suites", which was true
-before the fold and is not now — the bodies are all present, but `npx jest --listTests` reports one file:
+before the fold and is not now — the bodies are all present, but `npm test -- --listTests` reports one file
+(a bare `npx jest` cannot load this package's preset; see `slatwall-ts/README.md` §9.5):
 
 - `slatwall-ts/test/integrations/ProductFeedBuilder.test.ts` — the field mapping, every conditional
   branch, and the escaping.

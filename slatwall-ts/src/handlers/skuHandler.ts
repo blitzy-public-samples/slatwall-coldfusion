@@ -2298,15 +2298,15 @@ export function createSkuHandler(
    * option rather than a preference: the column is `unique="true"` [model/entity/Sku.cfc:L54], so it
    * addresses exactly one row, and no new dependency is introduced to reach it.
    *
-   * ⛔ THERE IS NO STORED-FILE-NAME GATE IN EITHER LAYER, AND ITS REMOVAL IS DELIBERATE (review finding
-   * F4). A revision of the service refused a stored `imageFile` that was not a single path segment with a
-   * permitted extension, and this paragraph used to describe that refusal arriving here as a verdict. The
-   * gate refused input the legacy ACCEPTS — [:L212] composes the path and asks the image service to write
-   * it whatever the column holds — so AAP §0.6.7.7, which makes D18 the sole declared hardening
-   * exception, and AAP §0.8.2 Guideline 4 both exclude it. Nothing is pre-empted here either: this layer
-   * adds no check of its own, because inventing one would put a policy the legacy never had into a second
-   * place as well. The residual exposure is flagged on {@link ImagePathPort.saveImageFile}, where an
-   * adapter that knows its own storage root can confine the write.
+   * ⛔ THE STORED-FILE-NAME GATE LIVES IN THE SERVICE, AND THIS LAYER ADDS NONE OF ITS OWN (review finding
+   * SEC-FILE-01). `../services/SkuService` refuses a stored `imageFile` that is not one generator-shaped
+   * segment BEFORE it composes a path, and it reports the refusal the way [model/service/SkuService.cfc:L216]
+   * already reports a declined write — by answering `false`. That verdict therefore arrives here as an
+   * ordinary `false`, with no path, root or reason attached, and is presented as judgment (k) describes.
+   * ⛔ DO NOT DUPLICATE THE CHECK HERE: a second copy would put the same policy in two places, where the
+   * copies can disagree, and this layer knows nothing the service does not. The residual READ/PROBE exposure
+   * is flagged on {@link ImagePathPort.saveImageFile}, where an adapter that knows its own storage root can
+   * confine what it discloses.
    *
    * ⛔ THE GATE RUNS FIRST, AND THIS ROW IS `'secure'`: `update` on `Sku`. It was `'anyLogin'` until
    * review finding F2; {@link SKU_ACCESS_MATRIX} carries the full derivation, including the measurement
@@ -3171,18 +3171,19 @@ type _SkuHandlerSatisfiesLambdaContract = AssertAssignable<typeof handler, APIGa
  * no signature — AAP §0.2.2.3 excludes the legacy authentication adapters and §0.8.3.2 forbids carrying
  * `org/Hibachi/**` forward, so the identity itself remains the deployment's to supply.
  *
- * `clearRequestAuthorizationResolver` travels with it because the only thing it can do is take a gate
- * AWAY: it resets the cell to absent, which is the fail-closed state, so exposing it cannot relax
- * anything. A deployment able to register must be able to unwind that registration — in a harness, or
- * between two configuration attempts — without discarding the module registry.
+ * ⛔ `clearRequestAuthorizationResolver` DELIBERATELY DOES NOT TRAVEL WITH IT, AND MUST NOT BE ADDED HERE
+ * (review finding F13). On its own the reset only takes a gate AWAY, which cannot relax anything — but
+ * `clear` FOLLOWED BY `register` re-points the gate, which is precisely what the registrar's single-shot
+ * refusal exists to prevent, and it would let any code holding this artifact swap or drop the deployment's
+ * resolver in process. The reset is exported from `./httpResponse` for the suite, which imports that module
+ * directly; `./httpResponse` is not an esbuild entry point, so the reset reaches no packaged artifact's
+ * public surface. A deployment that must unwind a registration discards the module registry — see §8.1's
+ * lifecycle contract.
  *
- * The two types are re-exported for the same reason the functions are: a deployment writing a resolver
+ * The two types are re-exported for the same reason the registrar is: a deployment writing a resolver
  * against a packaged artifact needs the shape it must satisfy, and `CatalogAuthorizationRequest` is the
  * one request slice — `Pick<APIGatewayProxyEvent, 'headers'>` — that serves all four gated surfaces.
  */
-export {
-  clearRequestAuthorizationResolver,
-  registerRequestAuthorizationResolver,
-} from './httpResponse';
+export { registerRequestAuthorizationResolver } from './httpResponse';
 
 export type { CatalogAuthorizationRequest, CatalogAuthorizationResolver } from './httpResponse';

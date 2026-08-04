@@ -225,10 +225,9 @@ const EXPECTED_XML_DECLARATION = '<?xml version="1.0"?>';
  *
  * ⚠️ IT IS AN `http://` URL AND MUST STAY ONE, WHICH IS WHY IT IS NAMED SEPARATELY. A namespace URI is an
  * IDENTIFIER compared by exact string equality, not a fetch target: rewriting it to `https://` would declare
- * a DIFFERENT namespace and every `g:` element in the document would cease to be a Google feed element.
- * Review finding F8's HTTPS direction reaches the five absolute URLs the feed publishes, and this is not one
- * of them — so the scheme census cases below measure `http://` occurrences against THIS constant rather than
- * requiring zero.
+ * a DIFFERENT namespace and every `g:` element in the document would cease to be a Google feed element. It
+ * is therefore NOT one of the five absolute URLs the feed publishes, and the scheme census cases below
+ * count `http://` occurrences with this one accounted for separately rather than lumped in.
  */
 const GOOGLE_FEED_NAMESPACE_URI = 'http://base.google.com/ns/1.0';
 const EXPECTED_RSS_OPEN_TAG = `<rss version="2.0" xmlns:g="${GOOGLE_FEED_NAMESPACE_URI}">`;
@@ -265,7 +264,7 @@ const RENDER_INSTANT_EPOCH_MS = new Date(2024, 0, 1, 9, 5, 7).getTime();
 const SALE_EXPIRATION_EPOCH_MS = new Date(2024, 1, 9, 14, 15, 0).getTime();
 const RAW_UTC_HOUR_OFFSET = '5';
 const RENDER_HOST = 'catalog.example.test';
-const ABSOLUTE_URL_PREFIX = `https://${RENDER_HOST}`;
+const ABSOLUTE_URL_PREFIX = `http://${RENDER_HOST}`;
 
 /*
  * The two endpoint timestamps, WITHOUT the offset label — the components of the two instants above,
@@ -992,7 +991,7 @@ interface PartitionedSource {
 /*
  * Split the source into comment spans and code spans.
  *
- * A naive `indexOf('//')` scan would mistake the `//` inside a `'https://…'` literal for a comment, and
+ * A naive `indexOf('//')` scan would mistake the `//` inside a `'http://…'` literal for a comment, and
  * the builder contains eleven such literals, so the walk tracks string, template-literal and
  * `${…}`-substitution state explicitly. Template substitutions nest arbitrarily, hence the frame stack
  * rather than a boolean. `charAt` is used rather than indexing because it answers `string` for an
@@ -1264,7 +1263,7 @@ describe('NET-NEW ProductFeedBuilder — RSS envelope and channel', () => {
     expect(countOccurrences(xml, EXPECTED_RSS_OPEN_TAG)).toBe(1);
   });
 
-  it('[NET-NEW] emits the exact channel title, the HTTPS channel link and the channel description', async () => {
+  it('[NET-NEW] emits the exact channel title, the channel link and the channel description', async () => {
     const scenario = createScenario();
 
     const xml = await scenario.render();
@@ -1272,28 +1271,31 @@ describe('NET-NEW ProductFeedBuilder — RSS envelope and channel', () => {
     /* `:L13` — a fixed literal, not derived from any setting. */
     expect(xml).toContain(channelField(EXPECTED_CHANNEL_TITLE_ELEMENT));
     /*
-     * `:L14` — `http://#CGI.HTTP_HOST#` in the legacy template, `https://` here.
+     * `:L14` — `http://#CGI.HTTP_HOST#`, byte for byte.
      *
-     * ⚠️ THE SCHEME IS THE PORT'S ONE DECLARED BEHAVIOURAL DIVERGENCE IN THIS FILE, AND THIS CASE PINS IT.
-     * The legacy hard-codes `http://` at all five absolute URLs, with no `https` branch, no setting behind it
-     * and no request-scheme read. Review finding F8 classified that as CWE-319 and directed "emit HTTPS or
-     * enforce an equivalent mandatory boundary"; the equivalent boundary would be infrastructure this
-     * deliverable does not author (AAP §0.2.2.5), so the scheme is upgraded. It is neither negotiated from a
-     * request nor configurable — one constant, `FEED_SCHEME_PREFIX`, reaches all five URLs.
+     * ⚠️ AND THE SCHEME IS PART OF THAT PARITY, WHICH IS WHAT THIS CASE PINS. The legacy hard-codes
+     * `http://` at all five absolute URLs, with no `https` branch, no setting behind it and no
+     * request-scheme read, so `FEED_SCHEME_PREFIX` transcribes that one literal and reaches all five. An
+     * earlier revision emitted `https://` as a second declared departure beside D18; AAP §0.6.7.7 admits
+     * exactly one, so the upgrade is reversed and the cleartext exposure is carried as an annotated
+     * TODO(parity) at `FEED_SCHEME_PREFIX` instead.
      */
-    expect(xml).toContain(channelField(`<link>https://${RENDER_HOST}</link>`));
-    /* ⭐ AND NO CLEARTEXT ORIGIN SURVIVES ANYWHERE IN THE DOCUMENT. The assertion is written against the
-     * HOST rather than against the bare scheme, because the RSS namespace URI is itself an `http://` URL
-     * (`xmlns:g`) and always will be — it is an identifier, not a fetch target. An earlier revision asserted
-     * `not.toContain('https://')`, requiring the cleartext form; finding F8 withdrew that. */
-    expect(xml).not.toContain(`http://${RENDER_HOST}`);
-    expect(countOccurrences(xml, 'http://')).toBe(countOccurrences(xml, GOOGLE_FEED_NAMESPACE_URI));
+    expect(xml).toContain(channelField(`<link>http://${RENDER_HOST}</link>`));
+    /* ⭐ AND NO SECURE-SCHEME ORIGIN IS INVENTED ANYWHERE IN THE DOCUMENT — the negative half of the same
+     * parity claim, so an upgrade cannot be reintroduced without this case failing. The positive census
+     * counts the `http://` occurrences: one per absolute URL the document publishes, PLUS the one in the
+     * `xmlns:g` namespace URI, which is an identifier rather than a fetch target. */
+    expect(xml).not.toContain('https://');
+    expect(countOccurrences(xml, 'http://')).toBe(
+      countOccurrences(xml, `http://${RENDER_HOST}`) +
+        countOccurrences(xml, GOOGLE_FEED_NAMESPACE_URI),
+    );
     /*
      * `:L15` — the channel description. It is required output even though a summary field list can omit
      * it, and it repeats the same prefix rather than reusing the link element.
      */
     expect(xml).toContain(
-      channelField(`<description>Google Product Feed for https://${RENDER_HOST}</description>`),
+      channelField(`<description>Google Product Feed for http://${RENDER_HOST}</description>`),
     );
   });
 
@@ -1897,14 +1899,14 @@ describe('NET-NEW ProductFeedBuilder — links and images', () => {
      * writes that slash into the composed literal itself, so `assertSameOriginRelativePath`'s requirement is
      * satisfied by every value the legacy composition can produce — the case below exercises the refusal.
      *
-     * ⚠️ THE SCHEME IS `https`, WHERE `:L22` HARD-CODES `http`. That is the port's one declared behavioural
-     * divergence in this file, directed by finding F8 (CWE-319); the channel-link case carries the full
-     * argument. The negative assertion below pins it: no item link may be published over cleartext.
+     * ⚠️ AND THE SCHEME IS `:L22`'s OWN `http`. The negative assertion below pins that half: no item link
+     * may be published over an invented secure scheme, because a second declared departure beside D18 is
+     * exactly what AAP §0.6.7.7 excludes. The channel-link case carries the full argument.
      */
     expect(xml).toContain(
       itemField(`<link>${ABSOLUTE_URL_PREFIX}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/nike-air/</link>`),
     );
-    expect(xml).not.toContain('<link>http://');
+    expect(xml).not.toContain('<link>https://');
     /* The URL key is read through the setting resolver, not hard-coded in the builder. */
     expect(resolvedSettingNames(scenario.settings)).toContain('globalURLKeyProduct');
   });
@@ -1937,7 +1939,7 @@ describe('NET-NEW ProductFeedBuilder — links and images', () => {
     expect(safeXml).not.toContain(`/${RAW_SAFE_SENTINEL_ESCAPED}/`);
     /* And the separators the legacy relies on survive, as they did under the encoder. */
     expect(safeXml).toContain(`<link>${ABSOLUTE_URL_PREFIX}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/`);
-    expect(safeXml).not.toContain('<link>http://');
+    expect(safeXml).not.toContain('<link>https://');
     /* The URL key is still read through the setting resolver, not hard-coded in the builder. */
     expect(resolvedSettingNames(safeScenario.settings)).toContain('globalURLKeyProduct');
 
@@ -2733,7 +2735,7 @@ function itemChildElementNames(xml: string, itemIndex = 0): readonly string[] {
   return names;
 }
 
-/** The element name opening a rendered line, e.g. `g:image_link` from `<g:image_link>https://…`. */
+/** The element name opening a rendered line, e.g. `g:image_link` from `<g:image_link>http://…`. */
 function elementNameOfLine(markup: string): string {
   const match = /^<([^\s/>]+)[\s>]/.exec(markup);
   if (match === null) {
@@ -3244,13 +3246,13 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
       productImages: [{ imagePath: FIRST_ADDITIONAL_IMAGE_PATH }],
     });
 
-    expect(xml).toContain(channelField(`<link>https://${rawHost}</link>`));
+    expect(xml).toContain(channelField(`<link>http://${rawHost}</link>`));
     expect(xml).toContain(
-      channelField(`<description>Google Product Feed for https://${rawHost}</description>`),
+      channelField(`<description>Google Product Feed for http://${rawHost}</description>`),
     );
-    expect(xml).toContain(itemField(`<link>https://${rawHost}/`));
-    expect(xml).toContain(itemField(`<g:image_link>https://${rawHost}/`));
-    expect(xml).toContain(itemField(`<g:additional_image_link>https://${rawHost}/`));
+    expect(xml).toContain(itemField(`<link>http://${rawHost}/`));
+    expect(xml).toContain(itemField(`<g:image_link>http://${rawHost}/`));
+    expect(xml).toContain(itemField(`<g:additional_image_link>http://${rawHost}/`));
     /* Five interpolations, five RAW occurrences, and no escaped one anywhere. */
     expect(countOccurrences(xml, rawHost)).toBe(5);
     expect(xml).not.toContain(RAW_SAFE_SENTINEL_ESCAPED);
@@ -3268,8 +3270,8 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
 
     const xml = await scenario.render();
 
-    expect(xml).toContain(channelField('<link>https://catalog.example.test:8080</link>'));
-    expect(xml).toContain(itemField('<link>https://catalog.example.test:8080/'));
+    expect(xml).toContain(channelField('<link>http://catalog.example.test:8080</link>'));
+    expect(xml).toContain(itemField('<link>http://catalog.example.test:8080/'));
     expect(xml).not.toContain('%3A8080');
   });
 
@@ -3788,12 +3790,12 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
     const channel = parseFeedChannel(xml);
 
     /* The channel pair round-trips to the composed value, every sub-delimiter intact. */
-    expect(soleChildText(channel, 'link')).toBe(`https://${CONFORMING_HOSTILE_HOST}`);
+    expect(soleChildText(channel, 'link')).toBe(`http://${CONFORMING_HOSTILE_HOST}`);
     expect(soleChildText(channel, 'description')).toBe(
-      `Google Product Feed for https://${CONFORMING_HOSTILE_HOST}`,
+      `Google Product Feed for http://${CONFORMING_HOSTILE_HOST}`,
     );
     /* On the wire there is NO entity anywhere: `:L14` and `:L15` are raw sinks. */
-    expect(xml).toContain(channelField(`<link>https://${CONFORMING_HOSTILE_HOST}</link>`));
+    expect(xml).toContain(channelField(`<link>http://${CONFORMING_HOSTILE_HOST}</link>`));
     expect(xml).not.toContain('&amp;');
     expect(xml).not.toContain('&apos;');
   });
@@ -3820,7 +3822,7 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
 
     const xml = await scenario.render({ productImages: [{ imagePath: '/product/default/b.jpg' }] });
     const item = parseSoleFeedItem(xml);
-    const prefix = `https://${CONFORMING_HOSTILE_HOST}`;
+    const prefix = `http://${CONFORMING_HOSTILE_HOST}`;
 
     expect(xml).toContain(
       itemField(`<link>${prefix}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/nike-air/</link>`),
@@ -3917,7 +3919,7 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
 
     for (const admitted of ['[2001:db8::1]', 'catalog.example.test:8080', 'under_score.example']) {
       await expect(createScenario({ host: admitted }).render()).resolves.toContain(
-        `<link>https://${admitted}</link>`,
+        `<link>http://${admitted}</link>`,
       );
     }
   });
@@ -3925,7 +3927,7 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
   it('[NET-NEW] F8 refuses a URL path that is not same-origin relative, at all three sinks', async () => {
     /*
      * ⭐ THE PATH HALF OF THE SAME FINDING, AND THE ROUTE IT CLOSES IS THE MISSING LEADING SLASH. A stored
-     * path of `attacker.example/x` appended to `https://<host>` yields the authority `<host>attacker.example`
+     * path of `attacker.example/x` appended to `http://<host>` yields the authority `<host>attacker.example`
      * — a DIFFERENT origin, reached without any delimiter the host gate inspects. `//x` is refused as well,
      * on the narrower ground that RFC 3986 §4.2 classifies it as a network-path reference rather than the
      * absolute-path reference F8 constrains these values to.
@@ -4012,7 +4014,7 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
 
     /* The item link is unaffected: a legitimate `urlTitle` travels raw, byte-for-byte. */
     expect(soleChildText(item, 'link')).toBe(
-      `https://${CONFORMING_HOSTILE_HOST}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/nike-air/`,
+      `http://${CONFORMING_HOSTILE_HOST}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/nike-air/`,
     );
     expect(childrenNamed(item, 'link')).toHaveLength(1);
   });
@@ -4064,7 +4066,7 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
     const traversalItem = parseSoleFeedItem(traversalXml);
 
     expect(soleChildText(traversalItem, 'link')).toBe(
-      `https://${RENDER_HOST}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/../../etc/passwd/`,
+      `http://${RENDER_HOST}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/../../etc/passwd/`,
     );
     expect(childrenNamed(traversalItem, 'link')).toHaveLength(1);
   });
@@ -4947,9 +4949,9 @@ describe('NET-NEW ProductFeedBuilder — parsed well-formedness over hostile val
     ]);
     const [channelTitle, channelLink, channelDescription] = channel.children;
     expect(channelTitle?.text).toBe('Slatwall Product Feed');
-    expect(channelLink?.text).toBe(`https://${CONFORMING_HOSTILE_HOST}`);
+    expect(channelLink?.text).toBe(`http://${CONFORMING_HOSTILE_HOST}`);
     expect(channelDescription?.text).toBe(
-      `Google Product Feed for https://${CONFORMING_HOSTILE_HOST}`,
+      `Google Product Feed for http://${CONFORMING_HOSTILE_HOST}`,
     );
 
     expect(soleElement(item, 'title').text).toBe(HOSTILE_TEXT);
@@ -4961,13 +4963,13 @@ describe('NET-NEW ProductFeedBuilder — parsed well-formedness over hostile val
      * URLs, and the host returns byte-identical because it was never transformed at all.
      */
     expect(soleElement(item, 'link').text).toBe(
-      `https://${CONFORMING_HOSTILE_HOST}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/nike-air/`,
+      `http://${CONFORMING_HOSTILE_HOST}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/nike-air/`,
     );
     expect(soleElement(root, 'g:image_link').text).toBe(
-      `https://${CONFORMING_HOSTILE_HOST}${SKU_COMPOSED_IMAGE_PATH}`,
+      `http://${CONFORMING_HOSTILE_HOST}${SKU_COMPOSED_IMAGE_PATH}`,
     );
     expect(soleElement(root, 'g:additional_image_link').text).toBe(
-      `https://${CONFORMING_HOSTILE_HOST}${FIRST_ADDITIONAL_IMAGE_PATH}`,
+      `http://${CONFORMING_HOSTILE_HOST}${FIRST_ADDITIONAL_IMAGE_PATH}`,
     );
 
     /*
@@ -6324,7 +6326,8 @@ describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTI
    *
    * The table is read from the statement's FIRST `FROM`, so the root projection's own joins cannot be
    * mistaken for the table it selects from. Honouring the `IN` form matters for the same reason it does
-   * in `test/adapters/catalogAggregates.test.ts`: two different statements read `SwSku` on this path — the
+   * in the AGGREGATE LOADERS section of `test/adapters/MySqlProductRepository.test.ts` (where
+   * `catalogAggregates.test.ts` was folded): two different statements read `SwSku` on this path — the
    * feed's record projection and the aggregate loader's default-SKU lookup by identifier — and a double
    * that answered both with the same rows would hand the lookup rows it never asked for.
    */
@@ -8089,7 +8092,7 @@ describe('test/integrations/IntegrationContract.test.ts — the five-method `<cf
  *      from the same records, the same context and the same serializer — which is the only form of
  *      the claim that cannot pass while the handler quietly alters a character.
  *   2. THE CONFIGURED HOST REACHES EVERY ABSOLUTE URL. `product.cfm` composes four content URLs and
- *      the channel description from `https://` plus the host. The host is read ONCE at creation,
+ *      the channel description from `http://` plus the host. The host is read ONCE at creation,
  *      which is asserted with a counting accessor, because AAP §0.6.6 M7 records that it cannot vary
  *      between invocations of one container.
  *   3. NOTHING SURVIVES BETWEEN INVOCATIONS. The selection is re-issued every call, the clock is read
@@ -8190,7 +8193,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
    * lives in the out-of-scope setting service, so inventing a default would be fabrication.
    * ============================================================================================== */
   const RENDER_HOST = 'catalog.example.test';
-  const ABSOLUTE_URL_PREFIX = 'https://catalog.example.test';
+  const ABSOLUTE_URL_PREFIX = 'http://catalog.example.test';
   const SECOND_RENDER_HOST = 'second.example.test';
 
   /** `product.cfm:L1-L11` — the envelope, byte for byte. */
@@ -8643,7 +8646,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
   });
 
   describe('NET-NEW googleFeedHandler — the configured host reaches every absolute URL (INT-06)', () => {
-    it('[NET-NEW] puts https://<host> in the channel link, the channel description and the item link', async () => {
+    it('[NET-NEW] puts http://<host> in the channel link, the channel description and the item link', async () => {
       const { response } = await invoke(createHandlerScenario().handler);
       const body = response.body;
 
@@ -8658,26 +8661,26 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       expect(body).toContain(`${ABSOLUTE_URL_PREFIX}${ADDITIONAL_IMAGE_PATH}`);
     });
 
-    it('[NET-NEW] F8 emits every content URL over HTTPS, and no cleartext origin anywhere', async () => {
+    it('[NET-NEW] emits every content URL over the legacy scheme, and invents no secure origin', async () => {
       const { response } = await invoke(createHandlerScenario().handler);
       const body = response.body;
 
       /*
-       * ⚠️ THE SCHEME IS THE PORT'S ONE DECLARED BEHAVIOURAL DIVERGENCE, AND THIS IS ITS ROUTE-LEVEL PIN.
-       * `integrationServices/google/views/feed/product.cfm:L14` and its four siblings hard-code `http://`;
-       * `ProductFeedBuilder.FEED_SCHEME_PREFIX` emits `https://`. Review finding F8 classified the hard-coded
-       * cleartext as CWE-319 and directed "emit HTTPS or enforce an equivalent mandatory boundary" — and the
-       * equivalent boundary would be infrastructure this deliverable does not author (AAP §0.2.2.5), so the
-       * scheme is upgraded and DECLARED rather than left as parity.
+       * ⚠️ THE SCHEME IS PARITY, AND THIS IS ITS ROUTE-LEVEL PIN.
+       * `integrationServices/google/views/feed/product.cfm:L14` and its four siblings hard-code `http://`,
+       * and `ProductFeedBuilder.FEED_SCHEME_PREFIX` transcribes that literal. An earlier revision emitted
+       * `https://` as a second declared departure beside D18; AAP §0.6.7.7 admits exactly one, so the
+       * upgrade is reversed and the cleartext exposure (CWE-319) is carried as an annotated TODO(parity) at
+       * that constant instead — where a reviewer diffing behaviour will find it.
        *
-       * ⭐ THE NEGATIVE IS WRITTEN AGAINST THE HOST, NOT THE BARE SCHEME. The `g:` namespace URI is itself an
-       * `http://` URL and must stay one — it is an identifier compared by string equality, not a fetch target
-       * — so the census counts `http://` occurrences against it rather than requiring zero. An earlier
-       * revision asserted `not.toContain('https://')`, requiring the cleartext form; F8 withdrew that.
+       * ⭐ THE CENSUS ACCOUNTS FOR THE NAMESPACE URI SEPARATELY. It is itself an `http://` URL and must stay
+       * one — an identifier compared by string equality, not a fetch target — so it is added to the expected
+       * count rather than folded into the published URLs.
        */
-      expect(body).not.toContain(`http://${RENDER_HOST}`);
+      expect(body).not.toContain('https://');
       expect(countOccurrences(body, 'http://')).toBe(
-        countOccurrences(body, GOOGLE_FEED_NAMESPACE_URI),
+        countOccurrences(body, ABSOLUTE_URL_PREFIX) +
+          countOccurrences(body, GOOGLE_FEED_NAMESPACE_URI),
       );
       expect(countOccurrences(body, ABSOLUTE_URL_PREFIX)).toBeGreaterThanOrEqual(4);
     });
@@ -8692,7 +8695,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
 
       /*
        * AAP §0.6.6 M7 — the host cannot vary between invocations of one container, and the module binds it
-       * once so the `https://<host>` text is sourced from exactly one place. A counting accessor is the only
+       * once so the `http://<host>` text is sourced from exactly one place. A counting accessor is the only
        * way to observe that, and it also proves the value is not re-validated or re-normalised per call.
        */
       expect(scenario.hostReads.reads).toBe(1);
@@ -8704,21 +8707,21 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
 
       /*
        * ⭐ VALIDATION AND NORMALISATION ARE DIFFERENT THINGS, AND THIS CASE PINS THE SECOND HALF ONLY.
-       * `validateFeedHostAuthority` IS applied — at construction here and again per render in the serializer,
-       * under review finding F8 — so the value is judged. What it never does is REWRITE: a host that passes
-       * is emitted byte-for-byte, with nothing trimmed, case-folded, punycoded or stripped of a default port.
-       * A gate that silently corrected a value would publish a URL the operator did not configure, which is
-       * the failure mode `assertSameOriginRelativePath` gives the same answer to.
+       * `validateFeedHostAuthority` IS applied — at construction here and again per render in the serializer
+       * — so the value is judged. What it never does is REWRITE: a host that passes is emitted byte-for-byte,
+       * with nothing trimmed, case-folded, punycoded or stripped of a default port. A gate that silently
+       * corrected a value would publish a URL the operator did not configure, which is the failure mode
+       * `assertSameOriginRelativePath` gives the same answer to.
        *
-       * ⚠️ THE SCHEME IS THE ONE EXCEPTION AND IT IS NOT A NORMALISATION OF THIS VALUE. `https://` is a
-       * module constant applied to every URL, not a rewrite of the configured host; the case above declares it.
+       * ⚠️ THE SCHEME IS NOT A NORMALISATION OF THIS VALUE EITHER. `http://` is a module constant transcribed
+       * from the legacy and applied to every URL, not a rewrite of the configured host.
        */
-      expect(response.body).toContain(`<link>https://${SECOND_RENDER_HOST}</link>`);
+      expect(response.body).toContain(`<link>http://${SECOND_RENDER_HOST}</link>`);
       expect(response.body).not.toContain(RENDER_HOST);
     });
 
     /* ==============================================================================================
-     * ⭐ THE NINE CASES BELOW WERE WITHDRAWN FOR ONE REVISION AND REVIEW FINDING F8 REINSTATED THEM
+     * ⭐ THE NINE CASES BELOW PIN THE HOST-AUTHORITY REFUSAL AT THE CONSTRUCTION BOUNDARY
      *
      * WHAT THEY ASSERT. That `createHandlerScenario` REFUSES at construction for a host carrying a userinfo
      * delimiter, a path delimiter, a backslash, a query delimiter, a fragment delimiter, an embedded space,
@@ -8806,7 +8809,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
         'my_host.example.test.',
       ]) {
         const { response } = await invoke(createHandlerScenario({ host }).handler);
-        expect(response.body).toContain(`<link>https://${host}</link>`);
+        expect(response.body).toContain(`<link>http://${host}</link>`);
       }
     });
 
@@ -8817,7 +8820,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
        * the serializer. What happens there has changed twice, and the current answer is the one this case
        * asserts.
        *
-       * ⛔ IT USED TO BE ESCAPED, and this case required `<link>https://a&amp;b.example.test</link>`, reasoning
+       * ⛔ IT USED TO BE ESCAPED, and this case required `<link>http://a&amp;b.example.test</link>`, reasoning
        * that a working document beats a refusal. Review finding CQ-9 withdrew that escape: the channel link at
        * `integrationServices/google/views/feed/product.cfm:L14` is one of NINE RAW sinks, and escaping it emits
        * bytes the legacy never emitted.
@@ -10248,10 +10251,10 @@ describe('NET-NEW — the feed end to end, from the public route to the document
 
     /* The configured host reaches every absolute URL, and the product URL key comes from a setting. */
     expect(soleChildText(selected, 'link')).toBe(
-      `https://${END_TO_END_HOST}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/feed-product/`,
+      `http://${END_TO_END_HOST}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/feed-product/`,
     );
     expect(soleChildText(selected, 'g:image_link')).toBe(
-      `https://${END_TO_END_HOST}${SKU_COMPOSED_IMAGE_PATH}`,
+      `http://${END_TO_END_HOST}${SKU_COMPOSED_IMAGE_PATH}`,
     );
 
     /* Both settings that compose one field, in one value — `product.cfm`'s two-setting weight. */
@@ -10282,10 +10285,10 @@ describe('NET-NEW — the feed end to end, from the public route to the document
       (element) => element.text,
     );
     expect(emitted).toStrictEqual([
-      `https://${END_TO_END_HOST}${THIRD_ADDITIONAL_IMAGE_PATH}`,
-      `https://${END_TO_END_HOST}${FIRST_ADDITIONAL_IMAGE_PATH}`,
-      `https://${END_TO_END_HOST}${SECOND_ADDITIONAL_IMAGE_PATH}`,
-      `https://${END_TO_END_HOST}${FIRST_ADDITIONAL_IMAGE_PATH}`,
+      `http://${END_TO_END_HOST}${THIRD_ADDITIONAL_IMAGE_PATH}`,
+      `http://${END_TO_END_HOST}${FIRST_ADDITIONAL_IMAGE_PATH}`,
+      `http://${END_TO_END_HOST}${SECOND_ADDITIONAL_IMAGE_PATH}`,
+      `http://${END_TO_END_HOST}${FIRST_ADDITIONAL_IMAGE_PATH}`,
     ]);
 
     /* The record the reader answered `[]` for emits none — the empty collection's legacy output. */
@@ -10324,7 +10327,7 @@ describe('NET-NEW — the feed end to end, from the public route to the document
 
       const channel = parseFeedChannel(response.body);
       expect(soleChildText(channel, 'title')).toBe('Slatwall Product Feed');
-      expect(soleChildText(channel, 'link')).toBe(`https://${END_TO_END_HOST}`);
+      expect(soleChildText(channel, 'link')).toBe(`http://${END_TO_END_HOST}`);
 
       /*
        * ⭐ THE ADDRESS IS EXACT IN ITS PUNCTUATION AND CASE-INSENSITIVE IN ITS LETTERS, WHICH IS TWO

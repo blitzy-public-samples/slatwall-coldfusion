@@ -308,32 +308,24 @@ const REQUEST_BUDGET_PRESENTATION: PublicErrorPresentation = Object.freeze({
 });
 
 /*
- * ⛔ THERE IS NO THIRD REQUEST REJECTION. A revision of this file declared an `ImportSourceRejectedError`
- * with its own neutral presentation, raised by an import-source allow-list in
- * `../adapters/mysql/MySqlProductRepository.ts` that refused non-`http`/`https` schemes and loopback,
- * link-local and private-range addresses before any retrieval was attempted. THE GATE AND THE ERROR ARE
- * BOTH WITHDRAWN, together with this constant pair.
- *
- * ⛔ WHY, GIVEN THAT THE ARGUMENT FOR THEM WAS A CAREFUL ONE. The gate was licensed on the D18 footing
- * (AAP §0.6.7.7) on the ground that the legacy retrieval at `model/dao/ProductDAO.cfc:L87` runs through
- * `getService("utilityTagService")` — a bean declared nowhere in the legacy repository — with the
- * `new http()` fallback at `:L89-L98` commented out, so the set of locations the legacy would actually
- * fetch is empty and refusing one alters no legacy outcome. That reasoning is sound as far as it goes.
- * It is withdrawn on the COUNT rather than on the merits: AAP §0.6.7.7 authorises exactly ONE departure
- * from behavioural preservation in this port — D18, the importer's parameterised SQL — and it does so
- * precisely so that a reviewer diffing behaviour has exactly one entry to check. A refusal that raises
- * where the legacy raises nothing is observable behaviour, and AAP §0.8.2 Guideline 4 admits no
+ * ⛔ THERE IS NO THIRD REQUEST REJECTION, AND AN `ImportSourceRejectedError` IN PARTICULAR MUST NOT BE
+ * ADDED. A dedicated class would exist to report a refusal this port does not author: no scheme, host or
+ * address rule is stated anywhere in the subtree, because the legacy retrieval at
+ * `model/dao/ProductDAO.cfc:L87` checks nothing and AAP §0.6.7.7 authorises exactly ONE departure from
+ * behavioural preservation (D18, the importer's parameterised SQL), with AAP §0.8.2 Guideline 4 admitting no
  * proportionality test.
  *
- * ⚠️ THE CWE-918 SURFACE IS THEREFORE CARRIED, AND IT IS RECORDED AS MISMATCH M4 RATHER THAN CLOSED. The
- * importer takes a location from its caller and would retrieve it server-side with no scheme, host or
- * resolved-address test anywhere on the path from `model/service/ProductService.cfc:L65`. What remains in
- * the port is a WIRING shape and not a refusal: `ProductImportSourcePolicy` on
- * `../ports/repositories/ProductRepository` is a REQUIRED member of any retrieving reader, so an operator
- * who supplies retrieval must supply a policy with it, and the only reader this subtree ships retrieves
- * nothing and declines every member with a `NotImplementedError`. A policy that refuses raises whatever
- * error the operator's implementation chooses; `../handlers/httpResponse.ts` classifies by
- * `getPublicError().code` on the {@link DomainError} base and needs no per-refusal class to do it.
+ * ⭐ WHAT DOES RUN IS THE OPERATOR'S OWN POLICY, AND IT NEEDS NO CLASS FROM HERE.
+ * `ProductImportSourcePolicy` on `../ports/repositories/ProductRepository` is a REQUIRED member of any
+ * retrieving reader, and `../adapters/mysql/MySqlProductRepository.ts` consults it before any read member
+ * can be reached — so a refusal raises whatever error the operator's implementation chooses, and
+ * `../handlers/httpResponse.ts` classifies by `getPublicError().code` on the {@link DomainError} base.
+ * The only reader this subtree ships retrieves nothing and declines every member with a
+ * {@link NotImplementedError}.
+ *
+ * ⚠️ THE RESIDUAL CWE-918 SURFACE IS THEREFORE CARRIED AND RECORDED AS MISMATCH M4 RATHER THAN CLOSED BY
+ * THIS PORT: what a caller-supplied location is judged against is the policy an operator injects, and this
+ * subtree names none of its content.
  */
 
 /**
@@ -575,22 +567,20 @@ export class UniqueConstraintViolationError extends DomainError {
 /**
  * Raised when a request exceeds a budget for the work one operation may perform.
  *
- * ⚠️ EXACTLY ONE SITE RAISES IT TODAY, AND THREE ONCE DID. `../adapters/mysql/SmartListQueryBuilder.ts`
- * refuses a materialisation above its optional `SmartListMaterialisationBudget`. The other two —
- * `../services/SkuService.ts`'s merchandise combination ceiling and a URL-title probe ceiling in a
- * `../util/urlTitleProbeBudget.ts` that no longer exists — are WITHDRAWN, because AAP §0.6.7.7 declares
- * exactly ONE departure from behavioural preservation in this port (D18, the importer's parameterised
- * SQL) and AAP §0.8.2 Guideline 4 admits no proportionality test. Their withdrawal blocks live beside
- * the code that used to enforce them.
+ * ⚠️ FOUR BUDGETS ARE IN FORCE IN THIS SUBTREE, AND NONE OF THEM CURRENTLY RAISES THROUGH THIS CLASS.
+ * `../adapters/mysql/SmartListQueryBuilder.ts` refuses a materialisation above its
+ * `SmartListMaterialisationBudget`; `../services/SkuService.ts` refuses an enumeration above its
+ * `SkuCombinationBudget`; `../util/urlTitle.ts` refuses a derivation above its `UrlTitleProbeBudget`; and
+ * `../integrations/google/ProductFeedBuilder.ts` refuses a render above its feed budget. Each raises a
+ * {@link DomainError} carrying its own diagnostic message, and an unstated figure raises
+ * {@link ConfigurationError} naming the variable instead.
  *
- * THE SURVIVING BUDGET IS OPTIONAL AND CARRIES NO DEFAULT, which is why it stands: a deployment that
- * states no figure has no ceiling, so nothing is invented (AAP §0.7.3 S9, IR-12), and the refusal
- * happens BEFORE any row is materialised so no partial result is ever observed.
- *
- * ⛔ AND THE CLASS IS RETAINED RATHER THAN DELETED WITH THE TWO WITHDRAWALS. It is the presentation
- * contract for "the request asks for more work than one operation may perform", `httpResponse` maps it
- * to 400 by `instanceof`, and the surviving site needs exactly that. Folding it back into the base type
- * would report a rejected request as a broken service on the 5xx rate.
+ * ⭐ SO THIS CLASS IS A DECLARED PRESENTATION CONTRACT WITH NO RAISE SITE TODAY, AND IT IS RETAINED
+ * DELIBERATELY. It is the one presentation for "the request asks for more work than one operation may
+ * perform", which `../handlers/httpResponse.ts` maps to 400; a budget refusal that reached the base
+ * presentation instead would be reported as a broken service on the 5xx rate. ⛔ A REFUSAL MOVED ONTO THIS
+ * CLASS MUST KEEP ITS DIAGNOSTIC INTERNAL — the figure and what was asked for belong in `context`, never in
+ * the public message.
  *
  * WHAT THE INTERNAL ACCOUNT SHOULD CARRY, since none of it is disclosed: the budget that was
  * exhausted, the figure it was set to, what the request asked for, and the legacy locator of the

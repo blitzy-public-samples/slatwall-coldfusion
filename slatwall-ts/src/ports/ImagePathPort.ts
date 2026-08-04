@@ -60,13 +60,15 @@
  * three paragraphs up excludes, and {@link toImageWebPath} is admitted only because it performs no
  * inspection at all. A `const` union or a nominal type would have been fine here; a validator never was.
  *
- * ⛔ AND NO NARROWER SUCCESSOR ENFORCES IT ANYWHERE EITHER, AS OF REVIEW FINDING F4. A write-boundary
- * predicate did briefly stand in `src/services/SkuService.ts`; it is withdrawn, because it refused input
- * the legacy ACCEPTS and AAP §0.6.7.7 declares D18 the SINGLE behaviour-hardening exception in this port
- * (AAP §0.8.2 Guideline 4, §0.1.2.1). The exposure is therefore CARRIED, and it is flagged on
+ * ⭐ A NARROWER SUCCESSOR DOES ENFORCE IT, AND IT LIVES IN THE SERVICE RATHER THAN HERE (review finding
+ * SEC-FILE-01). `src/services/SkuService.ts` holds a write-boundary predicate over the STORED NAME,
+ * consulted before a path is composed, transcribed from the legacy's own generator at
+ * `model/entity/Sku.cfc:L131-L139`. It belongs there because it is a working function body, which the
+ * "contracts here, I/O there" rule excludes from this module. The READ and PROBE paths are NOT narrowed, so
+ * that exposure is CARRIED and flagged on {@link ImagePathPort.getImageExistsFlag} and
  * {@link ImagePathPort.saveImageFile} for the implementer who can legitimately confine it — an adapter is
- * the only layer that knows its own storage root. DECISION I-1 below records the whole sequence, control by
- * control.
+ * the only layer that knows its own storage root. DECISION I-1 below records every control, one by one, and
+ * which of them are in force.
  *
  * ASYNCHRONY, AND WHY IT DIFFERS FROM `SettingResolverPort`
  * --------------------------------------------------------
@@ -425,25 +427,19 @@ export const IMAGE_UPLOAD_ALLOWED_EXTENSIONS = 'jpg,jpeg,png,gif';
  */
 
 /* ================================================================================================
- * SEC-07 / DECISION I-1, RE-ADJUDICATED THREE TIMES — CONTROL (1) IS REINSTATED ON A NEW GROUND, THE
- * READ-PATH EXPOSURE STAYS CARRIED, AND THE WRITE CONTRACT NOW CARRIES OBLIGATIONS
+ * SEC-07 / DECISION I-1 — CONTROL (1) IS IN FORCE, THE READ-PATH EXPOSURE STAYS CARRIED, AND THE WRITE
+ * CONTRACT CARRIES OBLIGATIONS
  *
- * THE HISTORY MATTERS HERE, BECAUSE THIS BLOCK HAS BEEN WRITTEN FOUR TIMES AND A READER DESERVES TO SEE
- * WHY IT SETTLED WHERE IT DID. It first withdrew SIX distinct controls on ONE argument. A later revision
- * found that argument sound for four of them and false for two, and REINSTATED control (1) — a name gate
- * at the write boundary — on the ground that D18's own example already changes outcomes on malicious
- * input, so a refusal shares D18's shape. Review finding F4 then withdrew control (1) again, and NOT by
- * disputing that reading: by PRECEDENCE. AAP §0.6.7.7 declares D18 "the single place where the port
- * intentionally does not preserve legacy behavior exactly", AAP §0.8.2 Guideline 4 forbids enhancement
- * beyond what the migration requires, and AAP §0.1.2.1 makes the plan FROZEN and not reinterpretable.
- * Reaching a SECOND exception by analogy with the first is exactly the reinterpretation §0.1.2.1
- * excludes, however well-argued the analogy.
+ * ⛔ TWO ARGUMENTS ABOUT THIS DECISION ARE RECORDED FIRST, BECAUSE ACTING ON EITHER ONE WOULD REMOVE OR
+ * MISPLACE A LIVE CONTROL. (a) DO NOT justify the write-boundary name gate by ANALOGY WITH D18 — "D18's own
+ * example already changes outcomes on malicious input, so a refusal shares D18's shape" is an unlicensed
+ * reinterpretation: AAP §0.6.7.7 declares D18 "the single place where the port intentionally does not
+ * preserve legacy behavior exactly", §0.8.2 Guideline 4 forbids enhancement beyond what the migration
+ * requires, and §0.1.2.1 makes the plan FROZEN. (b) DO NOT conclude from (a) that the gate must go, because
+ * the gate does not need an exception at all.
  *
- * ⭐⭐ REVIEW FINDING SEC-FILE-01 REINSTATES CONTROL (1), AND ACCEPTS F4's POINT RATHER THAN DISPUTING IT.
- * The analogy to D18 IS an unlicensed reinterpretation, and it is abandoned. The gate is reinstated on a
- * ground that needs no exception at all, because it is not a divergence: THERE IS NO LEGACY BEHAVIOUR ON
- * THIS WRITE PATH TO PRESERVE. That is not an argument — it is the fact this very block established
- * repo-wide, five paragraphs below, and then did not apply:
+ * ⭐⭐ THE GROUND IT ACTUALLY STANDS ON: THERE IS NO LEGACY BEHAVIOUR ON THIS WRITE PATH TO PRESERVE. That
+ * is a verified fact rather than an argument, and it is the fact this very block establishes repo-wide:
  *
  *     `saveImageFile` DOES NOT EXIST ANYWHERE IN THE LEGACY. One call site
  *     (`model/service/SkuService.cfc:L212`), zero declarations. The `save*` prefix routes the name to
@@ -453,13 +449,12 @@ export const IMAGE_UPLOAD_ALLOWED_EXTENSIONS = 'jpg,jpeg,png,gif';
  *
  * AAP §0.8.2 Guideline 4 requires that existing behaviour be preserved "exactly as-is". Where there is no
  * existing behaviour, nothing is preserved and nothing is changed, so §0.6.7.7's single-exception clause is
- * NOT ENGAGED — this is not a second exception, it is a path that never had a first outcome. This block
- * already conceded the consequence in its own words: the contract "is defined by AAP §0.4.3.2 and by the
- * call site rather than by a legacy body — there is no legacy body to reproduce." A contract with no legacy
- * body is SPECIFIED, not diverged from.
+ * NOT ENGAGED — this is not a second exception, it is a path that never had a first outcome. The contract
+ * "is defined by AAP §0.4.3.2 and by the call site rather than by a legacy body — there is no legacy body to
+ * reproduce", and a contract with no legacy body is SPECIFIED, not diverged from.
  *
- * ⭐ WHAT MOVED, AND WHAT DELIBERATELY DID NOT:
- *   • (1) name gate at the WRITE boundary — REINSTATED, in `src/services/SkuService.ts`, before a path is
+ * ⭐ THE SIX CONTROLS, AND WHICH OF THEM ARE IN FORCE:
+ *   • (1) name gate at the WRITE boundary — IN FORCE, in `src/services/SkuService.ts`, before a path is
  *     composed. Transcribed from `model/entity/Sku.cfc:L131-L139`, the legacy's own generator, so no policy
  *     is invented (AAP §0.7.3 S9, IR-12).
  *   • (3) narrowing the existence PROBE — STAYS WITHDRAWN, and F4 was right about it for a second reason
@@ -475,8 +470,8 @@ export const IMAGE_UPLOAD_ALLOWED_EXTENSIONS = 'jpg,jpeg,png,gif';
  *     produces, so no caller gains a failure mode the legacy lacked — and a bare boolean is also the
  *     strongest available form of the finding's "refusal without leaking destination details" clause.
  *
- * The per-control verdicts below are preserved as they were written, with each one's current disposition
- * marked, so the reasoning that produced them stays auditable rather than being overwritten.
+ * Each control below carries its current disposition and the reasoning behind it, so a proposal to change
+ * one has to answer that reasoning rather than re-derive it.
  *
  * ⛔ WHAT THE LEGACY DOES, VERBATIM, AND IT VALIDATES NOTHING AT THE POINT OF USE.
  * `model/entity/Sku.cfc:L146` composes a WEB URL by interpolating the stored column value:
@@ -489,18 +484,17 @@ export const IMAGE_UPLOAD_ALLOWED_EXTENSIONS = 'jpg,jpeg,png,gif';
  * `model/validation/Sku.json`, so a stored `../../../../tmp/payload.jpg` normalises straight out of the
  * intended directory on both paths. That exposure is real.
  *
- * ⛔ AND A CLAIM THIS BLOCK USED TO MAKE HERE IS INCOMPLETE — CORRECTED UNDER REVIEW FINDING SEC-FILE-01.
- * It read "the column is not fed by anything arbitrary, and that is checkable… exactly two writers populate
- * it, and BOTH assign the output of one generator", and concluded that a deployment whose column was only
- * ever written by those two is not exposed at all. There is a THIRD writer, and it takes ARBITRARY CALLER
- * DATA: the bulk importer. `model/dao/ProductDAO.cfc:L207` calls
+ * ⛔ AND THERE ARE THREE WRITERS OF THAT COLUMN, NOT TWO — WHICH IS THE MEASUREMENT THE GATE TURNS ON. It
+ * is tempting to conclude that the column "is not fed by anything arbitrary" because two writers assign the
+ * output of one generator; the THIRD writer takes ARBITRARY CALLER DATA. It is the bulk importer:
+ * `model/dao/ProductDAO.cfc:L207` calls
  * `saveImportData(data, r, "SlatwallSku", skuColumns, …)` where `skuColumns` is derived from the uploaded
  * FILE'S OWN HEADINGS, so a `sku_imageFile` column in an imported file is written straight to the row —
  * which is precisely the "Store/IMPORT" half of the finding's exploit. `src/adapters/mysql/`'s
  * `IMPORTABLE_SKU_COLUMNS` faithfully lists `imageFile` for that reason.
  *
- * That correction does not weaken the measurement below; it is why the gate belongs at the POINT OF USE
- * rather than at any one writer. Screening `processImageUpload` screens all three writers at once, and it
+ * That third writer is why the gate belongs at the POINT OF USE rather than at any one writer. Screening
+ * `processImageUpload` screens all three writers at once, and it
  * does so without refusing an import the legacy accepts — an imported row is a database write, not a file
  * write, and the hazard only materialises when the value becomes a write DESTINATION.
  *
@@ -519,24 +513,19 @@ export const IMAGE_UPLOAD_ALLOWED_EXTENSIONS = 'jpg,jpeg,png,gif';
  *
  * ================================ THE SIX CONTROLS, ADJUDICATED ==================================
  *
- * ⭐ (1) A NAME GATE OVER THE STORED VALUE — **REINSTATED** UNDER SEC-FILE-01, ON THE NO-LEGACY-BEHAVIOUR
- * GROUND STATED ABOVE RATHER THAN ON THE D18 ANALOGY. The account below is the F4 withdrawal as written,
- * kept because its reasoning about the ANALOGY is correct and worth not losing; what it lacked was the
- * observation that this path has no legacy outcome at all. It was
- * briefly reinstated in `src/services/SkuService.ts` as a single predicate consulted by
- * `processImageUpload` before any member of this port was touched, transcribed from the legacy's own
- * generator and answering `false` rather than raising. It was as narrow as such a gate can be, and it was
- * still a behaviour change on input the legacy accepts, which only AAP §0.6.7.7's declared exception could
- * license and §0.6.7.7 declares exactly one. TWO SECONDARY POINTS SURVIVE THAT WITHDRAWAL and are kept
- * because they remain true independently: such a gate could never have lived in THIS file (a compiled
- * `RegExp` and a function body are outside a contracts-only module, which is why the earliest revision's
- * `validateImageFileName` had to leave regardless of the security verdict), and the place to confine an
- * image write is an ADAPTER, which is the only layer that knows its own storage root.
+ * ⭐ (1) A NAME GATE OVER THE STORED VALUE — **IN FORCE** UNDER SEC-FILE-01, ON THE NO-LEGACY-BEHAVIOUR
+ * GROUND STATED ABOVE AND NOT ON THE D18 ANALOGY. It lives in `src/services/SkuService.ts` as a single
+ * predicate consulted by `processImageUpload` before any member of this port is touched, transcribed from
+ * the legacy's own generator and answering `false` rather than raising. It is as narrow as such a gate can
+ * be. ⛔ AND IT COULD NOT LIVE IN THIS FILE: a compiled `RegExp` and a function body are outside a
+ * contracts-only module, which is why an earlier `validateImageFileName` here had to leave regardless of the
+ * security verdict. The place to CONFINE an image write, as opposed to screening its name, is an ADAPTER —
+ * the only layer that knows its own storage root.
  *
  * ⛔ (2) `ImageStorageBase`, AN INJECTED CONTAINMENT DIRECTORY — STAYS WITHDRAWN AS AUTHORED CODE, and is
- * now an OBLIGATION (a) on {@link ImagePathPort.saveImageFile} for the adapter that has a root. GROUND 3
- * BELOW IS SOUND and is what lets the gate confine the write without any root at all. It had no legacy counterpart, so any value for it would be invented configuration, which AAP
- * §0.7.3 standard 9 and IR-12 forbid. Nothing is lost: because `L146` composes
+ * now an OBLIGATION (a) on {@link ImagePathPort.saveImageFile} for the adapter that has a root. A
+ * containment directory has no legacy counterpart, so any value for it would be invented configuration,
+ * which AAP §0.7.3 standard 9 and IR-12 forbid. Nothing is lost: because `L146` composes
  * `<baseImageURL>` + `/product/default/` + `<imageFile>`, requiring `imageFile` to be a single segment
  * confines the write to whatever directory that prefix denotes, WHATEVER it denotes. The confinement is
  * relative, derives entirely from the legacy's own composition, and needs no root to compare against.
@@ -554,21 +543,22 @@ export const IMAGE_UPLOAD_ALLOWED_EXTENSIONS = 'jpg,jpeg,png,gif';
  * that beyond doubt — it requires that member to "preserve the exact file path supplied by the SKU/image
  * path contract". This control stays withdrawn on its own merits, not merely on precedence.
  *
- * ⛔ (5) RAISING ON REFUSAL — STAYS WITHDRAWN, AND IS NOW MOOT SINCE NOTHING REFUSES.
- * `model/service/SkuService.cfc:L213-L217` has exactly two outcomes, `true` and `false`, and records
- * nothing on either, so a raise would have handed callers a failure mode the legacy never had. Note that
- * the two halves of the middle revision CONTRADICTED each other on this point —
- * {@link ImagePathPort.saveImageFile}'s own note chose `false` while the service side raised — and `false`
- * was the half that was right, for as long as either existed.
+ * ⛔ (5) RAISING ON REFUSAL — STAYS WITHDRAWN, AND THE DISTINCTION FROM CONTROL (1) IS THE POINT: the name
+ * gate REFUSES, but it refuses by ANSWERING `false`. `model/service/SkuService.cfc:L213-L217` has exactly
+ * two outcomes, `true` and `false`, and records nothing on either, so a raise would hand callers a failure
+ * mode the legacy never had. {@link ImagePathPort.saveImageFile}'s own note requires the same `false`, so
+ * both sides of the boundary agree.
  *
  * ⛔ (6) INSPECTING THE UPLOADED BYTES FOR A PERMITTED IMAGE TYPE — STAYS WITHDRAWN AS AUTHORED CODE HERE,
  * and is now OBLIGATION (d) on {@link ImagePathPort.saveImageFile}, where the finding asks for it and where
- * the bytes actually are. Nothing in the legacy sniffs content. `L212` passes an `allowedExtensions` list and nothing more; a magic-number or
- * MIME check would be a control invented here, which IR-12 and AAP §0.7.3 standard 9 forbid.
+ * the bytes actually are. Nothing in the legacy sniffs content: `L212` passes an `allowedExtensions` list
+ * and nothing more, so a magic-number or MIME check authored here would be an invented control, which IR-12
+ * and AAP §0.7.3 standard 9 forbid.
  *
- * ============================= THE ONE GROUND THAT WAS FALSE ====================================
+ * ==================== ONE GROUND OFTEN CITED HERE IS FALSE, AND THIS IS WHY ======================
  *
- * ⛔ GROUND 2 OF THE ORIGINAL WITHDRAWAL IS DISPROVED BY ITS OWN EXAMPLE. It read: D18 "is a precedent
+ * ⛔ "D18 CHANGES NO OUTCOME" IS DISPROVED BY D18's OWN EXAMPLE, so do not reason from it. The claim reads:
+ * D18 "is a precedent
  * for a divergence that removes a flaw class WITHOUT changing an outcome — parameterised SQL returns
  * exactly the rows interpolated SQL returned. A refusal has no such property." The second sentence is
  * false about D18 itself. Parameterised SQL does NOT return what interpolated SQL returned on the inputs
@@ -579,17 +569,17 @@ export const IMAGE_UPLOAD_ALLOWED_EXTENSIONS = 'jpg,jpeg,png,gif';
  *     for every input on which the legacy produced a well-defined, intended result, the port produces
  *     the same result; the divergence falls only on inputs where the legacy's behaviour WAS the flaw.
  *
- * ⛔ AND CONTROL (1) DID SATISFY THAT TEST, WHICH IS PRECISELY WHY THE WITHDRAWAL HAD TO REST ON
- * SOMETHING ELSE. Every value the legacy's own two writers can store would have been admitted, so every
- * intended input was unchanged; only a value no generator could have produced — a separator, a second
- * dot, a traversal — was refused, and on those the legacy's behaviour WAS the flaw. Sharing D18's shape
- * is not the same as being D18: AAP §0.6.7.7 names ONE divergence, by locator, and §0.1.2.1 forbids
- * reading the plan as licensing a class of them. A future iteration that wants this control has a clean
- * route — amend the AAP, which is a decision above this port's authority — and until then the exposure is
- * carried and flagged. Grounds 1 and 3 of the original withdrawal survive intact and are honoured above at
- * (2), (3) and (6).
+ * ⚠️ AND CONTROL (1) DOES SATISFY THAT TEST — WHICH IS STILL NOT THE GROUND IT STANDS ON, AND THE
+ * DISTINCTION IS WORTH HOLDING ONTO. Every value the legacy's own two writers can store is admitted, so
+ * every intended input is unchanged; only a value no generator could have produced — a separator, a second
+ * dot, a traversal — is refused, and on those the legacy's behaviour WAS the flaw. But sharing D18's shape
+ * is not the same as being D18: AAP §0.6.7.7 names ONE divergence, by locator, and §0.1.2.1 forbids reading
+ * the plan as licensing a class of them. So the gate rests on the NO-LEGACY-BEHAVIOUR ground stated at the
+ * top of this block, which needs no exception at all, and this paragraph exists only to stop the analogy
+ * being pressed back into service. Grounds 1 and 3 of the original analysis survive intact and are honoured
+ * above at (2), (3) and (6).
  *
- * ⚠️ AND A SEPARATE FACT ABOUT THIS PATH, VERIFIED REPO-WIDE, THAT MAKES (1) EASIER STILL. The
+ * ⭐ AND THE FACT (1) ACTUALLY RESTS ON, VERIFIED REPO-WIDE. The
  * collaborator member `saveImageFile` DOES NOT EXIST ANYWHERE IN THE LEGACY. A grep across every `.cfc`
  * and `.cfm` finds ONE call site (`model/service/SkuService.cfc:L212`) and ZERO declarations;
  * `model/service/ImageService.cfc:L54` extends `HibachiService` and declares only `getResizedImage`,
@@ -615,13 +605,12 @@ export const IMAGE_UPLOAD_ALLOWED_EXTENSIONS = 'jpg,jpeg,png,gif';
  * No adapter for this port is authored in this checkpoint (AAP §0.4.1.7 enumerates none), which is exactly
  * why the obligations are stated on the contract rather than implemented in one.
  *
- * ⭐ WHAT SURVIVES HERE, AND IT CHANGES NOTHING. {@link ImageWebPath} remains, as a purely NOMINAL label
+ * ⭐ AND WHAT THIS FILE CONTRIBUTES IS A LABEL, NOT A GATE. {@link ImageWebPath} is a purely NOMINAL label
  * for "a path this slice composed for an image". EVERY member that consumes a path accepts it — the
  * existence probe and the save request both do — so it refuses nothing, gates nothing and alters no
- * outcome. It is documentation the compiler can carry, not a restriction: {@link toImageWebPath} tags
- * any string on request and no member demands a tag a caller cannot obtain. There is no enforcement
- * anywhere for it to stand in for; the type system was never asked to carry one, and now neither is the
- * service.
+ * outcome. It is documentation the compiler can carry, not a restriction: {@link toImageWebPath} tags any
+ * string on request and no member demands a tag a caller cannot obtain. The refusal lives in the service,
+ * where a function body may live; the type system is not asked to carry it.
  * ============================================================================================== */
 
 declare const IMAGE_WEB_PATH: unique symbol;
@@ -633,8 +622,8 @@ declare const IMAGE_WEB_PATH: unique symbol;
  * a filesystem path — `model/entity/Sku.cfc:L222` wraps it in `expandPath`, and
  * `model/service/SkuService.cfc:L211-L212` passes it as `filePath` to a member that writes — so both
  * file-system members of this port accept it, exactly as the legacy does. The brand records what the
- * value IS; it refuses nothing. An earlier revision used it to make those two call shapes uncompilable,
- * which changed two outcomes; see the withdrawal block above.
+ * value IS; it refuses nothing. ⛔ DO NOT NARROW IT to make those two call shapes uncompilable: that would
+ * change the read path's outcome as well as the write path's — see DECISION I-1 above, control (4).
  */
 export type ImageWebPath = string & { readonly [IMAGE_WEB_PATH]: 'web' };
 
@@ -644,7 +633,7 @@ export type ImageWebPath = string & { readonly [IMAGE_WEB_PATH]: 'web' };
  * ⚠️ A NOMINAL TAG, NOT A VALIDATION, and deliberately so. It asserts nothing about the value; it
  * records that the value is a path this slice composed for an image. Nothing is enforced on the back of
  * it — every member of this port that consumes a path accepts an {@link ImageWebPath}, exactly as the
- * legacy hands the composed value to both of its file-system consumers. See the withdrawal block above.
+ * legacy hands the composed value to both of its file-system consumers. See DECISION I-1 above.
  *
  * Two producers exist in the slice, and both compose rather than validate: the adapter behind
  * {@link ImagePathPort.getImagePath}, mirroring `model/entity/Sku.cfc:L146`, and
@@ -876,12 +865,11 @@ export interface ImagePathPort {
    * single bad row — a behaviour change in the opposite direction from the one the finding asks for. So
    * composition never fails; what the brand adds is that the RESULT is marked as a URL.
    *
-   * ⚠️ AN EARLIER FORM OF THE SENTENCE ABOVE ENDED "and is consequently refused by every file-system
-   * member of this interface", WHICH WAS FALSE AND CONTRADICTED DECISION I-1 IN THE SAME FILE. Both
-   * file-system members ACCEPT an {@link ImageWebPath} — see {@link ImagePathPort.getImageExistsFlag} and
-   * {@link SaveImageFileRequest.filePath} — precisely so that the composed value the legacy hands them can
-   * still be handed to them. The claim survived from the pre-withdrawal revision, where the brand DID make
-   * those two call shapes uncompilable. Nothing here refuses anything.
+   * ⛔ AND THE BRAND IS NOT REFUSED BY ANY FILE-SYSTEM MEMBER OF THIS INTERFACE — do not read it that way,
+   * and do not make it true. Both file-system members ACCEPT an {@link ImageWebPath} — see
+   * {@link ImagePathPort.getImageExistsFlag} and {@link SaveImageFileRequest.filePath} — precisely so that
+   * the composed value the legacy hands them can still be handed to them. Nothing here refuses anything;
+   * DECISION I-1 control (4) records what narrowing it would cost.
    *
    * ⛔ AND NO GATE PRECEDES THIS MEMBER ON THE DISPLAY PATH, WHICH IS MOST OF ITS TRAFFIC. Composition is
    * display work, reached by the Google feed and by admin display for every SKU, so it is not gated:
@@ -934,12 +922,11 @@ export interface ImagePathPort {
    * boundary member, and how to answer the question is left to the adapter as an explicit,
    * documented decision rather than being prejudged by this contract.
    *
-   * ⚠️ THE PARAMETER IS THE COMPOSED PATH, BECAUSE THAT IS WHAT `:L222` PROBES WITH. An earlier
-   * revision narrowed it to the stored NAME and imposed three obligations on an implementation —
-   * validate the basename, join it under an injected containment directory, canonicalise the join and
-   * probe only that. All of it stays withdrawn: it made a traversal name resolve `false` where the legacy
-   * reported on the traversed file, which is an outcome change, and the containment directory had no
-   * legacy counterpart to derive a value from. See DECISION I-1 above, control (3).
+   * ⚠️ THE PARAMETER IS THE COMPOSED PATH, BECAUSE THAT IS WHAT `:L222` PROBES WITH. ⛔ DO NOT NARROW IT TO
+   * THE STORED NAME and probe a canonicalised join under an injected containment directory instead: that
+   * makes a traversal name resolve `false` where the legacy reported on the traversed file — an outcome
+   * change — and the containment directory has no legacy counterpart to derive a value from. See
+   * DECISION I-1 above, control (3).
    *
    * ⛔ AND NO GATE REACHES THIS MEMBER — THE VERDICT FOR THE READ PATH, AND IT IS NOW THE ONLY PATH THAT
    * KEEPS IT (DECISION I-1 control (3)). `:L222` answers a boolean about whatever the composed path resolves
@@ -975,15 +962,16 @@ export interface ImagePathPort {
    * =================================================================================================
    * ⭐⭐ OBLIGATIONS ON AN IMPLEMENTATION — REVIEW FINDING SEC-FILE-01 (CWE-22, CWE-434)
    * =================================================================================================
-   * ⛔ THIS CONTRACT USED TO IMPOSE NOTHING BEYOND STORING THE BYTES, AND THAT ABSENCE *WAS* THE FINDING.
-   * The review's own mitigating fact reads: "The shipped production image adapter is NotImplemented and
+   * ⛔ A CONTRACT THAT IMPOSES NOTHING BEYOND STORING THE BYTES *IS* THE FINDING, WHICH IS WHY (a)-(f)
+   * BELOW ARE PART OF IT. The review's own mitigating fact reads: "The shipped production image adapter is NotImplemented and
    * refuses, so no current file write occurs. The vulnerability becomes reachable AS SOON AS A FUNCTIONAL
    * ADAPTER IS SUPPLIED UNDER THE EXISTING CONTRACT." So the defect was never a byte this port writes —
    * it writes none — it was that an implementer reading this contract was told to store a path and told
    * nothing else. A future adapter author would have been conforming, and exposed.
    *
-   * ⭐ WHY STATING OBLIGATIONS IS NOT THE HARDENING DECISION I-1 WITHDREW. Those controls were withdrawn
-   * because they changed an OUTCOME for input the legacy accepts. An obligation on an unimplemented member
+   * ⭐ WHY STATING OBLIGATIONS IS NOT THE SAME THING AS THE CONTROLS DECISION I-1 DECLINES TO AUTHOR. Those
+   * are declined because they would change an OUTCOME for input the legacy accepts. An obligation on an
+   * unimplemented member
    * changes no outcome of any request, because there is no implementation for it to change: it constrains
    * whoever writes one, which is the layer that AAP §0.4.1.7 places outside this checkpoint and that
    * DECISION I-1 control (2) itself names as "the only layer that knows its own storage root". Stating what
@@ -1012,9 +1000,9 @@ export interface ImagePathPort {
    * ⚠️ THESE ARE OBLIGATIONS, NOT INJECTED CONFIGURATION, AND THE DISTINCTION KEEPS AAP §0.7.3 S9 AND
    * IR-12 SATISFIED. No root VALUE, no byte FIGURE and no MIME LIST is authored here — every one of those
    * is an operator's to state, exactly as the six resource bounds are. What is authored is the requirement
-   * that an implementation have them. DECISION I-1 controls (2), (4) and (6) stay withdrawn on that same
-   * line: this port still injects no `ImageStorageBase`, still substitutes no basename for the composed
-   * path, and still inspects no bytes itself.
+   * that an implementation have them. DECISION I-1 controls (2), (4) and (6) sit on that same line: this
+   * port injects no `ImageStorageBase`, substitutes no basename for the composed path, and inspects no bytes
+   * itself.
    *
    * ⭐ AND THE TRAVERSAL IS ALREADY REFUSED UPSTREAM, SO (a)-(f) ARE DEFENCE IN DEPTH RATHER THAN THE ONLY
    * LINE. `src/services/SkuService.ts` screens the stored `imageFile` against the shape

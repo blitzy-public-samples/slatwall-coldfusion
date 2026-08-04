@@ -1585,18 +1585,19 @@ type _BrandHandlerSatisfiesLambdaContract = AssertAssignable<
  * no signature — AAP §0.2.2.3 excludes the legacy authentication adapters and §0.8.3.2 forbids carrying
  * `org/Hibachi/**` forward, so the identity itself remains the deployment's to supply.
  *
- * `clearRequestAuthorizationResolver` travels with it because the only thing it can do is take a gate
- * AWAY: it resets the cell to absent, which is the fail-closed state, so exposing it cannot relax
- * anything. A deployment able to register must be able to unwind that registration — in a harness, or
- * between two configuration attempts — without discarding the module registry.
+ * ⛔ `clearRequestAuthorizationResolver` DELIBERATELY DOES NOT TRAVEL WITH IT, AND MUST NOT BE ADDED HERE
+ * (review finding F13). On its own the reset only takes a gate AWAY, which cannot relax anything — but
+ * `clear` FOLLOWED BY `register` re-points the gate, which is precisely what the registrar's single-shot
+ * refusal exists to prevent, and it would let any code holding this artifact swap or drop the deployment's
+ * resolver in process. The reset is exported from `./httpResponse` for the suite, which imports that module
+ * directly; `./httpResponse` is not an esbuild entry point, so the reset reaches no packaged artifact's
+ * public surface. A deployment that must unwind a registration discards the module registry — see §8.1's
+ * lifecycle contract.
  *
- * The two types are re-exported for the same reason the functions are: a deployment writing a resolver
+ * The two types are re-exported for the same reason the registrar is: a deployment writing a resolver
  * against a packaged artifact needs the shape it must satisfy, and `CatalogAuthorizationRequest` is the
  * one request slice — `Pick<APIGatewayProxyEvent, 'headers'>` — that serves all four gated surfaces.
  */
-export {
-  clearRequestAuthorizationResolver,
-  registerRequestAuthorizationResolver,
-} from './httpResponse';
+export { registerRequestAuthorizationResolver } from './httpResponse';
 
 export type { CatalogAuthorizationRequest, CatalogAuthorizationResolver } from './httpResponse';

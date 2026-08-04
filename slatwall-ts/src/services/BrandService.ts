@@ -570,14 +570,13 @@ export class BrandService {
    * @param urlTitleProbeBudget - The ceiling on how many uniqueness probes ONE URL-title derivation may
    * issue — review finding SEC-DOS-03; see `../util/urlTitle`'s {@link UrlTitleProbeBudget}.
    *
-   * ⭐ REQUIRED, AND THAT IS THE THIRD TIME THIS PARAMETER HAS CHANGED SHAPE, SO THE HISTORY IS RECORDED
-   * RATHER THAN THE OUTCOME ASSERTED. It arrived REQUIRED as a bare number, was withdrawn as a relocated
-   * fabrication; returned OPTIONAL, and was withdrawn again on the ground that AAP §0.6.7.7 licenses one
-   * behavioural departure. It is now required and carries a RESOLVER: the figure is the operator's or
-   * there is none, and "none" is a named `ConfigurationError` from the save that needed it — never a
-   * default and never an unbounded loop. `../util/urlTitle` argues the reversal in full, including why
-   * §0.6.7's register governs legacy business-logic defects rather than the availability of the extracted
-   * service. Every derivation inside the budget returns byte-for-byte what
+   * ⭐ REQUIRED, AND IT CARRIES A RESOLVER RATHER THAN A NUMBER, WHICH IS WHAT KEEPS IT INSIDE §0.7.3 S9
+   * AND IR-12. The figure is the operator's or there is none, and "none" is a named `ConfigurationError`
+   * raised by the save that needed it — never a default, never a fabricated ceiling and never an unbounded
+   * loop. ⛔ DO NOT MAKE IT OPTIONAL: an optional parameter leaves the unbounded probe loop reachable by
+   * default, which is the exposure SEC-DOS-03 reports. `../util/urlTitle` carries the authority in full,
+   * including why §0.6.7's register governs legacy business-logic defects rather than the availability of
+   * the extracted service. Every derivation inside the budget returns byte-for-byte what
    * `model/service/DataService.cfc:L64` returns.
    */
   public constructor(
@@ -817,21 +816,17 @@ export class BrandService {
    * transformation belongs to `createUniqueURLTitle`.
    * @returns A URL title free on `SwBrand`, suffixed `-2`, `-3`, … on successive collisions.
    *
-   * THE UTILITY TAKES THREE ARGUMENTS AND THERE IS NO FOURTH, AND THE LOOP IS UNBOUNDED. The attempt
-   * budget an earlier checkpoint passed through here as a fourth argument stays removed, and
-   * `../util/urlTitle` records the three authorities behind that removal, the decisive one being that a
-   * REQUIRED ceiling relocates a fabricated number instead of avoiding it. ⛔ A LATER REVISION REINSTATED
-   * THE BOUND AROUND THE PROBE — optional, no default, wired through a third constructor parameter — AND
-   * THAT IS WITHDRAWN TOO: an optional ceiling obliges nobody to invent a figure, but it still adds a
-   * capability the source does not describe (AAP §0.7.3 S9, IR-12) and still refuses derivations the
-   * legacy completed, and AAP §0.6.7.7 declares exactly one departure in this port. So the probe is handed
-   * over UNWRAPPED and the derivation probes exactly as `:L64` does.
+   * ⭐ THE COLLISION LOOP IS BOUNDED, AND THE BOUND IS THE FOURTH ARGUMENT — REVIEW FINDING SEC-DOS-03
+   * (CWE-400). An adversary able to hold `SwBrand` URL titles could otherwise make one save issue probes
+   * indefinitely, because `while (!unique)` at `model/service/DataService.cfc:L64` has no ceiling. The
+   * injected {@link UrlTitleProbeBudget} refuses beyond the operator's figure and refuses BY NAME when no
+   * figure was stated, so nothing here fabricates one (AAP §0.7.3 S9, IR-12). The suffix sequence, the slug
+   * transformation and every edge case are untouched for derivations inside the budget.
    *
-   * ⭐ THE EXPOSURE IS NOW BOUNDED — REVIEW FINDING SEC-DOS-03 (CWE-400). An adversary able to hold
-   * `SwBrand` URL titles could once make one save issue probes indefinitely, because `while (!unique)` at
-   * `model/service/DataService.cfc:L64` has no ceiling. The injected budget refuses beyond the operator's
-   * figure, and refuses BY NAME when no figure was stated; the suffix sequence, the slug transformation
-   * and every edge case are untouched for derivations inside the budget.
+   * ⚠️ THE PARITY COST, NAMED. A derivation that exceeds the stated figure is refused where the legacy would
+   * have kept probing; `../util/urlTitle` carries the TODO(parity) for `:L64` and the authority for holding
+   * the bound outside the algorithm rather than inside it. ⛔ DO NOT MOVE IT INSIDE: the transformation and
+   * the suffix arithmetic are the ported behaviour, and only the probe COUNT is bounded.
    *
    * Whatever the probe rejects with propagates unchanged — this member adds no failure of its own beyond
    * the budget's, matching the legacy member's `returntype="string"`.

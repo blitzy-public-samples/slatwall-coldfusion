@@ -1077,9 +1077,18 @@ function announceRuntimeLifecycleGate() {
  *   observed directly, six stale bundles left behind by a build that exited non-zero. A red build
  *   that leaves a green build's artifacts in place is the one outcome this step must not produce,
  *   because a successful build is the deliverable's acceptance criterion and a packaging step reading
- *   `dist/` cannot tell the two apart. {@link purgeOwnedArtifacts} therefore removes an enumerated
- *   list of paths derived from the entry list — never a recursive delete, never a glob, and never a
- *   file this script did not write.
+ *   `dist/` cannot tell the two apart. {@link purgeOwnedArtifacts} therefore removes, in this order:
+ *   the six relocated source maps, as an ENUMERATED file list derived from the entry list; then
+ *   {@link stagingDir} and {@link outputDir}, RECURSIVELY, because a staged dependency closure is a
+ *   directory tree with no file list to enumerate and because the promoting `rename` requires its
+ *   destination to be absent rather than merely emptied.
+ *
+ *   ⛔ THE QUALIFICATION THAT MATTERS SURVIVES THE RECURSION: NOTHING IS GLOBBED AND NO PATH IS
+ *   DISCOVERED. Both recursive targets are FIXED module constants, resolved from this file's own
+ *   location, lying inside the package root, git-ignored, and written by nothing but this script and
+ *   `tsc -p tsconfig.build.json`. No path outside those two directories is ever passed to `rm`, so a
+ *   file this script did not write is still never a candidate for removal — see
+ *   {@link purgeOwnedArtifacts} for the full argument and for why the two removals are recursive.
  *
  * `sourcemap` IS enabled, so a stack trace from a bundled artifact can be read against the
  * TypeScript that produced it; tsconfig.build.json enables maps for its own emit for the same

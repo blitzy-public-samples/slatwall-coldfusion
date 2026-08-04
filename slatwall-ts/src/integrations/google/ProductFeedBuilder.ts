@@ -40,14 +40,12 @@
  *
  *   1. `CGI.HTTP_HOST` (`product.cfm:L14`, `L15`, `L22`, `L23`, `L24`) becomes
  *      {@link ProductFeedRenderContext.host} — a host authority, not a pre-normalised URL. The
- *      concatenation is reproduced exactly — no slash is added or removed and the host is neither trimmed
- *      nor normalised — with ONE declared exception: the SCHEME is `https://` where the legacy hard-codes
- *      `http://`, on review finding F8's CWE-319 direction. See {@link FEED_SCHEME_PREFIX}. The host is a
- *      plain `string`, emitted RAW at each of the five emission sites — all five are raw sinks in the
- *      legacy — and never percent-encoded. It is GATED: {@link validateFeedHostAuthority} refuses
- *      the characters that would move the origin, and {@link renderRawFeedNode} refuses the two that would
- *      break the parse. See THE TWO FAIL-CLOSED GATES for the validated-and-branded form an earlier
- *      revision used and why THAT form stays withdrawn.
+ *      concatenation is reproduced exactly: the scheme is the legacy's own `http://`
+ *      ({@link FEED_SCHEME_PREFIX}), no slash is added or removed, and the host is neither trimmed nor
+ *      normalised. The host is a plain `string`, emitted RAW at each of the five emission sites — all
+ *      five are raw sinks in the legacy — and never percent-encoded. It is GATED:
+ *      {@link validateFeedHostAuthority} refuses the characters that would move the origin, and
+ *      {@link renderRawFeedNode} refuses the two that would break the parse.
  *   2. `now()` (`product.cfm:L30`, read twice) becomes {@link ProductFeedRenderContext.renderTime}.
  *      Nothing in this module constructs a date or reads a clock.
  *   3. `getTimeZoneInfo().utcHourOffset` (`product.cfm:L30`, read twice) becomes
@@ -134,29 +132,31 @@
  * legacy publishes unescaped. The reversal is recorded at ESCAPING below and at
  * THERE IS NO `encodeFeedUrlPath`, with the residual risk CQ-9 asks to be documented rather than closed.
  *
- * ⭐ SO THE ONE DECLARED DIVERGENCE THAT REMAINS IS A REFUSAL, NOT A REWRITE, AND IT IS NARROW. Review
+ * ⭐ SO WHAT REMAINS IS A REFUSAL, NOT A REWRITE, AND IT IS NARROW ENOUGH TO ENTER NO REGISTER. Review
  * finding SEC-2 directs that a document a parser cannot read must never be published with a 200, so a
  * value is refused — with a `DataIntegrityError`, which the handler answers 500 — when and only when it
  * would make the document unparseable: a code point outside the XML 1.0 `Char` production at ANY sink,
  * and additionally `&`, `<` or `]]>` at a RAW sink. Every one of those inputs produced a legacy document
- * with no defined parse, so no intended outcome is removed; and for every input the legacy rendered into a
- * well-formed document, this file emits the same bytes. See {@link assertRepresentableInXml} and
- * {@link renderRawFeedNode}.
+ * with NO DEFINED PARSE, which no consumer could ingest, so no legacy outcome is foreclosed; and for every
+ * input the legacy rendered into a well-formed document, this file emits the same bytes. D18 therefore
+ * remains the port's ONE departure from byte-for-byte preservation (AAP §0.6.7.7). See
+ * {@link assertRepresentableInXml} and {@link renderRawFeedNode}.
  *
- * ⭐ AND TWO URL CONTROLS ARE IN FORCE, ON REVIEW FINDING F8's AUTHORITY, WITH THE INVENTED FORMS OF EACH
- * STILL WITHDRAWN. {@link validateFeedHostAuthority} refuses a host that would move the document's origin,
- * and {@link assertSameOriginRelativePath} refuses an appended path that would leave it. Neither refuses a
- * value the legacy could publish: RFC 9110 §7.2 defines the `Host` field the first stands in for as an
- * RFC 3986 authority containing none of the refused characters, and `model/entity/Product.cfc:L206-L208`
- * writes the leading slash the second requires into the composed literal itself. What stays withdrawn is
- * the INVENTED shape of each — a DNS-label grammar with a 63-octet ceiling, and an `allowedHosts`
- * membership gate — because those refuse a bracketed IPv6 literal and a punycode label, which are
- * legitimate (AAP §0.7.3 S9). THE TWO URL CONTROLS section carries the full adjudication.
+ * ⭐ AND TWO URL CONTROLS ARE IN FORCE. {@link validateFeedHostAuthority} refuses a host that would move
+ * the document's origin, and {@link assertSameOriginRelativePath} refuses an appended path that would
+ * leave it. Neither refuses a value the legacy could publish: RFC 9110 §7.2 defines the `Host` field the
+ * first stands in for as an RFC 3986 authority containing none of the refused characters, and
+ * `model/entity/Product.cfc:L206-L208` writes the leading slash the second requires into the composed
+ * literal itself. Neither invents a policy of its own — no DNS-label grammar, no octet ceiling and no
+ * `allowedHosts` membership gate, because each of those would refuse a bracketed IPv6 literal or a
+ * punycode label, which are legitimate (AAP §0.7.3 S9). THE TWO URL CONTROLS section carries the full
+ * adjudication.
  *
- * ⚠️ ONE GENUINE BEHAVIOURAL DIVERGENCE IS DECLARED IN THIS FILE, AND IT IS THE SCHEME. All five legacy
- * lines hard-code `http://`; this port emits `https://`, on finding F8's CWE-319 direction. That is the
- * second and only other entry in the port's divergence register beside D18 (AAP §0.6.7.7), and
- * {@link FEED_SCHEME_PREFIX} states why no "equivalent mandatory boundary" was available instead.
+ * ⛔ AND NO BEHAVIOURAL DIVERGENCE IS DECLARED IN THIS FILE. Every emitted byte, the scheme included, is
+ * the legacy's. D18 (AAP §0.6.7.7) remains the port's ONE departure from byte-for-byte preservation, and
+ * it lives in `../../adapters/mysql/MySqlProductRepository.ts`, not here. The cleartext-scheme exposure
+ * that follows from reproducing `http://` is carried as an annotated observation rather than repaired —
+ * see {@link FEED_SCHEME_PREFIX}.
  *
  * COVERAGE PROVENANCE — NET-NEW, AND THE SUITE IS NAMED
  * This module's suite is `slatwall-ts/test/integrations/ProductFeedBuilder.test.ts`, the exact path AAP
@@ -194,10 +194,10 @@ import type { Product } from '../../domain/product/Product';
 import type { ProductType } from '../../domain/product/ProductType';
 import type { Sku } from '../../domain/sku/Sku';
 import { ConfigurationError, DataIntegrityError, DomainError } from '../../errors/DomainError';
-/* `ImageWebPath` and `SaveImageFileRequest` were imported for the two withdrawn memo decorators, which
- * had to re-declare every member of {@link ImagePathPort} in order to delegate the three they did not
- * wrap. With no wrapper left, this file names only the port it is handed and the one request shape it
- * builds; `ImageWebPath` survives in prose as a `{@link}` only, which needs no import. */
+/* ⛔ NEITHER `ImageWebPath` NOR `SaveImageFileRequest` IS IMPORTED, AND NO MEMO DECORATOR WRAPS THE PORT.
+ * A decorator would have to re-declare every member of {@link ImagePathPort} in order to delegate the ones
+ * it did not wrap, which is why this file names only the port it is handed and the one request shape it
+ * builds; `ImageWebPath` appears in prose as a `{@link}` only, which needs no import. */
 import type { ImagePathPort, ResizedImagePathRequest } from '../../ports/ImagePathPort';
 /* `compareExactDecimal` is a RUNTIME import, not a type-only one: `ExactDecimal` is a branded STRING, so
  * `>` between two of them compiles and silently orders lexicographically — `'9.00' > '10.00'` is true. The
@@ -440,11 +440,10 @@ export interface ProductFeedRenderContext {
    * slash is added or stripped, and no URL parser is involved — a parser would normalise, and normalising
    * would change emitted bytes for no stated reason (AAP §0.7.3 S9).
    *
-   * ⚠️ THE SCHEME IS THE ONE THING THAT DOES DIFFER, AND IT IS NOT A NORMALISATION OF THIS VALUE.
-   * {@link FEED_SCHEME_PREFIX} is `https://` where the legacy writes `http://`, on review finding F8's
-   * CWE-319 direction, and it is a module constant rather than anything derived from the host. It is also
-   * not made configurable — a configurable scheme would invent an input the source does not have and would
-   * reopen the cleartext outcome the finding closes.
+   * ⚠️ THE SCHEME IS NOT PART OF THIS VALUE AND IS NOT DERIVED FROM IT. {@link FEED_SCHEME_PREFIX} is the
+   * module constant `http://`, transcribed from the legacy, and it is not configurable — a configurable
+   * scheme would invent an input the source does not have (AAP §0.7.3 S9, IR-12). `../../config/env.ts`
+   * refuses a value that carries a scheme prefix, so the two can never be supplied twice.
    *
    * ⛔ AND IT IS NOT PERCENT-ENCODED, WHICH IS THE ONE ENCODING THIS VALUE MUST NOT RECEIVE. An authority
    * legitimately carries `:` before a port and `.` between labels, and `encodeURIComponent` would render
@@ -589,45 +588,59 @@ const RSS_OPEN_TAG = '<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0"
 const CHANNEL_TITLE = 'Slatwall Product Feed';
 
 /**
- * The channel description prefix from
+ * The channel description prefix, byte-exact from
  * `integrationServices/google/views/feed/product.cfm:L15`, where the host is appended directly to it.
  * The prefix carries none of the four XML metacharacters, so escaping the assembled description would
  * leave this half of it untouched.
  *
- * ⚠️ ITS SCHEME IS THE ONE DECLARED DIVERGENCE, AND IT IS `https`. The legacy literal reads
- * `Google Product Feed for http://`. See {@link FEED_SCHEME_PREFIX} for the whole adjudication; the two
- * constants carry the same scheme by construction, because a document whose channel description and channel
- * link disagreed about scheme would be worse than either choice.
+ * It ends in the same scheme {@link FEED_SCHEME_PREFIX} writes, because the legacy literal spells the
+ * scheme out here rather than reusing anything — a document whose channel description and channel link
+ * disagreed about scheme would match neither the legacy nor itself.
  */
-const CHANNEL_DESCRIPTION_PREFIX = 'Google Product Feed for https://';
+const CHANNEL_DESCRIPTION_PREFIX = 'Google Product Feed for http://';
 
 /**
  * The scheme this serializer writes ahead of the host in all five of its absolute URLs — the channel
  * link and description (`integrationServices/google/views/feed/product.cfm:L14`, `:L15`), the item link
  * (`:L22`), `g:image_link` (`:L23`) and each `g:additional_image_link` (`:L24`).
  *
- * ⚠️ THIS IS A DECLARED BEHAVIOURAL DIVERGENCE — THE SECOND AND ONLY OTHER ONE IN THIS PORT BESIDE
- * D18, AND THE ONLY ONE IN THIS FILE. All five legacy lines hard-code `http://`, with no `https` branch,
- * no setting behind it and no request-scheme read. This port emits `https://` instead.
+ * Byte-exact from those five lines. Each one writes the literal `http://` immediately before
+ * `#CGI.HTTP_HOST#`, with no `https` branch, no setting behind it and no request-scheme read, so there is
+ * exactly one scheme to transcribe and it is transcribed here once and applied to all five sites.
  *
- * ⭐ WHY, AND UNDER WHOSE AUTHORITY. Review finding F8 classifies the hard-coded `http://` as CWE-319,
- * cleartext transmission of sensitive information, and directs the remedy in terms: "emit HTTPS or enforce
- * an equivalent mandatory boundary". Every URL in this document is fetched by a merchant feed processor
- * over the public internet, and the alternative — an "equivalent mandatory boundary" — would have to be
- * infrastructure this deliverable explicitly does not author (AAP §0.2.2.5: infrastructure as code is out
- * of scope). Emitting the secure scheme is therefore the only remedy available inside the deliverable.
+ * ⛔ NO SCHEME IS CONFIGURABLE. Reading it from a setting or an environment variable would invent an input
+ * the source does not have (AAP §0.7.3 S9, IR-12).
+ * ================================================================================================
+ * TODO(parity): integrationServices/google/views/feed/product.cfm:L14, :L15, :L22, :L23, :L24 — THE
+ * PUBLISHED SCHEME IS CLEARTEXT (CWE-319), IN THE LEGACY AND THEREFORE HERE.
+ * ================================================================================================
+ * Every absolute URL in this document — the channel link, the channel description, each item link, each
+ * `g:image_link` and each `g:additional_image_link` — is published for a merchant feed processor to fetch
+ * over the public internet, and it is published as `http://`. A processor that honours the document as
+ * written therefore issues cleartext requests.
  *
- * ⚠️ AND IT IS RECORDED AS A DIVERGENCE RATHER THAN PRESENTED AS PARITY, WHICH IS THE POINT. A reviewer
- * diffing this port's output against the legacy template's will find exactly two entries: D18 (the
- * importer's parameterised SQL, AAP §0.6.7.7) and this. `slatwall-ts/README.md` lists both together, and
- * `src/config/env.ts`'s DECISION F states why the HOST rule beside it is NOT a third entry — that one
- * admits every value the legacy input could hold, so it forecloses nothing.
+ * ⭐ WHY IT IS CARRIED RATHER THAN REPAIRED, WITH THE ADJUDICATION STATED ONCE. An earlier revision of this
+ * file emitted `https://` instead, on a security review's CWE-319 direction, and declared itself a SECOND
+ * behavioural departure beside D18. A later review reversed that on PRECEDENCE, and the precedence is not
+ * arguable: AAP §0.6.7.7 is titled "The One Declared Departure from Byte-for-Byte Preservation", names D18
+ * by locator, and exists so that a reviewer diffing generated output against legacy output has exactly one
+ * entry to check; AAP §0.8.2 Guideline 4 admits no proportionality test that would create a second; and
+ * AAP §0.4.1.10 requires of THIS file that "every field mapping [be] preserved". A second entry makes the
+ * register untrue, and the register is the artefact the whole extraction is checked against.
  *
- * ⛔ AND NO SCHEME IS CONFIGURABLE. Reading the scheme from a setting or an environment variable would
- * invent an input the source does not have (AAP §0.7.3 S9) and would reopen the cleartext outcome the
- * finding closes. One constant, one scheme, applied to all five URLs.
- */
-const FEED_SCHEME_PREFIX = 'https://';
+ * ⚠️ AND THE SUBSTITUTE WAS NOT COST-FREE, WHICH IS WORTH RECORDING BESIDE THE PRECEDENCE ARGUMENT.
+ * Whether the merchant's own host serves TLS is a property of that deployment's infrastructure, and
+ * infrastructure is explicitly outside this deliverable (AAP §0.2.2.5). Emitting `https://` for a host
+ * that serves only cleartext publishes URLs that resolve to nothing — a broken feed rather than a secure
+ * one — so the substitution traded a disclosed exposure for an undisclosed availability failure.
+ *
+ * ⭐ WHERE IT CAN LEGITIMATELY BE CLOSED. In the deployment, not in this file: terminate TLS at the host
+ * `GOOGLE_FEED_HOST` names and redirect cleartext to it, which makes every URL in this document upgrade on
+ * first contact without changing a byte the port emits. That is the "equivalent mandatory boundary" the
+ * security review named as its own alternative remedy, and it is the half of the pair this deliverable is
+ * permitted to point at rather than author.
+ * ============================================================================================= */
+const FEED_SCHEME_PREFIX = 'http://';
 
 /** Fixed condition value from `integrationServices/google/views/feed/product.cfm:L25`. */
 const CONDITION_VALUE = 'new';
@@ -692,13 +705,14 @@ const SALE_PRICE_EFFECTIVE_DATE_TRAILING_TAB = '\t';
  * `DataIntegrityError`, which the handler answers 500. Escaping made such a payload harmless DATA;
  * refusing makes it unpublished. Both close CWE-91; only refusing leaves every legitimate byte untouched.
  *
- * ⭐ SO THE ONE DECLARED DIVERGENCE IS A REFUSAL, IT IS INSTRUCTED, AND ITS SHAPE IS EXACT. Review finding
+ * ⭐ SO THE REFUSAL IS INSTRUCTED, ITS SHAPE IS EXACT, AND IT IS NOT A SECOND DEPARTURE. Review finding
  * SEC-2 directs that XML-illegal code points must not be published in a successful response, so
  * {@link assertRepresentableInXml} runs at every sink, and the raw sinks additionally refuse the two
- * markup characters and the `]]>` sequence. AAP §0.6.7.7 records D18 as the sole declared
- * behaviour-hardening exception AS THE PLAN WAS AUTHORED; this is the second, authorised on the same
- * footing — an authority, named — and §0.6.7's "preserve and annotate, do not repair" is satisfied because
- * the exception is declared rather than slipped in.
+ * markup characters and the `]]>` sequence. AAP §0.6.7.7 records D18 as the SOLE departure from
+ * byte-for-byte preservation, and that count is untouched here for the reason the next paragraph sets out:
+ * the refusal fires only on inputs whose legacy document had no defined XML parse, so it forecloses no
+ * outcome any consumer could have received. §0.6.7's "preserve and annotate, do not repair" is satisfied
+ * by the residual being annotated rather than by an exception being minted.
  *
  * ⚠️ AND THE OUTCOME THAT CHANGES IS NAMED. For a value carrying `&`, `<`, `]]>` or an XML-illegal code
  * point, this module publishes NO DOCUMENT where `product.cfm` published an unparseable one. An earlier
@@ -1773,13 +1787,14 @@ export class ProductFeedBuilder {
    * full RFC 3986 authority production to the CONFIGURED value at load; this re-applies the origin-moving
    * deny set to whatever the CALLER actually passed. Review finding F8 directed both.
    *
-   * ⭐ THE `https://<host>` PREFIX IS COMPOSED EXACTLY ONCE, HERE, AFTER THE GATE AND BEFORE ANY BYTE IS
+   * ⭐ THE `http://<host>` PREFIX IS COMPOSED EXACTLY ONCE, HERE, AFTER THE GATE AND BEFORE ANY BYTE IS
    * PRODUCED. That is a de-duplication: one document can never assemble the prefix two different ways, and
    * {@link ProductFeedBuilder.buildItem} receives it finished, which is why that method never reads
-   * {@link ProductFeedRenderContext.host} itself. The scheme is `https` rather than the legacy's `http`,
-   * which is this file's one declared behavioural divergence — see {@link FEED_SCHEME_PREFIX}. The prefix
-   * is carried RAW to every sink, and no URL sink escapes or percent-encodes anything — see ESCAPING — but
-   * every appended PATH is held to {@link assertSameOriginRelativePath} at the sink that appends it.
+   * {@link ProductFeedRenderContext.host} itself. The scheme is the legacy's own `http` — see
+   * {@link FEED_SCHEME_PREFIX}, which also carries the cleartext observation that follows from it. The
+   * prefix is carried RAW to every sink, and no URL sink escapes or percent-encodes anything — see
+   * ESCAPING — but every appended PATH is held to {@link assertSameOriginRelativePath} at the sink that
+   * appends it.
    *
    * @param records the already-materialised SmartList records, rendered in the order given
    * @param context the render-time replacements for the legacy request globals
@@ -1905,7 +1920,7 @@ export class ProductFeedBuilder {
    *
    * @param record the SKU and its product's images
    * @param context the render-time replacements for the legacy request globals
-   * @param absoluteUrlPrefix the `https://<host>` prefix, composed once per render by
+   * @param absoluteUrlPrefix the `http://<host>` prefix, composed once per render by
    *   {@link ProductFeedBuilder.build} from {@link ProductFeedRenderContext.host}, whose authority it has
    *   already gated
    * @returns the rendered `item` element
@@ -1919,7 +1934,7 @@ export class ProductFeedBuilder {
     const sku = record.sku;
     const product = this.requireProduct(sku);
     /* `absoluteUrlPrefix` is composed once by {@link ProductFeedBuilder.build}, this method's only
-     * caller, and passed in — so the `https://<host>` text is assembled in exactly one place, and its
+     * caller, and passed in — so the `http://<host>` text is assembled in exactly one place, and its
      * AUTHORITY was gated there before the first byte of the document existed. What THIS method gates is
      * the other half: every per-record path it appends goes through
      * {@link assertSameOriginRelativePath} at the sink that appends it, because `product.cfm:L22-L24`
@@ -1988,7 +2003,7 @@ export class ProductFeedBuilder {
     /* ---- 6. item `link` — RAW, as at `product.cfm:L22`. ------------------------------------
      * `model/entity/Product.cfc:L207-L209` builds the path as `"/#setting('globalURLKeyProduct')#/`
      * `#getURLTitle()#/"`, carrying BOTH a leading and a trailing slash, so the emitted URL is
-     * `https://<host>/<globalURLKeyProduct>/<urlTitle>/`. NEITHER SLASH IS TRIMMED and the two
+     * `http://<host>/<globalURLKeyProduct>/<urlTitle>/`. NEITHER SLASH IS TRIMMED and the two
      * segments are not re-joined by a path helper.
      *
      * The domain member takes the setting resolver as an explicit parameter, so the key is resolved

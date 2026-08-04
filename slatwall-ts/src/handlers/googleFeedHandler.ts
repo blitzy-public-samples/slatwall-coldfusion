@@ -195,8 +195,9 @@
  * What IS captured, once, when {@link createGoogleFeedHandler} runs: the configured host authority,
  * and nothing else. It is derived purely from DEPLOYMENT CONFIGURATION, which is identical for every
  * invocation of the container, so capturing it cannot leak one caller's state into another. (A second
- * captured value, a frozen allowlist of publishable hosts, is WITHDRAWN with the serializer's own host
- * gate — see judgment (c).) That is the distinction `./brandHandler` draws
+ * captured value — a frozen allowlist of publishable hosts — is deliberately NOT among them: an allowlist
+ * refuses authorities that are legitimate and invents a closed set the source states nowhere. See judgment
+ * (c).) That is the distinction `./brandHandler` draws
  * when it insists a PRINCIPAL be resolved per invocation: a principal varies by request, configuration
  * does not. Everything that genuinely varies per request — the render instant and the offset — is read
  * inside the operation, on every invocation. See judgment (c) and {@link ProductFeedRenderClock}.
@@ -331,20 +332,17 @@
  *     legacy never accepted any value this gate refuses — it could not have received one. A rule that
  *     admits every value the legacy input could hold enters no departure register at all.
  *
- *     ⭐ AND THE OLDER MISREADING OF D18 IS STILL WORTH NAMING, BECAUSE IT WOULD FORBID EVEN THIS. It held
- *     that D18 licenses "only a divergence that removes a flaw class WITHOUT changing an outcome —
- *     parameterised SQL returns exactly the rows interpolated SQL returned". The premise is false on its
- *     own example: for an input containing a quote, parameterised SQL returns the operator's rows INSTEAD
- *     OF executing the attacker's statement, which is a different outcome, and D18 is declared anyway.
- *     D18's real test is that a divergence falls only on inputs where the legacy's own behaviour was the
- *     flaw — which is where the one divergence this feed DOES declare, the `https://` scheme, falls.
+ *     ⛔ AND THE FEED DECLARES NO DEPARTURE AT ALL, INCLUDING THE SCHEME. `ProductFeedBuilder` writes the
+ *     legacy's own `http://`, so D18 remains the port's single entry (AAP §0.6.7.7) and it lives in the
+ *     importer, not here. The cleartext exposure that follows is carried as an annotated observation at
+ *     that file's `FEED_SCHEME_PREFIX`.
  *
- *     ⛔ WHAT STAYS WITHDRAWN, BECAUSE THE CONTROLS WERE NEVER THE SAME DECISION. The `allowedHosts`
- *     membership gate this file used to supply is GONE and does not return: it refused hosts that were
- *     perfectly legal authorities for not being on a configured list, which fails the test outright. So
- *     does the RFC 1035 label grammar with its 63-octet ceiling. What is in force is the
- *     authority-delimiter deny set and nothing else. The serializer's THE TWO FAIL-CLOSED GATES note
- *     carries the control-by-control derivation.
+ *     ⛔ AND NO HOST POLICY IS INVENTED BEYOND THE AUTHORITY PRODUCTION. There is no `allowedHosts`
+ *     membership gate — it would refuse hosts that are perfectly legal authorities merely for being
+ *     absent from a configured list — and no RFC 1035 label grammar with a 63-octet ceiling, which would
+ *     refuse a bracketed IPv6 literal and a punycode label. What is in force is the authority-delimiter
+ *     deny set and nothing else. The serializer's THE TWO FAIL-CLOSED GATES note carries the
+ *     control-by-control derivation.
  *
  *     ⛔ THE PROCESS ENVIRONMENT IS NOT READ HERE EITHER. `src/config/env.ts` is the only module in
  *     the subtree permitted to read it; it validates `GOOGLE_FEED_HOST` for presence, non-blankness and
@@ -423,13 +421,14 @@
  * edge for a class this file never constructs. The serializer and the record source arrive as INJECTED
  * INSTANCES (S3), so the class itself stays type-only.
  *
- * ⛔ NO VALUE IS TAKEN FROM THE SERIALIZER MODULE, AND AN EARLIER REVISION TOOK ONE. It imported
- * `validateFeedHostAuthority` and ran a deny check at construction and once per render. That apparatus is
- * WITHDRAWN — `integrationServices/google/views/feed/product.cfm` performs no authority check of any kind,
- * so refusing a host the legacy serves is behaviour the migration adds rather than preserves, which AAP
- * §0.8.2 guideline 4 forbids and §0.6.7.7 licenses for exactly one departure (D18) that is not this one.
- * The serializer's own THERE IS NO `validateFeedHostAuthority` note records the same withdrawal from its
- * side.
+ * ⭐ EXACTLY ONE VALUE IS TAKEN FROM THE SERIALIZER MODULE, AND IT IS A GATE.
+ * {@link validateFeedHostAuthority} runs HERE at construction, and the serializer runs the same rule again
+ * per render because its render context is a plain `string` a caller could assemble without passing through
+ * this file. Two independent checks of one rule is deliberate: neither layer trusts the other to have run.
+ * ⛔ AND IT IS NOT A SECOND BEHAVIOURAL DEPARTURE: the rule refuses only the characters that MOVE an origin
+ * or leave the document unparseable — values RFC 9110 §7.2 excludes from a `Host` field, so values
+ * `integrationServices/google/views/feed/product.cfm:L14` could never have been handed. It decides no host's
+ * LEGITIMACY, and that residual exposure is flagged rather than closed.
  *
  * ⛔ AND NO NAME IS TAKEN FROM `../errors/DomainError` EITHER, WHICH IS A CONSEQUENCE OF FINDING F4. A
  * revision imported `NotImplementedError` to raise from an image-boundary reader declared IN THIS FILE.
@@ -533,8 +532,7 @@ export type ProductFeedSerializer = Pick<ProductFeedBuilder, 'build'>;
  *
  * IT IS CONFIGURATION RATHER THAN A REQUEST VALUE because a stateless invocation of this shape has no
  * request to read: {@link createGoogleFeedHandler}'s operation takes no parameter and therefore has no
- * invocation event. That is an execution-model adaptation, not a control — see judgment (c), which
- * records the withdrawn claim to the contrary.
+ * invocation event. That is an execution-model adaptation, not a control — see judgment (c).
  */
 export interface GoogleFeedHostConfiguration {
   /**
@@ -542,23 +540,24 @@ export interface GoogleFeedHostConfiguration {
    * five `CGI.HTTP_HOST` reads at `integrationServices/google/views/feed/product.cfm:L14`, `:L15`,
    * `:L22`, `:L23` and `:L24`.
    *
-   * ⛔ TYPED AS A PLAIN STRING, AND NOT VALIDATED. The type must stay `string` so that `config.googleFeed`
-   * satisfies this interface structurally — a brand would break that (S4). A revision put the value through
-   * a `validateFeedHostAuthority` deny check at construction AND once per render; both are WITHDRAWN,
-   * because `integrationServices/google/views/feed/product.cfm:L14` interpolates `CGI.HTTP_HOST` with no
-   * test of any kind and AAP §0.6.7.7 authorises exactly one behavioural departure in this port (D18).
+   * ⚠️ TYPED AS A PLAIN STRING BECAUSE THE TYPE CARRIES NO RULE — THE RULES RUN AT THE READERS. It must stay
+   * `string` so that `config.googleFeed` satisfies this interface structurally; a brand would break that
+   * (S4). {@link validateFeedHostAuthority} is applied at construction in
+   * {@link createGoogleFeedHandler} and again by the serializer per render.
    *
-   * ⭐ `src/config/env.ts` STILL CHECKS PRESENCE AND NON-BLANKNESS, which is a configuration-completeness
-   * rule and is deliberately not the same thing: the legacy has no environment variable to leave empty, so
-   * refusing an absent one diverges from nothing. Judging the SYNTAX of a value the operator did supply is
-   * what is withdrawn.
+   * ⭐ AND `src/config/env.ts` APPLIES AN RFC 3986 §3.2.2 TRANSCRIPTION AT LOAD, plus presence and
+   * non-blankness. Presence is a configuration-completeness rule rather than a security control — the legacy
+   * has no environment variable to leave empty — while the grammar and the deny check are siblings that admit
+   * every value RFC 9110 §7.2 permits in a `Host` field, which is the value space
+   * `integrationServices/google/views/feed/product.cfm:L14` could actually have been handed.
    *
-   * ⚠️ SO THE HOST REACHES ALL FIVE ABSOLUTE URLS UNJUDGED, AND THE EXPOSURE IS CARRIED. A host of
-   * `good.example@evil.example` moves the origin of every one of them; `#` collapses them onto one page;
-   * `&`, `<` or `>` leaves the two CHANNEL text nodes unparseable. The withdrawn RFC 1035 label grammar
-   * and the withdrawn `allowedHosts` membership gate stay withdrawn on their own, stronger grounds — both
-   * refuse values that are legitimate authorities. See judgment (c) and
-   * `../integrations/google/ProductFeedBuilder`'s THERE IS NO `validateFeedHostAuthority` note.
+   * ⭐ SO THE SHAPE OF THE HOST IS JUDGED, AND ONLY ITS IDENTITY IS NOT. {@link validateFeedHostAuthority}
+   * refuses `good.example@evil.example`, which would move the origin of all five absolute URLs; `#`, which
+   * would collapse them onto one page; and `&`, `<` or `>`, which would leave the two CHANNEL text nodes
+   * unparseable. ⛔ WHAT IS DELIBERATELY ABSENT is an RFC 1035 label grammar and an `allowedHosts` membership
+   * gate: both refuse values that are legitimate authorities, and the second invents a closed set the source
+   * states nowhere (AAP §0.7.3 S9). Whether the authority a deployment names is one it CONTROLS is therefore
+   * carried and flagged. See judgment (c) and `../integrations/google/ProductFeedBuilder`'s own account.
    */
   readonly host: string;
 }
@@ -707,8 +706,8 @@ export interface GoogleFeedHandlerCollaborators {
   readonly feedSerializer: ProductFeedSerializer;
 
   /**
-   * The configured feed host. NOT checked for anything and never normalised — every syntax rule that
-   * once stood on it is withdrawn. See {@link GoogleFeedHostConfiguration} and judgment (c).
+   * The configured feed host. Checked for SHAPE — never for identity, and never normalised. See
+   * {@link GoogleFeedHostConfiguration} and judgment (c).
    */
   readonly hostConfiguration: GoogleFeedHostConfiguration;
 
@@ -790,19 +789,21 @@ export interface GoogleFeedHandler {
 /**
  * Binds the feed collaborators to the one platform-facing operation they back.
  *
- * ⛔ THE HOST IS NOT VALIDATED HERE, AND NOTHING VALIDATES IT ANYWHERE. Three controls have stood on this
- * value across successive revisions and all three are withdrawn: an RFC 1035 label grammar with a
- * 63-octet ceiling plus an `allowedHosts` membership list the serializer refused renders against; a
- * threat-shaped deny check over the characters that terminate or redirect an authority, imported from the
- * serializer and run here at construction; and an RFC 3986 §3.2.2 transcription in `src/config/env.ts`.
- * The first pair fail two tests — they refuse hosts that are legitimate authorities AND invent a closed set
- * (AAP §0.7.3 S9). The other two fail one: they refuse where `product.cfm:L14` refuses nothing, and AAP
- * §0.6.7.7 authorises exactly ONE departure from behavioural preservation in this port (D18).
+ * ⭐ THE HOST'S SHAPE IS VALIDATED IN TWO PLACES, AND ITS IDENTITY IN NEITHER. An RFC 3986 §3.2.2
+ * transcription runs in `src/config/env.ts` at load, and {@link validateFeedHostAuthority} — a deny check
+ * over the characters that terminate or redirect an authority — runs here at construction and again in the
+ * serializer per render. Both admit every value RFC 9110 §7.2 permits in a `Host` field, which is the value
+ * space `product.cfm:L14` could actually have been handed, so neither enters a divergence register.
  *
- * ⭐ `src/config/env.ts`'s PRESENCE-AND-NON-BLANKNESS CHECK IS UNCHANGED, and it was never a security
- * control: the legacy has no environment variable to leave empty, so refusing an absent one diverges from
- * nothing. See judgment (c), and the serializer's THERE IS NO `validateFeedHostAuthority` note for the
- * carried origin-rebasing exposure.
+ * ⛔ WHAT IS DELIBERATELY ABSENT IS THE THIRD CONTROL: an RFC 1035 label grammar with a 63-octet ceiling,
+ * plus an `allowedHosts` membership list the serializer would refuse renders against. It fails two tests
+ * rather than one — it refuses hosts that are legitimate authorities AND invents a closed set the source
+ * states nowhere (AAP §0.7.3 S9, IR-12).
+ *
+ * ⭐ `src/config/env.ts` CHECKS PRESENCE, NON-BLANKNESS *AND* THE AUTHORITY GRAMMAR, at load, once — the
+ * first of those was never a security control, since the legacy has no environment variable to leave empty.
+ * The grammar there and {@link validateFeedHostAuthority} here are siblings rather than copies, and both are
+ * in force. See judgment (c) for what is still not decided: the host's IDENTITY.
  *
  * ⭐ WHAT IS CAPTURED IS CONFIGURATION, WHICH M7 PERMITS — AND THE DISTINCTION MATTERS. The one
  * value read below is derived purely from deployment configuration, identical for every
@@ -820,10 +821,11 @@ export interface GoogleFeedHandler {
  *   {@link GoogleFeedHandlerCollaborators}
  * @returns the one routed operation, frozen
  *
- * ⛔ THIS FACTORY HAS NO FAILURE MODE. It performs no probe, no I/O and no validation at construction time,
- *   and reads nothing but the one configured string. A `DataIntegrityError` for a blank or origin-moving
- *   host was documented here for one revision; both the check and the throw are withdrawn — see
- *   judgment (c).
+ * ⚠️ THIS FACTORY HAS EXACTLY ONE FAILURE MODE, AND IT IS FAIL-CLOSED. It performs no probe and no I/O, and
+ *   reads nothing but the one configured string — but it puts that string through
+ *   {@link validateFeedHostAuthority}, which raises a `DataIntegrityError` for a blank or origin-moving
+ *   host. Composing a handler whose every absolute URL would carry a moved or absent authority is refused
+ *   here rather than discovered at render. See judgment (c).
  *
  * @example
  * ```ts
@@ -859,15 +861,14 @@ export function createGoogleFeedHandler(
   /* Judgment (c). READ ONCE and passed to the render context UNMODIFIED — not branded, not trimmed, not
    * case-folded, not punycoded and not stripped of a default port. It is bound here rather than inside the
    * operation because it cannot vary between invocations of one container (M7), and because binding it once
-   * means the `https://<host>` text is sourced from exactly one place.
+   * means the `http://<host>` text is sourced from exactly one place.
    *
    * ⭐ AND IT IS CHECKED HERE, AT CONSTRUCTION, SO A MISCONFIGURATION IS REPORTED WHEN THE CONTAINER IS
    * BUILT RATHER THAN ON THE FIRST REQUEST. {@link validateFeedHostAuthority} refuses a blank host and the
-   * characters that would move the origin of every absolute URL in the document. Review finding F8 directed
-   * this control (CWE-20 feeding CWE-601); an intermediate revision withdrew it on AAP §0.6.7.7's
-   * one-departure count, and that reading is superseded because the rule admits every value the legacy
-   * input could hold — RFC 9110 §7.2 defines `CGI.HTTP_HOST` as an RFC 3986 authority, which contains none
-   * of the refused characters — so it forecloses no legacy outcome and enters no divergence register.
+   * characters that would move the origin of every absolute URL in the document (CWE-20 feeding CWE-601).
+   * It enters no divergence register, because it admits every value the legacy input could hold — RFC 9110
+   * §7.2 defines `CGI.HTTP_HOST` as an RFC 3986 authority, which contains none of the refused characters —
+   * so it forecloses no legacy outcome.
    *
    * ⭐ AND IT IS CHECKED IN TWO MORE PLACES, DELIBERATELY. `../config/env.ts`'s `requireHostAuthorityValue`
    * applies the full RFC 3986 §3.2.2 production with §3.2.3's optional `port` to `GOOGLE_FEED_HOST` at load,
@@ -875,16 +876,15 @@ export function createGoogleFeedHandler(
    * produced. Three checks of one rule at three trust boundaries: what the operator set, what this factory
    * was handed, and what the serializer was actually passed. None trusts the others to have run.
    *
-   * ⚠️ THE SCHEME IS NOT THIS LAYER'S DECISION AND IS NOT MADE HERE. `ProductFeedBuilder` emits `https://`
-   * where `product.cfm:L14` hard-codes `http://`; that is the port's one declared behavioural divergence
-   * beside D18, it is directed by the same finding F8 (CWE-319), and it is recorded at that file's
-   * `FEED_SCHEME_PREFIX` rather than duplicated here.
+   * ⚠️ THE SCHEME IS NOT THIS LAYER'S DECISION AND IS NOT MADE HERE. `ProductFeedBuilder` writes
+   * `product.cfm:L14`'s own `http://`; the cleartext exposure that follows from reproducing it is carried
+   * as an annotated observation at that file's `FEED_SCHEME_PREFIX` rather than duplicated here.
    *
    * ⚠️ THE MEMBER IS STILL READ EXACTLY ONCE, and a test asserts it: M7 turns a repeated configuration
    * read into a per-invocation one the moment anything moves inside the operation.
    *
-   * ⛔ THE `allowedHosts` MEMBERSHIP GATE THAT USED TO BE COMPUTED IMMEDIATELY BELOW STAYS WITHDRAWN,
-   * on its own and stronger ground: it refused values that are legitimate authorities (AAP §0.7.3 S9). */
+   * ⛔ AND NO `allowedHosts` MEMBERSHIP GATE IS COMPUTED BELOW: it would refuse values that are legitimate
+   * authorities, which is a policy the source states nowhere (AAP §0.7.3 S9). */
   const host = hostConfiguration.host;
 
   validateFeedHostAuthority(host);
@@ -1055,11 +1055,11 @@ export function createGoogleFeedHandler(
        * markup, leaving it with no defined parse, and a stored path can still move the authority of the
        * three absolute URLs. Second, a code point XML 1.0 forbids outright — a C0 control other than tab,
        * line feed or carriage return, an unpaired surrogate, U+FFFE or U+FFFF — has no spelling in any
-       * conforming document, so it can be neither escaped nor emitted safely; an earlier revision of the
-       * serializer REFUSED such a value and that gate is withdrawn as an unapproved behaviour addition.
-       * Both now reach the document exactly as they reach `product.cfm` (AAP §0.7.3 S8). Compensating here
-       * would mean altering stored catalog data on its way out, which is no more this layer's to do than
-       * the serializer's.
+       * conforming document, so it can be neither escaped nor emitted safely — and the serializer REFUSES
+       * such a value at every sink rather than emitting it, on the ground that the legacy document had no
+       * defined XML parse for it either. What reaches the document as markup still reaches it exactly as it
+       * reaches `product.cfm` (AAP §0.7.3 S8). ⛔ AND NOTHING IS COMPENSATED FOR HERE: altering stored catalog
+       * data on its way out is no more this layer's to do than the serializer's.
        *
        * ⛔ WHICH IS EXACTLY WHY THIS LAYER ADDS NO ENCODING, RE-ENCODING OR SANITISING STEP, AND MUST
        * NOT. A second pass here would double-escape every entity the serializer already emitted, and

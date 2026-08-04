@@ -2934,10 +2934,13 @@ export function createUrlTitleAvailabilityDouble(
 
 /*
  * ---------------------------------------------------------------------------------------------------
- * 10. The eight boundary ports.
+ * 10. The eight ports under `src/ports/` — seven boundary gaps plus one framework facility.
  *
- * Each of these exists because an in-scope member genuinely depends on an out-of-scope collaborator
- * (AAP §0.2.2.7). None of them redeclares its port interface — the real export is imported and satisfied
+ * Seven of them exist because an in-scope member genuinely depends on an out-of-scope collaborator, and those
+ * seven are the ones AAP §0.2.2.7 enumerates. The eighth, `UniquePropertyPort`, comes from IR-5 and AAP
+ * §0.4.1.6 instead: it stands for a facility the retired framework provided
+ * (`org/Hibachi/HibachiDAO.cfc:L130-L146`) rather than for an excluded domain.
+ * None of the doubles below redeclares its port interface — the real export is imported and satisfied
  * — and none of them models any part of the excluded service behind it. The sixteen explicitly excluded
  * calculated members of AAP §0.2.2.6 appear nowhere: not as entity fields, not as port members, and not
  * as seeds.

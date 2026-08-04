@@ -3496,8 +3496,9 @@ describe('test/adapters/SmartListQueryBuilder.test.ts — the smart-list query c
    * RESTORED COVERAGE. Twelve cases were dropped when the suite was reorganised and the review found no
    * replacement for them: four relationship-hydration/identity-map cases, four SEC-12 materialisation-
    * budget cases and four F-20 projection/count/paging cases. The eight belonging to the BUILDER are
-   * restored here; the four hydration cases are restored in `test/adapters/catalogAggregates.test.ts`,
-   * which owns hydration for this subtree.
+   * restored here; the four hydration cases are restored in the AGGREGATE LOADERS section of
+   * `test/adapters/MySqlProductRepository.test.ts`, which is where `catalogAggregates.test.ts` was folded
+   * and which therefore owns hydration for this subtree.
    *
    * WHY HERE AND NOT WHERE THEY WERE. The dropped cases lived in `test/services/OptionService.test.ts`,
    * and their own header explained why: at the time "AAP §0.4.1.12 declares no `SmartListQueryBuilder`

@@ -256,8 +256,9 @@ function callsContaining(
  * `cross-domain-read-only`, `assertRegisteredTableName` admits them for reads, and `assertWriteTableName`
  * refuses them for writes. They are still spelled literally in the FRAGMENTS below — a fragment is the text
  * this suite pins, and resolving a name through the gate to build an expectation would make the expectation
- * agree with the implementation by construction — but `./schemaScopeRegistry.test.ts` asserts the census and
- * the gates directly, so no name here is unratified.
+ * agree with the implementation by construction — but the folded registry section of
+ * `./MySqlProductTypeRepository.test.ts` asserts the census and the gates directly, so no name here is
+ * unratified.
  * ============================================================================================== */
 
 /** `model/dao/SkuDAO.cfc:L115-L119` — one correlated existence test per selected option. */
@@ -1170,7 +1171,8 @@ describe('NET-NEW transactionExists — the ten OR-ed existence predicates', () 
    * schema surface, only one of which was enforced. Review finding SEC-SQL-SCOPE-01 required one auditable
    * registry, so `QueryRunner.ts` gained a SCOPE for each name rather than a wider whitelist: reads are
    * admitted, writes are refused, and the privilege each name needs is legible from the registry. The
-   * spellings below are unchanged, and `./schemaScopeRegistry.test.ts` proves the registry agrees with them.
+   * spellings below are unchanged, and the folded registry section of `./MySqlProductTypeRepository.test.ts`
+   * proves the registry agrees with them.
    */
   it('NET-NEW — contains all ten predicates, in legacy order', async () => {
     const harness = makeTransactionExistsHarness();

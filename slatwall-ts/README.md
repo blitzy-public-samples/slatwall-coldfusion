@@ -34,18 +34,18 @@ for. Each is stated **once**, in the section named — deliberately not duplicat
 register are two things that can disagree, and this subtree treats a second copy of a fact as a defect
 rather than as redundancy.
 
-| What a reviewer needs to check                                                                                                                                                                       | Where it is                    |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| **T1–T5** — the five option-to-SKU semantics that must survive translation, each named as a silent-drift trap, with the translated SQL shape and the bound-parameter order                           | §10.2                          |
-| **The validation read-back loop** — the highest-risk item in the slice: a declarative rule that executes a query against rows the same operation is writing, and how `UnitOfWork` resolves it        | §10.3, with **M6** and **D19** |
-| **The combination engine** — the odometer enumeration whose order determines both the generated SKU set and what uniqueness validation observes                                                      | §10.4                          |
-| **The three seeded discriminator UUIDs** — fixed data, not test data (**IR-7**), reused verbatim in the fixtures                                                                                     | §10.5                          |
-| **The 28 preserved public members** — interface parity, method by method, with every tightened signature recorded                                                                                    | §10.1                          |
-| **D1–D21** — the full defect register, carried as flagged `TODO(parity)` annotations rather than repaired, plus the **two** declared departures and the four further observations carried by locator | §12.4                          |
-| **M1–M8** — the execution-model mismatches, flagged rather than silently resolved, each with its source-declared value and locator                                                                   | §12.5                          |
-| **Test provenance** — TRACEABLE versus NET-NEW, in both directions, with the honest ratio leading                                                                                                    | §12.1                          |
-| **What caps the evidence** — the absent local development setup and the legacy suite that cannot be executed here                                                                                    | §12.2                          |
-| **Scope** — the thirty in-scope legacy files, the exclusions, and the calculated-property boundary                                                                                                   | §9                             |
+| What a reviewer needs to check                                                                                                                                                                                | Where it is                    |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| **T1–T5** — the five option-to-SKU semantics that must survive translation, each named as a silent-drift trap, with the translated SQL shape and the bound-parameter order                                    | §10.2                          |
+| **The validation read-back loop** — the highest-risk item in the slice: a declarative rule that executes a query against rows the same operation is writing, and how `UnitOfWork` resolves it                 | §10.3, with **M6** and **D19** |
+| **The combination engine** — the odometer enumeration whose order determines both the generated SKU set and what uniqueness validation observes                                                               | §10.4                          |
+| **The three seeded discriminator UUIDs** — fixed data, not test data (**IR-7**), reused verbatim in the fixtures                                                                                              | §10.5                          |
+| **The 28 preserved public members** — interface parity, method by method, with every tightened signature recorded                                                                                             | §10.1                          |
+| **D1–D21** — the full defect register, carried as flagged `TODO(parity)` annotations rather than repaired, plus the **one** declared departure (**D18**) and the four further observations carried by locator | §12.4                          |
+| **M1–M8** — the execution-model mismatches, flagged rather than silently resolved, each with its source-declared value and locator                                                                            | §12.5                          |
+| **Test provenance** — TRACEABLE versus NET-NEW, in both directions, with the honest ratio leading                                                                                                             | §12.1                          |
+| **What caps the evidence** — the absent local development setup and the legacy suite that cannot be executed here                                                                                             | §12.2                          |
+| **Scope** — the thirty in-scope legacy files, the exclusions, and the calculated-property boundary                                                                                                            | §9                             |
 
 ---
 
@@ -246,15 +246,20 @@ install command and **not** a script in this manifest.
 | `npm run typecheck`     | `tsc --noEmit`, full strict                                 | **0 errors**                                   |
 | `npm run lint`          | `eslint .`                                                  | **0 problems**                                 |
 | `npm run format:check`  | `prettier --check .`                                        | **all matched files conform**                  |
-| `npm test`              | `jest --ci --config package.json --preset ./jest.config.ts` | **17 suites, 2342 tests, 0 failures**          |
-| `npm run test:coverage` | the same, plus `--coverage`                                 | **17 suites, 2342 tests, 0 failures**          |
+| `npm test`              | `jest --ci --config package.json --preset ./jest.config.ts` | **17 suites, 0 failures** (†)                  |
+| `npm run test:coverage` | the same, plus `--coverage`                                 | **17 suites, 0 failures** (†)                  |
 | `npm run build`         | `node build/esbuild.mjs`                                    | 6 CommonJS artifacts, exit 0 (§6)              |
 
-⚠️ **THIS SECTION SAID "EXACTLY FOUR SCRIPTS" AND LISTED FIVE ROWS, AND TWO OF THE SIX DID NOT EXIST.** A
-revision deleted `format:check` and `test:coverage` as "outside the frozen four" of AAP §0.4.1.2 and rewrote
-this section to match, leaving the project's own verified command contract naming two commands that would
-fail at a reader's shell prompt. Review finding **F6** restored both, and **F7** covers this account of them.
-AAP §0.4.1.2 declares which scripts the manifest must CARRY; it does not close the set.
+(†) **THE SUITE AND FAILURE COUNTS ARE FROZEN CLAIMS; THE CASE COUNT DELIBERATELY IS NOT.** AAP §0.4.1.12
+fixes the number of suites at 17, and "0 failures" is the acceptance bar, so both belong in a document. The
+number of executed CASES is not fixed by anything and grows whenever a case is added — an earlier revision of
+this table stated one, it went stale, and a reader had no way to tell. Run `npm test` and read its `Tests:`
+line; §12.1 states the figure measured at this checkpoint alongside the census that produced it.
+
+⛔ **AND ALL SIX SCRIPTS EXIST — DO NOT PRUNE THIS TABLE TO FOUR.** AAP §0.4.1.2 declares which scripts the
+manifest must CARRY; it does not close the set. `format:check` and `test:coverage` are outside that four and
+are real, verified commands: deleting them from the manifest to match a "frozen four" reading leaves this
+table naming commands that fail at a reader's shell prompt.
 
 `npm ci` rather than `npm install`: the lockfile is committed so resolution is reproducible, and `ci` is the
 command that honours it exactly.
@@ -435,8 +440,9 @@ src/
                separate module for any of them (see §6)
   domain/      typed entities, base types and process objects — no framework, no ORM, no AWS
   validation/  Validator.ts plus the seven typed rule sets ported from model/validation/*.json
-  ports/       5 repository ports and the 8 boundary ports of §5.3, in 13 files —
-               further declarations are folded into the ports whose subject they share
+  ports/       5 repository ports, the 7 boundary-gap ports AAP §0.2.2.7 enumerates and
+               UniquePropertyPort (IR-5) — 13 files; further declarations are folded into
+               the ports whose subject they share
   adapters/    mysql/** (parameterized SQL, row mappers, UnitOfWork) · settings/**
   services/    BaseService + ProductService · SkuService · BrandService · OptionService
   handlers/    router.ts, the 4 service handlers, googleFeedHandler.ts, httpResponse.ts
@@ -447,18 +453,23 @@ test/          17 suites, mirroring the layers above (§12.1)
 build/         esbuild.mjs — the whole build step, and the only file in the directory
 ```
 
-**70 TypeScript sources and 17 test suites**, and both counts are exact rather than approximate: AAP §0.4.1
-freezes the file inventory at **102 tracked files** and AAP §0.4.1.12 freezes the test plan at **17 executable
-suites plus 2 fixtures and 1 support module**, which is what `git ls-files slatwall-ts` and
-`npx jest --listTests` report. Review passes found **sixteen production modules and twenty-two suites**
+**69 TypeScript modules under `src/` — 70 files, because the Google adapter's own `README.md` sits among them
+— and 17 test suites.** ⚠️ **FILES AND MODULES ARE NOT THE SAME COUNT, and conflating them is how an inventory
+claim goes wrong:** `git ls-files slatwall-ts/src` reports **70**, `git ls-files 'slatwall-ts/src/**/*.ts'`
+reports **69**, and the difference is exactly one markdown file. Both counts are exact rather than
+approximate: AAP §0.4.1 freezes the file inventory at **102 tracked files** and AAP §0.4.1.12 freezes the test
+plan at **17 executable suites plus 2 fixtures and 1 support module** — 20 `.ts` files under `test/` — which is
+what `git ls-files slatwall-ts` and `npm test -- --listTests` report. §9.5 carries the reproduction commands with
+their expected output. Review passes found **sixteen production modules and twenty-three suites**
 running outside that plan — among them three shared configuration tiers, five per-surface compositions, a
 persistence adapter, a write runner, a bounded-read port and a SKU smart-list composer. Fifteen of the
-sixteen modules and twenty-one of the twenty-two suites were **folded** into the approved file whose subject
+sixteen modules and twenty-two of the twenty-three suites were **folded** into the approved file whose subject
 they share — never deleted, never thinned, with each folded suite body wrapped in one `describe` so its
 helpers became block-scoped and not one assertion altered; §5.5 lists the module folds with their hosts and
-§12.1 the suite folds. Two were different cases and are recorded as such: `util/urlTitleProbeBudget.ts`
-declared a probe ceiling the legacy has no equivalent of, so it was **removed** rather than relocated, along
-with the rest of the unauthorised hardening §13.4 describes; and a surface-reachability suite was
+§12.1 the suite folds. Two were different cases and are recorded as such: a `util/urlTitleProbeBudget.ts`
+module was **removed** rather than relocated — the probe ceiling it declared is now applied inside
+`src/util/urlTitle.ts` itself, as the fourth argument of `createUniqueURLTitle`, so the control survives while
+the extra file does not (§13.4); and a surface-reachability suite was
 **withdrawn** rather than folded, because its premise was a module graph the frozen inventory precludes —
 `test/regression/issues.test.ts` carries the withdrawal record in full, names the suite, and asserts the half
 of it that still holds through the folded entry-surface cases. Every intra-subtree import is a **relative path**: there is no
@@ -547,10 +558,26 @@ delete is exactly the silent divergence this design refuses.
 | `UniquePropertyPort`       | application-side uniqueness checking, reproducing `org/Hibachi/HibachiDAO.cfc:L130-L146` (**IR-5**) — required _in addition_ to the database's own unique columns, because the legacy enforces it with an HQL existence query during validation                                                                                                                           |
 | `TransactionalWriteRunner` | the Unit-of-Work boundary as a **declaration**, so a handler can reach a transaction without importing from `adapters/**`. The pattern is named at AAP §0.3.3. ⚠️ **It is a contract, not a ninth port, and it has no file of its own** — it is declared inside `src/ports/UniquePropertyPort.ts` and re-exported from `src/config/container.ts`; see the paragraph below |
 
-The eight rows above `TransactionalWriteRunner` are the eight boundary ports AAP §0.2.2.7 enumerates, each
-in its own file under `src/ports/`. The ninth row is a **transaction contract**, and the distinction matters:
-a _port_ stands for an out-of-scope collaborator this subtree may not implement, whereas the write runner
-stands for a boundary this subtree owns outright.
+The eight rows above `TransactionalWriteRunner` each occupy a file of their own under `src/ports/`, and they
+come from **two** AAP provisions rather than one — a distinction worth stating, because getting it wrong makes
+§0.2.2.7 look like it enumerates eight:
+
+- **Seven boundary-gap ports** are the ones AAP §0.2.2.7 tabulates by name: `SettingResolverPort`,
+  `ImagePathPort`, `SubscriptionTermPort`, `AccessContentPort`, `PricingPort`, `AccountContextPort` and
+  `SmartListQueryPort`. Each exists because an in-scope member depends on a collaborator the AAP excludes.
+- **`UniquePropertyPort` is the eighth file and is not one of them.** It comes from **IR-5**, and AAP §0.4.1.6
+  lists it separately: application-side uniqueness checking reproducing `org/Hibachi/HibachiDAO.cfc:L130-L146`.
+  It stands for a facility the retired framework provided rather than for an excluded domain.
+
+The ninth row is a **transaction contract**, and that distinction matters too: a _port_ stands for a
+collaborator this subtree may not implement, whereas the write runner stands for a boundary this subtree owns
+outright.
+
+⚠️ **A tenth declaration exists and is deliberately not in that table.** `PopulationAuthorizationPort` is
+declared inside `src/ports/AccountContextPort.ts` — not in a file of its own — and is consumed by
+`src/domain/base/populate.ts`. It is a **later security seam** rather than an AAP-enumerated boundary gap: it
+came from a security review's mass-assignment finding, not from §0.2.2.7, and it is folded into the port whose
+subject it shares (the request's own principal) for the same reason every other fold has a host.
 
 **Where it is declared, stated once, because three artefacts used to answer this differently.** It was briefly
 given a file of its own, `src/ports/TransactionalWritePort.ts`, which put a production file outside AAP
@@ -603,7 +630,9 @@ two through `createCatalogContainer({ imagePaths, pricing })` and the same reque
 A QA pass measured this subtree against AAP §0.4.1's frozen 102-file inventory and found **sixteen** production
 modules outside it. **Fifteen were folded** — moved whole into the approved file whose subject they share, with
 their entire doc record carried across verbatim under a fold banner — and the sixteenth,
-`util/urlTitleProbeBudget.ts`, was **removed** because the ceiling it applied is itself withdrawn (§13.4).
+`util/urlTitleProbeBudget.ts`, was **removed** rather than relocated, because the ceiling it declared is now
+applied inside `src/util/urlTitle.ts` itself, as the **required fourth argument** of `createUniqueURLTitle`
+(§8.1). The control survives; only the extra file does not.
 Nothing was thinned, and no declaration was merged away.
 
 ⚠️ **An earlier revision of this section listed only six of the fifteen** — it tabulated the ports and
@@ -670,12 +699,15 @@ Properties worth knowing, each measured rather than assumed:
   its own function. Nothing else lands in `dist/` beyond the six artifacts, the production manifest and the
   dependency closure — no chunk, no map, no build report — and that is **asserted** by the pipeline rather than
   merely intended.
-- **The five gated artifacts also export the authorisation registration seam** — the registrar and its clear
-  — because a bundle is the only file a deployment holds and the seam has to be callable on it. Verified by
-  requiring each emitted file: `router.js` publishes four names, the registrar and its clear alongside
-  `createRouter` and `handler`, and each per-surface bundle publishes them alongside its own factories.
-  `googleFeedHandler.js` publishes neither, since its one address is anonymous. §7.2 records the measured
-  export list from before the fix, when the seam was reachable in the source and in no bundle.
+- **The five gated artifacts also export the authorisation registration seam — the registrar, and _only_ the
+  registrar** — because a bundle is the only file a deployment holds and the seam has to be callable on it.
+  Verified by requiring each emitted file: `router.js` publishes three names, `registerRequestAuthorizationResolver`
+  alongside `createRouter` and `handler`, and each per-surface bundle publishes it alongside its own factories.
+  `clearRequestAuthorizationResolver` is deliberately **absent from all six bundles** (review finding **F13**) —
+  a `clear` followed by a `register` would re-point a live gate, which is precisely what the one-registration
+  contract exists to prevent; it stays a test-only export of `src/handlers/httpResponse.ts`, which is not a build
+  entry point. `googleFeedHandler.js` publishes neither name, since its one address is anonymous. §7.2 records
+  the measured export list from before the fix, when the seam was reachable in the source and in no bundle.
 - **The six entry points are a frozen literal list**, not a directory scan. A declared entry that is missing
   fails the build with a non-zero exit naming the path, and a non-test module appearing in `src/handlers/`
   that is neither a declared entry nor the acknowledged `httpResponse.ts` helper fails it too — so the
@@ -1009,10 +1041,10 @@ has none: no account, every entity authorisation answers no, and every gated rou
 
 There are **two seams**, and both end at the same per-invocation call:
 
-| Seam                                                                                                             | For                                                                   |
-| ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `createRouter(container, resolver)`, and the same optional second argument on each `create…HandlerFromContainer` | a deployment that builds its own entry module against these functions |
-| `registerRequestAuthorizationResolver(resolver)`, re-exported by all five gated entry modules                    | a deployment that takes a packaged artifact as it stands              |
+| Seam                                                                                                                | For                                                                   |
+| ------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `createRouter(container, resolver)`, and the same optional second argument on each `create…HandlerFromContainer`    | a deployment that builds its own entry module against these functions |
+| `registerRequestAuthorizationResolver(resolver)`, re-exported by all five gated entry modules — and nothing else is | a deployment that takes a packaged artifact as it stands              |
 
 `registerRequestAuthorizationResolver` is declared in `src/handlers/httpResponse.ts` and re-exported by
 `src/handlers/router.ts` and each of the four per-surface handlers, so it is reachable from
@@ -1022,6 +1054,16 @@ There are **two seams**, and both end at the same per-invocation call:
 registry on every invocation rather than capturing a context; a second registration is refused rather than
 replacing the first. Nothing in this subtree registers one, so a graph built by this port alone stays
 deny-all.
+
+⭐ **The lifecycle, exactly as shipped: one registration per module registry, and a fresh module registry is
+the only route back to the fail-closed state.** A companion `clearRequestAuthorizationResolver` exists in
+`src/handlers/httpResponse.ts` so the suite can restore that state between cases, and it is **test-only**: it
+is **not** re-exported by any of the five gated entry modules and therefore appears in **no** bundle, because
+`clear` followed by `register` is exactly the re-pointing path the one-registration rule forbids. Review
+finding **F13** removed the five re-exports that had made it reachable from a shipped artifact while this
+section still described registration as non-revocable. Each gated bundle carries its own inlined registry, so
+a deployment mounting several per-surface artifacts registers on each one it mounts, and dropping the module
+graph — a new container, or a fresh `require` cache — is what returns any of them to deny-all.
 
 The resolver returns an account (or `undefined`) and an entity-authorisation verdict per invocation. **No
 principal is ever stored** — AAP §0.6.6 M7 forbids module-scope state a warm container could carry between
@@ -1041,19 +1083,24 @@ invocations, and the registry holds the resolver **function**, never its answer.
 > artifact, `Object.keys(require('dist/handlers/router.js'))` was exactly `['createRouter', 'handler']`: the
 > registrar this section tells a deployment to call was unreachable from the one file a deployment deploys.
 > That is the same defect shape as the finding above, one layer out. The five gated entry modules —
-> `router.ts` and the four per-surface handlers — now **re-export** it together with
-> `clearRequestAuthorizationResolver` and the two resolver types, so every gated bundle publishes it;
-> `src/handlers/googleFeedHandler.ts` deliberately does not, because it gates nothing.
-> `test/regression/issues.test.ts` pins all of it: that each gated entry re-exports the **same**
-> declaration rather than a copy, that the feed publishes none, and that a resolver registered through an
-> entry's own export changes what that entry answers on a dispatcher already built.
+> `router.ts` and the four per-surface handlers — now **re-export** it together with the two resolver types,
+> so every gated bundle publishes it; `src/handlers/googleFeedHandler.ts` deliberately does not, because it
+> gates nothing. ⛔ **The clear does NOT travel with it** — review finding **F13** removed it from all five,
+> because publishing a `clear` beside a `register` hands a shipped artifact the re-pointing path the
+> one-registration contract forbids. `test/regression/issues.test.ts` pins all of it: that each gated entry
+> re-exports the **same** registrar declaration rather than a copy, that
+> `clearRequestAuthorizationResolver` is **absent** from every gated entry, that the feed publishes neither,
+> and that a resolver registered through an entry's own export changes what that entry answers on a
+> dispatcher already built.
 
 Verified against the packaged bundles, with the seeded local database: `brand.getBrand` answered
 `401 {"message":"Authentication is required"}` from `dist/handlers/router.js` before registration and `200`
 with the brand's projection after `router.registerRequestAuthorizationResolver(…)` — the same before-and-after
 on `dist/handlers/skuHandler.js` (`sku.getSkuBySkuCode`) and `dist/handlers/productHandler.js`
-(`product.getProduct`). A second registration raised, and `clearRequestAuthorizationResolver()` returned the
-answer to `401`. Each bundle carries its own inlined registry, so a deployment mounting several per-surface
+(`product.getProduct`). A second registration raised. `Object.keys()` over each gated bundle publishes
+`registerRequestAuthorizationResolver` and **not** `clearRequestAuthorizationResolver`, so the packaged
+artifact offers no way to revoke or re-point a registered gate; restoring deny-all means a fresh module graph.
+Each bundle carries its own inlined registry, so a deployment mounting several per-surface
 artifacts registers on each one it mounts.
 
 The **feed is the one exception**, and it is a port of
@@ -1257,10 +1304,12 @@ export DB_HOST=127.0.0.1 DB_PORT=3306 DB_NAME=… \
 ```
 
 **One consequence of the fail-safe default is worth stating, because it is easy to misread as a fault.**
-Supplying only the required variables is enough for the service to load, and the three **pool** bounds then
-fall back transparently — but `DB_TLS_MODE` falls back to `verified`, so the driver demands TLS with a
-verifiable chain. (The three **catalog** bounds of §8.1 do not fall back at all: absent means unbounded, and
-the one route that requires one refuses instead.) Against a local database that serves no verifiable certificate, a route that actually
+Supplying only the required variables is enough for the service to load, and the three **pool** bounds
+(`DB_CONNECTION_LIMIT`, `DB_QUEUE_LIMIT`, `DB_CONNECT_TIMEOUT_MS`) then fall back transparently — but
+`DB_TLS_MODE` falls back to `verified`, so the driver demands TLS with a verifiable chain. (The **six**
+`CATALOG_*` bounds of §8.1 do not fall back at all, and absent does **not** mean unbounded: every route that
+applies one **refuses**, naming the variable. That is the fail-closed direction, and §8.1 states its cost.)
+Against a local database that serves no verifiable certificate, a route that actually
 reaches the schema therefore fails, while routes that never reach it — a `404` for an unknown address, a
 `401` for a gated member — answer identically either way. That is the default behaving as designed:
 cleartext has to be asked for by name, which is what the `disabled` line above does. There is deliberately
@@ -1649,10 +1698,16 @@ enumerated by the target tree at AAP §0.3.1 and given a transformation row in A
 Verify it in this checkout rather than taking it on trust:
 
 ```bash
-# 70 production files (69 TypeScript modules + the Google adapter's own README)
-find src -type f | wc -l
+# run from slatwall-ts/
+# 70 production FILES = 69 TypeScript MODULES + the Google adapter's own README.md
+find src -type f | wc -l                 # 70
+find src -type f -name '*.ts' | wc -l    # 69
+# 20 test files = 17 executable suites + 2 fixtures + 1 support module
+find test -type f -name '*.ts' | wc -l   # 20
+find test -type f -name '*.test.ts' | wc -l  # 17
 # 11 root config files, and the single build script
-find . -maxdepth 1 -type f | wc -l && find build -type f | wc -l
+find . -maxdepth 1 -type f | wc -l       # 11
+find build -type f | wc -l               #  1
 ```
 
 #### Why 102 and not 100 — the exception, stated plainly
@@ -1688,36 +1743,68 @@ adapter's own README), 20 under `test/`, one under `build/` and eleven at the ro
 production module and no extra suite, and the figure is reproducible:
 
 ```bash
-git ls-files slatwall-ts | wc -l                       # 102
-git ls-files 'slatwall-ts/src/**' | wc -l              #  70
-git ls-files 'slatwall-ts/test/**/*.test.ts' | wc -l   #  17
-npx jest --listTests | wc -l                           #  17
+# run from the REPOSITORY ROOT
+git ls-files slatwall-ts | wc -l                        # 102  — every tracked file
+git ls-files 'slatwall-ts/src/**' | wc -l               #  70  — FILES under src/
+git ls-files 'slatwall-ts/src/**/*.ts' | wc -l          #  69  — TypeScript MODULES under src/
+git ls-files 'slatwall-ts/test/**/*.ts' | wc -l         #  20  — 17 suites + 2 fixtures + 1 support
+git ls-files 'slatwall-ts/test/**/*.test.ts' | wc -l    #  17  — executable suites
+
+# run from slatwall-ts/ — and note it is `npm test`, not a bare `npx jest`
+npm test -- --listTests | grep -c '\.test\.ts$'        #  17
 ```
 
+⚠️ **`npx jest --listTests` on its own does not work in this subtree, and the reason is a deliberate
+configuration choice rather than a missing dependency.** `jest.config.ts` is loaded as a **preset** — the
+`test` script is `jest --ci --config package.json --preset ./jest.config.ts` — so `ts-jest` transforms it.
+Invoking `jest` without those two flags makes Jest try to parse the TypeScript config file itself, which
+requires `ts-node`; `ts-node` is deliberately **not** a dependency of this package (§4 lists all eleven), so
+the bare invocation fails with `'ts-node' is required`. Always go through `npm test`, adding `--` before any
+Jest flag.
+
 It did not start that way, and the history is the point rather than an embarrassment. Earlier revisions
-carried **sixteen production modules and twenty-two suites** outside the plan — three shared configuration
+carried **sixteen production modules and twenty-three suites** outside the plan — three shared configuration
 tiers, five per-surface compositions, a persistence adapter, a write runner, a runner contract, a
 bounded-read port, a smart-list-input module, a SKU smart-list composer and a probe-budget leaf, plus suites
 for each. Review passes classified the surplus as a **project-inventory breach** and required that unplanned
 files be folded into the approved file whose subject they share rather than left outside the plan or thinned
-to fit. §5.5 lists the module folds with their hosts and §12.1 the suite folds; §13.4 records the two that
-were withdrawn rather than folded, and why.
+to fit. **Fifteen of the sixteen modules and twenty-two of the twenty-three suites were folded**; §5.5 lists
+the module folds with their hosts and §12.1 the suite folds. The remaining two are recorded as the different
+cases they are: `util/urlTitleProbeBudget.ts` was removed rather than relocated, because the ceiling it
+declared now lives inside `src/util/urlTitle.ts` (§8.1), and one surface-reachability suite was withdrawn
+rather than folded, because its premise was a module graph the frozen inventory precludes —
+`test/regression/issues.test.ts` carries that withdrawal record in full.
 
 ⚠️ **The production side carries no such surplus, and that is the property review finding F5 restored.**
 Four production files once sat outside the target inventory — `catalogAggregates.ts`,
 `MySqlProductPersistence.ts`, `MySqlTransactionalWriteRunner.ts` and `TransactionalWritePort.ts` — and three
 more were reachable from them, so every built handler depended transitively on unplanned production code.
 Each has been folded into the AAP-listed file that owns its concern (the aggregate loaders into
-`SmartListQueryBuilder.ts`, the product write surface into `MySqlProductRepository.ts`, the write runner into
+`QueryRunner.ts` — **not** `SmartListQueryBuilder.ts`, which only consumes them; the product write surface into
+`MySqlProductRepository.ts`, the write runner into
 `UnitOfWork.ts`, the runner contract into `container.ts`, the bounded-read and smart-list-input types into
 `SmartListQueryPort.ts`, and the five per-surface compositions and three shared tiers into `container.ts`)
 and deleted — with one exception recorded as one: the URL-title probe budget was **removed** rather than
-folded, because the ceiling it applied is itself withdrawn (§13.4). Walking the import graph from all six
-build entry points now reaches **53 modules, every one of them AAP-listed**, with **no runtime import
-cycle** — verified across all 69 modules and 162 value-import edges. The 16 modules not on that walk are
-reached only through `import type`, which `tsc` erases: the eight boundary and five repository PORTS are
-interfaces, the two `Product_Add*` process objects are input shapes, and the option and option-group rule
-sets are reachable only through a delete guard no route in the slice can call.
+folded, because the ceiling it declared is now applied inside `src/util/urlTitle.ts` itself, as the required
+fourth argument of `createUniqueURLTitle` (§8.1), so the control survives without the extra file. Walking the
+import graph from all six build entry points now reaches **53 modules, every one of them AAP-listed**, with
+**no runtime import cycle** — verified across all **69** modules and **164** value-import edges. The **16**
+modules not on that walk are reached only through `import type`, which `tsc` erases, and they enumerate
+exactly:
+
+| Not on the value walk                                                                                                     | Count | Why                                                     |
+| ------------------------------------------------------------------------------------------------------------------------- | ----- | ------------------------------------------------------- |
+| `ports/{AccessContentPort,AccountContextPort,PricingPort,SettingResolverPort,SubscriptionTermPort,UniquePropertyPort}.ts` | 6     | pure interface declarations                             |
+| `ports/repositories/{BrandRepository,OptionRepository,ProductRepository,ProductTypeRepository,SkuRepository}.ts`          | 5     | pure interface declarations                             |
+| `domain/process/{ProductAddOption,ProductAddOptionGroup}.ts`                                                              | 2     | input shapes                                            |
+| `validation/rules/{option,optionGroup}.rules.ts`                                                                          | 2     | reachable only through a delete guard no route can call |
+| `integrations/google/IntegrationContract.ts`                                                                              | 1     | `GoogleIntegration` satisfies it in type position only  |
+
+⚠️ **Two of the eight boundary ports are NOT in that list, and saying "the eight boundary ports are
+interfaces" would be wrong.** `ports/ImagePathPort.ts` and `ports/SmartListQueryPort.ts` each carry runtime
+values as well as types — the former its allowed-extension set, the latter `translateSmartListInput` and the
+bounded-read window folded into it (§5.5) — so both are on the value walk. Reproduce the whole measurement
+with a value-import graph walk from the six `ENTRY_POINTS` in `build/esbuild.mjs`.
 
 ---
 
@@ -1919,8 +2006,10 @@ The builder emits RSS 2.0 with the `xmlns:g="http://base.google.com/ns/1.0"` nam
 product's calculated title; `description` from the product description **with a fallback to the product
 type's description**; an intentionally empty `g:google_product_category`; `g:product_type`; `link`;
 `g:image_link` from the SKU's resized image path; a repeated `g:additional_image_link` per product image
-— the five absolute URLs among these are composed over **`https://`** where the legacy composed `http://`,
-which is the second of §12.4's two declared departures —;
+— the five absolute URLs among these are composed over **`http://`**, exactly as
+`integrationServices/google/views/feed/product.cfm` composes them at `:L14`, `:L15`, `:L22`, `:L23` and
+`:L24`, so the feed introduces **no** scheme departure and the cleartext exposure (CWE-319) is carried as a
+flagged `TODO(parity)` in `src/integrations/google/ProductFeedBuilder.ts` (§12.4);
 `g:condition` fixed to "new"; `g:availability` fixed to "in stock"; `g:price`; a **conditional**
 `g:sale_price` plus `g:sale_price_effective_date` emitted only when the SKU price exceeds the sale price; a
 **conditional** `g:brand`; `g:item_group_id` from the product code; and `g:shipping_weight` assembled from
@@ -1955,8 +2044,15 @@ without a helper fails a test rather than shipping.
 > Finding **F8** required both halves gated, and both are: `validateFeedHostAuthority` holds the configured
 > authority to RFC 3986 §3.2.2 `host` with §3.2.3's optional port, and `assertSameOriginRelativePath` holds
 > every appended path to a leading `/`, never `//`, with no scheme and no authority — at **all three** URL
-> sinks. Neither forecloses a legacy outcome, so neither is a declared departure; the **scheme** change to
-> `https://` is, and §12.4 declares it. `src/integrations/google/README.md` §13a holds the full accounting,
+> sinks. Neither forecloses a legacy outcome, so neither is a declared departure.
+>
+> ⚠️ **THE SCHEME IS NOT A DEPARTURE EITHER, AND A LATER REVIEW SETTLED THAT.** Finding **F8** additionally
+> re-schemed the five absolute URLs to `https://` and this block once declared that change as a second
+> departure beside **D18**. Review finding **F4** reversed it: AAP §0.6.7.7 licenses **exactly one**
+> departure, so the port composes `http://` at all five sinks exactly as `product.cfm` does, and the
+> cleartext exposure (CWE-319) is **carried and flagged** in `src/integrations/google/ProductFeedBuilder.ts`
+> rather than closed. §12.4 now lists one departure, not two.
+> `src/integrations/google/README.md` §13a holds the full accounting,
 > including which residual risks remain open.
 
 **The additional-image reader is a required boundary, not a silent default.** Finding **CQ-4** found the
@@ -2051,10 +2147,17 @@ unreachable code would add behaviour the legacy system does not have.
 **The honest ratio leads, because the ratio is itself the finding.** The extendable legacy signal for this
 slice amounts to **two entity test files, eight issue regressions and one fixture helper. Everything else is
 net-new.** Every suite in `test/` labels itself, so the ratio is visible per file rather than only in
-aggregate: of the **17** suites, **4 carry TRACEABLE cases and 13 are wholly NET-NEW** — and inside those
-four the imbalance is sharper still, **13 traceable cases against 2,329 net-new ones**. The four are
-`test/domain/Product.test.ts` (6), `test/domain/Brand.test.ts` (4), `test/regression/issues.test.ts` (2) and
+aggregate: of the **17** suites, **4 carry TRACEABLE cases and 13 are wholly NET-NEW** — and inside those four
+the imbalance is sharper still, **21 traceable case declarations against 2,100 net-new ones**. The four are
+`test/regression/issues.test.ts` (10), `test/domain/Product.test.ts` (6), `test/domain/Brand.test.ts` (4) and
 `test/services/BrandService.test.ts` (1).
+
+⚠️ **DECLARATIONS AND EXECUTED TESTS ARE TWO DIFFERENT COUNTS, and this paragraph states declarations.** The
+figures above come from walking the TypeScript AST of all seventeen suites and counting `it` / `test`
+declarations: **2,121 in total, 21 TRACEABLE and 2,100 NET-NEW, with 0 unlabelled.** The runner reports a
+larger number — **2,362 at this checkpoint** — because an `it.each(table)` declaration expands into one
+executed test per table row. Neither figure is frozen by anything: both grow when a case or a row is added, so
+re-measure rather than trusting a number in a document.
 
 **Every suite carries an explicit TRACEABLE or NET-NEW provenance label**, and in every suite the label also
 travels in each individual case title — which is why a failing case names its own provenance in the runner's
@@ -2063,12 +2166,15 @@ output rather than requiring a reader to find the file's header.
 Two clarifications, because both numbers were previously stated wrong here and a reader is entitled to know
 which way they moved. AAP §0.6.5.1 identified **five** catalog-relevant issue regressions; the suite carries
 **eight**, so the port is a **superset** of the plan and the table below names all eight rather than the
-plan's five. And the suite count is **17**, measured with `npx jest --listTests`, not the 36 an earlier
-revision of this section reported. **Twenty-two suites once ran outside AAP §0.4.1.12's declared plan:
-twenty-one are folded into the approved suite whose subject each shares, and one — the surface-reachability
+plan's five. And the suite count is **17**, measured with `npm test -- --listTests` (a bare `npx jest` cannot
+load this package's preset — §9.5 explains why), not the 36 an earlier
+revision of this section reported. **Twenty-three suites once ran outside AAP §0.4.1.12's declared plan:
+twenty-two are folded into the approved suite whose subject each shares, and one — the surface-reachability
 suite — was withdrawn** because the module separation it measured no longer exists to measure. Every one of
-the twenty-one folds is verifiable on disk: each folded body sits under a `FOLDED IN FROM` banner naming its
-origin, and `grep -rc 'FOLDED IN FROM' test/` counts exactly twenty-one. Folding moved coverage; it removed
+the twenty-two folds is verifiable on disk: each folded body sits under a banner naming its origin, and
+`grep -rh 'FOLDED IN FROM' test/ | wc -l` counts twenty of them — the two hosted inside
+`test/adapters/MySqlProductRepository.test.ts` use a `cases merged from …` banner instead, which is a wording
+difference and not a missing fold. Folding moved coverage; it removed
 none, which is why the case count went **up** rather than down.
 
 **TRACEABLE — extends existing legacy coverage:**
@@ -2140,10 +2246,15 @@ because all three arrived there by the folds above.**
    passing quietly. It is the only assertion in the subtree that can see that mistake, since `tsc` cannot and
    a happy-path database test would not.
 
-**Where the twenty-one folded suites went.** Folding relocated coverage into the approved seventeen; it
+**Where the twenty-two folded suites went.** Folding relocated coverage into the approved seventeen; it
 removed none, and each folded body sits inside one `describe` under a banner naming its origin, so a reviewer
 can read any of them as the file it used to be. Every host was chosen because it already owns the subject. The
-row counts below sum to **twenty-one**, which is what `grep -rc 'FOLDED IN FROM' test/` reports.
+row counts below sum to **twenty-two**.
+
+⚠️ **`grep -rh 'FOLDED IN FROM' test/ | wc -l` reports 20, not 22, and the gap is a banner-wording
+difference rather than a missing fold.** Two of the twenty-two — `adapters/catalogAggregates` and
+`adapters/MySqlProductPersistence` — carry a `cases merged from …` banner instead, both inside
+`test/adapters/MySqlProductRepository.test.ts`. Count the rows below, or grep for both banner forms.
 
 | Folded suite(s)                                                                                                                                                     | Host                                          |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
@@ -2152,10 +2263,10 @@ row counts below sum to **twenty-one**, which is what `grep -rc 'FOLDED IN FROM'
 | `handlers/brandHandler`                                                                                                                                             | `services/BrandService.test.ts`               |
 | `handlers/optionHandler`                                                                                                                                            | `services/OptionService.test.ts`              |
 | `integrations/ProductFeedQuery`, `integrations/GoogleIntegration`, `integrations/BaseIntegration`, `integrations/IntegrationContract`, `handlers/googleFeedHandler` | `integrations/ProductFeedBuilder.test.ts`     |
-| `adapters/MySqlProductPersistence`, `adapters/MySqlBrandRepository`                                                                                                 | `adapters/MySqlProductRepository.test.ts`     |
+| `adapters/MySqlProductPersistence`, `adapters/MySqlBrandRepository`, `adapters/catalogAggregates`                                                                   | `adapters/MySqlProductRepository.test.ts`     |
 | `adapters/UnitOfWork`, `adapters/UnitOfWorkSortOrder`                                                                                                               | `adapters/MySqlSkuRepository.test.ts`         |
 | `adapters/SmartListQueryBuilder`                                                                                                                                    | `adapters/MySqlOptionRepository.test.ts`      |
-| `adapters/catalogAggregates`                                                                                                                                        | `adapters/MySqlProductTypeRepository.test.ts` |
+| `adapters/schemaScopeRegistry`                                                                                                                                      | `adapters/MySqlProductTypeRepository.test.ts` |
 | `domain/process/processObjects`                                                                                                                                     | `domain/Product.test.ts`                      |
 | `handlers/httpResponse`, `handlers/entrySurface`, `config/env`, `config/container`, `config/writeBoundaryRebuild`                                                   | `regression/issues.test.ts`                   |
 
@@ -2349,8 +2460,8 @@ _members_, not a guarantee that every cell in a frozen table matches every body 
 These are **not** carried legacy defects and carry no register identifier. Each is a place where a code review
 instructed a change, and each cites that review as its authority. Crucially, **none of the five changes an
 outcome the legacy produced** — each either classifies a refusal the legacy already failed, or refuses input
-the legacy's own upstream could not have supplied. That is what separates them from the two declared
-departures below.
+the legacy's own upstream could not have supplied. That is what separates them from the one declared
+departure below.
 
 | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Authority                        |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
@@ -2364,14 +2475,14 @@ Conversely, the **escaping census is _not_ a change of any kind**: an earlier re
 fifteen dynamic feed sinks as a second declared hardening exception, and finding **CQ-9** reversed that. The
 port now reproduces the legacy's six-escaped / nine-raw split exactly. See §10.7.
 
-#### The two declared departures from behavioural preservation
+#### The one declared departure from behavioural preservation
 
 Stated prominently and exhaustively, because the whole value of this register is that a reviewer comparing
 generated output against legacy output has a **closed** list of places where a difference is intended. There
-are exactly two. Everything else in §12.4 either carries a legacy behaviour unchanged or classifies a failure
-the legacy already produced.
+is exactly **one**. Everything else in §12.4 either carries a legacy behaviour unchanged or classifies a
+failure the legacy already produced.
 
-**1. Parameterized SQL in the importer — D18, licensed by AAP §0.6.7.7.**
+**Parameterized SQL in the importer — D18, licensed by AAP §0.6.7.7.**
 
 `model/dao/ProductDAO.cfc` builds **21** statements via `setSql()` with direct interpolation of
 **file-supplied** values — including `L165` `WHERE optionGroupName = '#optionGroupKey#'`, and further
@@ -2381,24 +2492,24 @@ fed directly from an uploaded file.**
 The port uses `pool.execute()` with `?` placeholders throughout, which **structurally eliminates the entire
 class of flaw**. AAP §0.6.7.7 declares this departure by name, so it needs no other authority.
 
-**2. The feed's five absolute URLs are `https://`, where `product.cfm` emits `http://` — directed by finding
-F8 (CWE-319).**
+**It is deliberate, documented hardening — never a silent fix**, and it is asserted by the suite so that a
+later revision cannot quietly reverse it.
 
-`integrationServices/google/views/feed/product.cfm` composes `http://#CGI.HTTP_HOST#` at `L14`, `L15`, `L22`,
-`L23` and `L24`. The port composes `https://` at the same five sinks — the channel `link`, the channel
-`description` prefix, each item `link`, `g:image_link`, and each `g:additional_image_link`. A merchant feed is
-fetched by a third party over the public internet and its URLs are followed by shoppers, so cleartext is the
-wrong default; F8 required it changed. **The change is a behavioural difference and is therefore declared here
-rather than filed among the review-directed changes above**, which is where F8's host-authority and
-relative-path rules sit, because those two foreclose no legacy outcome and this one does.
+⚠️ **A SECOND ENTRY ONCE STOOD HERE, AND REVIEW FINDING F4 REMOVED IT. DO NOT PUT IT BACK.** Finding **F8**
+had re-schemed the feed's five absolute URLs from `http://` to `https://` (CWE-319) and this register declared
+that as departure 2. AAP §0.6.7.7 licenses **exactly one** departure and admits no proportionality test, so
+an undeclared-cardinality argument cannot license a second — which is the whole reason the register exists as
+a closed list. `src/integrations/google/ProductFeedBuilder.ts` therefore composes **`http://`** at all five
+sinks, byte-for-byte as `integrationServices/google/views/feed/product.cfm` composes them at `:L14`, `:L15`,
+`:L22`, `:L23` and `:L24`, and the cleartext exposure is **carried and flagged** as a `TODO(parity)` at that
+file's `FEED_SCHEME_PREFIX` declaration rather than closed. Two suite cases assert the scheme census
+explicitly, so a later revision cannot re-scheme silently. Closing CWE-319 requires separately authorised
+scope, exactly as §13.4 says of every other carried exposure.
 
-⚠️ **What is deliberately NOT re-schemed.** `xmlns:g="http://base.google.com/ns/1.0"` stays `http://`
+⚠️ **What is NOT a scheme question at all.** `xmlns:g="http://base.google.com/ns/1.0"` stays `http://`
 because an XML namespace name is an **identifier compared byte-for-byte**, not a fetch target — changing it
 would silently invalidate every `g:` element for every consumer. The Google Merchant specification URL quoted
 in `src/integrations/google/README.md` is likewise reproduced as the legacy view header wrote it.
-
-**Both departures are deliberate, documented hardening — never a silent fix**, and both are asserted by the
-suite so that a later revision cannot quietly reverse either one.
 
 ### 12.5 Execution-model mismatches — AAP §0.6.6's frozen M1–M8, flagged rather than silently resolved
 
@@ -2527,40 +2638,49 @@ deliverable:
 why the legacy `throw` message strings, the odometer enumeration order and the five option-resolution
 semantics of §10.2 are reproduced exactly while the mechanisms around them are rewritten.
 
-**The one place this line was crossed, and how far it had to be walked back.** A revision of this subtree added
-security hardening the legacy has no equivalent of, and a QA pass found it. The decisive argument against it
-was **cardinality, not merits**: AAP §0.6.7.7 licenses exactly **one** behavioural departure — D18's SQL
-parameterization — and the register exists precisely so that a reviewer comparing generated output against
-legacy output has a closed list of entries to check. An **undeclared** second departure, however defensible on
-its own, destroys that property; Guideline 4 admits no proportionality test, and AAP §0.7.1 records the plan as
-frozen. Six categories were therefore withdrawn:
+**The one place this line was crossed, and where each half of it stands today.** A revision of this subtree
+added security hardening the legacy has no equivalent of, and a QA pass withdrew all of it. The argument that
+withdrew it was **cardinality, not merits**: AAP §0.6.7.7 licenses exactly **one** behavioural departure —
+D18's SQL parameterization — and the register exists precisely so that a reviewer comparing generated output
+against legacy output has a closed list of entries to check. An **undeclared** second departure, however
+defensible on its own, destroys that property; Guideline 4 admits no proportionality test, and AAP §0.7.1
+records the plan as frozen.
 
-| Withdrawn                                                                                                             | What now happens instead                                                                                                                                               |
-| --------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| URL **userinfo** and **control-character** refusal in the brand URL check                                             | `isCfUrlAnyProtocol` is the bare six-protocol check again — `(https?\|ftp\|file)://` or `(mailto\|news):`, non-empty, no internal whitespace — and judges nothing else |
-| a runtime guard refusing unrecognised **validation-context** tokens                                                   | the closed nine-member union is the whole constraint, and it is compile-time only                                                                                      |
-| an always-on **SKU-combination** ceiling and an optional configurable one                                             | the odometer enumerates exactly as `model/service/SkuService.cfc:L58-L211` does, with no bound                                                                         |
-| an optional **URL-title probe** ceiling, and the whole of `util/urlTitleProbeBudget.ts`                               | the derivation probes exactly as `model/service/DataService.cfc:L64` does, unbounded                                                                                   |
-| an **import-source (SSRF) policy** — some 420 lines of IPv4/IPv6/loopback apparatus — and `ImportSourceRejectedError` | the importer fetches the location it is given, and the exposure is carried as mismatch **M4**                                                                          |
-| **transaction-locking reads** in the uniqueness probes and the sort-order read                                        | both read without `FOR UPDATE`, and the TOCTOU window is carried unrepaired                                                                                            |
-| broadened **feed escaping** and URL **percent-encoding**                                                              | the serializer escapes exactly the six fields `product.cfm` escapes and emits every other dynamic value raw, and appends no percent-encoding of its own                |
+Later reviews then **reinstated four of the seven categories on an external authority**, and the distinction
+that settled each one is the same in every case: a control that **forecloses no outcome the legacy could
+produce** is not a behavioural departure, so §0.6.7.7's single-departure budget never spoke to it. §0.6.7 is
+the _defect and TODO carry-over register_ — twenty-one **business-logic** defects — and the availability or
+data integrity of the extracted service is not an entry in it.
 
-**Every one of those exposures is now flagged where it lives rather than closed.** That is the uncomfortable
-half of Guideline 4 and it is stated plainly: CWE-367 at both uniqueness probes and the sort-order read — and
-note that `optionCode` and `optionGroupCode` have **no** `unique="true"` column behind them, so for those two
-the application-side check is the only check; CWE-918 at the importer; and CWE-91 at nine feed sinks. **Closing
-any of them requires separately authorised scope. It cannot be smuggled into a frozen extraction plan through
-tests** — which is exactly how it happened the first time, and why the withdrawal removed the expectations as
-well as the behaviour.
+⭐ **This table is the single authoritative statement of where each category stands. Read it, not the
+narrative in any individual source file.** Four of the seven are LIVE; three remain withdrawn.
 
-⚠️ **Three of the withdrawn feed exposures were later re-closed — on instruction, not on merit, which is the
-only footing that works.** A **host-syntax rule** for `GOOGLE_FEED_HOST` and a **relative-path rule** at the
-three URL sinks were withdrawn with the rest of that revision, and finding **F8** required both back
-(CWE-20, CWE-601). They return on a footing the withdrawn versions never had: neither forecloses any outcome
-the legacy could produce, so neither is a behavioural departure — §12.4 sets out both arguments, and §12.4's
-two-entry departure list is where F8's **scheme** change (CWE-319) is declared instead, because that one _is_ a
-difference. The lesson the withdrawal taught still holds: **the authority has to be external and it has to be
-cited.** What changed is that here it exists.
+| Category                                                                       | Status now                                                                  | Where it lives, and what happens                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------------------------------------------------ | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| URL **userinfo** and **control-character** refusal in the brand URL check      | **WITHDRAWN**                                                               | `isCfUrlAnyProtocol` in `src/validation/Validator.ts` is the bare six-protocol check — `(https?\|ftp\|file)://` or `(mailto\|news):`, non-empty, no internal whitespace — and judges nothing else. A stored `brandWebsite` may carry a control character (CWE-113/CWE-117) or a deceptive `user@host` authority (CWE-601) exactly as the legacy permits                                                                                                                                                                                                                                         |
+| a runtime guard refusing unrecognised **validation-context** tokens            | **WITHDRAWN**                                                               | the closed nine-member `ValidationContext` union is the whole constraint, and it is compile-time only                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| broadened **feed escaping** and URL **percent-encoding**                       | **WITHDRAWN** (finding **CQ-9**)                                            | the serializer reproduces the legacy's six-escaped / nine-raw split exactly and appends no percent-encoding. The injection half is nonetheless closed **by refusal**: a raw sink rejects `&`, `<` and `]]>`, and every sink rejects code points outside the XML 1.0 `Char` production, so an unparseable document becomes a `DataIntegrityError` (**500**) — see §10.7                                                                                                                                                                                                                          |
+| an **SKU-combination** ceiling                                                 | **LIVE and REQUIRED** (findings **SEC-DOS-01**, **SEC-DOS-02**)             | `SkuCombinationBudget`, a required constructor collaborator of `src/services/SkuService.ts`, resolving `CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST`. Unset means the routes that apply it **refuse**, naming the variable — never unbounded. §8.1 states the cost                                                                                                                                                                                                                                                                                                                                 |
+| a **URL-title probe** ceiling                                                  | **LIVE and REQUIRED** (finding **SEC-DOS-03**)                              | `UrlTitleProbeBudget`, the required **fourth argument** of `createUniqueURLTitle` in `src/util/urlTitle.ts`, resolving `CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION`. Only the standalone `util/urlTitleProbeBudget.ts` module was removed — the control moved into the utility it applies to (§5.5)                                                                                                                                                                                                                                                                                            |
+| an **import-source (SSRF) policy**                                             | **LIVE as a required seam**; the in-port address apparatus is **WITHDRAWN** | `ProductImportSourcePolicy` on `src/ports/repositories/ProductRepository.ts` is a **non-optional** member, and `MySqlProductRepository.importFromFile` calls `sourcePolicy.validateSource(fileURL)` unconditionally before any read. The port **decides no address policy of its own** — the ~420 lines of IPv4/IPv6/loopback apparatus and `ImportSourceRejectedError` are gone, and the adapter's own default implementation raises not-implemented, so an unwired deployment refuses rather than fetching. CWE-918 is therefore **delegated to the operator**, not carried silently (**M4**) |
+| **transaction-locking reads** in the uniqueness probes and the sort-order read | **LIVE inside a write boundary** (finding **SEC-RACE-01**)                  | `src/adapters/mysql/UniquePropertyChecker.ts` and `src/adapters/mysql/UnitOfWork.ts` append `FOR UPDATE` when — and only when — the reader is bound to a **transaction-scoped** executor. A pool-bound instance emits exactly the statement `org/Hibachi/HibachiDAO.cfc:L140` composes, because on an autocommit connection the lock would buy nothing                                                                                                                                                                                                                                          |
+
+**What is still carried rather than closed, stated plainly.** That is the uncomfortable half of Guideline 4:
+the brand-URL exposures above; the escaping divergence at nine feed sinks; the feed's cleartext `http://`
+scheme (CWE-319, §12.4); and the residual CWE-367 race that no lock can reach — a locking read binds only
+writers that take it, so a legacy CFML request, an administrative `INSERT` or a future service that skips
+validation is unbound, and for `optionCode` and `optionGroupCode`, which have **no** `unique="true"` column
+behind them, the application-side check is the only check. **Closing any of these requires separately
+authorised scope. It cannot be smuggled into a frozen extraction plan through tests** — which is exactly how
+it happened the first time, and why that withdrawal removed the expectations as well as the behaviour.
+
+⚠️ **Two feed exposures were also re-closed on instruction, and they are not departures either.** A
+**host-syntax rule** for `GOOGLE_FEED_HOST` and a **relative-path rule** at the three URL sinks were withdrawn
+with the rest of that revision, and finding **F8** required both back (CWE-20, CWE-601). Neither forecloses any
+outcome the legacy could produce, so neither is a behavioural departure — §12.4 sets out both arguments. F8 also
+re-schemed the five absolute URLs to `https://` and that one **was** a difference; review finding **F4**
+reversed it, so §12.4's departure list has **one** entry and the feed emits `http://`. The lesson the
+withdrawal taught still holds: **the authority has to be external and it has to be cited.**
 
 **One related wiring defect was fixed rather than withdrawn, because it was a defect and not hardening.** The
 feed's shipped factory wired a constant-empty product-image reader, so a product with three images rendered as
@@ -2599,10 +2719,11 @@ than aspirational:
 6. **One test per converted method, explicitly labelled** — every suite marked TRACEABLE or NET-NEW, with the
    honest ratio published rather than smoothed over (§12.1).
 7. **Preserve and annotate, do not repair** — the 21 legacy defects of the frozen register carried as flagged
-   `TODO(parity)` annotations, with the two declared departures and their reasoning (§12.4). The four further
-   port-boundary observations are carried **by source locator rather than by a minted number**, and are
-   additions to the record, never repairs to the code (§12.4); the six categories of unauthorised hardening
-   that once breached this standard were withdrawn (§13.4).
+   `TODO(parity)` annotations, with the **one** declared departure (**D18**) and its reasoning (§12.4). The four
+   further port-boundary observations are carried **by source locator rather than by a minted number**, and are
+   additions to the record, never repairs to the code (§12.4). Seven categories of hardening once breached this
+   standard and were withdrawn wholesale; **four were later reinstated on an external authority and three
+   remain withdrawn** — §13.4 tabulates where each one stands and is the single authoritative account.
 8. **Flag mismatches rather than assume them away** — the eight frozen execution-model mismatches, plus the
    struct-iteration-order observation carried by locator, surfaced as decisions rather than resolved by
    guesswork (§12.5).

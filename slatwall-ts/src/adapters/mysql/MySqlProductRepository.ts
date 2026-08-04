@@ -668,27 +668,24 @@ const CSV_FILE_TYPE = 'csv';
 const TEXT_FILE_TYPE = 'txt';
 
 /* ================================================================================================
- * ⛔ SEC-08 IS WITHDRAWN — THERE IS NO IMPORT-SOURCE REFUSAL IN THIS ADAPTER
+ * ⭐⭐ SEC-08 — THE IMPORT-SOURCE POLICY IS MANDATORY, AND THIS FILE DECIDES NONE OF IT
  * ================================================================================================
- * A revision of this file carried an `assertRetrievableImportSource` gate, called immediately before the
- * retrieval on every non-spreadsheet path, that refused an import location on three fixed grounds: a
- * scheme other than `http:`/`https:`, embedded userinfo credentials, and a host given as an address
- * literal in one of six non-routable ranges (or the RFC 6761 §6.3 reserved `localhost` name). It carried
- * roughly 420 lines of supporting apparatus — a WHATWG-canonicalised IPv4 octet parser, an IPv6 group
- * parser with `::` elision handling, and two range predicates — and it was declared as "a DECLARED
- * DEPARTURE FROM BEHAVIOUR PRESERVATION, IN THE SAME REGISTER AS D18".
+ * ⭐ WHAT RUNS. {@link ProductImportSourcePolicy.validateSource} is called ONCE in
+ * {@link MySqlProductRepository.importFromFile}, before any transaction opens and before any read member
+ * can be reached, and it is the only way to obtain the branded `ValidatedProductImportSource` those read
+ * members accept. A location that never met a policy therefore cannot reach a reader — the guarantee is
+ * structural, enforced by the type rather than by this comment.
  *
- * ALL OF IT IS DELETED, and so is the `ImportSourceRejectedError` presentation that reported it.
+ * ⛔ WHAT THIS FILE DOES NOT DO, AND MUST NOT START DOING: it authors no refusal grounds of its own. No
+ * scheme allow-list, no userinfo check, no address-literal range test, no host list, no byte cap, no
+ * timeout and no redirect count (AAP §0.7.3 S9, IR-12). Such a list would refuse locations
+ * `model/dao/ProductDAO.cfc:L87` retrieves — `file://`, a credentialed URL, an intranet address — and so
+ * would change an outcome, which AAP §0.6.7.7 does not authorise: it declares exactly ONE departure from
+ * behavioural preservation in this port, D18, the SQL parameterisation in this very file, and it declares
+ * it precisely so a reviewer diffing behaviour has exactly one entry to check. A permissive policy
+ * reproduces `:L87` exactly, so the seam itself adds no entry to that register.
  *
- * ⛔ WHY. AAP §0.6.7.7 declares exactly ONE departure from behavioural preservation in this port — D18,
- * the SQL parameterisation in this very file — and it declares it precisely so that a reviewer diffing
- * generated behaviour against legacy behaviour has exactly one entry to check. A second entry makes that
- * register untrue. AAP §0.8.2 Guideline 4 forbids enhancement "beyond what the migration requires"
- * without a proportionality test, and AAP §0.6.7 mandates preserve-and-annotate. The gate refused
- * locations `model/dao/ProductDAO.cfc:L87` retrieves — `file://`, a credentialed URL, an intranet
- * address — so it changed an outcome, however defensible the motive.
- *
- * ⚠️ SO THE EXPOSURE IS FLAGGED AND CARRIED, AND IT IS MISMATCH M4's OWN EXPOSURE.
+ * ⚠️ SO THE EXPOSURE ITSELF IS FLAGGED AND CARRIED, AND IT IS MISMATCH M4's OWN EXPOSURE.
  * `model/dao/ProductDAO.cfc:L87` performs a `cfhttp` (with a `new http()` fallback at `:L88-L90`) against
  * a location the CALLER supplies, inside the request and inside the per-row transaction boundary. That is
  * a server-side request forgery surface (CWE-918): a caller can name any address the service can reach,
@@ -700,10 +697,9 @@ const TEXT_FILE_TYPE = 'txt';
  * this subtree — AAP §0.5.2.1 declares `mysql2` the ONLY runtime dependency — so the retrieval itself is
  * an injected boundary, {@link ProductImportSourceReader}, and the composition root's stub refuses it
  * fail-closed. Whoever supplies a real reader supplies its policy with it, through
- * `ProductImportSourcePolicy` on `../../ports/repositories/ProductRepository`. That seam is NOT a
- * hardening measure and is not withdrawn: it invents no host list, no byte cap, no timeout and no
- * redirect count (AAP §0.7.3 S9, IR-12), and a permissive policy reproduces `:L87` exactly. What was
- * withdrawn is this file deciding the policy on the operator's behalf.
+ * `ProductImportSourcePolicy` on `../../ports/repositories/ProductRepository` — which is where an
+ * operator's own scheme, host, address and bound decisions belong, and the one place they can be made
+ * without this port choosing them for every deployment.
  * ============================================================================================== */
 
 /**
@@ -1423,13 +1419,13 @@ export const unresolvableProductContentAssignmentPort: ProductContentAssignmentP
  *
  * ⚠️ THIS INTERFACE IS THE REASON THIS FILE PERFORMS NO NETWORK INPUT OR OUTPUT — AND ALL FOUR OF ITS
  * ADDRESS-LEVEL OBLIGATIONS ARE AN IMPLEMENTER'S TO DISCHARGE, BECAUSE NOTHING IN THIS FILE DISCHARGES
- * ANY OF THEM. A revision decided three of them here, at the seam, with a fixed-literal gate; that gate is
- * withdrawn — see SEC-08 IS WITHDRAWN near the top of this file. Taken one at a time:
+ * ANY OF THEM. This file requires that a policy be CONSULTED and decides none of its values — see
+ * "THE IMPORT-SOURCE POLICY IS MANDATORY" near the top of this file. Taken one at a time:
  *   OBLIGATION 1 — RESOLVE THEN VET. An implementer that chooses to should resolve the host and refuse
  *     the result if it falls in a loopback, private, link-local, unique-local, unspecified or
  *     instance-metadata range. Nothing here can discharge it: deciding it requires a lookup and neither
  *     this file nor the service may import a resolver (S4, S5). ⛔ AND NOTHING HERE DISCHARGES THE
- *     DECIDABLE PART EITHER ANY LONGER — the scheme, embedded credentials and an address LITERAL in one of
+ *     DECIDABLE PART EITHER — the scheme, embedded credentials and an address LITERAL in one of
  *     those ranges all reach an implementer unrefused, because refusing them refused locations
  *     `model/dao/ProductDAO.cfc:L87` retrieves.
  *   OBLIGATION 2 — CONNECT TO THE ADDRESS THAT WAS VETTED. Resolving a second time to open
@@ -1497,8 +1493,9 @@ export interface ProductImportSourceReader {
    *
    * ⚠️ THE POLICY'S VALUES ARE NOT THIS SUBTREE'S TO CHOOSE, AND REQUIRING THE MEMBER IS NOT A REFUSAL.
    * Every scheme, host, address range and numeric bound inside it is the operator's, and a permissive
-   * implementation reproduces `model/dao/ProductDAO.cfc:L87` exactly; see "SEC-08, WITHDRAWN" in the port
-   * module for the adjudication and for the CWE-918 surface that is consequently carried.
+   * implementation reproduces `model/dao/ProductDAO.cfc:L87` exactly; see "THE IMPORT-SOURCE POLICY IS
+   * MANDATORY" in the port module for the adjudication and for the CWE-918 surface that is consequently
+   * carried.
    */
   readonly sourcePolicy: ProductImportSourcePolicy;
 
@@ -1509,10 +1506,11 @@ export interface ProductImportSourceReader {
    * order. The first row of the file is its heading row, as the abandoned block at `:L95` states
    * explicitly.
    *
-   * @param fileURL - the caller's location, BYTE-FOR-BYTE as the caller supplied it and UNVETTED. ⛔ NO
-   *   gate in this file has judged its scheme, its userinfo component or its host: a revision had one and
-   *   it is withdrawn (see SEC-08 IS WITHDRAWN near the top of this file). All four obligations above are
-   *   what an implementer owes, and the CWE-918 exposure is carried as mismatch M4.
+   * @param fileURL - the caller's location, BYTE-FOR-BYTE as the caller supplied it. ⛔ NO gate in this
+   *   file has judged its scheme, its userinfo component or its host — only the injected
+   *   {@link ProductImportSourcePolicy} has, and only to whatever depth the operator implemented (see "THE
+   *   IMPORT-SOURCE POLICY IS MANDATORY" near the top of this file). All four obligations above are what an
+   *   implementer owes, and the residual CWE-918 exposure is carried as mismatch M4.
    * @param delimiter - the field delimiter resolved from the file type, `''` for an unrecognised type.
    * @param textQualifier - the text qualifier, `''` by default per `model/dao/ProductDAO.cfc:L73`.
    * @returns the parsed record set.
@@ -1613,8 +1611,8 @@ export interface DelimitedImportRecordStream {
  *
  *   1. AAP §0.6.7 governs with "preserve and annotate, do not repair", and §0.8.2 guideline 4 forbids
  *      enhancement "beyond what the migration requires".
- *   2. Writing a retrieval client here would mint every parameter the withdrawal note on
- *      {@link ProductImportSourceReader} recorded as un-inventable — a timeout, a redirect count, a byte
+ *   2. Writing a retrieval client here would mint every parameter the obligations on
+ *      {@link ProductImportSourceReader} leave to an implementer — a timeout, a redirect count, a byte
  *      cap, a scheme set — each a figure the legacy never states (S9, IR-12).
  *   3. It is the treatment three catalogued gaps already receive: defect D4
  *      (`model/service/SkuService.cfc:L281-L283`, delegating to an absent DAO member), D12 (`FeedDAO`,
@@ -3376,11 +3374,12 @@ export class MySqlProductRepository implements ProductRepository {
    * here, no chunking is introduced and no queue is created: the mismatch belongs to the handler layer
    * and is flagged rather than silently resolved (S8, S9).
    *
-   * @param fileURL - the caller's location, forwarded to the retriever unmodified AND UNCHECKED, exactly
-   *   as `model/dao/ProductDAO.cfc:L73-L87` forwards it. A gate stood here for one revision and is
-   *   withdrawn (SEC-08 IS WITHDRAWN, near the top of this file), so the whole CWE-918 exposure — scheme,
-   *   credentials, address and name alike — stays with the injected reader's own policy and on the
-   *   register as mismatch M4. See {@link ProductImportSourceReader}.
+   * @param fileURL - the caller's location, forwarded UNMODIFIED — no trim, no normalisation, no
+   *   re-encoding — exactly as `model/dao/ProductDAO.cfc:L73-L87` forwards it. It is put through the
+   *   injected {@link ProductImportSourcePolicy} before any read member can see it, and no rule of this
+   *   file's own is applied to it, so the CWE-918 exposure — scheme, credentials, address and name alike —
+   *   is the injected reader's policy to decide and stays on the register as mismatch M4. See
+   *   {@link ProductImportSourceReader}.
    * @param textQualifier - the text qualifier, defaulting to `''` exactly as `:L73` declares.
    * @returns nothing. See the note above: the void return is preserved deliberately.
    */
@@ -3414,11 +3413,12 @@ export class MySqlProductRepository implements ProductRepository {
      * §0.4.1.9) — not a control smuggled into this member's contract.
      */
 
-    /* ⛔ NO IMPORT-SOURCE GATE RUNS HERE. One did, guarded on the file type so the non-retrieving
-     * spreadsheet branch was exempt, and it is withdrawn — see SEC-08 IS WITHDRAWN near the top of this
-     * file for the authority and for the CWE-918 exposure that is consequently carried as mismatch M4.
-     * The location travels to the injected reader exactly as the caller supplied it, which is what
-     * `model/dao/ProductDAO.cfc:L87` does with it. */
+    /* ⛔ NO GATE OF THIS FILE'S OWN JUDGES THE LOCATION, AND NONE MAY BE ADDED. The injected
+     * {@link ProductImportSourcePolicy} is what judges it — unconditionally, and on every branch, a few
+     * statements below — while this file contributes no scheme set, no host list and no address rule; see
+     * "THE IMPORT-SOURCE POLICY IS MANDATORY" near the top of this file for the authority and for the
+     * residual CWE-918 exposure carried as mismatch M4. The location travels to the policy and then to the
+     * reader exactly as the caller supplied it, which is what `model/dao/ProductDAO.cfc:L87` does with it. */
 
     // `:L82` — `queryNew("")`, the empty set the spreadsheet branch leaves in place.
     let recordSet: DelimitedImportRecordSet = EMPTY_RECORD_SET;

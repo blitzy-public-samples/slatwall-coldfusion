@@ -1128,14 +1128,15 @@ describe('loadDataFromFile — the import boundary', () => {
     await harness.service.loadDataFromFile(hostile);
 
     /*
-     * ⛔ TODO(parity) — THERE IS NO IMPORT-SOURCE GATE ANYWHERE ON THIS PATH, HERE OR DOWNSTREAM. A
-     * revision refused non-`http`/`https` schemes and loopback, link-local and private-range addresses in
-     * `src/adapters/mysql/MySqlProductRepository.ts` and pinned the refusal to that sink rather than to
-     * this member. The refusal is WITHDRAWN — AAP §0.6.7.7 authorises exactly one behavioural departure
-     * in this port (D18) — so the hostile location now travels the whole way to the injected reader
-     * unjudged, and the CWE-918 surface is carried as MISMATCH M4.
+     * ⛔ TODO(parity) — NO GATE OF THIS PORT'S OWN JUDGES THE LOCATION, HERE OR DOWNSTREAM. This port
+     * authors no scheme, host or address rule, because `model/dao/ProductDAO.cfc:L87` retrieves whatever it
+     * is handed and AAP §0.6.7.7 authorises exactly one behavioural departure (D18). The one thing that IS
+     * mandatory is that the injected `ProductImportSourcePolicy` be consulted at the retrieval seam in
+     * `src/adapters/mysql/MySqlProductRepository.ts` before any read member can see the location — so what a
+     * hostile location meets is the OPERATOR's policy, and the residual CWE-918 surface is carried as
+     * MISMATCH M4.
      *
-     * ⚠️ WHAT THIS MEMBER'S OBLIGATION STILL IS, AND WHY IT IS UNCHANGED BY THE WITHDRAWAL. It is the
+     * ⚠️ WHAT THIS MEMBER'S OBLIGATION STILL IS, AND WHY THE SEAM DOES NOT CHANGE IT. It is the
      * port of `model/service/ProductService.cfc:L65-L68`, whose whole body is a request-budget call and a
      * positional delegation; it opens no socket and dereferences nothing. So the assertion is deliberately
      * that NOTHING happens here: the location travels byte-for-byte, query string and percent-encoding
@@ -1150,11 +1151,12 @@ describe('loadDataFromFile — the import boundary', () => {
 
   it("NET-NEW: propagates the adapter's failure without translating or absorbing it", async () => {
     /*
-     * ⛔ THE ERROR RAISED HERE IS THE ONE THE SHIPPED READER ACTUALLY RAISES. With the import-source
-     * refusal withdrawn, `unresolvableProductImportSourceReader` declines every member with a
-     * `NotImplementedError` — the legacy retrieval at `model/dao/ProductDAO.cfc:L87` resolves a bean
-     * declared nowhere and its `new http()` fallback is commented out, so no location is retrievable at
-     * all. An `ImportSourceRejectedError` used to stand here; it is deleted with the gate.
+     * ⛔ THE ERROR RAISED HERE IS THE ONE THE SHIPPED READER ACTUALLY RAISES. `unresolvableProductImportSourceReader`
+     * declines EVERY member — `validateSource` included — with a `NotImplementedError`, because the legacy
+     * retrieval at `model/dao/ProductDAO.cfc:L87` resolves a bean declared nowhere and its `new http()`
+     * fallback is commented out, so no location is retrievable at all. There is no dedicated rejection
+     * error: what a location is judged against is the operator's policy, and this port authors no grounds
+     * of its own to report.
      */
     const failure = new NotImplementedError(
       'ProductImportSourcePolicy.validateSource',
@@ -5634,15 +5636,15 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
       expect(result.statusCode).toBe(400);
       expect(probe.calls).toStrictEqual([]);
     });
-    /* ⛔ A CASE STOOD HERE ASSERTING THAT A REFUSED IMPORT LOCATION ANSWERS 400 WITHOUT DISCLOSING THE
-     * POLICY, AND IT IS WITHDRAWN WITH THE BEHAVIOUR IT PINNED. The refusal came from an import-source
-     * policy — an allow-list of schemes, hosts and addresses, with an `ImportSourceRejectedError` to report
-     * a violation — that a later review withdrew in full, along with the error class itself. The argument
-     * was cardinality, not merits: `model/dao/ProductDAO.cfc:L87` retrieves whatever location it is handed
-     * and checks nothing, so refusing one is a behavioural departure, and AAP §0.6.7.7 licenses exactly ONE
-     * such departure (D18, the importer's parameterised SQL). The exposure is carried rather than closed, as
-     * AAP §0.6.6 mismatch M4 (CWE-918), and it is flagged at the member in `src/services/ProductService.ts`
-     * and at the retrieval seam in `src/adapters/mysql/MySqlProductRepository.ts` rather than asserted here.
+    /* ⛔ NO CASE HERE ASSERTS A PARTICULAR STATUS FOR A REFUSED IMPORT LOCATION, BECAUSE THIS PORT DECIDES
+     * NO REFUSAL GROUNDS. `model/dao/ProductDAO.cfc:L87` retrieves whatever location it is handed and checks
+     * nothing, so an allow-list of schemes, hosts or addresses authored HERE would be a behavioural departure
+     * and AAP §0.6.7.7 licenses exactly ONE (D18, the importer's parameterised SQL). What the port does
+     * require is that an injected `ProductImportSourcePolicy` be CONSULTED before any retrieval — asserted
+     * in the folded adapter suite, not here — and whatever that policy rejects with propagates through this
+     * service untranslated, which the neighbouring case pins. The residual exposure is carried as AAP §0.6.6
+     * mismatch M4 (CWE-918) and flagged at the member in `src/services/ProductService.ts` and at the
+     * retrieval seam in `src/adapters/mysql/MySqlProductRepository.ts`.
      *
      * The 400-versus-500 presentation rule the case also exercised is still covered: the neighbouring cases
      * pin the request-shape 400 for an absent `fileURL` and the exact two-argument forwarding, and the

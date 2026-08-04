@@ -395,13 +395,13 @@ export interface SkuResizedImagePathRequest {
  * {@link ImageWebPath} is branded with a `unique symbol` that `src/ports/ImagePathPort.ts` never
  * exports, so no structural copy of it can be written anywhere.
  *
- * ⚠️ THE BRAND IS A NOMINAL LABEL, NOT A RESTRICTION, AND AN EARLIER REVISION USED IT AS ONE. That
- * revision also imported an `ImageFileNameCandidate` type so the existence probe could no longer be
- * handed a composed path — making [model/entity/Sku.cfc:L222]'s own call shape uncompilable. That much
- * stays withdrawn: [:L222] probes whatever the composed path resolves to and answers a boolean about THAT
- * file, so refusing to probe would replace a defined legacy outcome with a different one. This entity
- * forwards the composed path to the probe, exactly as [:L222] does. `src/ports/ImagePathPort.ts`
- * DECISION I-1 control (3) carries the adjudication and the flagged residual exposure.
+ * ⚠️ THE BRAND IS A NOMINAL LABEL, NOT A RESTRICTION. ⛔ DO NOT USE IT AS ONE — for instance by adding an
+ * `ImageFileNameCandidate` type so the existence probe can no longer be handed a composed path, which would
+ * make [model/entity/Sku.cfc:L222]'s own call shape uncompilable. [:L222] probes whatever the composed path
+ * resolves to and answers a boolean about THAT file, so refusing to probe would replace a defined legacy
+ * outcome with a different one. This entity forwards the composed path to the probe, exactly as [:L222]
+ * does. `src/ports/ImagePathPort.ts` DECISION I-1 control (3) carries the adjudication and the flagged
+ * residual exposure.
  *
  * ⭐ AND THE WRITE HALF IS NOW GATED, WHICH AGAIN NEEDS NO CHANGE HERE. Under review finding SEC-FILE-01 a
  * name gate over the stored `imageFile` stands at the one member that writes, `processImageUpload` in
