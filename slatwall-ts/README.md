@@ -1050,27 +1050,26 @@ executing it; `.env.example` records why.
 
 _When_ that validation happens differs by artifact, deliberately — §6 records which and why.
 
-| Variable                                   | Required?       | Notes                                                                                                                                                                                                                                                                                                   |
-| ------------------------------------------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DB_HOST`                                  | **yes**         | a bare host: a registered name or IPv4 literal per RFC 3986 §3.2.2, or an IPv6 address bracketed or bare. A scheme, a `user:password@` prefix, a `:port` suffix, a path, whitespace, a control character, a non-ASCII character and a filesystem socket path are each refused with a message saying why |
-| `DB_PORT`                                  | **yes**         | a plain base-ten TCP port, 1–65535                                                                                                                                                                                                                                                                      |
-| `DB_NAME`                                  | **yes**         | the schema holding the existing `Sw*` tables. This service reads and writes that schema and neither creates nor migrates it. **Not** the legacy datasource name — see the note below                                                                                                                    |
-| `DB_USER`, `DB_PASSWORD`                   | **yes**         | must be present; an empty string is permitted, reproducing the legacy framework defaults exactly. Nothing is committed anywhere                                                                                                                                                                         |
-| `DB_TLS_MODE`                              | no → `verified` | `verified` requires TLS and verifies chain and identity. `disabled` is accepted **only** for a loopback host. Absence encrypts; cleartext must be asked for by name                                                                                                                                     |
-| `DB_QUEUE_LIMIT`                           | no → `1`        | the one bound not delegated to the driver: it reads `0` as "no limit" **and** `0` is its default, so omitting the option would select the unbounded queue this value exists to prevent                                                                                                                  |
-| `DB_CONNECTION_LIMIT`                      | no → omitted    | absent means the option is left off and the driver's own bounded default applies, so this port states no figure — AAP §0.4.1.3 records that pool sizing "is not carried over because the legacy application delegates pooling to the CF/Railo server and pins nothing in source"                        |
-| `DB_CONNECT_TIMEOUT_MS`                    | no → omitted    | as above. It bounds connection setup only — not a statement, request or invocation timeout, and not a latency target                                                                                                                                                                                    |
-| `GOOGLE_FEED_HOST`                         | **yes**         | the authority every absolute URL in the feed is composed from, replacing the legacy `CGI.HTTP_HOST` reads. Held to RFC 3986 §3.2.2 with §3.2.3's optional port. Its shape is checked; its **identity is not**, and that residual exposure stays documented rather than overclaimed                      |
-| `SETTING_APPLICATION_ROOT_MAPPING_PATH`    | no              | one of the three of eighteen setting values whose legacy default is **computed** rather than stored, so no static table can hold it. Consumed by `StaticSettingResolver` through the container                                                                                                          |
-| `SETTING_SKU_ELIGIBLE_CURRENCIES`          | no              | as above — the legacy computes it from the excluded `Currency*` family                                                                                                                                                                                                                                  |
-| `SETTING_SKU_ELIGIBLE_FULFILLMENT_METHODS` | no              | as above — the legacy computes it from the excluded `Fulfillment*` family                                                                                                                                                                                                                               |
-
-| `CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY` | no → **every read route refuses** | the largest number of records **one** smart-list query may materialise. Applied by **both** execution members of the query builder by counting before hydrating and **refusing** an over-budget selection rather than truncating it — see §8.1 |
-| `CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY` | no → **every read route refuses** | the largest number of query-**complexity** units one compiled statement may carry — one bound parameter plus one `ORDER BY` term plus one join. Bounds keyword cardinality, `FI:`/`FIR:` list cardinality, `OrderBy` cardinality, join count **and statement size** together — see §8.1 |
-| `CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST` | no → **`sku.createSkus` refuses** | the largest number of SKU combinations one merchandise `createSkus` request may enumerate. Applied between the count and the first SKU allocation, so an over-budget request constructs, attaches and validates nothing |
-| `CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION` | no → **the three save routes refuse** | the maximum number of uniqueness probes one URL-title derivation may issue. Bounds the **probe**, never the algorithm: the slug transformation and the `-2`-first suffix sequence are unchanged inside the budget |
-| `CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD` | no → **the feed refuses** | the largest number of `g:additional_image_link` elements one feed record may emit. Checked **before** the image loop, so an over-budget record resolves no path at all |
-| `CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES` | no → **the feed refuses** | the largest size in **bytes** the rendered feed document may reach. Measured on the finished document and **refused**, never truncated — a truncated RSS document is malformed, not smaller |
+| Variable                                      | Required?                             | Notes                                                                                                                                                                                                                                                                                                   |
+| --------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DB_HOST`                                     | **yes**                               | a bare host: a registered name or IPv4 literal per RFC 3986 §3.2.2, or an IPv6 address bracketed or bare. A scheme, a `user:password@` prefix, a `:port` suffix, a path, whitespace, a control character, a non-ASCII character and a filesystem socket path are each refused with a message saying why |
+| `DB_PORT`                                     | **yes**                               | a plain base-ten TCP port, 1–65535                                                                                                                                                                                                                                                                      |
+| `DB_NAME`                                     | **yes**                               | the schema holding the existing `Sw*` tables. This service reads and writes that schema and neither creates nor migrates it. **Not** the legacy datasource name — see the note below                                                                                                                    |
+| `DB_USER`, `DB_PASSWORD`                      | **yes**                               | must be present; an empty string is permitted, reproducing the legacy framework defaults exactly. Nothing is committed anywhere                                                                                                                                                                         |
+| `DB_TLS_MODE`                                 | no → `verified`                       | `verified` requires TLS and verifies chain and identity. `disabled` is accepted **only** for a loopback host. Absence encrypts; cleartext must be asked for by name                                                                                                                                     |
+| `DB_QUEUE_LIMIT`                              | no → `1`                              | the one bound not delegated to the driver: it reads `0` as "no limit" **and** `0` is its default, so omitting the option would select the unbounded queue this value exists to prevent                                                                                                                  |
+| `DB_CONNECTION_LIMIT`                         | no → omitted                          | absent means the option is left off and the driver's own bounded default applies, so this port states no figure — AAP §0.4.1.3 records that pool sizing "is not carried over because the legacy application delegates pooling to the CF/Railo server and pins nothing in source"                        |
+| `DB_CONNECT_TIMEOUT_MS`                       | no → omitted                          | as above. It bounds connection setup only — not a statement, request or invocation timeout, and not a latency target                                                                                                                                                                                    |
+| `GOOGLE_FEED_HOST`                            | **yes**                               | the authority every absolute URL in the feed is composed from, replacing the legacy `CGI.HTTP_HOST` reads. Held to RFC 3986 §3.2.2 with §3.2.3's optional port. Its shape is checked; its **identity is not**, and that residual exposure stays documented rather than overclaimed                      |
+| `SETTING_APPLICATION_ROOT_MAPPING_PATH`       | no                                    | one of the three of eighteen setting values whose legacy default is **computed** rather than stored, so no static table can hold it. Consumed by `StaticSettingResolver` through the container                                                                                                          |
+| `SETTING_SKU_ELIGIBLE_CURRENCIES`             | no                                    | as above — the legacy computes it from the excluded `Currency*` family                                                                                                                                                                                                                                  |
+| `SETTING_SKU_ELIGIBLE_FULFILLMENT_METHODS`    | no                                    | as above — the legacy computes it from the excluded `Fulfillment*` family                                                                                                                                                                                                                               |
+| `CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY`    | no → **every read route refuses**     | the largest number of records **one** smart-list query may materialise. Applied by **both** execution members of the query builder by counting before hydrating and **refusing** an over-budget selection rather than truncating it — see §8.1                                                          |
+| `CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY` | no → **every read route refuses**     | the largest number of query-**complexity** units one compiled statement may carry — one bound parameter plus one `ORDER BY` term plus one join. Bounds keyword cardinality, `FI:`/`FIR:` list cardinality, `OrderBy` cardinality, join count **and statement size** together — see §8.1                 |
+| `CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST`    | no → **`sku.createSkus` refuses**     | the largest number of SKU combinations one merchandise `createSkus` request may enumerate. Applied between the count and the first SKU allocation, so an over-budget request constructs, attaches and validates nothing                                                                                 |
+| `CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION` | no → **the three save routes refuse** | the maximum number of uniqueness probes one URL-title derivation may issue. Bounds the **probe**, never the algorithm: the slug transformation and the `-2`-first suffix sequence are unchanged inside the budget                                                                                       |
+| `CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD`   | no → **the feed refuses**             | the largest number of `g:additional_image_link` elements one feed record may emit. Checked **before** the image loop, so an over-budget record resolves no path at all                                                                                                                                  |
+| `CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES`      | no → **the feed refuses**             | the largest size in **bytes** the rendered feed document may reach. Measured on the finished document and **refused**, never truncated — a truncated RSS document is malformed, not smaller                                                                                                             |
 
 **Nineteen names — six required and thirteen optional — read in exactly one file, documented in exactly one
 template, and the two lists agree in both directions.** Verify the split rather than taking it on trust:
@@ -1995,13 +1994,13 @@ unreachable code would add behaviour the legacy system does not have.
 slice amounts to **two entity test files, eight issue regressions and one fixture helper. Everything else is
 net-new.** Every suite in `test/` labels itself, so the ratio is visible per file rather than only in
 aggregate: of the **17** suites, **3 carry TRACEABLE cases and 14 are wholly NET-NEW** — and inside those three
-the imbalance is sharper still, **20 traceable case declarations against 2,112 net-new ones**. The three are
+the imbalance is sharper still, **20 traceable case declarations against 2,131 net-new ones**. The three are
 `test/regression/issues.test.ts` (10), `test/domain/Product.test.ts` (6) and `test/domain/Brand.test.ts` (4).
 
 **Declarations and executed tests are two different counts, and this paragraph states declarations.** The
 figures above come from walking the TypeScript AST of all seventeen suites and counting `it` / `test`
-declarations: **2,132 in total, 20 TRACEABLE and 2,112 NET-NEW, with 0 unlabelled.** The runner reports a
-larger number — **2,373 at this checkpoint** — because an `it.each(table)` declaration expands into one
+declarations: **2,151 in total, 20 TRACEABLE and 2,131 NET-NEW, with 0 unlabelled.** The runner reports a
+larger number — **2,410 at this checkpoint** — because an `it.each(table)` declaration expands into one
 executed test per table row. Neither figure is frozen by anything: both grow when a case or a row is added, so
 re-measure rather than trusting a number in a document. `test/regression/issues.test.ts` asserts the
 declaration figures against a fresh walk of the suites on every run, so a drift between this paragraph and the
@@ -2100,7 +2099,7 @@ rather than a missing body.** Two of the twenty-two — `adapters/catalogAggrega
 | `domain/process/processObjects`                                                                                                                                     | `domain/Product.test.ts`                      |
 | `handlers/httpResponse`, `handlers/entrySurface`, `config/env`, `config/container`, `config/writeBoundaryRebuild`                                                   | `regression/issues.test.ts`                   |
 
-**Three groups of cases are additions rather than relocations, because nothing in the approved corpus
+**Four groups of cases are additions rather than relocations, because nothing in the approved corpus
 constrained their subject.** They are net-new and labelled so:
 
 - **The composition root and the aggregate router** (`regression/issues.test.ts`). No approved suite reached
@@ -2117,6 +2116,17 @@ constrained their subject.** They are net-new and labelled so:
   a real graph with only the `SqlExecutor` substituted, so the captured query description, the emitted joins
   and filters, real aggregate hydration and the final document are asserted in **one** chain rather than four
   separate ones (§11).
+- **The settings boundary adapter** (`adapters/MySqlProductRepository.test.ts`). A review measured
+  `src/adapters/settings/StaticSettingResolver.ts` as the one converted implementation no suite named: it was
+  reached only transitively, and `setting()` with its four refusal branches carried no direct assertion.
+  Eighteen declarations now cover the sixteen literal names, both interpolated dimension forms, the
+  `productDisplayTemplate` empty-string answer that the legacy engine's own initialised value produces, all
+  three computed names that **refuse** rather than inventing a substitute, the unmapped-size refusal, the
+  separate deprecated-name table, and the three seeded fulfillment rows. The host is the approved suite that
+  already owns the setting-name question — `globalImageExtension` and the closed-union pin are asserted there,
+  and `src/adapters/mysql/MySqlProductRepository.ts` is the module that imports the deprecated table — so this
+  closes the gap without an eighteenth suite, which AAP §0.3.1 does not declare. The module moves from 41.9 %
+  to **100 % statement, branch and function coverage**.
 
 **One structural difference, stated plainly so it is not mistaken for a gap.** Legacy tests extend a base
 class that boots the entire FW/1 application and resolves services through DI/1 at run time
@@ -2459,15 +2469,49 @@ deliverable:
 why the legacy `throw` message strings, the odometer enumeration order and the five option-resolution
 semantics of §10.2 are reproduced exactly while the mechanisms around them are rewritten.
 
-**Seven categories of control have no legacy equivalent at all, and the test that decides each one is the
-same.** A control that **forecloses no outcome the legacy could produce** is not a behavioural departure, so
-AAP §0.6.7.7's single-departure budget never speaks to it; a control that changes bytes the legacy publishes
-unmodified would be a second departure, and §0.6.7.7 licenses exactly **one** — D18's SQL parameterization —
-with Guideline 4 admitting no proportionality test. That is a cardinality argument rather than a merits
-argument, and it is deliberately so: the register's value is that anyone comparing generated output against
-legacy output has a closed list of entries to check, and an undeclared second entry destroys the property
-however defensible it is on its own. Note too what §0.6.7 governs — twenty-one **business-logic** defects — so
-the availability or data integrity of the extracted service is not an entry in it either way.
+**Seven categories of control have no legacy equivalent at all. Two different tests decide them, and an
+earlier revision of this section stated only the first — which left four of the seven mis-described.** A
+review measured that gap; the corrected statement is below, and it is the one to read.
+
+**Test 1, for a control that judges a value.** A control that **forecloses no outcome the legacy could
+produce** is not a behavioural departure, so AAP §0.6.7.7's single-departure budget never speaks to it; a
+control that changes bytes the legacy publishes unmodified would be a second departure, and §0.6.7.7 licenses
+exactly **one** — D18's SQL parameterization — with Guideline 4 admitting no proportionality test. That is a
+cardinality argument rather than a merits argument, and it is deliberately so: the register's value is that
+anyone comparing generated output against legacy output has a closed list of entries to check, and an
+undeclared second entry destroys the property however defensible it is on its own. **Four of the seven rows
+below are the ones this test governs**: the three marked "not implemented", each of which passes by being
+absent, and the **transaction-locking reads**, which pass while present — a lock is acquired only by a reader
+already bound to a transaction-scoped executor, a boundary the legacy had no equivalent of, and a pool-bound
+instance emits exactly the statement `org/Hibachi/HibachiDAO.cfc:L140` composes.
+
+**Test 2, for a control that decides whether a request is served at all.** The remaining three rows — the
+**SKU-combination** ceiling, the **URL-title probe** ceiling and the **import-source policy** seam — are not
+judgments about a value, and Test 1 does not fit them. Each is **fail-closed**: with its variable or its seam
+unsupplied the route that applies it **refuses**, where the legacy always proceeded. So they plainly **do**
+foreclose an outcome the legacy could produce, and stretching Test 1 over them would be the dishonest reading.
+The reason they are nonetheless not §0.6.7.7 entries is different and narrower: **§0.6.7 is a register of
+twenty-one _business-logic_ defects**, and neither a resource ceiling nor an address policy is a business rule.
+Each changes **whether** a request is served, never **what** a served request answers — inside the budget, and
+for a source the operator's policy admits, every byte, every enumeration order and every error key is the
+legacy's. Availability is therefore outside what the register governs, in both directions: these controls are
+not entries in it, and neither would their absence be.
+
+**Two things keep that from being a licence, and they apply to all six `CATALOG_*` bounds of §8.1, not only to
+the two named as rows here.** The cost is **stated rather than buried** — §8.1 owns it per variable,
+`.env.example` repeats it per name, each implementing module says so at its own site, and
+`test/services/SkuService.test.ts` pins the refusal. And **no figure is authored anywhere**: every one of the
+six must be supplied by the operator, which is IR-12 in force rather than merely respected.
+
+**One correction to the record, because the artifact trail is meant to be followable.** Commit `4ecb997de`'s
+message lists "SKU combination and URL-title probe ceilings" among hardening it **withdrew**. The tree
+contradicts that, and the tree is authoritative: both ceilings are live and required — `SkuCombinationBudget`
+is a required constructor collaborator of `src/services/SkuService.ts`, and `UrlTitleProbeBudget` is the
+required fourth argument of `createUniqueURLTitle` in `src/util/urlTitle.ts`. What was actually withdrawn is
+narrower and is two separate things: the **port-authored default figures**, so the operator now supplies every
+one, and the **standalone `util/urlTitleProbeBudget.ts` module**, whose control moved into the utility it
+applies to (§5.5). They were **converted to fail-closed operator-supplied gates, not removed.** Read that
+commit message with this paragraph beside it.
 
 **This table is the authoritative statement of where each category stands; read it rather than the narrative
 in any individual source file.** Four are implemented and three are not.

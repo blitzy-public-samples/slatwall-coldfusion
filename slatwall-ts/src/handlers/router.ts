@@ -10,9 +10,17 @@
  * modules named in `build/esbuild.mjs`'s entry list export one — this file plus `./productHandler`,
  * `./skuHandler`, `./brandHandler`, `./optionHandler` and `./googleFeedHandler` — because each is
  * independently deployable, serving only its own addresses. A review measured the old claim as false and
- * recorded it as finding ****. The distinction that is true, and the one the rest of this header turns
- * on, is aggregate versus per-surface: this file answers all 34 addresses, each sibling answers its own
- * subset and 404s the rest, and (e) below records the one behavioural difference between them.
+ * recorded it as finding **F8**. The distinction that is true, and the one the rest of this header turns
+ * on, is aggregate versus per-surface: this file answers all 34 addresses while each sibling answers its
+ * own subset and 404s the rest.
+ *
+ * There is exactly one behavioural difference between them, and it is WHEN configuration is validated.
+ * This file takes a static value import of `getCatalogContainer` and resolves the graph at module load,
+ * so requiring it with a missing or malformed variable throws immediately, names the variable, and fails
+ * the cold start rather than answering requests it cannot serve. The five per-surface modules take only
+ * `import type` and defer their narrow graph to a CommonJS `require` inside the first invocation, so each
+ * can be required with an empty environment and a misconfiguration surfaces per invocation as a
+ * classified 500. The asymmetry is deliberate; README §6 owns the full record of it.
  */
 
 import { getCatalogContainer, type CatalogContainer } from '../config/container';
@@ -56,7 +64,28 @@ import {
   type CatalogAuthorizationResolver,
 } from './httpResponse';
 
-/* The edge values this file no longer declares — where they went, and why. */
+/*
+ * The edge values this file no longer declares — where they went, and why.
+ *
+ * Four values used to be declared here, and declaring them here made this file the accidental owner of
+ * things its siblings also needed:
+ *
+ *   `SLAT_ACTION_PARAMETER` and `resolveFailClosedAuthorization` now live in `./httpResponse.ts`, §7 and
+ *   §8, beside `createActionDispatcher` — the shared edge module every handler in this folder already
+ *   imports. All six entry points need both, so both belong there rather than here, and their reasoning
+ *   travelled with them: the `config/configFramework.cfm:L2` locator for the parameter name, and the
+ *   deny-all remainder argument for the principal. §8.1 of that module additionally owns the deployment
+ *   seam — the registration cell and the per-invocation reader that this file's `resolveAuthorization`
+ *   parameter falls back to — because all six need it and none may hold a second copy of the fallback rule.
+ *
+ *   `FEED_RENDER_CLOCK` and the empty product-image reader now live in `./googleFeedHandler.ts`, in its
+ *   own entry-point section, because that module owns the feed and is what knows which collaborators the
+ *   feed needs. This file asks it for a wired handler instead of assembling one.
+ *
+ * What this file still owns is the aggregate surface: each handler module declares the actions it serves,
+ * and this is where all five declarations are composed into one address space that {@link RouteKey} proves
+ * complete.
+ */
 
 /* The route key — a closed literal union, which is the interface-parity artifact. */
 
@@ -81,6 +110,12 @@ interface CatalogHandlers {
 /**
  * Builds the five handler façades from a wired graph.
  *
+ * @param container the wired service graph every façade is built from
+ * @param resolveAuthorization the per-invocation authorisation resolver the four gated surfaces call;
+ * omitted means each of those four defaults to `./httpResponse.ts` §8.1's `resolveRequestAuthorization`,
+ * which answers the resolver a deployment registered and the deny-all context when none is registered.
+ * The feed receives no resolver on either path
+ * @returns the five mounted façades.
  */
 function createCatalogHandlers(
   container: CatalogContainer,
@@ -143,6 +178,11 @@ function createRouteTable(handlers: CatalogHandlers): Readonly<Record<RouteKey, 
 /**
  * Builds the dispatcher for a wired graph.
  *
+ * @param container the wired service graph the five façades are mounted over; its
+ * `beginInvocation` hook runs first on every request
+ * @param resolveAuthorization the per-invocation authorisation resolver, forwarded to
+ * {@link createCatalogHandlers} and defaulted there
+ * @returns a dispatcher taking one invocation event and answering one proxy result.
  */
 export function createRouter(
   container: CatalogContainer,

@@ -26,7 +26,7 @@ import type {
   AuditableEntity,
   DeclaredPropertyNameSet,
   EntityPropertyMetaData,
-  ManagedEntity,
+  AuditableManagedEntity,
 } from '../base/AuditableEntity';
 import type {
   ColumnPropertyDescriptor,
@@ -133,7 +133,7 @@ export const OPTION_GROUP_ENTITY_METADATA: EntityMetadataDeclaration<OptionGroup
 /**
  * A group of mutually exclusive product options — the `SwOptionGroup` row and its option collection.
  */
-export class OptionGroup implements AuditableEntity, ManagedEntity {
+export class OptionGroup implements AuditableEntity, AuditableManagedEntity {
   /* persistent properties — [model/entity/OptionGroup.cfc:L52-L58] */
 
   /** The primary identifier. */

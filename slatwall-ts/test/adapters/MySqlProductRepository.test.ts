@@ -52,13 +52,31 @@ import type {
 } from '../../src/adapters/mysql/MySqlProductRepository';
 import { assertTableName } from '../../src/adapters/mysql/QueryRunner';
 import type { SqlExecutor } from '../../src/adapters/mysql/QueryRunner';
-import { DomainError, DataIntegrityError } from '../../src/errors/DomainError';
+import {
+  DomainError,
+  DataIntegrityError,
+  ConfigurationError,
+  PUBLIC_ERROR_CODE,
+} from '../../src/errors/DomainError';
 import type { UnitOfWork } from '../../src/adapters/mysql/UnitOfWork';
 import { Product, PRODUCT_PROPERTY_DESCRIPTORS } from '../../src/domain/product/Product';
 import type { ProductPropertyName } from '../../src/domain/product/Product';
 import type { ProductDefaultSkuDelegate } from '../../src/domain/product/Product';
 import type { AccountContextPort, AccountReference } from '../../src/ports/AccountContextPort';
-import type { SettingName } from '../../src/ports/SettingResolverPort';
+import type {
+  CatalogSettingName,
+  ProductImageDimensionSettingName,
+  SettingName,
+  SettingResolutionContext,
+  SettingResolverPort,
+} from '../../src/ports/SettingResolverPort';
+import {
+  DEPRECATED_SETTING_DEFAULTS,
+  SEEDED_SKU_ELIGIBLE_FULFILLMENT_METHODS,
+  StaticSettingResolver,
+} from '../../src/adapters/settings/StaticSettingResolver';
+import type { StaticSettingResolverConfiguration } from '../../src/adapters/settings/StaticSettingResolver';
+import { SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE } from '../../src/domain/BaseProductType';
 import type {
   ProductImportRedirectHop,
   ProductImportSourceBounds,
@@ -8237,5 +8255,343 @@ describe('The synthesized CRUD surface `BrandService` reaches through `onMissing
       expect(original.calls).toEqual([]);
       expect(adopted.calls).toHaveLength(1);
     });
+  });
+});
+
+/*
+ * StaticSettingResolver — the settings boundary adapter, reached directly.
+ *
+ * Not a suite of its own: AAP §0.3.1 freezes the corpus at seventeen suites and a settings suite is not
+ * one of them, so these cases sit in the approved suite whose subject they share. This file already owns
+ * the setting-name question — the `globalImageExtension` binding and the `SettingName`-union pin above
+ * are here, and `src/adapters/mysql/MySqlProductRepository.ts:47` is the module that imports
+ * `DEPRECATED_SETTING_DEFAULTS` — so the adapter's own answers belong beside them rather than in a
+ * new file.
+ *
+ * Why they are needed. A review measured this module as the one converted implementation that no suite
+ * named: `setting()` and its four refusal branches had zero direct assertions and were reached only
+ * transitively, through `src/config/container.ts` and this adapter. Every case below is NET-NEW —
+ * `meta/tests/` has no `SettingServiceTest` and could not have one that means anything here, because the
+ * legacy effective-value engine `model/service/SettingService.cfc` is out of scope entirely
+ * (AAP §0.2.2.1 excludes the `Setting*` family) and this adapter is its narrow, input/output-free
+ * stand-in for exactly the eighteen names the slice reads (IR-2).
+ *
+ * What is asserted is transcription fidelity, not behaviour of our own devising: each expected value is
+ * the literal the legacy metadata struct declares, so a case fails if a transcription drifts from the
+ * `path:Lnnn` locator the module cites beside it.
+ */
+
+describe('NET-NEW — StaticSettingResolver: the eighteen names, and the four it refuses', () => {
+  /** A resolution context of the shape `model/entity/HibachiEntity.cfc:L130` passes as `object=this`. */
+  const SKU_CONTEXT: SettingResolutionContext = Object.freeze({
+    entityName: 'Sku',
+    entityId: 'aaaa1111bbbb2222cccc3333dddd4444',
+  });
+
+  /**
+   * The twelve literal defaults, each paired with the value the legacy metadata struct declares.
+   *
+   * Twelve of the sixteen literal names in `CatalogSettingName`: the remaining four are
+   * `productDisplayTemplate`, which has no declared default, and the three the legacy COMPUTES at run
+   * time — every one of those is asserted separately below.
+   */
+  const METADATA_DEFAULT_EXPECTATIONS: readonly (readonly [CatalogSettingName, string])[] =
+    Object.freeze([
+      /* model/service/SettingService.cfc:L178 — the format string, carried character for character. */
+      ['globalDateFormat', 'mmm dd, yyyy'],
+      ['globalURLKeyProduct', 'sp'],
+      /* :L183 — `defaultValue=""`. An empty string is the declared answer, not an absent one. */
+      ['imageAltString', ''],
+      ['imageMissingImagePath', '/assets/images/missingimage.jpg'],
+      ['productImageDefaultExtension', 'jpg'],
+      ['productImageOptionCodeDelimiter', '-'],
+      /* :L193 — the two `${…}` placeholders are data here, expanded by the consumer, never by this. */
+      ['productTitleString', '${brand.brandName} ${productName}'],
+      /* :L198 and :L219 — UNQUOTED `0` in source, carried as text per the port's TR-1 note. */
+      ['productAutoApproveReviewsFlag', '0'],
+      ['skuAllowBackorderFlag', '0'],
+      ['skuCurrency', 'USD'],
+      /* :L232 — UNQUOTED `1` in source, likewise carried as text. */
+      ['skuShippingWeight', '1'],
+      ['skuShippingWeightUnitCode', 'lb'],
+    ] as const);
+
+  it.each(METADATA_DEFAULT_EXPECTATIONS)(
+    'NET-NEW — answers %s from the legacy metadata default, transcribed exactly',
+    (settingName, expected) => {
+      /*
+       * Constructed with no configuration, which is the point: fifteen of the eighteen resolve from
+       * frozen literals, so `new StaticSettingResolver()` is a complete resolver for them.
+       */
+      expect(new StaticSettingResolver().setting(settingName)).toBe(expected);
+    },
+  );
+
+  it('NET-NEW — the twelve literal answers are typed as text, so a yesno flag never arrives as a number', () => {
+    /*
+     * `SettingValue` is `string`, and the two `yesno` names plus `skuShippingWeight` are UNQUOTED
+     * numbers in the legacy struct. The coercion is the port's declared decision, so it is asserted
+     * rather than described: a future edit that "corrected" one of them to a number would break here.
+     */
+    const resolver = new StaticSettingResolver();
+
+    for (const [settingName] of METADATA_DEFAULT_EXPECTATIONS) {
+      expect(typeof resolver.setting(settingName)).toBe('string');
+    }
+  });
+
+  it('NET-NEW — a resolution context does not change a literal answer, because this resolver is not hierarchical', () => {
+    /*
+     * The legacy engine's per-object lookup order (`model/service/SettingService.cfc:L102-L112`) is out
+     * of scope and deliberately absent, so the context travels only into diagnostics. Asserting that
+     * pins the boundary: if a hierarchical branch were ever added here it would change this answer.
+     */
+    const resolver = new StaticSettingResolver();
+
+    expect(resolver.setting('skuCurrency', SKU_CONTEXT)).toBe(resolver.setting('skuCurrency'));
+  });
+
+  /** The six declared image dimensions — the two interpolated forms, at their three declared sizes. */
+  const DIMENSION_EXPECTATIONS: readonly (readonly [ProductImageDimensionSettingName, string])[] =
+    Object.freeze([
+      /* model/service/SettingService.cfc:L261-L266 — the three declared sizes, width then height. */
+      ['productImageSmallWidth', '150'],
+      ['productImageSmallHeight', '150'],
+      ['productImageMediumWidth', '300'],
+      ['productImageMediumHeight', '300'],
+      ['productImageLargeWidth', '600'],
+      ['productImageLargeHeight', '600'],
+    ] as const);
+
+  it.each(DIMENSION_EXPECTATIONS)(
+    'NET-NEW — answers the interpolated name %s from its declared dimension default',
+    (settingName, expected) => {
+      expect(new StaticSettingResolver().setting(settingName)).toBe(expected);
+    },
+  );
+
+  it('NET-NEW — the two interpolated forms are answered from the dimension table, not the literal one', () => {
+    /*
+     * The two tables are separate lookups in `setting()`, tried in order, and the interpolated names are
+     * NOT members of `CatalogSettingName`. This case is what proves the second lookup is reached at all:
+     * every dimension name would fall through to the `default` refusal if it were not.
+     */
+    const resolver = new StaticSettingResolver();
+
+    expect(DIMENSION_EXPECTATIONS.map(([name]) => resolver.setting(name))).toEqual([
+      '150',
+      '150',
+      '300',
+      '300',
+      '600',
+      '600',
+    ]);
+  });
+
+  it('NET-NEW TODO(parity) — an UNMAPPED size segment is refused, not guessed at', () => {
+    /*
+     * Reachable in the legacy, which is why the port leaves the size segment open. `getResizedImage`
+     * lower-cases the incoming size (model/entity/Sku.cfc:L171, L174) and then maps only "l", "m" and
+     * "s" (:L177-L183) with no final `else`, so an unmapped size reaches :L184-L185 unchanged and asks
+     * for a name that was never declared. The port refuses rather than substituting a size, because
+     * substituting one would answer a dimension the legacy never had a value for.
+     */
+    const resolver = new StaticSettingResolver();
+
+    expect(() => resolver.setting('productImageThumbnailWidth')).toThrow(ConfigurationError);
+    expect(() => resolver.setting('productImageThumbnailWidth')).toThrow(
+      /image dimensions are declared only for/u,
+    );
+  });
+
+  it('NET-NEW — the unmapped-size refusal carries the offending name in context and nowhere else', () => {
+    const resolver = new StaticSettingResolver();
+    let raised: ConfigurationError | undefined;
+
+    try {
+      resolver.setting('productImageHugeHeight', SKU_CONTEXT);
+    } catch (error: unknown) {
+      raised = error as ConfigurationError;
+    }
+
+    expect(raised).toBeInstanceOf(ConfigurationError);
+    expect(raised?.context?.['settingName']).toBe('productImageHugeHeight');
+    /* The context the caller asked under travels in the message, so a log can place the request. */
+    expect(raised?.message).toContain('Sku aaaa1111bbbb2222cccc3333dddd4444');
+    /* And the presentation a caller sees names no setting at all — see `src/errors/DomainError.ts`. */
+    expect(raised?.getPublicError().code).toBe(PUBLIC_ERROR_CODE.SERVICE_CONFIGURATION);
+    expect(raised?.getPublicError().message).not.toContain('productImageHugeHeight');
+  });
+
+  it('NET-NEW — productDisplayTemplate answers the empty string the legacy engine leaves in place', () => {
+    /*
+     * Locator-backed, not fabricated. No `defaultValue` is declared at
+     * model/service/SettingService.cfc:L190, so the engine's initialised empty string at :L474 survives
+     * the default test at :L481 and is what a caller actually received.
+     */
+    expect(new StaticSettingResolver().setting('productDisplayTemplate')).toBe('');
+  });
+
+  /** The three names the legacy COMPUTES at run time, each with the configuration key that supplies it. */
+  const COMPUTED_NAMES: readonly (readonly [
+    CatalogSettingName,
+    keyof StaticSettingResolverConfiguration,
+  ])[] = Object.freeze([
+    ['globalAssetsImageFolderPath', 'applicationRootMappingPath'],
+    ['skuEligibleCurrencies', 'skuEligibleCurrencies'],
+    ['skuEligibleFulfillmentMethods', 'skuEligibleFulfillmentMethods'],
+  ] as const);
+
+  it.each(COMPUTED_NAMES)(
+    'NET-NEW — %s cannot be resolved without deployment configuration, and refuses rather than inventing one',
+    (settingName, missingConfiguration) => {
+      /*
+       * The three legacy defaults that are COMPUTED rather than stored: one reads a running CFML
+       * application scope (:L164) and two call out-of-scope services (:L222, :L223). No substitute is
+       * invented for any of them — not an empty string, not an empty list, and for the currency name
+       * not `'USD'` borrowed from the distinct `skuCurrency` default. Refusing is IR-12 in force.
+       */
+      const resolver = new StaticSettingResolver();
+      let raised: ConfigurationError | undefined;
+
+      try {
+        resolver.setting(settingName);
+      } catch (error: unknown) {
+        raised = error as ConfigurationError;
+      }
+
+      expect(raised).toBeInstanceOf(ConfigurationError);
+      expect(raised?.message).toContain('cannot be resolved');
+      /* The refusal names the remedy — which configuration key the deployment must supply. */
+      expect(raised?.context?.['settingName']).toBe(settingName);
+      expect(raised?.context?.['missingConfiguration']).toBe(missingConfiguration);
+    },
+  );
+
+  it('NET-NEW — globalAssetsImageFolderPath appends the legacy suffix to the supplied root, in that order', () => {
+    /*
+     * model/service/SettingService.cfc:L164 concatenates
+     * `getApplicationValue('applicationRootMappingPath') & '/custom/assets/images'`. Same order, same
+     * suffix, with the root arriving through the constructor instead of the application scope.
+     */
+    const resolver = new StaticSettingResolver({ applicationRootMappingPath: '/Slatwall' });
+
+    expect(resolver.setting('globalAssetsImageFolderPath')).toBe('/Slatwall/custom/assets/images');
+  });
+
+  it('NET-NEW — an EMPTY supplied root is still a supplied root, so the suffix alone is the answer', () => {
+    /*
+     * The branch tests `!== undefined`, not truthiness, and that is the faithful reading: the legacy
+     * concatenation would have produced the bare suffix too if the application value were empty.
+     * Treating `''` as absent would refuse a configuration the deployment did supply.
+     */
+    expect(
+      new StaticSettingResolver({ applicationRootMappingPath: '' }).setting(
+        'globalAssetsImageFolderPath',
+      ),
+    ).toBe('/custom/assets/images');
+  });
+
+  it('NET-NEW — the two computed list names answer the supplied value verbatim, unsplit and unnormalised', () => {
+    /*
+     * Both legacy defaults are ID LISTS produced by an excluded service, so the port carries whatever
+     * the deployment states without splitting, trimming, sorting or de-duplicating it. Doing any of
+     * those would be authoring a list format the source never declared.
+     */
+    const resolver = new StaticSettingResolver({
+      skuEligibleCurrencies: 'USD,CAD',
+      skuEligibleFulfillmentMethods: '444df2fb93d5fa960ba2966ba2017953',
+    });
+
+    expect(resolver.setting('skuEligibleCurrencies')).toBe('USD,CAD');
+    expect(resolver.setting('skuEligibleFulfillmentMethods')).toBe(
+      '444df2fb93d5fa960ba2966ba2017953',
+    );
+  });
+
+  it('NET-NEW — the resolver performs no input or output of any kind, which is what makes it synchronous (M8)', () => {
+    /*
+     * `SettingResolverPort` is declared synchronous because the excluded setting service launches an
+     * out-of-band `cfthread` (M8), so no caller in the slice may depend on background completion. A
+     * plain non-promise return is that contract, observable.
+     */
+    const answer: unknown = new StaticSettingResolver().setting('skuCurrency');
+
+    expect(answer).not.toBeInstanceOf(Promise);
+    expect(new StaticSettingResolver()).toBeInstanceOf(StaticSettingResolver);
+  });
+
+  it('NET-NEW — it satisfies SettingResolverPort, so the container may bind it as the settings boundary', () => {
+    /*
+     * The whole reason the eighteen-name union is closed. This binding fails to compile if the class and
+     * the port ever disagree, which is stronger than any run-time probe of the same claim.
+     */
+    const boundAsPort: SettingResolverPort = new StaticSettingResolver();
+
+    expect(boundAsPort.setting('globalURLKeyProduct')).toBe('sp');
+  });
+
+  it('NET-NEW — DEPRECATED_SETTING_DEFAULTS answers globalImageExtension, which the port union deliberately excludes', () => {
+    /*
+     * The counterpart of the `SettingName`-union pin earlier in this file. The legacy marks the name
+     * deprecated at model/service/SettingService.cfc:L246-L247, so it is answered from a SEPARATE table
+     * rather than promoted into the port's contract — and the importer's image back-fill is what reads
+     * it. Both halves matter: the value exists, and it is not one of the eighteen.
+     */
+    expect(DEPRECATED_SETTING_DEFAULTS.globalImageExtension).toBe('jpg');
+    expect(Object.keys(DEPRECATED_SETTING_DEFAULTS)).toEqual(['globalImageExtension']);
+  });
+
+  it('NET-NEW — the three seeded fulfillment rows carry the seed file’s own product-type identifiers', () => {
+    /*
+     * config/dbdata/SlatwallSetting.xml.cfm:L14-L16 is the only seeded data any of the eighteen names
+     * has, and each row is scoped by `productTypeID`. The identifiers are asserted against
+     * `SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE` rather than re-typed, so the two cannot drift apart, and the
+     * two values that are IDENTICAL in the seed file stay identical here (IR-7).
+     */
+    expect(SEEDED_SKU_ELIGIBLE_FULFILLMENT_METHODS.merchandise.productTypeID).toBe(
+      SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE.merchandise.productTypeID,
+    );
+    expect(SEEDED_SKU_ELIGIBLE_FULFILLMENT_METHODS.merchandise.settingValue).toBe(
+      '444df2fb93d5fa960ba2966ba2017953',
+    );
+    expect(SEEDED_SKU_ELIGIBLE_FULFILLMENT_METHODS.subscription.settingValue).toBe(
+      '444df2ffeca081dc22f69c807d2bd8fe',
+    );
+    /* :L16 seeds the SAME fulfillment method as :L15, and the port carries the duplication as seeded. */
+    expect(SEEDED_SKU_ELIGIBLE_FULFILLMENT_METHODS.contentAccess.settingValue).toBe(
+      SEEDED_SKU_ELIGIBLE_FULFILLMENT_METHODS.subscription.settingValue,
+    );
+  });
+
+  it('NET-NEW TODO(boundary) — the seeded rows are exposed but NOT resolved through setting(), because no context can select among them', () => {
+    /*
+     * The gap stated as an assertion. A `SettingResolutionContext` carries an entity name and one
+     * identifier; selecting among three product-type-scoped rows needs the hierarchical walk at
+     * model/service/SettingService.cfc:L534-L591 plus a database read for the child's
+     * `productTypeIDPath`, which M8 bars from this input/output-free adapter. So the member still
+     * refuses even though the values are right there — and the refusal names them as the way out.
+     */
+    let raised: ConfigurationError | undefined;
+
+    try {
+      new StaticSettingResolver().setting('skuEligibleFulfillmentMethods', SKU_CONTEXT);
+    } catch (error: unknown) {
+      raised = error as ConfigurationError;
+    }
+
+    expect(raised).toBeInstanceOf(ConfigurationError);
+    expect(raised?.message).toContain('SEEDED_SKU_ELIGIBLE_FULFILLMENT_METHODS');
+  });
+
+  it('NET-NEW — every frozen table it publishes is genuinely frozen, so no caller can mutate a shared default', () => {
+    /*
+     * One resolver instance is memoised for the life of a warm container (`src/config/container.ts`), so
+     * a mutable default table would let one invocation change what the next one reads. Freezing is the
+     * structural answer and is asserted rather than assumed.
+     */
+    expect(Object.isFrozen(DEPRECATED_SETTING_DEFAULTS)).toBe(true);
+    expect(Object.isFrozen(SEEDED_SKU_ELIGIBLE_FULFILLMENT_METHODS)).toBe(true);
+    expect(Object.isFrozen(SEEDED_SKU_ELIGIBLE_FULFILLMENT_METHODS.merchandise)).toBe(true);
   });
 });

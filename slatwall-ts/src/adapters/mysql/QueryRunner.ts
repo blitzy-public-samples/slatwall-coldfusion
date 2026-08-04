@@ -545,7 +545,13 @@ function buildColumnLookup(
 /** The resolved table-name lookup, built once at module evaluation and never mutated. */
 const TABLE_NAME_LOOKUP: ReadonlyMap<string, PhysicalTableName> = buildTableNameLookup();
 
-/** The case-insensitive index of the eleven cross-domain read-only names —. */
+/**
+ * The case-insensitive index of the sixteen cross-domain names — fifteen read-only, plus the one
+ * cross-domain table this service writes. Counted rather than asserted: {@link TABLE_SCOPES} declares
+ * twenty-eight names and {@link PHYSICAL_TABLE_NAMES} carries twelve of them with a column map, so this
+ * map holds the remaining sixteen. Its membership is a consequence of the filter below, not of a scope
+ * test, which is why the write table is in it.
+ */
 const CROSS_DOMAIN_NAME_LOOKUP: ReadonlyMap<string, RegisteredTableName> = new Map(
   /*
    * Filtered by absence from the sibling map, not by scope, and the difference matters. Filtering on

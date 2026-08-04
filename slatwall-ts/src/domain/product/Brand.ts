@@ -30,7 +30,7 @@ import {
   type AuditPropertyName,
   type DeclaredPropertyNameSet,
   type EntityPropertyMetaData,
-  type ManagedEntity,
+  type AuditableManagedEntity,
 } from '../base/AuditableEntity';
 import type {
   ColumnPropertyDescriptor,
@@ -81,7 +81,7 @@ export type OutOfScopeAssociation = object;
  * brand.brandName = 'acme';
  * ```
  */
-export class Brand implements AuditableEntity, ManagedEntity {
+export class Brand implements AuditableEntity, AuditableManagedEntity {
   /* persistent properties — [model/entity/Brand.cfc:L51-L57] */
 
   /**

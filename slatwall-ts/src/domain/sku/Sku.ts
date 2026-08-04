@@ -27,7 +27,7 @@ import type {
   AuditableEntity,
   DeclaredPropertyNameSet,
   EntityPropertyMetaData,
-  ManagedEntity,
+  AuditableManagedEntity,
 } from '../base/AuditableEntity';
 import {
   AUDIT_PROPERTY_NAMES,
@@ -341,7 +341,7 @@ function stripDisallowedImageFileNameCharacters(value: string): string {
  *
  * @see model/entity/Sku.cfc — the sole origin.
  */
-export class Sku implements AuditableEntity, ManagedEntity {
+export class Sku implements AuditableEntity, AuditableManagedEntity {
   /* persistent properties — [model/entity/Sku.cfc:L52-L96], in legacy declaration order. */
 
   /** `skuID` — [model/entity/Sku.cfc:L52]. */

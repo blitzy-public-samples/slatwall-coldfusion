@@ -33,9 +33,23 @@
 // `test/support/` are not excluded by a pattern; they simply do not end in `.test.ts`, which is
 // why they hold no cases and need no ignore entry.
 //
-// Provenance labelling. Every declaration in every suite names itself `[TRACEABLE]` or
-// `[NET-NEW]`, and `verbose: true` below puts those labels in the run log so the ratio is
-// auditable from a transcript. README §12.1 holds the census.
+// Provenance labelling. Every declaration in every suite opens with its provenance — TRACEABLE or
+// NET-NEW — and `verbose: true` below puts those labels in the run log so the ratio is auditable from
+// a transcript. README §12.1 holds the census.
+//
+// Two spellings of the label are in use, and this note used to claim only the bracketed one, which
+// sent a reader grepping for a form that in one case does not occur at all. Measured across the
+// suites: `[NET-NEW]` occurs several hundred times, in about half the files; the bare `NET-NEW` is
+// the majority form; the bare `TRACEABLE` is the ONLY form the traceable label takes, so
+// `grep '\[TRACEABLE\]'` returns nothing anywhere. Both spellings appear inside single files.
+//
+// Neither the runner nor the census cares, which is why the divergence is recorded rather than
+// normalised across hundreds of titles: `test/regression/issues.test.ts`'s census strips a leading
+// run of `[`, `(`, `*`, `_` or whitespace from each title before testing the prefix, so a bracketed
+// and a bare label are the same label to it, and it fails the run if any declaration carries neither.
+// To find them yourself, match the label without assuming a bracket:
+//
+//     grep -rEc "\b(it|test)\(\s*.?\[?(TRACEABLE|NET-NEW)" test/
 
 const config = {
   // --- 4a. Program scope -------------------------------------------------------------

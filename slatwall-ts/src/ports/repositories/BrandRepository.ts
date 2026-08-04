@@ -9,7 +9,7 @@
  * requires to be declared explicitly — that is what this file is (AAP §0.4.1.6).
  */
 
-import type { ManagedEntity as EntitySideManagedEntity } from '../../domain/base/AuditableEntity';
+import type { AuditableManagedEntity } from '../../domain/base/AuditableEntity';
 import type { ManagedEntity } from '../../domain/base/populate';
 import type { Brand } from '../../domain/product/Brand';
 
@@ -22,7 +22,7 @@ export type ManagedBrand = ManagedEntity<Brand>;
  * Compile-time proof of the two facts this port depends on: the entity class satisfies the
  * entity-side managed contract, and a managed brand is still usable wherever a `brand` is expected.
  */
-type _BrandSatisfiesEntitySideContract = Brand extends EntitySideManagedEntity ? true : never;
+type _BrandSatisfiesEntitySideContract = Brand extends AuditableManagedEntity ? true : never;
 const _brandSatisfiesEntitySideContract: _BrandSatisfiesEntitySideContract = true;
 void _brandSatisfiesEntitySideContract;
 

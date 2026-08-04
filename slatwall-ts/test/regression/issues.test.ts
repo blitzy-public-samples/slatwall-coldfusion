@@ -1685,6 +1685,40 @@ describe('NET-NEW — the build produces a complete, self-resolving Lambda packa
     expect(existsSync(join(SUBTREE_ROOT, '.prettierrc.json'))).toBe(true);
   });
 
+  it('[NET-NEW] the preset the test script names LOADS through Node’s own CommonJS loader', () => {
+    /*
+     * The guarded half of the `--preset ./jest.config.ts` mechanism. The case above asserts the script
+     * still names the preset; this one asserts the preset still loads the way that naming depends on.
+     *
+     * A review recorded that the mechanism rests on Jest internals rather than a published contract:
+     * `--config package.json` takes the JSON branch, so the branch that would demand `ts-node` or
+     * `esbuild-register` is never entered, and `--preset ./jest.config.ts` then reaches the file through
+     * `require()`, where Node's CommonJS loader maps the unrecognised `.ts` extension to its `.js`
+     * handler. Neither loader is in AAP §0.5.2.2's frozen ten development packages, so neither may be
+     * added — which makes "it parses as plain JavaScript" a standing constraint on that file rather than
+     * an incidental property of it.
+     *
+     * `require` here is exactly the call Jest's `setupPreset` makes, so a TypeScript-only construct
+     * introduced into `jest.config.ts` — a type annotation, `satisfies`, an `import type`, an `enum` —
+     * fails HERE with the same `SyntaxError` the runner would raise, instead of taking the whole suite
+     * down with a message that names no cause. `typecheck` and `lint` cannot see this: both are perfectly
+     * happy with the syntax that breaks it.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const loaded: unknown = require(join(SUBTREE_ROOT, 'jest.config.ts'));
+
+    expect(typeof loaded).toBe('object');
+    expect(loaded).not.toBeNull();
+
+    /* And it is the configuration, not merely some object: the four settings the suite cannot run without. */
+    const preset = loaded as Record<string, unknown>;
+
+    expect(preset['rootDir']).toBe('.');
+    expect(preset['testEnvironment']).toBe('node');
+    expect(preset['collectCoverage']).toBe(true);
+    expect(preset['testMatch']).toStrictEqual(['<rootDir>/test/**/*.test.ts']);
+  });
+
   it('[NET-NEW] writes a production manifest carrying the exact runtime dependency set and nothing developmental', () => {
     const sourceManifest = JSON.parse(
       readFileSync(join(SUBTREE_ROOT, 'package.json'), 'utf8'),

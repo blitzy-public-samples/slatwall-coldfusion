@@ -209,8 +209,16 @@ export type DeclaredPropertyNameSet<TPropertyName extends string> = Readonly<
   Record<TPropertyName, true>
 >;
 
-/** The seven inherited members, as one explicit structural contract. */
-export interface ManagedEntity {
+/**
+ * The seven inherited members, as one explicit structural contract.
+ *
+ * Named `AuditableManagedEntity` rather than `ManagedEntity` because `../base/populate.ts` declares an
+ * unrelated `ManagedEntity<TEntity>` — a generic intersection composing the metadata and error surfaces
+ * onto an entity — and two different types under one name in sibling modules of this folder invited a
+ * future edit to import the wrong one. This is the entity-side contract an entity class *implements*;
+ * that one is the shape a repository *hands back*.
+ */
+export interface AuditableManagedEntity {
   /**
    * The entity's bare class name — [org/Hibachi/HibachiObject.cfc:L135-L137], which returns the last
    * dot-delimited segment of the fully qualified component name.
@@ -382,7 +390,7 @@ export function readValueByPropertyIdentifier(
  * The framework-default simple-representation property name —
  * [org/Hibachi/HibachiEntity.cfc:L74-L88].
  *
- * @param className - The entity's bare class name, from {@link ManagedEntity.getClassName}.
+ * @param className - The entity's bare class name, from {@link AuditableManagedEntity.getClassName}.
  * @param declaredProperties - The entity's declared property-name set.
  * @returns The name of the property whose value represents the entity.
  * @throws DomainError when no declared property satisfies the convention, reproducing [:L87].

@@ -16,7 +16,7 @@ import {
   type AuditPropertyName,
   type DeclaredPropertyNameSet,
   type EntityPropertyMetaData,
-  type ManagedEntity,
+  type AuditableManagedEntity,
 } from '../base/AuditableEntity';
 import type {
   ColumnPropertyDescriptor,
@@ -277,7 +277,7 @@ export interface ProductSubscriptionTermFinder {
  * product.urlTitle = 'nike-air-jorden';
  * ```
  */
-export class Product implements AuditableEntity, ManagedEntity {
+export class Product implements AuditableEntity, AuditableManagedEntity {
   /*
    * Persistent properties — simple columns, [model/entity/Product.cfc:L52-L59]
    * Rule 1 — the persistent data surface is public fields, named exactly as the legacy properties.

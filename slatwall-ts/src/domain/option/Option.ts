@@ -28,7 +28,7 @@ import type {
   AuditableEntity,
   DeclaredPropertyNameSet,
   EntityPropertyMetaData,
-  ManagedEntity,
+  AuditableManagedEntity,
 } from '../base/AuditableEntity';
 import type {
   ColumnPropertyDescriptor,
@@ -211,7 +211,7 @@ export interface SkuOptionOwner {
  */
 
 /** One selectable product option — the `SwOption` row, its parent group and its SKU links. */
-export class Option implements AuditableEntity, ManagedEntity {
+export class Option implements AuditableEntity, AuditableManagedEntity {
   /* persistent properties — [model/entity/Option.cfc:L52-L56] */
 
   /** The primary identifier. */

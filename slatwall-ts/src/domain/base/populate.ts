@@ -1302,7 +1302,12 @@ export interface EntityErrorSurface {
   hasError(errorName: string): boolean;
 }
 
-/** An entity plus the two framework surfaces {@link manageEntity} composes onto it. */
+/**
+ * An entity plus the two framework surfaces {@link manageEntity} composes onto it.
+ *
+ * Not to be confused with `AuditableManagedEntity` in the sibling `./AuditableEntity.ts`, which is the
+ * entity-side contract an entity class implements. This is the shape a repository hands back.
+ */
 export type ManagedEntity<TEntity> = TEntity & EntityMetadataSurface & EntityErrorSurface;
 
 /** Whether a declaration lists the name, narrowing it to a field name when it does. */
