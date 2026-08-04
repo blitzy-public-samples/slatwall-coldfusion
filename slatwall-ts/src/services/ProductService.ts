@@ -588,19 +588,23 @@ export type ProductProcessValidator = Pick<Validator, 'validate' | 'validateProc
  * of `model/entity/OptionGroup.cfc` are deliberately absent: the legacy entry cannot carry them, so adding
  * one would publish information this member never produced (S9).
  *
- * ⚠️ TODO(parity) A NAME-COLLAPSE DIVERGENCE — THE NAME IS THE IDENTITY. Because the legacy KEYS by name,
- * two groups sharing a name collapse to one entry and the LAST one wins. That is preserved exactly, and it
- * is a second reason no identifier is published: a collapsed entry would have to choose which group's
- * identifier to report, and there is no legacy answer to that question.
+ * ⚠️ TODO(parity) D25 — A NAME-COLLAPSE DIVERGENCE, AND THE NAME IS THE IDENTITY. Because the legacy KEYS
+ * by name, two groups sharing a name collapse to one entry and the LAST one wins. That is preserved
+ * exactly, and it is a second reason no identifier is published: a collapsed entry would have to choose
+ * which group's identifier to report, and there is no legacy answer to that question. `D25` is a CORRECTION
+ * ALIAS for this observation rather than a register entry — AAP §0.6.7 stays frozen at D1–D21, and
+ * `../ports/repositories/SkuRepository.ts` defines the five aliases the port carries and states both frozen
+ * bounds.
  *
- * ⚠️ KEY ORDER IS A TRANSLATION DECISION, RECORDED BY LOCATOR RATHER THAN NUMBERED. A CFML struct has no
+ * ⚠️ KEY ORDER IS A TRANSLATION DECISION, CARRIED UNDER THE M9 ALIAS FOR THE SAME READING. A CFML struct has no
  * specified iteration order, so the legacy's own key order is unspecified. A JavaScript object preserves
  * INSERTION order for string keys — except that keys which look like array indices sort numerically ahead
  * of the rest — so a catalogue whose option groups are named `"1"`, `"2"`, … would enumerate numerically
  * here. Neither order is the legacy's, because the legacy has none; the port emits FIRST-SEEN order for
  * every ordinary name and does not sort. Sorting would impose an order the legacy never had. This is the
- * same reading `../services/SkuService` records for the combination engine's struct traversal at
- * [model/service/SkuService.cfc:L82] and [:L106].
+ * same reading `../services/SkuService` records under the **M9** alias for the combination engine's struct
+ * traversal at [model/service/SkuService.cfc:L82] and [:L106] — one observation, one alias, cited here
+ * rather than restated as a second one.
  *
  * The record and each option list are `readonly`: this is a projection computed for display, never an
  * object written back.
@@ -1892,9 +1896,12 @@ export class ProductService {
    * Groups a product's selectable options by option-group name.
    *
    * ==============================================================================================
-   * TODO(parity) `model/service/ProductService.cfc:L70-L80`: THE LEGACY ANSWERS A NAME-KEYED STRUCT, AND
-   * SO DOES THE PORT
+   * TODO(parity) D25 [`model/service/ProductService.cfc:L70-L80`]: THE LEGACY ANSWERS A NAME-KEYED
+   * STRUCT, AND SO DOES THE PORT
    * ==============================================================================================
+   * `D25` is the CORRECTION ALIAS for this observation — see {@link FormattedOptionGroups} for its status
+   * and `../ports/repositories/SkuRepository.ts` for the closed alias set and the two frozen AAP ranges.
+   *
    * `:L71` initialises `var AvailableOptions = {}` — a CFML STRUCT — and `:L76` assigns into it with
    * `AvailableOptions[ productObjectGroups[i].getOptionGroupName() ] = …`, keyed by the option group's
    * NAME. `:L79` returns that struct. The declared return type is `any`, so TR-1 governs — "the target

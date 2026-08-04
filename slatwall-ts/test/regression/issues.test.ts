@@ -328,6 +328,7 @@ import type { MySqlRow } from '../../src/adapters/mysql/rowMappers';
 import type {
   CatalogBoundaries,
   CatalogStatements,
+  ProductSurfaceDependencies,
   SkuSurfaceDependencies,
 } from '../../src/config/container';
 
@@ -2214,19 +2215,25 @@ describe('NET-NEW — the build produces a complete, self-resolving Lambda packa
     BUILD_CASE_TIMEOUT_MS,
   );
 
-  it('[NET-NEW] F6 — the source manifest and the lockfile agree on the engines floor and the six scripts', () => {
+  it('[NET-NEW] CR-3 — the source manifest and the lockfile agree on the engines floor and the exact four scripts', () => {
     /*
-     * ⭐ THE PROJECT'S COMMAND CONTRACT AND ITS RUNTIME FLOOR, PINNED SO NEITHER CAN BE SILENTLY LOWERED.
-     * Review finding F6 reported both regressions together: `engines.node` had been returned to the
-     * `>=20.19.0` value AAP 0.5.3.1 DERIVES from `eslint@10.8.0`'s `^20.19.0`, and the `format:check` and
-     * `test:coverage` scripts had been deleted as "outside the frozen four" — which left two documented
-     * commands that did not exist and a floor below the version the whole toolchain was verified on.
+     * ⭐ THE PROJECT'S COMMAND CONTRACT AND ITS RUNTIME FLOOR, PINNED SO NEITHER CAN DRIFT.
+     *
+     * ⚠️ THIS CASE HAS BEEN WRITTEN BOTH WAYS, AND BOTH FINDINGS BELONG IN THE RECORD. Review finding F6
+     * reported two regressions together: `engines.node` had been lowered to the `>=20.19.0` value AAP
+     * 0.5.3.1 DERIVES from `eslint@10.8.0`'s `^20.19.0`, and the `format:check` and `test:coverage` scripts
+     * had been deleted as "outside the frozen four" — leaving two documented commands that did not exist.
+     * This case then asserted all six by name. Review finding **CR-3** adjudicated the script half the other
+     * way: AAP 0.4.1.2's `build` / `test` / `lint` / `typecheck` inventory is EXACT, so the two extras are
+     * withdrawn from the manifest and the documentation now names the direct `npx prettier --check .` and
+     * `npx jest … --coverage` commands instead. F6's other half stands untouched — the floor is still the
+     * verified `>=20.20.2`. The assertion below is the inventory as CR-3 requires it, so restoring either
+     * extra fails here rather than passing quietly.
      *
      * ⭐ THE DERIVED VALUE IS A LOWER BOUND ON WHAT THE GRAPH TOLERATES, NOT A CEILING ON WHAT THE PROJECT
      * MAY REQUIRE. Every version `>=20.20.2` admits also satisfies `^20.19.0`, so declaring the verified
      * version states a real constraint rather than inventing one, and `.nvmrc` pins that same version so an
-     * installer lands exactly where the toolchain was validated. AAP 0.4.1.2 says which scripts the manifest
-     * must carry; it does not close the set.
+     * installer lands exactly where the toolchain was validated.
      *
      * ⚠️ AND THE LOCKFILE'S ROOT ENTRY MUST AGREE, WHICH IS THE HALF A MANIFEST-ONLY ASSERTION MISSES.
      * `npm` writes `engines` into `packages[""]` as well, and a lockfile disagreeing with its manifest is
@@ -2244,21 +2251,29 @@ describe('NET-NEW — the build produces a complete, self-resolving Lambda packa
     expect(lockfile.packages?.['']?.engines).toStrictEqual(manifest.engines);
     expect(readFileSync(join(SUBTREE_ROOT, '.nvmrc'), 'utf8').trim()).toBe('20.20.2');
 
-    /* All six, by name, so a removal fails here rather than at a reader's shell prompt. */
+    /* ⛔ EXACTLY THE FOUR, BY NAME. `toStrictEqual` on the sorted key list is deliberately two-sided: a
+     * DELETION fails here rather than at a reader's shell prompt, and an ADDITION fails here rather than
+     * being noticed only by the next reviewer counting the inventory (CR-3). */
     expect(Object.keys(manifest.scripts ?? {}).sort()).toStrictEqual([
       'build',
-      'format:check',
       'lint',
       'test',
-      'test:coverage',
       'typecheck',
     ]);
     /* And each one invokes the tool the contract names, rather than merely existing. */
     expect(manifest.scripts?.['typecheck']).toBe('tsc --noEmit');
     expect(manifest.scripts?.['lint']).toBe('eslint .');
-    expect(manifest.scripts?.['format:check']).toBe('prettier --check .');
     expect(manifest.scripts?.['build']).toBe('node build/esbuild.mjs');
-    expect(manifest.scripts?.['test:coverage']).toContain('--coverage');
+    expect(manifest.scripts?.['test']).toContain('--preset ./jest.config.ts');
+
+    /* ⭐ AND THE TWO WITHDRAWN CAPABILITIES ARE STILL REACHABLE, WHICH IS WHY WITHDRAWING THEM COSTS
+     * NOTHING. Coverage collection is declared in the CONFIGURATION rather than in a script, so plain
+     * `npm test` reports it and the `--coverage` flag is redundant; formatting is a direct
+     * `npx prettier --check .` over the same `.prettierrc.json` and `.gitignore` the script used. Asserted
+     * rather than described, so a change that made the flag load-bearing would fail here. */
+    const jestConfig = readFileSync(join(SUBTREE_ROOT, 'jest.config.ts'), 'utf8');
+    expect(jestConfig).toContain('collectCoverage: true');
+    expect(existsSync(join(SUBTREE_ROOT, '.prettierrc.json'))).toBe(true);
   });
 
   it('[NET-NEW] writes a production manifest carrying the exact runtime dependency set and nothing developmental', () => {
@@ -7278,6 +7293,204 @@ describe('test/config/writeBoundaryRebuild.test.ts — the M5/M6/M7 write-bounda
         expect(() => dependencies.boundaries.accountContext.getCurrentAccount()).toThrow();
 
         await Promise.resolve();
+      });
+    }, 20000);
+
+    /* ---------------------------------------------------------------------------------------------
+     * CR-1 — THE PRODUCT HALF OF THE SAME QUESTION, THROUGH THE CONTAINER-WIRED PRODUCTION SEAM
+     * --------------------------------------------------------------------------------------------
+     * ⭐⭐ WHY THESE THREE CASES EXIST, AND WHY THEIR ABSENCE IS PART OF THE FINDING.
+     *
+     * Every case above drives the SKU repository, and the product half had no counterpart. Review finding
+     * CR-1 (MAJOR) reported the consequence: `MySqlProductPersistence` — the seam
+     * `composeProductWriteSurface` wires normal `SwProduct` and `SwProductType` writes through — invoked no
+     * lifecycle at all, so product writes persisted no audit stamp and product-type writes persisted a
+     * stale `productTypeIDPath` as well. Two things had to be wrong at once for that to happen, and only a
+     * case that crosses BOTH can hold them: the adapter has to call the hooks, and the composition root has
+     * to hand it the invocation's principal rather than the memoised fail-closed tier — which is the
+     * SEC-AUTH-03 property, restated for the collaborator that had been left out of it.
+     *
+     * ⛔ SO THESE GO THROUGH `buildProductBoundaryGraph` AND `ProductService`, NOT THROUGH THE ADAPTER. The
+     * adapter's own suite (`test/adapters/MySqlProductRepository.test.ts`) asserts the stamping in
+     * isolation. What it cannot see is which context the ROOT passes, and that was half the defect: an
+     * adapter that stamps correctly from a port the container never populates is still a seam that writes
+     * empty audit columns. Nothing below is doubled except the scope's executor.
+     *
+     * ⚠️ THE PATH TAKEN IS THE PRODUCT-TYPE SAVE PLUS AN EXISTING-PRODUCT SAVE, and that is a deliberate
+     * choice rather than a convenience. `ProductService.saveProduct` on a TRANSIENT product continues into
+     * `skuService.createSkus` and the default-image-file-name pass [`model/service/ProductService.cfc:L279`,
+     * `:L282`], which need a discriminator path and image settings this section supplies to nothing else;
+     * the product-type INSERT below exercises the insert arm of the same seam, and the two update arms
+     * exercise the other. No collaborator is stubbed to shorten a path.
+     *
+     * TEST PROVENANCE: NET-NEW (AAP §0.6.5.2).
+     * ------------------------------------------------------------------------------------------ */
+
+    /** The product surface's dependency set, over the one memoised SKU set these cases share. */
+    const productDependencies = (
+      dependencies: SkuSurfaceDependencies,
+    ): ProductSurfaceDependencies => ({
+      sku: dependencies,
+      /* SEC-DOS-03 — required on the product surface; generous, because these cases are about identity. */
+      urlTitleProbeBudget: GENEROUS_URL_TITLE_PROBE_BUDGET,
+    });
+
+    /** The value bound for one named column of a recorded statement — see the adapter suite's twin. */
+    const boundColumnValue = (
+      statement: RecordedStatement | undefined,
+      column: string,
+    ): unknown => {
+      if (statement === undefined) {
+        throw new Error(`expected a recorded statement to read '${column}' from`);
+      }
+
+      const insertColumns = /\(([^)]*)\) VALUES/.exec(statement.sql)?.[1];
+      const columns =
+        insertColumns === undefined
+          ? (/ SET (.*) WHERE /.exec(statement.sql)?.[1] ?? '')
+              .split(', ')
+              .map((assignment) => assignment.replace(' = ?', ''))
+          : insertColumns.split(', ');
+
+      const index = columns.indexOf(column);
+      if (index === -1) {
+        throw new Error(`the statement does not name '${column}': ${statement.sql}`);
+      }
+
+      return statement.params[index];
+    };
+
+    it('[NET-NEW] CR-1 — a PRODUCT-TYPE insert through the wired seam stamps the invocation account', async () => {
+      await withPoisonedPool(async ({ buildProductBoundaryGraph, dependencies }) => {
+        const executor = createRecordingExecutor();
+        const productService = buildProductBoundaryGraph(
+          productDependencies(dependencies),
+          { executor },
+          contextFor(INVOCATION_ACCOUNT_ID),
+        );
+
+        /* A transient child of a root parent. Both names are set because
+         * `model/validation/ProductType.json` requires `productTypeName` and `urlTitle` on save, and the
+         * uniqueness probe the second one carries answers "available" against the recorder. */
+        const parent = new ProductType();
+        parent.productTypeID = '444df2f7ea9c87e60051f3cd87b435a1';
+        const productType = new ProductType();
+        productType.productTypeName = 'Wired Merchandise';
+        productType.urlTitle = 'wired-merchandise';
+        productType.parentProductType = parent;
+
+        const saved = await productService.saveProductType(productType, {});
+        expect(saved.hasErrors()).toBe(false);
+
+        const insert = executor.statements.find((statement) =>
+          statement.sql.startsWith('INSERT INTO SwProductType'),
+        );
+
+        /* ⭐ THE AUDIT COLUMNS CARRY THE INVOCATION's ACCOUNT — the whole of CR-1 in one assertion, because
+         * before the fix both of these were `null` no matter who was authorised. */
+        expect(boundColumnValue(insert, 'createdByAccountID')).toBe(INVOCATION_ACCOUNT_ID);
+        expect(boundColumnValue(insert, 'modifiedByAccountID')).toBe(INVOCATION_ACCOUNT_ID);
+        expect(boundColumnValue(insert, 'createdDateTime')).toBeInstanceOf(Date);
+        expect(boundColumnValue(insert, 'modifiedDateTime')).toBeInstanceOf(Date);
+        /* And the ancestry the hook rebuilt from the parent chain, rather than the nothing it held. */
+        expect(boundColumnValue(insert, 'productTypeIDPath')).toBe(
+          `444df2f7ea9c87e60051f3cd87b435a1,${saved.productTypeID}`,
+        );
+
+        const written = executor.statements.map((statement) => statement.params).flat();
+        expect(written).not.toContain(OTHER_ACCOUNT_ID);
+      });
+    }, 20000);
+
+    it('[NET-NEW] CR-1 — a RE-PARENTED product type persists its new ancestry, not the stale path', async () => {
+      await withPoisonedPool(async ({ buildProductBoundaryGraph, dependencies }) => {
+        const executor = createRecordingExecutor();
+        const productService = buildProductBoundaryGraph(
+          productDependencies(dependencies),
+          { executor },
+          contextFor(INVOCATION_ACCOUNT_ID),
+        );
+
+        /* A persisted type whose held path names its OLD parent, now pointed at a new one. Before the fix
+         * the stale string was persisted verbatim — and `ProductType.getBaseProductType` reads `listFirst`
+         * of this column, so the row's discriminator silently stayed with the old ancestor. */
+        const newParent = new ProductType();
+        newParent.productTypeID = '444df2f9c7deaa1582e021e894c0e299';
+        const productType = new ProductType();
+        productType.productTypeID = 'bbbbbbbb0000000000000000000000c1';
+        productType.productTypeName = 'Re-parented';
+        productType.urlTitle = 're-parented';
+        productType.productTypeIDPath = `444df313ec53a08c32d8ae434af5819a,${productType.productTypeID}`;
+        productType.parentProductType = newParent;
+
+        await productService.saveProductType(productType, {});
+
+        const update = executor.statements.find((statement) =>
+          statement.sql.startsWith('UPDATE SwProductType SET'),
+        );
+
+        expect(boundColumnValue(update, 'productTypeIDPath')).toBe(
+          `444df2f9c7deaa1582e021e894c0e299,bbbbbbbb0000000000000000000000c1`,
+        );
+        expect(boundColumnValue(update, 'parentProductTypeID')).toBe(
+          '444df2f9c7deaa1582e021e894c0e299',
+        );
+        /* The update arm of the audit block: the modified pair moves, and it names this invocation. */
+        expect(boundColumnValue(update, 'modifiedByAccountID')).toBe(INVOCATION_ACCOUNT_ID);
+        expect(boundColumnValue(update, 'modifiedDateTime')).toBeInstanceOf(Date);
+      });
+    }, 20000);
+
+    it('[NET-NEW] CR-1 — a PRODUCT update through the wired seam stamps the invocation account', async () => {
+      await withPoisonedPool(async ({ buildProductBoundaryGraph, dependencies }) => {
+        const executor = createRecordingExecutor();
+        const productService = buildProductBoundaryGraph(
+          productDependencies(dependencies),
+          { executor },
+          contextFor(INVOCATION_ACCOUNT_ID),
+        );
+
+        /* `model/validation/Product.json` requires `price`, `productName`, `productCode`, `productType` and
+         * `urlTitle` on save, and `price` is NON-PERSISTENT — it delegates to the default SKU. So the
+         * product needs a default SKU delegate, and it must be the IDENTIFIER-CARRYING one the composition
+         * root mints, because `readDefaultSkuIdOrRefuse` refuses any other. */
+        const defaultSku = new Sku();
+        defaultSku.skuID = 'cccccccc0000000000000000000000d4';
+        defaultSku.skuCode = 'CR-1-D4';
+        defaultSku.price = toExactDecimal('19.99');
+
+        const productType = new ProductType();
+        productType.productTypeID = '444df2f7ea9c87e60051f3cd87b435a1';
+
+        const product = new Product();
+        product.productID = 'dddddddd0000000000000000000000e5';
+        product.productName = 'Wired Product';
+        product.productCode = 'CR-1-E5';
+        product.urlTitle = 'wired-product';
+        product.productType = productType;
+        product.defaultSku = dependencies.bindDefaultSkuDelegate(defaultSku);
+
+        /* An earlier actor's first-write stamp, which the update arm must leave exactly alone. */
+        const firstWrite = new Date('2020-01-02T03:04:05.000Z');
+        product.createdDateTime = firstWrite;
+        product.createdByAccount = OTHER_ACCOUNT_ID;
+        product.modifiedDateTime = firstWrite;
+        product.modifiedByAccount = OTHER_ACCOUNT_ID;
+
+        const saved = await productService.saveProduct(product, {});
+        expect(saved.hasErrors()).toBe(false);
+
+        const update = executor.statements.find((statement) =>
+          statement.sql.startsWith('UPDATE SwProduct SET'),
+        );
+
+        expect(boundColumnValue(update, 'modifiedByAccountID')).toBe(INVOCATION_ACCOUNT_ID);
+        expect(boundColumnValue(update, 'modifiedDateTime')).not.toBe(firstWrite);
+        /* ⛔ AND THE CREATED PAIR IS UNTOUCHED, INCLUDING THE OTHER ACCOUNT'S NAME ON IT. `preUpdate` writes
+         * neither created member [org/Hibachi/HibachiEntity.cfc:L657-L681], so a fix that stamped all four
+         * on every write would rewrite history and would fail here. */
+        expect(boundColumnValue(update, 'createdDateTime')).toBe(firstWrite);
+        expect(boundColumnValue(update, 'createdByAccountID')).toBe(OTHER_ACCOUNT_ID);
       });
     }, 20000);
 

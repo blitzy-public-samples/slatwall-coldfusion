@@ -1865,7 +1865,7 @@ export class SkuService {
    * trade a real build failure for zero behavioural gain. Its omission is recorded rather than silent
    * (S7).
    *
-   * TODO(parity) CFML STRUCT ITERATION IS UNORDERED; THIS IS NOT. [:L82] and [:L106] both traverse the
+   * TODO(parity) M9 — CFML STRUCT ITERATION IS UNORDERED; THIS IS NOT. [:L82] and [:L106] both traverse the
    * `optionGroups` struct with `for(var key in …)`, and CFML specifies no order for a plain struct, so
    * the legacy's own combination sequence is unspecified. A `Map` preserves FIRST-SEEN INSERTION order,
    * which is the order the selected-option list itself establishes at [:L73-L79]. That choice is
@@ -1873,6 +1873,12 @@ export class SkuService {
    * the most defensible reading of an unspecified legacy order. The group identifiers are NOT sorted —
    * sorting would impose an order the legacy never had and would silently change which SKU becomes the
    * default.
+   *
+   * ⭐ `M9` IS A CORRECTION ALIAS AND THIS MEMBER IS ITS HOME. AAP §0.6.6 stays frozen at M1–M8 and is not
+   * extended; the alias exists so this observation — a defined order where the legacy had none, which
+   * through the read-back loop (M6) also fixes the order uniqueness validation observes siblings in — can
+   * be named in review correspondence and matched back to the code. `src/ports/repositories/SkuRepository.ts`
+   * defines the five aliases the port carries and states both frozen bounds; no sixth exists.
    *
    * TEST PROVENANCE: NET-NEW.
    */
@@ -2927,12 +2933,14 @@ export class SkuService {
    * neither recorded on the entity nor raised. AAP §0.8.2 Guideline 4 protects BUSINESS LOGIC from
    * enhancement, and no rule, branch, write, query or outcome moves here.
    *
-   * ⚠️ TODO(parity) [model/service/SkuService.cfc:L213-L217] — THE LEGACY BODY DEPARTS FROM ITS OWN
+   * ⚠️ TODO(parity) D24 [model/service/SkuService.cfc:L213-L217] — THE LEGACY BODY DEPARTS FROM ITS OWN
    * FRAMEWORK'S STATED CONVENTION, AND THE PORT CARRIES THAT DEPARTURE. The convention at
    * [org/Hibachi/HibachiService.cfc:L117] is that "all process methods should return an entity"; this body
    * returns a verdict instead. That is an inconsistency inside the LEGACY, not one this port introduces,
-   * and it is annotated BY LOCATOR rather than repaired (AAP §0.6.7 preserve-and-annotate). No register
-   * identifier is minted for it — AAP §0.6.7 is frozen at D1–D21.
+   * and it is annotated BY LOCATOR rather than repaired (AAP §0.6.7 preserve-and-annotate). `D24` is a
+   * CORRECTION ALIAS for that observation and not a register entry: AAP §0.6.7 stays frozen at D1–D21, and
+   * `src/ports/repositories/SkuRepository.ts` defines the five aliases the port carries — D22–D25 and M9 —
+   * with nothing minted beyond them.
    *
    * ⚠️ THE FRAMEWORK DISPATCHER CANNOT REACH THIS MEMBER ANYWAY, which is why the convention's pull is
    * weak here. [org/Hibachi/HibachiService.cfc:L114] composes

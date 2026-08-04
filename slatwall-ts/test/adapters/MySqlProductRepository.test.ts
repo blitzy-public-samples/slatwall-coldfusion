@@ -88,7 +88,7 @@ import type { UnitOfWork } from '../../src/adapters/mysql/UnitOfWork';
 import { Product, PRODUCT_PROPERTY_DESCRIPTORS } from '../../src/domain/product/Product';
 import type { ProductPropertyName } from '../../src/domain/product/Product';
 import type { ProductDefaultSkuDelegate } from '../../src/domain/product/Product';
-import type { AccountContextPort } from '../../src/ports/AccountContextPort';
+import type { AccountContextPort, AccountReference } from '../../src/ports/AccountContextPort';
 import type { SettingName } from '../../src/ports/SettingResolverPort';
 import type {
   ProductImportRedirectHop,
@@ -111,6 +111,7 @@ import {
   createUniquePropertyDouble,
   createUnitOfWorkDouble,
   createUrlTitleAvailabilityDouble,
+  newAccount,
   persistedAdminAccount,
   physicalID,
   sqlAffectedRows,
@@ -6717,15 +6718,29 @@ function makeDefaultSkuIdReader(): {
   };
 }
 
-/** The adapter under test, with everything it needs recorded. */
+/**
+ * The adapter under test, with everything it needs recorded.
+ *
+ * ⭐ THE FOURTH COLLABORATOR IS THE PRINCIPAL — REVIEW FINDING CR-1. The adapter now invokes the ORM
+ * lifecycle the flush used to invoke, so it takes the same `AccountContextPort` its sibling adapters take.
+ * The double is built HERE rather than per case, and both it and the account it names are published, so a
+ * case can assert which identity reached a column without constructing anything.
+ *
+ * @param rowsByTable the rows the executor answers, by table
+ * @param affectedRows the count `executeMutation` reports
+ * @param account the acting principal; a persisted administrative account by default, which is the only
+ *   kind the legacy audit gates attribute a write to
+ */
 function makeAdapter(
   rowsByTable: Readonly<Record<string, readonly MySqlRow[]>> = {},
   affectedRows = 1,
+  account: AccountReference = persistedAdminAccount(),
 ): {
   readonly adapter: MySqlProductPersistence;
   readonly journal: PersistenceJournal;
   readonly cleanup: ReturnType<typeof makeCleanup>;
   readonly defaultSkuIds: ReturnType<typeof makeDefaultSkuIdReader>;
+  readonly account: AccountReference;
 } {
   const { executor, journal } = makePersistenceExecutor(rowsByTable, affectedRows);
   const cleanup = makeCleanup();
@@ -6735,7 +6750,13 @@ function makeAdapter(
     journal,
     cleanup,
     defaultSkuIds,
-    adapter: new MySqlProductPersistence(executor, cleanup.cleanup, defaultSkuIds.read),
+    account,
+    adapter: new MySqlProductPersistence(
+      executor,
+      cleanup.cleanup,
+      defaultSkuIds.read,
+      createAccountContextDouble(account).accountContext,
+    ),
   };
 }
 
@@ -6778,6 +6799,42 @@ function savedProductType(): ProductType {
 /** Every statement whose text matches, in journal order. */
 function persistenceMatching(journal: PersistenceJournal, pattern: RegExp): readonly Statement[] {
   return journal.statements.filter((statement) => pattern.test(statement.sql));
+}
+
+/**
+ * The value bound for one NAMED column, located from the statement's own text.
+ *
+ * ⭐ WHY BY NAME RATHER THAN BY INDEX — REVIEW FINDING CR-1. The lifecycle cases below assert four audit
+ * columns whose positions sit at the far end of a nineteen-column whitelist, and a positional literal there
+ * says nothing about which column it means and silently starts asserting the neighbour if the whitelist ever
+ * gains a member. Reading the position out of the statement makes each assertion name its column, and it
+ * covers both arms: an insert names its columns in a parenthesised list, an update names them in its `SET`
+ * assignments, and the two orders are the same whitelist either way.
+ *
+ * @param statement the recorded statement, or `undefined` when the journal held none
+ * @param column the column whose bound value is wanted
+ * @returns the bound value
+ * @throws when the statement is absent or does not name the column, so a silent `undefined` cannot pass
+ */
+function boundValueFor(statement: Statement | undefined, column: string): unknown {
+  if (statement === undefined) {
+    throw new Error(`expected a recorded statement to read '${column}' from`);
+  }
+
+  const insertColumnList = /\(([^)]*)\) VALUES/.exec(statement.sql)?.[1];
+  const columns =
+    insertColumnList === undefined
+      ? (/ SET (.*) WHERE /.exec(statement.sql)?.[1] ?? '')
+          .split(', ')
+          .map((assignment) => assignment.replace(' = ?', ''))
+      : insertColumnList.split(', ');
+
+  const index = columns.indexOf(column);
+  if (index === -1) {
+    throw new Error(`the statement does not name '${column}': ${statement.sql}`);
+  }
+
+  return statement.params[index];
 }
 
 /* =================================================================================================
@@ -6873,6 +6930,100 @@ describe('MySqlProductPersistence — the SwProduct write path (DATA-03)', () =>
     expect(updates[0]?.params[19]).toBe(PERSISTENCE_ID.product);
   });
 
+  /* -----------------------------------------------------------------------------------------------
+   * CR-1 — THE ORM LIFECYCLE THIS SEAM OWNS
+   * ----------------------------------------------------------------------------------------------
+   * ⭐⭐ WHY THIS GROUP EXISTS, AND WHAT IT PINS THAT NOTHING ELSE DID.
+   *
+   * Review finding CR-1 (MAJOR) reported that this class — the one `src/config/container.ts` wires normal
+   * product and product-type writes through — wrote the audit columns "exactly as currently held" and
+   * invoked no lifecycle at all, while its own doc block claimed `Product.preInsert`/`preUpdate` performed
+   * the stamping. Those two members do not exist on `Product` and never did, so the stamping happened
+   * NOWHERE and every normal product write persisted missing or stale `created*` / `modified*` data.
+   *
+   * ⛔ AND NOTHING FAILED. No compile error, no lint error, no runtime error and no failing case: the row
+   * was written, just with empty audit columns. That is exactly why these assertions are about the VALUE
+   * bound to each audit column rather than about the shape of the statement.
+   *
+   * Hibernate fired the hooks during the flush the framework triggered at request end; a stateless
+   * invocation has no session and no flush (M5), so a write seam must call them — the requirement
+   * `src/domain/product/ProductType.ts` records on its own two hooks.
+   *
+   * TEST PROVENANCE: NET-NEW (AAP §0.6.5.2 — no legacy `ProductServiceTest` or DAO test exists).
+   * -------------------------------------------------------------------------------------------- */
+
+  it('NET-NEW — CR-1: the INSERT stamps the audit block from the acting principal, taking ONE instant', async () => {
+    const { adapter, journal, account } = makeAdapter();
+    const product = new Product();
+    product.productName = 'Audited On Insert';
+
+    await adapter.saveProduct(product);
+
+    /* `model/entity/Product.cfc` does NOT override the hooks, so the framework block at
+     * `org/Hibachi/HibachiEntity.cfc:L598-L649` is the whole behaviour: both timestamps take the SAME
+     * instant read once at `:L609`, and both account columns are written for a persisted administrative
+     * actor. */
+    expect(product.createdDateTime).toBeInstanceOf(Date);
+    expect(product.modifiedDateTime).toBeInstanceOf(Date);
+    expect(product.createdDateTime?.getTime()).toBe(product.modifiedDateTime?.getTime());
+    expect(product.createdByAccount).toBe(account.accountID);
+    expect(product.modifiedByAccount).toBe(account.accountID);
+
+    /* ⭐ AND THE STAMP REACHED THE STATEMENT, WHICH IS THE HALF AN ENTITY-ONLY ASSERTION MISSES. The order
+     * is fixed — stamp first, collect second — so a member that stamped afterwards would leave these four
+     * bindings null while the entity above looked perfectly correct. */
+    const insert = persistenceMatching(journal, /^INSERT INTO SwProduct/)[0];
+    expect(boundValueFor(insert, 'createdDateTime')).toBe(product.createdDateTime);
+    expect(boundValueFor(insert, 'modifiedDateTime')).toBe(product.modifiedDateTime);
+    expect(boundValueFor(insert, 'createdByAccountID')).toBe(account.accountID);
+    expect(boundValueFor(insert, 'modifiedByAccountID')).toBe(account.accountID);
+  });
+
+  it('NET-NEW — CR-1: the UPDATE moves only the modified pair and never rewrites the created pair', async () => {
+    const { adapter, journal, account } = makeAdapter();
+    const product = savedProduct();
+
+    /* The state a hydrated row arrives in: a first-write stamp naming a DIFFERENT actor, which
+     * `org/Hibachi/HibachiEntity.cfc:L657-L681` leaves alone because it writes neither created member. */
+    const firstWrite = new Date('2019-03-04T05:06:07.000Z');
+    product.createdDateTime = firstWrite;
+    product.createdByAccount = 'aaaaaaaa00000000000000000000ff01';
+    product.modifiedDateTime = firstWrite;
+    product.modifiedByAccount = 'aaaaaaaa00000000000000000000ff01';
+
+    await adapter.saveProduct(product);
+
+    expect(product.createdDateTime).toBe(firstWrite);
+    expect(product.createdByAccount).toBe('aaaaaaaa00000000000000000000ff01');
+    expect(product.modifiedDateTime).not.toBe(firstWrite);
+    expect(product.modifiedByAccount).toBe(account.accountID);
+
+    const update = persistenceMatching(journal, /^UPDATE SwProduct SET/)[0];
+    expect(boundValueFor(update, 'createdDateTime')).toBe(firstWrite);
+    expect(boundValueFor(update, 'createdByAccountID')).toBe('aaaaaaaa00000000000000000000ff01');
+    expect(boundValueFor(update, 'modifiedDateTime')).toBe(product.modifiedDateTime);
+    expect(boundValueFor(update, 'modifiedByAccountID')).toBe(account.accountID);
+  });
+
+  it('NET-NEW — CR-1: a not-logged-in write still stamps both timestamps and writes no account', async () => {
+    /* The legacy gates are GATE 2 (persisted) and GATE 3 (administrative) at
+     * `org/Hibachi/HibachiEntity.cfc:L627-L635`, and `newAccount()` fails the first of them — which is
+     * exactly the legacy's not-logged-in state, since `getLoggedInFlag()` is `!getAccount().isNew()`
+     * [org/Hibachi/HibachiScope.cfc:L40-L45]. Such a request stamped the timestamps and left both account
+     * foreign keys unwritten, and no system account is substituted for one (S9). */
+    const { adapter, journal } = makeAdapter({}, 1, newAccount());
+    const product = new Product();
+    product.productName = 'Anonymous Insert';
+
+    await adapter.saveProduct(product);
+
+    const insert = persistenceMatching(journal, /^INSERT INTO SwProduct/)[0];
+    expect(boundValueFor(insert, 'createdDateTime')).toBeInstanceOf(Date);
+    expect(boundValueFor(insert, 'modifiedDateTime')).toBeInstanceOf(Date);
+    expect(boundValueFor(insert, 'createdByAccountID')).toBeNull();
+    expect(boundValueFor(insert, 'modifiedByAccountID')).toBeNull();
+  });
+
   it('NET-NEW — the update path does NOT read the affected-row count', async () => {
     // Measured against MySQL 8.4.11 through mysql2 3.23.2: re-saving unchanged data reports 1 with
     // `CLIENT_FOUND_ROWS` and 0 without, and `src/config/database.ts` pins no capability flags. So a
@@ -6956,18 +7107,97 @@ describe('MySqlProductPersistence — the SwProductType write path (DATA-03)', (
     expect(update?.params[13]).toBe(PERSISTENCE_ID.productType);
   });
 
-  it('NET-NEW — productTypeIDPath is written as held and is NOT derived at this boundary', async () => {
-    // `model/entity/ProductType.cfc:L53` declares it a plain persistent column and
-    // `model/service/ProductService.cfc:L294-L310` never recomputes it on save. Deriving it here
-    // would add behaviour the legacy save path does not have (AAP §0.7.3 S9).
+  /* -----------------------------------------------------------------------------------------------
+   * CR-1 — THE PRODUCT-TYPE LIFECYCLE, WHICH IS THE PATH **AND** THE AUDIT BLOCK
+   * ----------------------------------------------------------------------------------------------
+   * ⛔ THE CASE THAT STOOD HERE ASSERTED THE DEFECT. It was titled "productTypeIDPath is written as held and
+   * is NOT derived at this boundary" and it reasoned that `model/service/ProductService.cfc:L294-L310` never
+   * recomputes the path on save. That is true of the SERVICE and irrelevant to the question:
+   * `model/entity/ProductType.cfc:L305-L313` overrides BOTH ORM hooks and each one rebuilds
+   * `productTypeIDPath` from the parent chain before delegating to the framework audit block, so the legacy
+   * derivation lived in the FLUSH. Review finding CR-1 reported that this seam never invoked it, and the old
+   * case positively ratified that omission — which is why it is replaced rather than extended.
+   *
+   * The case also passed for a reason worth naming, because it is what made the defect invisible: the
+   * fixture's held path and the rebuilt path are the SAME STRING for a child whose parent is resolved and
+   * itself a root. Only a RE-PARENTED type distinguishes the two, so that is what the first case below does.
+   * -------------------------------------------------------------------------------------------- */
+
+  it('NET-NEW — CR-1: the hook REBUILDS productTypeIDPath, so a re-parented type persists its NEW ancestry', async () => {
     const { adapter, journal } = makeAdapter();
     const productType = savedProductType();
-    const held = productType.productTypeIDPath;
+    const staleHeldPath = productType.productTypeIDPath;
+
+    /* The re-parenting a caller performs: a different parent, itself a root. `:L306`/`:L311` walk
+     * `parentProductType` to the root, so the rebuilt path is `<newParent>,<self>`. */
+    const newParent = new ProductType();
+    newParent.productTypeID = PERSISTENCE_ID.brand;
+    productType.parentProductType = newParent;
 
     await adapter.saveProductType(productType);
 
-    expect(productType.productTypeIDPath).toBe(held);
-    expect(persistenceMatching(journal, /^UPDATE SwProductType SET/)[0]?.params[0]).toBe(held);
+    const rebuilt = `${PERSISTENCE_ID.brand},${PERSISTENCE_ID.productType}`;
+    expect(productType.productTypeIDPath).toBe(rebuilt);
+    expect(productType.productTypeIDPath).not.toBe(staleHeldPath);
+    /* ⭐ AND THE REBUILT VALUE IS WHAT THE STATEMENT CARRIES. `ProductType.getBaseProductType` reads
+     * `listFirst` of this column, so persisting the stale path would silently keep the old discriminator. */
+    expect(
+      boundValueFor(
+        persistenceMatching(journal, /^UPDATE SwProductType SET/)[0],
+        'productTypeIDPath',
+      ),
+    ).toBe(rebuilt);
+  });
+
+  it('NET-NEW — CR-1: a transient root gets its own identifier as the path, which is what the seeds hold', async () => {
+    /* `config/dbdata/SlatwallProductType.xml.cfm:L13-L15` gives each of the three seeded discriminators a
+     * `productTypeIDPath` equal to its own identifier. A transient type with no parent rebuilds to exactly
+     * that, where before this seam bound `NULL` — a row whose discriminator could not be read at all. */
+    const { adapter, journal } = makeAdapter();
+    const productType = new ProductType();
+    productType.productTypeName = 'Merchandise';
+
+    await adapter.saveProductType(productType);
+
+    const insert = persistenceMatching(journal, /^INSERT INTO SwProductType/)[0];
+    expect(productType.productTypeIDPath).toBe(productType.productTypeID);
+    expect(boundValueFor(insert, 'productTypeIDPath')).toBe(productType.productTypeID);
+    expect(boundValueFor(insert, 'productTypeIDPath')).not.toBeNull();
+  });
+
+  it('NET-NEW — CR-1: the INSERT stamps the audit block from the acting principal, taking ONE instant', async () => {
+    const { adapter, journal, account } = makeAdapter();
+    const productType = new ProductType();
+    productType.productTypeName = 'Merchandise';
+
+    await adapter.saveProductType(productType);
+
+    /* `:L307` reaches `super.preInsert()`, whose port is `applyPreInsertAudit` — so a product type receives
+     * the same framework block a product does, in addition to the path rebuild above it. */
+    expect(productType.createdDateTime?.getTime()).toBe(productType.modifiedDateTime?.getTime());
+
+    const insert = persistenceMatching(journal, /^INSERT INTO SwProductType/)[0];
+    expect(boundValueFor(insert, 'createdDateTime')).toBeInstanceOf(Date);
+    expect(boundValueFor(insert, 'createdByAccountID')).toBe(account.accountID);
+    expect(boundValueFor(insert, 'modifiedByAccountID')).toBe(account.accountID);
+  });
+
+  it('NET-NEW — CR-1: the UPDATE moves only the modified pair and never rewrites the created pair', async () => {
+    const { adapter, journal, account } = makeAdapter();
+    const productType = savedProductType();
+    const firstWrite = new Date('2018-07-08T09:10:11.000Z');
+    productType.createdDateTime = firstWrite;
+    productType.createdByAccount = 'aaaaaaaa00000000000000000000ff02';
+    productType.modifiedDateTime = firstWrite;
+    productType.modifiedByAccount = 'aaaaaaaa00000000000000000000ff02';
+
+    await adapter.saveProductType(productType);
+
+    const update = persistenceMatching(journal, /^UPDATE SwProductType SET/)[0];
+    expect(boundValueFor(update, 'createdDateTime')).toBe(firstWrite);
+    expect(boundValueFor(update, 'createdByAccountID')).toBe('aaaaaaaa00000000000000000000ff02');
+    expect(boundValueFor(update, 'modifiedDateTime')).not.toBe(firstWrite);
+    expect(boundValueFor(update, 'modifiedByAccountID')).toBe(account.accountID);
   });
 });
 
@@ -7441,6 +7671,9 @@ describe('F8 — the Product delete guard resolves against a live transaction-ex
       executor,
       makeCleanup().cleanup,
       makeDefaultSkuIdReader().read,
+      /* CR-1 — the adapter's fourth collaborator. This block is about the DELETE guard, so the identity
+       * only has to be resolvable; the stamping itself is asserted by the write-path cases above. */
+      createAccountContextDouble().accountContext,
     );
 
     /* ⭐ THE CONTAINER'S CLOSURE, VERBATIM. `src/config/container.ts` builds this from

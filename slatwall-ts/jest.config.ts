@@ -304,17 +304,19 @@ const config = {
 
   // --- 4f. Coverage: collected, deliberately NOT gated -------------------------------
   // Collection is switched on in the CONFIGURATION rather than left to a `--coverage`
-  // flag, so the signal is produced by every run and cannot be lost by a script that forgot
-  // to ask for it. `package.json` also declares a `test:coverage` script that passes the flag
-  // explicitly, so the intent is addressable by name as well as always-on — the two are
-  // deliberately redundant rather than alternatives.
+  // flag, so the signal is produced by every run and cannot be lost by a script, a flag or a
+  // CI invocation that forgot to ask for it. Plain `npm test` therefore reports coverage.
   //
-  // ⚠️ THAT SCRIPT WAS REMOVED FOR ONE REVISION AND REVIEW FINDING F6 RESTORED IT, ALONG WITH
-  // `format:check`. The removal read AAP 0.4.1.2's `build`/`test`/`lint`/`typecheck` list as a
-  // CLOSED set and called a fifth script "outside the frozen four". That section declares which
-  // scripts the manifest must carry; it does not forbid others, and the project's verified
-  // command contract names all six — so removing two left two documented commands that did not
-  // exist. Collection stays declared here regardless, which is what makes the pair costless.
+  // ⚠️ THE MANIFEST CARRIES NO COVERAGE SCRIPT, AND THAT IS SETTLED RATHER THAN OPEN. A
+  // `test:coverage` wrapper existed for several revisions; review finding F6 restored it once
+  // after a removal, on the reading that AAP 0.4.1.2 names the scripts the manifest must carry
+  // without closing the set, and review finding CR-3 then adjudicated that reading the other
+  // way: the prescribed inventory is `build`, `test`, `lint`, `typecheck` and it is EXACT. The
+  // wrapper is withdrawn for good, and it costs nothing, precisely because collection is
+  // declared HERE — the flag was always redundant with this line. A reader who wants the report
+  // named explicitly runs
+  //   npx jest --ci --config package.json --preset ./jest.config.ts --coverage
+  // which README section 3 documents as a direct command.
   // Output goes to coverage/,
   // which .gitignore already excludes — and Prettier 3 honours .gitignore, so the same
   // single entry covers the formatter too, with no separate .prettierignore to keep in

@@ -144,7 +144,7 @@
  * instance of it to carry — which is why the naming note above is a plain warning and deliberately
  * NOT a carry-over annotation. Both numbers are placed by the canonical register statement: the
  * register is stated canonically, and only once, in the header of
- * `src/ports/repositories/SkuRepository.ts` (BOTH FROZEN AT THE AAP's OWN BOUNDS — AAP 0.6.7's D1-D21 and AAP 0.6.6's M1-M8. Nothing in this port mints an identifier beyond either range; a further source observation is recorded by its `path:Lnnn` locator instead).
+ * `src/ports/repositories/SkuRepository.ts` (BOTH FROZEN AT THE AAP's OWN BOUNDS — AAP 0.6.7's D1-D21 and AAP 0.6.6's M1-M8, over which the port carries exactly five CORRECTION ALIASES for observations those registers do not number: D22-D25 and M9. Nothing in this port mints a sixth; a further source observation is recorded by its `path:Lnnn` locator instead).
  *
  * What IS annotated below, each with its locator: the two `get()` behaviours deliberately not
  * reproduced (`org/Hibachi/HibachiDAO.cfc:L24` and `:L19`), the availability polarity

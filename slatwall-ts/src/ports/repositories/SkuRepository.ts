@@ -130,51 +130,83 @@
  * statements do not receive. The conclusion for implementers is unchanged and must be carried:
  * never "fix" mapping-layer entity names to physical ones, and never assume a logical name works in
  * a native statement. Which convention each member's statement uses is stated on that member. The
- * divergence is annotated HERE, by its locator, and NO register identifier is minted for it; the two
- * FROZEN register bounds are stated ONCE, in the block immediately below.
+ * divergence is annotated HERE, by its locator, and carries the CORRECTION ALIAS **D22** so the code and
+ * the review correspondence that named it can be reconciled; the two FROZEN register bounds are stated
+ * ONCE, in the block immediately below, and neither is extended by an alias.
  *
  * =================================================================================================
- * ⚠️ THE TWO REGISTERS ARE THE AAP's, THEY ARE FROZEN, AND THIS PORT MINTS NO IDENTIFIER OF ITS OWN
+ * ⚠️ THE TWO REGISTERS ARE THE AAP's AND THEY ARE FROZEN; THE FIVE ALIASES BELOW ARE CORRECTIONS, NOT
+ * EXTENSIONS
  * =================================================================================================
  * AAP §0.6.7 IS AUTHORITATIVE AND FROZEN AT **D1–D21** — twenty-one entries: three literal source
  * TODOs (D8, D20, D21) plus eighteen defects surfaced during analysis. AAP §0.6.6 IS AUTHORITATIVE AND
  * FROZEN AT **M1–M8**. No file in this port may amend or extend either range, and none does.
  *
- * ⛔ AN EARLIER REVISION OF THIS BLOCK MINTED FOUR FURTHER DEFECT NUMBERS AND ONE FURTHER MISMATCH
- * NUMBER and declared a "live numbering" running past those bounds. That was governance the AAP does not
- * grant: §0.1.2.1 says the plan is "the FROZEN, agreed-upon source of truth — align code to it; never
- * edit, weaken, or reinterpret it". Every one of those five numbers is WITHDRAWN from the subtree, and no
- * file restates a live bound other than the two frozen ones above.
+ * ⭐ THIS FILE IS THE ONE INDEX FOR THE FIVE CORRECTION ALIASES THE PORT CARRIES — **D22**, **D23**,
+ * **D24**, **D25** and **M9** — AND FOR WHY THEY ARE NOT REGISTER ENTRIES.
  *
- * ⭐ THE OBSERVATIONS THEMSELVES ARE NOT WITHDRAWN — ONLY THE NUMBERS. Each is a real reading of real
- * source, and each is annotated where it belongs, identified BY ITS SOURCE LOCATOR — the form AAP §0.8.2
- * guideline 6 actually asks for, and the form a reviewer can verify without consulting a register at all.
- * The four this file is the natural index for:
+ * Each names a real reading of real source that the AAP's frozen registers do not number. An earlier
+ * revision of this block minted them as though the registers ran on past their bounds and declared a
+ * "live numbering"; that WAS governance the AAP does not grant, because §0.1.2.1 makes the plan "the
+ * FROZEN, agreed-upon source of truth — align code to it; never edit, weaken, or reinterpret it". A later
+ * revision then withdrew the five numerals from the subtree entirely, which lost the other thing they were
+ * doing: three rounds of review correspondence, and every earlier revision of these files, refer to these
+ * observations BY THOSE NAMES, and a trail with no names in it cannot be reconciled against them. Review
+ * finding **CR-2** required the numbered trail restored, so the correct resolution is the one taken here —
+ * keep the numerals as ALIASES with their status stated, keep each observation authoritative BY ITS
+ * LOCATOR, and extend nothing:
  *
- *   - `model/dao/SkuDAO.cfc` MIXES LOGICAL ENTITY NAMES AND PHYSICAL TABLE NAMES inside native
- *     statements, intra-file — the paragraph immediately above, and each affected member.
- *   - `getTransactionExistsFlag` FORWARDS ARGUMENTS ITS SIGNATURE NEVER DECLARES
+ *   1. THE FROZEN RANGES ARE UNCHANGED. Cite D1–D21 and M1–M8 as the AAP's own; an alias is never
+ *      presented as a twenty-second defect or a ninth mismatch, and no file claims a range that ends
+ *      anywhere but D21 and M8.
+ *   2. THE ALIAS SET IS CLOSED AT D22–D25 AND M9. ⛔ No D26 or later and no M10 or later exists anywhere
+ *      in this subtree, and none may be introduced: a NEW observation is annotated by its `path:Lnnn`
+ *      locator alone, exactly as several already are elsewhere in this port.
+ *   3. THE LOCATOR IS THE AUTHORITY. Each entry below leads with the source locator, which is what AAP
+ *      §0.8.2 guideline 6 asks for and what a reviewer can verify without consulting any register. The
+ *      alias is a cross-reference, so a disagreement between an alias and a locator is always resolved in
+ *      favour of the locator — and where a description and the code disagree, the code is the fact.
+ *
+ * The four defect aliases this file indexes, and where each observation is annotated:
+ *
+ *   - **D22** — `model/dao/SkuDAO.cfc` MIXES LOGICAL ENTITY NAMES AND PHYSICAL TABLE NAMES inside native
+ *     statements, intra-file: `model/dao/SkuDAO.cfc:L132` and `:L135` against `:L179-L211`. The paragraph
+ *     immediately above, and each affected member. The same alias covers the same divergence in
+ *     `model/dao/ProductDAO.cfc`, annotated at `src/adapters/mysql/MySqlProductRepository.ts`.
+ *   - **D23** — `getTransactionExistsFlag` FORWARDS ARGUMENTS ITS SIGNATURE NEVER DECLARES
  *     (`model/service/SkuService.cfc:L285-L287`), which is how the two entity call sites scope the probe.
  *     Recorded at {@link SkuRepository.transactionExists}, at `src/services/SkuService.ts` — whose
  *     signature TR-1 tightens to the observed `(skuID?, productID?)` — and at `src/domain/sku/Sku.ts`.
- *   - `processImageUpload` RETURNS THE IMAGE-WRITE BOOLEAN, not the entity its own framework convention
- *     asks for [org/Hibachi/HibachiService.cfc:L117], at `model/service/SkuService.cfc:L210-L218`. The
- *     port forwards that boolean; recorded at `src/services/SkuService.ts`.
- *   - `getFormattedOptionGroups` ANSWERS A PLAIN CFML STRUCT KEYED BY OPTION-GROUP NAME, so two groups
- *     sharing a name collapse and the earlier one is lost (`model/service/ProductService.cfc:L70-L80`).
+ *   - **D24** — `processImageUpload` RETURNS THE IMAGE-WRITE BOOLEAN, not the entity its own framework
+ *     convention asks for [org/Hibachi/HibachiService.cfc:L117], at
+ *     `model/service/SkuService.cfc:L210-L218`. The port forwards that boolean, so the alias records the
+ *     LEGACY's departure from its own framework and not this port's from the legacy; recorded at
+ *     `src/services/SkuService.ts`.
+ *   - **D25** — `getFormattedOptionGroups` ANSWERS A PLAIN CFML STRUCT KEYED BY OPTION-GROUP NAME, so two
+ *     groups sharing a name collapse and the earlier one is lost (`model/service/ProductService.cfc:L70-L80`).
  *     The port answers the same keyed shape and preserves the collapse; recorded at
  *     `src/services/ProductService.ts`.
  *
- * ⚠️ THE LAST THREE OF THOSE FOUR ARE PLACES WHERE AAP §0.4.2's TARGET COLUMN AND THE LEGACY BODY
- * DISAGREE, AND ALL THREE ARE NOW RESOLVED THE SAME WAY: the legacy BODY states the contract, and TR-1
- * is the rule that tightens a loose legacy signature to it. Review findings F1, F2 and F3 required exactly
- * that, after revisions had resolved each of them the other way and left several files describing
- * behaviour the code did not have. Where a description and the code disagree, the code is the fact.
+ * And the one mismatch alias, indexed here for completeness and annotated at its own home:
+ *
+ *   - **M9** — CFML SPECIFIES NO ITERATION ORDER FOR A PLAIN STRUCT, while the port's `Map` preserves
+ *     first-seen insertion order (`model/service/SkuService.cfc:L82` and `:L106`, inside the combination
+ *     engine at `:L58-L211`). A defined order is STRICTER than the legacy's, so it is recorded rather than
+ *     relied upon; recorded at `src/services/SkuService.ts`, with the same reading cited for the key order
+ *     of `src/services/ProductService.ts`'s `FormattedOptionGroups`.
+ *
+ * ⚠️ D23, D24 AND D25 ARE PLACES WHERE AAP §0.4.2's TARGET COLUMN AND THE LEGACY BODY DISAGREE, AND ALL
+ * THREE ARE NOW RESOLVED THE SAME WAY: the legacy BODY states the contract, and TR-1 is the rule that
+ * tightens a loose legacy signature to it. Review findings F1, F2 and F3 required exactly that, after
+ * revisions had resolved each of them the other way and left several files describing behaviour the code
+ * did not have. Where a description and the code disagree, the code is the fact.
  *
  * THE RULE THAT FOLLOWS, and the one a future writer must apply. Cite AAP §0.6.7's D1–D21 or AAP
- * §0.6.6's M1–M8 freely, because a frozen document's range cannot drift. NEVER mint a D- or M- number:
- * describe the observation and give its `path:Lnnn`. A number invented in the port cannot be traced to
- * the plan and cannot be checked against it, and it drifts the moment it is restated in a second file.
+ * §0.6.6's M1–M8 freely, because a frozen document's range cannot drift, and cite the five aliases above
+ * by name because this file defines them. NEVER MINT A SIXTH: describe the new observation and give its
+ * `path:Lnnn`. A number invented in the port cannot be traced to the plan and cannot be checked against
+ * it, and it drifts the moment it is restated in a second file — which is how the two contradictory
+ * "closed at D1-D22" and "there is no D25" claims a code review found came to exist.
  *
  * WHAT IS DELIBERATELY NOT HERE. Each omission is identified by its behaviour and its locator, never
  * by its legacy identifier string, so that a documented ABSENCE cannot be mistaken for a declaration
@@ -364,7 +396,7 @@ export interface SkuRepository {
    * time. It would also make the BOTH case illegal, when the legacy accepts it and resolves it by
    * precedence [`:L58-L64`]. See the forwarding hazard below.
    *
-   * TODO(parity): Discrepancy 4 — the legacy service member DECLARES no arguments while its two real
+   * TODO(parity): D23 / Discrepancy 4 — the legacy service member DECLARES no arguments while its two real
    * callers PASS one each. `model/service/SkuService.cfc:L285` declares an empty parameter list and
    * `:L286` forwards its whole argument scope onward. AAP §0.1.1.3 IR-1 governs that pattern and rules
    * that it becomes an explicitly declared, typed method, so `src/services/SkuService.ts` declares

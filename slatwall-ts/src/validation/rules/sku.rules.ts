@@ -714,7 +714,7 @@ export function createHasUniqueOptionsConstraint(
  * observation, not a carried defect and not assigned a register number: this is documented legacy
  * structure rather than a fault introduced by the port, and no new number is minted for it — the
  * register is stated canonically, and only once, in the header of
- * `src/ports/repositories/SkuRepository.ts` (BOTH FROZEN AT THE AAP's OWN BOUNDS — AAP 0.6.7's D1-D21 and AAP 0.6.6's M1-M8. Nothing in this port mints an identifier beyond either range; a further source observation is recorded by its `path:Lnnn` locator instead).
+ * `src/ports/repositories/SkuRepository.ts` (BOTH FROZEN AT THE AAP's OWN BOUNDS — AAP 0.6.7's D1-D21 and AAP 0.6.6's M1-M8, over which the port carries exactly five CORRECTION ALIASES for observations those registers do not number: D22-D25 and M9. Nothing in this port mints a sixth; a further source observation is recorded by its `path:Lnnn` locator instead).
  *
  * S7 NOTE, UNNUMBERED BY DESIGN — THE DOCUMENTATION HINT ABOVE THIS METHOD IS A COPY-PASTE ARTEFACT.
  * `model/entity/Sku.cfc:L771` repeats `:L755`, so it describes this method as validating a unique option

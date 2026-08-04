@@ -537,7 +537,7 @@ export interface SkuSalePricingLookup {
 /**
  * Answers whether any transaction references this SKU.
  *
- * ⚠️ the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] — THE IDENTIFIER IS PASSED, AND EARLIER PROSE HERE CLAIMED THE OPPOSITE ON A FALSE READING
+ * ⚠️ D23 — THE IDENTIFIER IS PASSED, AND EARLIER PROSE HERE CLAIMED THE OPPOSITE ON A FALSE READING
  * OF CFML. [model/entity/Sku.cfc:L594] calls `getTransactionExistsFlag( skuID=this.getSkuID() )` with
  * a NAMED argument, and the service member it reaches —
  * `public boolean function getTransactionExistsFlag()` at [model/service/SkuService.cfc:L285] —
@@ -2883,7 +2883,7 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * The legacy body memoizes
    * `getService("skuService").getTransactionExistsFlag( skuID=this.getSkuID() )`.
    *
-   * ⚠️ the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] — `skuID` IS FORWARDED, because CFML forwards it. [:L594] passes it as a NAMED ARGUMENT to
+   * ⚠️ D23 — `skuID` IS FORWARDED, because CFML forwards it. [:L594] passes it as a NAMED ARGUMENT to
    * a service member that [model/service/SkuService.cfc:L285] declares with no formal parameters, and
    * [`:L286`] then forwards the entire `arguments` scope to the DAO with `argumentCollection=arguments`.
    * An undeclared named argument still lands in that scope, so the identifier arrives at

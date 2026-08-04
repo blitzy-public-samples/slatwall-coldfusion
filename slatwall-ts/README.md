@@ -34,18 +34,18 @@ for. Each is stated **once**, in the section named — deliberately not duplicat
 register are two things that can disagree, and this subtree treats a second copy of a fact as a defect
 rather than as redundancy.
 
-| What a reviewer needs to check                                                                                                                                                                                | Where it is                    |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| **T1–T5** — the five option-to-SKU semantics that must survive translation, each named as a silent-drift trap, with the translated SQL shape and the bound-parameter order                                    | §10.2                          |
-| **The validation read-back loop** — the highest-risk item in the slice: a declarative rule that executes a query against rows the same operation is writing, and how `UnitOfWork` resolves it                 | §10.3, with **M6** and **D19** |
-| **The combination engine** — the odometer enumeration whose order determines both the generated SKU set and what uniqueness validation observes                                                               | §10.4                          |
-| **The three seeded discriminator UUIDs** — fixed data, not test data (**IR-7**), reused verbatim in the fixtures                                                                                              | §10.5                          |
-| **The 28 preserved public members** — interface parity, method by method, with every tightened signature recorded                                                                                             | §10.1                          |
-| **D1–D21** — the full defect register, carried as flagged `TODO(parity)` annotations rather than repaired, plus the **one** declared departure (**D18**) and the four further observations carried by locator | §12.4                          |
-| **M1–M8** — the execution-model mismatches, flagged rather than silently resolved, each with its source-declared value and locator                                                                            | §12.5                          |
-| **Test provenance** — TRACEABLE versus NET-NEW, in both directions, with the honest ratio leading                                                                                                             | §12.1                          |
-| **What caps the evidence** — the absent local development setup and the legacy suite that cannot be executed here                                                                                             | §12.2                          |
-| **Scope** — the thirty in-scope legacy files, the exclusions, and the calculated-property boundary                                                                                                            | §9                             |
+| What a reviewer needs to check                                                                                                                                                                | Where it is                    |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| **T1–T5** — the five option-to-SKU semantics that must survive translation, each named as a silent-drift trap, with the translated SQL shape and the bound-parameter order                    | §10.2                          |
+| **The validation read-back loop** — the highest-risk item in the slice: a declarative rule that executes a query against rows the same operation is writing, and how `UnitOfWork` resolves it | §10.3, with **M6** and **D19** |
+| **The combination engine** — the odometer enumeration whose order determines both the generated SKU set and what uniqueness validation observes                                               | §10.4                          |
+| **The three seeded discriminator UUIDs** — fixed data, not test data (**IR-7**), reused verbatim in the fixtures                                                                              | §10.5                          |
+| **The 28 preserved public members** — interface parity, method by method, with every tightened signature recorded                                                                             | §10.1                          |
+| **D1–D21 plus the D22–D25 aliases** — the full defect register, carried as flagged `TODO(parity)` annotations rather than repaired, plus the **one** declared departure (**D18**)             | §12.4                          |
+| **M1–M8 plus the M9 alias** — the execution-model mismatches, flagged rather than silently resolved, each with its source-declared value and locator                                          | §12.5                          |
+| **Test provenance** — TRACEABLE versus NET-NEW, in both directions, with the honest ratio leading                                                                                             | §12.1                          |
+| **What caps the evidence** — the absent local development setup and the legacy suite that cannot be executed here                                                                             | §12.2                          |
+| **Scope** — the thirty in-scope legacy files, the exclusions, and the calculated-property boundary                                                                                            | §9                             |
 
 ---
 
@@ -236,30 +236,43 @@ anywhere in this subtree, because the legacy source states none and inventing on
 Run every command from **this directory** (`slatwall-ts/`). Each result below is this repository's measured
 output in this checkout, not an expectation.
 
-`package.json` declares **exactly six scripts** — `typecheck`, `build`, `test`, `test:coverage`, `lint` and
-`format:check`. The table below therefore has seven rows: those six, plus `npm ci`, which is npm's own
-install command and **not** a script in this manifest.
+`package.json` declares **exactly the four scripts AAP §0.4.1.2 prescribes** — `build`, `test`, `lint` and
+`typecheck` — and no others. The table below therefore has six rows: those four, plus `npm ci`, which is npm's
+own install command and **not** a script in this manifest, plus the one verification that is run as a direct
+command rather than through a script.
 
-| Command                 | What it runs                                                | Measured result                                |
-| ----------------------- | ----------------------------------------------------------- | ---------------------------------------------- |
-| `npm ci`                | install from the lockfile (npm builtin, not a script)       | 399 packages, 0 `EBADENGINE`, 0 audit findings |
-| `npm run typecheck`     | `tsc --noEmit`, full strict                                 | **0 errors**                                   |
-| `npm run lint`          | `eslint .`                                                  | **0 problems**                                 |
-| `npm run format:check`  | `prettier --check .`                                        | **all matched files conform**                  |
-| `npm test`              | `jest --ci --config package.json --preset ./jest.config.ts` | **17 suites, 0 failures** (†)                  |
-| `npm run test:coverage` | the same, plus `--coverage`                                 | **17 suites, 0 failures** (†)                  |
-| `npm run build`         | `node build/esbuild.mjs`                                    | 6 CommonJS artifacts, exit 0 (§6)              |
+| Command                  | What it runs                                                | Measured result                                |
+| ------------------------ | ----------------------------------------------------------- | ---------------------------------------------- |
+| `npm ci`                 | install from the lockfile (npm builtin, not a script)       | 399 packages, 0 `EBADENGINE`, 0 audit findings |
+| `npm run typecheck`      | `tsc --noEmit`, full strict                                 | **0 errors**                                   |
+| `npm run lint`           | `eslint .`                                                  | **0 problems**                                 |
+| `npm test`               | `jest --ci --config package.json --preset ./jest.config.ts` | **17 suites, 0 failures** (†)                  |
+| `npm run build`          | `node build/esbuild.mjs`                                    | 6 CommonJS artifacts, exit 0 (§6)              |
+| `npx prettier --check .` | the formatting gate, as a direct command                    | **all matched files conform**                  |
+
+⛔ **THE FOUR ARE EXACT, AND TWO EARLIER EXTRA SCRIPTS ARE WITHDRAWN — REVIEW FINDING CR-3.** `format:check`
+and `test:coverage` existed in the manifest for several revisions, on the reading that AAP §0.4.1.2 names the
+scripts the manifest must _carry_ without closing the set. A code review adjudicated that reading against the
+binding requirement: the prescribed inventory is `build`, `test`, `lint`, `typecheck` and it is **exact**. Both
+extras are therefore removed from `package.json`, and neither capability is lost, because neither was ever
+more than a one-line wrapper around a binary this subtree already installs:
+
+- **Formatting** — run `npx prettier --check .` (or `--write` to fix). `.prettierrc.json` is the baseline and
+  `.gitignore` doubles as the ignore list, so the direct command and the withdrawn script check exactly the
+  same files.
+- **Coverage** — run `npx jest --ci --config package.json --preset ./jest.config.ts --coverage`. This one costs
+  nothing at all to lose: `jest.config.ts` sets `collectCoverage: true`, so **plain `npm test` already reports
+  coverage** and the flag is redundant with the configuration.
+
+An earlier revision of this section argued the opposite and told a reader not to prune the table to four. That
+statement is withdrawn: where a file prompt states an exact inventory, the inventory is exact, and a
+convenience wrapper is not a reason to exceed it.
 
 (†) **THE SUITE AND FAILURE COUNTS ARE FROZEN CLAIMS; THE CASE COUNT DELIBERATELY IS NOT.** AAP §0.4.1.12
 fixes the number of suites at 17, and "0 failures" is the acceptance bar, so both belong in a document. The
 number of executed CASES is not fixed by anything and grows whenever a case is added — an earlier revision of
 this table stated one, it went stale, and a reader had no way to tell. Run `npm test` and read its `Tests:`
 line; §12.1 states the figure measured at this checkpoint alongside the census that produced it.
-
-⛔ **AND ALL SIX SCRIPTS EXIST — DO NOT PRUNE THIS TABLE TO FOUR.** AAP §0.4.1.2 declares which scripts the
-manifest must CARRY; it does not close the set. `format:check` and `test:coverage` are outside that four and
-are real, verified commands: deleting them from the manifest to match a "frozen four" reading leaves this
-table naming commands that fail at a reader's shell prompt.
 
 `npm ci` rather than `npm install`: the lockfile is committed so resolution is reproducible, and `ci` is the
 command that honours it exactly.
@@ -270,14 +283,13 @@ configuration is relaxed to reach those results: `tsconfig.json` keeps `strict`,
 `exactOptionalPropertyTypes` and `noUncheckedIndexedAccess`, and `ts-jest` runs that same `tsconfig.json`
 with no `diagnostics: false`.
 
-`jest.config.ts` sets `collectCoverage: true`, so plain `npm test` reports coverage as well. The
-`test:coverage` script passes `--coverage` explicitly, so the intent is addressable by name AND always-on;
-the two are deliberately redundant rather than alternatives. The configuration declares **no
-`coverageThreshold`** and no quality gate of any kind — measured coverage is published, no target is
-asserted, and none is invented (§12.1 records why: the legacy structural gate is inert and the legacy suite
-carries no line or branch instrumentation at all).
+`jest.config.ts` sets `collectCoverage: true`, so plain `npm test` reports coverage as well — which is why no
+coverage script is needed in the manifest and why the `--coverage` flag is only ever a way of asking for the
+same report explicitly. The configuration declares **no `coverageThreshold`** and no quality gate of any kind
+— measured coverage is published, no target is asserted, and none is invented (§12.1 records why: the legacy
+structural gate is inert and the legacy suite carries no line or branch instrumentation at all).
 
-Formatting has its own script, `npm run format:check`, which wraps `prettier --check .`.
+Formatting is verified with the direct command `npx prettier --check .` rather than through a manifest script.
 `.prettierrc.json` is the baseline and `.gitignore` doubles as its ignore list — Prettier 3 honours
 `.gitignore`, so there is no separate `.prettierignore` to keep in sync (see `.gitignore`'s own closing note
 for the measurement behind that).
@@ -934,9 +946,9 @@ likelier to keep it than a reader who copies `<YOUR_DB_PASSWORD>` and is forced 
 instance was created with; this deliverable provisions no database, seeds no user and ships no default. The
 same rule holds in `.env.example`, whose `DB_PASSWORD=` line is deliberately left with an EMPTY right-hand
 side — and note that a blank value is refused at load, so the template cannot be used unedited (§8). No
-secret, credential or token is required to `build`, `test`, `lint`, `typecheck`, `format:check` or
-`test:coverage`: every one of those six commands runs with an empty environment, which is why the
-verification in §3 needs none.
+secret, credential or token is required to `build`, `test`, `lint` or `typecheck`, nor to the direct
+`npx prettier --check .` and `npx jest … --coverage` commands of §3: every one of them runs with an empty
+environment, which is why the verification in §3 needs none.
 
 **Second, the `await`.** The artifact is CommonJS — `package.json` declares `"type": "commonjs"` and the
 bundle is emitted as CJS — and **CommonJS has no top-level `await`**, so a `.js` file that mixes `require`
@@ -2148,14 +2160,14 @@ unreachable code would add behaviour the legacy system does not have.
 slice amounts to **two entity test files, eight issue regressions and one fixture helper. Everything else is
 net-new.** Every suite in `test/` labels itself, so the ratio is visible per file rather than only in
 aggregate: of the **17** suites, **4 carry TRACEABLE cases and 13 are wholly NET-NEW** — and inside those four
-the imbalance is sharper still, **21 traceable case declarations against 2,100 net-new ones**. The four are
+the imbalance is sharper still, **21 traceable case declarations against 2,109 net-new ones**. The four are
 `test/regression/issues.test.ts` (10), `test/domain/Product.test.ts` (6), `test/domain/Brand.test.ts` (4) and
 `test/services/BrandService.test.ts` (1).
 
 ⚠️ **DECLARATIONS AND EXECUTED TESTS ARE TWO DIFFERENT COUNTS, and this paragraph states declarations.** The
 figures above come from walking the TypeScript AST of all seventeen suites and counting `it` / `test`
-declarations: **2,121 in total, 21 TRACEABLE and 2,100 NET-NEW, with 0 unlabelled.** The runner reports a
-larger number — **2,362 at this checkpoint** — because an `it.each(table)` declaration expands into one
+declarations: **2,130 in total, 21 TRACEABLE and 2,109 NET-NEW, with 0 unlabelled.** The runner reports a
+larger number — **2,371 at this checkpoint** — because an `it.each(table)` declaration expands into one
 executed test per table row. Neither figure is frozen by anything: both grow when a case or a row is added, so
 re-measure rather than trusting a number in a document.
 
@@ -2344,7 +2356,7 @@ CFSelenium being absent is why the legacy suite cannot be executed, and Hibernat
 why the ORM behaviours the port must preserve (flush timing, session visibility, second-level caching) are
 documented from the application's own code rather than from a dependency version.
 
-### 12.4 Defect register — AAP §0.6.7's frozen D1–D21, carried by number, plus four observations carried by locator
+### 12.4 Defect register — AAP §0.6.7's frozen D1–D21, plus the four correction aliases D22–D25
 
 **The governing rule: legacy defects are carried across as flagged `TODO(parity)` annotations rather than
 silently fixed.** Fixing any of them would violate behaviour preservation and make the port's output
@@ -2356,34 +2368,47 @@ Scanning the in-scope files found **exactly three literal TODO comments**. The t
 **frozen D1–D21** — 21 entries, because the analysis surfaced eighteen further defects a competent engineer
 would instinctively fix, and naming each one converts an invisible temptation into a documented decision.
 
-**⛔ THE REGISTER STOPS AT D21, AND THIS PORT MINTS NO IDENTIFIER OF ITS OWN.** AAP §0.6.7 is frozen at
+**⛔ THE PLAN'S REGISTER STOPS AT D21, AND THE PORT EXTENDS NEITHER RANGE.** AAP §0.6.7 is frozen at
 **D1–D21** and AAP §0.6.6 at **M1–M8**; a frozen document's range cannot drift, so both may be cited freely.
 Neither range is amended here, and no file in the subtree amends them.
 
-**An earlier revision of this section, and of `src/ports/repositories/SkuRepository.ts`, minted four further
-defect numbers (`D22`–`D25`) and one further mismatch number (`M9`) and declared a "live numbering" running
-past those bounds.** That was governance the plan does not grant: AAP §0.1.2.1 records the plan as "the
-FROZEN, agreed-upon source of truth — align code to it; never edit, weaken, or reinterpret it". Every one of
-those five numerals is **withdrawn from the subtree**, and the reason is practical as well as procedural — a
-number invented in the port cannot be traced to the plan, cannot be checked against it, and drifts the moment
-it is restated in a second file. That bound had already drifted twice, once to `D1-D22` and once to `D1-D24`,
-with files contradicting one another.
+**Over those frozen ranges the port carries exactly five CORRECTION ALIASES — `D22`, `D23`, `D24`, `D25` and
+`M9` — and the count matrix for the whole trail is therefore: D1–D21 (the plan's, 21 entries) + D22 and
+D23–D25 (four aliases) + M1–M8 (the plan's, 8 entries) + M9 (one alias). There is no `D26` or later and no
+`M10` or later anywhere in this subtree, and none may be added.**
 
-**⭐ The OBSERVATIONS are not withdrawn — only the numbers.** Each is a real reading of real source, and each
-is now carried where it belongs, identified **by its `path:Lnnn` locator** — which is the form AAP §0.8.2
-Guideline 6 actually asks for, and the form a reviewer can verify without consulting a register at all.
-`src/ports/repositories/SkuRepository.ts` is the natural index for the four below; it states the two frozen
-bounds once and mints nothing.
+The wording matters, because this trail has been wrong in both directions and a reader deserves both errors
+named. An earlier revision of this section, and of `src/ports/repositories/SkuRepository.ts`, minted the five
+numerals as though the registers themselves ran past their bounds and declared a "live numbering" — which is
+governance the plan does not grant, since AAP §0.1.2.1 records the plan as "the FROZEN, agreed-upon source of
+truth — align code to it; never edit, weaken, or reinterpret it". A later revision then **withdrew** all five
+numerals from the subtree, which removed the overreach and, with it, the audit trail: several rounds of review
+correspondence and every earlier revision of these files refer to these observations **by those names**, and a
+trail carrying no names cannot be reconciled against them. Review finding **CR-2** required the numbered trail
+restored, so both errors are corrected at once — the numerals are back at their canonical code sites and in
+this section, labelled as what they are:
 
-| Observation                                                                                                                                                                                                                                                                                                  | Legacy locator                                           | Where it is annotated, and what the port does                                                                                                                                                                                                                                                         |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SkuDAO` mixes **logical entity names and physical table names** inside native statements, intra-file. The logical names arise because the framework prefixes an entity name with the application key at `org/Hibachi/HibachiDAO.cfc:L102-L106`, a mapping-layer convenience native statements never receive | `model/dao/SkuDAO.cfc:L132`, `:L135` versus `:L179-L211` | `src/ports/repositories/SkuRepository.ts`, and each affected member. **Both vocabularies are kept rather than unified** (§5.5): never "fix" a mapping-layer entity name to a physical one, and never assume a logical name works in a native statement                                                |
-| `getTransactionExistsFlag` **forwards arguments its own signature never declares**, which is how the two entity call sites scope the probe                                                                                                                                                                   | `model/service/SkuService.cfc:L285-L287`                 | `src/services/SkuService.ts`, `src/domain/sku/Sku.ts`, `SkuRepository.transactionExists`. **TR-1 tightens the loose signature to the observed `(skuID?, productID?)`**; the repository keeps the legacy declaration order `(productID, skuID)`, so exactly two lines cross the two orders — see §10.1 |
-| `processImageUpload` **returns the image-write boolean**, not the entity its own framework convention asks for (`org/Hibachi/HibachiService.cfc:L117`)                                                                                                                                                       | `model/service/SkuService.cfc:L210-L218`                 | `src/services/SkuService.ts`. The body has exactly two returns, `true` and `false`. **The port forwards that boolean**, so the observation records the legacy's departure from its own framework — not the port's from the legacy                                                                     |
-| `getFormattedOptionGroups` **answers a plain CFML struct keyed by option-group name**, so two groups sharing a name collapse and the earlier one is lost                                                                                                                                                     | `model/service/ProductService.cfc:L70-L80`               | `src/services/ProductService.ts`. **The port answers the same keyed shape** — `Readonly<Record<string, readonly SelectOption[]>>` — and preserves the collapse by accumulating through a `Map` before freezing                                                                                        |
+- **An alias is a cross-reference, not a register entry.** It never appears as a twenty-second defect or a
+  ninth mismatch, and no file states a register bound other than D21 and M8.
+- **The locator is the authority.** Every entry below leads with its `path:Lnnn`, which is the form AAP §0.8.2
+  Guideline 6 asks for and the form a reviewer can verify without consulting any register. Where an alias and
+  a locator disagree the locator wins; where a description and the code disagree, the code is the fact.
+- **The alias set is closed.** A newly discovered observation is annotated by its locator alone — several
+  already are, including the two `D10`-class scoping findings in `src/services/ProductService.ts`, which
+  explicitly decline a number of their own.
 
-**⚠️ The last three of those four are places where AAP §0.4.2's target column and the legacy body disagree, and
-all three are now resolved the same way: the legacy BODY states the contract, and TR-1 is the rule that
+`src/ports/repositories/SkuRepository.ts` is the single index: it defines the five aliases once, states both
+frozen bounds once, and records that nothing beyond them exists.
+
+| Alias | Observation                                                                                                                                                                                                                                                                                                  | Legacy locator                                           | Where it is annotated, and what the port does                                                                                                                                                                                                                                                         |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `D22` | `SkuDAO` mixes **logical entity names and physical table names** inside native statements, intra-file. The logical names arise because the framework prefixes an entity name with the application key at `org/Hibachi/HibachiDAO.cfc:L102-L106`, a mapping-layer convenience native statements never receive | `model/dao/SkuDAO.cfc:L132`, `:L135` versus `:L179-L211` | `src/ports/repositories/SkuRepository.ts`, and each affected member. **Both vocabularies are kept rather than unified** (§5.5): never "fix" a mapping-layer entity name to a physical one, and never assume a logical name works in a native statement                                                |
+| `D23` | `getTransactionExistsFlag` **forwards arguments its own signature never declares**, which is how the two entity call sites scope the probe                                                                                                                                                                   | `model/service/SkuService.cfc:L285-L287`                 | `src/services/SkuService.ts`, `src/domain/sku/Sku.ts`, `SkuRepository.transactionExists`. **TR-1 tightens the loose signature to the observed `(skuID?, productID?)`**; the repository keeps the legacy declaration order `(productID, skuID)`, so exactly two lines cross the two orders — see §10.1 |
+| `D24` | `processImageUpload` **returns the image-write boolean**, not the entity its own framework convention asks for (`org/Hibachi/HibachiService.cfc:L117`)                                                                                                                                                       | `model/service/SkuService.cfc:L210-L218`                 | `src/services/SkuService.ts`. The body has exactly two returns, `true` and `false`. **The port forwards that boolean**, so the observation records the legacy's departure from its own framework — not the port's from the legacy                                                                     |
+| `D25` | `getFormattedOptionGroups` **answers a plain CFML struct keyed by option-group name**, so two groups sharing a name collapse and the earlier one is lost                                                                                                                                                     | `model/service/ProductService.cfc:L70-L80`               | `src/services/ProductService.ts`. **The port answers the same keyed shape** — `Readonly<Record<string, readonly SelectOption[]>>` — and preserves the collapse by accumulating through a `Map` before freezing                                                                                        |
+
+**⚠️ `D23`, `D24` and `D25` are places where AAP §0.4.2's target column and the legacy body disagree, and all
+three are now resolved the same way: the legacy BODY states the contract, and TR-1 is the rule that
 tightens a loose legacy signature to it.** Review findings **F1**, **F2** and **F3** required exactly that,
 after revisions had resolved each of them the other way and left several files describing behaviour the code
 did not have. §10.1 tabulates the three signatures; where a description and the code disagree, the code is the
@@ -2511,19 +2536,21 @@ because an XML namespace name is an **identifier compared byte-for-byte**, not a
 would silently invalidate every `g:` element for every consumer. The Google Merchant specification URL quoted
 in `src/integrations/google/README.md` is likewise reproduced as the legacy view header wrote it.
 
-### 12.5 Execution-model mismatches — AAP §0.6.6's frozen M1–M8, flagged rather than silently resolved
+### 12.5 Execution-model mismatches — AAP §0.6.6's frozen M1–M8, plus the one correction alias M9
 
 Eight are frozen in AAP §0.6.6 and tabulated below. Each is presented as a **decision surfaced**, with its
 source-declared value and locator, and with **no invented figure of any kind**.
 
-**⛔ THE RANGE STOPS AT M8, FOR THE REASON §12.4 GIVES.** An earlier revision minted a ninth identifier for a
-real observation — CFML specifies **no iteration order** for a plain struct, while the port's `Map` preserves
-insertion order, so the combination engine's enumeration order is guaranteed here in a way the legacy never
-guaranteed it. The **numeral** is withdrawn; the **observation is not**. It is annotated where it belongs, at
-`src/services/SkuService.ts`, identified by its locator `model/service/SkuService.cfc:L58-L211` — and it
-matters because that enumeration order determines both the generated SKU set and, through the read-back loop
-of §10.3, the order in which uniqueness validation observes its siblings. A defined order is **stricter** than
-the legacy's, so it is recorded rather than relied upon.
+**⛔ THE PLAN'S RANGE STOPS AT M8, AND `M9` IS A CORRECTION ALIAS OVER IT — exactly the arrangement §12.4
+describes, and governed by the same three rules.** The observation it names is real: CFML specifies **no
+iteration order** for a plain struct, while the port's `Map` preserves first-seen insertion order, so the
+combination engine's enumeration order is guaranteed here in a way the legacy never guaranteed it. Its home is
+`src/services/SkuService.ts` and its locators are `model/service/SkuService.cfc:L82` and `:L106` inside the
+engine at `:L58-L211`. It matters because that enumeration order determines both the generated SKU set and,
+through the read-back loop of §10.3, the order in which uniqueness validation observes its siblings — so a
+defined order is **stricter** than the legacy's and is recorded rather than relied upon. `M9` is the only
+mismatch alias, there is no `M10` or later anywhere in this subtree, and the alias is never presented as a
+ninth entry of AAP §0.6.6.
 
 | ID     | Mismatch                                                                                                                                                                                  | Why it does not map to one Lambda invocation                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -2720,13 +2747,13 @@ than aspirational:
    honest ratio published rather than smoothed over (§12.1).
 7. **Preserve and annotate, do not repair** — the 21 legacy defects of the frozen register carried as flagged
    `TODO(parity)` annotations, with the **one** declared departure (**D18**) and its reasoning (§12.4). The four
-   further port-boundary observations are carried **by source locator rather than by a minted number**, and are
-   additions to the record, never repairs to the code (§12.4). Seven categories of hardening once breached this
+   further port-boundary observations are carried **by source locator, under the correction aliases D22–D25**,
+   and are additions to the record, never repairs to the code (§12.4). Seven categories of hardening once breached this
    standard and were withdrawn wholesale; **four were later reinstated on an external authority and three
    remain withdrawn** — §13.4 tabulates where each one stands and is the single authoritative account.
 8. **Flag mismatches rather than assume them away** — the eight frozen execution-model mismatches, plus the
-   struct-iteration-order observation carried by locator, surfaced as decisions rather than resolved by
-   guesswork (§12.5).
+   struct-iteration-order observation carried by locator under the correction alias **M9**, surfaced as
+   decisions rather than resolved by guesswork (§12.5).
 9. **Invent nothing** — no SLA, latency target, throughput figure, availability number, capacity estimate or
    coverage threshold appears anywhere; where a fact could not be established from source it is recorded as
    **not documented** rather than given a plausible value (§12.3).

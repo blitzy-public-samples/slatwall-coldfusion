@@ -332,7 +332,7 @@ export const updateSkusListPriceValidation = Object.freeze({
  *
  * This is recorded as an observation, deliberately NOT reconciled (guideline 4) and deliberately NOT
  * annotated as a parity defect: no identifier is invented for it, and the register is stated
- * canonically, and only once, in the header of `src/ports/repositories/SkuRepository.ts` (BOTH FROZEN AT THE AAP's OWN BOUNDS — AAP 0.6.7's D1-D21 and AAP 0.6.6's M1-M8. Nothing in this port mints an identifier beyond either range; a further source observation is recorded by its `path:Lnnn` locator instead). Also noted in passing, and equally not given a NEW identifier: the loop counter at
+ * canonically, and only once, in the header of `src/ports/repositories/SkuRepository.ts` (BOTH FROZEN AT THE AAP's OWN BOUNDS — AAP 0.6.7's D1-D21 and AAP 0.6.6's M1-M8, over which the port carries exactly five CORRECTION ALIASES for observations those registers do not number: D22-D25 and M9. Nothing in this port mints a sixth; a further source observation is recorded by its `path:Lnnn` locator instead). Also noted in passing, and equally not given a NEW identifier: the loop counter at
  * `model/service/ProductService.cfc:L220` is UNSCOPED — the second such site, the first being
  * `:L118` — and TypeScript block scoping removes that hazard by construction. That is not a fresh
  * finding but the SAME deliberate translation decision the register ALREADY carries as D10 against

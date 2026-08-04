@@ -690,7 +690,7 @@ export const baseProductTypeInListSubscription = Object.freeze({
  * WHY NO PARITY ANNOTATION AND NO REGISTER ENTRY
  * =============================================================================================
  * No entry in the register covers this, and no new one is minted for it — the register is stated
- * canonically, and only once, in the header of `src/ports/repositories/SkuRepository.ts` (BOTH FROZEN AT THE AAP's OWN BOUNDS — AAP 0.6.7's D1-D21 and AAP 0.6.6's M1-M8. Nothing in this port mints an identifier beyond either range; a further source observation is recorded by its `path:Lnnn` locator instead). Inventing one would fabricate a plan artifact, so this finding is documented in prose
+ * canonically, and only once, in the header of `src/ports/repositories/SkuRepository.ts` (BOTH FROZEN AT THE AAP's OWN BOUNDS — AAP 0.6.7's D1-D21 and AAP 0.6.6's M1-M8, over which the port carries exactly five CORRECTION ALIASES for observations those registers do not number: D22-D25 and M9. Nothing in this port mints a sixth; a further source observation is recorded by its `path:Lnnn` locator instead). Inventing one would fabricate a plan artifact, so this finding is documented in prose
  * at the site of the judgment — which is exactly what guideline 6 asks for — and carries no
  * invented identifier of any kind.
  *

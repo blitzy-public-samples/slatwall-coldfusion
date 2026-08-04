@@ -31,7 +31,7 @@
  *
  * ⚠️ THE PRECISION MATTERS, AND OVER-CLAIMING MISLEADS AS BADLY AS UNDER-CLAIMING. The counted sites
  * are not uniformly file-fed injections, and this file says which are which:
- *   - FULLY STATIC, zero interpolation ⇒ the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] identifier translation ONLY, no injection at all:
+ *   - FULLY STATIC, zero interpolation ⇒ D22 identifier translation ONLY, no injection at all:
  *     `model/dao/ProductDAO.cfc:L289` and `:L295`.
  *   - INTERPOLATE A SETTING rather than file data ⇒ still a value that must become a bound `?`, but
  *     not untrusted input: `model/dao/ProductDAO.cfc:L305`, `:L311` and `:L318`.
@@ -83,8 +83,17 @@
  * made.
  *
  * =================================================================================================
- * TODO(parity) the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] `model/dao/ProductDAO.cfc` — LOGICAL ENTITY NAMES VERSUS PHYSICAL TABLE NAMES
+ * TODO(parity) D22 [`model/dao/ProductDAO.cfc`] — LOGICAL ENTITY NAMES VERSUS PHYSICAL TABLE NAMES
  * =================================================================================================
+ * ⭐ `D22` IS A CORRECTION ALIAS, NOT AN AMENDMENT TO THE PLAN'S REGISTER. AAP §0.6.7 stays frozen at
+ * D1–D21 and AAP §0.6.6 at M1–M8; nothing in this subtree extends either range. `D22` is the label the
+ * port's own review correspondence gave THIS observation, and it is carried at the canonical site so a
+ * reviewer reconciling that correspondence with this code has a name to match on. The observation itself
+ * is authoritative BY ITS LOCATOR, stated in full below.
+ * `src/ports/repositories/SkuRepository.ts` is the single index for all four aliases and states the two
+ * frozen bounds once; a previous revision of this heading dropped the alias and substituted a
+ * `model/dao/SkuDAO.cfc` locator into this `model/dao/ProductDAO.cfc` block, which is the drift review
+ * finding CR-2 reported.
  * `model/dao/ProductDAO.cfc` contains 74 `Slatwall*` occurrences, and most of them sit in NATIVE SQL
  * rather than in HQL: 26 `SlatwallProduct`, 24 `SlatwallSku`, 5 `SlatwallOptionGroup`, 5
  * `SlatwallOption`, 3 bare `Slatwall`, 2 `SlatwallSkuOption`, 2 `SlatwallScope`, 2
@@ -270,10 +279,10 @@ import type {
 } from '../../ports/repositories/ProductRepository';
 
 /* ================================================================================================
- * PHYSICAL IDENTIFIERS — EVERY ONE VALIDATED, NONE INTERPOLATED (S2, the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132])
+ * PHYSICAL IDENTIFIERS — EVERY ONE VALIDATED, NONE INTERPOLATED (S2, D22)
  * ==============================================================================================
  * Each table constant is produced by passing the LEGACY LOGICAL NAME to {@link assertTableName}, so the
- * the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] translation happens in code rather than in a comment and a reviewer can read the legacy
+ * D22 translation happens in code rather than in a comment and a reviewer can read the legacy
  * vocabulary and the physical result side by side. Each column constant is validated against the table
  * it belongs to, so a well-formed name applied to the wrong table is a load-time failure.
  * ============================================================================================== */
@@ -789,7 +798,7 @@ const DEFAULTED_FLAG_VALUE = '1';
  * ⚠️ THIS IS A SECOND, DIFFERENT QUESTION FROM THE ONE `assertColumnName` ANSWERS, AND CONFLATING THEM
  * WAS THE FINDING. The whitelist in `./QueryRunner` answers "is this a real column of this table",
  * which is an IDENTIFIER-SAFETY question: it exists so that no caller-supplied text can ever become
- * statement text (the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132]). It does not, and cannot, answer "may a file uploaded by a remote party WRITE
+ * statement text (D22). It does not, and cannot, answer "may a file uploaded by a remote party WRITE
  * this column", which is an AUTHORIZATION question about mutation targets — CWE-915, mass assignment.
  * Because the heading classifier at `model/dao/ProductDAO.cfc:L130-L140` accepts ANY heading whose
  * first underscore-delimited segment is `product` or `sku`, every column of `SwProduct` and `SwSku`
@@ -2581,7 +2590,7 @@ const ATTRIBUTE_VALUE_INSERT_STATEMENT = `INSERT INTO ${OUT_OF_SCOPE_TABLE.attri
 /**
  * BACK-FILL 1 — the default-SKU statement, the translation of `model/dao/ProductDAO.cfc:L288-L302`.
  *
- * ⚠️ FULLY STATIC IN THE LEGACY, SO THIS IS the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] ONLY AND NOT D18. `:L289` and `:L295` interpolate
+ * ⚠️ FULLY STATIC IN THE LEGACY, SO THIS IS D22 ONLY AND NOT D18. `:L289` and `:L295` interpolate
  * NOTHING; the only change here is the logical-to-physical identifier translation. `:L302` executes it
  * with zero parameters and so does this port. Claiming these two as injection sites would over-state
  * D18, which misleads as badly as under-stating it.
@@ -4328,7 +4337,7 @@ export class MySqlProductRepository implements ProductRepository {
     executor: ProductStatementExecutor,
     row: NormalisedImportRow,
     request: {
-      /** `:L328` `tableName` — already validated, so a logical name cannot reach a statement (the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132]). */
+      /** `:L328` `tableName` — already validated, so a logical name cannot reach a statement (D22). */
       readonly table: PhysicalTableName;
       /** `:L328` `columnList` — the classified headings for this table only. See the note above. */
       readonly columnList: readonly string[];
@@ -4380,7 +4389,7 @@ export class MySqlProductRepository implements ProductRepository {
      *
      * ⚠️ SEC-14 — TWO CHECKS PER HEADING, ASKING TWO DIFFERENT QUESTIONS, IN THIS ORDER. `assertColumnName`
      * answers "is this a real column of this table", which is what makes the identifier safe to place in
-     * statement text (the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132]). {@link assertImportableColumn} answers "may an imported file WRITE it", which
+     * statement text (D22). {@link assertImportableColumn} answers "may an imported file WRITE it", which
      * is the mass-assignment question the identifier check cannot answer. Schema first, so a heading
      * naming nothing is still reported as a schema fault rather than as an authorization one.
      *
@@ -4653,7 +4662,7 @@ export class MySqlProductRepository implements ProductRepository {
    * rows are updated, which Guideline 4 forbids and which the review conditions on a parity exception that
    * is deliberately not claimed.
    *
-   * ⚠️ BOTH ARE the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] SITES AND NEITHER IS AN INJECTION SITE. `:L289` and `:L295` interpolate nothing at
+   * ⚠️ BOTH ARE D22 SITES AND NEITHER IS AN INJECTION SITE. `:L289` and `:L295` interpolate nothing at
    * all; `:L305`, `:L311` and `:L318` interpolate a SETTING, not file content. The only change to the
    * first is the logical-to-physical identifier translation, and the only change to the second is that
    * the setting travels as a bound value. Claiming either as a D18 injection would over-state the
@@ -5451,11 +5460,20 @@ export class MySqlProductPersistence {
    *   Required; see that contract for why an optional one would be unsafe.
    * @param readDefaultSkuId - Reads the identifier of the delegate held in `Product.defaultSku`. See
    *   the association-identity note in the module header for why a plain field read is impossible here.
+   * @param accountContext - The acting principal, read once per write and handed to the lifecycle hooks
+   *   the two save members invoke. REQUIRED, and required for a reason review finding CR-1 makes
+   *   concrete: this class is the seam `src/config/container.ts` wires normal product and product-type
+   *   writes through, so a seam without a principal cannot stamp an audit column at all — and nothing
+   *   fails loudly when it does not. The port is the SAME collaborator
+   *   {@link MySqlProductRepository} and `./MySqlProductTypeRepository.ts` take, and the composition root
+   *   supplies the INVOCATION's context rather than the memoized one (SEC-AUTH-03), so a write inside a
+   *   transaction stamps the principal the route gate authorised.
    */
   public constructor(
     private readonly executor: ProductPersistenceExecutor,
     private readonly dependencyCleanup: ProductDependencyCleanup,
     private readonly readDefaultSkuId: DefaultSkuIdReader,
+    private readonly accountContext: AccountContextPort,
   ) {}
 
   /**
@@ -5485,10 +5503,47 @@ export class MySqlProductPersistence {
    * resolves carries the identifier the row was written with — and so `Product.isNew()` answers false
    * afterwards, which is what makes `saveProduct`'s fourth step a one-time gate.
    *
-   * ⚠️ THE AUDIT COLUMNS ARE WRITTEN AS THE ENTITY HOLDS THEM AND ARE NOT SET HERE. The legacy values
-   * are applied by the mapping layer's lifecycle hooks, whose port is
-   * `src/domain/base/AuditableEntity.ts` and whose stamping members `Product.preInsert` and
-   * `Product.preUpdate` already expose. Stamping them here would put the same decision in two places.
+   * ==============================================================================================
+   * ⚠️ THE AUDIT BLOCK IS STAMPED HERE, BECAUSE THIS IS THE FLUSH — REVIEW FINDING CR-1
+   * ==============================================================================================
+   * ⛔ THIS PARAGRAPH USED TO SAY THE OPPOSITE, AND IT WAS WRONG ON A FACT. It read "the audit columns are
+   * written as the entity holds them and are not set here … whose stamping members `Product.preInsert` and
+   * `Product.preUpdate` already expose", and `src/domain/product/Product.ts` DECLARES NEITHER MEMBER —
+   * correctly so, because `model/entity/Product.cfc` does not override the hooks either. So the decision
+   * this paragraph deferred to a second place existed in NO place: since the composition root wires normal
+   * product writes through this class, every one of them persisted whatever the entity happened to hold,
+   * which for an insert is nothing at all. The consequence was silent — missing or stale `created*` /
+   * `modified*` data, with no error anywhere.
+   *
+   * Hibernate invoked `preInsert`/`preUpdate` automatically as part of the flush the framework triggered at
+   * request end — `org/Hibachi/Hibachi.cfc` performs a double `ormFlush()` when the ORM reports no errors,
+   * with `flushAtRequestEnd=false`. A stateless Lambda invocation has no ORM session, no automatic flush
+   * and no request-end hook (mismatch M5, AAP §0.6.6), so nothing fires the hook unless a write seam calls
+   * it; `src/services/BaseService.ts` explicitly declines the job and places it behind the persister, which
+   * is this member.
+   *
+   * ⭐ THE FREE FUNCTIONS ARE CALLED, NOT A HOOK ON THE ENTITY, AND THAT ASYMMETRY IS LEGACY-FAITHFUL.
+   * `model/entity/Product.cfc` does NOT override the hooks, so a product received only the framework audit
+   * block at `org/Hibachi/HibachiEntity.cfc:L598-L649` and `:L657-L681`, and
+   * `src/domain/base/AuditableEntity.ts` is the port of exactly that block. `model/entity/ProductType.cfc:L305-L313`
+   * DOES override both, which is why {@link MySqlProductPersistence.saveProductType} calls the ENTITY's own
+   * hooks instead — there the override additionally refreshes a persisted column. Both members below are
+   * therefore stamped the same way `./MySqlProductRepository.ts` and `./MySqlProductTypeRepository.ts`
+   * respectively stamp theirs, so the two write paths for one table cannot disagree.
+   *
+   * ⚠️ THE ORDER IS FIXED: STAMP FIRST, COLLECT SECOND. {@link MySqlProductPersistence.collectProductValues}
+   * reads the four audit fields off the entity, so stamping after it would compose the statement from the
+   * PREVIOUS write's values and persist a row whose audit columns lag one save behind.
+   *
+   * ⚠️ WHICH FIELDS MOVE IS DECIDED INSIDE THE STAMPING FUNCTIONS, NOT HERE. On insert both timestamps take
+   * the identical instant and both account columns are written only for a persisted administrative actor;
+   * on update only `modifiedDateTime` moves and `createdByAccount` is never touched. Those gates are the
+   * legacy gates and are reproduced in `src/domain/base/AuditableEntity.ts`.
+   *
+   * ⚠️ AN ABSENT ACTOR IS A LEGITIMATE STATE AND IS NOT AN ERROR. `AccountContextPort` answers `undefined`
+   * when nobody is authenticated, the stamping functions accept that, and the legacy behaved identically:
+   * an unauthenticated request stamped the timestamps and left both account foreign keys unwritten. No
+   * system account is substituted (S9).
    *
    * ⚠️ THE AFFECTED-ROW COUNT IS DELIBERATELY NOT INSPECTED ON THE UPDATE PATH, because on that path it
    * describes the CONNECTION rather than the ROW — see {@link ProductPersistenceExecutor.executeMutation}.
@@ -5509,6 +5564,14 @@ export class MySqlProductPersistence {
 
     if (isInsert) {
       product.productID = createSlatwallUUID();
+    }
+
+    /* CR-1 — the flush's audit block, stamped before the statement is composed. See the doc block. */
+    const auditActor = this.accountContext.getCurrentAccount();
+    if (isInsert) {
+      applyPreInsertAudit(product, auditActor);
+    } else {
+      applyPreUpdateAudit(product, auditActor);
     }
 
     const writableValues = this.collectProductValues(product);
@@ -5646,15 +5709,49 @@ export class MySqlProductPersistence {
    * `src/services/BaseService.ts` and its two cleanup collaborators, not here.
    *
    * Identical in shape to {@link MySqlProductPersistence.saveProduct}, and identical for the same
-   * reasons: the entity's own `isNew()` decides, the identifier is minted on the insert path only, the
-   * audit columns are written as held, and the update path does not read the affected-row count. The one
-   * association is the SELF-REFERENCING parent at `model/entity/ProductType.cfc:L62`, whose identifier
-   * is read off the association object rather than from a scalar the domain does not carry.
+   * reasons: the entity's own `isNew()` decides, the identifier is minted on the insert path only, and the
+   * update path does not read the affected-row count. The one association is the SELF-REFERENCING parent
+   * at `model/entity/ProductType.cfc:L62`, whose identifier is read off the association object rather
+   * than from a scalar the domain does not carry.
    *
-   * ⚠️ `productTypeIDPath` IS WRITTEN AS THE ENTITY HOLDS IT AND IS NOT DERIVED HERE. `:L53` declares it
-   * a plain persistent column, `src/domain/product/ProductType.ts` owns the walk that reads it, and
-   * `model/service/ProductService.cfc:L294-L310` never recomputes it on save. Deriving it at this
-   * boundary would add behaviour the legacy save path does not have (AAP §0.7.3 S9).
+   * ==============================================================================================
+   * ⚠️ THE ENTITY'S OWN LIFECYCLE HOOK IS INVOKED HERE — REVIEW FINDING CR-1
+   * ==============================================================================================
+   * ⛔ THIS BLOCK USED TO SAY "`productTypeIDPath` IS WRITTEN AS THE ENTITY HOLDS IT AND IS NOT DERIVED
+   * HERE … deriving it at this boundary would add behaviour the legacy save path does not have". That
+   * reading was wrong about WHERE the derivation lives. `model/entity/ProductType.cfc:L305-L313` overrides
+   * both ORM hooks and each one rebuilds the path from the parent chain BEFORE delegating to the framework
+   * audit block, so the legacy save path did recompute it — inside the flush, not inside
+   * `model/service/ProductService.cfc:L294-L310`, which is why a reading confined to the service saw no
+   * derivation. `src/domain/product/ProductType.ts` carries a `TODO(boundary)` on those two hooks stating
+   * that in the legacy they fire themselves and here they MUST be called "immediately before the
+   * corresponding INSERT and UPDATE"; since the composition root wires normal product-type writes through
+   * this class, this is one of the two call sites that discharges it. Without the call a re-parented type
+   * persisted a STALE ancestry path and an unstamped audit block, and — as that TODO warns — nothing failed
+   * loudly.
+   *
+   * ⭐ THE HOOKS ARE CALLED, NOT THE FREE STAMPING FUNCTIONS, AND THE DIFFERENCE IS MATERIAL. `:L306` and
+   * `:L311` rebuild `productTypeIDPath` and only THEN call `super.preInsert()` / `super.preUpdate()`.
+   * `productTypeIDPath` is one of the columns this member writes, so calling only the audit functions would
+   * persist a stale path for any product type that has been re-parented. `./MySqlProductTypeRepository.ts`
+   * makes the identical call for the identical reason; the two write paths for this table now agree.
+   *
+   * ⚠️ `preUpdate`'s FIRST PARAMETER IS PASSED AS `undefined` DELIBERATELY. Hibernate supplied the row's
+   * pre-image in `struct oldData`; no legacy body reads it, and this adapter has no pre-image to offer —
+   * the update path composes a full-column assignment rather than a diff.
+   *
+   * ⚠️ AND THE REBUILD IS ALLOWED TO FAIL SAFE, WHICH IS RULE 3b's SECOND HALF. The rebuild walks
+   * `parentProductType` to the root, and `./rowMappers.ts` deliberately leaves that association
+   * UNRESOLVED for a hydrated child — an identifier-only parent would make
+   * `ProductType.getSimpleRepresentation` answer `undefined` and empty the feed's `g:product_type`. For
+   * such a child the walk finds no parent and yields the child's own identifier alone, which would FLATTEN
+   * the ancestry and leave the row self-contradictory: a `parentProductTypeID` naming a parent the path
+   * denies. `ProductType.getBaseProductType` reads `listFirst` of this very path, so a flattened path
+   * silently changes a product's discriminator. The hydrated path is therefore captured before the hook and
+   * put back exactly when the rebuild demonstrably had nothing to walk while the row demonstrably HAS a
+   * parent. Every other case keeps the hook's value: a resolved association means the walk was real, a
+   * detach that forgot its preserved key leaves nothing to restore, and a genuine root rebuilds to its own
+   * identifier — which is what `config/dbdata/SlatwallProductType.xml.cfm:L13-L15` seeds for all three.
    *
    * TEST PROVENANCE: NET-NEW, with `meta/tests/unit/IssuesTest.cfc:L51-L71` TRACEABLE for the
    * neighbouring nested-product-type population path.
@@ -5667,6 +5764,27 @@ export class MySqlProductPersistence {
 
     if (isInsert) {
       productType.productTypeID = createSlatwallUUID();
+    }
+
+    /* CR-1 — the two values rule 3b's restoration is decided from, read BEFORE the hook overwrites the
+     * first of them. See the doc block for why recomputing beats restoring in every other case. */
+    const hydratedProductTypeIDPath = productType.productTypeIDPath;
+    const preservedParentProductTypeID = readHydratedParentProductTypeID(productType);
+
+    /* CR-1 — the entity's own override, which rebuilds the ancestry path and then stamps the audit block. */
+    const auditActor = this.accountContext.getCurrentAccount();
+    if (isInsert) {
+      productType.preInsert(auditActor);
+    } else {
+      productType.preUpdate(undefined, auditActor);
+    }
+
+    if (
+      productType.parentProductType === undefined &&
+      preservedParentProductTypeID !== undefined &&
+      hydratedProductTypeIDPath !== undefined
+    ) {
+      productType.productTypeIDPath = hydratedProductTypeIDPath;
     }
 
     const writableValues = this.collectProductTypeValues(productType);

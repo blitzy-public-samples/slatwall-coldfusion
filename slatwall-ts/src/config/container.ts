@@ -2389,14 +2389,25 @@ function composeProductBaseServices(
  * which raises for a collaborator no in-scope file can supply. Reusing the adapter's own exports keeps one
  * statement of each refusal instead of two that could drift.
  *
+ * ⚠️ THE ACCOUNT CONTEXT IS A PARAMETER RATHER THAN A READ OFF `dependencies` — REVIEW FINDINGS CR-1 AND
+ * SEC-AUTH-03. Both collaborators built here stamp audit columns from it, and the two callers must supply
+ * DIFFERENT ones: the pool-bound graph has only the memoized fail-closed tier, while the write boundary has
+ * the INVOCATION's principal from {@link scopeBoundariesToInvocation}. Reading `dependencies.boundaries`
+ * here would silently give the boundary rebuild the memoized tier — which is exactly what it did until
+ * CR-1, and which `./skuSurface`'s equivalent avoids by taking the scoped object. Naming the collaborator
+ * makes the difference impossible to lose in a rebuild.
+ *
  * @param executor the statement executor — the pool-bound runner, or a transaction's own executor
  * @param dependencies the SKU half's dependencies, whose boundaries and unit of work are reused
+ * @param accountContext the principal both write collaborators stamp with — the invocation's inside a
+ *   boundary, the memoized fail-closed tier outside one
  * @param productRepositoryOverride a caller-supplied repository, honoured when present
  * @returns the repository and the persistence adapter
  */
 function composeProductWriteSurface(
   executor: TransactionScope['executor'],
   dependencies: SkuSurfaceDependencies,
+  accountContext: AccountContextPort,
   productRepositoryOverride?: ProductRepository,
 ): {
   readonly productRepository: ProductRepository;
@@ -2416,14 +2427,19 @@ function composeProductWriteSurface(
          * as the row it belongs to (M3). Passing the port directly compiled only because an earlier
          * revision declared the member loosely. */
         contentAssignment: unresolvableProductContentAssignmentFactory,
-        accountContext: boundaries.accountContext,
+        accountContext,
         urlTitleFilter: unresolvableImportUrlTitleFilter,
         readDefaultSkuId: readDefaultSkuIdOrRefuse,
       }),
+    /* CR-1 — THE FOURTH ARGUMENT IS THE PRINCIPAL, AND IT IS WHAT MAKES THIS SEAM AUDITED. This adapter is
+     * the one normal product and product-type writes go through (see {@link composeProductBaseServices} and
+     * {@link assembleProductService}); it now invokes the same lifecycle the repository adapters do, so it
+     * needs the same collaborator they take. */
     productPersistence: new MySqlProductPersistence(
       executor,
       boundaries.productDependencyCleanup,
       readDefaultSkuIdOrRefuse,
+      accountContext,
     ),
   };
 }
@@ -2524,6 +2540,13 @@ export function buildProductBoundaryGraph(
   const { productRepository, productPersistence } = composeProductWriteSurface(
     executor,
     dependencies.sku,
+    /* CR-1 / SEC-AUTH-03 — THE INVOCATION's PRINCIPAL, not the memoized tier. Every product write in
+     * production arrives here, because `../handlers/productHandler.ts` runs each one through
+     * `writeRunner.runWrite(authorization, …)`; so this is the argument that decides which account the
+     * audit columns of `SwProduct` and `SwProductType` name. Passing `dependencies.sku.boundaries`
+     * instead — which is what the omitted argument used to resolve to — handed both write collaborators
+     * the fail-closed memoized port. */
+    boundaries.accountContext,
   );
   const { productBaseService, productTypeBaseService } = composeProductBaseServices(
     productPersistence,
@@ -2574,6 +2597,12 @@ export function composeProductSurface(
   const { productRepository, productPersistence } = composeProductWriteSurface(
     statements.queryRunner,
     dependencies.sku,
+    /* CR-1 — the POOL tier's context, which with no override is the fail-closed
+     * {@link notImplementedAccountContextPort}. That is the correct value here and not an oversight: this
+     * graph serves READS, every write goes through `productWriteRunner` below, and a write attempted
+     * outside a boundary therefore RAISES rather than stamping an anonymous audit column. The pool-bound
+     * `MySqlSkuRepository` in {@link composeSkuSurface} is wired from the same tier for the same reason. */
+    boundaries.accountContext,
     dependencies.productRepository,
   );
   const { productBaseService, productTypeBaseService } = composeProductBaseServices(

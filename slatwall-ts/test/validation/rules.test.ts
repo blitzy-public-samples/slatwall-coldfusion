@@ -4340,9 +4340,9 @@ describe('NET-NEW — F5. `hasOneOptionPerOptionGroup` — the pure in-memory du
   // THE REASON IS LOCAL, AND IS DELIBERATELY NOT A CLAIM ABOUT ANY REGISTER'S BOUND: nothing in this
   // file mints a defect or mismatch identifier, so this hint receives no number here. Both ranges are
   // stated canonically, and only once, in the header of `src/ports/repositories/SkuRepository.ts` —
-  // AAP §0.6.7's **D1-D21** and AAP §0.6.6's **M1-M8**, both FROZEN. Nothing in this port mints an
-  // identifier beyond either range; a further source observation is recorded by its `path:Lnnn`
-  // locator instead.
+  // AAP §0.6.7's **D1-D21** and AAP §0.6.6's **M1-M8**, both FROZEN, over which that same header defines
+  // exactly five CORRECTION ALIASES: D22-D25 and M9. Nothing in this port mints a sixth; a further source
+  // observation is recorded by its `path:Lnnn` locator instead.
   //
   // ⛔ THIS COMMENT HAS BEEN WRONG TWICE, AND BOTH ERRORS ARE WORTH NAMING. It first read "AAP §0.6.7
   // fixes the register at D1-D21 and inventing a <port-minted number> would corrupt it" — wrong, because
@@ -4351,12 +4351,16 @@ describe('NET-NEW — F5. `hasOneOptionPerOptionGroup` — the pure in-memory du
   // but it substituted each numeral with a PROSE DESCRIPTION mechanically, including inside this
   // sentence's range and list positions, leaving a paragraph that ran two half-sentences together and
   // read "plus the source extension the logical-versus-physical naming divergence [...] and the three
-  // contract BOTH FROZEN AT THE AAP's OWN BOUNDS". Review finding F11 reported that residue. The claim
-  // above is now the only one this comment makes, and it is local and true.
+  // contract BOTH FROZEN AT THE AAP's OWN BOUNDS". Review finding F11 reported that residue, and review
+  // finding CR-2 then reported the other half of it: withdrawing the numerals outright removed the audit
+  // trail three rounds of correspondence had already been written against. They are restored as ALIASES
+  // over the frozen ranges, defined once in that header. The claim above is now the only one this comment
+  // makes, and it is local and true.
   //
-  // ⚠️ THE SUBSTANTIVE POINT SURVIVES BOTH ERRORS: the FROZEN range AAP §0.6.7 fixes is not a ceiling
-  // on what may be OBSERVED, only on what may be NUMBERED — which is why observations beyond it are
-  // carried by locator, and why no file but that header may state a bound at all.
+  // ⚠️ THE SUBSTANTIVE POINT SURVIVES ALL THREE REVISIONS: the FROZEN range AAP §0.6.7 fixes is not a
+  // ceiling on what may be OBSERVED, only on what the PLAN numbers — which is why an observation outside
+  // it is carried by locator, why the five aliases are declared as corrections rather than register
+  // entries, and why no file but that header may state a bound or an alias at all.
 
   /** A SKU whose options are described as `[optionID, optionGroupID]` pairs. */
   function skuWithGroups(pairs: readonly (readonly [string, string])[]): Sku {
