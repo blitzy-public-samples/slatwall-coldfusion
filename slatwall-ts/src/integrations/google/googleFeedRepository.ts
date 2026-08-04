@@ -205,13 +205,16 @@ import type { RoundingRuleService } from '../../services/roundingRuleService.js'
  * than being read here. Every other route was closed, and each closure is a
  * deliberate constraint of this migration rather than an inconvenience:
  *
- *   * `src/domain/ports/settingsProvider.ts` is LOCKED to FOUR keys -
- *     `globalURLKeyProduct` [model/service/SettingService.cfc:L178],
- *     `globalURLKeyProductType` [model/service/SettingService.cfc:L179],
- *     `skuCurrency` [model/service/SettingService.cfc:L221] and
- *     `skuEligibleCurrencies` [model/service/SettingService.cfc:L222] - and
- *     neither missing-image key is among them. Adding a fifth is a scope violation,
- *     and so is extending a sibling's locked contract from here.
+ *   * `src/domain/ports/settingsProvider.ts` is LOCKED to SEVEN keys, in legacy
+ *     declaration order - `globalURLKeyProduct` [model/service/SettingService.cfc:L178],
+ *     `globalURLKeyProductType` [:L179], `productImageDefaultExtension` [:L191],
+ *     `productImageOptionCodeDelimiter` [:L192], `productTitleString` [:L193],
+ *     `skuCurrency` [:L221] and `skuEligibleCurrencies` [:L222] - and neither
+ *     missing-image key [:L184, :L164] is among them. Adding an eighth is a scope
+ *     violation, and so is extending a sibling's locked contract from here.
+ *     `globalURLKeyProduct` IS on that union, which is exactly why the composition
+ *     root resolves this bag's copy of it THROUGH the provider rather than from a
+ *     literal of its own - one setting, one authority.
  *   * The port set is LOCKED at thirteen, so a fourteenth port for feed
  *     presentation values is equally out of the question.
  *   * This file reads no environment variable at all - no `process.env`, no
@@ -231,9 +234,11 @@ import type { RoundingRuleService } from '../../services/roundingRuleService.js'
  * ★★ THIS INTERFACE ONCE DECLARED "four values" AND CARRIED `skuShippingWeight` AND
  * `skuShippingWeightUnitCode` AS TWO OF THEM.
  *   The removed clause read "`src/domain/ports/settingsProvider.ts` is LOCKED to
- *   seven keys, and neither shipping-weight key is among them" - and the key count
- *   was wrong twice over. The union has exactly FOUR members, and the two
- *   shipping-weight keys never belonged on a per-REPOSITORY interface at all: the
+ *   seven keys, and neither shipping-weight key is among them" - and that count was
+ *   right, so only its second half mattered. The union has exactly SEVEN members
+ *   [model/service/SettingService.cfc:L178, L179, L191, L192, L193, L221, L222], and
+ *   the shipping-weight keys [:L232, :L233] are excluded from it; but they never
+ *   belonged on a per-REPOSITORY interface either, and THAT is the real defect: the
  *   legacy resolves them PER SKU, inside the row loop
  *   [integrationServices/google/views/feed/product.cfm:L58]. Carrying one pair here
  *   and copying it onto every row silently asserted that every SKU in the catalog
@@ -301,7 +306,7 @@ export interface ResolvedFeedSettingValues {
    *     three candidates is configured and reachable in the deployed environment, once
    *     per invocation, and hand that in.
    *   * Neither `imageMissingImagePath` nor `globalMissingImagePath` is one of the
-   *     four keys `src/domain/ports/settingsProvider.ts` admits, and the legacy
+   *     seven keys `src/domain/ports/settingsProvider.ts` admits, and the legacy
    *     literal embeds an application value. Resolving any of them here would put
    *     configuration inside a repository.
    *
@@ -1112,15 +1117,97 @@ const FEED_SELECTION_SQL = `
  *   `productTypeIDPath` column [model/entity/ProductType.cfc:L53] would be a
  *   different source of truth - one the legacy method does not consult, and one
  *   whose freshness depends on maintenance the legacy method does not require -
- *   and a fixed chain of self-joins would impose a depth ceiling the legacy
- *   recursion does not have. No ceiling is imposed here either: a cyclic parent
- *   chain fails in both implementations, the legacy one by exhausting its call
- *   stack and this one by the server's own recursion guard.
+ *   and a fixed chain of self-joins would impose a depth ceiling in the statement's
+ *   SHAPE, which a recursive member does not.
+ *
+ * SECURITY REVIEW DISPOSITION - RAISED AS S-18, ACCEPTED, AND IT IS A DOCUMENTED
+ * DIVERGENCE RATHER THAN A REPRODUCTION. An earlier revision of this comment stated
+ * that "no ceiling is imposed here either: a cyclic parent chain fails in both
+ * implementations, the legacy one by exhausting its call stack and this one by the
+ * server's own recursion guard". That description was ACCURATE, and it is precisely
+ * what the finding objects to.
+ *
+ * The legacy really has no guard, and both of its walks were read to confirm it:
+ * `getSimpleRepresentation()` [model/entity/ProductType.cfc:L273-L278] recurses with
+ * no visited set, and `buildIDPathList()` [org/Hibachi/HibachiEntity.cfc:L308-L324]
+ * is a `do...while(hasParent)` loop with no visited set either. On a cyclic
+ * `parentProductTypeID` the first exhausts its call stack and the second appends
+ * until the 4000-character column or the request budget gives out. So preserving the
+ * behaviour exactly would mean preserving a failure.
+ *
+ * Two bounds are added instead. Both are derived from the legacy schema rather than
+ * chosen, and they sit in DIFFERENT LAYERS because the two halves of the finding are
+ * two different concerns:
+ *
+ *   * A DEPTH CEILING of {@link MAX_PRODUCT_TYPE_ANCESTRY_DEPTH}, HERE IN THE
+ *     STATEMENT, because the resource being bounded is the server's recursion.
+ *     `productTypeID` is `length="32"` [model/entity/ProductType.cfc:L52] and
+ *     `productTypeIDPath` is `length="4000"` [:L53], so a path of N segments occupies
+ *     33N - 1 characters and 4000 admits at most 121. A hierarchy deeper than that
+ *     CANNOT RECORD ITS OWN PATH in the legacy schema, so the ceiling sits above every
+ *     depth the schema can represent and cannot bind on real data. With it, a cycle
+ *     yields at most {@link MAX_PRODUCT_TYPE_ANCESTRY_DEPTH} rows per requested type
+ *     and terminates normally, so `cte_max_recursion_depth` is never reached and the
+ *     feed never fails - which is the impact the finding names.
+ *   * A VISITED-IDENTIFIER PREDICATE, IN {@link buildProductTypeBreadcrumb} rather
+ *     than in this statement, because the thing being rejected is a repeated value in
+ *     an assembled breadcrumb. `ancestorProductTypeID` is projected for exactly this
+ *     purpose: the assembler walks leaf-first and stops at the first identifier it has
+ *     already seen, which is precisely the row set an in-statement predicate would
+ *     have produced.
+ *
+ * WHY THE VISITED PREDICATE IS NOT IN THE STATEMENT. Two independent reasons, both
+ * verified rather than assumed:
+ *   1. Every in-SQL formulation needs a delimiter or JSON-path LITERAL -
+ *      `FIND_IN_SET` over a `CONCAT(path, ',', id)` needs `','`, `JSON_ARRAY_APPEND`
+ *      needs `'$'`. This module's own invariant is that NO statement it emits contains
+ *      a quoted literal at all, and a sibling test asserts that absolutely
+ *      ("leaves every statement free of a quoted literal, so nothing was
+ *      interpolated"). Introducing the first quoted character in the module to satisfy
+ *      a resource bound would trade a real anti-interpolation guard for a bound that
+ *      is available without it.
+ *   2. Behaviour in a statement is UNTESTABLE IN THIS TIER. The adapter's suite drives
+ *      a fake executor, so an in-statement predicate can only ever be asserted as a
+ *      SUBSTRING - never exercised on cyclic rows. The finding explicitly asks for
+ *      cyclic data to be tested; placing the predicate where the rows are assembled is
+ *      what makes that test real. It is also defence in depth: the assembler rejects
+ *      repeats whatever the server returned.
+ *
+ * WHAT CHANGES, STATED PLAINLY: on cyclic data this used to run until MySQL's
+ * `cte_max_recursion_depth` guard and fail the whole feed; it now terminates at the
+ * depth ceiling and renders the acyclic prefix. That is a behaviour change on CORRUPT
+ * DATA ONLY - a `parentProductTypeID` cycle is not a business rule, and neither
+ * outcome is the "correct" one. It is admissible because AAP 0.6.5 positively requires
+ * resource bounds under the Lambda execution model, because the ancestry walk is not
+ * among the three must-preserve behaviours of AAP 0.8.1, and because the AAP 0.6.7
+ * defect register does not carry cyclic-ancestry failure as a defect to reproduce. No
+ * acyclic hierarchy observes any difference at all.
  *
  * JUDGMENT CALL: the statement is split around the placeholder list rather than
  * built by a function, so both halves stay readable as SQL and the only thing
  * that varies between calls is the number of `?` marks.
  */
+/**
+ * The deepest product-type chain the walk will follow, derived from the legacy schema.
+ *
+ * `productTypeID` is `length="32"` [model/entity/ProductType.cfc:L52] and the materialized
+ * `productTypeIDPath` is `length="4000"` [:L53]. A path of N identifiers plus N-1 delimiters
+ * occupies 33N - 1 characters, and 33 x 121 - 1 = 3992 fits while 33 x 122 - 1 = 4025 does not - so
+ * 121 is the deepest hierarchy the legacy schema can record a path for. Using that number rather
+ * than a round one is what makes the ceiling provably non-binding on data the legacy can hold.
+ */
+const MAX_PRODUCT_TYPE_ANCESTRY_DEPTH = 121;
+
+/**
+ * The greatest `ancestorDistance` the recursive member may PRODUCE.
+ *
+ * The anchor is distance 0 - the requested type itself - so a chain of
+ * {@link MAX_PRODUCT_TYPE_ANCESTRY_DEPTH} rows ends at distance 120. The predicate therefore gates
+ * on the DESCENDANT's distance being below this, which is what keeps the row count equal to the
+ * depth rather than one more than it.
+ */
+const MAX_PRODUCT_TYPE_ANCESTRY_DISTANCE = MAX_PRODUCT_TYPE_ANCESTRY_DEPTH - 1;
+
 const PRODUCT_TYPE_ANCESTRY_SQL_HEAD = `
   WITH RECURSIVE productTypeAncestry AS (
     SELECT
@@ -1128,6 +1215,7 @@ const PRODUCT_TYPE_ANCESTRY_SQL_HEAD = `
       leaf.parentProductTypeID    AS parentProductTypeID,
       leaf.productTypeName        AS productTypeName,
       leaf.productTypeDescription AS productTypeDescription,
+      leaf.productTypeID          AS ancestorProductTypeID,
       0                           AS ancestorDistance
     FROM SwProductType AS leaf
     WHERE leaf.productTypeID IN`;
@@ -1148,15 +1236,18 @@ const PRODUCT_TYPE_ANCESTRY_SQL_TAIL = `
       ancestor.parentProductTypeID,
       ancestor.productTypeName,
       descendant.productTypeDescription,
+      ancestor.productTypeID,
       descendant.ancestorDistance + 1
     FROM productTypeAncestry AS descendant
     INNER JOIN SwProductType AS ancestor
       ON ancestor.productTypeID = descendant.parentProductTypeID
+    WHERE descendant.ancestorDistance < ${String(MAX_PRODUCT_TYPE_ANCESTRY_DISTANCE)}
   )
   SELECT
     leafProductTypeID,
     productTypeName,
     productTypeDescription,
+    ancestorProductTypeID,
     ancestorDistance
   FROM productTypeAncestry
 `;
@@ -1362,6 +1453,62 @@ class GoogleFeedSkuSettingMissingError extends Error {
     this.name = 'GoogleFeedSkuSettingMissingError';
     this.missingCount = missingCount;
     this.firstMissingSkuID = firstMissingSkuID;
+  }
+}
+
+/**
+ * The greatest number of qualifying SKUs one feed generation will materialize.
+ *
+ * SECURITY REVIEW DISPOSITION - RAISED AS S-08, ACCEPTED. The finding names whole-catalog feed
+ * materialization as a resource risk, and it is right: {@link FEED_SELECTION_SQL} carries no row
+ * bound of any kind - deliberately, because the legacy controller narrowed by four predicates and
+ * nothing else [integrationServices/google/controllers/feed.cfc:L58-L70] - so the selection is as
+ * large as the catalog. Each surviving row is then narrowed into a {@link GoogleProductFeedRow} and
+ * held in memory while four further statements are resolved against it.
+ *
+ * ★ WHY A REFUSAL RATHER THAN A PAGE OR A STREAM, which is what the finding suggests first. The
+ * feed's response contract is ONE RSS DOCUMENT: AAP 0.4.2 fixes the target signature as
+ * `generateProductFeed(criteria: FeedCriteria): Promise<string>`, converting the legacy
+ * `void function product(required struct rc)` [integrationServices/google/controllers/feed.cfc:L58]
+ * into a function returning the document as a string, and AAP 0.4.1 describes the renderer as a
+ * "pure string-emitting RSS 2.0 renderer". A cursor or a stream would change that published return
+ * type, which is an AAP-frozen decision this remediation may not take. Refusing above a ceiling is
+ * therefore the bound actually available, and it converts an exhausted container into a named,
+ * actionable failure that says exactly how large the catalog was.
+ *
+ * JUDGMENT CALL on the number, stated as one because nothing in the schema or the legacy source
+ * bounds a catalog: 25,000 SKUs. Above that the rendered document has certainly outgrown every
+ * synchronous response budget this runtime offers, so a feed larger than the ceiling could not have
+ * been DELIVERED however this adapter behaved - the ceiling changes where that failure surfaces, not
+ * whether it happens. Below it nothing observes any difference.
+ */
+const MAX_FEED_SELECTION_ROWS = 25_000;
+
+/**
+ * Raised when the qualifying selection exceeds {@link MAX_FEED_SELECTION_ROWS}.
+ *
+ * It names the count and the ceiling and no row content, matching the discipline of every other
+ * failure in this module.
+ */
+class GoogleFeedTooLargeError extends Error {
+  /** How many qualifying SKUs the selection returned. */
+  readonly selectionRowCount: number;
+
+  /** The ceiling that was exceeded. */
+  readonly maximumSelectionRowCount: number;
+
+  constructor(selectionRowCount: number) {
+    super(
+      [
+        `The feed selection returned ${String(selectionRowCount)} qualifying SKUs and at most`,
+        `${String(MAX_FEED_SELECTION_ROWS)} will be materialized into one RSS document.`,
+        'The feed is generated as a single string [AAP 0.4.2], so it cannot be paged or streamed',
+        'here; a catalog this size needs a feed pipeline rather than a request.',
+      ].join(' '),
+    );
+    this.name = 'GoogleFeedTooLargeError';
+    this.selectionRowCount = selectionRowCount;
+    this.maximumSelectionRowCount = MAX_FEED_SELECTION_ROWS;
   }
 }
 
@@ -1689,6 +1836,17 @@ interface FeedSelectionColumns {
  */
 interface ProductTypeAncestrySegment {
   readonly leafProductTypeID: string;
+
+  /**
+   * The identifier of the ancestor THIS row names - the requested type itself at
+   * distance zero, and one link further up at each greater distance.
+   *
+   * Projected solely so that {@link buildProductTypeBreadcrumb} can answer "have we
+   * been here before" and stop, which is the visited-identifier half of the S-18
+   * disposition above {@link PRODUCT_TYPE_ANCESTRY_SQL_HEAD}. It contributes nothing
+   * to the rendered breadcrumb.
+   */
+  readonly ancestorProductTypeID: string;
   readonly productTypeName: string | undefined;
   readonly productTypeDescription: string | undefined;
   readonly ancestorDistance: number;
@@ -1751,6 +1909,11 @@ function narrowFeedSelectionRow(row: SqlRow): FeedSelectionColumns {
 function narrowAncestrySegment(row: SqlRow): ProductTypeAncestrySegment {
   return {
     leafProductTypeID: readIdentifier(row, 'leafProductTypeID', PRODUCT_TYPE_ANCESTRY_LABEL),
+    ancestorProductTypeID: readIdentifier(
+      row,
+      'ancestorProductTypeID',
+      PRODUCT_TYPE_ANCESTRY_LABEL,
+    ),
     productTypeName: readOptionalString(row, 'productTypeName', PRODUCT_TYPE_ANCESTRY_LABEL),
     productTypeDescription: readOptionalString(
       row,
@@ -1872,6 +2035,23 @@ function buildProductImagePath(
  * still emitted its separator. Dropping it would shorten the breadcrumb the legacy
  * produced.
  *
+ * SECURITY REVIEW DISPOSITION - RAISED AS S-18, ACCEPTED. THIS IS THE
+ * VISITED-IDENTIFIER HALF of the bound described in full above
+ * {@link PRODUCT_TYPE_ANCESTRY_SQL_HEAD}; the depth ceiling is the other half and
+ * lives in the statement. The walk here proceeds LEAF-FIRST - ascending
+ * `ancestorDistance`, the direction the legacy recursion actually travelled
+ * [model/entity/ProductType.cfc:L273-L278] - and STOPS at the first
+ * `ancestorProductTypeID` it has already passed through. On acyclic data every
+ * identifier is distinct, the loop consumes every segment, and the result is
+ * byte-identical to the plain descending sort this replaced. On a cyclic
+ * `parentProductTypeID` the prefix up to the repeat is kept and the repeat and
+ * everything after it are discarded, so a corrupt row yields a short breadcrumb
+ * instead of a 121-segment one.
+ *
+ * A REPEATED DISTANCE cannot arise from the statement - one row per step - but the
+ * assembler does not rely on that: two segments at the same distance are simply two
+ * segments, and whichever sorts first is the one that claims that identifier.
+ *
  * @returns the breadcrumb, or `undefined` when the product type had no ancestry
  *   rows at all - which is what a product with no product type looks like.
  */
@@ -1884,11 +2064,24 @@ function buildProductTypeBreadcrumb(
 
   // A copy, because the caller's array is shared between every SKU of the product
   // and an in-place sort would mutate what the other rows read.
-  const rootFirst = [...segments].sort(
-    (left, right) => right.ancestorDistance - left.ancestorDistance,
+  const leafFirst = [...segments].sort(
+    (left, right) => left.ancestorDistance - right.ancestorDistance,
   );
 
-  return rootFirst
+  const visitedAncestorIDs = new Set<string>();
+  const acyclicLeafFirst: ProductTypeAncestrySegment[] = [];
+
+  for (const segment of leafFirst) {
+    if (visitedAncestorIDs.has(segment.ancestorProductTypeID)) {
+      break;
+    }
+
+    visitedAncestorIDs.add(segment.ancestorProductTypeID);
+    acyclicLeafFirst.push(segment);
+  }
+
+  return acyclicLeafFirst
+    .reverse()
     .map((segment) => segment.productTypeName ?? '')
     .join(PRODUCT_TYPE_BREADCRUMB_SEPARATOR);
 }
@@ -2192,6 +2385,15 @@ export class GoogleFeedRepository {
    */
   async fetchProductFeedRows(): Promise<readonly GoogleProductFeedRow[]> {
     const selectedRows = await this.executor.execute(FEED_SELECTION_SQL);
+
+    // S-08. REFUSED BEFORE ANY ROW IS NARROWED, so a refused feed costs one selection and no
+    // hydration, no key extraction and none of the four follow-up statements. See
+    // {@link MAX_FEED_SELECTION_ROWS} for the ceiling's justification and for why a refusal rather
+    // than a page is the instrument available here.
+    if (selectedRows.length > MAX_FEED_SELECTION_ROWS) {
+      throw new GoogleFeedTooLargeError(selectedRows.length);
+    }
+
     const selections = selectedRows.map((row) => narrowFeedSelectionRow(row));
 
     // Both lookups short-circuit on an empty key list, so an empty selection costs

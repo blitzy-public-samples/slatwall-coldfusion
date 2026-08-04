@@ -51,11 +51,11 @@
  * ports/entities relationship - entities take port interfaces as constructor parameters while
  * ports return entity types - exists solely in the type graph and never at runtime. There is no
  * barrel file to force eager evaluation of that cycle, and none may be created. This port is the
- * sharpest live instance of that cycle in the folder: this file imports four entity types, while
- * `Product` is constructed with a narrow sale-price collaborator whose only method is declared on
- * the service surface this port feeds. `import type` on both sides is exactly what makes it safe.
+ * sharpest live instance of that cycle in the folder: `Product` takes `SalePriceResolver`, declared
+ * in THIS file, as an injected constructor parameter, while this file imports four entity types.
+ * `import type` on both sides is exactly what makes it safe.
  *
- * THE METHOD COUNT IS EIGHT, AND HERE IS THE ARITHMETIC
+ * THE METHOD COUNT IS SEVEN, AND HERE IS THE ARITHMETIC
  *
  *     6  declared functions in model/dao/PromotionDAO.cfc - every one of them public, every one of
  *          them ported, with no private helper and no seventh declaration in the file:
@@ -67,10 +67,12 @@
  *            getSalePricePromotionRewardsQuery  [model/dao/PromotionDAO.cfc:L298]
  *   + 1  the rounding-rule lookup `getRoundingRuleQuery` [model/dao/RoundingRuleDAO.cfc:L51], the
  *          only declaration in that 69-line DAO, hosted HERE.
- *   + 1  the rounding-rule WRITE `saveRoundingRule`, which is the persistence half of
- *          `super.save(argumentcollection=arguments)` [model/service/RoundingRuleService.cfc:L63].
- *          Hosted here for the same reason the lookup is - see the recorded change below.
- *   = 8  methods. Locked.
+ *   = 7  METHODS. LOCKED.
+ *
+ * No eighth method may be declared. In particular NO ROUNDING-RULE WRITE and no rounding-rule
+ * delete: `RoundingRuleService.saveRoundingRule` [model/service/RoundingRuleService.cfc:L56] is a
+ * service-tier concern, and neither the transformation plan nor this port's requirements place a
+ * rounding-rule write here. Adding one would invent a requirement.
  *
  * THERE IS NO FOURTEENTH PORT, AND THERE IS NO `roundingRuleRepository`
  * `src/domain/ports/` holds exactly thirteen port modules and the count is locked. Hosting the
@@ -79,30 +81,41 @@
  * not arbitrary - `PromotionReward.roundingRule` is the association that makes discount rounding
  * reachable at all, so the lookup and the rewards that need it belong to the same contract.
  *
- * A ROUNDING-RULE WRITE NOW APPEARS HERE, AND THIS IS THE RECORD OF THAT CHANGE
- * This paragraph previously read that no write belonged here, that `RoundingRuleService.saveRoundingRule`
- * [model/service/RoundingRuleService.cfc:L56] was "a service-tier concern", and that adding a write
- * "would invent a requirement" - closing with the condition that "if a write is later proved
- * unavoidable, that is a plan change to be recorded". That condition has now been met, so the change
- * is recorded here rather than made silently.
- *
- * WHAT PROVED IT UNAVOIDABLE. The legacy method's body is two things: evict the memo
+ * A ROUNDING-RULE WRITE BRIEFLY APPEARED HERE, AND THIS IS THE RECORD OF ITS REMOVAL
+ * For one revision this port declared an EIGHTH method, `saveRoundingRule`, and a long passage here
+ * argued for it. The argument ran: the legacy method's body is two things - evict the memo
  * [model/service/RoundingRuleService.cfc:L57-L61], then `return super.save(argumentcollection=arguments)`
- * [model/service/RoundingRuleService.cfc:L63]. The target ported the eviction and dropped the save,
- * so a rule handed to `saveRoundingRule` was evicted from the cache and then discarded - the caller
- * received its own object back and nothing reached `SwRoundingRule`. Interface parity is satisfied by
- * a method that EXISTS; it is not satisfied by one that performs half of what it names. And the half
- * that went missing is the persistent half, which is the one a caller cannot detect the absence of.
+ * [model/service/RoundingRuleService.cfc:L63] - and the target had ported the eviction and dropped
+ * the save, so a rule handed to `saveRoundingRule` was evicted from the cache and then discarded;
+ * therefore a write was "unavoidable", and since this contract already owned `SwRoundingRule`
+ * through the lookup above, the write belonged here too.
  *
- * WHY HERE AND NOT A NEW PORT. The port count stays thirteen and `roundingRuleRepository.ts` still
- * does not exist. This port ALREADY OWNS the `SwRoundingRule` table through the lookup above, for the
- * reason given there, and a contract that owns a table's read is the contract that owns its write.
- * Routing the write anywhere else would either create the fourteenth port the count forbids or
- * scatter one table across two contracts. Note what is NOT added: no delete. The legacy component
- * overrides save and never overrides delete [model/service/RoundingRuleService.cfc:L56], and that
- * asymmetry is reproduced rather than tidied.
+ * THE OBSERVATION WAS ACCURATE AND THE CONCLUSION WAS NOT AVAILABLE. The dropped `super.save` is
+ * real, and it is recorded where it belongs - as a `LEGACY-NOTE` on
+ * `src/services/roundingRuleService.ts`, naming exactly what is not reproduced. What does not follow
+ * is that this port may grow a member. Two independent reasons:
  *
- * The method count above therefore reads EIGHT, not seven. Still locked.
+ *   * THE METHOD COUNT IS THE AUTHORITY, and it is SEVEN. This port's own requirements state that
+ *     `RoundingRuleService.saveRoundingRule` is a service-tier concern, that no rounding-rule write
+ *     belongs here, and that adding one "would invent a requirement". They further state that if a
+ *     write were later proved unavoidable, that would be A PLAN CHANGE TO BE RECORDED - a plan
+ *     change is authored against the plan, not asserted from inside the file it would license.
+ *     Deciding in this file that the condition had been met is precisely the pre-emption the
+ *     instruction forbids.
+ *   * THE WRITE IS OUT OF SCOPE, NOT MERELY UNBUDGETED. `super.save(argumentcollection=arguments)`
+ *     is framework-inherited generic CRUD from `HibachiService` - there is no hand-written legacy
+ *     statement to port, which is why no DAO function corresponds to it. `saveRoundingRule` has ZERO
+ *     callers anywhere in the legacy codebase; it is an admin/framework surface reached through the
+ *     Hibachi save dispatcher. An unexercised framework-inherited write is exactly the kind of
+ *     branch this slice ports as a documented pass-through rather than implementing.
+ *
+ * "A save that silently does not save" was the sharpest line in the withdrawn argument, and it is
+ * answered rather than ignored: the gap is now DOCUMENTED at the service method with a
+ * `LEGACY-NOTE`, so a caller reading the method finds out what it does and does not do. That is the
+ * established treatment in this subtree for an out-of-scope branch reachable from an in-scope file -
+ * the same treatment `ProductService.processProduct_addProductReview` and the subscription SKU
+ * branches receive - and it costs no interface parity, because parity is a property of the SIGNATURE
+ * and the signature is unchanged.
  *
  * THIS PORT SITS DIRECTLY ON A NAMED MUST-PRESERVE AREA (B2)
  * The behaviour that must survive this migration exactly includes "promotion discount math together
@@ -156,14 +169,7 @@
  * database-product-name probe [config/configORM.cfm:L1-L15]. No dialect parameter appears on this
  * port.
  *
- * THE WRITE SIDE IS INTENT-BASED, WHICH IS WHY THIS PORT CARRIES NO PROMOTION-ENTITY WRITE
- * ★ THIS HEADING READ "WHICH IS WHY THIS PORT HAS NO WRITES AT ALL", and the absolute form did not
- * survive `saveRoundingRule`. What the paragraph below actually argues is narrower and still exactly
- * true: no PROMOTION-ENTITY write belongs here. The one write this port does carry is against
- * `SwRoundingRule`, a table this contract already owned the read of, and it is no counterexample to
- * anything below.
- *
- * There is no
+ * THE WRITE SIDE IS INTENT-BASED, WHICH IS WHY THIS PORT HAS NO WRITES AT ALL There is no
  * entity-lifecycle method here: no load-by-identifier, no save and no delete, for `Promotion`,
  * `PromotionPeriod`, `PromotionCode`, `PromotionQualifier`, `PromotionReward`, `PromotionApplied`
  * or `PromotionAccount`. That is a positive architectural decision rather than an omission, and it
@@ -181,15 +187,38 @@
  * `model/entity/PromotionAccount.cfc` is inert in this slice - no service references it and
  * `PromotionService` never touches it - so it gets no method here either.
  *
- * THIS FILE EXPORTS EXACTLY ONE INTERFACE PLUS ITS TWO READ PROJECTIONS. The narrow sale-price
- * collaborator that the `Product` entity takes as a constructor parameter - replacing the
- * service-locator call at [model/entity/Product.cfc:L519] under T2 - was previously co-located here
- * and exported, on the reasoning that the port count is locked at thirteen so no new file was
- * available. That reasoning is withdrawn: the locked inventory counts EXPORTED CONTRACTS, not
- * files, so co-locating a collaborator interface did not keep it out of the budget. It is declared
- * module-locally inside `src/domain/entities/product.ts` instead, and the relocation note further
- * down records where it went and who satisfies it. Its single method remains the only member of
- * `PromotionService`'s public surface that an ENTITY reaches for.
+ * THIS FILE EXPORTS TWO INTERFACES PLUS TWO READ PROJECTIONS, AND THAT COUNT IS PRESCRIBED. The
+ * second interface is `SalePriceResolver`, the narrow sale-price collaborator that replaces the
+ * service-locator call at [model/entity/Product.cfc:L519] under T2. It is co-located and exported
+ * here BECAUSE `src/domain/ports/` is locked at thirteen FILES and no fourteenth may be created; it
+ * is not a fourteenth port but a supporting interface of this one. Its own docblock, below, carries
+ * the full justification and the record of the one revision in which it was un-exported.
+ *
+ * Its single method is the only member of `PromotionService`'s public surface that an ENTITY-tier
+ * concern reaches for, AND THE ENTITY DOES REACH FOR IT. `src/domain/entities/product.ts` takes this
+ * interface as an OPTIONAL injected collaborator and ports `getSalePriceDetailsForSkus()`
+ * [model/entity/Product.cfc:L517-L522] on top of it - §3.9 branch (a), whose precondition is
+ * satisfied precisely because this port exposes a member that can serve the reach.
+ *
+ * ★ THE OBJECTION THAT ARGUED OTHERWISE IS ANSWERED HERE, BECAUSE IT IS THE ONE A READER WILL RAISE.
+ * One revision recorded that "no entity in this slice actually holds this port", on the reasoning
+ * that "the raw-query member on THIS port returns unreduced, unrounded rows, and the entity cannot
+ * apply the rounding rule because `roundingRuleService` is outside its legal import surface, so
+ * calling the raw member under a name promising rounded prices would be a money bug dressed as a
+ * port call". Every clause of that is TRUE OF THE RAW MEMBER - `getSalePricePromotionRewardsQuery`,
+ * method 6 - and it is exactly why the entity must not call THAT one. It is not true of
+ * `SalePriceResolver`, whose contract states that its sale price has ALREADY had the rounding rule
+ * applied where the row carried a rounding-rule identifier
+ * [model/service/PromotionService.cfc:L1024-L1028]. Two different contracts over the same subject
+ * matter: the entity is denied the raw one and given the reduced one, which is the whole reason the
+ * pair is published from one file.
+ *
+ * The hydration path still supplies the RESOLVED VALUE as well, and that is not a rival arrangement:
+ * `src/repositories/mysql/mysqlProductRepository.ts` resolves the map before it constructs a product
+ * so the memo [model/entity/Product.cfc:L517-L521] arrives pre-seeded and the reach never runs, and
+ * forwards this collaborator alongside it so a product the index had no entry for can still discharge
+ * the reach. `src/handlers/bootstrap.ts` satisfies the contract for both, and extends it on its
+ * request scope so a hand-built product has a satisfier too.
  *
  * FETCH SHAPE, AND WHY LAZINESS IS NOT SIMULATED (T3)
  * `ORMExecuteQuery`, the tag-syntax queries, `super.save()`, `super.delete()` and Hibernate's lazy
@@ -449,8 +478,8 @@
  *
  * The asymmetry that justifies publishing ports before entities: an entity body actually CALLS port
  * methods - the locator site at [model/entity/Product.cfc:L519] is exactly such a call, and
- * `Product` will invoke `getSalePriceDetailsForProductSkus` through its injected collaborator -
- * whereas a port needs only a type name and a module path from an entity. This
+ * `Product` will invoke `SalePriceResolver.getSalePriceDetailsForProductSkus` through the port
+ * declared below - whereas a port needs only a type name and a module path from an entity. This
  * file returns `PromotionReward`, `RoundingRule`, `PromotionPeriod` and `PromotionCode` values and
  * never invokes a member of any of them.
  *
@@ -624,8 +653,7 @@ export interface SalePricePromotionRewardRow {
 }
 
 /**
- * One SKU's sale-price detail, keyed by SKU identifier in the record that
- * `getSalePriceDetailsForProductSkus` resolves to.
+ * One SKU's sale-price detail, as `SalePriceResolver` returns it keyed by SKU identifier.
  *
  * This is a READ PROJECTION of service output - it is NOT an entity, and it must not grow behaviour
  * or gain persistence identity. Every property is `readonly` and there is no index signature. Like
@@ -712,35 +740,27 @@ export interface SalePriceDetail {
 /**
  * The promotion repository port.
  *
- * EIGHT methods, locked: the six public functions of `model/dao/PromotionDAO.cfc`, the single
- * lookup of `model/dao/RoundingRuleDAO.cfc`, and the rounding-rule WRITE `saveRoundingRule` - the
- * last two hosted here because the port count is locked at thirteen and no `roundingRuleRepository`
- * exists. The arithmetic is in this file's header. Each method returns a promise because each one
- * reaches persistence. Seven of the eight are reads; `saveRoundingRule` is the only write.
+ * SEVEN methods, locked: the six public functions of `model/dao/PromotionDAO.cfc` and the single
+ * lookup of `model/dao/RoundingRuleDAO.cfc`, the last hosted here because the port count is locked
+ * at thirteen and no `roundingRuleRepository` exists. The arithmetic is in this file's header. Each
+ * method returns a promise because each one reaches persistence. EVERY ONE OF THE SEVEN IS A READ.
  *
- * ★ QUOTE-THEN-REVISE, AND ONLY ONE CLAUSE OF THE EXCLUSION LIST IS WITHDRAWN. This paragraph read
- * "SEVEN methods, locked" and then "There is no eighth. No entity-lifecycle method, no
- * applied-promotion write, no promotion-account method, NO ROUNDING-RULE WRITE, no rounding
- * arithmetic, ...". The eighth member has since been added, and the reasoning is recorded in full
- * under "A ROUNDING-RULE WRITE NOW APPEARS HERE" in this file's header: the ported
- * `saveRoundingRule` had dropped the `super.save(argumentcollection=arguments)` half of
- * [model/service/RoundingRuleService.cfc:L63], so it evicted the memo and then discarded the rule.
- * The clause withdrawn is exactly one - "no rounding-rule write". Every other exclusion below stands
- * unchanged, and the count that replaces it is EIGHT rather than an open number.
+ * There is no eighth. No entity-lifecycle method, no applied-promotion write, no promotion-account
+ * method, NO ROUNDING-RULE WRITE, no rounding-rule delete (the legacy component overrides save and
+ * never overrides delete [model/service/RoundingRuleService.cfc:L56], and that asymmetry is
+ * reproduced rather than tidied), no rounding arithmetic, no address-zone evaluation, no dialect
+ * parameter, no ordering or sequencing parameter, no eager-load options bag, no date-window
+ * override, and no cache or invalidation surface. Each of those exclusions is justified in the
+ * header, and each is a decision rather than an omission.
  *
- * There is no ninth. No entity-lifecycle method, no applied-promotion write, no promotion-account
- * method, no rounding-rule DELETE (the legacy component overrides save and never overrides delete
- * [model/service/RoundingRuleService.cfc:L56], and that asymmetry is reproduced rather than tidied),
- * no rounding arithmetic, no address-zone evaluation, no dialect parameter, no ordering or
- * sequencing parameter, no eager-load options bag, no date-window override, and no cache or
- * invalidation surface. Each of those exclusions is justified in the header, and each is a decision
- * rather than an omission.
- *
- * ★ THE ONE WRITE IS NOT A PRECEDENT FOR A SECOND. `saveRoundingRule` was admitted because this
- * contract ALREADY OWNED the `SwRoundingRule` table through the lookup above, and the contract that
- * owns a table's read owns its write. No other table's write follows from that: this port owns no
- * read of `SwPromotion`, `SwPromotionCode`, `SwPromotionPeriod` or `SwPromotionApplied` as a whole
- * entity, so no write to any of them may be admitted here on this reasoning.
+ * ★ THE "NO ROUNDING-RULE WRITE" CLAUSE WAS WITHDRAWN FOR ONE REVISION AND HAS BEEN RESTORED. An
+ * eighth member, `saveRoundingRule`, was added on the reasoning that this contract already owned the
+ * `SwRoundingRule` table through the lookup above, and that the contract owning a table's read owns
+ * its write. Both the member and that reasoning are gone; the full record of why sits under "A
+ * ROUNDING-RULE WRITE BRIEFLY APPEARED HERE" in this file's header. The table-ownership argument is
+ * worth one line of its own, because it is the plausible one: owning a READ of a table does not
+ * license a WRITE to it, or this port would equally license writes wherever it reads, and the count
+ * that bounds it would mean nothing.
  *
  * The implementing adapter is `src/repositories/mysql/mysqlPromotionRepository.ts` (planned); the composition
  * root wires it. Nothing here names a driver, a connection, a statement or a table.
@@ -969,8 +989,8 @@ export interface PromotionRepository {
    * @param productID Optional product identifier narrowing the result set. Omit it for every
    *   product. The legacy body binds it per branch as a bound parameter, and the adapter must do
    *   the same rather than interpolate it.
-   * @returns The winning rows, unrounded. Applying the rounding rule is the service tier's step, in
-   *   `getSalePriceDetailsForProductSkus` [model/service/PromotionService.cfc:L1024-L1028].
+   * @returns The winning rows, unrounded. Applying the rounding rule is the service tier's step -
+   *   see `SalePriceResolver` below.
    */
   getSalePricePromotionRewardsQuery(productID?: string): Promise<SalePricePromotionRewardRow[]>;
 
@@ -1020,84 +1040,95 @@ export interface PromotionRepository {
    * @returns The rule, or `undefined` when there is none.
    */
   getRoundingRuleQuery(roundingRuleID: string): Promise<RoundingRule | undefined>;
-
-  /**
-   * Persists one rounding rule to `SwRoundingRule`.
-   *
-   * Legacy: the `super.save(argumentcollection=arguments)` half of
-   * `saveRoundingRule` [model/service/RoundingRuleService.cfc:L63]. That call is
-   * framework-inherited generic CRUD from `HibachiService`, so there is no
-   * hand-written legacy statement to cite - which is precisely why it was easy to
-   * drop, and why it is named explicitly here instead.
-   *
-   * WRITES THE WHOLE ROW, not a delta. `HibachiService.save` populated the entity
-   * from the request payload and flushed every dirty column, so a partial write
-   * would be a narrowing of legacy behaviour. Both persistable columns
-   * [model/entity/RoundingRule.cfc:L53-L54] are written on insert and on update.
-   *
-   * INSERT AGAINST UPDATE IS THE ADAPTER'S DECISION, and reproducing `super.save`
-   * means reproducing how the ORM made it. `isNew()` [model/service/RoundingRuleService.cfc:L57]
-   * settles the case of a rule that has never been persisted, which is inserted under
-   * a minted identifier. A rule that already CARRIES an identifier is a detached
-   * entity, and Hibernate reconciled one of those by reading the row first and then
-   * inserting or updating according to what it found - so an adapter that trusted
-   * `isNew()` alone would update zero rows, and report success, whenever a caller
-   * constructed a rule with a chosen identifier that had never been written.
-   *
-   * A NEW INSTANCE IS RETURNED, NOT THE ARGUMENT. The identifier and both audit
-   * stamps are immutable on the entity, so a rule that arrived without an identifier
-   * cannot be told the minted one by mutation. What comes back is rebuilt from the
-   * values that actually reached the database, which is what makes it safe to read.
-   *
-   * NO VALIDATION HAPPENS HERE. `roundingRuleExpression` is free text with no format
-   * constraint on the legacy entity, and there is no `RoundingRule.json`, so an
-   * expression that will later misbehave is storable exactly as it is today. That
-   * gap is reproduced deliberately: constraining it here would invent a rule the
-   * source does not have, and the arithmetic consequences are already recorded
-   * against `roundValue` rather than being prevented at the boundary.
-   *
-   * NO DELETE COUNTERPART. The legacy component overrides save and never overrides
-   * delete [model/service/RoundingRuleService.cfc:L56], and that asymmetry is
-   * reproduced rather than tidied.
-   *
-   * @param rule - The rule to persist. Its identifier may be empty, in which case one
-   *   is minted: the application generates identifiers, as every in-scope entity
-   *   declares `generator="uuid"`, so the adapter never asks the server for one.
-   * @returns A rule carrying the identifier and audit stamps that were written - so a
-   *   returned value is a persisted value.
-   * @throws Whatever the driver raises for a constraint or connection failure. A
-   *   failure is NOT swallowed into a boolean: the legacy `super.save` returned the
-   *   entity and signalled failure by raising, and that is preserved.
-   */
-  saveRoundingRule(rule: RoundingRule): Promise<RoundingRule>;
 }
 
 // ---------------------------------------------------------------------------
-// RELOCATED, NOT DROPPED: the narrow sale-price collaborator that the `Product`
-// entity depends on used to be PUBLISHED from this file as
-// `export interface SalePriceResolver`, carrying the single method
-// `getSalePriceDetailsForProductSkus(productID: string)` and replacing the
-// service-locator call at [model/entity/Product.cfc:L519] under transformation
-// rule T2.
-//
-// It is no longer declared here. The port inventory is locked at the THIRTEEN files
-// the transformation plan enumerates (AAP 0.4.1), and an interface EXPORTED from a
-// port module reads as an addition to that inventory whether or not it occupies a
-// file of its own - co-location does not make an exported contract invisible to the
-// budget. The contract now lives module-locally and un-exported inside
-// `src/domain/entities/product.ts`, the single module that constructs with it.
-// Nothing else changes: it still has no adapter file, and `src/handlers/bootstrap.ts`
-// still satisfies it STRUCTURALLY by adapting the ported
-// `src/services/promotionService.ts` surface - which is where
-// `getSalePriceDetailsForProductSkus` itself lives
-// [model/service/PromotionService.cfc:L1022] - and injecting the result into the
-// `Product` entity. Structural satisfaction needs no exported name to import.
-//
-// `SalePriceDetail` above STAYS EXPORTED and is unaffected. It is a read projection
-// named directly in the ported signature
-// `getSalePriceDetailsForProductSkus(productID: string): Promise<Record<string,
-// SalePriceDetail>>` (AAP 0.4.2), so it is part of this slice's sanctioned published
-// vocabulary rather than an extra collaborator port, and both
-// `src/services/promotionService.ts` and `src/domain/entities/product.ts` import it
-// from here.
+// ★ THE EXPORT BELOW WAS DELETED IN ONE REVISION AND RESTORED IN TWO INDEPENDENTLY. Both the
+// AAP-contract review and the completeness review reached the same verdict from different
+// directions, and the docblock that follows carries the fuller record of the removal argument
+// and why it fails. `SalePriceDetail` above STAYS EXPORTED and is unaffected: it is a read
+// projection named directly in the ported signature (AAP 0.4.2), so it is part of this slice's
+// sanctioned published vocabulary rather than an extra collaborator port.
 // ---------------------------------------------------------------------------
+/**
+ * The narrow sale-price collaborator the `Product` entity depends on.
+ *
+ * EXACTLY ONE METHOD. It replaces the service-locator call at
+ * [model/entity/Product.cfc:L519] under transformation rule T2:
+ *
+ *     // Legacy: getService("promotionService").getSalePriceDetailsForProductSkus(productID=getProductID())
+ *     // Target: this.salePriceResolver.getSalePriceDetailsForProductSkus(this.productID)
+ *
+ * The name is verbatim from [model/service/PromotionService.cfc:L1022], where the legacy
+ * `returntype="struct"` becomes a keyed record of the named `SalePriceDetail` interface above rather
+ * than a `Record<string, unknown>`.
+ *
+ * WHY A SECOND EXPORTED INTERFACE LIVES IN THIS FILE. `SalePriceResolver` is the collaborator
+ * contract standing in for the `getService("promotionService")` reach at
+ * [model/entity/Product.cfc:L519]. It is co-located here rather than given its own module because
+ * `src/domain/ports/` is LOCKED AT THIRTEEN files and no new file may be created. It is not a
+ * fourteenth port; it is a supporting interface of this one, and the "one primary exported unit plus
+ * its directly supporting co-located types" rule is satisfied on that reading.
+ *
+ * ★ THIS INTERFACE WAS UN-EXPORTED AND MOVED OUT OF THIS FILE FOR ONE REVISION, AND HAS BEEN
+ * RESTORED. The argument for moving it was that "an interface EXPORTED from a port module reads as an
+ * addition to the thirteen-file inventory whether or not it occupies a file of its own - co-location
+ * does not make an exported contract invisible to the budget". That reading is the exact one this
+ * file's requirements consider and reject: the inventory is a lock on how many port MODULES exist,
+ * the co-location is mandated BECAUSE no fourteenth file may be created, and publishing the contract
+ * from here is the prescribed resolution rather than a loophole in it.
+ *
+ * The note left behind at the time said the contract "now lives module-locally and un-exported inside
+ * `src/domain/entities/product.ts`". It did not: no such declaration was ever made in that file, for
+ * the sound reason given above - that entity holds a resolved VALUE, not a resolver. What actually
+ * happened is that the signature was written out longhand on `RequestScope` in
+ * `src/handlers/bootstrap.ts`, so the contract survived only as an inline restatement in its own
+ * satisfier, with no published name for the declaring side to be checked against. That is recorded
+ * here in the terms it actually occurred in rather than the terms it was described in, because a
+ * misfiled record is worse than none.
+ *
+ * IT HAS NO ADAPTER FILE, AND THAT IS DELIBERATE. Unlike `PromotionRepository`, nothing in
+ * `src/repositories/mysql/**` implements this. It is satisfied in `src/handlers/bootstrap.ts`, whose
+ * `RequestScope` EXTENDS this interface and fulfils it by adapting the ported
+ * `src/services/promotionService.ts` surface - which is where `getSalePriceDetailsForProductSkus`
+ * itself lives - and the resolved value is what gets injected when a `Product` is hydrated.
+ *
+ * WHO CONSUMES IT, STATED AS THE MERGED TREE HAS IT. `src/domain/entities/product.ts` DOES take this
+ * port, as an OPTIONAL constructor collaborator, and ports `getSalePriceDetailsForSkus()` on top of
+ * it under §3.9 branch (a). A superseded revision of this paragraph said the opposite - "the
+ * `Product` entity does NOT take this port. It takes the already-reduced, already-rounded
+ * `salePriceDetailsForSkus` VALUE, because the raw-query member on `PromotionRepository` returns
+ * unrounded rows and an entity cannot reach `roundingRuleService` to fix that." The premise is sound
+ * and it indicts METHOD 6, the raw query, which the entity indeed may not call. It does not reach
+ * this interface, whose values are already rounded by contract
+ * [model/service/PromotionService.cfc:L1024-L1028].
+ *
+ * The resolved VALUE is supplied too, by the product adapter, so the memo arrives pre-seeded and the
+ * reach never runs for a repository-loaded product; the collaborator is forwarded beside it for the
+ * ones the index had no entry for. Both arrangements are satisfied from `src/handlers/bootstrap.ts`
+ * by ONE object, which is the other reason the capability needs ONE published name rather than being
+ * restated longhand in whichever module happens to need it next.
+ *
+ * THE MODULE-LOCAL `ProductSalePriceResolver` IN `src/repositories/mysql/mysqlProductRepository.ts`
+ * IS NOT A RIVAL AND WAS NOT REMOVED. That adapter declares its own narrow shape for the collaborator
+ * it holds on its read path; this exported contract is what the entity and the request scope are
+ * typed against. Both are satisfied structurally by the same ported service surface.
+ *
+ * `SalePriceDetail` above is a read projection named directly in the ported signature, so it is part
+ * of this slice's published vocabulary and is imported from here by both
+ * `src/services/promotionService.ts` and `src/domain/entities/product.ts`.
+ */
+export interface SalePriceResolver {
+  /**
+   * The sale-price details for every SKU of one product, keyed by SKU identifier.
+   *
+   * Legacy: `public struct function getSalePriceDetailsForProductSkus(required string productID)`
+   * [model/service/PromotionService.cfc:L1022]. Backed by the common-table-expression rewrite of the
+   * query-of-queries chain, so a SKU with no qualifying sale price is simply absent from the record
+   * rather than present with a zero - absence is the honest answer and a zero would read as free.
+   *
+   * @param productID - The product whose SKUs are being resolved. Opaque identifier.
+   * @returns A record keyed by SKU identifier. An empty record is a legitimate answer.
+   */
+  getSalePriceDetailsForProductSkus(productID: string): Promise<Record<string, SalePriceDetail>>;
+}

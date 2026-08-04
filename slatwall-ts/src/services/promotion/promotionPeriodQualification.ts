@@ -443,6 +443,26 @@ export class PromotionPeriodQualificationEvaluator implements PromotionPeriodQua
       // ./qualifierQualification.ts differs - its four order-level bounds at
       // [model/service/PromotionService.cfc:L644, L646, L648, L650] are all STRICT. Neither module
       // is normalised toward the other.
+      //
+      // LEGACY-NOTE [model/dao/PromotionDAO.cfc:L177, L244]: THIS IS WHERE THE DUPLICATED
+      // start-date GUARD BECOMES A MONEY DECISION, and it is noted at the decision rather than only
+      // at the statement because the statement is where the defect lives and this is where it pays
+      // out. The count arriving above is produced by a query whose upper date bound is gated on the
+      // period's START date while binding its END date, so:
+      //   * a period with a START and NO END binds a null into `createdDateTime < ?`, which SQL
+      //     evaluates as UNKNOWN for every row, so `periodUseCount` is 0, the comparison below can
+      //     never fire, and `maximumUseCount` NEVER BINDS however many times the promotion was used;
+      //   * a period with NO START and an END emits neither bound, so applied promotions created
+      //     after the period ended are counted and the limit binds SOONER than intended.
+      // Both period states are reachable - [model/entity/PromotionPeriod.cfc:L53-L54] declare both
+      // dates nullable with hb_nullRBKey="define.forever". The disposition for the security finding
+      // this raises, with its AAP citations, is stated once at
+      // `src/repositories/mysql/sql/promotionUseCounts.sql.ts` beside the guard itself and governs
+      // this site too; it is not restated here, because two copies of a ruling drift. The public
+      // façade the finding names for this path is
+      // `PromotionService.getPromotionPeriodQualificationDetails`, which delegates straight to the
+      // method containing this gate.
+      // Preserved deliberately; do not fix without a product decision.
       if (periodUseCount >= maximumUseCount) {
         // [L569]
         qualificationDetails.qualificationsMeet = false;
@@ -456,6 +476,44 @@ export class PromotionPeriodQualificationEvaluator implements PromotionPeriodQua
       // account use-limit check entirely; the limit is never enforced for accountless orders. This
       // PERMISSIVE path is load-bearing: a guest order is never blocked by
       // `maximumAccountUseCount`, however high the count, and no fallback account is substituted.
+      //
+      // LEGACY-DEFECT [model/service/PromotionService.cfc:L574-L581]: the per-account use limit is
+      // enforced only when the order HAS an account. The guard is `if(!isNull(arguments.order.getAccount()))`
+      // at L575, wrapping the whole check, so an accountless (guest) order satisfies
+      // `maximumAccountUseCount` unconditionally and can redeem a per-account-limited promotion
+      // repeatedly. The general period limit at L566-L571 still applies - it is the ONLY ceiling a
+      // guest order faces.
+      // Preserved deliberately; do not fix without a product decision.
+      //
+      // SECURITY REVIEW DISPOSITION - RAISED AS S-04, DECLINED ON A CITED MANDATE.
+      //
+      // A security review raised this as a HIGH finding: an unauthenticated caller can omit the
+      // account identifier and redeem a per-account-limited promotion an unbounded number of times.
+      // Its suggested resolution was to refuse qualification, or to fall back to a per-session or
+      // per-order identity, whenever `maximumAccountUseCount` is set and no account is present.
+      //
+      // THAT RESOLUTION IS DECLINED, AND THE DECLINE IS MANDATED RATHER THAN CHOSEN:
+      //
+      //   * AAP 0.8.1 Preserve-Exactly names "promotion discount math TOGETHER WITH use-limit
+      //     enforcement semantics" as must-preserve area #1. This gate IS use-limit enforcement, and
+      //     the skip is one of its semantics rather than an accident of it.
+      //   * AAP 0.6.7 governs latent defects with the same force as explicit TODOs: they are
+      //     "reproduced, not repaired", and AAP 0.9.3 makes the inverse a failing gate - "A defect
+      //     that is silently fixed fails this gate."
+      //   * AAP 0.9.3 enumerates the ONLY three sanctioned divergences in the whole port - register
+      //     entries 13, 12 and 17/18/19. This gate is none of them, and the budget is closed.
+      //   * Substituting an identity the legacy does not have would be worse than either option: it
+      //     would enforce a limit against a per-session key the persisted use counts were never
+      //     recorded under, so the count read at L576 would not correspond to the identity being
+      //     limited. That is inventing behaviour, which AAP 0.8.1 forbids outright.
+      //
+      // The review's severity assessment is not disputed. What is disputed is that this file may fix
+      // it: tightening the gate here would refuse promotions the migrated system grants today,
+      // silently, inside a strangler-fig seam whose whole purpose is that the two implementations
+      // agree. The remedy belongs upstream of this port - either a product decision to change the
+      // rule in both systems, or an authentication requirement on the promotion endpoint that stops
+      // an accountless order reaching this gate at all. `tests/unit/services/promotionService.test.ts`
+      // pins the current outcome adversarially so it cannot change by accident in either direction.
       //
       // JUDGMENT CALL: the legacy tests the out-of-scope `Account` ENTITY via
       // `!isNull(order.getAccount())` and no such entity exists in the target. `OrderView`

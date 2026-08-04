@@ -28,7 +28,7 @@
 //   below are fully erased at emit. Any `const`, `class`, `enum` or function
 //   body appearing in the emitted output means this file is wrong.
 //
-// THE METHOD COUNT IS EIGHT
+// THE METHOD COUNT IS SEVEN, NOT EIGHT
 //   `SkuDAO.cfc` declares eight functions. Two of them are not port surface,
 //   so the arithmetic runs:
 //
@@ -45,45 +45,50 @@
 //            src/repositories/mysql/mysqlSkuRepository.ts, not a contract.
 //     = 6  ported DAO read methods
 //     + 1  one single-SKU persistence method (see `saveSku` below)
-//     + 1  one MULTI-SKU persistence method (see `saveSkus` below), which is the
-//            half of the legacy write path that lived in the ORM's flush rather
-//            than in `SkuDAO.cfc`
-//     = 8  METHODS.
+//     = 7  METHODS. LOCKED.
 //
-// ★★ THIS BLOCK ONCE READ "THE METHOD COUNT IS SEVEN, NOT EIGHT", AND THIS IS THE
-// RECORD OF THAT CHANGE
-//   The arithmetic above closed at `= 7 METHODS. LOCKED.` and the sentence after
-//   it read, in full: "No eighth method may be added: no load-by-ID, no delete,
-//   no count, no existence probe, NO BULK SAVE, no overload, no options bag, no
-//   cache-clear." Seven of those eight prohibitions still stand verbatim below.
-//   The bulk-save one does not, and the reason it does not is worth stating
-//   precisely, because the prohibition was not arbitrary - it was reasoning from
-//   `SkuDAO.cfc`'s declared surface, and that surface was never the whole legacy
-//   write path.
+//   No eighth method may be added: no load-by-ID, no delete, no count, no
+//   existence probe, NO BULK SAVE, no overload, no options bag, no cache-clear.
 //
-//   WHAT THE ORIGINAL REASONING MISSED. `SkuDAO.cfc` declares no save of any
-//   kind, singular or plural, so a reader enumerating that component correctly
-//   concludes that no write belongs here at all - which is why `saveSku` already
-//   carries the note that it has NO LEGACY ANTECEDENT ON THE DAO. Persistence
-//   reached a SKU through `super.save()` on the service base and through
-//   Hibernate's flush. The flush is the part that matters here: it was
-//   INHERENTLY A BATCH. `ProductService.processProduct_updateSkus`
-//   [model/service/ProductService.cfc:L216-L233] walks every SKU on a product
-//   and calls `setPrice` and `setListPrice` on each, saves nothing itself, and
-//   returns the product; the ORM then wrote EVERY dirtied SKU as ONE unit of
-//   work inside the request's transaction. Reproducing that with a loop over
-//   `saveSku` does not reproduce it: each call opens its own transaction on its
-//   own pooled connection, so a failure part-way through leaves some SKUs
-//   repriced and the rest not - a half-applied price change that the legacy
-//   system could not produce. `saveSkus` is that unit of work, made explicit.
+// ★★ THIS PORT BRIEFLY DECLARED AN EIGHTH MEMBER, AND THE RECORD OF ITS REMOVAL
+// BELONGS WITH THE ARITHMETIC THAT ONCE ACCOMMODATED IT
+//   A `saveSkus(skus: readonly Sku[]): Promise<Sku[]>` was added here, and the
+//   arithmetic above was rewritten to close at eight to make room for it. Its
+//   reasoning was that `SkuDAO.cfc` was never the whole legacy write path -
+//   persistence also reached a SKU through Hibernate's flush, and that flush was
+//   INHERENTLY A BATCH, writing every dirtied SKU of a request as ONE unit of work.
+//   `ProductService.processProduct_updateSkus`
+//   [model/service/ProductService.cfc:L216-L233] is the path that depends on it: it
+//   walks every SKU on a product applying a price and/or a list price, saves nothing
+//   itself, and answers the product.
 //
-//   WHAT IS STILL PROHIBITED, UNCHANGED. No load-by-ID, no delete, no count, no
-//   existence probe, no overload, no options bag, no cache-clear. And `saveSkus`
-//   is not a licence for a generic bulk surface either: it takes a collection of
-//   entities and nothing else - no batch size, no chunking parameter, no retry
-//   policy, no timeout and no transaction handle. The BOUND on how many SKUs a
-//   caller may hand it belongs to the service tier that assembles the collection,
-//   exactly as the bound on `createSkus` does, and AAP 0.6.5 places it there.
+//   THAT OBSERVATION ABOUT THE FLUSH IS CORRECT, AND IT STILL DOES NOT AUTHORIZE A
+//   PORT MEMBER. The port surface is fixed at the six public DAO reads plus one
+//   single-entity persistence method, and an eighth member is an invented
+//   requirement however well motivated. The batch semantics the flush provided are
+//   not discarded with it - they are relocated to the layer the AAP assigns them to.
+//   AAP 0.6.5 is explicit that the bulk mutation paths carry EXPLICIT BATCH LIMITS,
+//   IDEMPOTENCY ON RETRY, and A DOCUMENTED COMPENSATION STORY precisely "because
+//   there is no ambient transaction to fall back on". It does not say to recreate the
+//   ambient transaction as a port member; it says to replace it with compensation at
+//   the service tier, which is where `processProduct_updateSkus` now discharges all
+//   three obligations.
+//
+//   WHAT THIS COSTS, STATED PLAINLY RATHER THAN GLOSSED. A loop over `saveSku` opens
+//   one unit of work per SKU, so a failure part-way through leaves the earlier SKUs
+//   repriced and the rest not - a durable half-application the legacy flush could not
+//   produce. That is a real behavioural difference and it is not hidden: the write is
+//   idempotent by key, so a retry converges on the intended state rather than
+//   compounding, and the batch bound is checked BEFORE the first mutation so the
+//   exposure is bounded by construction. The compensation story is written out in full
+//   at `ProductService.processProduct_updateSkus`.
+//
+//   The cascade seam is likewise NOT a member. A product-aggregate write needs to hand
+//   its open transaction down to the SKU writer, and that is satisfied by OPTIONAL
+//   adapter-only parameters on `saveSku` rather than by a second declaration here: a
+//   port member naming a `PreparedStatementExecutor` would put a
+//   `src/repositories/**` type on a `src/domain/**` interface, which the layer
+//   boundary refuses outright.
 //
 //   `getSkuStocksDeletableFlag` is the eighth method a reader will look for and
 //   NOT find, so its absence is recorded rather than left to inference. It is
@@ -110,7 +115,7 @@
 //       erased declaration is erased with it. The runtime payload is one line:
 //       an empty-module marker.
 //     * the `.d.ts` keeps every `/** */` block - the interface doc and all
-//       eight method docs, including the carried-forward TODO - and drops every
+//       seven method docs, including the carried-forward TODO - and drops every
 //       `//` line comment in EVERY position. That was verified directly: a line
 //       comment survives declaration emit neither at file top, nor above a
 //       declaration, nor beside a TSDoc block, nor inside an interface body.
@@ -131,7 +136,7 @@
 //   transfers wholly to `src/repositories/mysql/**`.
 //
 //   On this port that obligation is unusually pointed, because two of the
-//   eight methods take a caller-supplied comma-delimited list that the legacy
+//   seven methods take a caller-supplied comma-delimited list that the legacy
 //   code expands into a variable number of predicates:
 //
 //     * `getSkusBySelectedOptions(selectedOptions, ...)` expands its list into
@@ -218,8 +223,8 @@
 //
 // THE ASYNC RULING
 //   A method is async if and only if its legacy body reached the DAO or the
-//   ORM. Every legacy function ported here did exactly that, and both write
-//   methods reach the ORM's own flush, so all eight
+//   ORM. Every legacy function ported here did exactly that, and the write
+//   method reaches the ORM's own flush, so all seven
 //   methods return a promise. Methods that merely traverse already-materialized
 //   associations or perform pure arithmetic stay synchronous, and those live on
 //   the entities and services rather than on this port.
@@ -364,11 +369,10 @@ import type { Product } from '../entities/product.js';
 /**
  * The SKU repository port.
  *
- * Eight methods: the six public data-reading `SkuDAO` functions, plus two
- * persistence methods that have no legacy antecedent on that component - one
- * for a single SKU and one for a collection written as a single unit of work.
- * The arithmetic behind the count, and the record of its revision from seven,
- * are in the file header.
+ * Seven methods: the six public data-reading `SkuDAO` functions, plus one
+ * persistence method that has no legacy antecedent on that component. The
+ * arithmetic behind the count, and the record of an eighth member that was
+ * briefly declared and has been removed, are in the file header.
  *
  * Every method returns a promise because every legacy body reached the DAO or
  * the ORM. Parameter types replace the legacy `any` with concrete ones, and
@@ -462,10 +466,11 @@ export interface SkuRepository {
 
   // NO LEGACY ANTECEDENT ON `SkuDAO.cfc`, which declares no save of any kind. Persistence reached a
   // SKU through `super.save()` on the service base and through Hibernate's flush, and this member
-  // replaces the single-entity half of that. A TSDoc block was added here alongside `saveSkus`
-  // below: the member itself is unchanged, but it was the only declaration on this interface
-  // carrying no doc comment, and since the emitted `.d.ts` keeps only `/** */` blocks, a consumer
-  // reading the declaration file saw this contract stated nowhere at all.
+  // replaces the single-entity half of that. THE BULK HALF IS NOT REPLACED BY A SECOND MEMBER -
+  // see the file header for why the flush's batch semantics are discharged at the service tier
+  // instead. A TSDoc block is carried here because this was otherwise the only declaration on the
+  // interface with no doc comment, and the emitted `.d.ts` keeps only `/** */` blocks, so a
+  // consumer reading the declaration file saw this contract stated nowhere at all.
   /**
    * Persist one SKU as its own unit of work.
    *
@@ -495,55 +500,4 @@ export interface SkuRepository {
    * @returns a new instance reflecting the persisted row.
    */
   saveSku(sku: Sku): Promise<Sku>;
-
-  // NO LEGACY ANTECEDENT ON `SkuDAO.cfc` EITHER, and its antecedent is not a DAO function at all -
-  // it is Hibernate's flush, which wrote every dirtied SKU of a request as ONE unit of work inside
-  // that request's transaction. `ProductService.processProduct_updateSkus`
-  // [model/service/ProductService.cfc:L216-L233] is the in-scope path that depends on it: it walks
-  // every SKU on a product applying a price and/or a list price, saves nothing itself, and answers
-  // the product. See the record in the file header for why this member exists despite the earlier
-  // prohibition on a bulk save.
-  /**
-   * Persist a collection of SKUs as ONE unit of work.
-   *
-   * ★ THE ATOMICITY IS THE POINT, AND IT IS THE WHOLE REASON THIS MEMBER IS NOT A
-   * LOOP AT THE CALL SITE. A caller that iterates {@link SkuRepository.saveSku}
-   * gets one transaction per SKU on one pooled connection per SKU, so a failure
-   * on the fifth of ten leaves four SKUs repriced and six not. The legacy could
-   * not reach that state: the ORM flush was a single unit inside the request's
-   * transaction, and either every dirtied SKU was written or none was. An
-   * implementation of this member MUST reproduce that - all of the supplied SKUs
-   * commit together, or none of them does.
-   *
-   * ★ IT DECLARES NO CONTROL PARAMETER, DELIBERATELY. There is no batch size, no
-   * chunk count, no retry policy, no timeout and no transaction handle. Bounding
-   * the size of the collection is the calling service's obligation under AAP
-   * 0.6.5, and it is discharged where the collection is assembled - the same
-   * place `SkuService.createSkus` bounds its combination odometer. A control
-   * parameter here would move that decision to the layer least able to make it,
-   * and would also put a transaction type from `src/repositories/**` onto a
-   * `src/domain/**` interface, which the layer boundary refuses outright.
-   *
-   * ★ IT IS IDEMPOTENT IN EVERY COLUMN THE CALLER CONTROLS. Re-running the same
-   * collection issues the same statements binding the same values, so a retry
-   * after a rolled-back attempt converges rather than compounding: a SKU that
-   * was already persisted updates by key to the same column values. The one
-   * column that does advance is the modified stamp, which is exactly what
-   * Hibernate's `preUpdate` advanced on every flush, so the divergence is the
-   * legacy's own.
-   *
-   * AN EMPTY COLLECTION IS A NO-OP that writes nothing and opens nothing. That is
-   * the flush's behaviour when a request dirtied no entity, and it matters here
-   * because the calling loop's flags are permitted to select no SKU at all.
-   *
-   * ORDER IS PRESERVED: the returned array corresponds positionally to the
-   * supplied one, so a caller can pair each persisted instance with the entity it
-   * handed over without matching on identifiers that the write may have minted.
-   *
-   * @param skus the SKUs to persist together. May be empty, in which case nothing
-   *   is written.
-   * @returns new instances reflecting the persisted rows, positionally matching
-   *   the supplied collection.
-   */
-  saveSkus(skus: readonly Sku[]): Promise<Sku[]>;
 }

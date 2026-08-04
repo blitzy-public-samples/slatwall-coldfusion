@@ -174,24 +174,27 @@
 // BUDGET AUDIT FOR THIS FILE
 //   ZERO signature widenings - the single entity-layer widening in this folder
 //   is `PromotionPeriod.isCurrent(now: Date)`, and nothing here is widened.
-//   ZERO of the BUDGETED deliberate divergences - the port's three all sit in
-//   `sku.ts` and `product.ts`. ZERO signature reshapings. ZERO visibility
-//   widenings. ZERO numbered defects owned. No invented non-functional
-//   requirement appears in any line of code or comment: no SLA, no latency,
-//   throughput or uptime figure, and no reference to the legacy runtime lock
-//   timeouts, which are noted-and-not-implemented elsewhere and are irrelevant
-//   here.
-//
-//   ★ ONE NON-BUDGETED DIVERGENCE IS SPENT HERE, AND THIS AUDIT USED TO DENY IT.
-//   These lines read "ZERO deliberate divergences" and closed with "No cycle
+//   ZERO deliberate divergences - the port's three all sit in `sku.ts` and
+//   `product.ts`. ZERO signature reshapings. ZERO visibility widenings. ZERO
+//   numbered defects owned. No invented non-functional requirement appears in
+//   any line of code or comment: no SLA, no latency, throughput or uptime
+//   figure, and no reference to the legacy runtime lock timeouts, which are
+//   noted-and-not-implemented elsewhere and are irrelevant here. No cycle
 //   guard, depth limit or performance mitigation is added to the parent-chain
-//   walk." The second sentence is now flatly false and the first was misleading:
-//   `setParentPriceGroup` REFUSES a reparent that would close a cycle, annotated
-//   as "★★★ DELIBERATE DIVERGENCE" at that method, and the MySQL adapter raises
-//   `PriceGroupCycleError` on the same condition. It is a FOURTH divergence
-//   rather than a spend against the budgeted three, which is why it carries its
-//   own justification at the method instead of citing the budget. No PERFORMANCE
-//   mitigation is added to the walk - that half of the old sentence stands.
+//   walk.
+//
+//   ★ AN EARLIER REVISION OF THIS FILE SPENT A FOURTH DIVERGENCE HERE, AND THE
+//   RECORD OF ITS REMOVAL BELONGS IN THE AUDIT THAT ONCE DECLARED IT.
+//   `setParentPriceGroup` REFUSED a reparent that would close a cycle, carried a
+//   three-star divergence banner at the method, and this audit conceded a spend
+//   outside the budgeted three. Both are gone. The setter now assigns
+//   whatever it is handed, exactly as [model/entity/PriceGroup.cfc:L110-L115]
+//   does, and the divergence budget for this file is back to zero. Where
+//   termination genuinely had to be decided - the hand-written recursive
+//   ancestry read in `mysqlPriceGroupRepository.ts`, which replaces Hibernate's
+//   lazy traversal under transformation rule T3 and has no legacy antecedent to
+//   reproduce - it is decided there, as a fetch-shape decision at the adapter
+//   boundary, not as a change to this entity's behaviour.
 //
 // NO USER RULES WERE PROVIDED
 //   Stated explicitly rather than left implicit. (1) No user-specified rules
@@ -225,11 +228,7 @@
 //   method reads a clock, an environment variable or a database.
 // ---------------------------------------------------------------------------
 
-import {
-  buildIdPathList,
-  resolveIdPath,
-  wouldCreateIdPathCycle,
-} from '../valueObjects/materializedIdPath.js';
+import { buildIdPathList, resolveIdPath } from '../valueObjects/materializedIdPath.js';
 import { cfBoolean, cfLen, isNullish } from '../../lib/cfml/truthiness.js';
 import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import type { PriceGroupRate } from './priceGroupRate.js';
@@ -1338,66 +1337,44 @@ export class PriceGroup {
    *
    * `void` return, matching the legacy declaration. Synchronous.
    *
-   * ★★★ DELIBERATE DIVERGENCE — A REPARENT THAT WOULD CLOSE A CYCLE IS REFUSED.
-   * The legacy setter assigns whatever it is handed, so choosing this node's own
-   * descendant as its parent is accepted and the malformed graph is created. That
-   * is not reproduced, and the reasoning is set out once, in full, on
-   * `buildIdPathList()` in src/domain/valueObjects/materializedIdPath.ts. In
-   * short: the resulting non-termination is an availability defect rather than a
-   * behaviour, it is not an entry in the project's closed defect register, no
-   * preserve-exactly mandate reaches it, and `org/Hibachi/**` is a boundary this
-   * migration REPLACES rather than reproduces.
+   * ★ WHATEVER IT IS HANDED IS ASSIGNED, INCLUDING A DESCENDANT OF THIS NODE.
+   * The legacy setter validates nothing, so choosing this node's own descendant as
+   * its parent is accepted and a cyclic `parentPriceGroup` chain is created. That
+   * is reproduced rather than corrected. The port adds no guard here, so no
+   * assignment this method accepts differs from the assignment
+   * [model/entity/PriceGroup.cfc:L110-L115] would have accepted.
    *
-   * WHY THE GUARD IS HERE AND NOT ONLY ON THE PATH BUILD. The path build refuses
-   * to produce a path from a cyclic chain, which is what keeps a SAVE from
-   * hanging. It does nothing for the walks over this same chain that never build
-   * a path: the price-group cascade climbs it on the READ path while pricing an
-   * order [model/service/PriceGroupService.cfc:L68-L77], and
-   * `getSimpleRepresentation()` recurses up it
-   * [model/entity/ProductType.cfc:L273-L278]. Refusing the ASSIGNMENT means a
-   * cycle never enters a live graph, so every one of those walks is safe for one
-   * reason instead of needing a guard each.
+   * ★ AN EARLIER REVISION REFUSED SUCH A REPARENT, AND THE RECORD OF ITS REMOVAL
+   * BELONGS HERE. This method used to call a `wouldCreateIdPathCycle()` helper and
+   * throw, under a three-star divergence banner. Three checkable reasons removed
+   * it. (1) A port reproduces; it does not improve. The legacy setter has
+   * no such check, so refusing an assignment it accepts is an unrequested
+   * behavioural change, not a migration. (2) The project's deliberate-divergence
+   * budget is closed at THREE - the un-`var`'d `discountAmount`
+   * [model/service/PromotionService.cfc:L1007], the `amountOff` branch routed
+   * through `Money` [model/service/PromotionService.cfc:L998], and the entity
+   * memo defects in `sku.ts`/`product.ts` - and a guard here was a FOURTH,
+   * justified against itself rather than against that budget. (3) Termination on
+   * a cyclic chain genuinely had to be decided in exactly one place, and this is
+   * not it: the hand-written recursive ancestry read in
+   * `mysqlPriceGroupRepository.ts` replaces Hibernate's lazy traversal under
+   * transformation rule T3, has no legacy antecedent to reproduce, and therefore
+   * owns its own fetch-shape termination decision at the adapter boundary. That
+   * adapter still raises `PriceGroupCycleError` naming the chain it followed,
+   * because a SHORTENED ancestry would be a DIFFERENT `priceGroupIDPath` and that
+   * path is what the five-level cascade climbs
+   * [model/service/PriceGroupService.cfc:L140-L181] - truncating would be a
+   * different price arrived at silently. Raising there is a decision about a
+   * query the legacy system never issued; it is not a change to this setter.
    *
-   * NOTHING IS MUTATED WHEN THE ASSIGNMENT IS REFUSED. The check runs before the
-   * near-side write, so a rejected reparent leaves both nodes exactly as they
-   * were rather than half-linked - which matters because the near side is assigned
-   * unconditionally and the far-side append is what the legacy guards.
-   *
-   * A WELL-FOUNDED REPARENT IS UNAFFECTED, including moving a subtree sideways or
-   * upward: the check answers `true` only when this node is reachable from the
-   * candidate, and a legitimate move never is. THE CONSTRUCTOR IS NOT GUARDED,
-   * deliberately - it is the hydration boundary, and a constructor that threw would
-   * duplicate a decision already taken, and taken more informatively, one layer out.
-   *
-   * ★ THIS PARAGRAPH ONCE ENDED "BOTH REPOSITORY ADAPTERS ALREADY TRUNCATE A CYCLIC
-   * ROW SET INTO AN ACYCLIC GRAPH ON PURPOSE, SO MAKING THE CONSTRUCTOR THROW WOULD
-   * UNDO A DECISION TAKEN ELSEWHERE." The conclusion still holds; the premise no longer
-   * describes the shipped adapters, so it is corrected here rather than left to mislead.
-   * The ancestry walk in `mysqlPriceGroupRepository.ts` does NOT truncate: it RAISES
-   * `PriceGroupCycleError`, naming the chain it followed. A shortened ancestry is a
-   * DIFFERENT `priceGroupIDPath`, and that path is what the five-level cascade climbs
-   * [model/service/PriceGroupService.cfc:L140-L181], so truncation would have been a
-   * different price arrived at silently.
-   *
-   * The reason the constructor needs no guard is therefore stronger than it was, not
-   * weaker: a cyclic ROW SET never reaches a constructor at all, and the only cyclic
-   * graph a constructor could be handed is one an operator built in memory - which is
-   * exactly what this setter refuses.
+   * THE CONSTRUCTOR IS LIKEWISE UNGUARDED, and for the same reason: it is the
+   * hydration boundary, it reproduces what the row set says, and the adapter that
+   * produced the row set has already refused to hand back a cyclic one.
    */
   setParentPriceGroup(parentPriceGroup: PriceGroup): void {
-    if (
-      wouldCreateIdPathCycle<PriceGroup>(this, parentPriceGroup, (node) =>
-        node.getParentPriceGroup(),
-      )
-    ) {
-      throw new Error(
-        `Price group '${this.getPriceGroupID()}' cannot take price group ` +
-          `'${parentPriceGroup.getPriceGroupID()}' as its parent: the assignment would make the ` +
-          `parentPriceGroup chain cyclic, so priceGroupIDPath could never be built and every walk up ` +
-          `that chain would never terminate. Nothing has been changed.`,
-      );
-    }
-
+    // CFML parity [model/entity/PriceGroup.cfc:L110-L115]: the legacy body validates nothing
+    // before assigning, and neither does this one. A cyclic parent chain is accepted here
+    // exactly as it is accepted there.
     this.parentPriceGroup = parentPriceGroup;
 
     if (this.isNew() || !parentPriceGroup.hasChildPriceGroup(this)) {

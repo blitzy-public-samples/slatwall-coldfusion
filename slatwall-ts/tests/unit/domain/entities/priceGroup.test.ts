@@ -2802,139 +2802,92 @@ describe('PriceGroup instance isolation and fixture freshness', () => {
 });
 
 // ===========================================================================
-// CYCLIC PARENT CHAINS ARE REFUSED, NOT FOLLOWED
+// A CYCLIC PARENT CHAIN IS ACCEPTED, EXACTLY AS THE LEGACY SETTER ACCEPTS ONE
 //
-// NET-NEW coverage - `meta/tests/` holds no PriceGroup test - and it pins the
-// port's single documented divergence from the framework path builder rather than
-// a legacy behaviour. The legacy walk at
-// [org/Hibachi/HibachiEntity.cfc:L314-L321] carries no visited set and no bound,
-// so a looping `parentPriceGroup` chain climbs forever. This port refuses at two
-// boundaries: `setParentPriceGroup` will not CREATE the cycle, and the shared
-// walk will not PRODUCE a path from one. The reasoning is set out once, on
-// `buildIdPathList` in src/domain/valueObjects/materializedIdPath.ts.
+// NET-NEW coverage - `meta/tests/` holds no PriceGroup test - pinning legacy PARITY rather than a divergence.
+// The legacy setter at [model/entity/PriceGroup.cfc:L110-L115] validates nothing before assigning, and the
+// legacy walk at [org/Hibachi/HibachiEntity.cfc:L314-L321] carries no visited set
+// and no bound. Both are reproduced: this setter assigns whatever it is handed,
+// and a looping chain climbs forever here exactly as it climbs forever there.
 //
-// Why it matters here specifically: `priceGroupIDPath` decides which price-group
-// rate wins, and `getRateForSkuBasedOnPriceGroup` recurses to the parent price
-// group [model/service/PriceGroupService.cfc:L174] on the READ path while an
-// order is being priced. A truncated path would silently change a price, so every
-// assertion below is about REFUSAL and none accepts a shorter path.
+// ★ THIS BLOCK ONCE ASSERTED THE OPPOSITE, AND THE RECORD BELONGS HERE. It ran
+// under the heading "CYCLIC PARENT CHAINS ARE REFUSED, NOT FOLLOWED" and pinned a
+// throw from `setParentPriceGroup` plus a `CyclicIdPathError` from the shared walk. Both
+// guards have been removed: a port reproduces rather than improves, and the
+// project's deliberate-divergence budget is closed at three - the un-`var`'d
+// `discountAmount` [model/service/PromotionService.cfc:L1007], the `amountOff`
+// branch routed through `Money` [model/service/PromotionService.cfc:L998], and the
+// entity memo defects in `sku.ts`/`product.ts`. None is spent in this folder.
+//
+// WHAT IS ASSERTED, AND WHAT DELIBERATELY IS NOT. Every test below asserts that
+// the ASSIGNMENT is accepted and that both sides of the link are maintained. NONE
+// of them builds a path from a cyclic graph, because that call does not return -
+// asserting non-termination would hang the suite rather than prove anything. The
+// absence of the removed guards is proven where it can be proven safely, in
+// `tests/unit/domain/valueObjects/materializedIdPath.test.ts`, by a counting
+// parent accessor that stops the walk long after either guard would have fired.
 // ===========================================================================
 
-describe('PriceGroup - cyclic parent chains are refused', () => {
-  /** Runs an operation expected to be refused; throws if it succeeds instead. */
-  const captureRefusal = (operation: () => unknown): { name: string; message: string } => {
-    try {
-      operation();
-    } catch (thrown) {
-      return thrown instanceof Error
-        ? { name: thrown.name, message: thrown.message }
-        : { name: 'NotAnError', message: 'a value that is not an Error was thrown' };
-    }
-
-    throw new Error(
-      'the operation was expected to be refused, but it completed. A cyclic parentPriceGroup chain ' +
-        'must never be created and must never yield a path - a truncated priceGroupIDPath silently ' +
-        'changes which price-group rate wins.',
-    );
-  };
-
-  it('refuses a price group as its own parent', () => {
+describe('PriceGroup - a cyclic parent chain is accepted, per legacy parity', () => {
+  it('accepts a price group as its own parent', () => {
     const subject = aPriceGroup({ priceGroupID: 'pg-self' });
 
-    const refusal = captureRefusal(() => {
-      subject.setParentPriceGroup(subject);
-    });
+    // CFML parity [model/entity/PriceGroup.cfc:L110-L115]: no validation precedes
+    // the assignment, so the self-reference is simply stored.
+    subject.setParentPriceGroup(subject);
 
-    expect(refusal.message).toContain("Price group 'pg-self' cannot take price group 'pg-self'");
-    expect(refusal.message).toContain('would make the parentPriceGroup chain cyclic');
+    expect(subject.getParentPriceGroup()).toBe(subject);
   });
 
-  it('refuses a descendant as its parent, walking more than one level', () => {
+  it('accepts a descendant as its parent, closing a multi-level cycle', () => {
     const root = aPriceGroup({ priceGroupID: 'pg-root' });
-    const middle = aPriceGroup({ priceGroupID: 'pg-middle' });
+    const mid = aPriceGroup({ priceGroupID: 'pg-mid' });
     const leaf = aPriceGroup({ priceGroupID: 'pg-leaf' });
+    mid.setParentPriceGroup(root);
+    leaf.setParentPriceGroup(mid);
 
-    middle.setParentPriceGroup(root);
-    leaf.setParentPriceGroup(middle);
+    root.setParentPriceGroup(leaf);
 
-    const refusal = captureRefusal(() => {
-      root.setParentPriceGroup(leaf);
-    });
-
-    expect(refusal.message).toContain("Price group 'pg-root' cannot take price group 'pg-leaf'");
+    // The cycle is now closed and observable in both directions.
+    expect(root.getParentPriceGroup()).toBe(leaf);
+    expect(leaf.getParentPriceGroup()).toBe(mid);
+    expect(mid.getParentPriceGroup()).toBe(root);
   });
 
-  it('changes nothing when it refuses, and the path still builds afterwards', () => {
-    const root = aPriceGroup({ priceGroupID: 'pg-keep-root' });
-    const child = aPriceGroup({ priceGroupID: 'pg-keep-child', priceGroupIDPath: undefined });
-
-    child.setParentPriceGroup(root);
-
-    const childrenBefore = [...root.getChildPriceGroups()];
-
-    captureRefusal(() => {
-      root.setParentPriceGroup(child);
-    });
-
-    expect(root.getParentPriceGroup()).toBeUndefined();
-    expect(child.getParentPriceGroup()).toBe(root);
-    expect(root.getChildPriceGroups()).toStrictEqual(childrenBefore);
-    expect(child.getPriceGroupIDPath()).toBe('pg-keep-root,pg-keep-child');
-  });
-
-  it('refuses through addChildPriceGroup too, since it delegates to the setter', () => {
-    const root = aPriceGroup({ priceGroupID: 'pg-add-root' });
-    const leaf = aPriceGroup({ priceGroupID: 'pg-add-leaf' });
-
+  it('maintains the far side when it closes a cycle, just as for any other parent', () => {
+    // The far-side append is the ONLY thing the legacy body guards
+    // [model/entity/PriceGroup.cfc:L112], and it is guarded on membership rather
+    // than on acyclicity - so a cycle-closing assignment appends like any other.
+    const root = aPriceGroup({ priceGroupID: 'pg-far-root' });
+    const leaf = aPriceGroup({ priceGroupID: 'pg-far-leaf' });
     leaf.setParentPriceGroup(root);
 
-    const refusal = captureRefusal(() => {
-      leaf.addChildPriceGroup(root);
-    });
+    root.setParentPriceGroup(leaf);
 
-    expect(refusal.message).toContain(
-      "Price group 'pg-add-root' cannot take price group 'pg-add-leaf'",
-    );
+    expect(leaf.getChildPriceGroups()).toContain(root);
+    expect(root.getChildPriceGroups()).toContain(leaf);
   });
 
-  it('allows every well-founded reparent, so a legitimate move is not penalised', () => {
+  it('accepts a cycle through addChildPriceGroup too, since it delegates to the setter', () => {
+    const root = aPriceGroup({ priceGroupID: 'pg-add-root' });
+    const leaf = aPriceGroup({ priceGroupID: 'pg-add-leaf' });
+    leaf.setParentPriceGroup(root);
+
+    leaf.addChildPriceGroup(root);
+
+    expect(root.getParentPriceGroup()).toBe(leaf);
+  });
+
+  it('still assigns every well-founded reparent, including moving a subtree', () => {
     const oldRoot = aPriceGroup({ priceGroupID: 'pg-old-root' });
     const newRoot = aPriceGroup({ priceGroupID: 'pg-new-root' });
-    const movable = aPriceGroup({ priceGroupID: 'pg-movable', priceGroupIDPath: undefined });
-
+    const movable = aPriceGroup({ priceGroupID: 'pg-movable' });
     movable.setParentPriceGroup(oldRoot);
+
     movable.setParentPriceGroup(newRoot);
 
     expect(movable.getParentPriceGroup()).toBe(newRoot);
+    // And the path still builds, because this hierarchy is well-founded.
     expect(movable.getPriceGroupIDPath()).toBe('pg-new-root,pg-movable');
-  });
-
-  it('refuses to build a path when a cycle is forced past the setter guard', () => {
-    // The two guards are independent defences, so the path build has to be
-    // provable on its own: a graph could reach `preInsert()` from a caller that
-    // assembled it some other way, and "the setter would have stopped it" is not
-    // evidence about the walk. The bypass is confined to this test.
-    const lower = aPriceGroup({ priceGroupID: 'pg-forced-lower', priceGroupIDPath: undefined });
-    const upper = aPriceGroup({ priceGroupID: 'pg-forced-upper', priceGroupIDPath: undefined });
-
-    for (const [node, parent] of [
-      [lower, upper],
-      [upper, lower],
-    ] as const) {
-      Object.defineProperty(node, 'parentPriceGroup', {
-        value: parent,
-        writable: true,
-        enumerable: true,
-        configurable: true,
-      });
-    }
-
-    const refusal = captureRefusal(() => {
-      lower.preInsert();
-    });
-
-    expect(refusal.name).toBe('CyclicIdPathError');
-    expect(refusal.message).toContain('contains a cycle');
-    expect(refusal.message).toContain('No path was produced');
   });
 });

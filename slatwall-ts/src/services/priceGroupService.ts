@@ -318,10 +318,33 @@ interface PriceGroupFrameworkReads {
    * `getBestPriceGroupDetailsBasedOnSkuAndAccount` deliberately does not, and quietly merging them
    * would erase a documented legacy defect.
    *
+   * ★★ THE RETURNED ARRAY IS THE ACCOUNT'S LIVE ASSOCIATION FOR THE LIFETIME OF THE REQUEST, AND IT
+   * IS MUTABLE BY CONTRACT. Every call with the same `accountID` within one request MUST return THE
+   * SAME ARRAY INSTANCE, and an implementation must not hand back a fresh copy per read.
+   *
+   * This is not a convenience; it is the mechanism by which a documented legacy behaviour stays
+   * observable. `calculateSkuPriceBasedOnAccount` [model/service/PriceGroupService.cfc:L276-L284]
+   * captures this collection with no defensive copy and `arrayAppend`s the account's subscription
+   * price groups INTO it, and CFML arrays are by reference, so the appended members are visible to
+   * every later reader of `account.getPriceGroups()` in the same request - specifically
+   * `getBestPriceGroupDetailsBasedOnSkuAndAccount` at [L351] and
+   * `updateOrderAmountsWithPriceGroups` at [L365]. Under Hibernate the array was the session's live
+   * collection, so this followed for free. Here it has to be arranged.
+   *
+   * The return type is therefore `PriceGroup[]` rather than `readonly PriceGroup[]`: the mutability
+   * is part of the contract and is stated in the type rather than left to a comment that a caller
+   * making a defensive copy would not contradict.
+   *
+   * ★ AND THE ARRAY MUST NOT OUTLIVE THE REQUEST. An implementation memoizing it in MODULE state
+   * would leak one account's subscription price groups into a later, unrelated invocation on the same
+   * warm container - which is a different customer's pricing. The memo belongs in instance state on a
+   * request-scoped adapter. `src/handlers/bootstrap.ts` satisfies this by constructing its
+   * implementation inside `createRequestScope`.
+   *
    * @param accountID - the account, as an opaque identifier.
-   * @returns the directly-assigned price groups, empty when there are none.
+   * @returns the account's live, mutable, request-scoped association; empty when there are none.
    */
-  getAccountPriceGroups(accountID: string): Promise<readonly PriceGroup[]>;
+  getAccountPriceGroups(accountID: string): Promise<PriceGroup[]>;
 
   /**
    * The CURRENT PAGE of price groups.
@@ -329,9 +352,22 @@ interface PriceGroupFrameworkReads {
    * CFML parity [model/service/PriceGroupService.cfc:L233-L236]: legacy builds a framework smart
    * list and iterates `getPageRecords()` - one page, not the whole collection. The paginated
    * projection is part of the observable behaviour and is preserved by keeping this member's name
-   * honest about it. NO PAGE SIZE IS ASSERTED anywhere below, because the source states none.
+   * honest about it.
    *
-   * @returns the price groups on the current page, empty when there are none.
+   * ★★ THE PAGE HOLDS AT MOST TEN ROWS, and the ten is stated by the source rather than chosen
+   * here. [L233] calls `getPriceGroupSmartList()` with no arguments, so
+   * `HibachiSmartList.setup`'s declared `pageRecordsShow=10` applies and `getPageRecords()` executes
+   * with `maxresults=10` [org/Hibachi/HibachiSmartList.cfc:L39, L759-L764]. An implementation
+   * returning every row would make `getPriceGroupDataJSON` serialize the whole table.
+   *
+   * ★ QUOTE-THEN-REVISE. This paragraph used to end "NO PAGE SIZE IS ASSERTED anywhere below,
+   * because the source states none." The source does state one; it states it on the framework method
+   * the caller invokes rather than at the call site, which is why reading only [L233] missed it.
+   *
+   * NO ORDERING is asserted, however, and that absence IS faithful: the caller configures no sort,
+   * so which ten rows arrive is whatever the database volunteers. The page is deliberately unstable.
+   *
+   * @returns the price groups on the current page - at most ten, empty when there are none.
    */
   getPriceGroupPageRecords(): Promise<readonly PriceGroup[]>;
 }
@@ -1038,37 +1074,36 @@ export class PriceGroupService implements SkuPriceGroupResolver {
       // runs on the READ path while an order is being priced - a cycle here would
       // hold the invocation's event loop until the Lambda timeout.
       //
-      // A CYCLE CANNOT REACH THIS LOOP, by construction rather than by hope, and
-      // the three ways a `parentProductType` link can come into existence are
-      // each closed:
+      // WHERE THE GUARD DOES LIVE: the one recursive READ that materializes an
+      // ancestry. `hydrateWithAncestry` in
+      // src/repositories/mysql/mysqlProductTypeRepository.ts keeps a chain-scoped
+      // visited set and raises `ProductTypeCycleError` naming the chain, so a
+      // cyclic ROW SET never becomes an in-memory graph and this loop is never
+      // handed one. That guard is a fetch-shape decision under transformation rule
+      // T3 - the query it protects has no legacy antecedent, because Hibernate's
+      // lazy many-to-one did the traversal - and it is NOT a deliberate divergence.
       //
-      //   * `ProductType.setParentProductType` REFUSES an assignment that would
-      //     make this node reachable from itself - the divergence documented on
-      //     that setter and on `buildIdPathList` in
-      //     src/domain/valueObjects/materializedIdPath.ts.
-      //   * The CONSTRUCTOR takes a parent, and is deliberately unguarded, but it
-      //     cannot close a cycle: the node being constructed does not exist yet,
-      //     so no already-constructed ancestor can reference it.
-      //   * REPOSITORY HYDRATION carries its own visited set and REFUSES on a
-      //     revisited node - `hydrateWithAncestry` in
-      //     src/repositories/mysql/mysqlProductTypeRepository.ts raises
-      //     `ProductTypeCycleError` naming the chain - so a cyclic row set never
-      //     becomes an in-memory graph at all.
+      // ★ TWO FURTHER GUARDS ONCE STOOD BEHIND IT AND HAVE BEEN REMOVED, WHICH IS
+      // WHY THIS NOTE NO LONGER CLAIMS A CYCLE IS IMPOSSIBLE HERE.
+      // `ProductType.setParentProductType` used to refuse an assignment that would
+      // make a node reachable from itself, and `buildIdPathList` used to throw on a
+      // revisited node. Both were removals of legacy behaviour rather than
+      // reproductions of it - the legacy setter validates nothing
+      // [model/entity/ProductType.cfc:L149-L153] and the legacy walk carries no
+      // visited set [org/Hibachi/HibachiEntity.cfc:L314-L321] - so both are gone.
+      // The honest statement is therefore narrower than the one that stood here: a
+      // cycle cannot arrive from the DATABASE, because the adapter refuses to
+      // hydrate one, and it cannot arrive from a CONSTRUCTOR, because the node
+      // being constructed does not exist yet for an ancestor to point at. It CAN be
+      // built in memory by an operator who calls the setter with a descendant, and
+      // in that case this loop does not terminate - exactly as
+      // [model/service/PriceGroupService.cfc:L68-L77] does not terminate on the
+      // same graph. That is the legacy behaviour, and reproducing it is the point.
       //
-      //     ★ THIS BULLET ONCE READ "STOPS AT THE FIRST REPEAT, SO A CYCLIC ROW SET
-      //     IS MATERIALIZED AS A TRUNCATED, ACYCLIC GRAPH - A READ THAT RETURNS
-      //     RATHER THAN ONE THAT NEVER ENDS." Truncating would indeed have closed
-      //     this loop, and it would have closed it by handing THIS CASCADE a
-      //     SHORTER ancestor chain - a smaller product-type membership set, a
-      //     different rate selected at [L68-L77], and a different price, with
-      //     nothing reported. The shipped adapter refuses instead, which is the
-      //     stronger guarantee for the same reason the loop is safe either way.
-      //
-      // A redundant guard here would therefore be unreachable code in the middle
-      // of the must-preserve cascade, and unreachable code in a money path is a
-      // cost with no benefit. The materialized `productTypeIDPath` column, which
-      // the schema maintains and this migration reads unchanged, remains the
-      // structural reason the hierarchy is a tree in the first place.
+      // Adding a guard here would therefore be a change to a must-preserve money
+      // path rather than a safety net, and the materialized `productTypeIDPath`
+      // column - which the schema maintains and this migration reads unchanged -
+      // remains the structural reason the hierarchy is a tree in practice.
       while (currentProductType !== undefined) {
         if (rate.hasProductType(currentProductType)) {
           returnRate = rate;
@@ -1669,11 +1704,33 @@ export class PriceGroupService implements SkuPriceGroupResolver {
     //
     // Preserved deliberately; do not fix without a product decision.
     //
-    // LEGACY-NOTE [model/service/PriceGroupService.cfc:L276-L284]: the legacy mutation was an
-    // ARTIFACT OF HIBERNATE'S LIVE COLLECTIONS, not a decision. The repository boundary
-    // materialises associations as FRESH ARRAYS per read, so the mutation is STRUCTURALLY ABSENT BY
-    // CONSTRUCTION rather than deliberately diverged from. A local merged list is built instead.
-    const priceGroups: PriceGroup[] = [...accountPriceGroups];
+    // ★★ AND IT IS PRESERVED LITERALLY: THIS IS THE LIVE ASSOCIATION, NOT A COPY. The port contract
+    // on {@link PriceGroupFrameworkReads.getAccountPriceGroups} guarantees that every read for one
+    // `accountID` within a request returns THE SAME ARRAY INSTANCE, so appending below mutates what
+    // [L351] and [L365] will subsequently read - exactly as `arrayAppend` into a by-reference CFML
+    // array does. No `[...spread]`, no `slice()`, no `Object.freeze`.
+    //
+    // ★ QUOTE-THEN-REVISE. An earlier revision copied here and justified it thus: "the legacy
+    // mutation was an ARTIFACT OF HIBERNATE'S LIVE COLLECTIONS, not a decision. The repository
+    // boundary materialises associations as FRESH ARRAYS per read, so the mutation is STRUCTURALLY
+    // ABSENT BY CONSTRUCTION rather than deliberately diverged from. A local merged list is built
+    // instead."
+    //
+    // The first sentence is true about the MECHANISM and says nothing about the OUTCOME, which is
+    // what has to be preserved. The second describes a property of an earlier adapter as though it
+    // were a property of the domain: "fresh arrays per read" was a choice made in
+    // `src/handlers/bootstrap.ts`, and it is what made the behaviour absent. Calling that
+    // "structurally absent by construction" turned an adapter decision into an alibi for dropping a
+    // marked defect - while the marker directly above continued to assert the behaviour was
+    // preserved, so the file contradicted itself. The adapter now memoizes one mutable array per
+    // account in request-scoped state, and the outcome is reproduced rather than explained away.
+    //
+    // WHAT IS OBSERVABLE, AND WHAT THAT COSTS. A caller resolving a price for an account that holds
+    // a subscription price group, and then asking for that account's best price-group details, gets
+    // details computed over the subscription group too - because the first call put it there. That is
+    // the legacy outcome and it is a real behavioural difference from the copying version, which is
+    // precisely why the review found the copy. The [L281] guard stops repeat calls compounding.
+    const priceGroups: PriceGroup[] = accountPriceGroups;
 
     // Legacy [L280-L284]:
     //   for(var i=1; i<=arrayLen(accountSubscriptionPriceGroups); i++) {
@@ -2795,6 +2852,16 @@ export class PriceGroupService implements SkuPriceGroupResolver {
     // EVER READ DURING RATE RESOLUTION, so exclusions are persisted, cleared and displayed but
     // never honoured when a rate is selected. The gap is preserved and no exclusion logic is added:
     // adding it would change which rate applies and therefore what a customer pays.
+    //
+    // The clearing immediately above is also what BOUNDS the gap: it fires only for a global rate
+    // [L436], so a global rate cannot carry an exclusion to ignore, while a SKU-, product- or
+    // product-type-level rate can and does. The security finding this raises is dispositioned once,
+    // beside the three declarations in `src/domain/entities/priceGroupRate.ts`, with the AAP
+    // citations that mandate the decline; it is not restated here, because two copies of a ruling
+    // drift. The pinning tests live in `tests/unit/services/priceGroupService.test.ts` under "the
+    // five-level cascade: the exclusion collections are never consulted" and cover this file's two
+    // reachable consequences - which rate RESOLVES, and what the SKU is then PRICED at.
+    // Preserved deliberately; do not fix without a product decision.
 
     // ---------------------------------------------------------------------
     // THE WRITE, AND WHY IT IS HERE RATHER THAN AT [L404].

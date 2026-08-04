@@ -47,7 +47,13 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Pool } from 'mysql2/promise';
-import { createPoolExecutor } from '../../../src/repositories/mysql/connection.js';
+import {
+  chunkTupleRows,
+  createPoolExecutor,
+  MAX_TUPLE_ROW_WIDTH,
+  SQL_TUPLE_ROW_LIMIT,
+  sqlTuplePlaceholderList,
+} from '../../../src/repositories/mysql/connection.js';
 import type { PreparedStatementExecutor } from '../../../src/repositories/mysql/connection.js';
 
 // ---------------------------------------------------------------------------
@@ -538,5 +544,142 @@ describe('createPoolExecutor - the non-transactional surface still goes through 
     const innerKeys = await executor.transaction((tx) => Promise.resolve(Object.keys(tx).sort()));
 
     expect(innerKeys).toEqual(['execute', 'executeMutation', 'transaction']);
+  });
+});
+
+// --- S-12: multi-row tuple bodies are bounded before they are allocated --------
+
+describe('sqlTuplePlaceholderList - the multi-row VALUES guard (S-12)', () => {
+  // Two link-table writers built a `VALUES` body by repeating a two-placeholder tuple once per
+  // collection member, validating neither the count nor the width before allocating. The member
+  // count originates in a caller-supplied collection, so it decided the size of one allocation.
+  //
+  // WHY THESE TESTS LIVE HERE RATHER THAN IN THE TWO REPOSITORY SUITES. Those suites assert the
+  // statement each adapter emits for a realistic membership, and they pass UNCHANGED after this
+  // fix - which is the point: for every real collection the emitted SQL is byte-identical. The
+  // behaviour that is new is what happens at and beyond the boundary, and that belongs to the
+  // shared builder rather than being asserted twice against two callers.
+
+  it('renders one tuple per row, parentheses included', () => {
+    expect(sqlTuplePlaceholderList(2, 1)).toBe('(?, ?)');
+    expect(sqlTuplePlaceholderList(2, 3)).toBe('(?, ?), (?, ?), (?, ?)');
+    expect(sqlTuplePlaceholderList(1, 2)).toBe('(?), (?)');
+    expect(sqlTuplePlaceholderList(3, 2)).toBe('(?, ?, ?), (?, ?, ?)');
+  });
+
+  it('accepts both dimensions AT their ceilings, so the limit is inclusive', () => {
+    // A ceiling that rejected its own stated maximum would be an off-by-one that only shows up at
+    // the one input nobody tries by hand.
+    expect(() => sqlTuplePlaceholderList(MAX_TUPLE_ROW_WIDTH, 1)).not.toThrow();
+    expect(() => sqlTuplePlaceholderList(2, SQL_TUPLE_ROW_LIMIT)).not.toThrow();
+
+    const atRowCeiling = sqlTuplePlaceholderList(2, SQL_TUPLE_ROW_LIMIT);
+
+    expect(atRowCeiling.split('), (')).toHaveLength(SQL_TUPLE_ROW_LIMIT);
+  });
+
+  it('★★ REFUSES A COUNT ABOVE THE BATCH CEILING rather than allocating for it', () => {
+    expect(() => sqlTuplePlaceholderList(2, SQL_TUPLE_ROW_LIMIT + 1)).toThrow(/row count/u);
+  });
+
+  it('refuses a width no in-scope link table could have', () => {
+    expect(() => sqlTuplePlaceholderList(MAX_TUPLE_ROW_WIDTH + 1, 1)).toThrow(/row width/u);
+  });
+
+  it('refuses zero rather than rendering an unparseable VALUES body', () => {
+    // `VALUES` with no rows is a parse error, not an empty write, so the caller must skip the
+    // insert. That decision belongs to the caller because it also governs whether the preceding
+    // delete is the whole operation.
+    expect(() => sqlTuplePlaceholderList(2, 0)).toThrow(/row count/u);
+    expect(() => sqlTuplePlaceholderList(0, 2)).toThrow(/row width/u);
+  });
+
+  it('refuses non-integers and negatives on both dimensions', () => {
+    for (const rejected of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => sqlTuplePlaceholderList(2, rejected)).toThrow(/row count/u);
+      expect(() => sqlTuplePlaceholderList(rejected, 2)).toThrow(/row width/u);
+    }
+  });
+
+  it('★★ VALIDATES BEFORE ALLOCATING, which is the entire point of the guard', () => {
+    // `Number.MAX_SAFE_INTEGER` passes `Number.isSafeInteger`, so the ONLY thing standing between
+    // this call and a multi-gigabyte allocation is the range check preceding it. A guard placed
+    // after `new Array(rowCount)` would already have committed the memory it exists to refuse, so
+    // this case is the difference between a rejected request and a dead container.
+    const started = Date.now();
+
+    expect(() => sqlTuplePlaceholderList(2, Number.MAX_SAFE_INTEGER)).toThrow(/row count/u);
+
+    // Rejection is a comparison, not a traversal. A generous bound: an allocation of that size
+    // could not complete in it.
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it('names the dimension it rejected, for programmatic inspection', () => {
+    try {
+      sqlTuplePlaceholderList(2, 0);
+      expect.unreachable('a zero row count must be refused');
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).name).toBe('SqlTupleShapeError');
+      expect((error as { dimension?: unknown }).dimension).toBe('rowCount');
+      expect((error as { value?: unknown }).value).toBe(0);
+    }
+  });
+
+  it('keeps its own limits consistent with the protocol placeholder ceiling', () => {
+    // The derived invariant the module asserts once at load, restated here against the two exported
+    // constants so that raising either without re-checking the product fails a test as well as an
+    // import. 65,535 is the two-byte placeholder count of `COM_STMT_PREPARE_OK`.
+    expect(MAX_TUPLE_ROW_WIDTH * SQL_TUPLE_ROW_LIMIT).toBeLessThanOrEqual(65535);
+  });
+});
+
+describe('chunkTupleRows - batching without refusing legitimate writes (S-12)', () => {
+  it('returns one batch when the collection fits, so real writes emit one statement', () => {
+    // The property that makes the ceiling safe to impose: every realistic membership - a SKU's
+    // option rows are one per option group, a rate's exclusion lists are curated by hand - yields a
+    // single batch, and therefore exactly the statement the adapter emitted before this fix.
+    expect(chunkTupleRows(['a'])).toStrictEqual([['a']]);
+    expect(chunkTupleRows(['a', 'b', 'c'])).toStrictEqual([['a', 'b', 'c']]);
+  });
+
+  it('still returns ONE batch at exactly the ceiling', () => {
+    const rows = Array.from({ length: SQL_TUPLE_ROW_LIMIT }, (_unused, index) => index);
+
+    expect(chunkTupleRows(rows)).toHaveLength(1);
+  });
+
+  it('★★ SPLITS BEYOND THE CEILING rather than refusing the write', () => {
+    // A ceiling that rejected large collections would be a behaviour change; chunking is not. AAP
+    // 0.6.5 asks for "explicit batch limits", not for a smaller maximum membership.
+    const rows = Array.from({ length: SQL_TUPLE_ROW_LIMIT + 1 }, (_unused, index) => index);
+    const batches = chunkTupleRows(rows);
+
+    expect(batches).toHaveLength(2);
+    expect(batches[0]).toHaveLength(SQL_TUPLE_ROW_LIMIT);
+    expect(batches[1]).toHaveLength(1);
+  });
+
+  it('preserves order and loses no member, so the end state is the unsplit one', () => {
+    const rows = Array.from({ length: SQL_TUPLE_ROW_LIMIT * 2 + 7 }, (_unused, index) => index);
+    const batches = chunkTupleRows(rows);
+
+    expect(batches).toHaveLength(3);
+    expect(batches.flatMap((batch) => [...batch])).toStrictEqual(rows);
+  });
+
+  it('every batch is a shape the tuple builder will accept', () => {
+    // The two halves have to agree: a batch the chunker produced but the builder refused would turn
+    // a large write into a runtime failure instead of several statements.
+    const rows = Array.from({ length: SQL_TUPLE_ROW_LIMIT * 2 + 7 }, (_unused, index) => index);
+
+    for (const batch of chunkTupleRows(rows)) {
+      expect(() => sqlTuplePlaceholderList(2, batch.length)).not.toThrow();
+    }
+  });
+
+  it('refuses an empty collection, leaving that decision to the caller', () => {
+    expect(() => chunkTupleRows([])).toThrow(/row count/u);
   });
 });

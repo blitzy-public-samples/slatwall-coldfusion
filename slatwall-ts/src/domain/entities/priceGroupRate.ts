@@ -513,6 +513,47 @@ export class PriceGroupRate {
   // never consulted when a rate is selected. Retained in full so the schema contract is unbroken
   // (B5); the READ gap is flagged rather than closed, because closing it would change which price a
   // customer is charged - but their PERSISTENCE is not optional, or clearing them would not stick.
+  //
+  // THE GAP IS ONLY REACHABLE ON A NON-GLOBAL RATE, which narrows it without excusing it:
+  // [model/service/PriceGroupService.cfc:L436-L443] empties all three exclusion collections - along
+  // with all three INCLUSION collections - whenever the saved rate carries `globalFlag`. A global
+  // rate therefore cannot hold an exclusion to ignore. A SKU-, product- or product-type-level rate
+  // can, and does, and the cascade ignores it.
+  //
+  // SECURITY REVIEW DISPOSITION - RAISED AS S-14, DECLINED ON A CITED MANDATE.
+  //
+  // Raised as finding S-14, HIGH, CWE-840: persisted exclusions are reported but never consulted, so
+  // merchandise an operator explicitly excluded still receives the account's price-group discount.
+  // Its required resolution was to enforce the exclusions before rate selection and application.
+  //
+  // DECLINED, AND THE DECLINE IS MANDATED RATHER THAN CHOSEN - THIS IS THE ONE FINDING THE AAP
+  // ANSWERS WORD FOR WORD:
+  //
+  //   * AAP 0.4.1 specifies this very file as CREATE from [model/entity/PriceGroupRate.cfc] with the
+  //     instruction to "retain the `excludedProductTypes`/`excludedProducts`/`excludedSkus`
+  //     collections even though the cascade never consults them, and flag that gap". Retaining them
+  //     unconsulted and flagged is not an oversight this port is tolerating; it is the specified
+  //     behaviour, and the flag is the deliverable. Enforcing them would be the deviation.
+  //   * AAP 0.8.1 Preserve-Exactly names "the price-group and currency resolution cascade" as
+  //     must-preserve area #2. Enforcing an exclusion REMOVES a discount that the system being
+  //     migrated grants, so every excluded SKU's price rises relative to the legacy - a change to
+  //     what customers are charged, in the direction customers notice.
+  //   * AAP 0.9.3 gates on the five-level cascade being tested "including the parent-recursion
+  //     asymmetry (defect 7) and the rounding-rule asymmetry (defect 8)", and states that "A defect
+  //     that is silently fixed fails this gate". Its three sanctioned divergences - register entries
+  //     13, 12 and 17/18/19 - do not include this one.
+  //
+  // The severity assessment is not disputed. An operator who configures an exclusion is entitled to
+  // expect it to bind, and today it does not - in the CFML system just as much as here. That makes it
+  // a product defect in the system of record rather than a translation defect at this seam, and the
+  // finding's own required resolution concedes as much by asking for "product-approved migration
+  // behavior". Correcting it here alone would make the two implementations disagree about price.
+  //
+  // Pinned rather than repaired: `tests/unit/services/priceGroupService.test.ts`, describe block
+  // "the five-level cascade: the exclusion collections are never consulted", proves BOTH halves -
+  // that a triply-excluded SKU still RESOLVES to the excluding rate, and that it is then PRICED
+  // through it rather than at its own price. Honouring an exclusion in either method would fail one
+  // of those two tests, so the gap cannot close silently or half-close unnoticed.
   private readonly excludedProductTypes: ProductType[];
 
   /**

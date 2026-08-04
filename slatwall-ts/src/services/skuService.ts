@@ -123,18 +123,20 @@
 //   Nothing else in this file is reshaped: no visibility is widened (the private
 //   merge helper stays private), no signature is widened (no method gains a
 //   parameter), no port member is invented BY THIS FILE (the port set stays at
-//   thirteen, `skuRepository` at eight members, `optionRepository` at two), and no
+//   thirteen, `skuRepository` at seven members, `optionRepository` at two), and no
 //   finding is repaired - every one is reproduced.
 //
-//   ★ THE FIGURE MOVED, AND THE CLAIM DID NOT. This read "`skuRepository` at seven
-//   members". The port has since gained an eighth, `saveSkus`, and this file is not
-//   where it came from: `saveSkus` is consumed only by
-//   `processProduct_updateSkus` in `src/services/productService.ts`, and it is
-//   referenced nowhere in this file except in prose. So the claim being made here -
-//   that THIS file invents no port member - is untouched; only the parenthetical
-//   census needed re-reading against the folder. See the quote-then-revise at
-//   `SkuQueryCriteria` for why the eighth member also leaves the required-keyword
-//   argument intact.
+//   ★ THE FIGURE MOVED TWICE AND RETURNED TO SEVEN, AND THE CLAIM NEVER DEPENDED ON
+//   IT. For one revision the SKU port carried an eighth member - a bulk save - and
+//   this parenthetical read "eight". The eighth member has been removed: the port's
+//   own header fixes the arithmetic at SEVEN and LOCKS it, so eight was never an
+//   authorised figure to record. This file was not where it came from and is not
+//   where it went; the bulk member was consumed only by `processProduct_updateSkus`
+//   in `src/services/productService.ts`, which now writes through the single-entity
+//   `saveSku` under the batch-limit, idempotency and compensation obligations AAP
+//   0.6.5 places on a bulk mutation path. The claim being made here - that THIS file
+//   invents no port member - was true at seven, stayed true at eight, and is true at
+//   seven again.
 //
 // CFML parity [model/service/SkuService.cfc:L49]: the component declares
 // `extends="HibachiService" persistent="false" accessors="true" output="false"`.
@@ -597,21 +599,21 @@ export type ImageUploadResult = ImageUploadResultProjection;
  * [model/service/SkuService.cfc:L309-L325].
  *
  * ★ `keyword` IS REQUIRED, AND THAT IS THE HONEST TYPING.
- * The eight-member `SkuRepository` has no member that lists SKUs without a search
- * term, and none of its members is an unfiltered listing. Making the keyword required renders the
+ * The seven-member `SkuRepository` has no member that lists SKUs without a search
+ * term, AND NO MEMBER MAY BE ADDED. Making the keyword required renders the
  * unfiltered listing UNREPRESENTABLE AT COMPILE TIME rather than letting it fail at
  * runtime, and the unfiltered listing is part of the open-ended dynamic filtering
  * surface this port deliberately does not reproduce. Saying so in the type is
  * better than discovering it in a stack trace.
  *
- * ★ QUOTE-THEN-REVISE, AND THE CONCLUSION IS UNAFFECTED. This read "The
- * SEVEN-member `SkuRepository` has no member that lists SKUs without a search term,
- * AND NO MEMBER MAY BE ADDED." The port has since grown an eighth member,
- * `saveSkus`, so the blanket clause is gone - but it was never what carried this
- * argument. `saveSkus` is a WRITE, and the reason an unfiltered listing is
- * unrepresentable is that no READ member answers one. What would justify relaxing
- * the required keyword is a member that lists SKUs without a term, and the port has
- * gained no such thing.
+ * ★ THE BLANKET CLAUSE LAPSED FOR ONE REVISION AND HAS BEEN RESTORED. While the
+ * port briefly carried an eighth member this paragraph dropped "AND NO MEMBER MAY BE
+ * ADDED" and argued the narrower point instead - that the eighth was a WRITE, so no
+ * READ member answered an unfiltered listing either way. The narrower argument was
+ * sound and is why the conclusion never moved; the clause is back because the port
+ * is back to seven and LOCKED there. What would justify relaxing the required
+ * keyword is a member that lists SKUs without a term, and no such member exists or
+ * may be added.
  *
  * There is no filter bag, no arbitrary property path, no `data` struct passthrough
  * and no paging surface - `data={}` and `currentURL=""` were framework plumbing and
@@ -1083,7 +1085,7 @@ export class SkuService {
    * `OptionService.productService`, `ProductService.contentService` and
    * `ProductService.productTypeDAO`.
    *
-   * @param skuRepository The eight-member SKU data port. Every query this service
+   * @param skuRepository The seven-member SKU data port. Every query this service
    *   needs arrives through it, which is why no SQL appears in this file (E5).
    * @param imageStore The image stub port, reached only from `processImageUpload`.
    * @param subscriptionTermProvider The subscription stub port, reached only from
@@ -1951,10 +1953,11 @@ export class SkuService {
    *
    * ★ [L211] RAISES BEFORE THE STORE IS EVER REACHED, AND THAT IS STATED PLAINLY.
    * `src/domain/entities/sku.ts` publishes `getImagePath(): never` - an EXPLICIT
-   * REFUSAL, because the settings port carries exactly four keys
-   * (`globalURLKeyProduct`, `globalURLKeyProductType`, `skuCurrency`,
-   * `skuEligibleCurrencies`) and none of them is an image setting, so an image path
-   * cannot be built. The call is kept at its [L211] position rather than being
+   * REFUSAL, and the reason is the ASSET ROOT rather than the key count. The path needs
+   * `getHibachiScope().getBaseImageURL()` [model/entity/Sku.cfc:L146], which resolves
+   * `globalAssetsImageFolderPath` [model/service/SettingService.cfc:L164] - a key the
+   * closed seven-key settings union deliberately excludes - so no image path can be
+   * built here. The call is kept at its [L211] position rather than being
    * skipped, so the refusal surfaces where the legacy read the path. The store call is
    * kept too, so the port contract and the extension literal are both real rather
    * than described. This method is an out-of-scope image branch and remains a thin
@@ -2271,7 +2274,7 @@ export class SkuService {
    * absent from `org/Hibachi/`, and cannot be dispatched because
    * `org/Hibachi/HibachiDAO.cfc` declares no `onMissingMethod`. The legacy method
    * raises unconditionally, every time it is called; the raise is reproduced and the
-   * member is deliberately absent from the eight-member `SkuRepository` port.
+   * member is deliberately absent from the seven-member `SkuRepository` port.
    * Preserved deliberately; do not fix without a product decision.
    *
    * The signature is kept for interface parity (B4): a reviewer diffing the two
@@ -2377,11 +2380,12 @@ export class SkuService {
    * are therefore carried as the reported criteria surface rather than as an
    * implemented match, and widening the match to all five is a repository-tier
    * obligation belonging to `src/repositories/mysql/mysqlSkuRepository.ts`. The port
-   * is locked at eight members and no member was invented to close the gap, so the
+   * is locked at seven members and no member was invented to close the gap, so the
    * gap is reported as DATA on the returned page instead of being hidden behind a
-   * claim in a comment. The figure read "seven" until the port gained `saveSkus`,
-   * and re-reading it changes nothing here: `saveSkus` is a WRITE, so it widens no
-   * search and closes no part of this gap.
+   * claim in a comment. The figure read "eight" for one revision, while the port
+   * carried a bulk save; re-reading it changed nothing here and its removal changes
+   * nothing either, because a WRITE member widens no search and closes no part of
+   * this gap in either direction.
    *
    * LEGACY-NOTE [model/service/SkuService.cfc:L314-L316]: the three joins are
    * preserved as reported criteria, INCLUDING the `"left"` on `alternateSkuCodes`,

@@ -335,6 +335,17 @@ interface OrderItemFixtureOverrides {
   /** Opaque [model/entity/OrderItem.cfc:L52]; never parsed, derived or validated. */
   readonly orderItemID?: string | undefined;
 
+  /**
+   * The rows a PREVIOUS invocation left on this item, which the engine's blanket clear
+   * [model/service/PromotionService.cfc:L64-L68] must detach before it recalculates. Defaults to
+   * empty, which is the ordinary case; override it to exercise the item arm of the clear.
+   *
+   * [model/entity/OrderItem.cfc:L71] `PromotionApplied`, `one-to-many`, `fkcolumn="orderItemID"`,
+   * `inverse`, `cascade="all-delete-orphan"` - a DISTINCT association from the order's own
+   * [model/entity/Order.cfc:L72] `fkcolumn="orderID"`.
+   */
+  readonly appliedPromotions?: readonly AppliedPromotionView[] | undefined;
+
   /** [model/entity/OrderItem.cfc:L84] `fetch="join"`, so always materialised. */
   readonly sku?: Sku | undefined;
 
@@ -1059,6 +1070,7 @@ function buildOrderItem(spec: {
   readonly appliedPriceGroup: PriceGroup | undefined;
   readonly orderItemTypeSystemCode: string;
   readonly orderFulfillmentID: string;
+  readonly appliedPromotions: readonly AppliedPromotionView[];
 }): OrderItemView {
   return Object.freeze({
     orderItemID: spec.orderItemID,
@@ -1074,6 +1086,9 @@ function buildOrderItem(spec: {
     appliedPriceGroup: spec.appliedPriceGroup,
     orderItemType: buildOrderItemType(spec.orderItemTypeSystemCode),
     orderFulfillmentID: spec.orderFulfillmentID,
+    // Copied then frozen, exactly as the fulfillment and order equivalents are, so a caller cannot
+    // reach back through its own array and mutate what the engine was handed.
+    appliedPromotions: Object.freeze(copyOf(spec.appliedPromotions)),
   });
 }
 
@@ -1357,6 +1372,10 @@ function resolveOrderItem(
       : defaults.appliedPriceGroup,
     orderItemTypeSystemCode: bag?.orderItemTypeSystemCode ?? defaults.orderItemTypeSystemCode,
     orderFulfillmentID: bag?.orderFulfillmentID ?? defaults.orderFulfillmentID,
+    // Empty by default: an order arriving with no prior applied promotions is the ordinary case, and
+    // it is the state under which the blanket clear at [model/service/PromotionService.cfc:L64-L68]
+    // emits nothing. Override the bag to exercise the item arm of that clear.
+    appliedPromotions: bag?.appliedPromotions ?? [],
   });
 }
 

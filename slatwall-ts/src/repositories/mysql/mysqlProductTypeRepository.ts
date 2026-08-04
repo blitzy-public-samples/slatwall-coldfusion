@@ -132,8 +132,13 @@ import { buildIdPathList } from '../../domain/valueObjects/materializedIdPath.js
 import { listAppend, listLen } from '../../lib/cfml/list.js';
 import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import { isNullish } from '../../lib/cfml/truthiness.js';
-import type { PreparedStatementExecutor, SqlRow } from './connection.js';
-import { sqlPlaceholderList } from './connection.js';
+import type { AuditActorContext, PreparedStatementExecutor, SqlRow } from './connection.js';
+import {
+  resolveAuditActorAccountID,
+  resolveStampedModifiedByAccountID,
+  sqlPlaceholderList,
+  sqlUpdateAssignment,
+} from './connection.js';
 import type { DatabaseDialect } from './dialect.js';
 import { materializedIdPathLikePatternFragment } from './dialect.js';
 
@@ -814,7 +819,7 @@ const INSERT_PRODUCT_TYPE_SQL = `INSERT INTO SwProductType (
  */
 const UPDATE_PRODUCT_TYPE_SQL = `UPDATE SwProductType
 SET
-  ${UPDATED_COLUMNS.map((columnName) => `${columnName} = ?`).join(',\n  ')}
+  ${UPDATED_COLUMNS.map((columnName) => sqlUpdateAssignment(columnName)).join(',\n  ')}
 WHERE SwProductType.productTypeID = ?`;
 
 // --- Hydration ---------------------------------------------------------------
@@ -951,26 +956,30 @@ function toProductType(
  * is a cycle. The already-hydrated check runs FIRST, so legitimate sharing is reused
  * and never mistaken for a loop.
  *
- * ★★ THE READ SIDE AND THE WRITE SIDE NOW AGREE, AND AN EARLIER REVISION HAD THEM
- * DISAGREE ON PURPOSE. That revision truncated here and refused on the write side, on
- * the reasoning that "the two boundaries answer different questions: a READ of
- * pre-existing malformed data should return what it can, so an operator can see the
- * hierarchy and fix it, whereas a WRITE of a path that cannot be correct must not
- * proceed." The write-side half of that is kept and is stronger than ever -
- * `ProductType.setParentProductType` consults `wouldCreateIdPathCycle` and refuses to
- * create such a chain, and `buildIdPathList` in
- * `src/domain/valueObjects/materializedIdPath.ts` refuses a cyclic walk.
+ * ★★ THIS IS THE ONLY BOUNDARY THAT GUARDS, AND IT IS A FETCH-SHAPE DECISION RATHER
+ * THAN A DIVERGENCE. It spends no part of the three-divergence ledger described at the
+ * head of this file, for the same reason the schema-naming correction there spends
+ * none: a divergence changes behaviour the source actually HAD, and this recursive read
+ * has none to change. It exists only because transformation rule T3 replaces
+ * Hibernate's lazy many-to-one traversal with an explicit query, and deciding where
+ * such a query STOPS is a decision the legacy system never had to take.
  *
- * The read-side half does not survive contact with what this function's OUTPUT is used
- * for. It does not hand an operator a hierarchy to look at; it hands the pricing
- * cascade a `parentProductType` chain that
+ * ★★ AN EARLIER REVISION SPREAD THE DECISION ACROSS THREE PLACES, AND THE RECORD
+ * BELONGS HERE. It truncated here and leaned on two guards further in:
+ * `ProductType.setParentProductType` consulted a `wouldCreateIdPathCycle` helper and
+ * refused to create a cyclic chain, and `buildIdPathList` threw on a revisited node.
+ * Both have been removed, because the legacy setter validates nothing
+ * [model/entity/ProductType.cfc:L149-L153] and the legacy walk carries no visited set
+ * [org/Hibachi/HibachiEntity.cfc:L314-L321], so reproducing them faithfully means
+ * adding neither. The read-side half of that revision does not survive either, and for
+ * an independent reason: it does not hand an operator a hierarchy to look at; it hands
+ * the pricing cascade a `parentProductType` chain that
  * `PriceGroupService.getRateForProductTypeBasedOnPriceGroup`
  * [model/service/PriceGroupService.cfc:L57-L100] walks, and that the promotion engine
  * reads as `productTypeIDPath` [model/service/PromotionService.cfc:L858-L870]. A
  * truncated ancestry is not a partial answer there - it is a DIFFERENT price and a
- * DIFFERENT qualification verdict, arrived at silently. So both boundaries refuse, and
- * the guarantee is the same one either way: no cyclic chain ever enters a live graph,
- * which is why no walk over a hydrated graph can hit the write-side guard.
+ * DIFFERENT qualification verdict, arrived at silently. So this boundary raises, and it
+ * is the one place the decision is taken.
  *
  * @param foldedProductTypeID the case-folded identifier of the row to hydrate.
  * @param scope the hydration scope; its `hydratedByFoldedID` and
@@ -1151,6 +1160,8 @@ function resolveParentProductTypeID(productType: ProductType): string | undefine
  * @param productTypeName the product type name the populate step settled on, if any.
  * @param createdDateTime the creation stamp; consumed by the insert only.
  * @param modifiedDateTime the modification stamp.
+ * @param auditActorAccountID the account the request's audit actor resolves to, or
+ *   `undefined` when the legacy gate refuses.
  * @returns the record every write binds from.
  * @throws An error named `ProductTypePersistenceError` when the parent is transient.
  */
@@ -1162,6 +1173,7 @@ function toPersistableRecord(
   productTypeName: string | undefined,
   createdDateTime: Date | undefined,
   modifiedDateTime: Date,
+  auditActorAccountID: string | undefined,
 ): SqlRow {
   return {
     productTypeID,
@@ -1185,9 +1197,23 @@ function toPersistableRecord(
     parentProductTypeID: resolveParentProductTypeID(productType),
     remoteID: productType.getRemoteID(),
     createdDateTime,
-    createdByAccountID: productType.getCreatedByAccountID(),
+    // SECURITY REVIEW DISPOSITION - RAISED AS S-07, ACCEPTED. These two arrive as ONE
+    // parameter, resolved from the request's audit actor, and are no longer read off the
+    // entity. Reading `productType.getCreatedByAccountID()` here let a caller that
+    // hand-built a `ProductType` name whoever it liked as the author of the row, or name
+    // nobody at all - a trust relationship the legacy never had. `HibachiEntity` took both
+    // from the ambient request scope [org/Hibachi/HibachiEntity.cfc:L628-L630, L632-L635],
+    // so the actor was never a caller-supplied value; T6 turns that ambient scope into
+    // this explicit parameter. The insert stamps BOTH halves from the same resolution,
+    // exactly as `preInsert` calls both setters under one gate.
+    createdByAccountID: auditActorAccountID,
     modifiedDateTime,
-    modifiedByAccountID: productType.getModifiedByAccountID(),
+    // On the UPDATE path a `null` here does NOT erase the stored value: the statement
+    // renders this column through `COALESCE(?, modifiedByAccountID)`, reproducing
+    // `preUpdate`'s leave-it-alone behaviour when the gate refuses
+    // [org/Hibachi/HibachiEntity.cfc:L676-L678]. See `sqlUpdateAssignment` in
+    // `./connection.js` for why that resolution belongs in SQL.
+    modifiedByAccountID: auditActorAccountID,
   };
 }
 
@@ -1282,10 +1308,25 @@ export class MysqlProductTypeRepository implements ProductTypeRepository {
   private readonly executor: PreparedStatementExecutor;
 
   /**
-   * @param executor the narrow prepared-statement executor from `./connection.js`.
+   * WHO this adapter stamps its writes on behalf of, INJECTED and immutable.
+   *
+   * SECURITY REVIEW DISPOSITION - RAISED AS S-07, ACCEPTED. It is a CONSTRUCTOR argument
+   * rather than a method parameter for two reasons. It keeps `ProductTypeRepository`
+   * unchanged, so interface parity - the acceptance contract - is untouched. And it puts
+   * the actor beyond a caller's reach entirely: there is no argument through which one
+   * could name an actor, so there is nothing to validate. The composition root builds it
+   * once per invocation from the authenticated request, alongside the executor.
    */
-  constructor(executor: PreparedStatementExecutor) {
+  private readonly auditActor: AuditActorContext;
+
+  /**
+   * @param executor the narrow prepared-statement executor from `./connection.js`.
+   * @param auditActor the request's audit actor, for stamping `createdByAccountID` and
+   *   `modifiedByAccountID`.
+   */
+  constructor(executor: PreparedStatementExecutor, auditActor: AuditActorContext) {
     this.executor = executor;
+    this.auditActor = auditActor;
   }
 
   /**
@@ -1665,6 +1706,7 @@ export class MysqlProductTypeRepository implements ProductTypeRepository {
         productTypeName,
         auditTimestamp,
         auditTimestamp,
+        resolveAuditActorAccountID(this.auditActor),
       );
 
       await this.executor.executeMutation(
@@ -1685,6 +1727,7 @@ export class MysqlProductTypeRepository implements ProductTypeRepository {
       productTypeName,
       auditTimestamp,
       auditTimestamp,
+      resolveAuditActorAccountID(this.auditActor),
     );
 
     await this.executor.executeMutation(
@@ -1768,6 +1811,7 @@ export class MysqlProductTypeRepository implements ProductTypeRepository {
       productTypeName,
       productType.getCreatedDateTime(),
       new Date(),
+      resolveAuditActorAccountID(this.auditActor),
     );
 
     const parameters = [
@@ -1786,7 +1830,21 @@ export class MysqlProductTypeRepository implements ProductTypeRepository {
     }
 
     return toProductType(
-      record,
+      {
+        ...record,
+        // The record carries what was BOUND; the row now holds what the statement
+        // RESOLVED. Those differ by exactly one column, because `modifiedByAccountID`
+        // binds through `COALESCE(?, modifiedByAccountID)` - so a refused gate left the
+        // stored value in place and hydrating straight from `record` would hand back an
+        // entity claiming the attribution had been cleared. `createdByAccountID` needs no
+        // such correction: it is not in `UPDATED_COLUMNS` at all, so the update never
+        // touched it and the stored value is the one the entity was loaded with.
+        createdByAccountID: productType.getCreatedByAccountID(),
+        modifiedByAccountID: resolveStampedModifiedByAccountID(
+          this.auditActor,
+          productType.getModifiedByAccountID(),
+        ),
+      },
       productType.getParentProductType(),
       createHydrationScope([], this, UPDATE_STATEMENT_LABEL),
     );

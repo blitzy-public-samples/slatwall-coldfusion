@@ -323,13 +323,21 @@ export interface AttributeSetSummary {
  *     fourteenth.
  *
  * WHAT THIS MEANS FOR A CALLER, STATED PLAINLY RATHER THAN LEFT TO INFERENCE. `saveBrand` on
- * `src/services/brandService.ts` resolves the unique URL title exactly as [L68-L74] does and answers
- * the brand; the durable half of `super.save` is left to the composition root, which is what that
- * service's own LEGACY-NOTE records. A partial brand write - one that persisted `urlTitle` and
- * `brandName` while silently dropping `activeFlag`, `publishedFlag` and `brandWebsite`, and while
- * enforcing none of `model/validation/Brand.json` because the framework validation service is not
- * ported - would be strictly worse than no write at all: it would durably store a WRONG ROW. So the
- * member is gone rather than narrowed.
+ * `src/services/brandService.ts` resolves the unique URL title exactly as [L68-L74] does, writes it
+ * into the supplied payload, and THEN RAISES `BrandPersistenceUnavailableError`. A partial brand
+ * write - one that persisted `urlTitle` and `brandName` while silently dropping `activeFlag`,
+ * `publishedFlag` and `brandWebsite`, and while enforcing none of `model/validation/Brand.json`
+ * because the framework validation service is not ported - would be strictly worse than no write at
+ * all: it would durably store a WRONG ROW. So the member is gone rather than narrowed.
+ *
+ * ★ AND THE ABSENCE IS NOW SIGNALLED AT THE CALL RATHER THAN LEFT TO A COMMENT. An earlier revision
+ * of this paragraph said the durable half was "left to the composition root". Finding S-06 checked
+ * that: no module under `src/repositories/**` issues an INSERT or UPDATE against `SwBrand` - this
+ * port's own adapter reads those eleven columns and never writes them - so the deferral named no
+ * owner and every brand a caller saved was discarded silently (CWE-703, CWE-840). Removing the
+ * member is still the right call for the reason above; what changed is that `brandService` no longer
+ * answers as though the missing member did not matter. Wiring persistence here later is a deliberate
+ * decision that begins by deleting that `throw`, not a gap someone stumbles into.
  */
 
 /**

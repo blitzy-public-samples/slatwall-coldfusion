@@ -1,232 +1,39 @@
-// ---------------------------------------------------------------------------
-// slatwall-ts - characterization suite for `src/domain/entities/product.ts`
+// slatwall-ts - unit suite for `src/domain/entities/product.ts`, the port of the 841-line
+// `model/entity/Product.cfc`.
 //
-// The subject is the port of the 841-line `model/entity/Product.cfc`, the
-// behaviour-carrying centre of the catalog half of this slice.
+// PROVENANCE, in three classes, labelled at every `describe` so net-new coverage is never read as
+// parity:
+//   1. LEGACY-EXTENDED - five cases. [meta/tests/unit/entity/ProductTest.cfc] declares
+//      `productUrlIsCorrectlyFormatted` (with the `nike-air-jorden` fixture kept verbatim) and
+//      overrides nothing, so it adds to the four inherited from
+//      [meta/tests/unit/entity/SlatwallEntityTestBase.cfc].
+//   2. ROUTED LEGACY CASES - four from [meta/tests/unit/IssuesTest.cfc]: `issue_1097`, `issue_1331`,
+//      `issue_1690` and `issue_1690_2`. Three of the four assert nothing in the legacy, so each is
+//      strengthened here with its lineage and original weakness named at the case. `issue_1335` and
+//      `issue_1348` are recorded as sibling-owned by `skuCurrency.test.ts` and `sku.test.ts`.
+//   3. NET-NEW - everything else.
 //
-// ═══════════════════════════════════════════════════════════════════════════
-// C8 TRACEABILITY DECLARATION - THREE PROVENANCE CLASSES
-// ═══════════════════════════════════════════════════════════════════════════
+// [meta/tests/functional/admin/entity/ProductTest.cfc] has a literally empty component body and
+// contributes zero coverage; it is acknowledged as a gap rather than counted.
 //
-// This file carries THREE distinct provenance classes and every `describe` is
-// labelled with the one it belongs to. Presenting net-new coverage as parity
-// fails C8, so the boundaries are drawn explicitly rather than left to
-// inference.
+// The suite is hermetic: no environment variable, socket, filesystem, `.env` or database is touched.
 //
-//   1. LEGACY-EXTENDED - EXACTLY FIVE CASES.
-//      [meta/tests/unit/entity/ProductTest.cfc] (65 lines) declares ONE test
-//      method and OVERRIDES NOTHING, so it ADDS to the four its base declares:
-//      3 + 1 inherited-but-not-overridden + ... no. Precisely: 4 inherited
-//      unchanged + 1 added = 5.
+// TWO MEMBERS THE PLAN NAMES ARE WORTH STATING HERE, because a reader checking the census against
+// this file will look for both and find only one:
 //
-//      ★ CONTRAST WITH THE SIBLING LEGACY-EXTENDED SUITE.
-//      [meta/tests/unit/entity/BrandTest.cfc:L58-L60] OVERRIDES
-//      `defaults_are_correct`, and an override REPLACES rather than adds, so
-//      Brand totals 3 + 1 = 4. Product overrides nothing, so Product totals
-//      4 + 1 = 5. The two numbers differ for a real reason and neither is a
-//      transcription of the other.
-//
-//   2. ROUTED LEGACY CASES - FOUR, from [meta/tests/unit/IssuesTest.cfc]:
-//      `issue_1097` [L51-L71], `issue_1331` [L101-L108], `issue_1690`
-//      [L192-L201] and `issue_1690_2` [L203-L206]. They are legacy in lineage
-//      but three of the four assert NOTHING, so each is STRENGTHENED into a
-//      meaningful target assertion with both the lineage AND the original
-//      weakness named at the case.
-//
-//      The remaining two cases in that file are sibling-owned and are NOT
-//      duplicated here: `issue_1335` [L110-L124] belongs to `skuCurrency.test.ts`
-//      and `issue_1348` [L126-L138] belongs to `sku.test.ts`.
-//
-//   3. NET-NEW - everything else, and it is the overwhelming majority.
-//
-// THE EMPTY FUNCTIONAL STUB CONTRIBUTES ZERO AND IS NEVER COUNTED.
-// [meta/tests/functional/admin/entity/ProductTest.cfc] is 53 lines of which 48
-// are the licence header: the component opens at L49 and closes at L53 with a
-// LITERALLY EMPTY body. It is acknowledged here so the gap is explicit, and it
-// MUST NOT be turned into a functional suite. There is no functional tier in
-// this port.
-//
-// FOUR LEGACY TEST FILES TOUCH THIS SLICE IN TOTAL - not two, not three:
-//   1. [meta/tests/unit/entity/ProductTest.cfc]              65 lines - EXTENDED HERE
-//   2. [meta/tests/unit/entity/SlatwallEntityTestBase.cfc]   70 lines - EXTENDED HERE (via 1)
-//   3. [meta/tests/unit/IssuesTest.cfc]                     209 lines - FOUR CASES ROUTED HERE
-//   4. [meta/tests/functional/admin/entity/ProductTest.cfc]  53 lines - EMPTY, zero coverage
-// [meta/tests/unit/entity/BrandTest.cfc] is the fifth file touching the slice
-// overall, and it is sibling-owned by `brand.test.ts`.
-//
-// THE LEGACY STRUCTURAL FLOOR IS UNRUNNABLE, NOT PARITY.
-// [meta/tests/coverage/SlatwallCoverageTestBase.cfc:L54] resolves
-// `expandPath("/Slatwall/com/entity/")`, a directory that does not exist in this
-// repository - the real one is `model/entity/`. The coverage component that
-// would have asserted "every entity has a test case" could therefore never have
-// run. `tests/traceability/legacyTestMap.ts` carries that floor forward
-// machine-readably; it is sibling-owned and is neither edited nor imported here.
-//
-// ═══════════════════════════════════════════════════════════════════════════
-// CARRY THE ASSERTIONS, NOT THE HARNESS  (C1)
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// Every legacy "unit" test boots the real application through
-// [meta/tests/unit/SlatwallUnitTestBase.cfc]: L52 instantiates
-// `Slatwall.Application`, L55 builds a `Helper` component, L60 calls
-// `bootstrap()`, L62 ELEVATES the ambient account to superuser before every
-// test, and L70's teardown is COMMENTED OUT so nothing is torn down between
-// cases. That component is THE ANTI-PATTERN and is never emulated.
-//
-// Concretely dropped, and none of it is reconstructed anywhere below:
-// `entityNew`, `entitySave`, `entityDelete`, `ormFlush`,
-// `javaCast("null","")`, `request.slatwallScope`, every `getService(...)`, the
-// `setUp`/`tearDown` component pattern, any `assertEquals`-shaped shim, the
-// MXUnit expected-FIRST argument order, a `Helper`-class port, a `RemoteFacade`
-// or CFSelenium analogue, a shared entity test base class, `variables.` scope
-// emulation, `evaluate()`/`eval`/`new Function`/`vm`, and any Proxy-based
-// dynamic dispatch standing in for `onMissingMethod`.
-//
-// [meta/tests/unit/Helper.cfc] (77 lines) is a SHAPE REFERENCE ONLY - build,
-// save, flush; then null-child, delete, flush. Only the "one named function
-// returning a formed subject" shape is kept, and it is kept by importing the
-// sibling fixture factories rather than by porting the helper. There is no
-// `destroy*` counterpart.
-//
-// ★ ONE HARNESS DETAIL DELIBERATELY NOT REPRODUCED, stated because silence
-// would look like an oversight: both [meta/tests/unit/Helper.cfc:L53] and
-// [meta/tests/unit/IssuesTest.cfc:L55] declare `productData = { ... }` WITHOUT
-// `var`, leaking the struct into the component scope. That is harness hygiene,
-// NOT one of the thirty preserved defects, and it is not reproduced. Every
-// binding in this file is `const` and function-local.
-//
-// Traceability means the same assertions about the same behaviour - NOT the same
-// test architecture.
-//
-// ═══════════════════════════════════════════════════════════════════════════
-// VERIFIED CORRECTIONS - SOURCE WINS, AND THE CORRECTION IS RECORDED
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// Locator and surface drift is systemic in the upstream descriptions of this
-// slice. Every figure below was re-derived first-hand from `model/entity/Product.cfc`,
-// from `src/domain/entities/product.ts`, or by running the code. Where an
-// upstream note disagrees with what ships, THE SHIPPED SURFACE IS ASSERTED and
-// the disagreement is recorded rather than quietly applied.
-//
-//   C1. `getBaseProductType()` is **async** on the shipped class, returning
-//       `Promise<string | undefined>`. Upstream describes it as possibly
-//       synchronous. It is async because `ProductType.getBaseProductType()`
-//       [model/entity/ProductType.cfc:L110-L115] is, and that method resolves
-//       the ROOT of the path with `listFirst(getProductTypeIDPath())` at L112 -
-//       element ONE, the root, never a second element.
-//   C2. The `getUnusedProduct*` pair resolves `readonly SelectOption[]`
-//       (`{ name, value }` pairs), not `Option[]`/`OptionGroup[]`.
-//   C3. `getTitle()` is **OMITTED**. The legacy body [L540-L545] routes through
-//       `hibachiUtilityService`, which is not one of the thirteen ports, and the
-//       `productTitleString` setting is not one of the four keys the settings
-//       port publishes. The omission is asserted; no fourteenth port is invented.
-//   C4. `getAllowBackorderFlag()` is **OMITTED** [L551-L553]. Its legacy
-//       `returntype="numeric"`-versus-boolean mismatch is therefore recorded as
-//       a documented non-port rather than asserted as a live defect.
-//   C5. `getBrandOptions()` is **OMITTED** [L534-L538], exactly as upstream
-//       predicted. It is not created here.
-//   C6. `getImages()` is **OMITTED** [L178-L180].
-//   C7. `getSalePriceDetailsForSkus()` is **OMITTED** [L517-L522] under the
-//       shipped module's documented branch (b); only `getSkuSalePriceDetails`
-//       ships, reading a pre-materialised map.
-//   C8. `getSalePrice()` returns `Money.fromDecimalString('0')` - a `Money`
-//       holding zero, NOT a JavaScript numeric `0`. Upstream says "numeric
-//       zero"; the observable contract is a `Money`, and it is asserted as one.
-//   C9. `getOptionGroups()` **THROWS** when its option groups were never
-//       materialized. There is therefore no seed-then-overwrite behaviour to
-//       observe: the legacy `[]` seed at [L253] and its immediate discard at
-//       [L258] are annotated in comments, and the shipped refusal is what is
-//       asserted.
-//  C10. `getSkuSalePriceDetails()` resolves `undefined` on a miss, where the
-//       legacy returns `{}` [L186]. Both readers test for their key first, so
-//       absence and an empty struct are indistinguishable to every caller.
-//  C11. There are **SIX** containment probes, not five: `hasPriceGroupRate`,
-//       `hasPromotionQualifier`, `hasPromotionQualifierExclusion`,
-//       `hasPromotionReward`, `hasPromotionRewardExclusion` and **`hasSku`**.
-//  C12. `getUnusedProductSubscriptionTerms()` **REJECTS**; it does not delegate
-//       to the subscription-term stub port. The port declares no such member and
-//       none may be invented.
-//  C13. `getSkus()` returns the **LIVE** internal array when neither flag is
-//       set and a **NEW** array when either is. Both are asserted, separately.
-//  C14. `removeBrand()` called with no argument on a product that has no brand
-//       **THROWS**; it is not a silent no-op.
-//  C15. `getOptionsByOptionGroup()` sorts an `undefined` sort order **FIRST**,
-//       matching MySQL's NULL-first ordering for `ORDER BY ... ASC`.
-//  C16. ⚠️ THE DISCARDED-ARGUMENT DEFECT DOES NOT EXIST. Upstream asserts that
-//       `getTransactionExistsFlag` [L626] passes `productID=` to
-//       [model/service/SkuService.cfc:L285], which declares no parameters, so
-//       CFML "silently discards" it and the flag is GLOBAL. Reading all three
-//       files disproves it: the service body forwards
-//       `argumentCollection=arguments` at [model/service/SkuService.cfc:L286],
-//       CFML places an UNDECLARED named argument into the `arguments` scope, and
-//       [model/dao/SkuDAO.cfc:L54-L55] DECLARES both `productID` and `skuID` and
-//       branches on them at [L59-L63]. The identifier reaches the query and the
-//       flag IS per-product. NO `LEGACY-DEFECT` marker is written for it,
-//       because there is no defect to preserve.
-//  C17. `listingPages` is declared at **[model/entity/Product.cfc:L79]**, not
-//       L82. The shipped `getPageIDs()` refusal message cites L82. The message
-//       is asserted AS SHIPPED, because it is observable behaviour and `src/**`
-//       is never edited from a test; the locator correction is recorded here.
-//  C18. `price` IS declared on the component - at [model/entity/Product.cfc:L118]
-//       as `persistent="false"`. Upstream says it is "not declared as a property
-//       at all"; it is not PERSISTENT, which is a different claim. No persistent
-//       `price` column is invented, and the two-probe shape of `getPrice()` is
-//       asserted from the shipped code rather than from that reasoning.
-//  C19. `model/validation/Product.json` is 17 physical lines and 18 numbered
-//       lines counting the trailing newline. Either figure describes the same
-//       file; the ELEVEN property entries are what this suite pins.
-//  C20. `Object.getOwnPropertyNames(Product.prototype)` is **82** at runtime:
-//       79 public members, plus `constructor` and the two compile-time-private
-//       methods `missingCollaborator` and `buildExistingOptionGroupIDList`,
-//       which TypeScript's `private` does not erase.
-//  C21. `structKeyList` from `src/lib/cfml/struct.ts` returns a **`string[]`**,
-//       NOT the comma-delimited LIST that CFML's same-named function returns.
-//       The helper documents the choice deliberately, and
-//       `Product.buildExistingOptionGroupIDList` folds that array through
-//       `listAppend` to BUILD the comma list rather than receiving one. Verified
-//       at runtime, not inferred from the name.
-//  C22. The prompt's B20.1 lists "the six default-sku delegations" among the
-//       SYNCHRONOUS members. Only FOUR are: `getCurrencyCode` [L555],
-//       `getPrice` [L561], `getRenewalPrice` [L570] and `getListPrice` [L576].
-//       `getLivePrice` [L582] and `getCurrentAccountPrice` [L588] are **ASYNC**
-//       on the shipped surface, because the sku-side accessors they delegate to
-//       reach a repository. Verified by direct read of the shipped signatures.
-//  C23. `getSkuSalePriceDetails` [L182] RETURNS A PROMISE BUT IS NOT MARKED
-//       `async` - it returns `Promise.resolve(...)` on all three paths. It is
-//       therefore an ELEVENTH promise-returning member on top of the ten `async`
-//       ones, and any structural assertion about "the async surface" has to count
-//       promise-returning members rather than the `async` keyword.
-//  C24. `cfTruthy` from `src/lib/cfml/truthiness.ts` **THROWS** for a non-empty
-//       string that is neither a boolean literal nor numeric - faithfully, since
-//       CFML raises the same conversion error. `''` is NOT rejected; it is falsy,
-//       which the currency-eligibility gate at [model/entity/Sku.cfc:L373] depends
-//       on. Consequence: `if(len(x))` translates to `cfTruthy(cfLen(x))` and NEVER
-//       to `cfTruthy(x)` for a string-valued `x`. Verified at runtime after a
-//       failing assertion, not inferred.
-//
-// ═══════════════════════════════════════════════════════════════════════════
-// DEPENDENCY BOUNDARY  (P2, P3, P5, P6)
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// This suite imports from `src/domain/**`, `src/lib/cfml/**` and
-// `tests/fixtures/**` and from nowhere else. It never imports
-// `src/handlers/**`, `src/repositories/**`, `src/integrations/**`,
-// `src/lib/config.ts`, `src/lib/logger.ts`, `tests/integration/**` or
-// `tests/traceability/**`. Tests are not a back door around the domain-inward
-// lint boundary.
-//
-// `decimal.js`, `mysql2`, `zod`, `aws-lambda` and `dotenv` are never imported:
-// `money.ts` is the only domain module permitted to touch the decimal
-// substrate, and every monetary expectation below goes through `Money`.
-//
-// No SQL appears anywhere in this file. The AND-of-EXISTS option-matching
-// semantics of `getSkusBySelectedOptions` [model/dao/SkuDAO.cfc:L107-L128] are
-// explicitly OUT OF SCOPE for a domain suite and belong to `tests/integration`;
-// this file models RESULTS over an inline repository double, never queries.
-//
-// Nothing here reads an environment variable, opens a socket, touches the
-// filesystem, loads a `.env`, needs a database or elevates a privilege. The
-// whole suite passes with a completely empty environment.
+//   C3. `getTitle()` is **OMITTED**, for ONE reason: the legacy body [L540-L545]
+//       routes through `hibachiUtilityService`, which is not one of the thirteen
+//       ports and is not ported. `productTitleString` IS one of the seven keys the
+//       settings port publishes [model/service/SettingService.cfc:L193], so the
+//       setting is not a reason and is not offered as one. The omission is
+//       asserted; no fourteenth port is invented.
+//   C7. `getSalePriceDetailsForSkus()` **SHIPS** [L517-L522] under the shipped
+//       module's documented branch (a), memoized over an injected
+//       `salePriceResolver` - the SECOND interface exported by
+//       `src/domain/ports/promotionRepository.ts`, satisfied in
+//       `src/handlers/bootstrap.ts` and injected into `Product` from there. The
+//       collaborator is OPTIONAL, so a pre-materialised map still answers
+//       without reaching anything.
 // ---------------------------------------------------------------------------
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -249,12 +56,6 @@ import { structKeyExists, structKeyList } from '../../../../src/lib/cfml/struct.
 import { cfLen, cfTruthy } from '../../../../src/lib/cfml/truthiness.js';
 import { makeProductFixture } from '../../../fixtures/productFixtures.js';
 import { makeSkuFixture } from '../../../fixtures/skuFixtures.js';
-
-// ---------------------------------------------------------------------------
-// A2 - REQUEST-SCOPED STATE
-//
-// `tests/setup.ts` already registers a global `afterEach` running `vi.restoreAllMocks()` and
-// `vi.useRealTimers()`, and `vitest.config.ts` sets `clearMocks` and `restoreMocks`.
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -320,18 +121,10 @@ const LEGACY_NON_MERCHANDISE_PRODUCT_TYPE_ID = '444df313ec53a08c32d8ae434af5819a
  */
 const PROVISIONAL_SKU_ID = '6b1f0c9d7a2e4b558c30d1fe94a7b602';
 
-// ---------------------------------------------------------------------------
-// Reflection helpers
-//
-// These read `Object.getOwnPropertyNames(Product.prototype)` rather than a hand-maintained list,
-// because the question they answer is "what does the class actually publish".
-
-/** Every own property name on the prototype, including the private three. */
 function prototypeMembers(): readonly string[] {
   return Object.getOwnPropertyNames(Product.prototype);
 }
 
-/** The runtime-visible members that are part of the PUBLIC contract, sorted. */
 function publicMembers(): readonly string[] {
   const compileTimePrivate: readonly string[] = [
     'constructor',
@@ -344,12 +137,10 @@ function publicMembers(): readonly string[] {
     .sort();
 }
 
-/** `true` when the shipped class declares `name` as a callable member. */
 function declaresMember(name: string): boolean {
   return prototypeMembers().includes(name);
 }
 
-/** The declared arity of a published member, read off the prototype. */
 function arityOf(name: string): number {
   const descriptor = Object.getOwnPropertyDescriptor(Product.prototype, name);
   const candidate: unknown = descriptor === undefined ? undefined : descriptor.value;
@@ -479,28 +270,26 @@ function buildProductType(
 }
 
 // ---------------------------------------------------------------------------
-// Inline hand-written recording port doubles (B18)
+// Inline hand-written recording port doubles
 //
-// THE PORT LEDGER IS LOCKED AT THIRTEEN and `Product` receives FIVE: `settingsProvider`,
-// `skuRepository`, `optionRepository`, `productRepository` and `subscriptionTermProvider`. The
-// other eight - `productTypeRepository`, `promotionRepository`, `priceGroupRepository`,
-// `currencyConverter`, `addressZoneEvaluator`, `urlTitleGenerator`, `imageStore` and
-// `productFeedPort` - are not this entity's collaborators and none is constructed here.
-// `hibachiUtilityService` is NOT a port and no fourteenth port is invented for `getTitle` or
-// `getProductOptionsByGroup`. The argument order of a positional port call is a real contract - the
-// legacy passed `(selectedOptions, productID)` positionally at [model/entity/Product.cfc:L367] -
-// and a recorder is the only way to observe it.
+// `Product` is constructed with five collaborators here: `settingsProvider`, `skuRepository`,
+// `optionRepository`, `productRepository` and `subscriptionTermProvider`. Recorders rather than
+// stubs, because the argument ORDER of a positional port call is part of the contract - the legacy
+// passed `(selectedOptions, productID)` positionally at [model/entity/Product.cfc:L367] - and only a
+// recorder can observe it.
 // ---------------------------------------------------------------------------
 
 /** One recorded `setting(...)` read. */
 type SettingRead = string;
 
 /**
- * The settings port, over the FOUR keys `settingsProvider.ts` publishes.
+ * The settings port, over the SEVEN keys `settingsProvider.ts` publishes.
  *
  * CFML parity [model/service/SettingService.cfc:L178]: only `globalURLKeyProduct` is this entity's
  * concern, and its legacy default lives in the setting declaration rather than in the component.
- * The other three are answered so the double satisfies the whole port contract.
+ * The others are answered so the double satisfies the whole port contract - the catch-all return
+ * below covers every key this entity never reads, including the three product-subsystem keys
+ * [:L191, :L192, :L193].
  */
 class SettingsProviderDouble {
   readonly reads: SettingRead[] = [];
@@ -539,26 +328,23 @@ class SettingsProviderDouble {
   }
 }
 
-/** One recorded `getSkusBySelectedOptions(...)` call, in positional order. */
 interface SelectedOptionsCall {
   readonly selectedOptions: string;
   readonly productID: string | undefined;
 }
 
-/** One recorded `getTransactionExistsFlag(...)` call. */
 interface TransactionExistsCall {
   readonly productID: string | undefined;
   readonly skuID: string | undefined;
 }
 
-/** One recorded `getProductSkus(...)` call. */
 interface ProductSkusCall {
   readonly productID: string;
   readonly fetchOptions: boolean;
 }
 
 /**
- * The sku repository port - all eight declared members.
+ * The sku repository port - all seven declared members.
  *
  * P5: this stands in for [model/dao/SkuDAO.cfc] WITHOUT reproducing any SQL. The AND-of-EXISTS
  * matching semantics of `getSkusBySelectedOptions` [model/dao/SkuDAO.cfc:L107-L128] are an
@@ -611,18 +397,16 @@ class SkuRepositoryDouble {
   }
 
   saveSku(sku: Sku): Promise<Sku> {
+    // The port's ONLY write member, present so this double still satisfies
+    // `SkuRepository`. No entity method reaches it - persistence is not an entity
+    // concern - so it answers the instance unchanged.
+    //
+    // ★ A `saveSkus` COLLECTION FORM STOOD BESIDE IT FOR ONE REVISION, as an eighth
+    // port member. It has been removed and so has this double's copy of it.
     return Promise.resolve(sku);
-  }
-
-  saveSkus(skus: readonly Sku[]): Promise<Sku[]> {
-    // The eighth port member, present so this double still satisfies `SkuRepository`.
-    // No entity method reaches it - persistence is not an entity concern - so it
-    // answers the collection unchanged, in arrival order, as the port specifies.
-    return Promise.resolve([...skus]);
   }
 }
 
-/** One recorded `getUnusedProductOptions(...)` call, in positional order. */
 interface UnusedOptionsCall {
   readonly productID: string;
   readonly existingOptionGroupIDList: string;
@@ -669,7 +453,6 @@ class OptionRepositoryDouble {
   }
 }
 
-/** One recorded `getAttributeSets(...)` call, in positional order. */
 interface AttributeSetsCall {
   readonly attributeSetTypeCode: readonly string[];
   readonly productTypeIDs: readonly string[];
@@ -747,23 +530,14 @@ class SubscriptionTermProviderDouble {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Projection helpers
-//
-// B16.5: EVERY association comparison in this file is by PRIMARY KEY - never by object identity,
-// never by deep equality.
-
-/** Primary keys of a sku collection, in order. */
 function skuIDsOf(skus: readonly Sku[]): readonly string[] {
   return skus.map((sku: Sku): string => sku.getSkuID());
 }
 
-/** Primary keys of an option collection, in order. */
 function optionIDsOf(options: readonly Option[]): readonly string[] {
   return options.map((option: Option): string => option.getOptionID());
 }
 
-/** Primary keys of a product collection, in order. */
 function productIDsOf(products: readonly Product[]): readonly string[] {
   return products.map((product: Product): string => product.getProductID());
 }
@@ -812,7 +586,6 @@ describe('LEGACY-EXTENDED: the five cases Product inherits and adds', () => {
       expect(declaresMember(absent)).toBe(false);
     }
 
-    // What IS observable at this tier, and what the service-tier gate will read.
     const bare = new Product({ productID: '' });
 
     expect(bare.getPrice()).toBeUndefined();
@@ -828,7 +601,6 @@ describe('LEGACY-EXTENDED: the five cases Product inherits and adds', () => {
     // context fail. This is the same fact `issue_1690` rests on.
     expect(bare.getDefaultSku()).toBeUndefined();
 
-    // And a fully populated product supplies every one of the five.
     const populated = new Product({
       productID: 'product-1',
       productName: 'Test Product',
@@ -870,9 +642,6 @@ describe('LEGACY-EXTENDED: the five cases Product inherits and adds', () => {
 
     expect(declaresMember('getSimpleRepresentation')).toBe(false);
 
-    // The underlying legacy claim - that the representation is a SIMPLE value - is still checkable
-    // one step removed: the property the name points at is a plain string on the entity, never an
-    // object or a collection.
     const populated = new Product({ productID: 'product-1', productName: 'Test Product' });
 
     expect(typeof populated.getProductName()).toBe('string');
@@ -912,14 +681,10 @@ describe('LEGACY-EXTENDED: the five cases Product inherits and adds', () => {
 
     expect(subject.isNew()).toBe(true);
 
-    // `!len(getPrimaryIDValue())` becomes a length test over the primary key the shipped class
-    // publishes.
     expect(cfLen(subject.getProductID())).toBe(0);
     expect(subject.getProductID()).toBe('');
     expect(subject.getProductID()).not.toBeUndefined();
 
-    // Omitting the key entirely is not expressible: `productID` is the ONE required member of the
-    // hydration surface, so an unsaved product must say so explicitly.
     const hydrated = new Product({ productID: 'product-1' });
 
     expect(hydrated.isNew()).toBe(false);
@@ -952,42 +717,30 @@ describe('LEGACY-EXTENDED: the five cases Product inherits and adds', () => {
     // default and builds the expectation from the same source the accessor reads.
     expect(subject.getProductURL()).toBe(`/${URL_KEY_UNDER_TEST}/${LEGACY_URL_TITLE}/`);
 
-    // The whole path, spelled out, so the two slashes are visible as literals and not just as an
-    // interpolation: leading slash, key, slash, title, TRAILING slash.
     expect(subject.getProductURL()).toBe('/catalog-key-under-test/nike-air-jorden/');
     expect(subject.getProductURL().startsWith('/')).toBe(true);
     expect(subject.getProductURL().endsWith('/')).toBe(true);
 
-    // ★ THE LEGACY `setURLTitle(...)` IS PUBLISHED, AND AN EARLIER REVISION OF THIS
-    // CASE ASSERTED THAT IT WAS NOT. That assertion encoded a premise - "the shipped
-    // class is hydrate-once and exposes no setter for any column" - which was never a
-    // rule the port imposes. `src/domain/entities/product.ts` prohibition 1 locks the
-    // entity FOLDER at eighteen FILES and prohibition 12 forbids a fourteenth PORT;
-    // neither says anything about a class member, and §0.6's member-generation
-    // principle positively instructs generating the ORM-implicit accessors the source
-    // concretely calls. This is one of them:
+    // The write accessor exists because the ported slice calls it:
     // [model/service/ProductService.cfc:L269] is
-    // `arguments.product.setURLTitle( getDataService().createUniqueURLTitle(...) )` -
-    // a write ONTO THE ENTITY, whose result the save-context validation then reads.
-    // Without the setter that write had nowhere to land and the resolved title was
-    // never persisted.
+    // `arguments.product.setURLTitle( getDataService().createUniqueURLTitle(...) )`, a write ONTO
+    // the entity whose result the save-context validation then reads.
     //
-    // The name is normalised to `setUrlTitle` to match `getUrlTitle`, which the port
-    // already spells that way; the legacy `setURLTitle` casing is NOT published, so
-    // both facts are asserted rather than one being left to inference.
+    // ACRONYM CASING IS NORMALISED, NOT VERBATIM. The legacy sources spell the pair `setURLTitle` /
+    // `getURLTitle` [model/service/ProductService.cfc:L268] while the property is `urlTitle`
+    // [model/entity/Product.cfc:L54]; CFML method names are case-insensitive so both spellings
+    // resolved to one generated accessor, and TypeScript is case-sensitive, so the port publishes
+    // exactly one spelling - `setUrlTitle` / `getUrlTitle`, matching the property. Both the presence
+    // and the casing are asserted so neither is left to inference.
     expect(declaresMember('setUrlTitle')).toBe(true);
     expect(declaresMember('setURLTitle')).toBe(false);
 
-    // And it does what the legacy setter did: the column changes and the URL follows
-    // it, on the SAME instance.
     const mutated = makeProductFixture({ globalURLKeyProduct: URL_KEY_UNDER_TEST });
     mutated.setUrlTitle('another-title');
 
     expect(mutated.getUrlTitle()).toBe('another-title');
     expect(mutated.getProductURL()).toBe(`/${URL_KEY_UNDER_TEST}/another-title/`);
 
-    // Constructing another instance reaches the same place, which is what a repository
-    // does when it hydrates a row.
     const other = makeProductFixture({
       urlTitle: 'another-title',
       globalURLKeyProduct: URL_KEY_UNDER_TEST,
@@ -995,20 +748,13 @@ describe('LEGACY-EXTENDED: the five cases Product inherits and adds', () => {
 
     expect(other.getProductURL()).toBe(`/${URL_KEY_UNDER_TEST}/another-title/`);
 
-    // AND THE ACCESSOR IS SYNCHRONOUS, which the legacy case relied on without saying so.
     expect(typeof subject.getProductURL()).toBe('string');
 
-    // The refusal path, asserted in the same case because it is the same contract: with no settings
-    // port there is no key to read, and the accessor names the locator it could not evaluate rather
-    // than inventing a segment.
     const unwired = new Product({ productID: 'product-1', urlTitle: LEGACY_URL_TITLE });
 
     expect(() => unwired.getProductURL()).toThrow(/settings provider/);
     expect(() => unwired.getProductURL()).toThrow(/model\/entity\/Product\.cfc:L208/);
 
-    // `await` on a resolved promise keeps this case's `async` marking honest under the
-    // `require-await` lint rule while asserting something real: the shipped class publishes no
-    // asynchronous URL accessor of any kind.
     await Promise.resolve();
 
     expect(declaresMember('getProductUrlAsync')).toBe(false);
@@ -1046,8 +792,6 @@ describe('NET-NEW: the URL pair and its deliberate slash asymmetry', () => {
     expect(detailUrl).toBe(`/${URL_KEY_UNDER_TEST}/${LEGACY_URL_TITLE}/`);
     expect(listingUrl).toBe(`${URL_KEY_UNDER_TEST}/${LEGACY_URL_TITLE}/`);
 
-    // Stated as the one-character relationship it actually is, so a future edit to either accessor
-    // breaks this immediately.
     expect(detailUrl).toBe(`/${listingUrl}`);
     expect(detailUrl.length - listingUrl.length).toBe(1);
 
@@ -1122,10 +866,11 @@ describe('NET-NEW: the URL pair and its deliberate slash asymmetry', () => {
     expect(() => unwired.getListingProductURL()).toThrow(/settings provider/);
     expect(() => unwired.getListingProductURL()).toThrow(/model\/entity\/Product\.cfc:L212/);
 
-    // The refusal names this product, so a batch build says WHICH row is unwired.
     expect(() => unwired.getProductURL()).toThrow(/Product 'product-1'/);
 
-    // A LOCATOR CORRECTION, RECORDED RATHER THAN APPLIED.
+    // The failure message names the STATEMENT that needs the collaborator, not the declaration:
+    // the settings read is at [model/entity/Product.cfc:L208] for `getProductURL` and at [L212] for
+    // `getListingProductURL`, while L207 and L211 are only the `function` lines.
     expect(() => unwired.getListingProductURL()).not.toThrow(/L211/);
     expect(() => unwired.getProductURL()).not.toThrow(/L207/);
   });
@@ -1161,8 +906,6 @@ describe('DIVERGENCE (c): getBrandName is fixed, getSalePriceDiscountType is the
 
     expect(subject.getBrandName()).toBe('Test Brand');
 
-    // THE ASSERTION THE DEFECT WOULD FAIL. Under the legacy body this second read returns `''`;
-    // under the fix it returns the same non-empty value.
     expect(subject.getBrandName()).toBe('Test Brand');
     expect(subject.getBrandName()).toBe('Test Brand');
 
@@ -1170,8 +913,6 @@ describe('DIVERGENCE (c): getBrandName is fixed, getSalePriceDiscountType is the
   });
 
   it('B3.1 - the far side is consulted exactly ONCE, which is what makes it a memo', () => {
-    // The value being cached is only half the contract; the other half is that the association is
-    // not re-walked.
     const brand = new Brand({ brandID: 'brand-1', brandName: 'Test Brand' });
     const subject = new Product({ productID: 'product-1', brand });
 
@@ -1199,16 +940,12 @@ describe('DIVERGENCE (c): getBrandName is fixed, getSalePriceDiscountType is the
   });
 
   it('B3.2 - a brand whose own name is absent also lands on the empty string', () => {
-    // `Brand.getBrandName()` returns `string | undefined` - the column carries no `notNull`, so a
-    // brand with no name is reachable.
     const namelessBrand = new Brand({ brandID: 'brand-1' });
     const subject = new Product({ productID: 'product-1', brand: namelessBrand });
 
     expect(namelessBrand.getBrandName()).toBeUndefined();
     expect(subject.getBrandName()).toBe('');
 
-    // And the memo still holds, so the coalesced empty string is stable rather than recomputed -
-    // the fix caches the resolved value, not merely a non-empty one.
     const spy = vi.spyOn(namelessBrand, 'getBrandName');
 
     expect(subject.getBrandName()).toBe('');
@@ -1233,8 +970,6 @@ describe('DIVERGENCE (c): getBrandName is fixed, getSalePriceDiscountType is the
     expect(second.getBrandName()).toBe('Second Brand');
     expect(first.getBrandName()).toBe('First Brand');
 
-    // The brandless case is the sharper direction: if the memo were shared, a brandless product
-    // built after a branded one would answer with the branded one's name.
     const third = new Product({ productID: 'product-3' });
 
     expect(third.getBrandName()).toBe('');
@@ -1267,14 +1002,13 @@ describe('DIVERGENCE (c): getBrandName is fixed, getSalePriceDiscountType is the
     expect(subject.getSalePriceDiscountType()).toBe('percentageOff');
     expect(subject.getSalePriceDiscountType()).toBe('percentageOff');
 
-    // Memoized correctly, which is exactly what getBrandName failed to do.
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
   it('B3.4 - the control seeds "none", and that stand-in differs from the sku-level one', () => {
-    // CFML parity [model/entity/Product.cfc:L606 vs model/entity/Sku.cfc:L557]: the PRODUCT
-    // substitutes the literal string `"none"` for an absent discount type while the SKU substitutes
-    // the EMPTY STRING. Two different stand-ins for the same absence, in two sibling components,
+    // CFML parity [model/entity/Product.cfc:L606]: the PRODUCT substitutes the literal string
+    // `"none"` for an absent discount type, while the SKU substitutes the EMPTY STRING at
+    // [model/entity/Sku.cfc:L557]. Two different stand-ins for the same absence, in two sibling components,
     // neither copied onto the other.
     const withoutDefaultSku = new Product({ productID: 'product-1' });
 
@@ -1282,16 +1016,10 @@ describe('DIVERGENCE (c): getBrandName is fixed, getSalePriceDiscountType is the
     expect(withoutDefaultSku.getSalePriceDiscountType()).toBe('none');
     expect(withoutDefaultSku.getSalePriceDiscountType()).toBe('none');
 
-    // The sku-level stand-in, for the contrast. `makeSkuFixture` leaves `salePriceDetail` absent by
-    // default, which is the absent case.
     const skuWithoutDetail = makeSkuFixture({ skuID: 'sku-1' });
 
     expect(skuWithoutDetail.getSalePriceDiscountType()).toBe('');
 
-    // And the product's own accessor still says "none" even when its default sku says `''` - the
-    // seed is overwritten by whatever the sku answers, including an empty string, so the two
-    // stand-ins are NOT interchangeable and the product's is only reachable when there is no
-    // default sku at all.
     const withEmptySku = new Product({ productID: 'product-2', defaultSku: skuWithoutDetail });
 
     expect(withEmptySku.getSalePriceDiscountType()).toBe('');
@@ -1299,9 +1027,6 @@ describe('DIVERGENCE (c): getBrandName is fixed, getSalePriceDiscountType is the
   });
 
   it('B3.4 - the control memo is request-scoped too, and its seed does not leak', () => {
-    // A2 again, for the control. The seed `"none"` is the value most likely to leak if the memo
-    // were module state, because it is written on the first call for every product regardless of
-    // what happens next.
     const seeded = new Product({ productID: 'product-1' });
 
     expect(seeded.getSalePriceDiscountType()).toBe('none');
@@ -1325,28 +1050,20 @@ describe('DIVERGENCE (c): getBrandName is fixed, getSalePriceDiscountType is the
   });
 
   it('B3.5 - this is the THIRD AND FINAL member of divergence (c); no fourth exists anywhere', () => {
-    // THE PROJECT-WIDE DIVERGENCE LEDGER, FULLY ALLOCATED:
-    //   (a) the un-`var`'d `discountAmount` [model/service/PromotionService.cfc:L1007, L1009] -
-    //       sibling-owned by `src/services`, because reproducing shared mutable state that
-    //       survives between warm Lambda invocations could leak one customer's discount into
-    //       another's order.
-    //   (b) the `amountOff` raw-float gap [model/service/PromotionService.cfc:L998]
-    //       - sibling-owned by `src/services`, because routing all arithmetic
-    //       through `Money` is structural and preserving one branch's drift would
-    //       mean deliberately bypassing the value object.
-    //   (c) the entity memo bugs: DEFECT 17 [model/entity/Sku.cfc:L500-L510] and
-    //       DEFECT 18 [model/entity/Sku.cfc:L512-L522], both owned by
-    //       `sku.test.ts`, and DEFECT 19 [model/entity/Product.cfc:L524-L532],
-    //       owned HERE. This file owns the third of (c)'s three members.
+    // THE AUTHORIZED DIVERGENCES THAT BEAR ON THIS FILE:
+    //   (a) the un-`var`'d `discountAmount` [model/service/PromotionService.cfc:L1007, L1009, L1014]
+    //       - sibling-owned by `src/services`, because shared mutable state surviving between warm
+    //       Lambda invocations could leak one customer's discount into another's order.
+    //   (b) the `amountOff` raw-float gap [model/service/PromotionService.cfc:L998] - sibling-owned
+    //       by `src/services`, because routing all arithmetic through `Money` is structural and
+    //       preserving one branch's drift would mean deliberately bypassing the value object.
+    //   (c) the entity memo bugs: DEFECT 17 [model/entity/Sku.cfc:L500-L510] and DEFECT 18
+    //       [model/entity/Sku.cfc:L512-L522], owned by `sku.test.ts`, and DEFECT 19
+    //       [model/entity/Product.cfc:L524-L532], owned HERE.
     //
-    // A FOURTH DIVERGENCE IS FORBIDDEN. Every other entry in the register - thirty
-    // numbered defects plus eight secondary items - is REPRODUCED, not repaired.
-    // This case exists so that the ledger is stated once in an executable place
-    // rather than only in prose, and it asserts the observable half of that claim:
-    // the members this file preserves as defective are still defective.
-    //
-    // DEFECT 20 is still preserved - the discarded sale price still falls through
-    // to zero.
+    // What this case asserts is the observable half: the members this file preserves as defective
+    // are still defective. DEFECT 20 is one of them - the discarded sale price still falls through
+    // to zero [model/entity/Product.cfc:L598].
     const defect20 = new Product({
       productID: 'product-1',
       skus: [makeSkuFixture({ skuID: 'sku-1' })],
@@ -1354,10 +1071,8 @@ describe('DIVERGENCE (c): getBrandName is fixed, getSalePriceDiscountType is the
 
     expect(defect20.getSalePrice().toFixed2()).toBe('0.00');
 
-    // DEFECT 25 is still preserved - the misspelled call site still cannot resolve.
     expect(() => defect20.getSalePriceExpirationDateTime()).toThrow();
 
-    // And the two throwing accessors are still throwing.
     expect(() => defect20.getPageIDs()).toThrow();
     expect(() => defect20.getProductOptionsByGroup()).toThrow();
   });
@@ -1397,7 +1112,6 @@ describe('DEFECT 20 (preserved): getSalePrice discards the first sku and falls t
       },
     });
 
-    // The sku genuinely has a sale price, and it is genuinely not zero.
     expect(firstSku.getSalePrice().toFixed2()).toBe('12.34');
 
     const subject = new Product({ productID: 'product-1', skus: [firstSku] });
@@ -1405,7 +1119,6 @@ describe('DEFECT 20 (preserved): getSalePrice discards the first sku and falls t
     expect(subject.getDefaultSku()).toBeUndefined();
     expect(subject.getSkus()).toHaveLength(1);
 
-    // THE DEFECT, ASSERTED. Zero - not 12.34.
     expect(subject.getSalePrice().toFixed2()).toBe('0.00');
     expect(subject.getSalePrice().equals(Money.fromDecimalString('0'))).toBe(true);
 
@@ -1417,24 +1130,19 @@ describe('DEFECT 20 (preserved): getSalePrice discards the first sku and falls t
   });
 
   it('B4.1 - the discarded call is still EVALUATED, which is observable', () => {
-    // WHY THE PORT DOES NOT SIMPLY DELETE THE UNUSED STATEMENT.
     const firstSku = makeSkuFixture({ skuID: 'sku-1' });
     const spy = vi.spyOn(firstSku, 'getSalePrice');
     const subject = new Product({ productID: 'product-1', skus: [firstSku] });
 
     expect(subject.getSalePrice().toFixed2()).toBe('0.00');
 
-    // The call happened. Its result went nowhere.
     expect(spy).toHaveBeenCalledTimes(1);
 
-    // And it is re-evaluated on every call, because this accessor is NOT memoized - there is no
-    // `variables.salePrice` guard anywhere in [L594-L601].
     expect(subject.getSalePrice().toFixed2()).toBe('0.00');
     expect(spy).toHaveBeenCalledTimes(2);
   });
 
   it('B4.1 - a throw from the discarded delegate still propagates', () => {
-    // The sharpest consequence of preserving the evaluation rather than deleting it.
     const explodingSku = makeSkuFixture({ skuID: 'sku-1' });
 
     vi.spyOn(explodingSku, 'getSalePrice').mockImplementation((): never => {
@@ -1476,8 +1184,6 @@ describe('DEFECT 20 (preserved): getSalePrice discards the first sku and falls t
       skus: [otherSku],
     });
 
-    // The DEFAULT sku wins, and the collection's first element is never consulted - [L595] returns
-    // before [L597] is ever evaluated.
     const skuSpy = vi.spyOn(otherSku, 'getSalePrice');
 
     expect(subject.getSalePrice().toFixed2()).toBe('44.55');
@@ -1500,18 +1206,13 @@ describe('DEFECT 20 (preserved): getSalePrice discards the first sku and falls t
   });
 
   it('B4.3 - Sku.getSalePrice() is CORRECT, and this defect must NOT propagate to it', () => {
-    // THE CONTRAST. `Sku.getSalePrice()` [model/entity/Sku.cfc:L546-L551] falls back to
-    // `getPrice()` at [L550] when it has no sale-price detail. The legacy declares that fallback
-    // EXPLICITLY, so the sku accessor always answers a real amount and never a discarded one.
     const skuWithoutDetail = makeSkuFixture({ skuID: 'sku-1' });
 
-    // `SKU_PRICE` in the fixture is '19.99', and `getPrice()` is `default="0"` on the column so it
-    // is never absent. The sku therefore answers 19.99, not zero.
     expect(skuWithoutDetail.getSalePrice().toFixed2()).toBe('19.99');
     expect(skuWithoutDetail.getSalePrice().equals(skuWithoutDetail.getPrice())).toBe(true);
 
     // THE ABSENCE CONVENTION, STATED IN BOTH DIRECTIONS, because collapsing either one is a money
-    // bug: THE ABSENCE CONVENTION, BOTH DIRECTIONS, IN ONE PLACE.
+    // bug:
     //   `Product.getSalePrice()` MUST answer `0` and never `undefined`, because
     //     [model/entity/Product.cfc:L600] declares the zero explicitly.
     //   `Sku.getPriceByCurrencyCode()` MUST answer `undefined` and never `0`, because
@@ -1549,21 +1250,18 @@ describe('DEFECT 20 (preserved): getSalePrice discards the first sku and falls t
 
 describe('DEFECT 25 / G1 (preserved): getSalePriceExpirationDateTime cannot return', () => {
   it('B5.1 - the shipped accessor THROWS, and the throw is the faithful arm', () => {
-    // LEGACY-DEFECT [model/entity/Product.cfc:L614, L617, L618]: the declaration at L614 is spelled
-    // correctly but the call at L618 invokes the misspelled getSalePricExpirationDateTime(). In
-    // CFML this resolved silently to an empty attribute value; in the target there is no dynamic
-    // dispatch, so it throws.
+    // LEGACY-NOTE [model/entity/Product.cfc:L618]: the declaration at L614 is spelled correctly
+    // while the call at L618 invokes the misspelled `getSalePricExpirationDateTime()` on the
+    // delegate. The misspelling is carried over rather than corrected, because correcting it would
+    // change what the method resolves.
     //
-    // Preserved deliberately; do not fix without a product decision.
-    //
-    // BOTH READINGS OF THE LEGACY ARE INTERNALLY CONSISTENT, AND THE SHIPPED ONE IS WHAT IS
-    // ASSERTED. In CFML the misspelled call fell into `onMissingMethod`
-    // [org/Hibachi/HibachiEntity.cfc:L507-L565]; because `Sku.cfc:L70` declares `attributeValues`,
-    // the dispatcher reached the `getAttributeValue` fallback at [L559] rather than the throw at
-    // [L565], so a CFML runtime could plausibly have yielded `''` - which then still could not
-    // satisfy the `returntype="date"` coercion declared at [L614]. IN THE TARGET THERE IS NO
-    // DYNAMIC DISPATCH AT ALL, the misspelled member does not exist on the ported `Sku`, and so the
-    // call cannot be made.
+    // STATIC-DISPATCH DIVERGENCE, NOT PRESERVED PARITY. In CFML the misspelled call entered
+    // `onMissingMethod` [org/Hibachi/HibachiEntity.cfc:L507-L565] and, because
+    // [model/entity/Sku.cfc:L70] declares `attributeValues`, matched the attribute fallback at
+    // [org/Hibachi/HibachiEntity.cfc:L559-L561] BEFORE the terminal throw at [L565] - so what a CFML
+    // runtime did next is not established here and is not asserted. The target has no dynamic
+    // dispatch at all: the misspelled member does not exist on the ported `Sku`, so the call is
+    // refused rather than dispatched, and THAT refusal is what is asserted below.
     const subject = new Product({
       productID: 'product-1',
       defaultSku: makeSkuFixture({ skuID: 'sku-1' }),
@@ -1574,8 +1272,6 @@ describe('DEFECT 25 / G1 (preserved): getSalePriceExpirationDateTime cannot retu
       /getSalePriceExpirationDateTime\(\) cannot return/,
     );
 
-    // THE MARKER'S THREE LOCATORS, EACH ASSERTED IN THE MESSAGE, so an operator reading a log has
-    // the whole chain without the source in front of them.
     expect(() => subject.getSalePriceExpirationDateTime()).toThrow(
       /model\/entity\/Product\.cfc:L617/,
     );
@@ -1586,23 +1282,20 @@ describe('DEFECT 25 / G1 (preserved): getSalePriceExpirationDateTime cannot retu
       /model\/entity\/Product\.cfc:L614/,
     );
 
-    // Both CFML mechanisms are named in the message: the dispatcher chain, and the
-    // `returntype="date"` coercion that could not have been satisfied anyway.
     expect(() => subject.getSalePriceExpirationDateTime()).toThrow(/onMissingMethod/);
     expect(() => subject.getSalePriceExpirationDateTime()).toThrow(
       /org\/Hibachi\/HibachiEntity\.cfc:L507-L565/,
     );
     expect(() => subject.getSalePriceExpirationDateTime()).toThrow(/returntype="date"/);
 
-    // And it is explicitly NOT a stub, so nobody "finishes" it later.
     expect(() => subject.getSalePriceExpirationDateTime()).toThrow(
       /not a stub awaiting implementation/,
     );
   });
 
   it('B5.2 - the MISSPELLED identifier is preserved verbatim in the message', () => {
-    // C3 TODO CARRY-FORWARD. The misspelling is the whole point of the defect, so it survives in
-    // the reproduction rather than being silently corrected.
+    // DEFECT PRESERVATION, NOT A SOURCE TODO: the legacy carries no TODO here. The misspelling IS
+    // the defect, so it survives verbatim in the reproduction rather than being silently corrected.
     //
     // JUDGMENT CALL: asserting the misspelling as a literal string rather than by regex-escaping a
     // variable, because a variable would let a future edit change both the source and this
@@ -1612,13 +1305,8 @@ describe('DEFECT 25 / G1 (preserved): getSalePriceExpirationDateTime cannot retu
     expect(() => subject.getSalePriceExpirationDateTime()).toThrow(/getSalePricExpirationDateTime/);
     expect(() => subject.getSalePriceExpirationDateTime()).toThrow(/no "e" in "Price"/);
 
-    // The message also names where the CORRECT spelling lives, which is the control for B5.3.
     expect(() => subject.getSalePriceExpirationDateTime()).toThrow(/model\/entity\/Sku\.cfc:L560/);
 
-    // JUDGMENT CALL: the shipped member is authored under the DECLARATION's correct spelling,
-    // because that is what L614 declares and interface parity is measured against the declaration.
-    // The misspelling lives only where the legacy put it - inside the body - so no misspelled
-    // member appears on the surface.
     expect(declaresMember('getSalePriceExpirationDateTime')).toBe(true);
     expect(declaresMember('getSalePricExpirationDateTime')).toBe(false);
   });
@@ -1666,9 +1354,6 @@ describe('DEFECT 25 / G1 (preserved): getSalePriceExpirationDateTime cannot retu
 
     expect(skuWithExpiry.getSalePriceExpirationDateTime()).toBe(SALE_PRICE_EXPIRATION_INSTANT);
 
-    // And a detail row with NO expiry still answers `''`, because [L561] tests the sub-key as well
-    // as the row - the same second-existence-check shape that makes `getListPriceByCurrencyCode`
-    // able to answer absence for a known currency.
     const skuWithDetailButNoExpiry = makeSkuFixture({
       skuID: 'sku-3',
       salePriceDetail: {
@@ -1690,26 +1375,20 @@ describe('DEFECT 25 / G1 (preserved): getSalePriceExpirationDateTime cannot retu
 
 describe('PRESERVED THROWS: getPageIDs and getProductOptionsByGroup, with their twins', () => {
   it('B6.1 - getPageIDs THROWS, because getPages() is not declared on the component', () => {
-    // LEGACY-DEFECT [model/entity/Product.cfc:L193]: getPageIDs() iterates getPages(), which is not
-    // declared on the component and corresponds to no property - the component declares
-    // listingPages, not pages - so in CFML the call reaches [org/Hibachi/HibachiEntity.cfc:L559]
-    // and throws at [L565].
+    // LEGACY-NOTE [model/entity/Product.cfc:L191-L197]: `getPageIDs()` loops `arrayLen(getPages())`
+    // at L193, and `getPages()` is declared nowhere and corresponds to no property - the component
+    // declares `listingPages` [model/entity/Product.cfc:L79], not `pages`.
     //
-    // Preserved deliberately; do not fix without a product decision.
+    // THE FAILURE POINT, PRECISELY. The missing `getPages` did NOT reach the terminal throw:
+    // `onMissingMethod` matched the attribute fallback at [org/Hibachi/HibachiEntity.cfc:L559-L561]
+    // first, because `get`-prefixed names satisfy that branch once the entity declares
+    // `attributeValues` [model/entity/Product.cfc:L75], and the fallback answers `''` for an unknown
+    // code [model/entity/HibachiEntity.cfc:L202]. Whatever failed, failed at the LATER array use in
+    // L193-L194 rather than at dispatch, and that runtime outcome is not measured here. The target
+    // has no dynamic dispatch, so the member is simply absent and the call is refused.
     //
-    // The legacy body verbatim [model/entity/Product.cfc:L191-L197]:
-    //
-    //   L191  public string function getPageIDs() {
-    //   L192    var pageIDs = "";
-    //   L193    for( var i=1; i<= arrayLen(getPages()); i++ ) {
-    //   L194      pageIDs = listAppend(pageIDs,getPages()[i].getPageID());
-    //           }
-    //   L196    return pageIDs;
-    //   L197  }
-    //
-    // NO WORKING IMPLEMENTATION IS WRITTEN OVER `listingPages`, and none may be. The two
-    // collections are not interchangeable: a listing page link row is not a page, and quietly
-    // substituting one would be inventing a feature and calling it a port.
+    // NO WORKING IMPLEMENTATION IS WRITTEN OVER `listingPages`, and none may be: a listing-page link
+    // row is not a page, and substituting one would be inventing a feature and calling it a port.
     const subject = new Product({
       productID: 'product-1',
       categories: [buildCategory('category-1')],
@@ -1745,7 +1424,6 @@ describe('PRESERVED THROWS: getPageIDs and getProductOptionsByGroup, with their 
     expect(listLen(subject.getCategoryIDs())).toBe(2);
     expect(listToArray(subject.getCategoryIDs())).toEqual(['category-1', 'category-2']);
 
-    // A single category produces a bare id with no delimiter at all.
     const single = new Product({
       productID: 'product-2',
       categories: [buildCategory('category-only')],
@@ -1756,13 +1434,6 @@ describe('PRESERVED THROWS: getPageIDs and getProductOptionsByGroup, with their 
   });
 
   it("B6.1 - getCategoryIDs returns '' on an empty collection, which is one of the five empty semantics", () => {
-    // B21 EMPTY-COLLECTION SEMANTICS, CASE 5-ADJACENT: a comma-list build over an empty collection
-    // answers the EMPTY STRING, not `undefined` and not a bare delimiter. That is the property
-    // `listAppend` guarantees and it is load-bearing elsewhere in the slice - the materialized-path
-    // walks depend on a leading delimiter never appearing.
-    //
-    // CFML parity [model/entity/Product.cfc:L200]: `var categoryIDs = ""` seeds the accumulator,
-    // and an empty `getCategories()` skips the loop entirely, so the seed is what returns.
     const empty = new Product({ productID: 'product-1' });
 
     expect(empty.getCategories()).toEqual([]);
@@ -1770,25 +1441,21 @@ describe('PRESERVED THROWS: getPageIDs and getProductOptionsByGroup, with their 
     expect(empty.getCategoryIDs()).not.toBeUndefined();
     expect(listLen(empty.getCategoryIDs())).toBe(0);
 
-    // And the collection defaults to `[]` rather than to absence, so the accessor is safe to call
-    // on a bare product - `categories` is one of the eight collections the constructor coalesces.
     expect(Array.isArray(empty.getCategories())).toBe(true);
   });
 
   it('B6.2 - getProductOptionsByGroup THROWS, and it fails for TWO independent reasons', () => {
-    // LEGACY-DEFECT [model/entity/Product.cfc:L631-L633]: getProductOptionsByGroup() calls the bare
-    // getProductService(), which is not declared on the component or its bases, so the call reaches
-    // [org/Hibachi/HibachiEntity.cfc:L559] and throws at [L565]; and ProductService declares no
-    // getProductOptionsByGroup method either, so the intended target does not exist.
+    // LEGACY-NOTE [model/entity/Product.cfc:L631-L633]: the body is
+    // `return getProductService().getProductOptionsByGroup( this )`, and it is broken twice over.
+    // FAILURE 1 - `getProductService()` is declared neither on `Product.cfc` nor on
+    // `model/entity/HibachiEntity.cfc`, and every other outward reach in this component goes through
+    // `getService("...")`. FAILURE 2 - `ProductService` declares no `getProductOptionsByGroup`
+    // either, so the intended target does not exist.
     //
-    // Preserved deliberately; do not fix without a product decision.
-    //
-    // The legacy body verbatim [model/entity/Product.cfc:L631-L633]: L631 public array function
-    // getProductOptionsByGroup(){ L632 return getProductService().getProductOptionsByGroup( this );
-    // L633 } FAILURE 1 - `getProductService()` IS NOT A METHOD. Every other outward reach in this
-    // component goes through `getService("...")` - all eighteen of them - and this bare
-    // accessor-shaped call appears exactly ONCE, here. It is declared neither on `Product.cfc`, nor
-    // on `model/entity/HibachiEntity.cfc`, nor among the generated-accessor patterns.
+    // THE FAILURE POINT, PRECISELY. `getProductService` is `get`-prefixed, so `onMissingMethod`
+    // matched the attribute fallback at [org/Hibachi/HibachiEntity.cfc:L559-L561] BEFORE the
+    // terminal throw at [L565] and answered `''` [model/entity/HibachiEntity.cfc:L202]; the chained
+    // call at L632 is what could not proceed. The target refuses the member statically instead.
     const subject = new Product({ productID: 'product-1' });
 
     expect(() => subject.getProductOptionsByGroup()).toThrow(Error);
@@ -1796,17 +1463,14 @@ describe('PRESERVED THROWS: getPageIDs and getProductOptionsByGroup, with their 
       /getProductOptionsByGroup\(\) cannot return/,
     );
 
-    // Failure 1, named in the message.
     expect(() => subject.getProductOptionsByGroup()).toThrow(/model\/entity\/Product\.cfc:L632/);
     expect(() => subject.getProductOptionsByGroup()).toThrow(/getProductService\(\)/);
     expect(() => subject.getProductOptionsByGroup()).toThrow(/model\/entity\/HibachiEntity\.cfc/);
 
-    // Failure 2, named in the message.
     expect(() => subject.getProductOptionsByGroup()).toThrow(
       /ProductService declares no[\s\S]*getProductOptionsByGroup method either/,
     );
 
-    // The dispatcher chain, and the explicit disclaimer.
     expect(() => subject.getProductOptionsByGroup()).toThrow(
       /org\/Hibachi\/HibachiEntity\.cfc:L507-L565/,
     );
@@ -1832,17 +1496,12 @@ describe('PRESERVED THROWS: getPageIDs and getProductOptionsByGroup, with their 
 
     const subject = new Product({ productID: 'product-1', skus: [skuOne, skuTwo] });
 
-    // Filtered to the requested group, and ordered by `sortOrder` ascending, so `option-a2`
-    // (sortOrder 1) precedes `option-a1` (sortOrder 2) even though the sku carrying it was added
-    // second.
     expect(optionIDsOf(subject.getOptionsByOptionGroup('group-a'))).toEqual([
       'option-a2',
       'option-a1',
     ]);
     expect(optionIDsOf(subject.getOptionsByOptionGroup('group-b'))).toEqual(['option-b1']);
 
-    // An unknown group answers the empty array rather than throwing or answering absence - the
-    // legacy smart list would have returned no records.
     expect(subject.getOptionsByOptionGroup('group-absent')).toEqual([]);
   });
 });
@@ -1910,8 +1569,6 @@ describe('C2 MUST-PRESERVE: getSkuBySelectedOptions - all five outcomes', () => 
   });
 
   it('B7.1 outcome 2 - MORE THAN ONE match THROWS, naming the selection [L354-L355]', async () => {
-    // The message interpolates the caller's own selection string, so an operator reading a log sees
-    // which combination is ambiguous.
     const repository = new SkuRepositoryDouble([
       makeSkuFixture({ skuID: 'sku-one' }),
       makeSkuFixture({ skuID: 'sku-two' }),
@@ -1931,8 +1588,6 @@ describe('C2 MUST-PRESERVE: getSkuBySelectedOptions - all five outcomes', () => 
       'No Skus are found for these selected options: option-a,option-b',
     );
 
-    // AND IT IS NOT `undefined`. A zero-result lookup is an ERROR in this method, not an absence,
-    // which is the opposite of `getSkuByID` four hundred lines earlier.
     await expect(subject.getSkuBySelectedOptions('option-a')).rejects.toThrow(Error);
   });
 
@@ -1970,18 +1625,12 @@ describe('C2 MUST-PRESERVE: getSkuBySelectedOptions - all five outcomes', () => 
       'You must submit a comma seperated list of selectOptions to find an indvidual sku in this product',
     );
 
-    // Each misspelling asserted on its own, so a partial "correction" of either one fails here
-    // rather than silently passing a looser whole-string match.
     await expect(zeroSkus.getSkuBySelectedOptions('')).rejects.toThrow(/seperated/);
     await expect(zeroSkus.getSkuBySelectedOptions('')).rejects.toThrow(/indvidual/);
 
-    // And the CORRECT spellings must be absent, which is the assertion that actually catches a
-    // well-meaning fix.
     await expect(zeroSkus.getSkuBySelectedOptions('')).rejects.not.toThrow(/separated/);
     await expect(zeroSkus.getSkuBySelectedOptions('')).rejects.not.toThrow(/individual/);
 
-    // TWO OR MORE skus with an empty selection lands on the same throw - [L359] tests `== 1`, not
-    // `>= 1`, so a two-sku product is as unresolvable as a zero-sku one.
     const twoSkus = new Product({
       productID: 'product-2',
       skus: [makeSkuFixture({ skuID: 'sku-one' }), makeSkuFixture({ skuID: 'sku-two' })],
@@ -2005,13 +1654,10 @@ describe('C2 MUST-PRESERVE: getSkuBySelectedOptions - all five outcomes', () => 
       skuRepository: repository,
     });
 
-    // Selection present, zero results -> throw, not undefined.
     await expect(subject.getSkuBySelectedOptions('option-a')).rejects.toThrow(Error);
 
-    // Selection absent, two skus -> throw, not undefined.
     await expect(subject.getSkuBySelectedOptions('')).rejects.toThrow(Error);
 
-    // The only two resolving shapes, for completeness of the claim.
     const single = new Product({
       productID: 'product-2',
       skus: [makeSkuFixture({ skuID: 'sku-only' })],
@@ -2045,13 +1691,10 @@ describe('C2 MUST-PRESERVE: getSkuBySelectedOptions - all five outcomes', () => 
 
     expect(skuIDsOf(resolved)).toEqual(['sku-match']);
 
-    // Both arguments, in order, exactly once.
     expect(repository.selectedOptionsCalls).toEqual([
       { selectedOptions: 'option-a,option-b', productID: 'product-under-test' },
     ]);
 
-    // The default parameter reaches the port as the empty string rather than as absence, because
-    // [L366] declares `string selectedOptions=""`.
     await subject.getSkusBySelectedOptions();
 
     expect(repository.selectedOptionsCalls[1]).toEqual({
@@ -2061,8 +1704,6 @@ describe('C2 MUST-PRESERVE: getSkuBySelectedOptions - all five outcomes', () => 
   });
 
   it('B7.5 - it returns the port RESULT unchanged; matching semantics are not re-implemented here', async () => {
-    // THE P5 BOUNDARY, ASSERTED. The entity applies NO filtering of its own: it hands the selection
-    // to the port and returns whatever comes back, in order.
     const first = makeSkuFixture({ skuID: 'sku-first' });
     const second = makeSkuFixture({ skuID: 'sku-second' });
     const repository = new SkuRepositoryDouble([first, second]);
@@ -2079,8 +1720,6 @@ describe('C2 MUST-PRESERVE: getSkuBySelectedOptions - all five outcomes', () => 
   });
 
   it('B7.4 - with no sku repository injected it refuses, naming the collaborator and L367', async () => {
-    // The port is a constructor argument a repository owns supplying, so its absence is a wiring
-    // error and is reported.
     const unwired = new Product({ productID: 'product-1' });
 
     await expect(unwired.getSkusBySelectedOptions('option-a')).rejects.toThrow(/sku repository/);
@@ -2088,8 +1727,6 @@ describe('C2 MUST-PRESERVE: getSkuBySelectedOptions - all five outcomes', () => 
       /model\/entity\/Product\.cfc:L367/,
     );
 
-    // And the refusal propagates through the caller at [L351] rather than being converted into one
-    // of that method's three domain throws.
     await expect(unwired.getSkuBySelectedOptions('option-a')).rejects.toThrow(/sku repository/);
   });
 
@@ -2105,15 +1742,11 @@ describe('C2 MUST-PRESERVE: getSkuBySelectedOptions - all five outcomes', () => 
     expect(subject.getSkuByID('sku-wanted')).toBe(wanted);
     expect(subject.getSkuByID('sku-other')).toBe(other);
 
-    // The miss.
     expect(subject.getSkuByID('sku-absent')).toBeUndefined();
     expect(subject.getSkuByID('')).toBeUndefined();
 
-    // And it is SYNCHRONOUS - it walks the materialized array and reaches nothing outward, so the
-    // async boundary rule keeps it sync.
     expect(subject.getSkuByID('sku-wanted')).not.toBeInstanceOf(Promise);
 
-    // A bare product with no skus answers absence rather than throwing.
     expect(new Product({ productID: 'product-2' }).getSkuByID('sku-wanted')).toBeUndefined();
   });
 });
@@ -2142,8 +1775,6 @@ describe('getSkus: the live array on the fast path, a projection on the flagged 
     expect(subject.getSkus()).toBe(skus);
     expect(subject.getSkus()).toBe(subject.getSkus());
 
-    // The live consequence: a push through the accessor is visible through the accessor, because
-    // they are the same array.
     const second = makeSkuFixture({ skuID: 'sku-2' });
 
     subject.getSkus().push(second);
@@ -2165,9 +1796,6 @@ describe('getSkus: the live array on the fast path, a projection on the flagged 
   });
 
   it('B8.2 - EITHER flag set produces a NEW array rather than the live one', () => {
-    // [L159] delegated in the legacy, and a delegation cannot return the caller's own array - it
-    // builds one. The port preserves that: the flagged path is a projection, so a caller that sorts
-    // or fetches cannot mutate the product's own collection by accident.
     const first = makeSkuFixture({ skuID: 'sku-1' });
     const skus = [first];
     const subject = new Product({ productID: 'product-1', skus });
@@ -2176,10 +1804,8 @@ describe('getSkus: the live array on the fast path, a projection on the flagged 
     expect(subject.getSkus(false, true)).not.toBe(skus);
     expect(subject.getSkus(true, true)).not.toBe(skus);
 
-    // Same contents, different array.
     expect(skuIDsOf(subject.getSkus(true))).toEqual(['sku-1']);
 
-    // And mutating the projection leaves the product alone - the direction that matters for safety.
     const projection = subject.getSkus(true);
 
     projection.push(makeSkuFixture({ skuID: 'sku-intruder' }));
@@ -2196,8 +1822,6 @@ describe('getSkus: the live array on the fast path, a projection on the flagged 
     const groupOne = buildOptionGroup('group-1', 1);
     const groupTwo = buildOptionGroup('group-2', 2);
 
-    // Two skus differing only in the FIRST group's option order, so the expected ordering follows
-    // that group and nothing else.
     const lowFirst = makeSkuFixture({
       skuID: 'sku-low',
       options: [buildOption('option-low', 1, groupOne), buildOption('option-b', 2, groupTwo)],
@@ -2213,7 +1837,6 @@ describe('getSkus: the live array on the fast path, a projection on the flagged 
       nextOptionGroupSortOrder: 3,
     });
 
-    // Insertion order is high-then-low; the sorted projection reverses it.
     expect(skuIDsOf(subject.getSkus())).toEqual(['sku-high', 'sku-low']);
     expect(skuIDsOf(subject.getSkus(true))).toEqual(['sku-low', 'sku-high']);
   });
@@ -2225,7 +1848,6 @@ describe('getSkus: the live array on the fast path, a projection on the flagged 
     // aggregate can be absent.
     const groupOne = buildOptionGroup('group-1', 1);
 
-    // Arm 1 - a single sku is already sorted.
     const single = new Product({
       productID: 'product-1',
       skus: [
@@ -2236,8 +1858,6 @@ describe('getSkus: the live array on the fast path, a projection on the flagged 
 
     expect(skuIDsOf(single.getSkus(true))).toEqual(['sku-only']);
 
-    // Arm 2 - the FIRST sku has no options, so no weighting is attempted even though the second one
-    // does. Preserved exactly: the legacy probed element one only.
     const firstWithoutOptions = makeSkuFixture({ skuID: 'sku-no-options', options: [] });
     const secondWithOptions = makeSkuFixture({
       skuID: 'sku-with-options',
@@ -2251,8 +1871,6 @@ describe('getSkus: the live array on the fast path, a projection on the flagged 
 
     expect(skuIDsOf(partial.getSkus(true))).toEqual(['sku-no-options', 'sku-with-options']);
 
-    // Arm 3 - no radix ceiling means the weighting cannot be computed, and the honest answer is the
-    // UNSORTED projection rather than a silently different order.
     const noRadix = new Product({
       productID: 'product-3',
       skus: [
@@ -2266,10 +1884,6 @@ describe('getSkus: the live array on the fast path, a projection on the flagged 
   });
 
   it('B8.2 - fetchOptions alone projects without reordering', () => {
-    // CFML parity [model/entity/Product.cfc:L159]: `fetchOptions` is an EAGER-LOAD hint in the
-    // legacy - it changed the query's fetch shape, not its ordering. With associations already
-    // materialized there is nothing left to fetch, so the flag's only remaining effect is to take
-    // the projecting path.
     const groupOne = buildOptionGroup('group-1', 1);
     const high = makeSkuFixture({
       skuID: 'sku-high',
@@ -2285,27 +1899,23 @@ describe('getSkus: the live array on the fast path, a projection on the flagged 
       nextOptionGroupSortOrder: 3,
     });
 
-    // Order preserved, array new.
     expect(skuIDsOf(subject.getSkus(false, true))).toEqual(['sku-high', 'sku-low']);
     expect(subject.getSkus(false, true)).not.toBe(subject.getSkus());
 
-    // The options are reachable either way, because materialization already happened.
     expect(optionIDsOf(high.getOptions())).toEqual(['option-high']);
   });
 
   it('B8.2 - a sorted projection of an EMPTY sku collection is an empty NEW array', () => {
     // COVERING THE `no first element` ARM OF THE THREE-CLAUSE GUARD.
     // [model/service/SkuService.cfc:L223] probes `getSkus()[1].getOptions()`, which in CFML over an
-    // empty array is a runtime index error. The port reaches the same OUTCOME without raising: with
-    // no first element there are no options to weigh, the guard short-circuits, and the empty
-    // projection is what comes back.
+    // empty array is a runtime index error. THE TARGET GUARD IS A BEHAVIOUR CHANGE, NOT PARITY: with
+    // no first element it short-circuits and returns the empty projection, so a caller that would
+    // have seen an exception now sees `[]`.
     const subject = new Product({ productID: 'product-1', skus: [] });
 
     expect(subject.getSkus(true)).toEqual([]);
     expect(subject.getSkus(true, true)).toEqual([]);
 
-    // Still a NEW array on the flagged path, so a caller cannot reach the live collection through
-    // it. [model/entity/Product.cfc:L159] built a new array too.
     expect(subject.getSkus(true)).not.toBe(subject.getSkus());
   });
 
@@ -2318,7 +1928,6 @@ describe('getSkus: the live array on the fast path, a projection on the flagged 
     const groupOne = buildOptionGroup('group-1', 1);
     const groupTwo = buildOptionGroup('group-2', 2);
 
-    // Weight 1 * 10^(3-1) = 100. The NULL-order option in group two adds nothing.
     const heavier = makeSkuFixture({
       skuID: 'sku-heavier',
       options: [
@@ -2327,9 +1936,6 @@ describe('getSkus: the live array on the fast path, a projection on the flagged 
       ],
     });
 
-    // Weight 1 * 10^(3-2) = 10. The groupless option adds nothing DESPITE its order of 9, which is
-    // exactly what makes the skip observable: counted, it would dominate and the two skus would
-    // come back the other way round.
     const lighter = makeSkuFixture({
       skuID: 'sku-lighter',
       options: [
@@ -2346,8 +1952,6 @@ describe('getSkus: the live array on the fast path, a projection on the flagged 
 
     expect(skuIDsOf(subject.getSkus(true))).toEqual(['sku-lighter', 'sku-heavier']);
 
-    // The live collection is untouched by the projection, so the reordering is local to the
-    // caller's copy. A2: nothing about this call leaves state behind on the instance.
     expect(skuIDsOf(subject.getSkus())).toEqual(['sku-heavier', 'sku-lighter']);
   });
 
@@ -2368,17 +1972,11 @@ describe('getSkus: the live array on the fast path, a projection on the flagged 
       expect(declaresMember(absent)).toBe(false);
     }
 
-    // The two raw-return accessors the port DOES ship, for contrast: `getSkus` unflagged, and the
-    // five live association accessors.
     expect(declaresMember('getSkus')).toBe(true);
     expect(declaresMember('getCategories')).toBe(true);
   });
 
   it('the five association accessors return LIVE arrays, matching the raw-return convention', () => {
-    // CFML parity [model/entity/Product.cfc:L84-L89]: the many-to-many INVERSE collections are read
-    // and appended in place by their far-side helpers, so they follow the same by-reference
-    // convention as `getSkus()` unflagged. Asserted as a family because the bidirectional helpers
-    // in B16 depend on it.
     const subject = makeProductFixture({});
 
     expect(subject.getPriceGroupRates()).toBe(subject.getPriceGroupRates());
@@ -2389,8 +1987,6 @@ describe('getSkus: the live array on the fast path, a projection on the flagged 
     expect(subject.getPromotionRewards()).toBe(subject.getPromotionRewards());
     expect(subject.getPromotionRewardExclusions()).toBe(subject.getPromotionRewardExclusions());
 
-    // All five default to `[]` rather than to absence, so every one is safe to walk on a bare
-    // product - B21 empty-collection semantics.
     expect(subject.getPriceGroupRates()).toEqual([]);
     expect(subject.getPromotionQualifiers()).toEqual([]);
     expect(subject.getPromotionQualifierExclusions()).toEqual([]);
@@ -2428,8 +2024,6 @@ describe('the option-group family: getOptionGroups, its struct, and its count', 
     expect(() => unhydrated.getOptionGroups()).toThrow(/model\/entity\/Product\.cfc:L254-L258/);
     expect(() => unhydrated.getOptionGroups()).toThrow(/minCollection:1/);
 
-    // An EMPTY materialization is legitimate and is NOT a refusal - a product with no options
-    // genuinely has no option groups.
     const materializedEmpty = new Product({ productID: 'product-2', optionGroups: [] });
 
     expect(materializedEmpty.getOptionGroups()).toEqual([]);
@@ -2454,26 +2048,21 @@ describe('the option-group family: getOptionGroups, its struct, and its count', 
       subject.getUnusedProductOptions(),
       subject.getUnusedProductOptionGroups(),
     ]).then((): void => {
-      // Both reached the one port.
       expect(repository.unusedOptionsCalls).toHaveLength(1);
       expect(repository.unusedOptionGroupsCalls).toHaveLength(1);
 
-      // And the third casing site - `getOptionsByOptionGroup` at L341 - reaches NO port at all in
-      // the target, because the data is already materialized.
       expect(subject.getOptionsByOptionGroup('group-1')).toEqual([]);
       expect(repository.unusedOptionsCalls).toHaveLength(1);
     });
   });
 
   it('B9.3 - getOptionGroups is SYNCHRONOUS over the materialized array, with no cloning', () => {
-    // NO CLONE, matching the raw-return convention of `getSkus()` unflagged.
     const groups = [buildOptionGroup('group-1', 1), buildOptionGroup('group-2', 2)];
     const subject = new Product({ productID: 'product-1', optionGroups: groups });
 
     expect(subject.getOptionGroups()).toBe(groups);
     expect(subject.getOptionGroups()).not.toBeInstanceOf(Promise);
 
-    // Memoized in the only sense available: the same reference every call.
     expect(subject.getOptionGroups()).toBe(subject.getOptionGroups());
   });
 
@@ -2496,23 +2085,19 @@ describe('the option-group family: getOptionGroups, its struct, and its count', 
 
     expect(structKeyExists(struct, 'group-shared')).toBe(true);
 
-    // CORRECTION 21, VERIFIED AT RUNTIME: the shipped `structKeyList` in
-    // slatwall-ts/src/lib/cfml/struct.ts returns a `string[]`, NOT the comma-delimited LIST that
-    // CFML's same-named function returns. `Product.buildExistingOptionGroupIDList` is written
-    // accordingly - it folds the array through `listAppend` to BUILD the comma list rather than
-    // receiving one.
+    // The shipped `structKeyList` in slatwall-ts/src/lib/cfml/struct.ts returns a `string[]`, NOT
+    // the comma-delimited list CFML's same-named function returns, so
+    // `Product.buildExistingOptionGroupIDList` folds that array through `listAppend` to BUILD the
+    // comma list rather than receiving one.
     expect(structKeyList(struct)).toEqual(['group-shared']);
     expect(structKeyList(struct)).toHaveLength(1);
 
-    // THE LAST ENTRY WINS.
     expect(struct['group-shared']).toBe(secondWithKey);
     expect(struct['group-shared']?.getOptionGroupCode()).toBe('SECOND');
     expect(struct['group-shared']).not.toBe(firstWithKey);
   });
 
   it('B9.4 - the struct is memoized per instance and never shared between instances', () => {
-    // A2: all entity memos are request-scoped. Reproducing them as module state would leak one
-    // customer's data into another's request.
     const subject = new Product({
       productID: 'product-1',
       optionGroups: [buildOptionGroup('group-1', 1)],
@@ -2533,8 +2118,6 @@ describe('the option-group family: getOptionGroups, its struct, and its count', 
   });
 
   it('B9.4 - an empty materialization yields {} rather than absence', () => {
-    // B21 empty-collection semantics: a struct build over an empty collection answers the EMPTY
-    // STRUCT, and its key list is the EMPTY ARRAY (correction 21).
     const subject = new Product({ productID: 'product-1', optionGroups: [] });
 
     expect(subject.getOptionGroupsStruct()).toEqual({});
@@ -2566,11 +2149,9 @@ describe('the option-group family: getOptionGroups, its struct, and its count', 
       expect(Object.prototype.hasOwnProperty.call(struct, reservedKey)).toBe(true);
       expect(structKeyExists(struct, reservedKey)).toBe(true);
 
-      // The record is still an ordinary object, and the value came back intact.
       expect(Object.getPrototypeOf(struct)).toBe(Object.prototype);
       expect(Object.getOwnPropertyDescriptor(struct, reservedKey)?.value).toBe(group);
 
-      // And nothing leaked onto every other object in the process.
       const bystander: Record<string, unknown> = {};
 
       expect(Object.keys(bystander)).toHaveLength(0);
@@ -2601,9 +2182,6 @@ describe('the option-group family: getOptionGroups, its struct, and its count', 
   });
 
   it('B9.5 - getOptionGroupCount is arrayLen(getOptionGroups()) and is SYNC', () => {
-    // CFML parity [model/entity/Product.cfc:L263-L265]: a bare `arrayLen` over the same accessor,
-    // so it inherits the hydration refusal too - a count of zero for an unhydrated product would be
-    // the same silent lie as an empty array.
     const two = new Product({
       productID: 'product-1',
       optionGroups: [buildOptionGroup('group-1', 1), buildOptionGroup('group-2', 2)],
@@ -2612,10 +2190,8 @@ describe('the option-group family: getOptionGroups, its struct, and its count', 
     expect(two.getOptionGroupCount()).toBe(2);
     expect(two.getOptionGroupCount()).not.toBeInstanceOf(Promise);
 
-    // ZERO for an empty materialization - the legitimate empty case.
     expect(new Product({ productID: 'product-2', optionGroups: [] }).getOptionGroupCount()).toBe(0);
 
-    // And a refusal for no materialization at all, inherited from the accessor.
     expect(() => new Product({ productID: 'product-3' }).getOptionGroupCount()).toThrow(
       /materialized during hydration/,
     );
@@ -2639,8 +2215,6 @@ describe('the option-group family: getOptionGroups, its struct, and its count', 
       ],
     });
 
-    // A sku belonging to a DIFFERENT product, carrying an option in the same group. It is never
-    // wired onto the subject, which is how the [L344] product filter is expressed here.
     const foreign = makeSkuFixture({
       skuID: 'sku-foreign',
       options: [buildOption('option-foreign', 2, groupOne)],
@@ -2657,7 +2231,6 @@ describe('the option-group family: getOptionGroups, its struct, and its count', 
   });
 
   it('B9.6 - it is DISTINCT across skus, so a shared option appears once', () => {
-    // The legacy smart list selected DISTINCT; the port dedupes on `optionID`.
     const groupOne = buildOptionGroup('group-1', 1);
     const shared = buildOption('option-shared', 1, groupOne);
     const own = buildOption('option-own', 2, groupOne);
@@ -2716,8 +2289,6 @@ describe('the option-group family: getOptionGroups, its struct, and its count', 
     // NULL-first regardless of which side of a comparison the NULL lands on.
     const groupOne = buildOptionGroup('group-1', 1);
 
-    // Arm `right is absent` - the absent order arrives FIRST in the input, so the comparison runs
-    // as (present, absent).
     const absentFirst = new Product({
       productID: 'product-1',
       skus: [
@@ -2736,7 +2307,6 @@ describe('the option-group family: getOptionGroups, its struct, and its count', 
       'option-ordered',
     ]);
 
-    // Arm `both absent` - the comparator returns 0.
     const bothAbsent = new Product({
       productID: 'product-2',
       skus: [
@@ -2787,10 +2357,6 @@ describe('the option-group family: getOptionGroups, its struct, and its count', 
 
 describe('the unusedProduct* trio: async, memoized, and validation-gated', () => {
   it('B10.1 - getUnusedProductOptions passes POSITIONAL (productID, existingOptionGroupIDList)', async () => {
-    // CFML parity [model/entity/Product.cfc:L637]: two positional arguments, product id first and
-    // the comma list of already-used option groups second. Argument order is asserted through a
-    // recording double for the same reason it is in B7.4 - two string parameters that silently swap
-    // would query the wrong thing and still return a plausible-looking result.
     const repository = new OptionRepositoryDouble([
       { name: 'Small', value: 'option-small' },
       { name: 'Large', value: 'option-large' },
@@ -2808,7 +2374,6 @@ describe('the unusedProduct* trio: async, memoized, and validation-gated', () =>
       { name: 'Large', value: 'option-large' },
     ]);
 
-    // THE COMMA LIST IS BUILT FROM THE OPTION-GROUP STRUCT'S KEYS, WITH NO LEADING DELIMITER.
     expect(repository.unusedOptionsCalls).toEqual([
       { productID: 'product-under-test', existingOptionGroupIDList: 'group-a,group-b' },
     ]);
@@ -2816,8 +2381,6 @@ describe('the unusedProduct* trio: async, memoized, and validation-gated', () =>
   });
 
   it('B10.1 - the built list is EMPTY, not a bare delimiter, when the product has no option groups', async () => {
-    // The composition of two contracts: `structKeyList` answers the EMPTY ARRAY (correction 21) and
-    // `listAppend` folds it to the EMPTY STRING with no leading delimiter.
     const repository = new OptionRepositoryDouble([]);
     const subject = new Product({
       productID: 'product-1',
@@ -2848,8 +2411,6 @@ describe('the unusedProduct* trio: async, memoized, and validation-gated', () =>
       { name: 'Colour', value: 'group-colour' },
     ]);
 
-    // The recorded call carries the LIST and nothing else - the product id is not silently added
-    // "for symmetry".
     expect(repository.unusedOptionGroupsCalls).toEqual(['group-a']);
     expect(repository.unusedOptionsCalls).toEqual([]);
   });
@@ -2878,9 +2439,6 @@ describe('the unusedProduct* trio: async, memoized, and validation-gated', () =>
       /minCollection:1/,
     );
 
-    // THE MESSAGE REPORTS THE WIRING STATE, which is the diagnostic that matters: "wired and still
-    // refusing" tells an operator the port is present and the member is genuinely absent, rather
-    // than sending them to check the composition root.
     await expect(withProvider.getUnusedProductSubscriptionTerms()).rejects.toThrow(
       /provider was wired on this instance/,
     );
@@ -2893,11 +2451,8 @@ describe('the unusedProduct* trio: async, memoized, and validation-gated', () =>
   });
 
   it('B10.3 - it REJECTS rather than throwing synchronously, so the trio is handled uniformly', async () => {
-    // A real difference to every caller: an `async` function that throws produces a REJECTED
-    // PROMISE, while a plain function that throws throws SYNCHRONOUSLY.
     const subject = new Product({ productID: 'product-1' });
 
-    // Calling it does NOT throw here; the rejection arrives on the promise.
     const pending = subject.getUnusedProductSubscriptionTerms();
 
     expect(pending).toBeInstanceOf(Promise);
@@ -2905,7 +2460,6 @@ describe('the unusedProduct* trio: async, memoized, and validation-gated', () =>
   });
 
   it('B10.4 - all three are memoized ONCE per instance, so the port is reached once', async () => {
-    // MEMO VARIANT C - no seed, no inner guard, one unconditional computation behind a probe.
     const repository = new OptionRepositoryDouble(
       [{ name: 'Small', value: 'option-small' }],
       [{ name: 'Colour', value: 'group-colour' }],
@@ -2927,15 +2481,11 @@ describe('the unusedProduct* trio: async, memoized, and validation-gated', () =>
     expect(await subject.getUnusedProductOptionGroups()).toBe(firstGroups);
     expect(repository.unusedOptionGroupsCalls).toHaveLength(1);
 
-    // AND THE THIRD MEMBER MEMOIZES NOTHING, because it never produces a value to cache - it
-    // rejects every time, identically.
     await expect(subject.getUnusedProductSubscriptionTerms()).rejects.toThrow(Error);
     await expect(subject.getUnusedProductSubscriptionTerms()).rejects.toThrow(Error);
   });
 
   it('B10.4 - the memos are REQUEST-SCOPED: a second product reaches the port again', async () => {
-    // A2: all entity memos are request-scoped. Reproducing them as module state would leak one
-    // customer's data into another's request.
     const repository = new OptionRepositoryDouble([{ name: 'Small', value: 'option-small' }]);
 
     const first = new Product({
@@ -2959,8 +2509,6 @@ describe('the unusedProduct* trio: async, memoized, and validation-gated', () =>
   });
 
   it('B10.1 / B10.2 - with no option repository injected both refuse, naming L637 and L644', async () => {
-    // The two locators differ, so a stack-free error still says which of the two near-identical
-    // accessors was called.
     const unwired = new Product({ productID: 'product-1', optionGroups: [] });
 
     await expect(unwired.getUnusedProductOptions()).rejects.toThrow(/option repository/);
@@ -2973,7 +2521,6 @@ describe('the unusedProduct* trio: async, memoized, and validation-gated', () =>
       /model\/entity\/Product\.cfc:L644/,
     );
 
-    // AND A FAILED REACH LEAVES THE MEMO UNSET, so a later call with a wired port still works.
     const repository = new OptionRepositoryDouble([{ name: 'Small', value: 'option-small' }]);
     const rewired = new Product({
       productID: 'product-2',
@@ -2987,13 +2534,10 @@ describe('the unusedProduct* trio: async, memoized, and validation-gated', () =>
   });
 
   it('B10.5 - the trio is exactly the set the three minCollection:1 contexts read', () => {
-    // The declarative link, asserted as a surface fact: one accessor per process context named in
-    // `model/validation/Product.json`, and all three present.
     expect(declaresMember('getUnusedProductOptions')).toBe(true);
     expect(declaresMember('getUnusedProductOptionGroups')).toBe(true);
     expect(declaresMember('getUnusedProductSubscriptionTerms')).toBe(true);
 
-    // And no fourth "unused" accessor was invented to round the set out.
     const unusedMembers = publicMembers().filter((member: string): boolean =>
       member.startsWith('getUnusedProduct'),
     );
@@ -3034,7 +2578,6 @@ describe('the six default-sku delegations: undefined on absence, never 0', () =>
     await expect(bare.getLivePrice()).resolves.toBeUndefined();
     await expect(bare.getCurrentAccountPrice()).resolves.toBeUndefined();
 
-    // AND EXPLICITLY NOT ZERO, in either the numeric or the `Money` sense.
     expect(bare.getPrice()).not.toBe(0);
     expect(bare.getListPrice()).not.toBe(0);
     expect(bare.getRenewalPrice()).not.toBe(0);
@@ -3042,8 +2585,6 @@ describe('the six default-sku delegations: undefined on absence, never 0', () =>
   });
 
   it('B11.1 - all six delegate the REAL value when a default sku is present', async () => {
-    // `makeSkuFixture` carries '19.99' / '24.99' / '17.99' for price / list / renewal and answers
-    // 'USD' for the currency code.
     const defaultSku = makeSkuFixture({ skuID: 'sku-default' });
     const subject = new Product({ productID: 'product-1', defaultSku });
 
@@ -3052,14 +2593,11 @@ describe('the six default-sku delegations: undefined on absence, never 0', () =>
     expect(subject.getRenewalPrice()?.toFixed2()).toBe('17.99');
     expect(subject.getCurrencyCode()).toBe('USD');
 
-    // The two asynchronous members of the family - async because the SKU side of each reaches a
-    // resolver rather than a materialized column.
     await expect(subject.getLivePrice().then((v) => v?.toFixed2())).resolves.toBe('19.99');
     await expect(subject.getCurrentAccountPrice().then((v) => v?.toFixed2())).resolves.toBe(
       '19.99',
     );
 
-    // EVERY MONETARY RETURN IS `Money`, NEVER `number` (P4).
     expect(subject.getPrice()).toBeInstanceOf(Money);
     expect(subject.getListPrice()).toBeInstanceOf(Money);
     expect(subject.getRenewalPrice()).toBeInstanceOf(Money);
@@ -3085,34 +2623,27 @@ describe('the six default-sku delegations: undefined on absence, never 0', () =>
     expect(shadowed.getPrice()?.toFixed2()).toBe('100.00');
     expect(spy).toHaveBeenCalledTimes(0);
 
-    // With no shadow, the sku answers.
     const unshadowed = new Product({ productID: 'product-2', defaultSku });
 
     expect(unshadowed.getPrice()?.toFixed2()).toBe('19.99');
     expect(spy).toHaveBeenCalledTimes(1);
 
-    // With neither, nothing.
     expect(new Product({ productID: 'product-3' }).getPrice()).toBeUndefined();
   });
 
   it('B11.2 / C18 - `price` IS declared, as a NON-PERSISTENT shadow, and no column is invented', () => {
-    // C18 - A CORRECTION TO A PUBLISHED CLAIM, VERIFIED AGAINST THE SOURCE. The claim that `price`
-    // is "NOT declared as a property at all" is half-wrong: it IS declared, at
-    // model/entity/Product.cfc:L118, inside the block opened at [L115] and headed
-    //   // Non-Persistent Properties - Delegated to default sku
-    // as `persistent="false"` with `hb_formatType="currency"`. What it is not is a PERSISTENT
-    // column, and it appears nowhere in the [L52-L59] persistent block.
+    // `price` IS declared [model/entity/Product.cfc:L118] - `persistent="false"` with
+    // `hb_formatType="currency"`, inside the "Non-Persistent Properties - Delegated to default sku"
+    // block opened at [L115] - but it is not a persistent column and appears nowhere in the
+    // [L52-L59] persistent block.
     //
-    // AND THAT IS EXACTLY WHY THE TWO-GUARD SHAPE EXISTS: a non-persistent property can be
-    // populated in memory by a form or a process object without ever being a column, so the
-    // accessor must prefer it when present and fall through when not. No persistent `price` column
-    // is invented here - the hydration surface accepts `price` because the legacy property exists;
-    // the `Sw*` schema is untouched (C5).
+    // THAT IS WHY THE TWO-GUARD SHAPE EXISTS: a non-persistent property can be populated in memory
+    // by a form or a process object without ever being a column, so the accessor prefers it when
+    // present and falls through when not. The hydration surface accepts `price` because the legacy
+    // property exists; no column is added and the `Sw*` schema is untouched.
     expect(ProductLegacyMetadata.table).toBe('SwProduct');
     expect(ProductLegacyMetadata.delegatedPriceFormatType).toBe('currency');
 
-    // The shadow is settable only at construction - the port is hydrate-once and publishes no
-    // setter for it, so a caller cannot poison it after the fact.
     expect(declaresMember('setPrice')).toBe(false);
 
     const shadowOnly = new Product({
@@ -3139,8 +2670,6 @@ describe('the six default-sku delegations: undefined on absence, never 0', () =>
     expect(price?.equals(Money.fromDecimalString('100'))).toBe(true);
     expect(price?.equals(Money.fromDecimalString('100.00'))).toBe(true);
 
-    // And `Money.zero` is NEVER used as a stand-in for absence anywhere in this suite - it is
-    // reserved for the promotion accumulator seeds.
     expect(new Product({ productID: 'product-2' }).getSalePrice().equals(Money.zero)).toBe(true);
     expect(new Product({ productID: 'product-3' }).getPrice()).toBeUndefined();
   });
@@ -3163,22 +2692,18 @@ describe('the six default-sku delegations: undefined on absence, never 0', () =>
   });
 
   it('★ setDefaultSku is published, accepts the null-out, and moves all six delegations with it', () => {
-    // ★★ THE LEGACY `setDefaultSku(...)` IS PUBLISHED, FOR THE SAME REASON
-    // `setUrlTitle` IS. Two ported callers write it, so an entity that answered the
-    // association but could never be told to change it left both writes with nowhere to
-    // land:
+    // `setDefaultSku(...)` is published because two ported callers write it; an entity that
+    // answered the association but could never be told to change it would leave both writes with
+    // nowhere to land:
     //
     //   [model/service/SkuService.cfc:L101-L103]  if(isNull(arguments.product.getDefaultSku())) {
     //                                               arguments.product.setDefaultSku(newSku);
     //                                             }
     //   [model/service/ProductService.cfc:L323]   arguments.product.setDefaultSku(javaCast("null",""));
     //
-    // The first is `createSkus` designating the first SKU it created; the second is
-    // `deleteProduct` nulling the FK before delegating to the framework delete. §0.6's
-    // member-generation principle is what sanctions both - generate the ORM-implicit
-    // members the ported slice CONCRETELY CALLS - and no budget ledger is touched,
-    // because a method on an existing class is neither a nineteenth entity FILE nor a
-    // fourteenth PORT.
+    // The first is `createSkus` designating the first SKU it created; the second is `deleteProduct`
+    // nulling the FK before delegating to the framework delete. Both are ORM-implicit members the
+    // ported slice concretely calls, which is what sanctions generating them.
     const sku = makeSkuFixture({ skuID: 'sku-1' });
     const subject = new Product({ productID: 'product-1' });
 
@@ -3188,17 +2713,10 @@ describe('the six default-sku delegations: undefined on absence, never 0', () =>
 
     subject.setDefaultSku(sku);
 
-    // The designation lands, and every delegation that reads through it follows on the
-    // SAME instance - which is the whole point of writing the entity rather than a
-    // caller-local ledger.
     expect(subject.getDefaultSku()).toBe(sku);
     expect(subject.getPrice()).toBeInstanceOf(Money);
     expect(subject.getCurrencyCode()).toBe(sku.getCurrencyCode());
 
-    // ★ `undefined` IS AN ACCEPTED ARGUMENT, BECAUSE `javaCast("null","")` IS HOW
-    // [model/service/ProductService.cfc:L323] SPELLS IT. A setter typed `Sku` alone
-    // would leave `deleteProduct`'s null-out inexpressible, so the null-out is asserted
-    // here rather than left to the service suite.
     subject.setDefaultSku(undefined);
 
     expect(subject.getDefaultSku()).toBeUndefined();
@@ -3239,26 +2757,40 @@ describe('the six default-sku delegations: undefined on absence, never 0', () =>
 //         }
 
 describe('the sale-price-details seam between Product and Sku', () => {
-  it('B12.1 / C7 - getSalePriceDetailsForSkus is OMITTED under the branch-(b) decision', () => {
-    // C7 - A PROMPT-CLAIMED MEMBER THAT DELIBERATELY DOES NOT SHIP, and the reason is a money bug
-    // avoided rather than an oversight. The T2 mapping would replace the [L519] locator with an
-    // injected sale-price resolver. The only candidate collaborator declares
-    // `getSalePricePromotionRewardsQuery(productID?)`, which is the port for
-    // [model/dao/PromotionDAO.cfc:L298] - the RAW six-branch UNION - and NOT for
-    // `getSalePriceDetailsForProductSkus` [model/service/PromotionService.cfc:L1022]. The service
-    // method REDUCES that raw result AND APPLIES THE ROUNDING RULE at
-    // [model/service/PromotionService.cfc:L1024-L1028], and an entity cannot perform that step
-    // because `roundingRuleService` lives under `src/services`, outside the domain layer's legal
-    // import surface.
-    expect(declaresMember('getSalePriceDetailsForSkus')).toBe(false);
+  it('B12.1 / C7 - getSalePriceDetailsForSkus SHIPS, under the branch-(a) decision', () => {
+    // C7 - THE DECISION PROCEDURE, AND WHICH ARM OF IT THE SHIPPED CODE TAKES. The T2 mapping
+    // replaces the [model/entity/Product.cfc:L519] `getService("promotionService")` locator with an
+    // injected sale-price resolver, and the governing plan makes the choice conditional: branch (a)
+    // if the promotion port exposes a member that can serve `getSalePriceDetailsForProductSkus`,
+    // branch (b) - omit - if it does not.
+    //
+    // IT DOES. `src/domain/ports/promotionRepository.ts` exports a SECOND interface,
+    // `SalePriceResolver`, carrying exactly one method,
+    //   getSalePriceDetailsForProductSkus(productID: string): Promise<Record<string, SalePriceDetail>>
+    // co-located in that file rather than given its own module because the port count is locked at
+    // thirteen. So branch (a) is the live arm, and this member ships.
+    //
+    // THE ROUNDING-RULE OBJECTION IS ANSWERED BY WHERE THE RESOLVER IS SATISFIED, NOT BY OMISSION.
+    // `getSalePriceDetailsForProductSkus` [model/service/PromotionService.cfc:L1022] does reduce the
+    // raw six-branch UNION [model/dao/PromotionDAO.cfc:L298] AND apply the rounding rule at
+    // [model/service/PromotionService.cfc:L1024-L1028], and an entity genuinely cannot perform that
+    // step - `roundingRuleService` lives under `src/services`, outside the domain layer's legal
+    // import surface. But `SalePriceResolver` has no adapter file anywhere in the locked layout: it
+    // is satisfied in `src/handlers/bootstrap.ts` by adapting the ported
+    // `src/services/promotionService.ts` surface, and it is injected into `Product` FROM THERE. The
+    // composition root performs the reduction and the rounding; the domain imports the TYPE only, so
+    // no layer boundary is crossed, no fourteenth port exists, and no port member was invented.
+    expect(declaresMember('getSalePriceDetailsForSkus')).toBe(true);
 
-    // Its ONE in-scope consumer IS shipped, and it reads the hydrated map.
+    // Its ONE in-scope consumer IS shipped, and it reads through the accessor above.
     expect(declaresMember('getSkuSalePriceDetails')).toBe(true);
   });
 
-  it('B12.1 - the hydrated map is read per instance, and there is no port to reach', async () => {
-    // The consequence of the omission, stated as behaviour: the detail map is supplied at
-    // construction, so the accessor computes.
+  it('B12.1 - a pre-materialized map is read per instance, with no port reached', async () => {
+    // BRANCH (a) IS ADDITIVE, NOT A REPLACEMENT. The resolver is an OPTIONAL collaborator, so a
+    // product hydrated with the detail map already in hand answers from it and reaches nothing -
+    // exactly as it did before the collaborator existed. This is the [L518] memo arriving
+    // pre-seeded rather than being filled on first read.
     const detail = {
       skuID: 'sku-1',
       discountLevel: 'sku' as const,
@@ -3274,8 +2806,62 @@ describe('the sale-price-details seam between Product and Sku', () => {
     expect(await subject.getSkuSalePriceDetails('sku-1')).toBe(detail);
     expect(await subject.getSkuSalePriceDetails('sku-1')).toBe(detail);
 
-    // And no repository is needed at all - a product with NO ports wired still answers.
     expect(subject.getSkus()).toEqual([]);
+  });
+
+  it('B12.1 - the injected resolver fills the memo ONCE, which is what [L518] guards', async () => {
+    // THE MEMO IS THE POINT OF THE LEGACY BODY, so it is asserted as a call count rather than as a
+    // returned value. [model/entity/Product.cfc:L518] guards the reach with
+    // `!structKeyExists(variables, "salePriceDetailsForSkus")`, so the resolver is consulted on the
+    // FIRST read and never again for the life of the instance. Variant TWO of the three-way
+    // seed/guard pattern is NOT what this is: there is no dead seed here, the guard is the whole
+    // mechanism, and the memo is instance-scoped because instances are request-scoped.
+    const detail = {
+      skuID: 'sku-resolved',
+      discountLevel: 'productType' as const,
+      salePriceDiscountType: 'percentageOff' as const,
+      salePrice: Money.fromDecimalString('12.34'),
+      promotionID: 'promotion-1',
+    };
+    const productIDsAsked: string[] = [];
+    const subject = new Product({
+      productID: 'product-resolver',
+      salePriceResolver: {
+        getSalePriceDetailsForProductSkus: (productID) => {
+          productIDsAsked.push(productID);
+          return Promise.resolve({ 'sku-resolved': detail });
+        },
+      },
+    });
+
+    const first = await subject.getSalePriceDetailsForSkus();
+    const second = await subject.getSalePriceDetailsForSkus();
+
+    // ONE reach, and the SAME struct object handed back both times.
+    expect(productIDsAsked).toEqual(['product-resolver']);
+    expect(second).toBe(first);
+
+    // The keyed consumer routes through the same memo, so it adds no second reach. The argument the
+    // resolver receives is `getProductID()` [L519], not a SKU key.
+    expect(await subject.getSkuSalePriceDetails('sku-resolved')).toBe(detail);
+    expect(await subject.getSkuSalePriceDetails('sku-absent')).toBeUndefined();
+    expect(productIDsAsked).toEqual(['product-resolver']);
+  });
+
+  it('B12.1 - with NEITHER a map NOR a resolver, the accessor REFUSES and names [L519]', async () => {
+    // The established refusal convention for an unwired collaborator, applied here too: the entity
+    // does not invent an empty struct, it names the locator it cannot evaluate. Repositories own
+    // hydration - `src/repositories/mysql/mysqlProductRepository.ts` forwards the resolver into every
+    // product it builds, and `src/handlers/bootstrap.ts` is where that resolver is satisfied.
+    const bare = new Product({ productID: 'product-unwired' });
+
+    await expect(bare.getSalePriceDetailsForSkus()).rejects.toThrow(/L519/);
+    await expect(bare.getSalePriceDetailsForSkus()).rejects.toThrow(/product-unwired/);
+
+    // ITS CONSUMER STILL ANSWERS ABSENCE RATHER THAN RAISING, which is the [L186] `return {}` arm
+    // surviving intact: a caller probing for a sale price on a product that has none must not be
+    // handed an exception where the legacy handed it an empty struct.
+    await expect(bare.getSkuSalePriceDetails('sku-1')).resolves.toBeUndefined();
   });
 
   it('B12.2 - a miss answers `undefined`, which is the faithful port of the legacy `{}`', async () => {
@@ -3304,8 +2890,6 @@ describe('the sale-price-details seam between Product and Sku', () => {
     await expect(subject.getSkuSalePriceDetails('')).resolves.toBeUndefined();
     await expect(subject.getSkuSalePriceDetails('sku-present')).resolves.toBeDefined();
 
-    // A product with NO map at all answers the same absence, rather than throwing - the legacy
-    // [L518] memo would simply have queried and found nothing.
     const mapless = new Product({ productID: 'product-2' });
 
     await expect(mapless.getSkuSalePriceDetails('sku-present')).resolves.toBeUndefined();
@@ -3359,14 +2943,12 @@ describe('the sale-price-details seam between Product and Sku', () => {
       promotionID: 'promotion-1',
     };
 
-    // The SKU side: hydrated with the SAME detail row the product's map carries.
     const sku = makeSkuFixture({ skuID: 'sku-round-trip', salePriceDetail: detail });
 
     expect(sku.getSalePriceDetails()).toBe(detail);
     expect(sku.getSalePrice().toFixed2()).toBe('8.49');
     expect(sku.getSalePriceDiscountType()).toBe('percentageOff');
 
-    // The PRODUCT side: the same row, reachable by the sku's own key.
     const product = new Product({
       productID: 'product-1',
       skus: [sku],
@@ -3375,14 +2957,10 @@ describe('the sale-price-details seam between Product and Sku', () => {
 
     expect(await product.getSkuSalePriceDetails(sku.getSkuID())).toBe(detail);
 
-    // AND THE PRODUCT'S OWN `getSalePrice()` STILL ANSWERS ZERO, because it has no DEFAULT sku, so
-    // DEFECT 20 is unaffected by the seam.
     expect(product.getSalePrice().toFixed2()).toBe('0.00');
     expect(sku.getSalePrice().toFixed2()).toBe('8.49');
   });
 });
-
-// --- B13: delegations, warts and the remaining accessors -------------------
 
 describe('remaining delegations, warts and accessors', () => {
   it('B13.1 / C1 - getBaseProductType is UNGUARDED and ASYNC, and its materialization is documented', async () => {
@@ -3404,7 +2982,6 @@ describe('remaining delegations, warts and accessors', () => {
 
     await expect(subject.getBaseProductType()).resolves.toBe('merchandise');
 
-    // The unguarded refusal.
     const typeless = new Product({ productID: 'product-2' });
 
     await expect(typeless.getBaseProductType()).rejects.toThrow(/requires the product type/);
@@ -3412,18 +2989,13 @@ describe('remaining delegations, warts and accessors', () => {
   });
 
   it('B13.2 / C16 - getTransactionExistsFlag is async and memoized, and the "discarded argument" defect DOES NOT EXIST', async () => {
-    // C16 - THE MOST CONSEQUENTIAL CORRECTION IN THIS FILE, AND IT REMOVES A DEFECT MARKER RATHER
-    // THAN ADDING ONE. Upstream asserts a LEGACY-DEFECT here: that [model/entity/Product.cfc:L626]
-    // passes `productID=this.getProductID()` to `SkuService.getTransactionExistsFlag()`, which
-    // "declares NO parameters", so CFML silently discards the argument and the flag is GLOBAL
-    // rather than per-product. That is not what the source does, verified by direct read of all
-    // three files: [model/service/SkuService.cfc:L285-L287] declares no parameters BUT forwards
-    // `argumentCollection=arguments`, which passes the whole scope through; and
-    // [model/dao/SkuDAO.cfc:L53-L55] DECLARES BOTH `<cfargument name="productID" />` AND
-    // `<cfargument name="skuID" />` and BRANCHES on them at [L59-L63] - `ss.skuID = :skuID` when a
-    // skuID is supplied, otherwise `ss.product.productID = :productID`. So the identifier reaches
-    // the query, the flag IS per-product, and there is NO `LEGACY-DEFECT` marker for it; inventing
-    // one would misreport the source. THE SOURCE WINS.
+    // THE FLAG IS PER-PRODUCT, SO NO DEFECT MARKER BELONGS HERE.
+    // [model/entity/Product.cfc:L626] passes `productID=this.getProductID()`;
+    // [model/service/SkuService.cfc:L285-L287] declares no parameters but forwards
+    // `argumentCollection=arguments`, passing the whole scope through; and
+    // [model/dao/SkuDAO.cfc:L53-L55] declares both `productID` and `skuID` and branches on them at
+    // [L59-L63] - `ss.skuID = :skuID` when a skuID is supplied, otherwise
+    // `ss.product.productID = :productID`. The identifier reaches the query.
     const repository = new SkuRepositoryDouble([], true);
     const subject = new Product({
       productID: 'product-under-test',
@@ -3432,13 +3004,10 @@ describe('remaining delegations, warts and accessors', () => {
 
     await expect(subject.getTransactionExistsFlag()).resolves.toBe(true);
 
-    // The product id genuinely reaches the port, and `skuID` is deliberately NOT supplied - which
-    // selects the per-product branch at [model/dao/SkuDAO.cfc:L62] over [L60].
     expect(repository.transactionExistsCalls).toEqual([
       { productID: 'product-under-test', skuID: undefined },
     ]);
 
-    // Memoized, so the port is reached once per instance (A2).
     await subject.getTransactionExistsFlag();
     await subject.getTransactionExistsFlag();
 
@@ -3465,8 +3034,6 @@ describe('remaining delegations, warts and accessors', () => {
   });
 
   it('B13.2 - with no sku repository injected it refuses, naming L626', async () => {
-    // The locator differs from the other sku-repository reaches - L367 for the selected-options
-    // query, L626 here - so the refusal identifies the accessor without a stack.
     const unwired = new Product({ productID: 'product-1' });
 
     await expect(unwired.getTransactionExistsFlag()).rejects.toThrow(/sku repository/);
@@ -3478,14 +3045,12 @@ describe('remaining delegations, warts and accessors', () => {
   it('B13.3 / C4 - getAllowBackorderFlag is OMITTED, so its returntype mismatch becomes a non-port', () => {
     // C4 - A PROMPT-CLAIMED MEMBER THAT DOES NOT SHIP. [model/entity/Product.cfc:L551-L553]
     // declares `returntype="numeric"` while returning the BOOLEAN setting `skuAllowBackorderFlag` -
-    // a genuine legacy type mismatch. It is nonetheless omitted, because `skuAllowBackorderFlag` is
-    // NOT among the four keys `settingsProvider` publishes (`globalURLKeyProduct`,
-    // `globalURLKeyProductType`, `skuCurrency`, `skuEligibleCurrencies`), and widening the contract
-    // would put a fifth key on a port the AAP fixes at four.
+    // a genuine legacy type mismatch. It is nonetheless omitted, because `skuAllowBackorderFlag`
+    // [model/service/SettingService.cfc:L219] is NOT among the seven keys `settingsProvider`
+    // publishes and is named there as explicitly excluded, so widening the contract would put an
+    // eighth key on a port the checkpoint fixes at seven.
     expect(declaresMember('getAllowBackorderFlag')).toBe(false);
 
-    // The CALCULATED sibling IS shipped - a real persisted column at [model/entity/Product.cfc:L64]
-    // rather than a setting read.
     expect(declaresMember('getCalculatedAllowBackorderFlag')).toBe(true);
 
     const subject = new Product({
@@ -3495,19 +3060,19 @@ describe('remaining delegations, warts and accessors', () => {
 
     expect(subject.getCalculatedAllowBackorderFlag()).toBe(true);
 
-    // CFML parity [model/entity/Product.cfc:L64]: the column is boolean, and the port routes it
-    // through `cfBoolean` so CFML's string-boolean forms coerce identically.
     expect(new Product({ productID: 'product-2' }).getCalculatedAllowBackorderFlag()).toBe(false);
   });
 
   it('B13.4 / C3 - getTitle is OMITTED because hibachiUtilityService is NOT a port', () => {
-    // C3 - A PROMPT-CLAIMED MEMBER THAT DOES NOT SHIP, for two independent reasons.
-    // [model/entity/Product.cfc:L540-L545] memoizes a template substitution driven by the
-    // `productTitleString` setting. First, that setting is not among the four keys
-    // `settingsProvider` publishes.
+    // C3 - A PROMPT-CLAIMED MEMBER THAT DOES NOT SHIP, for ONE reason.
+    // `productTitleString` setting. That setting IS among the seven keys `settingsProvider`
+    // publishes [model/service/SettingService.cfc:L193] and this entity holds the provider that
+    // resolves it, so the setting is not the obstacle. What is missing is the RENDERER: [L542]
+    // hands the template to `getService("hibachiUtilityService").replaceStringTemplate(...)`, a
+    // framework utility under `org/Hibachi/` that this migration never ports, so the `${...}`
+    // markers in the value have nothing to resolve them.
     expect(declaresMember('getTitle')).toBe(false);
 
-    // The CALCULATED sibling IS shipped - a persisted column at [L65], not a substitution.
     expect(declaresMember('getCalculatedTitle')).toBe(true);
 
     const subject = new Product({ productID: 'product-1', calculatedTitle: 'Test Brand Product' });
@@ -3530,13 +3095,10 @@ describe('remaining delegations, warts and accessors', () => {
   });
 
   it('B13.6 - getSimpleRepresentationPropertyName returns "productName"', () => {
-    // CFML parity [model/entity/Product.cfc:L791-L793]: one of the component's three overridden
-    // methods, returning the literal `"productName"` - a data contract the admin reads.
     expect(new Product({ productID: 'product-1' }).getSimpleRepresentationPropertyName()).toBe(
       'productName',
     );
 
-    // And it names a REAL accessor on this surface, which is the part of the contract that matters.
     expect(declaresMember('getProductName')).toBe(true);
   });
 
@@ -3561,14 +3123,12 @@ describe('remaining delegations, warts and accessors', () => {
       productRepository: repository,
     });
 
-    // The default: `astProduct` only.
     expect(await subject.getAttributeSets()).toHaveLength(1);
     expect(repository.attributeSetsCalls[0]).toEqual({
       attributeSetTypeCode: ['astProduct'],
       productTypeIDs: ['type-root', 'type-child'],
     });
 
-    // The trigger: `astProductCustomization` ADDS `astOrderItem` and is NOT itself passed through.
     await subject.getAttributeSets(['astProductCustomization']);
 
     expect(repository.attributeSetsCalls[1]).toEqual({
@@ -3576,7 +3136,6 @@ describe('remaining delegations, warts and accessors', () => {
       productTypeIDs: ['type-root', 'type-child'],
     });
 
-    // `astOrderItem` triggers the same addition.
     await subject.getAttributeSets(['astOrderItem']);
 
     expect(repository.attributeSetsCalls[2]?.attributeSetTypeCode).toEqual([
@@ -3584,28 +3143,20 @@ describe('remaining delegations, warts and accessors', () => {
       'astOrderItem',
     ]);
 
-    // An unrelated code triggers nothing - it is not a filter value.
     await subject.getAttributeSets(['astSomethingElse']);
 
     expect(repository.attributeSetsCalls[3]?.attributeSetTypeCode).toEqual(['astProduct']);
 
-    // Not memoized, because the argument varies the answer: a memo would return the first caller's
-    // narrowing to every later one.
     expect(repository.attributeSetsCalls).toHaveLength(4);
   });
 
   it('B13.7 - with no product type the product-type disjunct is EMPTY, meaning global sets only', async () => {
-    // CFML parity: `productTypeIDPath` split on commas, empty when the product has no product type.
-    // The port documents that as "global sets only" rather than "no filter" - matching the legacy
-    // query, where the `globalFlag = 1` disjunct always applies - so an empty array is the correct
-    // answer, not a bug.
     const repository = new ProductRepositoryDouble([]);
     const subject = new Product({ productID: 'product-1', productRepository: repository });
 
     expect(await subject.getAttributeSets()).toEqual([]);
     expect(repository.attributeSetsCalls[0]?.productTypeIDs).toEqual([]);
 
-    // And with no product repository it refuses, naming L833.
     const unwired = new Product({ productID: 'product-2' });
 
     await expect(unwired.getAttributeSets()).rejects.toThrow(/product repository/);
@@ -3627,12 +3178,8 @@ describe('remaining delegations, warts and accessors', () => {
       expect(declaresMember(absent)).toBe(false);
     }
 
-    // The three folder-wide preserved typos and the ONE rename: `singlularname`
-    // [model/entity/Product.cfc:L76] preserved; `subsciptionUsageBenefit`
-    // [model/entity/PriceGroup.cfc:L168] preserved; `DisplayName`
-    // [model/entity/PriceGroupRate.cfc:L270] preserved; and `promtionRewards`
-    // [model/entity/PromotionReward.cfc:L57] renamed WITH the original recorded - the folder's only
-    // rename, and sibling-owned.
+    // The metadata typo this component carries is preserved rather than corrected: `singlularname`
+    // on `productReviews` [model/entity/Product.cfc:L76].
     expect(ProductLegacyMetadata.entityName).toBe('SlatwallProduct');
   });
 
@@ -3648,10 +3195,8 @@ describe('remaining delegations, warts and accessors', () => {
     expect(productIDsOf(subject.getRelatedProducts())).toEqual(['product-related']);
     expect(related.getRelatedProducts()).toEqual([]);
 
-    // No cycle, so no traversal can diverge.
     expect(subject.getRelatedProducts()[0]?.getRelatedProducts()).toEqual([]);
 
-    // Defaults to `[]` on a bare product - B21 empty-collection semantics.
     expect(new Product({ productID: 'product-2' }).getRelatedProducts()).toEqual([]);
   });
 
@@ -3703,12 +3248,10 @@ describe('remaining delegations, warts and accessors', () => {
     expect(bare.getCalculatedQATS()).toBeUndefined();
     expect(bare.getCalculatedTitle()).toBeUndefined();
 
-    // The two coerced flags default to `false` rather than to absence, matching `cfBoolean`.
     expect(bare.getActiveFlag()).toBe(false);
     expect(bare.getPublishedFlag()).toBe(false);
     expect(bare.getCalculatedAllowBackorderFlag()).toBe(false);
 
-    // CFML string-boolean forms coerce, which is why `cfBoolean` is used over a bare cast.
     const coerced = new Product({
       productID: 'product-2',
       activeFlag: 'yes',
@@ -3720,10 +3263,6 @@ describe('remaining delegations, warts and accessors', () => {
   });
 
   it('B13.10 - the four audit columns are inert UTC values, read back unchanged', () => {
-    // CFML parity [model/entity/Product.cfc:L96-L99]: `createdDateTime`, `createdByAccountID`,
-    // `modifiedDateTime`, `modifiedByAccountID`. They are INERT here - no ORM hook stamps them,
-    // because `preInsert` / `preUpdate` become repository-invoked explicit maintenance rather than
-    // entity behaviour (B17.4).
     const subject = new Product({
       productID: 'product-1',
       createdDateTime: CREATED_INSTANT,
@@ -3740,7 +3279,6 @@ describe('remaining delegations, warts and accessors', () => {
     expect(subject.getCreatedDateTime()?.toISOString()).toBe('2024-06-01T00:00:00.000Z');
     expect(subject.getModifiedDateTime()?.toISOString()).toBe('2024-06-15T12:30:45.000Z');
 
-    // Unset, they are absent rather than stamped - nothing in the entity reads a clock.
     const unstamped = new Product({ productID: 'product-2' });
 
     expect(unstamped.getCreatedDateTime()).toBeUndefined();
@@ -3748,11 +3286,9 @@ describe('remaining delegations, warts and accessors', () => {
   });
 });
 
-// --- B14: the declarative validation schema `model/validation/Product.json` --------------------
+// --- the declarative validation schema `model/validation/Product.json` -------------------------
 //
-// Transcribed VERBATIM from the file, in file order, and frozen. C19 - the file is 17 PHYSICAL
-// lines (18 counting the trailing newline), and sibling notes citing "18 lines" and "17 lines" both
-// describe the same file; the count that matters is the ELEVEN property entries.
+// Transcribed in file order and frozen; what the assertions turn on is the ELEVEN property entries.
 
 const PRODUCT_VALIDATION_SCHEMA = {
   baseProductType: [
@@ -3843,8 +3379,8 @@ describe('model/validation/Product.json: eleven rules, transcribed and pinned', 
   });
 
   it('B14.2 - `price` is required+numeric with NO minValue, so a NEGATIVE price is VALID on Product', () => {
-    // CFML parity [model/validation/Product.json vs model/validation/Sku.json]: Product.price is
-    // required+numeric with NO minValue, while Sku.price carries minValue 0. Do not add a floor the
+    // CFML parity [model/validation/Product.json]: `price` is required+numeric with NO minValue,
+    // while `Sku.price` carries minValue 0 in [model/validation/Sku.json]. Do not add a floor the
     // legacy schema lacks. Verified by direct read: `model/validation/Sku.json:L9` reads
     // `{"contexts":"save","required":true,"dataType":"numeric","minValue":0}` while
     // `model/validation/Product.json` reads
@@ -3861,8 +3397,6 @@ describe('model/validation/Product.json: eleven rules, transcribed and pinned', 
       'dataType',
     ]);
 
-    // And the entity accepts a negative price without complaint, the behavioural half of the same
-    // claim - `Money` validates FORMAT, never SIGN.
     const negative = new Product({
       productID: 'product-1',
       price: Money.fromDecimalString('-5.00'),
@@ -3879,28 +3413,22 @@ describe('model/validation/Product.json: eleven rules, transcribed and pinned', 
     expect(ENTITY_CODE_PATTERN.source).toBe(PRODUCT_VALIDATION_SCHEMA.productCode[0].regex);
     expect(ENTITY_CODE_PATTERN.source).toBe('^[a-zA-Z0-9-_.|:~^]+$');
 
-    // The shipped module carries the same text as an inert metadata constant, so the entity, the
-    // schema and the shared regex all agree.
     expect(ProductLegacyMetadata.productCodeRegexText).toBe(ENTITY_CODE_PATTERN.source);
 
-    // The behaviour the pattern encodes: the legacy fixture code passes, and the characters the
-    // class excludes are rejected.
     expect(ENTITY_CODE_PATTERN.test('TESTPRODUCTXXX')).toBe(true);
     expect(ENTITY_CODE_PATTERN.test('sku-1.2_3|4:5~6^7')).toBe(true);
     expect(ENTITY_CODE_PATTERN.test('')).toBe(false);
     expect(ENTITY_CODE_PATTERN.test('has space')).toBe(false);
     expect(ENTITY_CODE_PATTERN.test('has/slash')).toBe(false);
 
-    // `unique: true` is part of the rule and is not expressible here - uniqueness needs the
-    // database, so it is a repository concern.
     expect(PRODUCT_VALIDATION_SCHEMA.productCode[0].unique).toBe(true);
     expect(PRODUCT_VALIDATION_SCHEMA.urlTitle[0].unique).toBe(true);
   });
 
   it('B14.4 - the `physicalCounts` gate is ORPHANED, and it is pinned as a documented DEAD declaration', () => {
-    // CFML parity [model/validation/Product.json + model/entity/Product.cfc:L90]: the
-    // physicalCounts delete gate is ORPHANED - Product declares "physicals" (SwPhysicalProduct),
-    // and physicalCounts exists as a property only on model/entity/Physical.cfc:L59. Documented as
+    // CFML parity [model/validation/Product.json]: the physicalCounts delete gate is ORPHANED -
+    // Product declares "physicals" (SwPhysicalProduct) at [model/entity/Product.cfc:L90], and
+    // physicalCounts exists as a property only at [model/entity/Physical.cfc:L59]. Documented as
     // a dead declaration; not a defect, not a divergence. WHY IT WENT UNNOTICED FOR THE WHOLE LIFE
     // OF THE CODEBASE: FIVE schemas carry the gate - Brand.json, Location.json, Product.json,
     // ProductType.json and Sku.json - and FOUR of the entities behind them declare
@@ -3913,8 +3441,6 @@ describe('model/validation/Product.json: eleven rules, transcribed and pinned', 
       maxCollection: 0,
     });
 
-    // The component declares `physicals`, not `physicalCounts` - and the target ports NEITHER,
-    // because `Physical` is outside the eighteen in-scope entities.
     for (const absent of [
       'getPhysicalCounts',
       'getPhysicals',
@@ -3925,8 +3451,6 @@ describe('model/validation/Product.json: eleven rules, transcribed and pinned', 
       expect(declaresMember(absent)).toBe(false);
     }
 
-    // And there is NO DYNAMIC DISPATCH in the target, so the silent-`''` route the orphan relied on
-    // does not exist - the structural reason it cannot be reproduced even in principle.
     expect(declaresMember('getAttributeValue')).toBe(false);
     expect(declaresMember('onMissingMethod')).toBe(false);
   });
@@ -3960,8 +3484,6 @@ describe('model/validation/Product.json: eleven rules, transcribed and pinned', 
     }
     expect(getterOnly).toHaveLength(6);
 
-    // The remaining five DO key on persisted columns at [model/entity/Product.cfc:L52-L59] (or, for
-    // `physicalCounts`, on nothing at all - see B14.4).
     expect(
       Object.keys(PRODUCT_VALIDATION_SCHEMA).filter(
         (property: string): boolean => !getterOnly.includes(property),
@@ -3970,9 +3492,6 @@ describe('model/validation/Product.json: eleven rules, transcribed and pinned', 
   });
 
   it('B14.5 - THE CONSEQUENCE: a bare Product FAILS the `price` required check', () => {
-    // THE PRECISE MECHANISM, AND `issue_1690` RESTS ON IT. `price` is `required: true` in the
-    // `save` context but resolves through `getPrice()` [model/entity/Product.cfc:L561-L568], which
-    // answers NOTHING when there is neither a `variables.price` shadow nor a `defaultSku`.
     const bare = new Product({ productID: '' });
 
     expect(bare.isNew()).toBe(true);
@@ -3980,15 +3499,11 @@ describe('model/validation/Product.json: eleven rules, transcribed and pinned', 
     expect(bare.getDefaultSku()).toBeUndefined();
     expect(PRODUCT_VALIDATION_SCHEMA.price[0].required).toBe(true);
 
-    // The other four `save` requirements are equally unmet, so the context fails on five counts
-    // rather than one.
     expect(bare.getProductName()).toBeUndefined();
     expect(bare.getProductCode()).toBeUndefined();
     expect(bare.getProductType()).toBeUndefined();
     expect(bare.getUrlTitle()).toBeUndefined();
 
-    // And EITHER route to a price satisfies it - the shadow, or a default sku - which is the
-    // two-guard shape of B11.2 seen from the schema's side.
     expect(
       new Product({ productID: 'product-1', price: Money.fromDecimalString('1.00') }).getPrice(),
     ).toBeDefined();
@@ -4020,8 +3535,6 @@ describe('model/validation/Product.json: eleven rules, transcribed and pinned', 
       expect(Object.keys(PRODUCT_VALIDATION_SCHEMA)).not.toContain(absent);
     }
 
-    // The entity nonetheless publishes accessors for those columns - the gap is in the SCHEMA, not
-    // in the surface, and the two are not conflated.
     expect(declaresMember('getActiveFlag')).toBe(true);
     expect(declaresMember('getPublishedFlag')).toBe(true);
     expect(declaresMember('getSortOrder')).toBe(true);
@@ -4029,10 +3542,6 @@ describe('model/validation/Product.json: eleven rules, transcribed and pinned', 
   });
 
   it('B14.6 - the SIX project-wide absent schemas must REMAIN absent', () => {
-    // THE SIX-FILE ABSENCE INVENTORY, VERIFIED ABSENT PROJECT-WIDE AND RECORDED SO IT IS NOT
-    // "FIXED": `Category.json`, `PromotionQualifier.json`, `PromotionApplied.json`,
-    // `PromotionAccount.json`, `Product_AddOption.json` and `Product_AddOptionGroup.json` do not
-    // exist in `model/validation/`.
     const absentSchemas = [
       'Category.json',
       'PromotionQualifier.json',
@@ -4044,8 +3553,6 @@ describe('model/validation/Product.json: eleven rules, transcribed and pinned', 
 
     expect(absentSchemas).toHaveLength(6);
 
-    // The behavioural consequence here: `Category` is ported as a read-mostly leaf with no
-    // validation of its own, and this file asserts no category rule.
     const category = buildCategory('category-1');
 
     expect(category.getCategoryID()).toBe('category-1');
@@ -4053,8 +3560,6 @@ describe('model/validation/Product.json: eleven rules, transcribed and pinned', 
   });
 
   it('B14.1 - every schema property resolves to a SHIPPED accessor, or is a documented dead one', () => {
-    // The point of transcribing the schema in an entity suite: proving the surface can answer every
-    // rule.
     const resolvable: Record<string, string> = {
       baseProductType: 'getBaseProductType',
       price: 'getPrice',
@@ -4075,7 +3580,6 @@ describe('model/validation/Product.json: eleven rules, transcribed and pinned', 
 
     expect(Object.keys(resolvable)).toHaveLength(10);
 
-    // The eleventh - the orphan, which is why 10 + 1 = 11 rather than 11 + 0.
     expect(declaresMember('getPhysicalCounts')).toBe(false);
   });
 });
@@ -4125,23 +3629,18 @@ describe('ROUTED LEGACY CASES: the four IssuesTest cases that belong to Product'
       productType,
     });
 
-    // The populated payload, read back.
     expect(product.getProductName()).toBe('My Product');
     expect(product.getProductType()).toBe(productType);
     expect(product.getProductType()?.getProductTypeID()).toBe('444df2f7ea9c87e60051f3cd87b435a1');
 
-    // Unsaved, exactly as `entityNew` produced it.
     expect(product.isNew()).toBe(true);
     expect(product.getProductID()).toBe('');
 
-    // And it can be reasoned about without an ORM - the accessors the legacy case never got round
-    // to calling all answer, and none of them needs a session.
     expect(product.getSkus()).toEqual([]);
     expect(product.getCategoryIDs()).toBe('');
     expect(product.getBrandName()).toBe('');
     expect(product.getSimpleRepresentationPropertyName()).toBe('productName');
 
-    // No `entityDelete` / `ormFlush` analogue is invented.
     for (const absent of ['save', 'delete', 'flush', 'populate', 'entityDelete']) {
       expect(declaresMember(absent)).toBe(false);
     }
@@ -4162,7 +3661,6 @@ describe('ROUTED LEGACY CASES: the four IssuesTest cases that belong to Product'
     expect(LEGACY_NON_MERCHANDISE_PRODUCT_TYPE_ID).toBe('444df313ec53a08c32d8ae434af5819a');
     expect(LEGACY_NON_MERCHANDISE_PRODUCT_TYPE_ID).not.toBe(LEGACY_MERCHANDISE_PRODUCT_TYPE_ID);
 
-    // The gate, transcribed from the schema.
     expect(PRODUCT_VALIDATION_SCHEMA.baseProductType[0]).toEqual({
       contexts: 'addOptionGroup,addOption',
       inList: 'merchandise',
@@ -4172,8 +3670,6 @@ describe('ROUTED LEGACY CASES: the four IssuesTest cases that belong to Product'
       minCollection: 1,
     });
 
-    // The non-merchandise product FAILS the gate - the value the rule reads is `subscription`,
-    // which is not in the `merchandise` list.
     const nonMerchandise = new Product({
       productID: 'product-1',
       productType: buildProductType(
@@ -4188,8 +3684,6 @@ describe('ROUTED LEGACY CASES: the four IssuesTest cases that belong to Product'
     expect(resolvedBase).toBe('subscription');
     expect(resolvedBase).not.toBe(PRODUCT_VALIDATION_SCHEMA.baseProductType[0].inList);
 
-    // And a MERCHANDISE product satisfies the same gate - the control proving the assertion above
-    // is about the product type.
     const merchandise = new Product({
       productID: 'product-2',
       productType: buildProductType(
@@ -4201,7 +3695,6 @@ describe('ROUTED LEGACY CASES: the four IssuesTest cases that belong to Product'
 
     await expect(merchandise.getBaseProductType()).resolves.toBe('merchandise');
 
-    // `isProcessable()` is not ported and is not invented.
     expect(declaresMember('isProcessable')).toBe(false);
     expect(declaresMember('getProcessObject')).toBe(false);
     expect(ProductLegacyMetadata.processContexts).toContain('addOptionGroup');
@@ -4218,15 +3711,12 @@ describe('ROUTED LEGACY CASES: the four IssuesTest cases that belong to Product'
     // NOT being savable, but the test never says so.
     const bare = new Product({ productID: '' });
 
-    // IT DOES NOT THROW. Every value the save context reads is readable, and reading it is safe,
-    // which is the half of the ticket the legacy `if` accidentally proved and never asserted.
     expect(() => bare.getPrice()).not.toThrow();
     expect(() => bare.getProductName()).not.toThrow();
     expect(() => bare.getProductCode()).not.toThrow();
     expect(() => bare.getProductType()).not.toThrow();
     expect(() => bare.getUrlTitle()).not.toThrow();
 
-    // And it FAILS - all five `save` requirements are unmet.
     const unmet = [
       bare.getPrice(),
       bare.getProductName(),
@@ -4238,12 +3728,9 @@ describe('ROUTED LEGACY CASES: the four IssuesTest cases that belong to Product'
     expect(unmet.every((value: unknown): boolean => value === undefined)).toBe(true);
     expect(unmet).toHaveLength(5);
 
-    // And `undefined` rather than `0` for the price, which is what makes the failure detectable at
-    // all.
     expect(bare.getPrice()).toBeUndefined();
     expect(bare.getPrice()).not.toBe(0);
 
-    // The non-ports the legacy case leaned on, asserted absent rather than stubbed.
     expect(declaresMember('validate')).toBe(false);
     expect(declaresMember('hasErrors')).toBe(false);
   });
@@ -4276,15 +3763,12 @@ describe('ROUTED LEGACY CASES: the four IssuesTest cases that belong to Product'
 
     expect(bare.isNew()).toBe(true);
 
-    // And not every accessor on a bare product is safe - which is why this case enumerates the ones
-    // it claims rather than asserting a blanket "nothing throws".
     expect(() => bare.getPageIDs()).toThrow();
     expect(() => bare.getProductOptionsByGroup()).toThrow();
     expect(() => bare.getSalePriceExpirationDateTime()).toThrow();
     expect(() => bare.getOptionGroups()).toThrow();
     expect(() => bare.getProductURL()).toThrow();
 
-    // No `saveEntity` analogue exists to assert against.
     expect(declaresMember('saveEntity')).toBe(false);
   });
 
@@ -4320,22 +3804,16 @@ describe('ROUTED LEGACY CASES: the four IssuesTest cases that belong to Product'
   });
 });
 
-// --- B16: bidirectional helpers, the D25 hazard, and the CFML-vs-JS index base -----------------
+// --- bidirectional helpers and the CFML-vs-JS index base ---------------------------------------
 //
-// B16.1 - G3 IS MIXED ACROSS THE FOLDER, NOT UNIFORM. Far-side graph symmetry is REPRODUCED in
-// `priceGroupRate.ts`, `promotionApplied.ts`, `promotionPeriod.ts`, `promotionCode.ts`,
-// `promotionQualifier.ts`, `promotionReward.ts` and `priceGroup.ts`, and deliberately NOT in
-// `option.ts`, `skuCurrency.ts`, `category.ts` and `brand.ts`. So the convention cannot be assumed:
-// it has to be read off the shipped module and asserted as found. `setBrand` in
-// slatwall-ts/src/domain/entities/product.ts pushes onto `brand.getProducts()` behind the guard
-//   `isNew() || !hasProduct(this)`
-// verbatim from [model/entity/Product.cfc:L662-L667]; `removeBrand` splices out of
-// `brand.getProducts()` and then clears the near side UNCONDITIONALLY, verbatim from
-// [model/entity/Product.cfc:L668-L677]. That is the OPPOSITE of the sibling `brand.ts` decision,
-// and the asymmetry is real: `Brand.addProduct`/`removeProduct` delegate to the OWNING side and
-// touch no array, because `Product` holds the `brandID` FK at [model/entity/Product.cfc:L68]. The
-// defect class screened for - a `remove*` whose body calls `add*` on the far side - is REAL in this
-// folder: [model/entity/Option.cfc:L129-L131] and [L145-L147] each do exactly that.
+// PRODUCT IS THE OWNING SIDE, WHICH IS WHY ITS HELPERS MUTATE THE FAR ARRAY. `setBrand` pushes onto
+// `brand.getProducts()` behind the guard `isNew() || !hasProduct(this)`, reproducing
+// [model/entity/Product.cfc:L662-L667]; `removeBrand` splices out of `brand.getProducts()` when
+// `arrayFind` located it and then clears the near side UNCONDITIONALLY, reproducing
+// [model/entity/Product.cfc:L668-L677]. `Brand.addProduct`/`removeProduct` do the opposite - they
+// delegate and touch no array - because `Product` holds the `brandID` FK
+// [model/entity/Product.cfc:L68]. The asymmetry is read off the shipped modules and asserted as
+// found rather than assumed to be a folder-wide convention.
 
 describe('bidirectional helpers: reproduced symmetry, the D25 hazard, and the index base', () => {
   it('B16.1 - setBrand wires BOTH sides: the near-side FK and the far-side array', () => {
@@ -4348,19 +3826,12 @@ describe('bidirectional helpers: reproduced symmetry, the D25 hazard, and the in
 
     product.setBrand(brand);
 
-    // Near side.
     expect(product.getBrand()).toBe(brand);
-    // Far side - and it is the LIVE array, which is why the push is observable at all.
     expect(brand.getProducts()).toHaveLength(1);
     expect(productIDsOf(brand.getProducts())).toEqual(['product-1']);
   });
 
   it('B16.1 - the guard SUPPRESSES a duplicate append for a SAVED product', () => {
-    // CFML parity [model/entity/Product.cfc:L664]:
-    //   if(isNew() or !arguments.brand.hasProduct( this ))
-    // A SAVED product - one with a real primary key - takes the containment probe, which finds it
-    // and short-circuits the append, so calling `setBrand` twice appends ONCE. The control for the
-    // next case's hazard.
     const brand = new Brand({ brandID: 'brand-1', brandName: 'Saved Path' });
     const saved = new Product({ productID: 'product-1' });
 
@@ -4404,13 +3875,11 @@ describe('bidirectional helpers: reproduced symmetry, the D25 hazard, and the in
 
     unsaved.setBrand(brand);
 
-    // TWO ENTRIES, BOTH THE SAME INSTANCE.
     expect(brand.getProducts()).toHaveLength(2);
     expect(brand.getProducts()[0]).toBe(unsaved);
     expect(brand.getProducts()[1]).toBe(unsaved);
     expect(productIDsOf(brand.getProducts())).toEqual(['', '']);
 
-    // And the near side is still correct - the hazard is entirely on the far side.
     expect(unsaved.getBrand()).toBe(brand);
   });
 
@@ -4427,20 +3896,14 @@ describe('bidirectional helpers: reproduced symmetry, the D25 hazard, and the in
     product.setBrand(owningBrand);
     expect(owningBrand.getProducts()).toHaveLength(1);
 
-    // Remove against a brand that does NOT hold this product: the far-side index is not found, so
-    // nothing is spliced there...
     product.removeBrand(strangerBrand);
 
     expect(strangerBrand.getProducts()).toEqual([]);
     expect(owningBrand.getProducts()).toHaveLength(1);
-    // ...but the near side is cleared ANYWAY, because L676 sits outside the L673 guard.
     expect(product.getBrand()).toBeUndefined();
   });
 
   it('B16.3 - the omitted-argument default resolves to the owning brand, and both sides clear', () => {
-    // CFML parity [model/entity/Product.cfc:L669-L671]:
-    //   `if(!structKeyExists(arguments, "brand")) { arguments.brand = variables.brand; }`
-    // becomes an optional parameter.
     const brand = new Brand({ brandID: 'brand-1', brandName: 'Owner' });
     const product = new Product({ productID: 'product-1' });
 
@@ -4452,11 +3915,12 @@ describe('bidirectional helpers: reproduced symmetry, the D25 hazard, and the in
   });
 
   it('B16.3 / C14 - with no argument and no owning brand it REFUSES rather than no-ops', () => {
-    // LEGACY-NOTE [model/entity/Product.cfc:L669-L672]: with neither an argument nor a
-    // `variables.brand`, CFML dereferences null at `arguments.brand.getProducts()` and raises.
-    // Raising here is the faithful port, not an invented guard.
-    //
-    // Preserved deliberately; do not fix without a product decision.
+    // LEGACY-NOTE [model/entity/Product.cfc:L669-L671]: with no argument the legacy resolves
+    // `arguments.brand = variables.brand`, so when the near side was never set that read itself
+    // raises and the `arrayFind` at [model/entity/Product.cfc:L672] is never reached. The target
+    // refuses the call for the same reason and names L672 - the statement that would have
+    // dereferenced it - in the message. Reproduced as a refusal deliberately; a silent no-op here
+    // would invent a guard the legacy never had.
     const orphan = new Product({ productID: 'product-1' });
 
     expect(() => orphan.removeBrand()).toThrow(/removeBrand was called with no argument/);
@@ -4477,7 +3941,6 @@ describe('bidirectional helpers: reproduced symmetry, the D25 hazard, and the in
     second.setBrand(brand);
     expect(productIDsOf(brand.getProducts())).toEqual(['product-1', 'product-2']);
 
-    // Remove the element at position ZERO.
     first.removeBrand(brand);
 
     expect(brand.getProducts()).toHaveLength(1);
@@ -4524,8 +3987,6 @@ describe('bidirectional helpers: reproduced symmetry, the D25 hazard, and the in
 
     expect(product.hasSku(makeSkuFixture({ skuID: 'sku-2' }))).toBe(false);
 
-    // The empty-key branch: an unsaved candidate falls back to reference containment, so a
-    // DIFFERENT unsaved sku is correctly reported absent rather than matching on `'' === ''`.
     const unsavedHeld = makeSkuFixture({ skuID: '', isNew: true });
     const unsavedStranger = makeSkuFixture({ skuID: '', isNew: true });
     const withUnsaved = new Product({ productID: 'product-2', skus: [unsavedHeld] });
@@ -4540,8 +4001,6 @@ describe('bidirectional helpers: reproduced symmetry, the D25 hazard, and the in
     // `Sku` holds the `productID` FK at [model/entity/Sku.cfc:L65], so the SKU is what changes -
     // and this product's `skus` array is appended to BY `Sku.setProduct`, not here.
     const product = new Product({ productID: 'product-1' });
-    // A sku built with an explicit `product` override is NOT auto-wired by the fixture, so this
-    // starts genuinely detached.
     const sku = makeSkuFixture({ skuID: 'sku-1', product });
 
     expect(product.getSkus()).toHaveLength(1);
@@ -4586,13 +4045,7 @@ describe('bidirectional helpers: reproduced symmetry, the D25 hazard, and the in
   // ═════════════════════════════════════════════════════════════════════════
 
   it('B16.8 - setDefaultSku assigns the near side and touches NOTHING else', () => {
-    // The three observable neighbours of the field are checked explicitly, because a
-    // "helpful" bidirectional push is exactly the thing that would look harmless here
-    // and then double-count a SKU on the collection the skuCode formula measures.
     const product = new Product({ productID: 'product-1' });
-    // `product: undefined` is passed EXPLICITLY: the fixture auto-wires a product of
-    // its own when the key is absent, and a SKU already pointing somewhere else could
-    // not show that this setter leaves the back-reference alone.
     const sku = makeSkuFixture({ skuID: 'sku-1', product: undefined });
 
     expect(product.getDefaultSku()).toBeUndefined();
@@ -4601,18 +4054,11 @@ describe('bidirectional helpers: reproduced symmetry, the D25 hazard, and the in
     product.setDefaultSku(sku);
 
     expect(product.getDefaultSku()).toBe(sku);
-    // NOT appended: designating a default is not attaching a SKU. [L102] and [L134]
-    // both perform the attachment separately, through `addSku` and `setProduct`.
     expect(product.getSkus()).toEqual([]);
     expect(sku.getProduct()).toBeUndefined();
   });
 
   it('B16.8 - it OVERWRITES, because [L167] and [L189] overwrite', () => {
-    // Three of the five legacy sites are unconditional or index-gated rather than
-    // null-gated - [L134] and [L189] are unconditional, [L167] and [L198] test a loop
-    // counter - so the setter itself must not carry a first-wins guard. The
-    // first-wins behaviour belongs to [L101]'s `isNull` test at ONE of the five sites,
-    // and putting it in here instead would silently change the other four.
     const product = new Product({ productID: 'product-1' });
     const first = makeSkuFixture({ skuID: 'sku-1' });
     const second = makeSkuFixture({ skuID: 'sku-2' });
@@ -4646,8 +4092,6 @@ describe('bidirectional helpers: reproduced symmetry, the D25 hazard, and the in
     const draft = makeSkuFixture({ skuID: PROVISIONAL_SKU_ID, isNew: true, product: undefined });
 
     expect(draft.isNew()).toBe(true);
-    // The provisional key is present and is NOT the persisted one: the adapter is what
-    // decides it must not travel into `SwProduct.defaultSkuID`.
     expect(draft.getSkuID()).toBe(PROVISIONAL_SKU_ID);
 
     product.setDefaultSku(draft);
@@ -4657,12 +4101,6 @@ describe('bidirectional helpers: reproduced symmetry, the D25 hazard, and the in
   });
 
   it('B16.8 - and the designation immediately drives the accessors that read through it', () => {
-    // The point of the member, stated as an assertion rather than as a comment: eight
-    // accessors on this class guard on `defaultSku` and answer a fallback when it is
-    // absent [model/entity/Product.cfc:L556, L565, L571, L577, L583, L589, L595,
-    // L607]. Two of them are checked here - one monetary, one not - because "the
-    // designation landed" and "the designation is USED" are different claims and only
-    // the second is worth having.
     const product = new Product({ productID: 'product-1' });
     const sku = makeSkuFixture({ skuID: 'sku-1' });
 
@@ -4710,7 +4148,6 @@ describe('bidirectional helpers: reproduced symmetry, the D25 hazard, and the in
       expect(arityOf(member)).toBe(1);
     }
 
-    // And their five matching probes plus `hasSku` - the six of C11.
     for (const probe of [
       'hasSku',
       'hasPriceGroupRate',
@@ -4756,8 +4193,6 @@ describe('bidirectional helpers: reproduced symmetry, the D25 hazard, and the in
       expect(declaresMember(omitted)).toBe(false);
     }
 
-    // And the collections those pairs would have maintained are likewise absent, so nothing
-    // half-built is left behind for a caller to trip over.
     for (const absentAccessor of [
       'getAttributeValues',
       'getProductImages',
@@ -4772,54 +4207,35 @@ describe('bidirectional helpers: reproduced symmetry, the D25 hazard, and the in
   });
 
   it('B16.7 - the L783-L790 footnote is RESOLVED: there is no hidden method there', () => {
-    // A SIBLING NOTE FLAGGED `model/entity/Product.cfc:L783-L790` as possibly concealing an
-    // unaccounted-for method. Read line by line it is fully accounted for:
-    //   L783-L785  removePhysical                                  (CLUSTER 8, omitted)
-    //   L786       blank
-    //   L787       the END-of-bidirectional-helper-methods banner comment
-    //   L788       blank
-    //   L789       the START-of-overridden-methods banner comment
-    //   L790       blank
-    // Two banners, three blanks and one omitted helper. NOTHING HIDDEN. The next real declaration
-    // is `getSimpleRepresentationPropertyName()` at [L791-L793], which this suite already asserts,
-    // so the accounting closes with no gap.
     expect(declaresMember('getSimpleRepresentationPropertyName')).toBe(true);
     expect(arityOf('getSimpleRepresentationPropertyName')).toBe(0);
     expect(new Product({ productID: 'product-1' }).getSimpleRepresentationPropertyName()).toBe(
       'productName',
     );
 
-    // The one member the range actually declares is the omitted one, re-asserted here so the
-    // footnote's resolution is executable.
     expect(declaresMember('removePhysical')).toBe(false);
   });
 
   it('B16.5 - far-side accessors hand back LIVE arrays, and no defensive copy is added', () => {
-    // CFML parity: `Brand.getProducts()` is LIVE precisely because `Product.setBrand` reaches
-    // through it to append [model/entity/Product.cfc:L665]. Wrapping it in a copy would make the
-    // append vanish, so the raw-return convention is load-bearing rather than incidental.
     const brand = new Brand({ brandID: 'brand-1', brandName: 'Live' });
     const product = new Product({ productID: 'product-1' });
 
     const beforeWiring = brand.getProducts();
     product.setBrand(brand);
 
-    // The SAME array object observed the mutation - proof there is no copy at the boundary.
     expect(brand.getProducts()).toBe(beforeWiring);
     expect(beforeWiring).toHaveLength(1);
   });
 });
 
-// --- B17: the inherited-base behaviours - documented, not fabricated ---------------------------
+// --- the inherited-base behaviours - documented, not fabricated --------------------------------
 //
-// The shipped entities port NO Hibachi base class. `Product.cfc` extends `HibachiEntity`, which
-// extends `org.Hibachi.HibachiEntity`, and the whole of `org/Hibachi/**` - 938 files, 24 top-level
-// classes - is a BOUNDARY TO EXTRACT FROM AND NEVER MODIFY. Its responsibilities are redistributed:
-// persistence to the repositories, validation to typed schemas, scope to explicit context
-// parameters, smart lists to typed repository queries. So this section characterizes the legacy
-// contract in comments and asserts the shipped reality, which for most of these members is a
-// DOCUMENTED ABSENCE: where a base behaviour is deliberately not ported the discipline is (a)
-// assert the shipped reality and (b) document the legacy contract and the deliberate non-port.
+// No Hibachi base class is ported: `Product.cfc` extends `HibachiEntity`, which extends
+// `org.Hibachi.HibachiEntity`, and that tree is extracted from rather than translated - persistence
+// moves to the repositories, validation to typed schemas, ambient scope to explicit context
+// parameters, smart lists to typed repository queries. For most base members the shipped reality is
+// therefore a DOCUMENTED ABSENCE, and each case below asserts that absence and records the legacy
+// contract it replaces.
 
 describe('inherited-base behaviours: the legacy contract documented and the shipped reality asserted', () => {
   it('B17.1 - the unknown-getter split is 4 SILENT / 14 THROW, and Product is one of the four', () => {
@@ -4845,9 +4261,6 @@ describe('inherited-base behaviours: the legacy contract documented and the ship
       expect(declaresMember(absent)).toBe(false);
     }
 
-    // The observable consequence is a REFUSAL, not a silent empty string: reading an undeclared
-    // member is a COMPILE error, and the one legacy call site that reached the fallback now throws,
-    // which is what B5 pins.
     const subject = new Product({ productID: 'product-1' });
     expect(() => subject.getSalePriceExpirationDateTime()).toThrow(/onMissingMethod/);
     expect(() => subject.getSalePriceExpirationDateTime()).toThrow(
@@ -4877,16 +4290,10 @@ describe('inherited-base behaviours: the legacy contract documented and the ship
   });
 
   it('B17.3 - only isNew() is authored; getNewFlag, getPrintTemplates and getEmailTemplates are not', () => {
-    // THE LEGACY CONTRACT. `getNewFlag()` [org/Hibachi/HibachiEntity.cfc:L571-L576] duplicated what
-    // `isNull()`-style probes already answered; `getPrintTemplates()` [L578-L580] and
-    // `getEmailTemplates()` [L582-L584] return `[]`, always, and were overridden nowhere in the
-    // in-scope slice.
     for (const absent of ['getNewFlag', 'getPrintTemplates', 'getEmailTemplates']) {
       expect(declaresMember(absent)).toBe(false);
     }
 
-    // `isNew()` is authored per entity and tests the PRIMARY KEY rather than a framework flag,
-    // which is what makes it checkable.
     expect(declaresMember('isNew')).toBe(true);
     expect(arityOf('isNew')).toBe(0);
     expect(new Product({ productID: '' }).isNew()).toBe(true);
@@ -4916,8 +4323,6 @@ describe('inherited-base behaviours: the legacy contract documented and the ship
       expect(declaresMember(absent)).toBe(false);
     }
 
-    // The four audit columns the hook would have stamped are still persisted - the schema contract
-    // is unbroken - they are simply written by the repository.
     const stamped = new Product({
       productID: 'product-1',
       createdDateTime: CREATED_INSTANT,
@@ -4949,9 +4354,6 @@ describe('inherited-base behaviours: the legacy contract documented and the ship
     expect(declaresMember('getAttributeByAttributeCode')).toBe(false);
     expect(declaresMember('getAttributeValue')).toBe(false);
 
-    // The one assertable fact: the 32-character length test the dead branch guarded on is the same
-    // width as every `Sw*` primary key, which is why the intent is legible even though the code
-    // never runs.
     expect(LEGACY_MERCHANDISE_PRODUCT_TYPE_ID).toHaveLength(32);
     expect(LEGACY_NON_MERCHANDISE_PRODUCT_TYPE_ID).toHaveLength(32);
   });
@@ -4987,12 +4389,10 @@ describe('inherited-base behaviours: the legacy contract documented and the ship
       expect(declaresMember(absent)).toBe(false);
     }
 
-    // The one that DID survive, and only because validation depends on it.
     expect(declaresMember('getOptionGroups')).toBe(true);
     expect(declaresMember('getOptionGroupsStruct')).toBe(true);
     expect(declaresMember('getOptionGroupCount')).toBe(true);
 
-    // And no image-path fragment is ever written as a literal.
     expect(declaresMember('getImages')).toBe(false);
     expect(declaresMember('getImageFileName')).toBe(false);
     expect(declaresMember('getResizedImagePath')).toBe(false);
@@ -5013,15 +4413,11 @@ describe('inherited-base behaviours: the legacy contract documented and the ship
     const first = new Product({ productID: 'product-1' });
     const second = new Product({ productID: 'product-2' });
 
-    // The seven shipped memos all start from the same "not yet computed" state on a fresh instance,
-    // regardless of which legacy idiom guarded them.
     expect(first.getBrandName()).toBe('');
     expect(first.getSalePriceDiscountType()).toBe('none');
     expect(second.getBrandName()).toBe('');
     expect(second.getSalePriceDiscountType()).toBe('none');
 
-    // `templateOptions` - the `isDefined` site - is itself a documented non-port, so the idiom is
-    // recorded without a member to exercise.
     expect(declaresMember('getTemplateOptions')).toBe(false);
   });
 
@@ -5045,8 +4441,6 @@ describe('inherited-base behaviours: the legacy contract documented and the ship
       expect(declaresMember(absent)).toBe(false);
     }
 
-    // The one stub port this entity reaches answers with a documented refusal rather than a partial
-    // implementation, which is the whole contract of a stub port.
     const withStub = new Product({
       productID: 'product-1',
       subscriptionTermProvider: new SubscriptionTermProviderDouble(),
@@ -5079,7 +4473,8 @@ describe('ports, not locators: the composition surface this entity actually has'
     //   L401 stockService    -> out of scope (estimated receival)
     //   L441, L443 inventoryService -> out of scope (quantity types)
     //   L501 skuService      -> OMITTED (getDefaultProductImageFiles, B17.6)
-    //   L519 promotionService-> hydration input (`salePriceDetailsForSkus`, B12.1)
+    //   L519 promotionService-> `salePriceResolver`, the SECOND interface exported by
+    //                           `src/domain/ports/promotionRepository.ts` (B12.1, branch (a))
     //   L542 hibachiUtilityService -> OMITTED (getTitle, C3 - NOT a port)
     //   L626 skuService      -> `skuRepository` (B13.2)
     //   L637, L644 optionService -> `optionRepository` (B10.1, B10.2)
@@ -5107,16 +4502,11 @@ describe('ports, not locators: the composition surface this entity actually has'
       expect(declaresMember(absent)).toBe(false);
     }
 
-    // The two sites that still fail at runtime do so by NAMING the missing service rather than
-    // trying to locate it - the difference between a faithful port of a broken call and a
-    // resurrected locator. `getProductOptionsByGroup` [L632] called a bare `getProductService()`,
-    // which is not a member of the entity, so the throw names it.
     const subject = new Product({ productID: 'product-1' });
     expect(() => subject.getProductOptionsByGroup()).toThrow(/getProductService\(\)/);
   });
 
   it('B18.1 - the subject is built BY HAND, with explicit ports and inline doubles', () => {
-    // No DI container, bootstrap or composition root is reached from this suite.
     const settings = new SettingsProviderDouble(URL_KEY_UNDER_TEST);
     const skuRepository = new SkuRepositoryDouble();
     const optionRepository = new OptionRepositoryDouble();
@@ -5132,8 +4522,6 @@ describe('ports, not locators: the composition surface this entity actually has'
       subscriptionTermProvider,
     });
 
-    // Every collaborator is reachable because it was HANDED IN, and each is a plain object this
-    // file authored - no proxy, no auto-mock, no container resolution.
     expect(subject.getProductURL()).toBe(`/${URL_KEY_UNDER_TEST}//`);
     expect(settings.reads).toEqual(['globalURLKeyProduct']);
   });
@@ -5158,7 +4546,6 @@ describe('ports, not locators: the composition surface this entity actually has'
 
     expect(accepted.getProductID()).toBe('product-1');
 
-    // The eight this entity does NOT own have no accessor and no setter - nothing to reach.
     for (const absent of [
       'getProductTypeRepository',
       'getPromotionRepository',
@@ -5180,9 +4567,6 @@ describe('ports, not locators: the composition surface this entity actually has'
   });
 
   it('B18.4 - a missing port produces a NAMED REFUSAL that cites its own legacy locator', () => {
-    // THE UNIFORM REFUSAL SHAPE. Every port-dependent accessor throws the same three-part message
-    // when its collaborator was not injected: the product's identity, the collaborator's NAME, and
-    // the exact `model/entity/Product.cfc` locator that cannot be evaluated.
     const unwired = new Product({ productID: 'product-1' });
 
     const refusals: ReadonlyArray<readonly [() => unknown, string, string]> = [
@@ -5196,7 +4580,6 @@ describe('ports, not locators: the composition surface this entity actually has'
       expect(invoke).toThrow(/Repositories own hydration and must supply it/);
     }
 
-    // The async ones refuse the same way, through a rejected promise rather than a throw.
     return Promise.all([
       expect(unwired.getSkusBySelectedOptions('option-1')).rejects.toThrow(
         /the sku repository collaborator was not injected/,
@@ -5228,8 +4611,6 @@ describe('ports, not locators: the composition surface this entity actually has'
       expect(declaresMember(absent)).toBe(false);
     }
 
-    // The two audit instants round-trip unchanged, which is only observable because nothing
-    // re-stamps them.
     expect(CREATED_INSTANT.toISOString()).toBe('2024-06-01T00:00:00.000Z');
     expect(MODIFIED_INSTANT.toISOString()).toBe('2024-06-15T12:30:45.000Z');
     expect(SALE_PRICE_EXPIRATION_INSTANT.toISOString()).toBe('2024-12-31T23:59:59.000Z');
@@ -5245,15 +4626,6 @@ describe('ports, not locators: the composition surface this entity actually has'
   });
 
   it('B18.5 - the doubles are HAND-WRITTEN and RECORDING, with no mocking library involved', () => {
-    // ★ THE THIRTEEN PINNED PACKAGES `package.json` DECLARES ARE FROZEN, and none of them is a mocking, faker or
-    // factory library. `vi` ships inside vitest and is permitted - this suite uses `vi.spyOn`
-    // in the memo blocks to count far-side calls - but every collaborator is a class authored in
-    // this file, which is what makes its behaviour readable at the point of use rather than
-    // configured at a distance.
-    //
-    // ★ AND RECORDING IS THE POINT. A hand-written double can capture the ARGUMENTS it received
-    // in the ORDER it received them, which is exactly what the positional-argument assertions in
-    // B7.4, B10.1 and B10.2 need. An auto-mock would give call counts without the fidelity.
     const skuRepository = new SkuRepositoryDouble();
     const product = new Product({ productID: 'product-1', skuRepository });
 
@@ -5285,8 +4657,6 @@ describe('ports, not locators: the composition surface this entity actually has'
         /model\/entity\/Product\.cfc:L651/,
       ),
       expect(withStub.getUnusedProductSubscriptionTerms()).rejects.toThrow(/getSubscriptionTerm/),
-      // It says so even though the port WAS wired - the refusal is about the missing CAPABILITY,
-      // not a missing collaborator, which is what distinguishes a stub port from an unwired one.
       expect(withStub.getUnusedProductSubscriptionTerms()).rejects.toThrow(/wired/),
     ]);
   });
@@ -5306,8 +4676,6 @@ describe('ports, not locators: the composition surface this entity actually has'
       expect(declaresMember(absent)).toBe(false);
     }
 
-    // The settings a caller supplies are read through the port and are visibly not literals: change
-    // the double and both URL accessors move together, which B2.2 proves in detail.
     const settings = new SettingsProviderDouble('some-other-key');
     const product = new Product({
       productID: 'product-1',
@@ -5320,43 +4688,43 @@ describe('ports, not locators: the composition surface this entity actually has'
   });
 });
 
-// --- A2 / B19: memo isolation and freshness --------------------------------
-// EVERY MEMO ON EVERY SHIPPED ENTITY IS REQUEST-SCOPED, and this section proves it for the SEVEN
+// --- memo isolation and freshness ----------------------------------------------------------------
+// EVERY MEMO ON EVERY SHIPPED ENTITY IS REQUEST-SCOPED, and this section proves it for the EIGHT
 // `Product` carries: `optionGroups` [model/entity/Product.cfc:L252], `optionGroupsStruct` [L242],
 // `brandName` [L525] - the divergence-(c) one, `salePriceDiscountType` [L605] - the correct
-// control, `transactionExistsFlag` [L625], `unusedProductOptions` [L636] and
-// `unusedProductOptionGroups` [L643]. The other three - `title` [L541], `salePriceDetailsForSkus`
-// [L518] and `unusedProductSubscriptionTerms` [L650] - are documented non-ports or refusals (C3,
-// C7, C12), so their absence is asserted rather than a memo invented. C7 - THE JUSTIFICATION IS
-// STATE MANAGEMENT, NEVER SPEED. The legacy framed the same mechanism the other way - "This
-// improves performance when doing things like rebuilding the skuCache" at
-// [model/service/RoundingRuleService.cfc:L66] - and THAT FRAMING IS NOT CARRIED FORWARD.
-//   1. `SkuDAO.variables.nextOptionGroupSortOrder` [model/dao/SkuDAO.cfc:L204-L220]. NEVER
-//      CLEARED: its clear method [model/dao/SkuDAO.cfc:L222-L226] reads
-//      `<cfif not structKeyExists(variables, "nextOptionGroupSortOrder")>` and then deletes -
-//      it deletes ONLY WHEN THE KEY IS ALREADY ABSENT, so the condition is INVERTED and the
-//      branch can never fire. On a warm container that cache would outlive every request that
-//      ever touched it.
-//   2. `RoundingRuleService.variables.roundingRuleDetails` [L53, L67-L77], seeded at component
-//      scope and cleared only on save.
-//   3. The un-`var`'d `discountAmount` [model/service/PromotionService.cfc:L1007, L1009], which
-//      leaks into component scope - divergence (a), SIBLING-OWNED by `src/services`.
-//   4. EVERY entity memo, including the seven above.
-// All four are request-scoped in the target. Reproducing any as module state would be actively
-// unsafe, which is why (3) is an authorized divergence rather than a preserved defect.
+// control, `transactionExistsFlag` [L625], `unusedProductOptions` [L636],
+// `unusedProductOptionGroups` [L643] and `salePriceDetailsForSkus` [L518] - the branch-(a) one,
+// which fills through the injected `salePriceResolver` and is proved isolated in its own case
+// below. The other two - `title` [L541] and `unusedProductSubscriptionTerms` [L650] - are a
+// documented non-port and a refusal (C3, C12), so their absence is asserted rather than a memo
+// invented.
+//
+// THE JUSTIFICATION IS STATE MANAGEMENT, NEVER SPEED. Legacy component-scope caches become
+// cross-request state on a warm container, so all of them are request-scoped here:
+//   1. `SkuDAO.variables.nextOptionGroupSortOrder` [model/dao/SkuDAO.cfc:L204-L220], whose clear
+//      method [model/dao/SkuDAO.cfc:L222-L226] tests `not structKeyExists(...)` before deleting and
+//      so can never fire. IDENTIFIED, NOT REPRODUCED - the target gives the value a different owner.
+//   2. `RoundingRuleService.variables.roundingRuleDetails` [model/service/RoundingRuleService.cfc:L67-L77],
+//      seeded at component scope and cleared only on save.
+//   3. The un-`var`'d `discountAmount` [model/service/PromotionService.cfc:L1007, L1009, L1014],
+//      which leaks into component scope - divergence (a), SIBLING-OWNED by `src/services`.
+//   4. Every entity memo, including the eight above.
+// Reproducing any of them as module state would be actively unsafe, which is why (3) is an authorized
+// divergence rather than a preserved defect.
 
 describe('A2: every memo is request-scoped, and no state crosses instances', () => {
-  it('B19.2 - all SEVEN memos on a second instance start FRESH, never inheriting the first', () => {
+  it('B19.2 - SEVEN of the eight memos on a second instance start FRESH, never inheriting', () => {
     // THE WHOLE-FAMILY ISOLATION PROOF. Each memo is driven to a DISTINCT value on the first
     // instance, and the second - built with different collaborators - answers from its own state.
+    // The eighth, `salePriceDetailsForSkus` [model/entity/Product.cfc:L518], needs an injected
+    // resolver to fill rather than a differing collaborator to observe, so it is proved in the
+    // dedicated case at the end of this block instead of here.
     const firstBrand = new Brand({ brandID: 'brand-1', brandName: 'First Brand' });
     const firstGroup = buildOptionGroup('group-1', 1, 'FIRST');
     const firstOptionRepository = new OptionRepositoryDouble(
       [{ name: 'First Option', value: 'option-1' }],
       [{ name: 'First Group', value: 'group-1' }],
     );
-    // The double's `transactionExists` is CONSTRUCTOR-SET AND PRIVATE READONLY: a double whose
-    // recorded answer can be reassigned mid-test is the mutable state hazard A2 excludes.
     const firstSkuRepository = new SkuRepositoryDouble([], true);
 
     const first = new Product({
@@ -5406,25 +4774,19 @@ describe('A2: every memo is request-scoped, and no state crosses instances', () 
         secondGroups,
         secondTransaction,
       ]) => {
-        // Memo 1 + 2 - option groups and their struct.
         expect(first.getOptionGroups()).toHaveLength(1);
         expect(structKeyList(first.getOptionGroupsStruct())).toEqual(['group-1']);
         expect(structKeyList(second.getOptionGroupsStruct())).toEqual(['group-2']);
 
-        // Memo 3 - brandName, the divergence-(c) accessor.
         expect(first.getBrandName()).toBe('First Brand');
         expect(second.getBrandName()).toBe('Second Brand');
 
-        // Memo 4 - salePriceDiscountType, the control. The second has no default sku, so it seeds
-        // `'none'` rather than inheriting `'percentageOff'`.
         expect(first.getSalePriceDiscountType()).toBe('percentageOff');
         expect(second.getSalePriceDiscountType()).toBe('none');
 
-        // Memo 5 - transactionExistsFlag, opposite booleans on the two instances.
         expect(firstTransaction).toBe(true);
         expect(secondTransaction).toBe(false);
 
-        // Memo 6 + 7 - the unused-* pair, non-empty against empty.
         expect(firstOptions).toHaveLength(1);
         expect(firstGroups).toHaveLength(1);
         expect(secondOptions).toEqual([]);
@@ -5434,7 +4796,6 @@ describe('A2: every memo is request-scoped, and no state crosses instances', () 
   });
 
   it('B19.2 - each memo computes ONCE per instance, proven by counting the far-side reach', () => {
-    // THE OTHER HALF OF A MEMO'S CONTRACT: within one instance it must not recompute.
     const optionRepository = new OptionRepositoryDouble(
       [{ name: 'Option', value: 'option-1' }],
       [{ name: 'Group', value: 'group-1' }],
@@ -5468,13 +4829,10 @@ describe('A2: every memo is request-scoped, and no state crosses instances', () 
         ]),
       )
       .then(() => {
-        // Three rounds of calls, ONE reach apiece.
         expect(optionRepository.unusedOptionsCalls).toHaveLength(1);
         expect(optionRepository.unusedOptionGroupsCalls).toHaveLength(1);
         expect(skuRepository.transactionExistsCalls).toHaveLength(1);
 
-        // And the same for the two synchronous memos, observed through struct identity - a
-        // recomputing accessor would hand back a NEW object each time.
         const firstRead = subject.getOptionGroupsStruct();
         expect(subject.getOptionGroupsStruct()).toBe(firstRead);
         expect(subject.getOptionGroupsStruct()).toBe(firstRead);
@@ -5482,8 +4840,6 @@ describe('A2: every memo is request-scoped, and no state crosses instances', () 
   });
 
   it('B19.2 - the memo SEEDS do not leak either, which is the subtler half of the isolation', () => {
-    // WHY THE SEEDS MATTER SEPARATELY. `brandName` seeds `''` and `salePriceDiscountType` seeds
-    // `'none'`, and those seeds are what a caller sees when the far side is absent.
     const brandless = new Product({ productID: 'product-1' });
     expect(brandless.getBrandName()).toBe('');
     expect(brandless.getSalePriceDiscountType()).toBe('none');
@@ -5505,16 +4861,12 @@ describe('A2: every memo is request-scoped, and no state crosses instances', () 
     expect(branded.getBrandName()).toBe('Leak Detector');
     expect(branded.getSalePriceDiscountType()).toBe('amountOff');
 
-    // Back to a brandless instance AFTER the branded one computed: still the seed, not the leak.
     const brandlessAgain = new Product({ productID: 'product-3' });
     expect(brandlessAgain.getBrandName()).toBe('');
     expect(brandlessAgain.getSalePriceDiscountType()).toBe('none');
   });
 
   it('B19.1 - there is NO mutable module-level state in this suite, and every spy is restored', () => {
-    // THE SUITE ITSELF OBEYS A2. Every subject and double is constructed inside its own `it`, and
-    // the only module-level bindings are INERT: frozen instants, string constants, the transcribed
-    // validation schema, and pure helpers.
     const brand = new Brand({ brandID: 'brand-1', brandName: 'Unspied' });
     expect(brand.getBrandName()).toBe('Unspied');
 
@@ -5522,24 +4874,20 @@ describe('A2: every memo is request-scoped, and no state crosses instances', () 
     expect(new Product({ productID: 'product-1', brand }).getBrandName()).toBe('Spied');
     expect(spy).toHaveBeenCalledTimes(1);
 
-    // Restoring by hand too, so this test leaves nothing behind even before the hooks run.
     spy.mockRestore();
     expect(brand.getBrandName()).toBe('Unspied');
   });
 
   it('B19.4 - the inverted SkuDAO clear condition is recorded, and no cache is module-scoped here', () => {
-    // LEGACY-DEFECT [model/dao/SkuDAO.cfc:L222-L226]: `clearNextOptionGroupSortOrder` guards its
-    // `structDelete` with `not structKeyExists(variables, "nextOptionGroupSortOrder")`, so it
-    // deletes the key only when the key is already absent and can therefore never clear the
-    // populated cache it was written to clear.
+    // LEGACY-NOTE [model/dao/SkuDAO.cfc:L222-L226]: `clearNextOptionGroupSortOrder` guards its
+    // `structDelete` with `not structKeyExists(variables, "nextOptionGroupSortOrder")`, so it deletes
+    // the key only when the key is already absent and can never clear the populated cache it was
+    // written to clear.
     //
-    // Preserved deliberately; do not fix without a product decision.
-    //
-    // HOW IT IS PRESERVED WITHOUT BEING REPRODUCED: `nextOptionGroupSortOrder` arrives as a
-    // per-instance HYDRATION INPUT rather than a DAO-scoped cache, so there is no shared key to
-    // clear and the inverted guard has nothing to guard. The observable consequence - a stale radix
-    // ceiling surviving across requests - is structurally impossible. Not an authorized divergence:
-    // the public contract is unchanged; the cache simply has a different owner.
+    // NEUTRALISED BY OWNERSHIP, NOT PRESERVED. `nextOptionGroupSortOrder` arrives as a per-instance
+    // HYDRATION INPUT rather than a DAO-scoped cache, so there is no shared key to clear and the
+    // inverted guard has nothing to guard: the stale-ceiling consequence is structurally impossible
+    // here. That is a deliberate containment of the defect, not a reproduction of it.
     const group = buildOptionGroup('group-1', 1);
     const highOption = buildOption('option-high', 9, group);
     const lowOption = buildOption('option-low', 1, group);
@@ -5549,7 +4897,6 @@ describe('A2: every memo is request-scoped, and no state crosses instances', () 
       makeSkuFixture({ skuID: 'sku-low', options: [lowOption] }),
     ];
 
-    // Instance ONE carries a radix ceiling, supplied per instance rather than from a DAO cache.
     const withRadix = new Product({
       productID: 'product-1',
       skus: [...buildGraph()],
@@ -5559,8 +4906,6 @@ describe('A2: every memo is request-scoped, and no state crosses instances', () 
     expect(skuIDsOf(withRadix.getSkus())).toEqual(['sku-high', 'sku-low']);
     expect(skuIDsOf(withRadix.getSkus(true))).toEqual(['sku-low', 'sku-high']);
 
-    // Instance TWO never saw a ceiling, so the third clause of the sort guard trips and the sorted
-    // projection is a PASS-THROUGH.
     const withoutRadix = new Product({ productID: 'product-2', skus: [...buildGraph()] });
 
     expect(skuIDsOf(withoutRadix.getSkus())).toEqual(['sku-high', 'sku-low']);
@@ -5568,17 +4913,17 @@ describe('A2: every memo is request-scoped, and no state crosses instances', () 
   });
 
   it('B19.3 - the memos that were NOT ported have no memo to isolate, and none is invented', () => {
-    // THREE LEGACY MEMOS HAVE NO SHIPPED COUNTERPART, and the honest treatment is to assert the
-    // absence rather than manufacture a cache so something can be isolated: `title`
-    // [model/entity/Product.cfc:L541-L544] (C3, reaches `hibachiUtilityService`, not a port);
-    // `salePriceDetailsForSkus` [L518-L521] (C7, the rounding rule lives in `src/services`, outside
-    // the domain layer); `unusedProductSubscriptionTerms` [L650-L652] (C12, refuses, because
-    // subscription handling is out of scope).
+    // TWO LEGACY MEMOS HAVE NO SHIPPED COUNTERPART, and the honest treatment is to assert the
+    // [model/entity/Product.cfc:L541-L544] (C3, reaches `hibachiUtilityService`, not a port); and
+    // `unusedProductSubscriptionTerms` [L650-L652] (C12, refuses, because subscription handling is
+    // out of scope).
+    //
+    // THE `salePriceDetailsForSkus` MEMO [L518-L521] IS DELIBERATELY NOT ON THIS LIST. It ships,
+    // under the branch-(a) decision recorded at B12.1, and its per-instance isolation is asserted in
+    // the case immediately below rather than as an absence here.
     expect(declaresMember('getTitle')).toBe(false);
-    expect(declaresMember('getSalePriceDetailsForSkus')).toBe(false);
 
-    // The third DOES ship - it refuses instead of memoizing, so there is no cached rejection to
-    // leak either.
+    // The second DOES ship - it refuses instead of memoizing, so there is no cached rejection to
     const first = new Product({ productID: 'product-1' });
     const second = new Product({ productID: 'product-2' });
 
@@ -5587,15 +4932,59 @@ describe('A2: every memo is request-scoped, and no state crosses instances', () 
       expect(second.getUnusedProductSubscriptionTerms()).rejects.toThrow(/product-2/),
     ]);
   });
+
+  it('B19.3 - the SHIPPED sale-price memo is per instance, and nothing crosses', async () => {
+    // A2 APPLIED TO THE ONE MEMO THAT REACHES A PORT. Two products, one shared resolver: each
+    // instance fills its OWN [model/entity/Product.cfc:L518] memo, so the resolver is consulted once
+    // PER PRODUCT and neither instance can serve the other's rows. Reproducing this memo as module
+    // state would be actively unsafe on a warm container - one product's sale prices would leak into
+    // another's.
+    const detailOne = {
+      skuID: 'sku-one',
+      discountLevel: 'sku' as const,
+      salePriceDiscountType: 'amountOff' as const,
+      salePrice: Money.fromDecimalString('1.11'),
+      promotionID: 'promotion-1',
+    };
+    const detailTwo = {
+      skuID: 'sku-two',
+      discountLevel: 'sku' as const,
+      salePriceDiscountType: 'amountOff' as const,
+      salePrice: Money.fromDecimalString('2.22'),
+      promotionID: 'promotion-2',
+    };
+    const asked: string[] = [];
+    const salePriceResolver = {
+      getSalePriceDetailsForProductSkus: (productID: string) => {
+        asked.push(productID);
+        return Promise.resolve(
+          productID === 'product-1' ? { 'sku-one': detailOne } : { 'sku-two': detailTwo },
+        );
+      },
+    };
+
+    const firstProduct = new Product({ productID: 'product-1', salePriceResolver });
+    const secondProduct = new Product({ productID: 'product-2', salePriceResolver });
+
+    expect(await firstProduct.getSkuSalePriceDetails('sku-one')).toBe(detailOne);
+    expect(await secondProduct.getSkuSalePriceDetails('sku-two')).toBe(detailTwo);
+
+    // Neither instance sees the other's row, and re-reading adds no third reach.
+    expect(await firstProduct.getSkuSalePriceDetails('sku-two')).toBeUndefined();
+    expect(await secondProduct.getSkuSalePriceDetails('sku-one')).toBeUndefined();
+    expect(asked).toEqual(['product-1', 'product-2']);
+  });
 });
 
-// --- B20: the async boundary and structural parity -------------------------
-// THE RULE, STATED ONCE AND APPLIED WITHOUT EXCEPTION: a method is `async` IF AND ONLY IF its
-// legacy body reaches the DAO or the ORM. Methods that only traverse already-materialized
-// associations, or that perform pure arithmetic, stay synchronous. That is why
-// `getPriceByCurrencyCode` stays sync on `Sku` and why `getSkus` stays sync here. Four of the six
-// delegations are sync; `getLivePrice` [model/entity/Product.cfc:L582] and `getCurrentAccountPrice`
-// [L588] are async because the sku-side accessors they delegate to reach a repository.
+// --- the async boundary and structural parity ---------------------------------------------------
+// THE RULE, WITH ITS ONE EXCEPTION STATED: a method is `async` when its legacy body reaches the DAO
+// or the ORM AND the port still has to reach a repository to answer it. Methods that only traverse
+// already-materialized associations, or that perform pure arithmetic, stay synchronous - which is why
+// `getPriceByCurrencyCode` stays sync on `Sku` and why `getSkus` stays sync here even though the
+// legacy walked a lazy Hibernate collection: the repository materialized the association at hydration
+// time, so no I/O remains at call time. Four of the six delegations are sync; `getLivePrice`
+// [model/entity/Product.cfc:L582] and `getCurrentAccountPrice` [L588] are async because the sku-side
+// accessors they delegate to still reach a repository.
 
 describe('the async boundary and structural parity with the legacy component', () => {
   it('B20.1 - the TEN async members are exactly the ones whose legacy bodies reach a port', () => {
@@ -5619,8 +5008,6 @@ describe('the async boundary and structural parity with the legacy component', (
       subscriptionTermProvider: new SubscriptionTermProviderDouble(),
     });
 
-    // Each returns a THENABLE - the only structural signal of async-ness surviving compilation,
-    // since the keyword itself is erased.
     const promiseReturning: ReadonlyArray<readonly [string, unknown]> = [
       ['getSkuBySelectedOptions', subject.getSkuBySelectedOptions('option-1')],
       ['getSkusBySelectedOptions', subject.getSkusBySelectedOptions('option-1')],
@@ -5631,8 +5018,6 @@ describe('the async boundary and structural parity with the legacy component', (
       ['getTransactionExistsFlag', subject.getTransactionExistsFlag()],
       ['getBaseProductType', subject.getBaseProductType()],
       ['getAttributeSets', subject.getAttributeSets()],
-      // C23 - promise-returning WITHOUT the `async` keyword, counted here because a caller cannot
-      // tell the difference.
       ['getSkuSalePriceDetails', subject.getSkuSalePriceDetails('sku-1')],
     ];
 
@@ -5642,11 +5027,9 @@ describe('the async boundary and structural parity with the legacy component', (
       promiseReturning.map(([name, value]) => {
         expect(value, name).toBeInstanceOf(Promise);
 
-        // EVERY PROMISE IS SETTLED, so `no-floating-promises` is satisfied.
         return (value as Promise<unknown>).catch(() => undefined);
       }),
     ).then(() => {
-      // The eleventh promise-returning member, asserted separately because it REJECTS.
       return expect(subject.getUnusedProductSubscriptionTerms()).rejects.toThrow(
         /not available in this slice/,
       );
@@ -5654,9 +5037,6 @@ describe('the async boundary and structural parity with the legacy component', (
   });
 
   it('B20.1 - the synchronous members return VALUES, never thenables', () => {
-    // THE OTHER SIDE OF THE RULE. Making any of these async "for consistency" would break interface
-    // parity - a CFML caller reading `getOptionGroupCount()` got a number, not a future - and would
-    // force `await` into every call site that only walks a materialized array.
     const subject = new Product({
       productID: 'product-1',
       urlTitle: 'sync-title',
@@ -5692,7 +5072,6 @@ describe('the async boundary and structural parity with the legacy component', (
       expect(result).not.toBeInstanceOf(Promise);
     }
 
-    // And two representative values, so this is not merely a shape check.
     expect(subject.getOptionGroupCount()).toBe(1);
     expect(subject.getProductURL()).toBe(`/${URL_KEY_UNDER_TEST}/sync-title/`);
   });
@@ -5711,13 +5090,13 @@ describe('the async boundary and structural parity with the legacy component', (
     //   SwVendorProduct          [L89]
     //   SwPhysicalProduct        [L90]  the `physicals` collection, NOT `physicalCounts`
     //
-    // `SwPromoQual` and `SwPromoReward` are likewise the PHYSICAL names of the qualifier and reward
-    // tables [model/entity/PromotionQualifier.cfc:L49, model/entity/PromotionReward.cfc:L57] -
+    // `SwPromoQual` and `SwPromoReward` are likewise the PHYSICAL names of the qualifier table
+    // [model/entity/PromotionQualifier.cfc:L49] and the reward table
+    // [model/entity/PromotionReward.cfc:L57] -
     // "normalising" any of these to a spelled-out form would break every existing row.
     expect(ProductLegacyMetadata.table).toBe('SwProduct');
     expect(ProductLegacyMetadata.entityName).toBe('SlatwallProduct');
 
-    // No schema tooling of any kind is reachable from the entity.
     for (const absent of ['createTable', 'migrate', 'sync', 'getTableName', 'getDatasource']) {
       expect(declaresMember(absent)).toBe(false);
     }
@@ -5750,7 +5129,6 @@ describe('the async boundary and structural parity with the legacy component', (
     ]);
     expect(listLen(ProductLegacyMetadata.processContexts)).toBe(4);
 
-    // The four calculated properties all ship as accessors - the count is the assertion.
     const calculated = [
       'getCalculatedSalePrice',
       'getCalculatedQATS',
@@ -5763,30 +5141,15 @@ describe('the async boundary and structural parity with the legacy component', (
       expect(arityOf(member)).toBe(0);
     }
 
-    // The three eager associations are plain accessors, because eager IS materialized.
     for (const member of ['getBrand', 'getProductType', 'getDefaultSku']) {
       expect(declaresMember(member)).toBe(true);
     }
 
-    // B20.6 - the rbKey identifier survives as an INERT STRING CONSTANT.
     expect(ProductLegacyMetadata.brandOptionsNullRBKey).toBe('define.none');
     expect(ProductLegacyMetadata.productDescriptionFormFieldType).toBe('wysiwyg');
   });
 
   it('B20.5 - the CFML case-insensitive duplicate bindings collapse to ONE identifier each', () => {
-    // CFML COMPONENT LOOKUP AND `arguments` KEYS ARE CASE-INSENSITIVE, so the source spells the
-    // same thing several ways. THREE families exist in this file alone, and each collapses to a
-    // single TypeScript identifier WITHOUT any behaviour change - porting hazards, not further
-    // authorized divergences:
-    //   `optionService`  -> "OptionService" [L254], "optionService" [L341],
-    //                       'optionService' [L637] and [L644]
-    //   `productService` -> 'productService' [L132], "ProductService" [L173],
-    //                       "productService" [L367]
-    //   `arguments.Product` vs the `product` parameter, over in
-    //                       [model/entity/Brand.cfc:L101-L103]
-    // No lint rule is weakened to make any of this compile: `noUnusedLocals`, `eqeqeq`,
-    // `no-explicit-any`, `ban-ts-comment`, `consistent-type-imports`, the `no-unsafe-*` family and
-    // `no-restricted-imports` are all active over `tests/**`.
     const optionRepository = new OptionRepositoryDouble(
       [{ name: 'Option', value: 'option-1' }],
       [{ name: 'Group', value: 'group-1' }],
@@ -5804,7 +5167,6 @@ describe('the async boundary and structural parity with the legacy component', (
       ([options, groups]: [readonly ProductUnusedOption[], readonly ProductUnusedOption[]]) => {
         expect(options).toHaveLength(1);
         expect(groups).toHaveLength(1);
-        // Both legacy call sites - [L637] and [L644] - reached the SAME injected port.
         expect(optionRepository.unusedOptionsCalls).toHaveLength(1);
         expect(optionRepository.unusedOptionGroupsCalls).toHaveLength(1);
       },
@@ -5812,8 +5174,6 @@ describe('the async boundary and structural parity with the legacy component', (
   });
 
   it('B20.1 - the hydration input is a typed contract, not an untyped CFML struct', () => {
-    // C1 / E9. The legacy `populate(struct data)` accepted anything and resolved keys
-    // case-insensitively at runtime.
     const minimal: ProductHydrationInput = { productID: 'product-1' };
     const populated: ProductHydrationInput = {
       productID: 'product-2',
@@ -5843,13 +5203,9 @@ describe('the async boundary and structural parity with the legacy component', (
     expect(full.getActiveFlag()).toBe(true);
     expect(full.getPublishedFlag()).toBe(false);
 
-    // `publishedFlag` DEFAULTS TO FALSE while `activeFlag` HAS NO DEFAULT
-    // [model/entity/Product.cfc:L52-L58] - a real asymmetry, preserved through the `cfBoolean`
-    // coercion rather than normalised to one default.
     expect(new Product({ productID: 'product-3' }).getPublishedFlag()).toBe(false);
     expect(new Product({ productID: 'product-4' }).getActiveFlag()).toBe(false);
 
-    // The attribute-set projection type is likewise a named contract rather than a struct.
     const projection: ProductAttributeSet = {
       attributeSetID: 'set-1',
       attributeSetTypeSystemCode: 'astProduct',
@@ -5861,9 +5217,6 @@ describe('the async boundary and structural parity with the legacy component', (
   });
 
   it('B20.2 - every promise in this suite is awaited or settled, so nothing floats', () => {
-    // `no-floating-promises`, `await-thenable` AND `require-await` ARE ALL ACTIVE, and the
-    // discipline shows in the doubles: each returns `Promise.resolve(...)` from a NON-async method
-    // rather than being marked `async` with nothing to await.
     const subject = new Product({
       productID: 'product-1',
       skuRepository: new SkuRepositoryDouble([makeSkuFixture({ skuID: 'sku-1' })]),
@@ -5877,7 +5230,6 @@ describe('the async boundary and structural parity with the legacy component', (
       })
       .then((single: Sku | undefined) => {
         expect(single?.getSkuID()).toBe('sku-1');
-        // A rejecting path, settled rather than floated.
         return expect(
           new Product({ productID: 'product-2' }).getSkusBySelectedOptions('option-1'),
         ).rejects.toThrow(/sku repository/);
@@ -5924,8 +5276,6 @@ describe('empty-collection semantics: five rules, named individually', () => {
     expect(cfLen(bare.getCategoryIDs())).toBe(0);
     expect(listLen(bare.getCategoryIDs())).toBe(0);
 
-    // With one category the same accessor produces a single element with NO LEADING DELIMITER - the
-    // property the empty seed exists to protect.
     const withOne = new Product({
       productID: 'product-2',
       categories: [buildCategory('category-1')],
@@ -5953,13 +5303,10 @@ describe('empty-collection semantics: five rules, named individually', () => {
       expect(options).toEqual([]);
       expect(groups).toEqual([]);
 
-      // The gates that read them, and what an empty collection does to each.
       expect(PRODUCT_VALIDATION_SCHEMA.unusedProductOptions[0].minCollection).toBe(1);
       expect(PRODUCT_VALIDATION_SCHEMA.unusedProductOptionGroups[0].minCollection).toBe(1);
       expect(PRODUCT_VALIDATION_SCHEMA.unusedProductSubscriptionTerms[0].minCollection).toBe(1);
 
-      // `0 >= 1` is false three times over: `addOption`, `addOptionGroup` and `addSubscriptionTerm`
-      // are all unreachable on this product.
       expect(options.length >= 1).toBe(false);
       expect(groups.length >= 1).toBe(false);
     });
@@ -5976,11 +5323,8 @@ describe('empty-collection semantics: five rules, named individually', () => {
 
     const bare = new Product({ productID: 'product-1' });
 
-    // Every probe answers `false` against an empty collection - the exact legacy return.
     expect(bare.hasSku(makeSkuFixture({ skuID: 'sku-1' }))).toBe(false);
 
-    // And the five inverse many-to-many collections promotion membership reads are all `[]` rather
-    // than absent, so the probes compose without a null check.
     expect(bare.getPromotionRewards()).toEqual([]);
     expect(bare.getPromotionRewardExclusions()).toEqual([]);
     expect(bare.getPromotionQualifiers()).toEqual([]);
@@ -6013,7 +5357,6 @@ describe('empty-collection semantics: five rules, named individually', () => {
     expect(brand.getProducts()).toEqual([]);
     expect(brand.getProducts()).not.toBeUndefined();
 
-    // The same convention holds on this entity's own collections.
     const bare = new Product({ productID: 'product-1' });
     expect(bare.getSkus()).toEqual([]);
     expect(bare.getCategories()).toEqual([]);
@@ -6048,8 +5391,6 @@ describe('empty-collection semantics: five rules, named individually', () => {
     // C24 - AND A NON-EMPTY NON-NUMERIC STRING IS A CONVERSION ERROR, NOT `true`.
     expect(() => cfTruthy('category-1')).toThrow(/cannot convert the string/);
 
-    // Non-empty flips all three via the CORRECT idiom, and `cfLen` counts characters rather than
-    // list elements.
     const populated = new Product({
       productID: 'product-2',
       optionGroups: [buildOptionGroup('group-1', 1, 'GRP')],
@@ -6086,19 +5427,13 @@ describe('empty-collection semantics: five rules, named individually', () => {
       skus: [makeSkuFixture({ skuID: 'sku-1' })],
     });
     expect(cfTruthy(withSkus.getSkus().length)).toBe(true);
-    // Same answer - the branch ran, and its result was discarded.
     expect(withSkus.getSalePrice().toFixed2()).toBe('0.00');
   });
 
   it('B21.1 - the Product<->Sku fixture cycle is broken by the [] default, and graphs are explicit', () => {
-    // THE FIXTURE DAG IS LOCKED AND ACYCLIC: priceGroupFixtures -> productFixtures -> skuFixtures
-    // -> promotionFixtures / orderViewFixtures.
     const bareFixture = makeProductFixture({});
     expect(bareFixture.getSkus()).toEqual([]);
 
-    // SO ANY GRAPH IS WIRED BY HAND, in one of two explicit directions: (a) pass `skus` into the
-    // Product constructor, or (b) pass `product` into the sku fixture and let `Sku.setProduct`
-    // append.
     const viaConstructor = new Product({
       productID: 'product-1',
       skus: [makeSkuFixture({ skuID: 'sku-a' })],
@@ -6109,8 +5444,6 @@ describe('empty-collection semantics: five rules, named individually', () => {
     makeSkuFixture({ skuID: 'sku-b', product: viaFarSide });
     expect(skuIDsOf(viaFarSide.getSkus())).toEqual(['sku-b']);
 
-    // AND EXACTLY ONCE, not twice - `makeSkuFixture` calls `setProduct` a single time, and this
-    // product is SAVED, so the containment guard suppresses any second append.
     expect(viaFarSide.getSkus()).toHaveLength(1);
     expect(viaFarSide.isNew()).toBe(false);
   });

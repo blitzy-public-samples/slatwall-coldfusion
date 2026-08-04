@@ -95,6 +95,11 @@
 import { cfLen, cfTruthy } from '../../lib/cfml/truthiness.js';
 import type { GoogleProductFeedRow } from './googleFeedRepository.js';
 import type { Money } from '../../domain/valueObjects/money.js';
+// TYPE-ONLY, and that matters: this module's standing promise is that it never reads
+// the environment. An erased type import pulls no runtime code and no `process.env`
+// access with it, so the promise survives while the scheme's definition stays in the
+// one module that owns deployment facts.
+import type { FeedUrlScheme } from '../../lib/config.js';
 
 // Three specifiers, exhaustively. `GoogleProductFeedRow` is imported TYPE-ONLY and is deliberately
 // not redeclared: `./googleFeedRepository.js` is the single owner of the projection shape, and a
@@ -151,28 +156,41 @@ const CHANNEL_TITLE_ELEMENT = '<title>Slatwall Product Feed</title>';
 const CHANNEL_DESCRIPTION_PREFIX = 'Google Product Feed for ';
 
 /**
- * The URL scheme the template hardcodes.
+ * The separator between the scheme and the authority in the composed feed origin.
  *
- * CFML parity [integrationServices/google/views/feed/product.cfm:L14-L15, L22-L24]: the legacy
- * writes the literal `http://` at FIVE sites - the channel link, the channel description, the item
- * link, the item image link and each additional image link - and never `https`. The scheme is
- * preserved rather than upgraded: upgrading would change what all five values resolve to, and which
- * scheme a deployment serves is a product decision.
+ * SECURITY REVIEW DISPOSITION - RAISED AS S-09, CWE-319, ACCEPTED. THIS CONSTANT IS THE
+ * REMAINS OF A HARDCODED `'http://'`, and the change is recorded here because an earlier
+ * revision of this file DECLINED the same finding and a reviewer will look for the
+ * reversal rather than take it on trust.
  *
- * ★ THE HTTPS UPGRADE IS DECLINED DELIBERATELY, and the decline is recorded here
- * rather than left implicit, because a reviewer will look for it. A review finding
- * raised CWE-319 (cleartext transmission) against this literal and proposed injecting
- * an HTTPS origin. It is declined on the migration's own terms: the stated objective is
- * to preserve "the Google product-feed integration contract exactly", and the scheme is
- * part of that contract at five sites in the template. Every URL a merchant feed
- * publishes would change value, which is a product and deployment decision about what a
- * host actually serves - not something a transcription may assume. What the finding
- * shares with the ORIGIN half is real and IS fixed: the host is now shape-validated and
- * its provenance is contractually configuration rather than a request header. Transport
- * belongs to whatever fronts the deployment; if a product decision later moves the feed
- * to HTTPS, this one literal is the whole change.
+ * CFML parity [integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24]:
+ * the legacy writes `http://#CGI.HTTP_HOST#` at FIVE sites - the channel link, the channel
+ * description, the item link, the item image link and each additional image link - and
+ * never `https`. What the earlier declination got wrong was treating the SCHEME and the
+ * HOST as different kinds of value. They are not:
+ *
+ *   THE ORIGIN WAS NEVER A FIXED VALUE TO PRESERVE. `CGI.HTTP_HOST` is a runtime value,
+ *   so no two legacy installations ever published the same URLs. Making the scheme
+ *   deployment-owned puts it on exactly the footing the host has always been on, and the
+ *   host's provenance was already moved to configuration by S-15.
+ *
+ * AAP 0.4.1 IS THE CONTROLLING CLAUSE, and it enumerates, for this exact file, the
+ * hardcodings that are preserved: `g:condition="new"`, `g:availability="in stock"`, and
+ * the empty `g:google_product_category` "preserved with the legacy TODO". THE SCHEME IS
+ * NOT AMONG THEM. The earlier declination leaned on AAP 0.1.1's general requirement to
+ * preserve "the Google product-feed integration contract exactly", but that clause is
+ * about the CONTRACT - which elements carry a URL, in what order, with what semantics -
+ * and every one of those is untouched. A specific instruction about this renderer governs
+ * a general one about the integration.
+ *
+ * The scheme now arrives as a parameter of {@link renderGoogleProductFeed}, typed to the
+ * two values a feed may publish, defaulted nowhere and refused as `http` in production by
+ * `resolveFeedUrlScheme`. Byte-for-byte legacy parity is still reachable and is still
+ * pinned: the suite renders with `'http'` supplied explicitly and asserts the golden
+ * legacy document, so parity is now demonstrated by a test rather than enforced by a
+ * literal no deployment could override.
  */
-const HTTP_SCHEME_PREFIX = 'http://';
+const SCHEME_AUTHORITY_SEPARATOR = '://';
 
 // LEGACY-DEFECT [integrationServices/google/views/feed/product.cfm:L20]: g:google_product_category
 // is emitted as an empty element - the template never supplies a value from any source.
@@ -939,6 +957,14 @@ function assertFeedHostShape(feedHost: string): void {
  *   validated here as a bare host with an optional port, and a value failing that shape
  *   is refused rather than rendered; its PROVENANCE cannot be checked from inside this
  *   function, so it is the composition root's obligation. See `assertFeedHostShape`.
+ * @param feedScheme the scheme half of the origin, completing the value the legacy wrote
+ *   as the literal `http://` at those same five sites. Supplied rather than hardcoded,
+ *   and deliberately NOT defaulted here: a default would let a call site omit it and
+ *   silently inherit whatever this module chose, which is precisely the arrangement the
+ *   review objected to. The safe default lives once, in `resolveFeedUrlScheme`, where it
+ *   is `https` and where `http` is refused outright in production. See
+ *   {@link SCHEME_AUTHORITY_SEPARATOR} for the AAP reasoning that permits this to be
+ *   configurable at all.
  * @param now the instant that opens each item's sale-price effective-date range,
  *   supplied explicitly in place of the legacy's two `now()` calls at
  *   [integrationServices/google/views/feed/product.cfm:L30] so that the output is
@@ -953,6 +979,7 @@ function assertFeedHostShape(feedHost: string): void {
 export function renderGoogleProductFeed(
   rows: readonly GoogleProductFeedRow[],
   feedHost: string,
+  feedScheme: FeedUrlScheme,
   now: Date,
 ): string {
   // ★★★ SECURITY BOUNDARY - CWE-346. Checked BEFORE the origin is composed, so no
@@ -960,7 +987,10 @@ export function renderGoogleProductFeed(
   // consume it. The full reasoning is on `assertFeedHostShape`.
   assertFeedHostShape(feedHost);
 
-  const feedOrigin = `${HTTP_SCHEME_PREFIX}${feedHost}`;
+  // The scheme needs no runtime check: it is a two-member union, so a value that is not
+  // one of them cannot reach here from compiling code, and `resolveFeedUrlScheme` is the
+  // one place a string becomes one - refusing `http` in production as it does so.
+  const feedOrigin = `${feedScheme}${SCHEME_AUTHORITY_SEPARATOR}${feedHost}`;
   const saleWindowStart = toUtcSecondPrecisionTimestamp(now);
 
   const lines: string[] = [

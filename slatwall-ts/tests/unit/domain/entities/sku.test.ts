@@ -302,8 +302,9 @@ type SettingsCallLog = string[];
  * A recording stand-in for the settings port.
  *
  * The port declares `setting(name): string` and never `undefined`, so the table
- * is TOTAL over the four keys the shipped `SettingKey` union publishes
- * [model/service/SettingService.cfc:L178, L179, L221, L222]. The parameter is
+ * is TOTAL over the seven keys the shipped `SettingKey` union publishes
+ * [model/service/SettingService.cfc:L178, L179, L191, L192, L193, L221, L222] - the catch-all
+ * return below answers every key this sku never reads. The parameter is
  * typed `string` rather than the port's narrower union so that no port module
  * has to be imported; a function accepting `string` satisfies one declared to
  * accept a subset of `string`.
@@ -500,19 +501,19 @@ type SkuRepositoryCall = {
 };
 
 /**
- * A recording stand-in for the EIGHT-MEMBER sku repository port.
+ * A recording stand-in for the SEVEN-MEMBER sku repository port.
  *
- * ★ THE PORT LEDGER IS STILL THIRTEEN AND `skuRepository` NOW DECLARES EIGHT
- * MEMBERS. Nothing is added here to make `getStocksDeletableFlag` [L569] work:
- * that member lives on `model/service/SkuService.cfc:L281`, not on the DAO, and
- * therefore does not exist on the port. See the D28/H4 block below.
+ * ★ THE PORT LEDGER IS THIRTEEN AND `skuRepository` IS LOCKED AT SEVEN MEMBERS.
+ * Nothing is added here to make `getStocksDeletableFlag` [L569] work: that member
+ * lives on `model/service/SkuService.cfc:L281`, not on the DAO, and therefore does
+ * not exist on the port. See the D28/H4 block below.
  *
- * ★ QUOTE-THEN-REVISE. This block read "the SEVEN-MEMBER sku repository port"
- * and "`skuRepository` IS LOCKED AT SEVEN". The port has since grown `saveSkus`,
- * the collection form of `saveSku`, which reproduces the Hibernate flush that
- * [model/service/ProductService.cfc:L216-L233] depended on. That is a WRITE
- * member and it changes nothing about the absent read: the refusal asserted below
- * is still a refusal, and no member was added to soften it.
+ * ★ THIS BLOCK READ "EIGHT-MEMBER" FOR ONE REVISION. The port briefly carried a
+ * `saveSkus` collection form, and this stand-in mirrored it. That member has been
+ * removed - the port's own header fixes the arithmetic at seven and locks it - so the
+ * mirror is back to seven. The observation made at the time still holds: a WRITE
+ * member never softened the absent READ, and the refusal asserted below was a refusal
+ * at seven, at eight, and at seven again.
  */
 function makeRecordingSkuRepository(
   selectedOptionsResult: readonly Sku[],
@@ -526,7 +527,6 @@ function makeRecordingSkuRepository(
   getProductSkus: (product: Product, fetchOptions: boolean) => Promise<Sku[]>;
   getSortedProductSkusID: (productID: string) => Promise<string[]>;
   saveSku: (sku: Sku) => Promise<Sku>;
-  saveSkus: (skus: readonly Sku[]) => Promise<Sku[]>;
 } {
   return {
     getTransactionExistsFlag(productID?: string, skuID?: string): Promise<boolean> {
@@ -562,18 +562,6 @@ function makeRecordingSkuRepository(
     saveSku(sku: Sku): Promise<Sku> {
       log.push({ member: 'saveSku', args: [sku.getSkuID()] });
       return Promise.resolve(sku);
-    },
-
-    saveSkus(skus: readonly Sku[]): Promise<Sku[]> {
-      // Recorded as one call carrying every identifier, so a suite can see both THAT
-      // the batch member was reached and WITH WHAT - which a per-SKU log entry would
-      // have obscured by looking identical to a loop over `saveSku`. No entity method
-      // reaches it; the entry exists so that if one ever does, the log says so.
-      log.push({
-        member: 'saveSkus',
-        args: skus.map((member: Sku): string => member.getSkuID()),
-      });
-      return Promise.resolve([...skus]);
     },
   };
 }
@@ -2940,25 +2928,24 @@ describe('Sku.getStocksDeletableFlag — D28/H4 [model/entity/Sku.cfc:L567-L572]
 
   it('★ names the reason precisely: the member lives on the SERVICE, not the DAO', () => {
     // JUDGMENT CALL: NO port member was added to make this pass. The ledger stays
-    // at thirteen ports and `skuRepository` declares eight members —
+    // at thirteen ports and `skuRepository` declares seven members —
     // getTransactionExistsFlag, getSkuBySkuCode, getSkusBySelectedOptions,
-    // searchSkusByProductType, getProductSkus, getSortedProductSkusID, saveSku,
-    // saveSkus. `getSkuStocksDeletableFlag` is a SkuService method, the stock
-    // subsystem is out of scope, and inventing a member for it would import an
-    // out-of-scope aggregate through the back door.
+    // searchSkusByProductType, getProductSkus, getSortedProductSkusID, saveSku.
+    // `getSkuStocksDeletableFlag` is a SkuService method, the stock subsystem is out
+    // of scope, and inventing an EIGHTH member for it would import an out-of-scope
+    // aggregate through the back door.
     //
-    // ★ QUOTE-THEN-REVISE, AND THE POINT SURVIVES INTACT. This said the port
-    // "stays at SEVEN members" and that "inventing an EIGHTH member would import an
-    // out-of-scope aggregate". The eighth member that arrived is `saveSkus`, the
-    // collection form of `saveSku`, which imports nothing: it takes `Sku` entities
-    // this slice already models and reproduces the ORM flush that
-    // [model/service/ProductService.cfc:L216-L233] relied on. What was forbidden was
-    // a member that would drag the STOCK subsystem in, and that is still forbidden
-    // and still absent — which is why this case's assertions are unchanged.
+    // ★ THE COUNT MOVED AWAY FROM SEVEN AND BACK, AND THE POINT NEVER MOVED. For one
+    // revision the port carried a `saveSkus` collection form and this comment argued
+    // that the eighth member imported nothing, taking only `Sku` entities this slice
+    // already models. That member has been removed, so the original wording stands
+    // again verbatim. What was forbidden throughout was a member that would drag the
+    // STOCK subsystem in, and that is still forbidden and still absent — which is why
+    // this case's assertions never changed.
     const sku = makeSkuFixture();
 
     expect(() => sku.getStocksDeletableFlag()).toThrow(/getSkuStocksDeletableFlag/);
-    expect(() => sku.getStocksDeletableFlag()).toThrow(/eight-member SkuRepository port/);
+    expect(() => sku.getStocksDeletableFlag()).toThrow(/seven-member SkuRepository port/);
 
     // A hydrated repository changes nothing — the gap is in the CONTRACT, not the
     // wiring, which is exactly why a refusal rather than a stub is honest.

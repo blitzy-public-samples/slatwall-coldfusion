@@ -98,6 +98,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderGoogleProductFeed } from '../../../../src/integrations/google/rssFeedRenderer.js';
 import type { GoogleProductFeedRow } from '../../../../src/integrations/google/googleFeedRepository.js';
+import type { FeedUrlScheme } from '../../../../src/lib/config.js';
 import { Money } from '../../../../src/domain/valueObjects/money.js';
 
 // Four specifiers, and the list is exhaustive.
@@ -134,16 +135,44 @@ import { Money } from '../../../../src/domain/valueObjects/money.js';
  * absence of any network call directly.
  *
  * ★ THE FORM MATTERS AS WELL AS THE VALUE. This is a bare authority - no scheme, no
- * userinfo, no path, no query, no fragment and no surrounding whitespace - because
- * that is the only shape the composition boundary will hand over. Deriving and
- * allow-listing a trusted authority is `toTrustedFeedHost`'s job in
- * `src/integrations/google/googleFeedService.ts`, and every other shape is refused
- * there rather than escaped here.
+ * userinfo, no path, no query, no fragment and no surrounding whitespace - because that is
+ * the only shape THIS FUNCTION accepts: `assertFeedHostShape` refuses every other shape
+ * before an origin is composed, and it refuses by throwing rather than by escaping.
+ *
+ * ★★ THIS PARAGRAPH ONCE ATTRIBUTED THAT REFUSAL TO A `toTrustedFeedHost` ALLOW-LIST MINT
+ * IN `src/integrations/google/googleFeedService.ts`, AND NO SUCH SYMBOL EXISTS. The mint was
+ * part of an unplanned host-policy subsystem in the feed service and has been withdrawn -
+ * that module's authority excludes an allow-list by name and assigns authorization to an API
+ * Gateway owned outside this subtree. Nothing was lost from this file, which is the whole
+ * reason the withdrawal was safe: the grammar was always enforced here as well, so the
+ * service was never the only guard, and the shape check simply stopped being duplicated.
+ *
+ * What the withdrawal does leave unowned is PROVENANCE. A shape check cannot tell a
+ * configured authority from an attacker's, so supplying a CONFIGURED host is an obligation on
+ * the composition root, stated there and on this function's parameter.
  */
 const FEED_HOST = 'feed.example.invalid';
 
-/** The origin the subject composes from {@link FEED_HOST} and its hardcoded scheme. */
-const FEED_ORIGIN = `http://${FEED_HOST}`;
+/**
+ * The scheme this suite renders with by default, and it is deliberately the LEGACY one.
+ *
+ * ★★ THIS CONSTANT IS WHY THE `http://` LITERALS THROUGHOUT THIS FILE ARE STILL CORRECT
+ * AFTER FINDING S-09. The subject no longer hardcodes a scheme - it takes one, and the
+ * deployment default in `resolveFeedUrlScheme` is now `https`. Every case below that
+ * asserts an `http://` URL is asserting BYTE-FOR-BYTE LEGACY PARITY, which the AAP
+ * requires to stay demonstrable, so those cases keep supplying `'http'` explicitly and
+ * keep asserting the legacy document exactly.
+ *
+ * Rewriting them to `https` would have been the easy edit and the wrong one: it would
+ * have deleted the only evidence that this renderer can still reproduce
+ * [integrationServices/google/views/feed/product.cfm] verbatim. The https behaviour is
+ * pinned separately, by the S-09 block at the end of this file, which renders the SAME
+ * rows under both schemes and asserts that the scheme is the ONLY difference.
+ */
+const FEED_SCHEME: FeedUrlScheme = 'http';
+
+/** The origin the subject composes from {@link FEED_HOST} and {@link FEED_SCHEME}. */
+const FEED_ORIGIN = `${FEED_SCHEME}://${FEED_HOST}`;
 
 /**
  * The image path the data-access half substitutes when a SKU or product image row
@@ -275,7 +304,7 @@ function makeFullyPopulatedFeedRow(
 
 /** Renders a whole document from the given rows, with the fixed host and instant. */
 function renderDocument(rows: readonly GoogleProductFeedRow[]): string {
-  return renderGoogleProductFeed(rows, FEED_HOST, RANGE_START_INSTANT);
+  return renderGoogleProductFeed(rows, FEED_HOST, FEED_SCHEME, RANGE_START_INSTANT);
 }
 
 /** Renders a single-item document from one ordinary row plus overrides. */
@@ -848,9 +877,9 @@ describe('renderGoogleProductFeed - element 16, the unguarded shipping weight', 
   //   skuShippingWeightUnitCode  [model/service/SettingService.cfc:L233]  "lb"
   //
   // AND ITS BINDING RECONCILIATION. The settings contract at
-  // `src/domain/ports/settingsProvider.ts` is locked to a FOUR-key union that
+  // `src/domain/ports/settingsProvider.ts` is locked to a SEVEN-key union that
   // EXCLUDES both shipping-weight keys, and the port set is locked at thirteen, so
-  // admitting a fifth key or adding a fourteenth port would be a scope
+  // admitting an eighth key or adding a fourteenth port would be a scope
   // violation. That contract is therefore NOT extended, NOT reshaped and NOT
   // imported by this suite - a hard ban. Both weight values instead arrive as
   // already-resolved STRING FIELDS on the read-only projection, which is the right
@@ -999,6 +1028,7 @@ describe('renderGoogleProductFeed - the five-entity XML escaper', () => {
         }),
       ],
       FEED_HOST,
+      FEED_SCHEME,
       RANGE_START_INSTANT,
     );
 
@@ -1007,12 +1037,15 @@ describe('renderGoogleProductFeed - the five-entity XML escaper', () => {
     // query-bearing host is not the same thing as accepting one, and a suite that
     // demonstrates the second while testing the first BLESSES an untrusted input: a
     // host is an authority, it has no query component, and every absolute address in
-    // this document is composed from it. The host is a trusted, normalised authority
-    // now - refused unless it parses as one and appears on an allow-list, at
-    // `toTrustedFeedHost` in `src/integrations/google/googleFeedService.ts` - so the
-    // shape this case used to pass cannot reach the renderer through the sanctioned
-    // path at all, and the refusal itself is pinned by
-    // `tests/unit/integrations/google/googleFeedService.test.ts`.
+    // this document is composed from it. A query-bearing host is refused OUTRIGHT now, by
+    // `assertFeedHostShape` in the module under test, before any origin is composed - so
+    // the shape this case used to pass cannot reach the composition at all, and the
+    // refusal is pinned by the host-shape cases further down this file.
+    //
+    // ★ AN EARLIER REVISION ATTRIBUTED THAT REFUSAL TO A `toTrustedFeedHost` ALLOW-LIST
+    // MINT IN `src/integrations/google/googleFeedService.ts`. That mint was an unplanned
+    // host-policy subsystem and has been withdrawn; the refusal recorded above never
+    // depended on it, because this module performs the check itself.
     //
     // The ESCAPING this case exists for is unchanged and is now carried entirely by
     // the ROW, which is where an ampersand genuinely originates: a SKU code, a title,
@@ -1358,6 +1391,7 @@ describe('renderGoogleProductFeed - code points XML 1.0 forbids', () => {
         }),
       ],
       FEED_HOST,
+      FEED_SCHEME,
       RANGE_START_INSTANT,
     );
 
@@ -1563,8 +1597,18 @@ describe('renderGoogleProductFeed - elements 12 and 13, the gated sale block', (
       skuSalePrice: Money.fromDecimalString('9.5'),
       salePriceExpirationDateTime: SALE_EXPIRATION_INSTANT,
     });
-    const earlier = renderGoogleProductFeed([row], FEED_HOST, new Date('2020-02-29T00:00:00.000Z'));
-    const later = renderGoogleProductFeed([row], FEED_HOST, new Date('2031-11-15T06:07:08.000Z'));
+    const earlier = renderGoogleProductFeed(
+      [row],
+      FEED_HOST,
+      FEED_SCHEME,
+      new Date('2020-02-29T00:00:00.000Z'),
+    );
+    const later = renderGoogleProductFeed(
+      [row],
+      FEED_HOST,
+      FEED_SCHEME,
+      new Date('2031-11-15T06:07:08.000Z'),
+    );
 
     // Two fixed instants, both far from the moment this suite runs, each reaching the output
     // verbatim.
@@ -1680,6 +1724,7 @@ describe('renderGoogleProductFeed - elements 12 and 13, the gated sale block', (
         }),
       ],
       FEED_HOST,
+      FEED_SCHEME,
       new Date(Number.NaN),
     );
 
@@ -1922,22 +1967,30 @@ describe('renderGoogleProductFeed - purity and the host argument', () => {
     expect(itemElementBody(document, 'g:additional_image_link').startsWith(FEED_ORIGIN)).toBe(true);
   });
 
-  it('preserves the http scheme rather than upgrading it', () => {
+  it('reproduces the legacy http scheme EXACTLY when it is the one supplied', () => {
     const document = renderDocument([makeFullyPopulatedFeedRow()]);
 
-    // CFML parity [integrationServices/google/views/feed/product.cfm:L14-L15, L22-L24]:
+    // CFML parity [integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24]:
     // the literal is `http://` at every one of the five sites and never `https`.
     //
-    // ★ THE UPGRADE TO `https` IS DECLINED DELIBERATELY, and the decline is recorded
-    // here as well as on `HTTP_SCHEME_PREFIX` so a reviewer meets it from either side.
-    // AAP 0.1.1 states the objective as preserving "the Google product-feed
-    // integration contract exactly", and the scheme is part of that contract at all
-    // five sites: a Merchant Center account whose configured item URLs are `http`
-    // would see every one of them change at once. Which scheme a deployment ought to
-    // serve is a product decision, not a transcription choice, so this port keeps the
-    // legacy literal and fixes the half of the finding that IS a defect - that the
-    // origin was never validated at all - in `assertFeedHostShape` instead.
+    // ★★ THIS CASE WAS ONCE NAMED "preserves the http scheme rather than upgrading it" AND
+    // ARGUED THAT THE UPGRADE WAS DECLINED. That argument is struck, and the case is kept
+    // in the inverted role it can still play honestly. The declination leaned on AAP 0.1.1's
+    // general requirement to preserve "the Google product-feed integration contract
+    // exactly"; AAP 0.4.1 is more specific about THIS FILE and enumerates the hardcodings
+    // that are preserved - `g:condition="new"`, `g:availability="in stock"` and the empty
+    // `g:google_product_category`. THE SCHEME IS NOT AMONG THEM. The old comment also
+    // cited `HTTP_SCHEME_PREFIX`, a constant that no longer exists, which is how a stale
+    // annotation announces itself.
+    //
+    // What survives, and is now the case's whole point: given `'http'` this renderer
+    // reproduces the legacy document byte for byte. Legacy parity is therefore still
+    // demonstrable - it is just demonstrated by a supplied value rather than enforced by a
+    // literal no deployment could override. The https behaviour is pinned by the S-09 block
+    // below.
     expect(document).not.toContain('https');
+    // Six, not five: the five origin sites plus the `xmlns:g` namespace URI, which is an
+    // identifier rather than a transport and is asserted separately never to move.
     expect(occurrenceCount(document, 'http://')).toBe(6);
   });
 
@@ -2015,10 +2068,14 @@ describe('renderGoogleProductFeed - purity and the host argument', () => {
     // ADDING A GUARD WOULD ADD BEHAVIOUR THE LEGACY NEVER HAD."
     //
     // It then read "VALIDATES NOTHING ITSELF, BECAUSE THE HOST IT IS GIVEN HAS ALREADY
-    // BEEN VALIDATED", which kept the empty-host render and moved the justification: the
-    // refusal had been added at `toTrustedFeedHost` in
+    // BEEN VALIDATED", which kept the empty-host render and moved the justification: a
+    // refusal had been added at a `toTrustedFeedHost` allow-list mint in
     // `src/integrations/google/googleFeedService.ts`, so this function was described as
-    // pure, policy-free, and interpolating exactly what it was handed.
+    // pure, policy-free, and interpolating exactly what it was handed. THAT MINT HAS SINCE
+    // BEEN WITHDRAWN - an unplanned host-policy subsystem in a module whose authority
+    // excludes an allow-list by name - which is a second, independent reason the
+    // justification could not stand: the guard it deferred to no longer exists, and this
+    // function's own check is the only one there is.
     //
     // Both statements ABOUT THE LEGACY are accurate
     // [integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24]. The
@@ -2045,11 +2102,13 @@ describe('renderGoogleProductFeed - purity and the host argument', () => {
     const plain = renderGoogleProductFeed(
       [makeFeedRow()],
       'shop.example.invalid',
+      FEED_SCHEME,
       RANGE_START_INSTANT,
     );
     const ported = renderGoogleProductFeed(
       [makeFeedRow()],
       'shop.example.invalid:8443',
+      FEED_SCHEME,
       RANGE_START_INSTANT,
     );
 
@@ -2095,7 +2154,7 @@ describe('renderGoogleProductFeed - feed origin validation', () => {
   /** Renders with the supplied host and returns the raised error, or throws if none was. */
   function captureOriginRefusal(feedHost: string): Error {
     try {
-      renderGoogleProductFeed([makeFeedRow()], feedHost, RANGE_START_INSTANT);
+      renderGoogleProductFeed([makeFeedRow()], feedHost, FEED_SCHEME, RANGE_START_INSTANT);
     } catch (error: unknown) {
       if (error instanceof Error) {
         return error;
@@ -2228,6 +2287,7 @@ describe('renderGoogleProductFeed - feed origin validation', () => {
       rendered = renderGoogleProductFeed(
         [makeFullyPopulatedFeedRow(), makeFeedRow()],
         'http://evil.invalid/x',
+        FEED_SCHEME,
         RANGE_START_INSTANT,
       );
     } catch {
@@ -2238,7 +2298,12 @@ describe('renderGoogleProductFeed - feed origin validation', () => {
   });
 
   it('accepts an IPv6 literal in brackets, so an IPv6 deployment is not refused', () => {
-    const document = renderGoogleProductFeed([makeFeedRow()], '[2001:db8::1]', RANGE_START_INSTANT);
+    const document = renderGoogleProductFeed(
+      [makeFeedRow()],
+      '[2001:db8::1]',
+      FEED_SCHEME,
+      RANGE_START_INSTANT,
+    );
 
     // RFC 3986 requires the brackets, which is also what keeps the colon-rich form
     // from being read as a host-and-port. The unbracketed form is refused.
@@ -2253,6 +2318,7 @@ describe('renderGoogleProductFeed - feed origin validation', () => {
     const document = renderGoogleProductFeed(
       [makeFeedRow()],
       'feed_internal.example.invalid',
+      FEED_SCHEME,
       RANGE_START_INSTANT,
     );
 
@@ -2267,7 +2333,12 @@ describe('renderGoogleProductFeed - feed origin validation', () => {
     // perfectly well-formed host and renders cleanly. Ensuring the value came from
     // CONFIGURATION rather than from a request `Host` header is the composition
     // root's obligation, stated on the parameter and enforced at the service seam.
-    const document = renderGoogleProductFeed([makeFeedRow()], 'evil.invalid', RANGE_START_INSTANT);
+    const document = renderGoogleProductFeed(
+      [makeFeedRow()],
+      'evil.invalid',
+      FEED_SCHEME,
+      RANGE_START_INSTANT,
+    );
 
     expect(documentLines(document)[4]).toBe('    <link>http://evil.invalid</link>');
   });
@@ -2388,5 +2459,142 @@ describe('renderGoogleProductFeed - the complete rendered document', () => {
         '</rss>',
       ].join('\n'),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The URL scheme is deployment-owned (S-09)
+//
+// A security review raised finding S-09, MEDIUM, CWE-319: product, image and channel URLs were
+// emitted with a hardcoded `http://`, so an on-path attacker could rewrite the links a shopper
+// follows out of a merchant feed. Its required resolution was to "Emit HTTPS-only URLs from a
+// deployment-owned canonical origin; refuse insecure origin configuration."
+//
+// ★★ AN EARLIER REVISION OF THIS PORT DECLINED THAT FINDING, AND THE DECLINATION WAS WRONG. It
+// leaned on AAP 0.1.1's general requirement to preserve "the Google product-feed integration
+// contract exactly". AAP 0.4.1 speaks specifically about THIS renderer and enumerates the
+// hardcodings that are preserved - `g:condition="new"`, `g:availability="in stock"` and the empty
+// `g:google_product_category` "preserved with the legacy TODO". THE SCHEME IS NOT AMONG THEM, and a
+// specific instruction governs a general one.
+//
+// The decisive legacy fact is that there was never a fixed origin to preserve:
+// [integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24] read
+// `http://#CGI.HTTP_HOST#`, a RUNTIME value, so no two installations ever published the same URLs.
+// The scheme is now on exactly the footing the host has always been on.
+//
+// NET-NEW COVERAGE per AAP 0.6.6 - there is no legacy antecedent, because CFML had no way to vary
+// a literal. What is NOT net-new, and is deliberately left untouched, is every case above that
+// asserts an `http://` URL: those pin byte-for-byte legacy parity and keep doing so by supplying
+// `'http'` explicitly. See {@link FEED_SCHEME}.
+// ---------------------------------------------------------------------------
+
+describe('renderGoogleProductFeed - the scheme is supplied, not assumed (S-09)', () => {
+  /** The same row under both schemes, so the ONLY variable is the scheme. */
+  function renderUnderBothSchemes(): { readonly http: string; readonly https: string } {
+    const rows = [makeFullyPopulatedFeedRow()];
+
+    return {
+      http: renderGoogleProductFeed(rows, FEED_HOST, 'http', RANGE_START_INSTANT),
+      https: renderGoogleProductFeed(rows, FEED_HOST, 'https', RANGE_START_INSTANT),
+    };
+  }
+
+  it('★★ writes https into all five URL sites when https is the scheme supplied', () => {
+    const document = renderGoogleProductFeed(
+      [makeFullyPopulatedFeedRow()],
+      FEED_HOST,
+      'https',
+      RANGE_START_INSTANT,
+    );
+    const secureOrigin = `https://${FEED_HOST}`;
+
+    // All five sites the legacy interpolated, each now secure: the channel link, the channel
+    // description, and the item's link, image link and additional image link.
+    expect(occurrenceCount(document, secureOrigin)).toBe(5);
+    expect(documentLines(document)[4]).toBe(`    <link>${secureOrigin}</link>`);
+    expect(documentLines(document)[5]).toBe(
+      `    <description>Google Product Feed for ${secureOrigin}</description>`,
+    );
+    expect(itemElementBody(document, 'link').startsWith(secureOrigin)).toBe(true);
+    expect(itemElementBody(document, 'g:image_link').startsWith(secureOrigin)).toBe(true);
+    expect(itemElementBody(document, 'g:additional_image_link').startsWith(secureOrigin)).toBe(
+      true,
+    );
+  });
+
+  it('★★ changes NOTHING ELSE: the scheme is the only difference between the two documents', () => {
+    const { http, https } = renderUnderBothSchemes();
+
+    // THIS IS THE CASE THAT MAKES THE FIX SAFE. Element set, element order, indentation,
+    // escaping, the sale window, the three preserved hardcodings and every body but the five
+    // URLs are identical - so rewriting the https document's origins back to http must
+    // reproduce the legacy document EXACTLY. If the change had disturbed any other byte, this
+    // fails.
+    expect(https.split(`https://${FEED_HOST}`).join(`http://${FEED_HOST}`)).toBe(http);
+
+    // And it really did differ, so the assertion above is not comparing a document with itself.
+    expect(https).not.toBe(http);
+    expect(documentLines(https)).toHaveLength(documentLines(http).length);
+  });
+
+  it('★★ leaves the xmlns:g NAMESPACE URI on http, because it is an identifier and not a transport', () => {
+    const { https } = renderUnderBothSchemes();
+
+    // ★ THE DISTINCTION THIS CASE EXISTS TO PROTECT. `http://base.google.com/ns/1.0` is an XML
+    // NAMESPACE NAME: it is compared byte for byte by every consumer and is never dereferenced.
+    // "Upgrading" it would silently change the document's namespace and break the feed contract
+    // outright - which is the one place in this file where an https-everywhere sweep would have
+    // done real damage. It stays exactly as the legacy wrote it.
+    expect(https).toContain(`xmlns:g="${GOOGLE_NAMESPACE_URI}"`);
+    expect(occurrenceCount(https, GOOGLE_NAMESPACE_URI)).toBe(1);
+
+    // Every absolute address is still accounted for: five secure origins plus the namespace.
+    const urls = absoluteUrls(https);
+
+    expect(urls).toHaveLength(6);
+    expect(urls.filter((url) => url === GOOGLE_NAMESPACE_URI)).toHaveLength(1);
+    expect(urls.filter((url) => url.startsWith(`https://${FEED_HOST}`))).toHaveLength(5);
+  });
+
+  it('still refuses a malformed host under https, so the two guards are independent', () => {
+    // The scheme becoming configurable must not weaken the S-15 host check. A host carrying its
+    // own scheme would otherwise compose `https://http://x`.
+    expect(() =>
+      renderGoogleProductFeed(
+        [makeFeedRow()],
+        'http://evil.invalid/x',
+        'https',
+        RANGE_START_INSTANT,
+      ),
+    ).toThrow(/no scheme/);
+  });
+
+  it('★ will not COMPILE without a scheme, which is why no default lives in the renderer', () => {
+    // NET-NEW, and a TYPE-LEVEL assertion on purpose. A default parameter here would let a call
+    // site omit the scheme and silently inherit whatever this module chose - precisely the
+    // arrangement the review objected to. The safe default lives once, in `resolveFeedUrlScheme`,
+    // where it is `https` and where `http` is refused in production.
+    //
+    // `@ts-expect-error` fails the build if the error ever stops being reported, so this cannot rot
+    // into a no-op the way a commented-out assertion would.
+    expect(() =>
+      // @ts-expect-error - the scheme is REQUIRED; omitting it must not fall back to a default.
+      renderGoogleProductFeed([makeFeedRow()], FEED_HOST, RANGE_START_INSTANT),
+    ).toThrow();
+  });
+
+  it('★ accepts only the two schemes a feed may publish, and no other string', () => {
+    // The scheme is a two-member union, so `ftp` and a scheme carrying its own separator are
+    // COMPILE errors rather than runtime ones. That is what removes the need for a runtime check
+    // in the renderer, and it is asserted rather than assumed.
+    expect(() =>
+      // @ts-expect-error - 'ftp' is not a FeedUrlScheme.
+      renderGoogleProductFeed([makeFeedRow()], FEED_HOST, 'ftp', RANGE_START_INSTANT),
+    ).not.toThrow();
+
+    expect(() =>
+      // @ts-expect-error - a scheme must not carry the separator; the renderer adds it.
+      renderGoogleProductFeed([makeFeedRow()], FEED_HOST, 'https://', RANGE_START_INSTANT),
+    ).not.toThrow();
   });
 });

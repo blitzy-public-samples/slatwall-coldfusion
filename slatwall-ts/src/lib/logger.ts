@@ -522,6 +522,18 @@ const LEGIBLE_DIAGNOSTIC_KEYS: ReadonlySet<string> = new Set([
   // opaque identifiers in the set above.
   'skucode',
   'currencycode',
+  // The SAME datum as `currencyCode` above under the two qualified names a
+  // CONVERSION needs, because one context object has to name both ends of it and
+  // cannot spell either of them `currencyCode`. Admitting these concedes nothing
+  // the entry above has not already conceded: a three-letter ISO currency code is
+  // published on every storefront that quotes a price in it.
+  //
+  // `src/handlers/bootstrap.ts` publishes exactly this pair when a conversion
+  // passes through unconverted - finding S-20's observability half. The amount is
+  // deliberately NOT here: it is a customer's price, and the codes are the whole
+  // operator-actionable signal without it.
+  'originalcurrencycode',
+  'converttocurrencycode',
   'amounttype',
   'discountamount',
   'quantity',
@@ -538,6 +550,12 @@ const LEGIBLE_DIAGNOSTIC_KEYS: ReadonlySet<string> = new Set([
   'completedat',
   'durationms',
   'elapsedms',
+  // An ELAPSED SPAN on the same footing as the two durations above it, differing
+  // only in unit and in what it is measured from. `src/handlers/bootstrap.ts`
+  // publishes it for the age of the configured currency rate table, where it is
+  // the entire signal distinguishing a fresh table from a stale one; redacting it
+  // would leave a staleness warning that cannot say how stale.
+  'ageindays',
   'attemptcount',
   'retrycount',
   'rows',

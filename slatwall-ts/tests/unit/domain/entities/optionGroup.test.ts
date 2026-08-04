@@ -268,6 +268,66 @@ describe('getOptions with no argument', () => {
   });
 });
 
+// =========================================================================================
+// SECURITY REVIEW DISPOSITION - RAISED AS S-13 (INSECURE RANDOMNESS), ACCEPTED AS RAISED.
+//
+// The review flagged the `Math.random` draw behind this entity's tie-breaker and required:
+// "No security remediation required; keep it outside token/ID decisions." Both halves were
+// then VERIFIED rather than assumed, and the verification is recorded here because a
+// constraint no test states is a constraint the next edit can breach silently.
+//
+// WHAT WAS MEASURED ACROSS THE WHOLE SOURCE TREE:
+//   * `Math.random` has exactly ONE runtime site - the tie-breaker this file exercises.
+//   * EVERY identifier generator draws from `node:crypto`'s `randomUUID` instead: those in
+//     `promotionCode.ts`, `skuService.ts`, and the price-group, product, product-type,
+//     promotion and SKU repositories. None of them can reach `Math.random`.
+//   * So the "outside token/ID decisions" requirement already holds, and the two cases
+//     below pin what this entity's randomness IS, so that it stays a sort input.
+//
+// WHY THE DRAW IS NOT UPGRADED TO A CSPRNG: it reproduces `randRange(1,100)` at
+// [model/service/HibachiUtilityService.cfc:L521], whose ordering AND whose key-collision
+// element loss are preserved behaviour. A CSPRNG would change no observable property and
+// would put `node:crypto` inside a domain entity to buy nothing.
+// =========================================================================================
+describe('the DEFAULT tie-breaking source (S-13)', () => {
+  /** Two options that tie on name, so ONLY the random draw can order them. */
+  const tiedPair = (): Option[] => [
+    anOption({ optionID: 'first', optionName: 'Red' }),
+    anOption({ optionID: 'second', optionName: 'Red' }),
+  ];
+
+  it('is genuinely non-deterministic, which is what makes it a random source at all', () => {
+    // ★ THIS IS AN EMPIRICAL CHECK, NOT A RESTATEMENT OF THE ANNOTATION. `aGroup` passes
+    // `optionSortTieBreaker: undefined`, which is the deliberate statement "use the legacy
+    // random source", so this reaches `randRange(1,100)` for real. If the default were ever
+    // replaced by a constant the sort would become stable and this case would fail.
+    const observed = new Set<string>();
+
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      observed.add(idsOf(aGroup(tiedPair()).getOptions('optionName')).join(','));
+    }
+
+    // Both orderings must appear. Seeing only one across 200 draws is not chance.
+    expect(observed.size).toBeGreaterThan(1);
+  });
+
+  it('produces only outcomes the legacy algorithm can produce, collision included', () => {
+    // ★ THE THIRD OUTCOME IS THE PRESERVED DEFECT, AND IT IS ADMITTED ON PURPOSE. When both
+    // elements draw the SAME number of the 100 available, they compose the SAME struct key
+    // and the later assignment overwrites the earlier - so the sort returns ONE element and
+    // the other is silently dropped. That is legacy behaviour this port preserves, so a
+    // single-element result is legitimate here and is enumerated rather than treated as a
+    // failure. Nothing outside these three shapes may ever appear.
+    const legitimate = new Set(['first,second', 'second,first', 'first', 'second']);
+
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const outcome = idsOf(aGroup(tiedPair()).getOptions('optionName')).join(',');
+
+      expect(legitimate).toContain(outcome);
+    }
+  });
+});
+
 describe("the default sortType 'text' is CASE-SENSITIVE", () => {
   // [model/service/HibachiUtilityService.cfc:L526]: `arraySort(keyArray,"text",...)`. This is the
   // property whose loss would silently re-order a mixed-case option list, and the legacy default is

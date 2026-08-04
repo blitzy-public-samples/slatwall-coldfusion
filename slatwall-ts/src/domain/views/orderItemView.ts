@@ -55,6 +55,7 @@
 import type { Money } from '../valueObjects/money.js';
 import type { Sku } from '../entities/sku.js';
 import type { PriceGroup } from '../entities/priceGroup.js';
+import type { AppliedPromotionView } from './orderFulfillmentView.js';
 
 /**
  * The order item's type, reduced to the single field the engine reads.
@@ -94,13 +95,36 @@ interface OrderItemTypeView {
 /**
  * One order item, as the promotion and price-group engines read it.
  *
- * THE MEMBER SET IS EXHAUSTIVE AND CLOSED AT TEN. A census of every `orderItem.get*()` call site in
- * `model/service/PromotionService.cfc` yields exactly ten distinct accessors and no more:
+ * THE MEMBER SET IS EXHAUSTIVE AND CLOSED AT ELEVEN. A census of every `orderItem.get*()` call site
+ * in `model/service/PromotionService.cfc` yields exactly eleven distinct accessors and no more:
  * `getSku` (36 occurrences), `getOrderItemID` (18), `getQuantity` (6), `getPrice` (3),
- * `getAppliedPriceGroup` (2), and `getSkuPrice`, `getOrderItemType`, `getOrderFulfillment`,
- * `getExtendedSkuPrice` and `getExtendedPrice` (1 each). Each member below carries the locators that
- * prove it is read. Nothing may be added that no call site reads, and nothing that is read may be
- * dropped.
+ * `getAppliedPriceGroup` (2), `getAppliedPromotions` (1, at L65-L66), and `getSkuPrice`,
+ * `getOrderItemType`, `getOrderFulfillment`, `getExtendedSkuPrice` and `getExtendedPrice` (1 each).
+ * Each member below carries the locators that prove it is read. Nothing may be added that no call
+ * site reads, and nothing that is read may be dropped.
+ *
+ * ★ QUOTE-THEN-REVISE ON THE MEMBER COUNT. An earlier revision declared the set "CLOSED AT TEN" and
+ * justified excluding the eleventh like this: "No `appliedPromotions`. The item's applied-promotion
+ * collection [model/entity/OrderItem.cfc:L71] is reached only through the order-level traversal
+ * `order.getOrderItems()[oi].getAppliedPromotions()` [model/service/PromotionService.cfc:L65-L66],
+ * which is one of the three backwards clear-out loops that the intent-returning inversion REPLACES
+ * rather than reproduces. That collection therefore belongs to the order shape."
+ *
+ * Two things in that justification are wrong, and the census rule this file states is what settles
+ * it. First, the traversal at L65-L66 IS an `orderItem.get*()` call site, so by the very rule quoted
+ * above - "nothing that is read may be dropped" - the accessor belongs in the census. Second, the
+ * collection does NOT belong to the order shape: `OrderView.appliedPromotions` carries
+ * [model/entity/Order.cfc:L72], `fkcolumn="orderID"`, which is the ORDER's own one-to-many. The
+ * item's collection is a different association with a different foreign key,
+ * [model/entity/OrderItem.cfc:L71] `fkcolumn="orderItemID"`, and no other member of any view carries
+ * it. Attributing it to the order shape did not relocate it - it dropped it.
+ *
+ * And the "REPLACES rather than reproduces" premise does not hold either. The clear-out loops are
+ * reproduced, not replaced: the inversion changes only HOW they reach persistence. Because the order
+ * aggregate is out of scope, the engine cannot detach a row by mutating a live ORM association the
+ * way [model/entity/PromotionApplied.cfc:L103] does; it must EMIT a remove intent per detached row,
+ * and it cannot emit one for a row it was never shown. See `RemovePromotionAppliedIntent` in
+ * `../promotionEngine/qualifiedDiscountTypes.ts`, which carries the matching item-level variant.
  *
  * WHAT THIS SHAPE DELIBERATELY DOES NOT CARRY
  *
@@ -110,11 +134,6 @@ interface OrderItemTypeView {
  *     `model/service/PriceGroupService.cfc` returns zero hits. The currency code is carried
  *     structurally on the order, and the engine hands it down to the currency-aware `Sku` accessors.
  *     Adding it here would invent a member no in-scope call site reads.
- *   * No `appliedPromotions`. The item's applied-promotion collection
- *     [model/entity/OrderItem.cfc:L71] is reached only through the order-level traversal
- *     `order.getOrderItems()[oi].getAppliedPromotions()` [model/service/PromotionService.cfc:L65-L66],
- *     which is one of the three backwards clear-out loops that the intent-returning inversion
- *     REPLACES rather than reproduces. That collection therefore belongs to the order shape.
  *   * No `extendedPriceAfterDiscount`. The legacy accessor exists
  *     [model/entity/OrderItem.cfc:L208], and a search for it across both in-scope services returns
  *     zero hits.
@@ -347,17 +366,58 @@ export interface OrderItemView {
    * site touches the association at all.
    *
    * Because only the identifier is read, this member is a plain `string` and NOT a nested
-   * `OrderFulfillmentView`. That keeps the two leaf view modules of `src/domain/views/` mutually
-   * independent, so the folder's dependency graph stays a DAG - `orderItemView` and
-   * `orderFulfillmentView` are both leaves, and only `orderView` composes them. The independence is
-   * symmetric and verified in the source: the fulfillment reward branch
-   * [model/service/PromotionService.cfc:L345-L410] contains no `orderItem.get*()` reference
-   * whatsoever, so `orderFulfillmentView.ts` has no reason to import this module either. A nested
-   * view here would introduce a circular type for no behavioural gain, while carrying the identifier
-   * also upholds invariant 3.
+   * `OrderFulfillmentView`. Nesting the fulfillment view here would make the two modules import each
+   * other, because `orderFulfillmentView.ts` would then be both this module's dependency and - via
+   * the shared `AppliedPromotionView` below - its dependent. Carrying the identifier instead keeps
+   * the folder's dependency graph a DAG and upholds invariant 3. The asymmetry is verified in the
+   * source: the fulfillment reward branch [model/service/PromotionService.cfc:L345-L410] contains no
+   * `orderItem.get*()` reference whatsoever, so `orderFulfillmentView.ts` has no reason to import
+   * this module in either direction.
    *
    * ORM authority [model/entity/OrderItem.cfc:L66]: `property name="orderFulfillment"
    * cfc="OrderFulfillment" fieldtype="many-to-one" fkcolumn="orderFulfillmentID";`
    */
   readonly orderFulfillmentID: string;
+
+  /**
+   * The applied-promotion records this item is carrying when the engine receives it - that is,
+   * whatever a PREVIOUS invocation left behind. NOT the records this invocation will produce.
+   *
+   * WHY THIS MEMBER EXISTS, AND WHY OMITTING IT LOSES MONEY. The engine's very first act is a
+   * blanket clear [model/service/PromotionService.cfc:L61-L80]: three reverse-index loops detach
+   * every previously applied promotion before any qualification runs. The item arm is L64-L68:
+   *
+   *   for(var oi=arrayLen(arguments.order.getOrderItems()); oi >= 1; oi--) {
+   *     for(var pa=arrayLen(arguments.order.getOrderItems()[oi].getAppliedPromotions()); pa >= 1; pa--) {
+   *       arguments.order.getOrderItems()[oi].getAppliedPromotions()[pa].removeOrderItem();
+   *     }
+   *   }
+   *
+   * `removeOrderItem()` [model/entity/PromotionApplied.cfc:L103] `arrayDeleteAt`s from this very
+   * association, so in the legacy the clear is a side effect on a live ORM graph. Here the aggregate
+   * is out of scope and the only channel back to persistence is the returned intent array, so the
+   * engine must EMIT one remove intent per row - and it can only emit intents for rows it was shown.
+   * Without this member the item half of L61-L80 becomes unexpressible, and a stale item discount
+   * survives a recalculation that no longer qualifies it.
+   *
+   * READ EXACTLY ONCE, AND ONLY BY THE CLEAR. No qualification gate, no membership test, no discount
+   * calculation and no winner comparison may read this collection. The post-clear state is EMPTY, and
+   * every subsequent legacy read of an item's applied promotions - including the L521-L537 creation
+   * block - therefore sees an empty association. A consumer that let these rows compete with the
+   * current pass's rewards would reproduce neither the legacy nor anything correct.
+   *
+   * The element type is shared with `OrderFulfillmentView.appliedPromotions` and
+   * `OrderView.appliedPromotions` because all three associations point at the same entity,
+   * [model/entity/PromotionApplied.cfc], and the clear reads the same two fields at all three levels.
+   * Duplicating the shape per level would let the three sides drift.
+   *
+   * ORM authority [model/entity/OrderItem.cfc:L71]: `property name="appliedPromotions"
+   * singularname="appliedPromotion" cfc="PromotionApplied" fieldtype="one-to-many"
+   * fkcolumn="orderItemID" inverse="true" cascade="all-delete-orphan";`
+   *
+   * That `fkcolumn="orderItemID"` is what makes this a DISTINCT association from
+   * `OrderView.appliedPromotions`, which carries [model/entity/Order.cfc:L72] `fkcolumn="orderID"`.
+   * The two are not views of one collection and must never be conflated.
+   */
+  readonly appliedPromotions: readonly AppliedPromotionView[];
 }

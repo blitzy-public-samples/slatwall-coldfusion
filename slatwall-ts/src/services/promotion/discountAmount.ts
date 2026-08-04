@@ -276,7 +276,8 @@ const percentageOffStrategy: DiscountAmountStrategy = ({ reward, originalAmount 
  * CFML parity [model/service/PromotionService.cfc:L998]:
  *   `discountAmountPreRounding = reward.getAmount() * quantity;`
  *
- * DELIBERATE DIVERGENCE (b) - REGISTER ENTRY 12, CLOSED HERE. The legacy line is the ONLY monetary
+ * DELIBERATE DIVERGENCE [model/service/PromotionService.cfc:L998] - divergence (b) of three,
+ * register entry 12, CLOSED HERE. The legacy line is the ONLY monetary
  * computation in `getDiscountAmount` that carries no `precisionEvaluate` - a raw IEEE-754
  * floating-point multiplication sitting between two branches that are both precision-guarded [L995,
  * L1001]. Here it goes through `Money`, so the result is strictly MORE correct.
@@ -453,7 +454,8 @@ export class DiscountAmountCalculator {
       discountAmountPreRounding = amountStrategy(operands);
     }
 
-    // DELIBERATE DIVERGENCE (a) - REGISTER ENTRY 13, CLOSED HERE.
+    // DELIBERATE DIVERGENCE [model/service/PromotionService.cfc:L1007] - divergence (a) of three,
+    // register entry 13, CLOSED HERE.
     //
     // In the legacy function `discountAmount` is assigned WITHOUT `var`, so CFML resolves it into
     // COMPONENT (`variables`) scope. Contrast L988 and L989 above, which ARE properly `var`'d -
@@ -523,6 +525,11 @@ export class DiscountAmountCalculator {
     //   `// This makes sure that the discount never exceeds the original amount`
     //
     // SECURITY REVIEW DISPOSITION - RAISED AS S-03, DECLINED ON A CITED MANDATE.
+    //
+    // TWO REVIEW CYCLES, TWO IDS, ONE DEFECT. `S-03` is the PRIOR cycle's id. The
+    // CURRENT review re-raises this clamp in this file as FINDING 2 (CRITICAL, CWE-682
+    // and CWE-840); the disposition below is unchanged and answers both. Both ids are
+    // recorded so the declination is locatable from either report.
     //
     // Raised as finding S-03, CRITICAL, CWE-682 and CWE-840, with runtime evidence
     // of an original amount of 0.42, a pre-discount of 0.01, a rounded net of -0.99

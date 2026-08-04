@@ -474,6 +474,27 @@ const PRODUCT_PREDICATE = 'and sku.productID = ?';
  *   identifier, an untrimmed element, an option belonging to another product, an
  *   empty-string `productID` - yields a statement that returns ZERO ROWS, exactly
  *   as the legacy did. It does not yield an exception.
+ *
+ *   SECURITY REVIEW DISPOSITION - RAISED AS S-08, AND THE CEILING IT ASKS FOR IS
+ *   IMPOSED AT THE REQUEST BOUNDARY RATHER THAN HERE. The finding names this
+ *   builder's `EXISTS`-per-element loop as an unbounded-construction risk, and it is
+ *   right that the loop is unbounded. It is deliberately NOT bounded here, for a
+ *   reason this module recorded before the review ever ran: an earlier revision DID
+ *   carry a 64-element cap alongside `len()`, `trim()` and membership checks, and all
+ *   of them were removed because each turned "no SKU matches" into a request failure
+ *   for inputs [model/dao/SkuDAO.cfc:L107-L128] accepted. The suite KEPT those cases,
+ *   INVERTED, precisely so that a returning guard fails a case that names it - see
+ *   `tests/integration/repositories/skusBySelectedOptions.test.ts`, block
+ *   "buildSkusBySelectedOptionsStatement - totality: it never throws". Reinstating the
+ *   cap here would re-litigate a settled decision and reintroduce a divergence in the
+ *   one folder granted none.
+ *
+ *   The ceiling lives instead in `src/handlers/skuResolutionHandler.ts`, applied to the
+ *   caller-supplied field before any service is reached. That is where the finding's own
+ *   suggested resolution puts it - "conservative core/handler count ... limits" - and
+ *   where this module's own test comment already said it belonged: "it is a request
+ *   boundary's, and no such boundary is in scope for this folder". The boundary IS in
+ *   scope; this folder is not it.
  */
 export function buildSkusBySelectedOptionsStatement(
   selectedOptions: string,

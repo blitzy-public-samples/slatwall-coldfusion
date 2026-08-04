@@ -360,6 +360,9 @@ function makeOrderItemView(sku: FixtureSku, orderItemID: string): OrderItemView 
     appliedPriceGroup: undefined,
     orderItemType: { systemCode: 'oitSale' },
     orderFulfillmentID: 'reward-usage-ledger-fulfillment',
+    // Empty because the ledger never reads it. The member exists for the blanket clear at
+    // [model/service/PromotionService.cfc:L64-L68], which runs before the ledger is built.
+    appliedPromotions: [],
   };
 }
 

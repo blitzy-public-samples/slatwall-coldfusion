@@ -373,9 +373,6 @@ class RecordingPromotionRepository implements PromotionRepository {
 
   readonly getRoundingRuleQuery: PromotionRepository['getRoundingRuleQuery'] = () =>
     unreachedRepositoryMember('getRoundingRuleQuery');
-
-  readonly saveRoundingRule: PromotionRepository['saveRoundingRule'] = () =>
-    unreachedRepositoryMember('saveRoundingRule');
 }
 
 /**

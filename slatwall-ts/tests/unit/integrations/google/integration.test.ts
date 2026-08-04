@@ -4,95 +4,43 @@
 // SUBJECT: src/integrations/google/integration.ts - the `GoogleIntegration` adapter, ported from
 // [integrationServices/google/Integration.cfc:L49-L79] - and, THROUGH that adapter, the five-member
 // contract declared in src/integrations/integrationInterface.ts. There is deliberately no separate
-// suite for the contract: a contract here is type declarations with no runtime footprint, so the
-// honest way to assert it is to bind a real implementation to it, with no cast, and let the
-// compiler do the work.
+// suite for the contract: a contract is type declarations with no runtime footprint, so the honest
+// way to assert it is to bind a real implementation to it, with no cast, and let the compiler do the
+// work.
 //
-// The adapter is a metadata component - eight members, each answering with a constant. It declares
-// no constructor parameter and no field, reads no configuration and no clock, opens no connection,
-// issues no query and makes no outbound call, so this suite needs no double, fixture module,
-// container, environment or server: every subject is constructed with a bare `new` inside the case
-// that reads it, and nothing is held at module scope.
+// COVERAGE CLASSIFICATION: NET-NEW. `meta/tests/` holds nothing for the integration surface, so
+// presenting this suite as parity would be false.
 //
-// COVERAGE CLASSIFICATION: NET-NEW, with no legacy antecedent; presenting it as parity would be
-// false. meta/tests/ holds nothing for the integration surface - searching it for the integration
-// services directory, the feed DAO, the interface component, the base component or any of this
-// adapter's eight member names matches only the license header each of those files carries, and
-// `google` matches zero lines. The two suites that DO extend legacy coverage are
-// meta/tests/unit/entity/ProductTest.cfc (the URL-format case, whose nike-air-jorden fixture is
-// retained verbatim) and meta/tests/unit/entity/BrandTest.cfc (an empty products array), and this
-// is neither; meta/tests/functional/admin/entity/ProductTest.cfc is an empty stub acknowledged
-// rather than counted.
+// EIGHT ADAPTER MEMBERS AGAINST A FIVE-MEMBER CONTRACT, which is the distinction the suite turns on.
+// [integrationServices/IntegrationInterface.cfc:L50-L89] declares five members;
+// [integrationServices/BaseIntegration.cfc:L49] supplies defaults WITHOUT implementing the
+// interface, which is how a component satisfies the contract while declaring fewer methods than the
+// contract has. So the adapter answers eight questions, and what is asserted is that each answers
+// what the CFML answered, whichever component answered it:
 //
-// VERIFIED ON DISK, WHERE THE SHIPPED SYMBOLS DIFFER FROM EXPECTATION
-//   1. THE EXPORTED CLASS IS `GoogleIntegration`, not the source's bare `Integration`.
-//      The component's identity was its dotted path,
-//      `Slatwall.integrationServices.google.Integration`, of which `Integration` was only
-//      the last segment. Interface parity binds MEMBER names, all eight verbatim, so the
-//      class name is free to be unambiguous: seventeen `Integration.cfc` components exist
-//      in the legacy tree and one is in scope.
-//   2. THE CLASS DECLARES `implements IntegrationInterface`, which is what makes the
-//      conformance block below a compiler check rather than a convention.
-//   3. THE TWO BASE DEFAULTS ARE INLINED AS ORDINARY MEMBERS. The shipped module builds
-//      no TypeScript base class, so no `override` keyword exists to observe and this
-//      suite asserts BEHAVIOUR - the eight returns - never an inheritance mechanism.
-//   4. THE MODULE IMPORTS THE CFML EQUALITY HELPER and uses it in `getSettingOptions`, so
-//      the case-insensitivity of CFML `eq` survives the port and the differing-case
-//      inputs below are genuinely exercised rather than hypothetical.
+//     init()                  -> the receiver  [integrationServices/google/Integration.cfc:L51-L53]
+//     getIntegrationTypes()   -> 'fw1'         [integrationServices/google/Integration.cfc:L55-L57]
+//     getDisplayName()        -> 'Google'      [integrationServices/google/Integration.cfc:L59-L61]
+//     getSettings()           -> {}            [integrationServices/google/Integration.cfc:L63-L65]
+//     getIntegratedSettings() -> one entry     [integrationServices/google/Integration.cfc:L67-L71]
+//     getSettingOptions(name) -> nothing       [integrationServices/google/Integration.cfc:L73-L77]
+//     getEventHandlers()      -> []            [integrationServices/BaseIntegration.cfc:L67-L69]
+//     getAdminNavbarHTML()    -> ''            [integrationServices/BaseIntegration.cfc:L71-L73]
 //
-// THE PORTED SURFACE: EIGHT MEMBERS, ALL SYNCHRONOUS. Six are declared on the Google component and
-// two inherited from the base component; locators abbreviate integrationServices/.
+// The last two are the base defaults, and `getAdminNavbarHTML` is not a contract member at all. None
+// of the eight is asynchronous: no legacy body reaches a DAO or the ORM, so awaiting one would
+// assert a signature the port does not have.
 //
-//     init()                  -> the receiver  [.../google/Integration.cfc:L51-L53]
-//     getIntegrationTypes()   -> 'fw1'         [.../google/Integration.cfc:L55-L57]
-//     getDisplayName()        -> 'Google'      [.../google/Integration.cfc:L59-L61]
-//     getSettings()           -> {}            [.../google/Integration.cfc:L63-L65]
-//     getIntegratedSettings() -> one entry     [.../google/Integration.cfc:L67-L71]
-//     getSettingOptions(name) -> nothing       [.../google/Integration.cfc:L73-L77]
-//     getEventHandlers()      -> []            [.../BaseIntegration.cfc:L67-L69]
-//     getAdminNavbarHTML()    -> ''            [.../BaseIntegration.cfc:L71-L73]
+// FEED GENERATION IS NOT ASSERTED HERE, because the legacy component holds no feed logic. The
+// entrypoint is a controller member [integrationServices/google/controllers/feed.cfc:L58], the query
+// lives in [integrationServices/google/model/dao/FeedDAO.cfc:L52-L75] and the rendering in
+// [integrationServices/google/views/feed/product.cfm:L11-L65]. The integration contract by itself
+// therefore cannot carry the feed, and this file imports none of the ported replacements.
 //
-// None is asynchronous. The async boundary opens where a legacy body reached the DAO or the ORM,
-// and not one of these bodies reaches anything, so awaiting a member would assert a signature the
-// port does not have. Checked rather than assumed below.
-//
-// FEED GENERATION IS NOT ASSERTED HERE, WHICH IS THE WHOLE OF THE EIGHT-VERSUS-NINE QUESTION. The
-// legacy component holds no feed logic: the entrypoint is a controller member
-// [integrationServices/google/controllers/feed.cfc:L58] mutating a request context, the query lives
-// in [integrationServices/google/model/dao/FeedDAO.cfc:L52-L75] and the rendering in
-// [integrationServices/google/views/feed/product.cfm]. None is reachable from the adapter, and this
-// file imports none of the ported replacements.
-//
-// THE TYPE VOCABULARY, QUOTED WITH ITS OWN TYPOS INTACT.
-// [integrationServices/IntegrationInterface.cfc:L63-L73] documents the vocabulary in prose, and two
-// of its typos are reproduced verbatim rather than tidied, because a reviewer diffing this file
-// against the source should find the source's own words: the member "should return a comma
-// seperated list of the integration types" [L65], and the `fw1` entry reads "custom views, ect."
-// [L70]. The four documented values are exactly:
-//
-//     shipping  [L68]  usable by shipping methods and rates
-//     payment   [L69]  usable by payment methods
-//     fw1       [L70]  may contribute custom views, ect.
-//     custom    [L71]  hooks into events, with no views
-//
-// THERE IS NO PRODUCT-FEED TYPE IN THAT VOCABULARY, and the consequence is asserted below rather
-// than papered over: the union admits no fifth member, so the integration contract by itself cannot
-// carry the feed.
-//
-// INHERITANCE, AS IT WAS AND AS IT NOW IS. [integrationServices/BaseIntegration.cfc:L49] extends
-// `Slatwall.org.Hibachi.HibachiObject` and does NOT implement the interface; it supplies defaults
-// only, which is why an adapter can satisfy the contract while declaring fewer methods than the
-// contract has. The Google component overrides four of the five contract members
-// [integrationServices/google/Integration.cfc:L51-L65] and inherits `getEventHandlers`, while
-// `getAdminNavbarHTML` is a sixth base member the contract never declared. The target has no base
-// class, so what is asserted is that all eight members answer what the CFML answered, whichever
-// component answered it.
-//
-// FIXTURE PROVENANCE: [meta/tests/unit/Helper.cfc:L51-L75] is followed as a PATTERN - build the
-// subject a case needs inside that case - and its MECHANISM rejected: it constructs a persistent
-// entity through the ORM, saves it by reaching a service through an ambient request-scoped locator
-// and flushes the session, which is why every legacy "unit" test boots the real application, the
-// ORM and the dependency container.
+// The adapter declares no constructor parameter and no field, reads no configuration and no clock,
+// and makes no outbound call, so this suite needs no double, fixture module, container, environment
+// or server: every subject is built with a bare `new` inside the case that reads it, and nothing is
+// held at module scope.
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from 'vitest';
@@ -110,8 +58,6 @@ describe('the adapter constructs with no argument and carries no state', () => {
 
     expect(adapter).toBeInstanceOf(GoogleIntegration);
 
-    // Zero declared constructor arity is the assertion: nothing to inject, so a composition root
-    // can build this adapter without knowing anything about it.
     expect(GoogleIntegration.length).toBe(0);
   });
 
@@ -158,9 +104,6 @@ describe('the five-member contract is satisfied, and the compiler is what proves
   it('binds to the contract type with no cast, and answers through the binding', () => {
     const adapter = new GoogleIntegration();
 
-    // THE BINDING IS THE ASSERTION. `tsc` rejects this line unless the class satisfies every member
-    // the contract declares. No `as` and no `satisfies` standing in for a real mismatch: a cast
-    // would assert the conclusion.
     const contract: IntegrationInterface = adapter;
 
     expect(contract.init()).toBe(adapter);
@@ -171,8 +114,6 @@ describe('the five-member contract is satisfied, and the compiler is what proves
   });
 
   it('declares those five members, each of them present on the adapter', () => {
-    // Every entry is checked twice: by the compiler, because the array is typed as contract keys,
-    // and at run time, because the member must exist on the class.
     const contractMembers: readonly (keyof IntegrationInterface)[] = [
       'init',
       'getDisplayName',
@@ -199,8 +140,6 @@ describe('the five-member contract is satisfied, and the compiler is what proves
 
     expect(asPlainString).toBe('getAdminNavbarHTML');
 
-    // It is still a real member of the adapter, which is the distinction: part of a concrete
-    // adapter's surface, and no part of the contract.
     expect(Object.getOwnPropertyNames(GoogleIntegration.prototype)).toContain('getAdminNavbarHTML');
   });
 
@@ -246,8 +185,6 @@ describe('init() hands back the very instance it was called on', () => {
   it('keeps the concrete type through the call, so the extras stay reachable', () => {
     const adapter = new GoogleIntegration();
 
-    // The polymorphic `this` return is what makes this compile: a member declared on the class
-    // rather than on the contract is still reachable on what `init()` returns.
     const initialised = adapter.init();
 
     expect(initialised.getIntegratedSettings()).toStrictEqual({
@@ -271,7 +208,8 @@ describe('getIntegrationTypes() answers one scalar value from a four-value vocab
     // JUDGMENT CALL: 'fw1' is carried over verbatim, even though reading the vocabulary's own
     // descriptions argues for 'custom'. The vocabulary describes `fw1` as an integration that may
     // contribute custom views [integrationServices/IntegrationInterface.cfc:L70] and `custom` as
-    // the choice for hooking events with no views [L71], so on the descriptions alone neither fits
+    // the choice for hooking events with no views
+    // [integrationServices/IntegrationInterface.cfc:L71], so on the descriptions alone neither fits
     // a feed. THE SOURCE IS AUTHORITATIVE AND IT SAYS `"fw1"`
     // [integrationServices/google/Integration.cfc:L55-L57]. Interface parity is the acceptance
     // contract, and the legacy engine keys view resolution off this value - which is why the feed
@@ -365,9 +303,6 @@ describe('getDisplayName() answers Google, and the component tag disagrees with 
   it('answers the override rather than the base component placeholder', () => {
     const adapter = new GoogleIntegration();
 
-    // CFML parity [integrationServices/BaseIntegration.cfc:L55-L57]: the base default is the
-    // placeholder "Not Defined", which the Google component overrides, so inheriting it would be a
-    // regression rather than a default.
     expect(adapter.getDisplayName()).not.toBe('Not Defined');
     expect(adapter.getDisplayName()).not.toBe('');
   });
@@ -401,9 +336,6 @@ describe('getSettings() answers an empty map, which is never the integrated payl
   it('is never conflated with the integrated settings, which are a different member', () => {
     const adapter = new GoogleIntegration();
 
-    // The two members are distinct in the source and stay distinct here:
-    // [integrationServices/google/Integration.cfc:L63-L65] answers an empty struct and L67-L71
-    // answers a populated one.
     expect(adapter.getSettings()).not.toStrictEqual(adapter.getIntegratedSettings());
     expect(Object.keys(adapter.getSettings())).not.toContain('productGoogleProductType');
   });
@@ -432,9 +364,6 @@ describe('getIntegratedSettings() answers one entry carrying one evidenced field
     // spelling is carried over verbatim.
     const definitions: Record<string, SettingDefinition> = adapter.getIntegratedSettings();
 
-    // A strict deep comparison is what keeps a field nobody evidenced from creeping in: an added
-    // label, default value, requiredness flag, option list, sort order or validation rule would
-    // fail this line, and each would be a requirement invented by the port.
     expect(definitions).toStrictEqual({ productGoogleProductType: { fieldType: 'select' } });
     expect(Object.keys(definitions)).toStrictEqual(['productGoogleProductType']);
   });
@@ -445,8 +374,6 @@ describe('getIntegratedSettings() answers one entry carrying one evidenced field
 
     expect(Object.keys(definitions)).toHaveLength(1);
 
-    // Reading through entries keeps every access narrowed: the pair's second element is a
-    // definition rather than a possibly-absent lookup.
     for (const [name, definition] of Object.entries(definitions)) {
       expect(name).toBe('productGoogleProductType');
       expect(Object.keys(definition)).toStrictEqual(['fieldType']);
@@ -519,8 +446,6 @@ describe('getSettingOptions() answers nothing, whatever it is asked', () => {
 
     expect(adapter.getSettingOptions('ProductGoogleProductType')).toBeUndefined();
 
-    // An empty string is a definite string rather than an absent one, so the ported comparison
-    // evaluates it and falls through, as CFML did.
     expect(adapter.getSettingOptions('')).toBeUndefined();
   });
 
@@ -570,8 +495,6 @@ describe('getEventHandlers() answers an empty array, inherited rather than decla
     const adapter = new GoogleIntegration();
     const handlers = adapter.getEventHandlers();
 
-    // The annotation carries the absence that strict indexed access reports, so the read stays
-    // narrowed.
     const firstHandler: string | undefined = handlers[0];
 
     expect(firstHandler).toBeUndefined();
@@ -609,9 +532,6 @@ describe('getAdminNavbarHTML() answers an empty string, and is no part of the co
     const adapter = new GoogleIntegration();
     const markup = adapter.getAdminNavbarHTML();
 
-    // The empty answer is a contract stub rather than a presentation concern: this adapter
-    // contributes no admin navigation, and this subtree's compiler options declare no browser
-    // library, so no browser type is even in scope to reference.
     expect(markup).not.toContain('<');
     expect(markup.trim()).toBe('');
   });
@@ -621,8 +541,6 @@ describe('every member answers synchronously', () => {
   it('answers with a value directly, and never with a promise, on all eight members', () => {
     const adapter = new GoogleIntegration();
 
-    // Sync stays sync. Awaiting any of these would assert a signature the port does not have, so
-    // the absence of a promise is checked at each member.
     expect(adapter.init()).not.toBeInstanceOf(Promise);
     expect(adapter.getIntegrationTypes()).not.toBeInstanceOf(Promise);
     expect(adapter.getDisplayName()).not.toBeInstanceOf(Promise);
@@ -674,8 +592,6 @@ describe('answers are stable across calls and across instances', () => {
     const first = new GoogleIntegration();
     const second = new GoogleIntegration();
 
-    // Two instances agreeing on all eight answers is the evidence that no ambient state and no
-    // shared cache is in play.
     expect(first.getIntegrationTypes()).toBe(second.getIntegrationTypes());
     expect(first.getDisplayName()).toBe(second.getDisplayName());
     expect(first.getAdminNavbarHTML()).toBe(second.getAdminNavbarHTML());

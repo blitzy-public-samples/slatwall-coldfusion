@@ -130,6 +130,7 @@ import { cfBoolean } from '../../../src/lib/cfml/truthiness.js';
 import { appConfig } from '../../../src/lib/config.js';
 import { createPoolExecutor } from '../../../src/repositories/mysql/connection.js';
 import type {
+  AuditActorContext,
   PreparedStatementExecutor,
   SqlMutationResult,
   SqlRow,
@@ -428,8 +429,8 @@ class RecordingExecutor implements PreparedStatementExecutor {
    *
    * NESTING IS LOAD-BEARING IN PRODUCTION CODE, which is what settles it rather than a
    * preference. `MysqlProductRepository.saveProduct` opens a transaction and, from
-   * inside that work function, calls `MysqlSkuRepository.saveSkuForProduct(draft,
-   * productID, tx)`; that method funnels through `persistSku`, which calls
+   * inside that work function, calls `MysqlSkuRepository.saveSku(draft, productID, tx)`;
+   * that method funnels through `persistSku`, which calls
    * `executor.transaction(...)` on the executor it was handed. A recorder that refused
    * would report a failure for every new product carrying a SKU - the exact inversion
    * of the mistake the earlier note was guarding against, made in a double instead of
@@ -530,9 +531,30 @@ interface Subject {
   readonly repository: PriceGroupRepository;
 }
 
+/**
+ * The request clock the subject factory composes with by default.
+ *
+ * A LIVE clock, so a case that says nothing about the instant exercises the same behaviour an
+ * unconfigured production request does; it is the CONSTRUCTION that is explicit here, not the value.
+ * The cases that assert on the value pass `fixedClock(...)` instead.
+ */
+const LIVE_REQUEST_CLOCK = { now: (): Date => new Date() };
+
+/**
+ * A clock that answers a FIXED instant, for the cases asserting the adapter binds the instant it is
+ * GIVEN rather than reading a clock of its own.
+ *
+ * Each call returns a COPY, exactly as the composition root's clock does, so a case cannot reach the
+ * shared instant through a value it received.
+ */
+function fixedClock(instant: Date): { now: () => Date } {
+  return { now: (): Date => new Date(instant.getTime()) };
+}
+
 function makeSubject(
   cannedResultSets: readonly (readonly SqlRow[])[] = [],
   cannedWriteResults: readonly SqlMutationResult[] = [],
+  requestClock: { now: () => Date } = LIVE_REQUEST_CLOCK,
 ): Subject {
   const executor = new RecordingExecutor(cannedResultSets, cannedWriteResults);
   const valueRounder = makeRecordingValueRounder();
@@ -540,7 +562,12 @@ function makeSubject(
   return {
     executor,
     valueRounder,
-    repository: new MySqlPriceGroupRepository(executor, valueRounder),
+    repository: new MySqlPriceGroupRepository(
+      executor,
+      TEST_AUDIT_ACTOR,
+      valueRounder,
+      requestClock,
+    ),
   };
 }
 
@@ -844,6 +871,22 @@ const EXPECTED_SELECT_PRICE_GROUP_BY_ID_SQL = [
   'WHERE pg.priceGroupID = ?',
 ].join('\n');
 
+/**
+ * The set-based form of the read above, for a given number of keys.
+ *
+ * Spelled out rather than derived from the module under test, so the assertion is a statement of what
+ * the SQL must be and not a restatement of what it is. The projection, the table and the predicate
+ * are the singular form's: an `activeFlag` filter, an `ORDER BY` or a `LIMIT` appearing here would
+ * fail these cases.
+ */
+function expectedSelectPriceGroupsByIDSql(identifierCount: number): string {
+  return [
+    'SELECT ' + EXPECTED_PRICE_GROUP_SELECT_LIST,
+    'FROM SwPriceGroup pg',
+    'WHERE pg.priceGroupID IN (' + new Array<string>(identifierCount).fill('?').join(', ') + ')',
+  ].join('\n');
+}
+
 const EXPECTED_SELECT_CHILD_PRICE_GROUPS_SQL = [
   'SELECT ' + EXPECTED_PRICE_GROUP_SELECT_LIST,
   'FROM SwPriceGroup pg',
@@ -932,7 +975,8 @@ const EXPECTED_INSERT_PRICE_GROUP_SQL = [
 const EXPECTED_UPDATE_PRICE_GROUP_SQL = [
   'UPDATE SwPriceGroup',
   'SET priceGroupIDPath = ?, activeFlag = ?, priceGroupName = ?, priceGroupCode = ?, ' +
-    'parentPriceGroupID = ?, modifiedDateTime = ?, modifiedByAccountID = ?',
+    'parentPriceGroupID = ?, modifiedDateTime = ?, ' +
+    'modifiedByAccountID = COALESCE(?, modifiedByAccountID)',
   'WHERE priceGroupID = ?',
 ].join('\n');
 
@@ -946,7 +990,8 @@ const EXPECTED_INSERT_PRICE_GROUP_RATE_SQL = [
 const EXPECTED_UPDATE_PRICE_GROUP_RATE_SQL = [
   'UPDATE SwPriceGroupRate',
   'SET globalFlag = ?, amount = ?, amountType = ?, remoteID = ?, priceGroupID = ?, ' +
-    'roundingRuleID = ?, modifiedDateTime = ?, modifiedByAccountID = ?',
+    'roundingRuleID = ?, modifiedDateTime = ?, ' +
+    'modifiedByAccountID = COALESCE(?, modifiedByAccountID)',
   'WHERE priceGroupRateID = ?',
 ].join('\n');
 
@@ -1064,6 +1109,30 @@ const CANNED_ACCOUNT_ID = 'acct-00000000000000000000000000001';
 const CANNED_CREATED_BY_ACCOUNT_ID = 'acct-created';
 
 const CANNED_MODIFIED_BY_ACCOUNT_ID = 'acct-modified';
+
+/**
+ * S-07. The audit actor every construction in this file supplies: an ADMIN, PERSISTED account, the
+ * one combination the legacy gate stamps for [org/Hibachi/HibachiEntity.cfc:L628, L633].
+ */
+const TEST_AUDIT_ACTOR: AuditActorContext = Object.freeze({
+  accountID: 'acct-00000000000000000000000000009',
+  adminAccountFlag: true,
+});
+
+/**
+ * Signed in WITHOUT the admin flag, and carrying an identifier ON PURPOSE so that a refusal to
+ * stamp is provably the FLAG's doing rather than an accident of having no account to name.
+ */
+const NON_ADMIN_AUDIT_ACTOR: AuditActorContext = Object.freeze({
+  accountID: 'acct-00000000000000000000000000008',
+  adminAccountFlag: false,
+});
+
+// NOTE: this file needs no purpose-built forged-account literal. Every price-group and rate fixture
+// already populates both account columns with `CANNED_CREATED_BY_ACCOUNT_ID` /
+// `CANNED_MODIFIED_BY_ACCOUNT_ID`, so the FIXTURE is the caller-supplied value the S-07 cases below
+// assert never reaches a bound position - a closer reproduction of the reported defect than a
+// bespoke constant would be.
 
 const CANNED_PRICE_GROUP_ID = 'pg-wholesale';
 
@@ -1314,14 +1383,30 @@ describe('MySqlPriceGroupRepository - NET-NEW coverage with no legacy antecedent
     }
   });
 
-  it('is composed from two explicit constructor arguments and nothing ambient', () => {
+  it('is composed from three explicit constructor arguments and nothing ambient', () => {
     // C1/B1: no application bootstrap, no container, no locator, no ambient request scope and no
     // privilege elevation - the whole [meta/tests/unit/SlatwallUnitTestBase.cfc] pattern is absent.
-    // Two arguments, supplied by hand, is the entire composition, and the executor being a
-    // parameter is what makes the emitted SQL observable at all.
+    // FOUR arguments, supplied by hand, are the entire composition, and every one of them is a
+    // dependency the legacy took from somewhere a caller could not see:
+    //
+    //   * the EXECUTOR being a parameter is what makes the emitted SQL observable at all;
+    //   * the AUDIT ACTOR (S-07) is the closest thing this adapter has to the elevated account
+    //     `HibachiEntity` reached ambient scope for [org/Hibachi/HibachiEntity.cfc:L628], which makes
+    //     it the one dependency whose being a PARAMETER rather than ambient state is the whole point
+    //     of transformation rule T6;
+    //   * the VALUE ROUNDER replaces the `getService("roundingRuleService")` locator
+    //     [model/entity/RoundingRule.cfc] - rule T2;
+    //   * the REQUEST CLOCK, REQUIRED rather than defaulted, is what stops this adapter's
+    //     eligibility window from reading a private clock and disagreeing with the promotion and
+    //     sale-price windows of the same request.
     const executor = new RecordingExecutor([]);
     const valueRounder = makeRecordingValueRounder();
-    const repository: PriceGroupRepository = new MySqlPriceGroupRepository(executor, valueRounder);
+    const repository: PriceGroupRepository = new MySqlPriceGroupRepository(
+      executor,
+      TEST_AUDIT_ACTOR,
+      valueRounder,
+      LIVE_REQUEST_CLOCK,
+    );
 
     expect(executor.calls).toHaveLength(0);
     expect(executor.mutationCalls).toHaveLength(0);
@@ -1410,6 +1495,28 @@ describe('getAccountSubscriptionPriceGroups - the one deliberate read-only reach
     // landing in the same millisecond.
     expect(endDateTimeBound).toBe(effectiveDateTimeBound);
     expect(endDateTimeBound.getTime()).toBe(effectiveDateTimeBound.getTime());
+  });
+
+  it('binds the INJECTED instant, not a clock of its own', async () => {
+    // The case above proves the two bound positions agree WITH EACH OTHER. This one proves they agree
+    // with the REQUEST: the instant is the one the injected clock answered, so the eligibility window
+    // this adapter evaluates and the promotion / sale-price windows `MysqlPromotionRepository`
+    // evaluates for the same order are one moment rather than three neighbouring ones. A `new Date()`
+    // captured inside the method would still satisfy the identity assertion above and would fail here.
+    const { repository, executor } = makeSubject([NO_ROWS], [], fixedClock(EXPLICIT_UTC_INSTANT));
+
+    await repository.getAccountSubscriptionPriceGroups(CANNED_ACCOUNT_ID);
+
+    const stageOne = onlyStatement(executor.calls);
+
+    for (const boundPosition of [0, 2]) {
+      const bound = requireBoundDate(
+        parameterAt(stageOne.params, boundPosition),
+        `the timestamp bound at position ${String(boundPosition)}`,
+      );
+
+      expect(bound.getTime()).toBe(EXPLICIT_UTC_INSTANT.getTime());
+    }
   });
 
   it('never emits a server-side clock call in either dialect arm', () => {
@@ -1915,6 +2022,20 @@ async function provokeEveryStatement(): Promise<ProvokedStatements> {
   const rateWithMembers = makeSubject([]);
   await rateWithMembers.repository.savePriceGroupRate(makeFullyLinkedPriceGroupRate());
   collect(rateWithMembers);
+
+  // 11. The set-based by-key read. NOT a port member - the port is locked at six - but it is a
+  //     statement this adapter emits, so it belongs in a census that calls itself exhaustive. Two
+  //     keys rather than one, so the `IN` list carries more than a single placeholder and the
+  //     no-interpolation and permitted-table obligations are discharged for the widened predicate too.
+  const setRead = makeSetLoaderSubject([
+    [priceGroupRow(), priceGroupRow({ priceGroupID: CANNED_SIBLING_PRICE_GROUP_ID })],
+    NO_ROWS,
+    NO_ROWS,
+    NO_ROWS,
+  ]);
+  await setRead.adapter.getPriceGroupsByID([CANNED_PRICE_GROUP_ID, CANNED_SIBLING_PRICE_GROUP_ID]);
+  reads.push(...setRead.executor.calls);
+  writes.push(...setRead.executor.mutationCalls);
 
   return { reads, writes };
 }
@@ -3411,9 +3532,17 @@ function expectedDeleteGateProbeSql(gate: {
 /** The expected child-detach UPDATE, written out in full. */
 const EXPECTED_DETACH_CHILD_PRICE_GROUPS_SQL = [
   'UPDATE SwPriceGroup',
-  'SET parentPriceGroupID = NULL, priceGroupIDPath = priceGroupID, modifiedDateTime = ?',
+  'SET parentPriceGroupID = NULL, priceGroupIDPath = priceGroupID, modifiedDateTime = ?, ' +
+    'modifiedByAccountID = COALESCE(?, modifiedByAccountID)',
   'WHERE parentPriceGroupID = ?',
 ].join('\n');
+
+/** Positional indices into the detach UPDATE's three bound values. */
+const DETACH_BOUND = Object.freeze({
+  modifiedDateTime: 0,
+  modifiedByAccountID: 1,
+  parentPriceGroupID: 2,
+});
 
 /**
  * Canned reads for a delete whose gates all pass.
@@ -3520,8 +3649,17 @@ describe('load by identifier, and delete', () => {
     const detach = statementAt(executor.mutationCalls, DETACH_MUTATION_INDEX);
 
     expect(detach.sql).toBe(EXPECTED_DETACH_CHILD_PRICE_GROUPS_SQL);
-    expect(detach.params).toHaveLength(2);
-    expect(parameterAt(detach.params, 1)).toBe(PINNED_CHILD_PRICE_GROUP_ID);
+
+    // Three values now, not two: S-07 put the modifying ACCOUNT on the same footing as the
+    // modifying TIMESTAMP beside it, because the legacy detached children by saving each one
+    // and `preUpdate` stamped both [org/Hibachi/HibachiEntity.cfc:L662-L667, L676-L678].
+    expect(detach.params).toHaveLength(3);
+    expect(parameterAt(detach.params, DETACH_BOUND.modifiedByAccountID)).toBe(
+      TEST_AUDIT_ACTOR.accountID,
+    );
+    expect(parameterAt(detach.params, DETACH_BOUND.parentPriceGroupID)).toBe(
+      PINNED_CHILD_PRICE_GROUP_ID,
+    );
 
     // Then the six link deletes, IN THE COLLECTION ORDER THE ENTITY DECLARES
     // [model/entity/PriceGroupRate.cfc:L71-L77], each scoped by the owning price group
@@ -3611,6 +3749,264 @@ describe('load by identifier, and delete', () => {
 
     expect(deleted).toBe(false);
     expect(executor.mutationCalls).toHaveLength(DELETE_MUTATION_COUNT);
+  });
+});
+
+// --- The set-based by-key read ---------------------------------------------------
+
+/**
+ * A subject held at the CONCRETE adapter type.
+ *
+ * `Subject.repository` is deliberately typed to the six-member port, which is what makes every other
+ * case in this file a test of the contract. `getPriceGroupsByID` is NOT a port member - the port locks
+ * its count at six explicitly - so reaching it needs the concrete type, exactly as
+ * `src/handlers/bootstrap.ts` holds this class un-narrowed for the same reason.
+ */
+function makeSetLoaderSubject(cannedResultSets: readonly (readonly SqlRow[])[]): {
+  readonly executor: RecordingExecutor;
+  readonly adapter: MySqlPriceGroupRepository;
+} {
+  const executor = new RecordingExecutor(cannedResultSets, []);
+
+  return {
+    executor,
+    // The audit actor is the adapter's SECOND constructor argument: writes stamp
+    // `createdByAccountID` / `modifiedByAccountID` from it rather than from caller-supplied data.
+    // The set-based read below performs no write, so the shared read-only actor is sufficient here.
+    adapter: new MySqlPriceGroupRepository(
+      executor,
+      TEST_AUDIT_ACTOR,
+      makeRecordingValueRounder(),
+      LIVE_REQUEST_CLOCK,
+    ),
+  };
+}
+
+describe('getPriceGroupsByID - one statement for a key set, never one per key', () => {
+  // ★★ NET-NEW COVERAGE (AAP 0.6.6). `model/dao/PriceGroupDAO.cfc` declares no load function at all,
+  // so there is no legacy antecedent for either the singular or the set-based form. What IS traceable
+  // is the shape being restored: Hibernate answered `account.getPriceGroups()`
+  // [model/entity/PriceGroup.cfc:L67] and the framework smart list's page
+  // [org/Hibachi/HibachiSmartList.cfc:L759-L764] with ONE fetch each, not with one fetch per member.
+
+  const SECOND_PRICE_GROUP_ID = CANNED_SIBLING_PRICE_GROUP_ID;
+
+  /** Two independent leaf groups: the seed read, one shared rate read, then one child read each. */
+  function twoLeafSeedResultSets(): readonly (readonly SqlRow[])[] {
+    return [
+      [
+        priceGroupRow(),
+        priceGroupRow({
+          priceGroupID: SECOND_PRICE_GROUP_ID,
+          priceGroupIDPath: SECOND_PRICE_GROUP_ID,
+          priceGroupName: 'Distributor',
+          priceGroupCode: 'distributor',
+        }),
+      ],
+      NO_ROWS,
+      NO_ROWS,
+      NO_ROWS,
+    ];
+  }
+
+  it('binds one placeholder per key, in the caller order, and interpolates nothing', async () => {
+    const { adapter, executor } = makeSetLoaderSubject(twoLeafSeedResultSets());
+
+    await adapter.getPriceGroupsByID([CANNED_PRICE_GROUP_ID, SECOND_PRICE_GROUP_ID]);
+
+    const seedStatement = statementAt(executor.calls, 0);
+
+    expect(seedStatement.sql).toBe(expectedSelectPriceGroupsByIDSql(2));
+    expect(seedStatement.params).toStrictEqual([CANNED_PRICE_GROUP_ID, SECOND_PRICE_GROUP_ID]);
+
+    // E5/P5 asserted directly rather than inferred from the absence of a quote.
+    expect(seedStatement.sql).not.toContain(CANNED_PRICE_GROUP_ID);
+    expect(seedStatement.sql).not.toContain(SECOND_PRICE_GROUP_ID);
+  });
+
+  it('adds no activeFlag filter, no ORDER BY and no LIMIT to the singular form it widens', async () => {
+    const { adapter, executor } = makeSetLoaderSubject(twoLeafSeedResultSets());
+
+    await adapter.getPriceGroupsByID([CANNED_PRICE_GROUP_ID, SECOND_PRICE_GROUP_ID]);
+
+    const seedStatement = statementAt(executor.calls, 0);
+
+    // The singular read carries none of the three. A set-based form that quietly added one would not
+    // be interchangeable with N singular calls, which is the whole basis for substituting it.
+    expect(seedStatement.sql).not.toContain('activeFlag = ?');
+    expect(seedStatement.sql).not.toContain('ORDER BY');
+    expect(seedStatement.sql).not.toContain('LIMIT');
+
+    // And the only difference from the singular text is the predicate.
+    expect(seedStatement.sql.replace('IN (?, ?)', '= ?')).toBe(
+      EXPECTED_SELECT_PRICE_GROUP_BY_ID_SQL,
+    );
+  });
+
+  it('★★★ issues ONE seed statement for two keys where two singular reads issued two', async () => {
+    const batched = makeSetLoaderSubject(twoLeafSeedResultSets());
+
+    await batched.adapter.getPriceGroupsByID([CANNED_PRICE_GROUP_ID, SECOND_PRICE_GROUP_ID]);
+
+    // Filtered on the BY-KEY predicate, not on the table: `SELECT_CHILD_PRICE_GROUPS_SQL` reads the
+    // same table by `parentPriceGroupID` and is not a by-key read.
+    const batchedSeedReads = batched.executor.calls.filter((statement) =>
+      statement.sql.includes('WHERE pg.priceGroupID'),
+    );
+
+    expect(batchedSeedReads).toHaveLength(1);
+
+    // The comparison that gives the number meaning: the same two groups, read one at a time.
+    const serial = makeSetLoaderSubject([
+      ...leafPriceGroupResultSets(),
+      ...leafPriceGroupResultSets(
+        priceGroupRow({
+          priceGroupID: SECOND_PRICE_GROUP_ID,
+          priceGroupIDPath: SECOND_PRICE_GROUP_ID,
+        }),
+      ),
+    ]);
+
+    await serial.adapter.getPriceGroup(CANNED_PRICE_GROUP_ID);
+    await serial.adapter.getPriceGroup(SECOND_PRICE_GROUP_ID);
+
+    const serialSeedReads = serial.executor.calls.filter((statement) =>
+      statement.sql.includes('WHERE pg.priceGroupID'),
+    );
+
+    expect(serialSeedReads).toHaveLength(2);
+    expect(serial.executor.calls).toHaveLength(LEAF_PRICE_GROUP_STATEMENT_COUNT * 2);
+
+    // Four rather than six: one seed read, one shared rate read, and one child read per seed. The
+    // child read stays per-seed because the shared hydrator has always issued it that way - the
+    // singular form does too - and narrowing THAT is not what this finding is about.
+    expect(batched.executor.calls).toHaveLength(4);
+  });
+
+  it('keys the answer by CASE-FOLDED identifier, so a caller spelling need not match the row', async () => {
+    const { adapter } = makeSetLoaderSubject(leafPriceGroupResultSets());
+
+    const loaded = await adapter.getPriceGroupsByID([CANNED_PRICE_GROUP_ID.toUpperCase()]);
+
+    // Asked for in upper case, stored in lower case, found under the folded key. CFML identifiers are
+    // case-insensitive and MySQL's default collation matches them that way.
+    expect(loaded.get(CANNED_PRICE_GROUP_ID)).toBeDefined();
+    expect(loaded.get(CANNED_PRICE_GROUP_ID.toUpperCase())).toBeUndefined();
+    expect(loaded.size).toBe(1);
+  });
+
+  it('collapses a repeated key - including one repeated only in casing - to ONE placeholder', async () => {
+    const { adapter, executor } = makeSetLoaderSubject(leafPriceGroupResultSets());
+
+    await adapter.getPriceGroupsByID([
+      CANNED_PRICE_GROUP_ID,
+      CANNED_PRICE_GROUP_ID,
+      CANNED_PRICE_GROUP_ID.toUpperCase(),
+    ]);
+
+    const seedStatement = statementAt(executor.calls, 0);
+
+    expect(seedStatement.sql).toBe(expectedSelectPriceGroupsByIDSql(1));
+
+    // The FIRST spelling seen is what is bound, so the parameter is the caller's own value rather
+    // than a folded one - identical to what the singular form would have bound.
+    expect(seedStatement.params).toStrictEqual([CANNED_PRICE_GROUP_ID]);
+  });
+
+  it('★★★ issues NO statement at all for an empty key set, and answers an empty map', async () => {
+    const { adapter, executor } = makeSetLoaderSubject([]);
+
+    const loaded = await adapter.getPriceGroupsByID([]);
+
+    // Parity, not optimisation: N singular calls issue N statements, so zero calls issue zero. It
+    // also mechanically prevents `IN ()`, which is a MySQL syntax error.
+    //
+    // ★★ AND THE ASYMMETRY WITH `mysqlOptionRepository` IS DELIBERATE, NOT AN INCONSISTENCY. That
+    // adapter binds ONE EMPTY-STRING ELEMENT for an empty list rather than skipping the statement,
+    // because `OptionDAO` carries no emptiness guard and its two statements use the list with
+    // OPPOSITE polarity - so an empty input has to reach the database to be answered correctly. This
+    // loader is the other case: it stands in for reads that simply did not happen, and
+    // [model/dao/PriceGroupDAO.cfc:L92, L98] guards on `recordCount` before going further. Issuing a
+    // statement here would invent a read the source never performed. A future change that
+    // "harmonises" the two would break whichever one it converted.
+    expect(executor.calls).toHaveLength(0);
+    expect(loaded.size).toBe(0);
+  });
+
+  it('leaves an unmatched key ABSENT from the map rather than reporting it', async () => {
+    // One key requested, no seed row returned. The caller decides what a miss means - and the two
+    // callers in the composition root decide differently - so the loader must not decide for them.
+    const { adapter } = makeSetLoaderSubject([NO_ROWS]);
+
+    const loaded = await adapter.getPriceGroupsByID([CANNED_PRICE_GROUP_ID]);
+
+    expect(loaded.size).toBe(0);
+    expect(loaded.get(CANNED_PRICE_GROUP_ID)).toBeUndefined();
+  });
+
+  it('gives every entity the fetch shape the singular form gives it, association for association', async () => {
+    const linkResultSets: readonly (readonly SqlRow[])[] = EXPECTED_RATE_LINK_TABLES.map(
+      (linkTable) => [rateLinkRow(linkTable.memberColumn, 'member-' + linkTable.memberColumn)],
+    );
+
+    // Seed read, the shared rate read with one rate, its six link reads, then the seed's child read.
+    const { adapter } = makeSetLoaderSubject([
+      [priceGroupRow()],
+      [priceGroupRateRow()],
+      ...linkResultSets,
+      NO_ROWS,
+    ]);
+
+    const loaded = await adapter.getPriceGroupsByID([CANNED_PRICE_GROUP_ID]);
+    const priceGroup = loaded.get(CANNED_PRICE_GROUP_ID);
+
+    if (priceGroup === undefined) {
+      throw new Error('the requested price group was not loaded');
+    }
+
+    // The three associations the five-level cascade [model/service/PriceGroupService.cfc:L140-L181]
+    // walks, all materialized: the rates, the global-rate projection over them, and the parent chain.
+    expect(priceGroup.getPriceGroupRates()).toHaveLength(1);
+    expect(priceGroup.getGlobalPriceGroupRate()).toBeUndefined();
+    expect(priceGroup.getParentPriceGroup()).toBeUndefined();
+    expect(priceGroup.getChildPriceGroups()).toStrictEqual([]);
+  });
+
+  it('★★★ hands ONE instance of a shared ancestor to every descendant that needs it', async () => {
+    // Two seeds inheriting from one parent. Under N singular reads each seed received its OWN copy of
+    // that parent, built from the same stored row - something Hibernate's session could never do, and
+    // something the key-based comparisons in `src/domain/entities/priceGroup.ts` assume away.
+    const { adapter } = makeSetLoaderSubject([
+      [
+        priceGroupRow({ parentPriceGroupID: CANNED_PARENT_PRICE_GROUP_ID }),
+        priceGroupRow({
+          priceGroupID: SECOND_PRICE_GROUP_ID,
+          priceGroupIDPath: SECOND_PRICE_GROUP_ID,
+          parentPriceGroupID: CANNED_PARENT_PRICE_GROUP_ID,
+        }),
+      ],
+      [
+        priceGroupRow({
+          priceGroupID: CANNED_PARENT_PRICE_GROUP_ID,
+          priceGroupIDPath: CANNED_PARENT_PRICE_GROUP_ID,
+          parentPriceGroupID: null,
+        }),
+      ],
+      NO_ROWS,
+      NO_ROWS,
+      NO_ROWS,
+    ]);
+
+    const loaded = await adapter.getPriceGroupsByID([CANNED_PRICE_GROUP_ID, SECOND_PRICE_GROUP_ID]);
+
+    const first = loaded.get(CANNED_PRICE_GROUP_ID);
+    const second = loaded.get(SECOND_PRICE_GROUP_ID);
+
+    if (first === undefined || second === undefined) {
+      throw new Error('both requested price groups should have loaded');
+    }
+
+    expect(first.getParentPriceGroup()).toBe(second.getParentPriceGroup());
   });
 });
 
@@ -3746,14 +4142,26 @@ describe('deletePriceGroup - the legacy relationship gates and the child detachm
     // children to key on - and keying on stored rows detaches every child even for an
     // entity the caller loaded without them.
     expect(detach.sql).toContain('WHERE parentPriceGroupID = ?');
-    expect(parameterAt(detach.params, 1)).toBe(PINNED_CHILD_PRICE_GROUP_ID);
+    expect(parameterAt(detach.params, DETACH_BOUND.parentPriceGroupID)).toBe(
+      PINNED_CHILD_PRICE_GROUP_ID,
+    );
 
-    // `modifiedDateTime` is stamped from one captured instant
-    // [org/Hibachi/HibachiEntity.cfc:L662-L667]; `modifiedByAccountID` is NOT, because
-    // [org/Hibachi/HibachiEntity.cfc:L676-L677] sourced it from the ambient scope that
-    // transformation rule T6 removes, and this method takes no context parameter.
-    expect(parameterAt(detach.params, 0)).toBeInstanceOf(Date);
-    expect(detach.sql).not.toContain('modifiedByAccountID');
+    // BOTH modifying halves are stamped: the instant from one captured `now()`
+    // [org/Hibachi/HibachiEntity.cfc:L662-L667] and the account through the admin gate
+    // [L676-L678].
+    //
+    // ★ THIS ASSERTION WAS INVERTED BY S-07. It previously read
+    // `expect(detach.sql).not.toContain('modifiedByAccountID')`, on the reasoning that
+    // "[L676-L677] sourced it from the ambient scope that transformation rule T6 removes,
+    // and this method takes no context parameter". That was TRUE WHEN WRITTEN and is no
+    // longer: S-07 gave this adapter a request-scoped audit actor as a CONSTRUCTOR
+    // parameter, which is T6 being applied rather than evaded, so the account half now has
+    // the input it lacked. The legacy detached children by loading and saving each one, so
+    // Hibernate fired `preUpdate` per dirty child and stamped both - meaning the bulk
+    // UPDATE that replaces those saves has to stamp both to stay faithful. Keeping the old
+    // assertion would have pinned an omission as though it were the contract.
+    expect(parameterAt(detach.params, DETACH_BOUND.modifiedDateTime)).toBeInstanceOf(Date);
+    expect(detach.sql).toContain('modifiedByAccountID = COALESCE(?, modifiedByAccountID)');
 
     // Write-once columns are untouched, matching `UPDATED_PRICE_GROUP_COLUMNS`.
     expect(detach.sql).not.toContain('createdDateTime');
@@ -4047,7 +4455,7 @@ describe('deletePriceGroup - the legacy relationship gates and the child detachm
     // fail only in the test.
     //
     // AND ONE DOES NESTS, LEGITIMATELY. `MysqlProductRepository.saveProduct` opens a
-    // transaction and calls `MysqlSkuRepository.saveSkuForProduct(draft, productID, tx)`
+    // transaction and calls `MysqlSkuRepository.saveSku(draft, productID, tx)`
     // from inside it; that path funnels through `persistSku`, which calls
     // `executor.transaction(...)` on the executor it was handed. Refusing here would
     // report a failure for every new product carrying a SKU.
@@ -4842,7 +5250,16 @@ describe('money, flags, and the rate write paths', () => {
     // method, which is why nothing of the kind appears on this port.
     const { repository } = makeSubject();
 
-    expect(MySqlPriceGroupRepository.length).toBe(2);
+    // FOUR declared parameters, none of them ambient, and the two that were added are the two that
+    // make this assertion sharper rather than weaker.
+    //
+    // The AUDIT ACTOR (S-07) is precisely the value `HibachiEntity.preInsert` DID reach ambient scope
+    // for [org/Hibachi/HibachiEntity.cfc:L628-L635], so the last remaining job the request scope had
+    // in this adapter is now discharged by a constructor argument - T6 applied to the final holdout,
+    // not an exception to it. The REQUEST CLOCK is the mechanical opposite of an ambient scope too: a
+    // collaborator the caller must supply, whose absence is a compile error rather than a silent fall
+    // back to a clock of the adapter's own.
+    expect(MySqlPriceGroupRepository.length).toBe(4);
 
     const members = repository as unknown as Readonly<Record<string, unknown>>;
 
@@ -5672,7 +6089,7 @@ describe('createPoolExecutor - the transaction protocol', () => {
     //
     // REFUSING WOULD BREAK PRODUCTION CODE THAT DEPENDS ON THIS, which is what decided
     // it. `MysqlProductRepository.saveProduct` opens a transaction and then calls
-    // `MysqlSkuRepository.saveSkuForProduct(draft, productID, tx)` inside it; that call
+    // `MysqlSkuRepository.saveSku(draft, productID, tx)` inside it; that call
     // funnels through `persistSku`, which calls `executor.transaction(...)` on the
     // executor it was given. A named refusal there would fail every new product carrying
     // a SKU - and it would do so by design, which is worse than by accident.
@@ -5725,5 +6142,200 @@ describe('createPoolExecutor - the transaction protocol', () => {
     expect(connection.events).toStrictEqual([
       'POOL_EXECUTE:SELECT 1 FROM SwPriceGroup WHERE 1 = ?',
     ]);
+  });
+});
+
+// --- S-07: who a write is attributed to ----------------------------------------
+
+describe('audit actor attribution - the preInsert and preUpdate account stamps', () => {
+  // SECURITY REVIEW DISPOSITION - RAISED AS S-07, ACCEPTED.
+  //
+  // Every one of this adapter's four write paths used to read `createdByAccountID` and
+  // `modifiedByAccountID` OFF THE ENTITY IT WAS HANDED, so a caller that built a `PriceGroup` or a
+  // `PriceGroupRate` chose the row's recorded authorship. `HibachiEntity` never did that: both
+  // stamps came from the ambient request scope, `preInsert` setting the pair
+  // [org/Hibachi/HibachiEntity.cfc:L628-L630, L632-L635] and `preUpdate` setting only the modifying
+  // one [L676-L678], each behind the account's `!isNew() && getAdminAccountFlag()` gate.
+  //
+  // WHY THIS BLOCK IS NEW RATHER THAN AN EDIT. The suite already pinned every statement's text and
+  // the POSITION of all four audit values - `INSERT_BOUND.createdByAccountID` and its three siblings
+  // are named constants above. What it never asserted was either account's VALUE, so the spoof sat
+  // between two checked positions with nothing to announce it. The fixtures made that worse rather
+  // than better: `makePersistedPriceGroup` populates both columns with `CANNED_CREATED_BY_ACCOUNT_ID`
+  // / `CANNED_MODIFIED_BY_ACCOUNT_ID`, values the test file invents, so every write these cases
+  // exercised was attributed to an account that does not exist. Those fixture values ARE the
+  // caller-supplied spoof, which is why the cases below assert they reach no bound position instead
+  // of merely asserting the actor's value is present - the stronger of the two claims.
+
+  it("★★ STAMPS THE REQUEST ACTOR on a price-group insert, ignoring the entity's own accounts", async () => {
+    const { repository, executor } = makeSubject([]);
+
+    const inserted = await repository.savePriceGroup(makeUnsavedPriceGroup(undefined));
+
+    const statement = onlyStatement(executor.mutationCalls);
+
+    // Both halves, because `preInsert` calls both setters under ONE gate.
+    expect(parameterAt(statement.params, INSERT_BOUND.createdByAccountID)).toBe(
+      TEST_AUDIT_ACTOR.accountID,
+    );
+    expect(parameterAt(statement.params, INSERT_BOUND.modifiedByAccountID)).toBe(
+      TEST_AUDIT_ACTOR.accountID,
+    );
+
+    // And NEITHER fixture value was bound anywhere at all - not merely at the audit positions.
+    expect(statement.params).not.toContain(CANNED_CREATED_BY_ACCOUNT_ID);
+    expect(statement.params).not.toContain(CANNED_MODIFIED_BY_ACCOUNT_ID);
+
+    // The entity handed back reports the same resolution, so it describes the row that now exists.
+    expect(inserted.getCreatedByAccountID()).toBe(TEST_AUDIT_ACTOR.accountID);
+    expect(inserted.getModifiedByAccountID()).toBe(TEST_AUDIT_ACTOR.accountID);
+  });
+
+  it('stamps ONLY the modifying half on a price-group update, matching preUpdate', async () => {
+    const { repository, executor } = makeSubject([]);
+
+    const inserted = await repository.savePriceGroup(
+      makePersistedPriceGroup({
+        priceGroupID: CANNED_PRICE_GROUP_ID,
+        priceGroupIDPath: CANNED_PRICE_GROUP_ID,
+        parentPriceGroup: undefined,
+      }),
+    );
+
+    const statement = onlyStatement(executor.mutationCalls);
+
+    expect(parameterAt(statement.params, UPDATE_BOUND.modifiedByAccountID)).toBe(
+      TEST_AUDIT_ACTOR.accountID,
+    );
+
+    // `createdByAccountID` is absent from the SET list entirely, so the creating account is neither
+    // restamped nor rewritten - `preUpdate` has NO created setter anywhere in its body.
+    expect(EXPECTED_UPDATE_PRICE_GROUP_SQL).not.toContain('createdByAccountID = ');
+    expect(statement.params).not.toContain(CANNED_MODIFIED_BY_ACCOUNT_ID);
+
+    // The creating account is still reported, read off the row the entity came from.
+    expect(inserted.getCreatedByAccountID()).toBe(CANNED_CREATED_BY_ACCOUNT_ID);
+    expect(inserted.getModifiedByAccountID()).toBe(TEST_AUDIT_ACTOR.accountID);
+  });
+
+  it('★★ STAMPS NOTHING FOR A NON-ADMIN, reproducing the getAdminAccountFlag half of the gate', async () => {
+    const executor = new RecordingExecutor([]);
+    const repository = new MySqlPriceGroupRepository(
+      executor,
+      NON_ADMIN_AUDIT_ACTOR,
+      makeRecordingValueRounder(),
+      LIVE_REQUEST_CLOCK,
+    );
+
+    const inserted = await repository.savePriceGroup(makeUnsavedPriceGroup(undefined));
+
+    const statement = onlyStatement(executor.mutationCalls);
+
+    // The actor HAS an identifier; it is the missing flag alone that refuses the stamp, exactly as
+    // `getAdminAccountFlag()` did. An unattributed row beats a wrongly attributed one.
+    expect(NON_ADMIN_AUDIT_ACTOR.accountID).toBeTypeOf('string');
+
+    // NULL, not `undefined`: unlike its four sibling adapters this one runs every bound value
+    // through `toBindableValue`, so an absent value becomes an EXPLICIT SQL NULL and is never
+    // omitted from the parameter array. The refusal is therefore observable as a bound NULL at a
+    // known position rather than as a shortened array, which is the stronger contract.
+    expect(parameterAt(statement.params, INSERT_BOUND.createdByAccountID)).toBeNull();
+    expect(parameterAt(statement.params, INSERT_BOUND.modifiedByAccountID)).toBeNull();
+    expect(statement.params).not.toContain(NON_ADMIN_AUDIT_ACTOR.accountID);
+
+    expect(inserted.getCreatedByAccountID()).toBeUndefined();
+    expect(inserted.getModifiedByAccountID()).toBeUndefined();
+  });
+
+  it('★★ PRESERVES A STORED ATTRIBUTION when the gate refuses, rather than erasing it', async () => {
+    const executor = new RecordingExecutor([]);
+    const repository = new MySqlPriceGroupRepository(
+      executor,
+      NON_ADMIN_AUDIT_ACTOR,
+      makeRecordingValueRounder(),
+      LIVE_REQUEST_CLOCK,
+    );
+
+    const updated = await repository.savePriceGroup(
+      makePersistedPriceGroup({
+        priceGroupID: CANNED_PRICE_GROUP_ID,
+        priceGroupIDPath: CANNED_PRICE_GROUP_ID,
+        parentPriceGroup: undefined,
+      }),
+    );
+
+    const statement = onlyStatement(executor.mutationCalls);
+
+    // NULL is bound, and `COALESCE` in the SET list turns that into "leave the stored value alone".
+    // This is the whole reason the assignment is rendered through `sqlUpdateAssignment`: a bare `?`
+    // would bind NULL and DESTROY provenance on every non-admin update, turning a fix for forged
+    // attribution into a cause of erased attribution. `preUpdate` simply never reached its setter,
+    // so the loaded value stayed put and Hibernate wrote it back unchanged.
+    expect(parameterAt(statement.params, UPDATE_BOUND.modifiedByAccountID)).toBeNull();
+    expect(EXPECTED_UPDATE_PRICE_GROUP_SQL).toContain(
+      'modifiedByAccountID = COALESCE(?, modifiedByAccountID)',
+    );
+
+    // And the entity handed back reports what the ROW will hold, not the NULL that was BOUND.
+    expect(updated.getModifiedByAccountID()).toBe(CANNED_MODIFIED_BY_ACCOUNT_ID);
+  });
+
+  it('★★ STAMPS THE REQUEST ACTOR on a RATE insert, on the same seam as the dates', async () => {
+    const { repository, executor } = makeSubject([]);
+
+    const inserted = await repository.savePriceGroupRate(makeUnsavedPriceGroupRate());
+
+    const statement = statementAt(executor.mutationCalls, 0);
+
+    expect(statement.sql).toBe(EXPECTED_INSERT_PRICE_GROUP_RATE_SQL);
+    expect(parameterAt(statement.params, RATE_INSERT_BOUND.createdByAccountID)).toBe(
+      TEST_AUDIT_ACTOR.accountID,
+    );
+    expect(parameterAt(statement.params, RATE_INSERT_BOUND.modifiedByAccountID)).toBe(
+      TEST_AUDIT_ACTOR.accountID,
+    );
+
+    expect(inserted.getCreatedByAccountID()).toBe(TEST_AUDIT_ACTOR.accountID);
+    expect(inserted.getModifiedByAccountID()).toBe(TEST_AUDIT_ACTOR.accountID);
+  });
+
+  it('preserves a stored RATE attribution when the gate refuses', async () => {
+    const executor = new RecordingExecutor([]);
+    const repository = new MySqlPriceGroupRepository(
+      executor,
+      NON_ADMIN_AUDIT_ACTOR,
+      makeRecordingValueRounder(),
+      LIVE_REQUEST_CLOCK,
+    );
+
+    // A rate that ALREADY CARRIES a stored attribution, built here rather than through
+    // `makePersistedPriceGroupRate` - which leaves both accounts absent, and would therefore make
+    // this case pass whether the adapter bound the actor's refusal or the entity's own value. With a
+    // stored value present the two outcomes differ, which is the only way the assertion discriminates.
+    const stored = new PriceGroupRate({
+      priceGroupRateID: CANNED_PRICE_GROUP_RATE_ID,
+      globalFlag: 'false',
+      amountType: 'percentageOff',
+      amount: Money.fromDecimalString('12.50'),
+      createdByAccountID: CANNED_CREATED_BY_ACCOUNT_ID,
+      modifiedByAccountID: CANNED_MODIFIED_BY_ACCOUNT_ID,
+    });
+
+    const updated = await repository.savePriceGroupRate(stored);
+
+    const statement = statementAt(executor.mutationCalls, 0);
+
+    expect(statement.sql).toBe(EXPECTED_UPDATE_PRICE_GROUP_RATE_SQL);
+
+    // NULL is bound even though the entity carries a value, and `COALESCE` keeps what is stored.
+    expect(parameterAt(statement.params, RATE_UPDATE_BOUND.modifiedByAccountID)).toBeNull();
+    expect(statement.params).not.toContain(CANNED_MODIFIED_BY_ACCOUNT_ID);
+    expect(EXPECTED_UPDATE_PRICE_GROUP_RATE_SQL).toContain(
+      'modifiedByAccountID = COALESCE(?, modifiedByAccountID)',
+    );
+
+    // And the entity handed back reports what the ROW holds - the stored value `COALESCE` kept -
+    // not the NULL that was bound.
+    expect(updated.getModifiedByAccountID()).toBe(CANNED_MODIFIED_BY_ACCOUNT_ID);
   });
 });

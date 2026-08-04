@@ -14,17 +14,30 @@
 // [model/entity/Category.cfc:L126-L134] are its only route, which is why the write half has to
 // stand alone.
 //
-// ★ A CONDENSED RESTATEMENT OF THE NEXT THREE SECTIONS ONCE SAT HERE, AND IT HAS BEEN REMOVED
-// BECAUSE TWO OF ITS CLAIMS WERE FALSE. It summarised the six legacy walk properties, the three
-// path columns and the "computation only" boundary - all three of which the sections below already
-// state in full - but it asserted of the cycle guard "None is added here" and listed "no cycle
-// detection" among this module's exclusions. Both were true of an earlier revision and are now
-// wrong: `buildIdPathList` REFUSES a cyclic or unbounded chain by throwing `CyclicIdPathError`,
-// and `resolveIdPath` carries the same depth backstop. Keeping a shorter summary that contradicts
-// the authoritative section forty lines below it is worse than keeping neither, so the summary is
-// gone and the sections stand. Nothing else was lost with it - every fact it carried, down to the
-// prefix-match filters, the absence of whitespace stripping and case folding, and the
-// persistence-layer ownership of path assembly, appears below.
+// ★ IN ONE PARAGRAPH, BEFORE THE SECTIONS THAT PROVE IT. This module reproduces the six
+// properties of the legacy walk exactly - root-first, self-last, comma-delimited, includes self,
+// NO CYCLE GUARD, never empty - and serves the three path columns `priceGroupIDPath`,
+// `productTypeIDPath` and `categoryIDPath`, each declared `ormtype="string" length="4000"`. It
+// supplies COMPUTATION ONLY: the ordering of path assignment relative to `super` belongs to each
+// entity, the `LIKE '<path>%'` prefix filters belong to the repositories, and the stored path is
+// instance state on the entity rather than anything retained here. Identifiers pass through
+// untouched - no whitespace stripping, no case folding. And no cycle detection is added: none is
+// added here, because none exists at [org/Hibachi/HibachiEntity.cfc:L314-L321] and adding one
+// would be an unrequested behavioural change rather than a port.
+//
+// ★ THIS PARAGRAPH ONCE READ THE OPPOSITE WAY, AND THE RECORD OF THAT IS WORTH KEEPING. An
+// earlier revision of this module DID refuse a cyclic or over-deep chain, throwing from
+// `buildIdPathList` and carrying a depth backstop in `resolveIdPath`, and this header argued for
+// it at length as a divergence. That guard has been removed in full - the visited set, the depth
+// ceiling, the error type it threw and the `reparent`-shaped predicate three entities called - and
+// the reason is not that the guard was badly built. It is that the module's authority reproduces
+// the legacy walk and adds nothing to it: a cycle guard here is a behavioural change nobody asked
+// for, `reparent`-class helpers are outside this module's surface, and the migration's divergence
+// budget is closed at three, none of which is spent in this folder. Termination for the ONE place
+// that genuinely needed it - the hand-written recursive ancestry reads in
+// `src/repositories/mysql/mysqlPriceGroupRepository.ts` and `mysqlProductTypeRepository.ts`, where
+// Hibernate's lazy traversal used to do the recursing - lives there, as a documented fetch-shape
+// decision under transformation rule T3, and is not a divergence either.
 //
 //   §0.3.3 Composite / materialized path - this module "centralizes the
 //   comma-delimited ID-path walking that the legacy code duplicates between
@@ -46,12 +59,14 @@
 //     comma-delimited   the default delimiter of that legacy list call.
 //     includes self     L315 runs before the parent test at L316, always.
 //     no cycle guard    the do/while at L314-L321 carries no visited set and
-//                       no iteration bound. THIS IS THE ONE PROPERTY THE PORT
-//                       DOES NOT REPRODUCE. `buildIdPathList` refuses a cyclic
-//                       or unbounded chain by THROWING, producing no path at
-//                       all - the terms its own docstring reserved for such a
-//                       guard. The reasoning, and why no preserve-exactly
-//                       mandate covers it, is set out in full there.
+//                       no iteration bound, and neither does the port. A cyclic
+//                       parent chain loops here exactly as it loops there.
+//                       That is deliberate: the walk is reproduced, not
+//                       improved, and a guard would be an unrequested
+//                       behavioural change. Where termination genuinely had to
+//                       be decided - the recursive ancestry reads in the MySQL
+//                       adapters, which replace Hibernate's lazy traversal - it
+//                       is decided there, as a fetch-shape decision.
 //     never empty       it is a do/while, so the body executes once even for a
 //                       root with no parent; the result therefore always holds
 //                       at least one element.
@@ -127,28 +142,29 @@
 //   * No stored state whatsoever: no module-scope mutable binding and nothing
 //     retained between calls. The stored path is instance state on the entity;
 //     this module only decides and computes.
-//   * NO CYCLE DETECTION - STRUCK, BECAUSE THIS MODULE NOW HAS IT. This entry
-//     read "No cycle detection. See the six properties above." and it was true
-//     of an earlier revision. `buildIdPathList` and `resolveIdPath` both REFUSE
-//     a cyclic or over-deep chain by throwing {@link CyclicIdPathError}, and the
-//     six properties above now say so as well. The divergence, and the four-step
-//     justification for it, are set out on `buildIdPathList` itself.
+//   * No cycle detection. See the six properties above: the legacy walk has
+//     none, so neither does this one. An earlier revision of this module did
+//     carry a visited set and a depth ceiling, and both are gone - not because
+//     they misbehaved, but because reproducing the walk is this module's whole
+//     brief and a guard is an addition to it. Termination for the one place
+//     that had to decide it, the recursive ancestry reads in the MySQL
+//     adapters, is decided in those adapters.
 //   * No value rewriting: identifiers pass through exactly as given, with no
 //     whitespace stripping and no case folding on the way in. `listAppend`
 //     guarantees the same, and contradicting it here would change what gets
 //     persisted.
 //
-// THIS MODULE OWNS ZERO DEFECTS, AND ONE DIVERGENCE THAT IS NOT ONE OF THE THREE
-//   The port's numbered defect register assigns nothing to this folder, and
-//   none of the three BUDGETED deliberate divergences is spent here, so no
-//   defect marker appears below. The heading read "ZERO DEFECTS AND ZERO
-//   DIVERGENCES" until the cycle guard was added: that guard IS a divergence
-//   from the legacy walk, it is annotated as one on `buildIdPathList`, and it is
-//   a fourth one rather than a spend against the budgeted three - which is
-//   precisely why it carries its own four-step justification instead of citing
-//   the budget. Two legacy imperfections that this module's own call
-//   sites DO exhibit are annotated where they land, as parity notes rather
-//   than as defects:
+// THIS MODULE OWNS ZERO DEFECTS AND ZERO DIVERGENCES
+//   The numbered defect register assigns nothing to this folder, and none of
+//   the migration's three deliberate divergences is spent here, so no defect
+//   marker and no divergence marker appears below. This heading briefly read
+//   otherwise, while the cycle guard existed and was annotated as a divergence
+//   the budget had no room for; removing the guard restored the heading to what
+//   it had always been. The budget is spent as follows and nowhere else: two in
+//   `src/services/promotionService.ts` with `src/services/promotion/discountAmount.ts`,
+//   and one across `src/domain/entities/sku.ts` and `src/domain/entities/product.ts`.
+//   Two legacy imperfections that this module's own call sites DO exhibit are
+//   annotated where they land, as parity notes rather than as defects:
 //
 //     * the doc comment at [org/Hibachi/HibachiEntity.cfc:L307] calls the
 //       builder a private method while the declaration on the very next line
@@ -261,92 +277,12 @@ export type PrimaryIdAccessor<TNode> = (node: TNode) => string;
 export type ParentNodeAccessor<TNode> = (node: TNode) => TNode | null | undefined;
 
 /**
- * The deepest ancestor chain {@link buildIdPathList} will climb.
- *
- * ★ IT IS A BACKSTOP, NOT THE CYCLE GUARD. Cycles are caught exactly, by node
- * identity, and an acyclic chain of any depth below this bound walks exactly as it
- * did before the guard existed. This constant covers only the one shape identity
- * tracking cannot see — a parent accessor that manufactures a fresh node on every
- * call, so no node is ever revisited and the chain is unbounded rather than
- * circular.
- *
- * ★ THE FIGURE IS DERIVED FROM THE SCHEMA, NOT CHOSEN FOR COMFORT. All three
- * path-bearing columns are declared `length="4000"`
- * [model/entity/ProductType.cfc:L53, model/entity/PriceGroup.cfc:L53,
- * model/entity/Category.cfc:L53]. A path of 32-character identifiers joined by
- * single commas costs 33 characters per level, so those columns store AT MOST 121
- * LEVELS. This bound is more than thirty times that, so a hierarchy deep enough to
- * reach it could never have been persisted — and it sits well above the deepest
- * acyclic chain the suite exercises, which is what keeps that case passing
- * unchanged.
- *
- * NO TIMING, THROUGHPUT OR SERVICE-LEVEL CLAIM IS MADE OR IMPLIED BY THIS NUMBER.
- * It is a correctness bound on a walk over a finite hierarchy, derived from a
- * column width.
- */
-const MAX_ID_PATH_DEPTH = 4096;
-
-/**
- * Raised when a materialized-path walk cannot terminate.
- *
- * ★ IT THROWS AND PRODUCES NOTHING, WHICH IS THE WHOLE POINT. The alternative — a
- * cap that truncates — would hand back a SHORTER path that still looks valid, and
- * these paths decide which promotion rewards apply and which price-group rate
- * wins. A shortened `productTypeIDPath` silently changes both. Refusing outright is
- * the only failure mode that cannot change money, and it is the mode
- * {@link buildIdPathList}'s own documentation reserved.
- *
- * IT IS RAISED BEFORE ANY PATH EXISTS, therefore before any caller can assign one
- * to an entity field and before any repository can bind one into a statement — so
- * a cyclic hierarchy cannot be persisted with a half-built path.
- *
- * The message names the depth reached and the identifier of the offending node,
- * because that identifier is what an operator needs in order to break the cycle.
- * It is a `Sw*` primary key, never a credential or a monetary value.
- *
- * JUDGMENT CALL: this class is deliberately NOT exported, and neither is
- * {@link MAX_ID_PATH_DEPTH}. The export surface of this module is a closed set of
- * path functions, its suite asserts that set exactly and asserts that every
- * export is a function, and widening it is a product decision rather than an
- * implementation detail. The precedent is `src/lib/cfml/precision.ts`, whose
- * `PrecisionError` is withheld for the identical reason and in the identical words.
- * The error remains a distinct, identifiable type rather than a bare string: it is
- * an `Error` subclass carrying a stable `name`, so a caller discriminates on
- * `name === 'CyclicIdPathError'` without this module handing out a constructor. If
- * a consumer ever genuinely needs `instanceof`, exporting it is a deliberate
- * surface change and should be made as one.
- *
- * @param reason `'cycle'` when the walk returned to a node it had already visited;
- *   `'depth'` when it climbed past {@link MAX_ID_PATH_DEPTH} without repeating one.
- * @param depthReached how many levels had been collected when the walk stopped.
- * @param offendingId the identifier of the node the walk stopped on.
- */
-class CyclicIdPathError extends Error {
-  public constructor(reason: 'cycle' | 'depth', depthReached: number, offendingId: string) {
-    super(
-      reason === 'cycle'
-        ? `Materialized ID path walk revisited node '${offendingId}' after ${String(depthReached)} ` +
-            `level(s): the parent chain contains a cycle. No path was produced, because a ` +
-            `truncated path would silently change which promotion rewards and price-group rates ` +
-            `apply. Break the cycle in the parent hierarchy.`
-        : `Materialized ID path walk exceeded ${String(MAX_ID_PATH_DEPTH)} levels at node ` +
-            `'${offendingId}' without revisiting one, so the parent chain is unbounded. No path ` +
-            `was produced. The path columns are declared length="4000" and store at most 121 ` +
-            `levels, so no persistable hierarchy can reach this depth.`,
-    );
-    this.name = 'CyclicIdPathError';
-  }
-}
-
-/**
  * Rebuild a materialized ID path by climbing from one node to its root.
  *
  * THE WRITE HALF. This is the target's equivalent of the framework builder at
  * [org/Hibachi/HibachiEntity.cfc:L308-L324], and it reproduces all six
- * properties listed in the file header: root-first, self-last,
- * comma-delimited, includes the starting node, never empty - and, as the SINGLE
- * documented exception, a cyclic or unbounded parent chain is REFUSED rather than
- * followed forever. See the divergence note below.
+ * properties listed in the file header, without exception: root-first, self-last,
+ * comma-delimited, includes the starting node, never empty, and no cycle guard.
  *
  * The three in-scope entities call it with their own parent property:
  * `parentPriceGroup` [model/entity/PriceGroup.cfc:L59],
@@ -361,69 +297,40 @@ class CyclicIdPathError extends Error {
  * All three entities call it, so the public shape is what is reproduced; the mismatch is recorded,
  * not resolved.
  *
- * ★★★ DELIBERATE DIVERGENCE — THE CYCLE GUARD THIS FUNCTION'S OWN DOCUMENTATION
- * RESERVED THE RIGHT TO ADD, NOW ADDED. The paragraph that used to stand here
- * recorded that [org/Hibachi/HibachiEntity.cfc:L314-L321] carries no visited set
- * and no iteration bound, that a cycling parent chain therefore never terminates,
- * and that the port reproduced that faithfully. It also stated the terms on which
- * a guard would be acceptable: "If a bounded guard is ever judged necessary, it
- * must THROW rather than truncate silently, and it must be annotated as the
- * divergence it would be; truncation would quietly shorten a path and change
- * money." Those terms are met exactly — this guard throws
- * {@link CyclicIdPathError} and produces NO path at all, so no shortened value can
- * reach a caller, a column or a comparison.
+ * ★ NO CYCLE GUARD, AND THE ABSENCE IS DELIBERATE.
+ * [org/Hibachi/HibachiEntity.cfc:L314-L321] carries no visited set and no iteration
+ * bound, so a cycling parent chain never terminates there. It does not terminate
+ * here either. That is the sixth reproduced property, not an oversight.
  *
- * WHY IT IS JUSTIFIED, IN FOUR STEPS, EACH CHECKABLE.
+ * ★ AN EARLIER REVISION DID GUARD, AND THE RECORD OF ITS REMOVAL BELONGS HERE.
+ * That revision refused a cyclic or over-deep chain by throwing, tracked identity
+ * with a visited set of node references, and carried a depth backstop derived from
+ * the `length="4000"` path columns [model/entity/ProductType.cfc:L53,
+ * model/entity/PriceGroup.cfc:L53, model/entity/Category.cfc:L53]. It was removed
+ * in full, and not because it misbehaved. Three reasons, each checkable:
  *
- *   1. THE NON-TERMINATION IS AN AVAILABILITY DEFECT, NOT A BEHAVIOUR. On CFML
- *      the loop ran inside a request with a server-configured timeout that
- *      eventually killed it. On `nodejs20.x` the same loop is a synchronous
- *      `do/while` on the event loop: it pins a Lambda invocation until the
- *      function times out, and every automatic retry repeats it. There is no
- *      "observable behaviour" here to preserve — the legacy answer was "the
- *      request dies", and the target answer is "the request dies, slower and
- *      repeatedly".
+ *   1. THIS MODULE REPRODUCES THE WALK AND ADDS NOTHING TO IT. A guard is an
+ *      addition. The instruction this module is built against says a cycle guard
+ *      may not be added and that faithful reproduction is preferred, and the two
+ *      halves of that are not in tension.
  *
- *   2. IT IS NOT A REGISTER ENTRY. The project's defect register is a closed set
- *      of twenty entries plus eight secondary items, and the missing cycle guard
- *      is in NEITHER. The preserve-exactly mandate names promotion discount math
- *      with use-limit enforcement, the price-group and currency cascade, and
- *      option-to-SKU resolution. None of them is this. So no mandate is being set
- *      aside, and none is cited to justify setting one aside.
+ *   2. IT WAS A FOURTH DIVERGENCE AGAINST A BUDGET CLOSED AT THREE. The
+ *      migration's three deliberate divergences are spent on the un-scoped
+ *      discount accumulator, the fixed-amount precision gap, and the entity
+ *      option-lookup memos. This folder owns none of them, and self-declaring an
+ *      extra one does not create room for it.
  *
- *   3. THE FRAMEWORK IT COPIED IS EXPLICITLY NOT PORTED. `org/Hibachi/**` is a
- *      boundary to extract from and never modify, and not one of its 938 files is
- *      ported; what those files provided is REPLACED rather than reproduced. This
- *      walk is the replacement for one framework method, and a replacement is
- *      exactly where a framework's unbounded loop stops being inherited.
+ *   3. THE ONE PLACE THAT GENUINELY HAD TO DECIDE TERMINATION IS NOT THIS ONE.
+ *      The MySQL adapters read ancestry with hand-written recursive queries that
+ *      replace Hibernate's lazy traversal, so termination there is a fetch-shape
+ *      decision they had to make and did make, under transformation rule T3 and
+ *      documented as such. It is not a divergence either, and it is not here.
  *
- *   4. NOTHING LEGITIMATE IS REFUSED, AND THE SCHEMA PROVES IT. All three
- *      path-bearing columns are declared `length="4000"`
- *      [model/entity/ProductType.cfc:L53, model/entity/PriceGroup.cfc:L53,
- *      model/entity/Category.cfc:L53]. A path of 32-character identifiers joined
- *      by single commas costs 33 characters per level, so 4000 characters STORE AT
- *      MOST 121 LEVELS. {@link MAX_ID_PATH_DEPTH} sits an order of magnitude above
- *      that, so a hierarchy deep enough to trip the depth backstop could not have
- *      been persisted in the first place.
- *
- * ★ THE PRIMARY GUARD IS EXACT, WHICH IS WHY IT IS A VISITED SET AND NOT A CAP.
- * A cap alone would have to guess where a legitimate hierarchy ends and a cycle
- * begins. Identity tracking guesses nothing: it refuses if and only if the walk
- * returns to a node it has already stood on. An acyclic chain of ANY depth
- * traverses exactly as it did before this guard existed — which is the property
- * the suite's five-hundred-and-twelve-level case pins, and it still passes
- * untouched. The depth backstop exists only for the one shape identity tracking
- * cannot see: a parent accessor that manufactures a fresh node on every call, so
- * that no node is ever revisited and the chain is unbounded rather than circular.
- * The three shipped entities read a stored field and cannot do that; an arbitrary
- * accessor can, and this function's signature accepts arbitrary accessors.
- *
- * IDENTITY, NOT IDENTIFIER, IS WHAT IS TRACKED. Two distinct nodes may legitimately
- * report the same identifier — the suite has a case where a generational accessor
- * returns a different string for the same node on successive calls — so comparing
- * identifiers would produce false refusals and false acceptances in turn. The
- * visited set holds NODE REFERENCES, which is the only thing that means "I have
- * been here".
+ * CFML parity [org/Hibachi/HibachiEntity.cfc:L316, L319]: the legacy body evaluates the parent
+ * accessor TWICE per iteration - once for the null test and again for the reassignment - because
+ * CFML has no way to bind the result of a dynamic getter call. The port calls the injected accessor
+ * ONCE and reuses the value. That is the idiomatic translation of a construct with no TypeScript
+ * equivalent, not a behavioural change: the same chain is walked in the same order.
  *
  * CFML parity [org/Hibachi/HibachiEntity.cfc:L312, L321]: the loop condition is a real `hasParent`
  * flag, as the legacy body writes it, and not a constant-condition loop with an internal break -
@@ -443,9 +350,6 @@ class CyclicIdPathError extends Error {
  *   {@link ParentNodeAccessor}.
  * @returns a comma-delimited path, root first and `node` last, holding at
  *   least one element and carrying neither a leading nor a trailing delimiter.
- * @throws CyclicIdPathError when the parent chain returns to a node the walk has
- *   already visited, or climbs past {@link MAX_ID_PATH_DEPTH} levels. NO PATH IS
- *   PRODUCED in either case.
  */
 export function buildIdPathList<TNode>(
   node: TNode,
@@ -457,32 +361,16 @@ export function buildIdPathList<TNode>(
   // above.
   const idsFromNodeUpward: string[] = [];
 
-  // Node REFERENCES, not identifiers - see the identity note in the docstring.
-  // Local to this call, so two walks can never observe one another and nothing is
-  // retained across a warm invocation.
-  const visitedNodes = new Set<TNode>();
-
   let cursor: TNode = node;
   let hasParent = true;
 
   // A do/while, so the starting node's identifier is always collected: this is both the "includes
   // self" and the "never empty" property, and they are the same line of legacy code.
+  //
+  // CFML parity [org/Hibachi/HibachiEntity.cfc:L314-L321]: there is no visited set and no
+  // iteration bound, exactly as in the legacy loop. A cyclic parent chain does not terminate here
+  // because it does not terminate there, and the walk is reproduced rather than improved.
   do {
-    // Checked BEFORE the identifier is collected, so a self-parenting node is
-    // refused on its second visit rather than after contributing a duplicate
-    // segment to an accumulator that is then discarded anyway.
-    if (visitedNodes.has(cursor)) {
-      throw new CyclicIdPathError('cycle', idsFromNodeUpward.length, getPrimaryIdValue(cursor));
-    }
-    visitedNodes.add(cursor);
-
-    // The backstop for an accessor that manufactures a fresh node per call, which
-    // identity tracking cannot see. Compared against the count already collected,
-    // so the limit is a count of LEVELS.
-    if (idsFromNodeUpward.length >= MAX_ID_PATH_DEPTH) {
-      throw new CyclicIdPathError('depth', idsFromNodeUpward.length, getPrimaryIdValue(cursor));
-    }
-
     idsFromNodeUpward.push(getPrimaryIdValue(cursor));
 
     const parent = getParentNode(cursor);
@@ -504,130 +392,6 @@ export function buildIdPathList<TNode>(
   }
 
   return idPathList;
-}
-
-/**
- * Would assigning `candidateParent` as `node`'s parent close a cycle?
- *
- * THE SETTER-BOUNDARY HALF of the cycle divergence documented on
- * {@link buildIdPathList}. That guard refuses to PRODUCE a path from a cyclic
- * chain, which is what keeps a save from hanging; this one lets the three
- * path-bearing entities refuse to CREATE the cycle in the first place, which is
- * what keeps every OTHER walk over the same parent chain safe.
- *
- * WHY BOTH ARE NEEDED, stated concretely rather than as defence-in-depth
- * boilerplate. The path walk is not the only code that climbs `parentProductType`
- * or `parentPriceGroup`. The price-group cascade ascends the product-type parent
- * chain on the READ path while pricing an order
- * [model/service/PriceGroupService.cfc:L68-L77], and
- * `ProductType.getSimpleRepresentation()` recurses up the same chain
- * [model/entity/ProductType.cfc:L273-L278]. Neither goes anywhere near a path
- * build, so neither is protected by the guard inside `buildIdPathList`. Guarding
- * the assignment instead means a cycle never enters a live object graph, and all
- * of those walks are safe for the same one reason.
- *
- * WHERE A CYCLE CAN AND CANNOT COME FROM. Not from hydration: both repository
- * adapters that materialize an ancestor chain carry their own visited set and
- * stop at the first repeat, so a cyclic row set is hydrated as a TRUNCATED,
- * acyclic graph - a read that returns rather than a read that never ends. That
- * decision is theirs and is deliberately left alone, which is also why the entity
- * CONSTRUCTORS are not guarded: the constructor is the hydration boundary, and
- * making it throw would convert those adapters' careful "returns" back into a
- * failure. The remaining way in is exactly the one the review describes - a
- * caller reparenting a live graph through a setter - and that is the boundary
- * this function serves.
- *
- * NO CFML ANTECEDENT, and none is owed. The legacy setters
- * [model/entity/ProductType.cfc:L149-L153],
- * [model/entity/PriceGroup.cfc:L156-L160] and
- * [model/entity/Category.cfc:L100-L104] accept any argument; the framework never
- * checked, because a CFML request thread that spun forever was one thread. The
- * reasoning for diverging is the same reasoning set out on {@link buildIdPathList}
- * and is not restated here.
- *
- * ★ THIS FUNCTION ANSWERS A QUESTION AND NEVER THROWS ONE. It reports; the caller
- * decides. Each entity raises its own error naming its own identifiers and its own
- * association, which is far more useful to an operator than one generic message
- * from a shared helper - and it keeps this module free of any opinion about how a
- * caller should fail.
- *
- * ★ IT CANNOT ITSELF LOOP. The upward walk carries the same visited-identity set
- * and the same {@link MAX_ID_PATH_DEPTH} backstop the path walk uses, so a graph
- * that is ALREADY cyclic - reparented before this guard existed, or assembled by
- * a caller that bypasses the setters - is answered rather than followed forever.
- * Reaching either limit means the candidate chain does not terminate, so no
- * assignment onto it can be sound; both therefore answer `true`.
- *
- * @typeParam TNode - the hierarchy node type; nothing is assumed of it beyond
- *   reference identity.
- * @param node - the node whose parent is about to be assigned.
- * @param candidateParent - the node proposed as its parent.
- * @param getParentNode - reads a node's parent, answering `null` or `undefined`
- *   at the root. The same accessor the caller passes to
- *   {@link buildIdPathList}.
- * @returns `true` when the assignment would make `node` reachable from itself -
- *   because the candidate IS the node, which the walk answers on its first
- *   iteration, or because the node already sits above the candidate -
- *   or when the candidate's own chain does not terminate. `false` when the
- *   assignment is sound.
- */
-export function wouldCreateIdPathCycle<TNode>(
-  node: TNode,
-  candidateParent: TNode,
-  getParentNode: ParentNodeAccessor<TNode>,
-): boolean {
-  // NO SPECIAL CASE FOR A SELF-PARENT, deliberately. A node chosen as its own
-  // parent is the tightest cycle and the one a single operator edit produces, so
-  // an explicit early return for it is the obvious thing to write - and it would
-  // be dead code. The walk below starts the cursor AT the candidate and asks
-  // `cursor === node` as its very first question, so the self-parent case is
-  // already the first iteration's answer. A redundant branch in a guard is worse
-  // than no branch: it invites a reader to assume the loop does not handle the
-  // case, and mutation-testing it proves nothing because removing it changes no
-  // outcome. The case is covered by its own test instead.
-  //
-  // Node REFERENCES, matching the identity rule the path walk uses - see the note
-  // there for why an identifier-keyed set would be wrong. Local to this call, so
-  // nothing survives a warm invocation and two guards can never observe one
-  // another.
-  const visitedNodes = new Set<TNode>();
-
-  let cursor: TNode = candidateParent;
-  let levelsClimbed = 0;
-
-  for (;;) {
-    // `node` is an ancestor of the candidate, so making the candidate `node`'s
-    // parent would close the loop.
-    if (cursor === node) {
-      return true;
-    }
-
-    // The candidate's own chain is already cyclic. No assignment onto a chain
-    // that never reaches a root can be sound, so this is reported as a cycle
-    // rather than passed over.
-    if (visitedNodes.has(cursor)) {
-      return true;
-    }
-    visitedNodes.add(cursor);
-
-    levelsClimbed += 1;
-
-    // The backstop for an accessor that manufactures a fresh node per call, which
-    // identity tracking cannot see. Same limit and same reasoning as the path
-    // walk.
-    if (levelsClimbed >= MAX_ID_PATH_DEPTH) {
-      return true;
-    }
-
-    const parent = getParentNode(cursor);
-
-    if (isAbsent(parent)) {
-      // A root was reached without meeting `node`: the assignment is sound.
-      return false;
-    }
-
-    cursor = parent;
-  }
 }
 
 /**

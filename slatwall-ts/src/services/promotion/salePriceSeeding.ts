@@ -1,59 +1,30 @@
 /**
- * SALE-PRICE SEEDING - the pass that enters sale prices into the discount competition.
+ * Sale-price seeding - the pass that enters sale prices into the discount competition.
  *
- * Port of [model/service/PromotionService.cfc:L144-L162], the first loop inside
- * `updateOrderAmountsWithPromotions`. It walks the order's items and, for every item whose SKU
- * carries a sale price strictly below the SKU's own price, seeds one qualified-discount record into
- * the accumulator BEFORE the main reward iteration at [model/service/PromotionService.cfc:L164]
- * begins. Running first is what lets a sale price compete on equal footing with reward discounts in
- * the descending insertion sort that happens later and elsewhere.
+ * Ports [model/service/PromotionService.cfc:L144-L162]. Every order item whose SKU carries a sale
+ * price strictly below the SKU's own price contributes one qualified-discount record to the
+ * accumulator BEFORE the reward traversal at [model/service/PromotionService.cfc:L164] begins.
+ * Seeding first is behavioural, not stylistic: it is what lets a sale price compete with reward
+ * discounts in the descending insertion sort the facade performs afterwards.
  *
- * `model/service/PromotionService.cfc` is the sole behavioural authority for this module;
- * `model/entity/Sku.cfc` is consulted only as the accessor contract behind
- * `orderItem.getSku().getSalePriceDetails()`.
- *
- * WHAT THIS MODULE MUST NOT DO, each prohibition being a money decision rather than a style
- * preference:
- *
- *   * It does NOT sort. The descending insertion sort establishing "index [1] is best" lives at
- *     [model/service/PromotionService.cfc:L266-L294] and belongs to the promotion facade.
- *   * It does NOT round, quantize, clamp or format. The seeded amount is a raw extended-price
- *     delta; quantization belongs to the reward path alone
- *     ([model/service/PromotionService.cfc:L1017], ported in `./discountAmount.ts`).
- *   * It does NOT add a guard the legacy lacks - no non-negativity test on the sale price, no
- *     presence test on the promotion identifier, no throw on a malformed detail row.
- *   * It holds NO state. The accumulator is supplied by the caller and lives for exactly one
- *     invocation, mirroring `var orderItemQulifiedDiscounts = {}` at
- *     [model/service/PromotionService.cfc:L142]. Reusing one map across invocations on a warm
- *     container would surface one customer's discount in another customer's order.
+ * The pass adds nothing the legacy lacks. It does not sort, round, quantize or format - quantization
+ * belongs to the reward path at [model/service/PromotionService.cfc:L1017] - and it adds no
+ * non-negativity or presence guard. It also holds no state: the accumulator belongs to the caller
+ * and lives for exactly one invocation, mirroring `var orderItemQulifiedDiscounts = {}` at
+ * [model/service/PromotionService.cfc:L142]. Reusing one map across invocations on a warm container
+ * would surface one customer's discount in another customer's order.
  *
  * LEGACY-NOTE [model/service/PromotionService.cfc:L142]: the accumulator is spelled
- * `orderItemQulifiedDiscounts` in the source - "Qulified", missing the `a` - and the target uses
- * the corrected `orderItemQualifiedDiscounts`. The rename is permitted because the identifier is a
- * function-local accumulator, never a column, a JSON key or a parameter name, and interface parity
- * binds public method names. Identifiers that ARE contracts stay verbatim wherever they surface -
- * `hb_permission="promotionPeriod.promtionRewards"` at [model/entity/PromotionReward.cfc:L57] chief
- * among them. One is renamed with a comment, the other preserved with a comment.
+ * `orderItemQulifiedDiscounts` in the source - "Qulified", missing the `a`. The target uses the
+ * corrected spelling because that identifier is a function-local accumulator rather than a column, a
+ * JSON key or a parameter name. Identifiers that ARE contracts stay verbatim, such as
+ * `hb_permission="promotionPeriod.promtionRewards"` at [model/entity/PromotionReward.cfc:L57].
  *
- * LEGACY-NOTE [model/service/PromotionService.cfc:L138]: the neighbouring declaration - the
- * reward-usage ledger this module deliberately does NOT touch - carries the comment "This is a
- * structure of promotionRewards that will hold information reguarding maximum usages". "reguarding"
- * is the source's own spelling, quoted unaltered.
- *
- * LEGACY-NOTE [model/service/PromotionService.cfc:L150, L252, L299, L486, L990, L995, L1001, L1006,
- * L1007]: the `precisionEvaluate` census for this component is NINE sites, not the eight the
- * published plan lists. The plan's "L248" is a comment line and the arithmetic it means is on L252;
- * the plan's single "L1007" is really two adjacent sites, L1006 and L1007. This module owns exactly
- * one of the nine - L150 - and routes it through the `Money` value object.
- *
- * LEGACY-NOTE [model/service/PromotionService.cfc:L121-L131]: the illustrative docblock promises
- * FIVE members on each accumulator record - `promotionRewardID`, `promotion`, `discountAmount`,
- * `discountQuantity` and `discountPerUseValue` - while all three construction sites write only the
- * first three (L156-L158 here, L275-L277 and L289-L291 on the reward path). The target follows the
- * CODE, and the record type is imported from
- * `../../domain/promotionEngine/qualifiedDiscountTypes.js` rather than redeclared. A same-named
- * `discountQuantity` and `discountPerUseValue` do exist, but on the reward ledger's per-item usage
- * rows at L311-L312 and L325-L326; the docblock conflates two structures.
+ * LEGACY-NOTE [model/service/PromotionService.cfc:L121-L131]: the illustrative docblock there
+ * promises five members on each accumulator record, while all three construction sites write only
+ * `promotionRewardID`, `promotion` and `discountAmount`. The target follows the code and imports the
+ * record type from `../../domain/promotionEngine/qualifiedDiscountTypes.js`, so the shape cannot
+ * drift; the two extra names exist on the reward ledger's per-item usage rows instead.
  */
 
 import type { Promotion } from '../../domain/entities/promotion.js';
@@ -75,7 +46,7 @@ import { structKeyExists } from '../../lib/cfml/struct.js';
  *
  * JUDGMENT CALL: the framework accessor becomes a constructor-injected collaborator typed to this
  * local interface rather than a fourteenth port or a new member on
- * `../../domain/ports/promotionRepository.js`, whose eight members are frozen and none of which
+ * `../../domain/ports/promotionRepository.js`, whose seven members are frozen reads and none of which
  * loads a `Promotion` by identifier. Declaring it under `src/domain/ports/` would create that
  * fourteenth port by another name, so it is declared beside its only consumer. A service locator, a
  * runtime scan or module-level state are all excluded outright.
@@ -85,21 +56,10 @@ import { structKeyExists } from '../../lib/cfml/struct.js';
  *   `Promise<Promotion | undefined>`
  * would force a throw or a skip that the legacy never performs.
  *
- * ★ NOT EXPORTED, AND AN EARLIER REVISION EXPORTED IT.
- *
- * This declaration is deliberately MODULE-LOCAL. Exporting it makes it an importable contract that
- * any module may depend on and any adapter may implement — which is a port in everything but the
- * folder it sits in, and the port set is CLOSED AT THIRTEEN. The alternative rejected above was
- * "declare this in `src/domain/ports/`, creating the fourteenth port by another name"; publishing it
- * from here reaches the same place by a shorter route, so the export was removed rather than the
- * declaration moved. The instruction it now satisfies is literal: declare the contract as a LOCAL
- * type alias in this file, attached to the one class that consumes it.
- *
- * Nothing outside this file referenced it, so removing the export narrows a surface without
- * changing a single behaviour. `src/handlers/bootstrap.ts` wires the collaborator by passing a value
- * to {@link SalePriceSeeder}'s constructor, which is a structural check against the parameter type —
- * it never needed the name, and TypeScript's structural typing means it still does not. Any object
- * with a matching `getPromotion` satisfies the constructor whether or not the type is importable.
+ * The declaration is module-local and unexported: publishing it would make it an importable contract
+ * any adapter may implement, which is a port in everything but the folder it sits in. Structural
+ * typing means `src/handlers/bootstrap.ts` still wires the collaborator by passing any object with a
+ * matching `getPromotion` to {@link SalePriceSeeder}'s constructor.
  */
 interface SalePricePromotionResolver {
   getPromotion(promotionID: string): Promise<Promotion>;
@@ -204,11 +164,6 @@ export class SalePriceSeeder {
     order: OrderView,
     orderItemQualifiedDiscounts: OrderItemQualifiedDiscounts,
   ): Promise<void> {
-    // CFML parity [model/service/PromotionService.cfc:L145]:
-    //   `for(var orderItem in arguments.order.getOrderItems())`
-    // iterates an ARRAY, and CFML's for-in over an array yields the ELEMENTS rather than indices -
-    // so this is a plain for-of, with no 1-based index emulation and no index arithmetic. The
-    // collection expression is evaluated once, as CFML evaluates it once.
     const orderItems: readonly OrderItemView[] = order.orderItems;
 
     // CFML parity [model/service/PromotionService.cfc:L157]: `this.getPromotion(id)` resolves through the ORM SESSION, whose IDENTITY MAP answers the second request for an identifier with THE VERY SAME ENTITY INSTANCE it answered the first with. This map reproduces that, and it is a correctness property rather than a shortcut.
@@ -234,22 +189,8 @@ export class SalePriceSeeder {
     const resolvedPromotions = new Map<string, Promotion>();
 
     for (const orderItem of orderItems) {
-      // [L146] The sale-price detail row for this item's SKU. `undefined` is how the target spells
-      // the legacy's "no sale-price row": `Product.getSkuSalePriceDetails` guards on key existence
-      // at [model/entity/Product.cfc:L183-L184] with NO `else`, so a SKU with no winning sale price
-      // yields an absent or empty structure - which is why the presence test below is necessary
-      // rather than merely defensive. In CFML `salePrice` is an optional KEY on a struct that may
-      // itself be empty and both states answer the same `structKeyExists` test; the ported
-      // projection makes the RECORD optional and `salePrice` a required member of a record that
-      // exists, so both halves of the legacy test must be reproduced.
       const salePriceDetails = orderItem.sku.getSalePriceDetails();
 
-      // CFML parity [model/service/PromotionService.cfc:L148, L150]:
-      // `orderItem.getSku().getPrice()` is evaluated TWICE in the source - once in the gate at L148
-      // and again inside the arithmetic at L150. Each value is read ONCE here so the gate and the
-      // arithmetic provably test and multiply the same value. Both accessors are plain field reads
-      // over already-materialized state ([model/entity/Sku.cfc:L56] declares `default="0"`, so the
-      // price is never absent), so hoisting them cannot be observed.
       const skuPrice = orderItem.sku.getPrice();
 
       // CFML parity [model/service/PromotionService.cfc:L148]: the gate is a CONJUNCTION of two
@@ -271,33 +212,12 @@ export class SalePriceSeeder {
         structKeyExists(salePriceDetails, 'salePrice') &&
         salePriceDetails.salePrice.isLessThan(skuPrice)
       ) {
-        // [L150] and [L152-L159] read these three values; each is captured once. The quantity is a
-        // COUNT rather than money - the column is `ormtype="integer"` - so it stays a number and
-        // enters the arithmetic as a multiplier.
         const salePrice = salePriceDetails.salePrice;
         const quantity = orderItem.quantity;
         const orderItemID = orderItem.orderItemID;
 
-        // CFML parity [model/service/PromotionService.cfc:L150]: the legacy computes TWO EXTENDED
-        // AMOUNTS AND SUBTRACTS THEM - `(price * quantity) - (salePrice * quantity)` - and that
-        // shape is reproduced exactly: two multiplications, then one subtraction. It is
-        // deliberately NOT simplified to `(price - salePrice) * quantity`; the two forms agree in
-        // exact decimal arithmetic, so the reason is the acceptance contract, which is that a
-        // reviewer can diff the target against the cited source line. This is `precisionEvaluate`
-        // site L150 of the nine recorded in the module header. All of it runs through the money
-        // value object; nothing is rounded, quantized, clamped or formatted, and the two-decimal
-        // presentation step belongs to the reward path alone.
         const discountAmount = skuPrice.times(quantity).minus(salePrice.times(quantity));
 
-        // CFML parity [model/service/PromotionService.cfc:L152]: a FRESH empty array is assigned
-        // UNCONDITIONALLY - there is no `structKeyExists` guard here - and only INSIDE the gate
-        // above. The asymmetry with the reward path is reproduced rather than normalised: L260-L263
-        // wraps the identical assignment in `if(!structKeyExists(...))`, so it preserves an
-        // existing bucket where this one would replace it. Assigning only inside the gate is
-        // load-bearing downstream: the application pass at L529 tests `structKeyExists` on this
-        // map, so an item with no qualifying sale price must genuinely have NO key. Pre-seeding
-        // every item with an empty array would change which items are considered. The array is held
-        // in a local as well as stored because L155 appends into the very array L152 created.
         const potentialDiscounts: QualifiedDiscount[] = [];
         // `putOwnStructKey`, not `orderItemQualifiedDiscounts[orderItemID] = …`: the key is an
         // opaque identifier from the order view, and a plain assignment for `__proto__` would
@@ -306,7 +226,9 @@ export class SalePriceSeeder {
         // its placement inside the gate are unchanged; only the write mechanism differs.
         putOwnStructKey(orderItemQualifiedDiscounts, orderItemID, potentialDiscounts);
 
-        // CFML parity [model/service/PromotionService.cfc:L157 versus L276 and L290]: a `Promotion` reaches the accumulator by TWO DIFFERENT ROUTES, and only this one is a lookup.
+        // CFML parity [model/service/PromotionService.cfc:L157]: a `Promotion` reaches the accumulator by
+        // TWO DIFFERENT ROUTES - this one and the reward path at L276 and L290 - and only this one is a
+        // lookup.
         // Here the winning detail row carries a promotion identifier and the promotion is resolved
         // FROM it. On the reward path the promotion is reached by pure association traversal —
         // `reward.getPromotionPeriod().getPromotion()` — with no lookup at all. Both yield the same
@@ -319,11 +241,11 @@ export class SalePriceSeeder {
         // The identity map declared at the top of the pass is consulted FIRST, exactly as the ORM
         // session consults its own before reaching storage. A hit answers with the instance already
         // resolved in this pass; a miss delegates to the collaborator and records the answer. Item
-        // ORDER IS UNAFFECTED: the lookup is synchronous, the items are still visited in sequence,
-        // and each item still completes before the next begins. What changes is only how many
-        // distinct instances exist for one identifier — one, as in the legacy — and it is written
-        // with an explicit `undefined` narrowing rather than `Map.has` followed by an indexed read,
-        // because a non-null assertion is not available in this subtree.
+        // ORDER IS UNAFFECTED: items are processed sequentially, and each async miss is awaited to
+        // completion before the next item is visited. What changes is only how many distinct
+        // instances exist for one identifier — one, as in the legacy — and it is written with an
+        // explicit `undefined` narrowing rather than `Map.has` followed by an indexed read, because a
+        // non-null assertion is not available in this subtree.
         const memoizedPromotion = resolvedPromotions.get(salePriceDetails.promotionID);
         let promotion: Promotion;
 

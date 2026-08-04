@@ -382,12 +382,23 @@ export type SkuImageResizeOptions = {
 /**
  * The three ALREADY-RESOLVED ambient values the two portable image members need.
  *
- * ★ WHY THIS TYPE EXISTS RATHER THAN A SETTINGS-PORT LOOKUP. `SettingsProvider`
- * publishes exactly four keys - `globalURLKeyProduct`, `globalURLKeyProductType`,
- * `skuCurrency` and `skuEligibleCurrencies` - and none of the values below is
- * among them. That fact establishes that this entity may not RESOLVE them; it
- * says nothing about whether the entity may COMPOSE a string out of them once
- * they have been resolved somewhere that legitimately can. The distinction is
+ * ★ WHY THIS TYPE EXISTS RATHER THAN A SETTINGS-PORT LOOKUP, AND THE REASON IS
+ * PER MEMBER RATHER THAN BLANKET. `baseImageURL` is not a settings key at all: it
+ * resolves `getHibachiScope().getBaseImageURL()`
+ * [model/transient/HibachiScope.cfc:L186-L188] over `globalAssetsImageFolderPath`
+ * [model/service/SettingService.cfc:L164], which the seven-key `SettingsProvider`
+ * union deliberately excludes. `productImageOptionCodeDelimiter` [:L192] and
+ * `productImageDefaultExtension` [:L191] ARE on that union - they are its third
+ * and fourth literals - but THE LEGACY RESOLVES BOTH ON THE PRODUCT, NOT ON THE
+ * SKU: `getProduct().setting('productImageOptionCodeDelimiter')`
+ * [model/entity/Sku.cfc:L135] and
+ * `getProduct().setting('productImageDefaultExtension')` [L138]. So the SKU
+ * receives all three ALREADY RESOLVED, arriving together as one materialized
+ * bundle at the repository boundary, and the composition root resolves the two
+ * settings THROUGH the one flat provider on the way in - never a second time and
+ * never here. What that establishes is only that this entity may not RESOLVE
+ * them; it says nothing about whether the entity may COMPOSE a string out of them
+ * once they have been resolved somewhere that legitimately can. The distinction is
  * exactly the one already drawn for `Option.getImageDirectory()`
  * [model/entity/Option.cfc:L81-L83], whose base URL arrives the same way through
  * `Option.assetsImageBaseUrl`, and for the feed adapter's
@@ -2768,10 +2779,10 @@ export class Sku {
    * Whether this sku's stock records can be deleted.
    *
    * LEGACY-DEFECT [model/entity/Sku.cfc:L569]: the body reaches
-   * `skuService.getSkuStocksDeletableFlag`, which is NOT among the eight members of the SKU
+   * `skuService.getSkuStocksDeletableFlag`, which is NOT among the seven members of the SKU
    * repository port - `getTransactionExistsFlag` [model/dao/SkuDAO.cfc:L53], `getSkuBySkuCode`
    * [L102], `getSkusBySelectedOptions` [L107], `searchSkusByProductType` [L130], `getProductSkus`
-   * [L150], `getSortedProductSkusID` [L172], `saveSku` and `saveSkus` - so the call cannot resolve.
+   * [L150], `getSortedProductSkusID` [L172] and `saveSku` - so the call cannot resolve.
    *
    * Preserved deliberately; do not fix without a product decision.
    *
@@ -2789,7 +2800,7 @@ export class Sku {
     throw new Error(
       `Sku '${this.skuID}': getStocksDeletableFlag cannot be evaluated. ` +
         `[model/entity/Sku.cfc:L569] calls skuService.getSkuStocksDeletableFlag, which is ` +
-        `absent from the eight-member SkuRepository port, and the stock subsystem is out of ` +
+        `absent from the seven-member SkuRepository port, and the stock subsystem is out of ` +
         `scope. LEGACY-DEFECT preserved deliberately; the port is not extended here.`,
     );
   }
@@ -2890,13 +2901,14 @@ export class Sku {
   //
   // ★ WHERE THE LINE FALLS, AND WHY IT IS NOT "THE IMAGE SUBSYSTEM IS OUT OF
   // SCOPE, SO ALL OF IT GOES". An earlier revision of this section refused all
-  // five members on two grounds, each stated as independently sufficient: that
-  // `SettingsProvider` publishes only four keys — `globalURLKeyProduct`,
-  // `globalURLKeyProductType`, `skuCurrency` and `skuEligibleCurrencies` — so
-  // none of `productImageDefaultExtension`, `productImageOptionCodeDelimiter`
-  // [model/service/SettingService.cfc:L191-L192] or the base image URL is
-  // reachable from here; and that the resizer reaches the un-ported
-  // `imageService`. BOTH PREMISES ARE TRUE. The first supports nothing.
+  // five members on two grounds, each stated as independently sufficient: that no
+  // ambient value behind `productImageDefaultExtension`,
+  // `productImageOptionCodeDelimiter` [model/service/SettingService.cfc:L191-L192]
+  // or the base image URL is RESOLVABLE from here — the legacy resolves the first
+  // two on the PRODUCT [model/entity/Sku.cfc:L135, L138] and the third through the
+  // request scope, so none of the three is this entity's to look up; and that the
+  // resizer reaches the un-ported `imageService`. BOTH PREMISES ARE TRUE. The
+  // first supports nothing.
   //
   // Not being able to RESOLVE an ambient value says nothing about whether this
   // entity may COMPOSE a string once the value has been resolved somewhere that
@@ -3506,8 +3518,9 @@ export class Sku {
 //   any port; the PORT member serves the service, which holds no
 //   `SkuImageSettingValues` and must not - `productImageOptionCodeDelimiter`
 //   [model/service/SettingService.cfc:L192] and `productImageDefaultExtension`
-//   [L191] are image-subsystem configuration outside the closed four-key
-//   `SettingsProvider` union, and the image subsystem is where they belong. The
+//   [L191] are resolved once by the composition root through the seven-key
+//   `SettingsProvider` union and then travel with the image subsystem, which is
+//   where their CONSUMPTION belongs even though their RESOLUTION is the port's. The
 //   service therefore supplies the halves only IT can supply - the option
 //   traversal via `getOptions()`, filtered on
 //   `option.getOptionGroup().getImageGroupFlag()` [model/entity/Sku.cfc:L133], and
@@ -3586,8 +3599,9 @@ export class Sku {
 //   EIGHTEEN-ITEM ENUMERATIONS OMIT — and builds a smart list over the order-item
 //   attribute sets. OMITTED twice over: order aggregate and EAV.
 //
-// IMAGE / ASSET SUBSYSTEM, OMITTED because the four-key settings port publishes no image setting
-// and `imageService` has no port: `generateImageFileName()` [model/entity/Sku.cfc:L131-L139],
+// IMAGE / ASSET SUBSYSTEM, OMITTED because this entity may not RESOLVE the ambient values those
+// members read - the legacy resolves them on the PRODUCT and through the request scope - and because
+// `imageService` has no port: `generateImageFileName()` [model/entity/Sku.cfc:L131-L139],
 // `getImageExtension()` [L141-L143], `getResizedImage()` [L153-L190] and `getImageName()`
 // [L794-L799], the only member of the POPULATED `Overridden Implicit Getters` pair [L792]/[L801].
 // `getImagePath`, `getImage`, `getResizedImagePath` and `getImageExistsFlag` are NOT omitted -

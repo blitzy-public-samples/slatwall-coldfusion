@@ -150,13 +150,43 @@ import type { Product } from '../../../src/domain/entities/product.js';
 // restates that signature so the compiler checks the shape on every build.
 import type { Sku } from '../../../src/domain/entities/sku.js';
 import type { AttributeSetSummary } from '../../../src/domain/ports/productRepository.js';
+// Type-only: the sale-price collaborator's return projection. The contract the adapter asks for is
+// module-local and un-exported there, so the double below satisfies it STRUCTURALLY - but the VALUE it
+// answers with is this published projection, and restating it keeps the compiler checking the shape.
+import type { SalePriceDetail } from '../../../src/domain/ports/promotionRepository.js';
+import { Money } from '../../../src/domain/valueObjects/money.js';
 import { listToArray } from '../../../src/lib/cfml/list.js';
 import { cfBoolean } from '../../../src/lib/cfml/truthiness.js';
 import type {
+  AuditActorContext,
   PreparedStatementExecutor,
   SqlMutationResult,
   SqlRow,
 } from '../../../src/repositories/mysql/connection.js';
+
+/**
+ * S-07. The audit actor every construction in this file supplies: an ADMIN, PERSISTED
+ * account, which is the one combination the legacy gate
+ * [org/Hibachi/HibachiEntity.cfc:L628, L633] stamps for. The refusing arms get dedicated
+ * cases rather than being the ambient default, so that a regression which dropped the
+ * stamping entirely could not hide behind a default that writes nothing.
+ */
+const TEST_AUDIT_ACTOR: AuditActorContext = Object.freeze({
+  accountID: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1',
+  adminAccountFlag: true,
+});
+
+/**
+ * Signed in WITHOUT the admin flag - and carrying an identifier deliberately, so a refusal is
+ * provably the flag's doing and not an accident of having nothing to stamp.
+ */
+const NON_ADMIN_AUDIT_ACTOR: AuditActorContext = Object.freeze({
+  accountID: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2',
+  adminAccountFlag: false,
+});
+
+/** An account a CALLER put on a product. It must never reach a bound parameter. */
+const FORGED_ACCOUNT_ID = 'ffffffffffffffffffffffffffffffff';
 import { MysqlProductRepository } from '../../../src/repositories/mysql/mysqlProductRepository.js';
 import { makeProductFixture } from '../../fixtures/productFixtures.js';
 // The aggregate cascade is driven by the product's OWN sku collection, so the cascade cases
@@ -326,9 +356,9 @@ class RecordingExecutor implements PreparedStatementExecutor {
    * `src/repositories/mysql/connection.ts` implements the transactional executor's
    * `transaction(work)` as `return work(boundExecutor)`, so an inner call issues no
    * `BEGIN` and the OUTERMOST caller owns the single commit. IT IS LOAD-BEARING HERE:
-   * `saveProduct` opens a unit and then calls `saveSkuForProduct` for each transient
-   * draft, which funnels through `persistSku` and opens a unit on the executor it was
-   * handed. Those are joins, not second commits, and `transactionCount` counts them
+   * `saveProduct` opens a unit and then calls the cascade writer's `saveSku` for each
+   * transient draft, which funnels through `persistSku` and opens a unit on the executor
+   * it was handed. Those are joins, not second commits, and `transactionCount` counts them
    * while `transactionEvents` shows only the one real boundary.
    */
   readonly transactionEvents: string[] = [];
@@ -1000,7 +1030,12 @@ const EXPECTED_PRODUCT_UPDATE = [
   '  defaultSkuID = ?,',
   '  remoteID = ?,',
   '  modifiedDateTime = ?,',
-  '  modifiedByAccountID = ?',
+  // S-07. This ONE column resolves against itself rather than binding a bare placeholder.
+  // `preUpdate` [org/Hibachi/HibachiEntity.cfc:L676-L678] stamps the modifying account only
+  // when the actor gate passes and leaves the loaded value alone when it does not, so
+  // Hibernate rewrote the SAME value. A bare `?` would bind null on a refused gate and ERASE
+  // an attribution the legacy preserved - a worse outcome than the finding it fixes.
+  '  modifiedByAccountID = COALESCE(?, modifiedByAccountID)',
   'WHERE productID = ?',
 ].join('\n');
 
@@ -1461,14 +1496,40 @@ const PRODUCT_EXISTS_ROW: SqlRow = Object.freeze({ productID: PERSISTED_PRODUCT_
  *   empty string per [model/entity/Product.cfc:L52] `unsavedvalue=""`.
  * @returns the product.
  */
-function makeWritableProduct(productID?: string): Product {
+function makeWritableProduct(
+  productID?: string,
+  auditOverrides: {
+    readonly createdByAccountID?: string;
+    readonly modifiedByAccountID?: string;
+  } = {},
+): Product {
   return makeProductFixture({
     productID,
     brand: undefined,
     productType: undefined,
     defaultSku: undefined,
+    // S-07. The audit accounts are settable here ONLY so a case can prove they are IGNORED.
+    // Every other case leaves them absent, which is what the spoof cases contrast against.
+    ...auditOverrides,
   });
 }
+
+/**
+ * S-07 parameter positions, derived from the same `PRODUCT_INSERTED_COLUMNS` order that gives
+ * the two date-stamp positions this file already asserts. The four audit columns are
+ * consecutive - created pair at 16 and 17, modified pair at 18 and 19 - so the accounts sit
+ * between the two stamps that were already checked.
+ */
+const INSERT_CREATED_BY_POSITION = 17;
+
+const INSERT_MODIFIED_BY_POSITION = 19;
+
+/**
+ * The modifying account is the LAST value in the update SET list, ahead of the key. The update
+ * omits `productID`, `createdDateTime` and `createdByAccountID`, so twenty insert columns become
+ * seventeen set values at indices 0 to 16.
+ */
+const UPDATE_MODIFIED_BY_POSITION = 16;
 
 /**
  * A save payload that populates NOTHING, so every column comes off the entity.
@@ -1500,7 +1561,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // and for the `request.slatwallScope.getDAO("accountDAO")` locator the legacy
       // DAO tests used (C1/B1).
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       expect(repository).toBeInstanceOf(MysqlProductRepository);
 
@@ -1514,7 +1575,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // The adapter defaults its collaborators to `{}` precisely so a SQL-shape
       // suite can construct it with a capturing executor alone. Asserting that
       // here pins the affordance rather than relying on it silently.
-      const repository = new MysqlProductRepository(new RecordingExecutor());
+      const repository = new MysqlProductRepository(new RecordingExecutor(), TEST_AUDIT_ACTOR);
 
       expect(repository).toBeInstanceOf(MysqlProductRepository);
     });
@@ -1525,7 +1586,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // [model/dao/ProductDAO.cfc:L52], `loadDataFromFile` [:L73] and
       // `searchProductsByProductType` [:L419]. The three lifecycle methods have no
       // legacy antecedent on the DAO.
-      const repository = new MysqlProductRepository(new RecordingExecutor());
+      const repository = new MysqlProductRepository(new RecordingExecutor(), TEST_AUDIT_ACTOR);
 
       expect(typeof repository.getAttributeSets).toBe('function');
       expect(typeof repository.loadDataFromFile).toBe('function');
@@ -1554,6 +1615,12 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
         'deleteProduct',
         'materializeProducts',
         'readSkus',
+        // The sale-price resolution step of the read path, and a PRIVATE HELPER rather than a seventh
+        // member for the same reason `cascadeTransientSkus` below is: it exists to satisfy an internal
+        // ordering obligation - the map has to be resolved before a `Product` constructor runs, because
+        // `src/domain/entities/product.ts` takes `salePriceDetailsForSkus` as a constructed-with value
+        // and offers no later moment to attach it. Nothing outside this class may drive it.
+        'readSalePriceDetails',
         'readSkuOptions',
         'buildProduct',
         'assertAssociationsPersisted',
@@ -1577,7 +1644,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // string-keyed, dynamically-filtered query builder here would re-import the
       // exact coupling this migration exists to remove, so the absence is the
       // contract and is asserted as one.
-      const repository = new MysqlProductRepository(new RecordingExecutor());
+      const repository = new MysqlProductRepository(new RecordingExecutor(), TEST_AUDIT_ACTOR);
 
       for (const absentMember of [
         'findProducts',
@@ -1608,7 +1675,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // `transaction` does not weaken it: the executor it hands to its work function
       // routes through the same two statement methods and reaches no `query` either.
       const executor = new RecordingExecutor([[ATTRIBUTE_SET_ROW]]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getAttributeSets([PRODUCT_ATTRIBUTE_SET_TYPE_CODE], []);
 
@@ -1633,7 +1700,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // influences which arm runs - and [L57-L58] appends the globalFlag-OR-
       // assignments fragment.
       const executor = new RecordingExecutor([[ATTRIBUTE_SET_ROW]]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getAttributeSets(
         [PRODUCT_ATTRIBUTE_SET_TYPE_CODE, SKU_ATTRIBUTE_SET_TYPE_CODE],
@@ -1651,7 +1718,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // `AND sas.globalFlag = 1` and NOTHING else - the assignment sub-clause is
       // absent entirely rather than present-and-always-true.
       const executor = new RecordingExecutor([[ATTRIBUTE_SET_ROW]]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getAttributeSets(
         [PRODUCT_ATTRIBUTE_SET_TYPE_CODE, SKU_ATTRIBUTE_SET_TYPE_CODE],
@@ -1699,13 +1766,13 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // `ASC`, in that exact sequence, in both arms. Not reduced to one key, not
       // reordered, and neither `ASC` dropped.
       const productTypeArm = new RecordingExecutor([[ATTRIBUTE_SET_ROW]]);
-      await new MysqlProductRepository(productTypeArm).getAttributeSets(
+      await new MysqlProductRepository(productTypeArm, TEST_AUDIT_ACTOR).getAttributeSets(
         [PRODUCT_ATTRIBUTE_SET_TYPE_CODE],
         [MERCHANDISE_PRODUCT_TYPE_ID],
       );
 
       const globalArm = new RecordingExecutor([[ATTRIBUTE_SET_ROW]]);
-      await new MysqlProductRepository(globalArm).getAttributeSets(
+      await new MysqlProductRepository(globalArm, TEST_AUDIT_ACTOR).getAttributeSets(
         [PRODUCT_ATTRIBUTE_SET_TYPE_CODE],
         [],
       );
@@ -1787,7 +1854,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
 
     it('binds the type codes as ONE comma-joined parameter in the product-type arm', async () => {
       const executor = new RecordingExecutor([[ATTRIBUTE_SET_ROW]]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getAttributeSets(
         [
@@ -1833,7 +1900,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
 
     it('binds the type codes PER ELEMENT in the global-only arm, with no productTypeIDs at all', async () => {
       const executor = new RecordingExecutor([[ATTRIBUTE_SET_ROW]]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getAttributeSets(
         [
@@ -1882,13 +1949,13 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
 
       for (const codes of codeLists) {
         const productTypeArm = new RecordingExecutor([[ATTRIBUTE_SET_ROW]]);
-        await new MysqlProductRepository(productTypeArm).getAttributeSets(codes, [
+        await new MysqlProductRepository(productTypeArm, TEST_AUDIT_ACTOR).getAttributeSets(codes, [
           MERCHANDISE_PRODUCT_TYPE_ID,
         ]);
         const productTypeStatement = onlyStatement(productTypeArm.calls);
 
         const globalArm = new RecordingExecutor([[ATTRIBUTE_SET_ROW]]);
-        await new MysqlProductRepository(globalArm).getAttributeSets(codes, []);
+        await new MysqlProductRepository(globalArm, TEST_AUDIT_ACTOR).getAttributeSets(codes, []);
         const globalStatement = onlyStatement(globalArm.calls);
 
         // Product-type arm: ONE type-code placeholder at every arity, plus one per
@@ -1919,7 +1986,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
         const expectedRun = expectedRuns[index] ?? '';
 
         const executor = new RecordingExecutor([[ATTRIBUTE_SET_ROW]]);
-        await new MysqlProductRepository(executor).getAttributeSets(
+        await new MysqlProductRepository(executor, TEST_AUDIT_ACTOR).getAttributeSets(
           [PRODUCT_ATTRIBUTE_SET_TYPE_CODE],
           productTypeIDs,
         );
@@ -1940,7 +2007,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // expanded an empty bound array into an empty IN list and the engine rejected
       // it. This raises where that raised.
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const rejection = await captureRejection(() => repository.getAttributeSets([], []));
 
@@ -1960,7 +2027,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // `:attributeSetTypeCode` produced. Faithful by construction, with no special
       // case to write, and still never `IN ()`.
       const executor = new RecordingExecutor([[]]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const summaries = await repository.getAttributeSets([], [MERCHANDISE_PRODUCT_TYPE_ID]);
 
@@ -1986,7 +2053,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // entities and no entity module exists to construct, so this is a flat mapper
       // over ten labels. The member names are the source's own.
       const executor = new RecordingExecutor([[ATTRIBUTE_SET_ROW]]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const summaries = await repository.getAttributeSets(
         [PRODUCT_ATTRIBUTE_SET_TYPE_CODE],
@@ -2013,7 +2080,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // path is deliberately not ported and must not be added. So the whole method is
       // ONE statement: no per-row follow-up, no collection load, no second lookup.
       const executor = new RecordingExecutor([[ATTRIBUTE_SET_ROW, ATTRIBUTE_SET_ROW]]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const summaries = await repository.getAttributeSets(
         [PRODUCT_ATTRIBUTE_SET_TYPE_CODE],
@@ -2042,7 +2109,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // Coalescing to true here would report a value the legacy never reported.
       const rowWithNullGlobalFlag: SqlRow = { ...ATTRIBUTE_SET_ROW, globalFlag: null };
       const executor = new RecordingExecutor([[rowWithNullGlobalFlag]]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const summaries = await repository.getAttributeSets(
         [PRODUCT_ATTRIBUTE_SET_TYPE_CODE],
@@ -2058,7 +2125,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
 
     it('returns an empty array, never undefined, when the read matched nothing', async () => {
       const executor = new RecordingExecutor([[]]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const summaries = await repository.getAttributeSets(
         [PRODUCT_ATTRIBUTE_SET_TYPE_CODE],
@@ -2091,7 +2158,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // correctly names `SlatwallAttributeSet`, because HQL resolves entity names,
       // and needs no correction at all.
       const executor = new RecordingExecutor([[PRODUCT_SEARCH_ROW], [PRODUCT_GRAPH_ROW], []]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.searchProductsByProductType(SEARCH_TERM);
 
@@ -2107,7 +2174,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // SKU sibling filters through a CORRELATED `IN`-subquery because a SKU has no
       // product-type column of its own; the two are NOT unified.
       const executor = new RecordingExecutor([[PRODUCT_SEARCH_ROW], [PRODUCT_GRAPH_ROW], []]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.searchProductsByProductType(
         SEARCH_TERM,
@@ -2130,13 +2197,15 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // `ProductTypeDAO`, whose `ORDER BY productTypeName ASC` IS contract: the two
       // rules point in opposite directions and both are deliberate.
       const withTypes = new RecordingExecutor([[PRODUCT_SEARCH_ROW], [PRODUCT_GRAPH_ROW], []]);
-      await new MysqlProductRepository(withTypes).searchProductsByProductType(
+      await new MysqlProductRepository(withTypes, TEST_AUDIT_ACTOR).searchProductsByProductType(
         SEARCH_TERM,
         MERCHANDISE_PRODUCT_TYPE_ID,
       );
 
       const withoutTypes = new RecordingExecutor([[PRODUCT_SEARCH_ROW], [PRODUCT_GRAPH_ROW], []]);
-      await new MysqlProductRepository(withoutTypes).searchProductsByProductType(SEARCH_TERM);
+      await new MysqlProductRepository(withoutTypes, TEST_AUDIT_ACTOR).searchProductsByProductType(
+        SEARCH_TERM,
+      );
 
       for (const calls of [withTypes.calls, withoutTypes.calls]) {
         const searchStatement = statementAt(calls, 0).sql.toLowerCase();
@@ -2156,7 +2225,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // statement's projection, carried over unchanged rather than trimmed to what
       // this adapter happens to consume - and that is what is pinned.
       const executor = new RecordingExecutor([[PRODUCT_SEARCH_ROW], [PRODUCT_GRAPH_ROW], []]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const products = await repository.searchProductsByProductType(SEARCH_TERM);
 
@@ -2177,7 +2246,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // `%` character; the parameter carries `%term%`. That is what makes the search
       // injection-safe, and it is asserted rather than assumed.
       const executor = new RecordingExecutor([[PRODUCT_SEARCH_ROW], [PRODUCT_GRAPH_ROW], []]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.searchProductsByProductType(SEARCH_TERM);
 
@@ -2196,7 +2265,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // positional form the target uses preserves the VALUE contract rather than the
       // name.
       const executor = new RecordingExecutor([[], []]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.searchProductsByProductType(INJECTION_SHAPED_TERM);
 
@@ -2233,7 +2302,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
         const expectedElements = listToArray(productTypeIDs);
 
         const executor = new RecordingExecutor([[], []]);
-        await new MysqlProductRepository(executor).searchProductsByProductType(
+        await new MysqlProductRepository(executor, TEST_AUDIT_ACTOR).searchProductsByProductType(
           SEARCH_TERM,
           productTypeIDs,
         );
@@ -2261,7 +2330,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // `structKeyExists(arguments,"productTypeIDs") && len(arguments.productTypeIDs)`,
       // so an ABSENT argument omits both the clause and the bind.
       const executor = new RecordingExecutor([[], []]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.searchProductsByProductType(SEARCH_TERM);
 
@@ -2277,7 +2346,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // as it does on an absent argument - and crucially the adapter must not emit
       // `in ()` for it.
       const executor = new RecordingExecutor([[], []]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.searchProductsByProductType(SEARCH_TERM, '');
 
@@ -2299,7 +2368,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // and neither side is normalised to the other. This case pins the `len()` side:
       // the clause IS emitted for a whitespace-only list.
       const executor = new RecordingExecutor([[], []]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.searchProductsByProductType(SEARCH_TERM, ' ');
 
@@ -2313,7 +2382,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
     it('emits the clause exactly once for a non-empty list', async () => {
       // C2.3, third half: present once, not twice, and not conditionally duplicated.
       const executor = new RecordingExecutor([[], []]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.searchProductsByProductType(SEARCH_TERM, MERCHANDISE_PRODUCT_TYPE_ID);
 
@@ -2344,7 +2413,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
 
     it('rejects when term is omitted, rather than substituting an empty pattern', async () => {
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const rejection = await captureRejection(() => repository.searchProductsByProductType());
 
@@ -2361,7 +2430,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // does nothing to protect the term bind at L422, which runs first and
       // unconditionally.
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const rejection = await captureRejection(() =>
         repository.searchProductsByProductType(undefined, MERCHANDISE_PRODUCT_TYPE_ID),
@@ -2376,7 +2445,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // present, so the legacy would have bound `'%%'` happily - and so does the
       // target. Pinning this keeps the reproduction precise rather than approximate.
       const executor = new RecordingExecutor([[], []]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.searchProductsByProductType('');
 
@@ -2410,7 +2479,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // value is a comma-delimited list. It is deliberately not widened to an array
       // and there is no array-taking overload.
       const executor = new RecordingExecutor([[], []]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.searchProductsByProductType(
         SEARCH_TERM,
@@ -2434,7 +2503,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // joined string IS bound whole. The two must never be cross-applied, and this
       // pair of cases is what makes the distinction checkable.
       const executor = new RecordingExecutor([[], []]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const twoElementList = MERCHANDISE_PRODUCT_TYPE_ID + ',' + SUBSCRIPTION_PRODUCT_TYPE_ID;
       await repository.searchProductsByProductType(SEARCH_TERM, twoElementList);
@@ -2486,7 +2555,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
     // all and none is asserted here.
 
     it('exists with the declared two-argument signature', () => {
-      const repository = new MysqlProductRepository(new RecordingExecutor());
+      const repository = new MysqlProductRepository(new RecordingExecutor(), TEST_AUDIT_ACTOR);
 
       expect(typeof repository.loadDataFromFile).toBe('function');
 
@@ -2512,7 +2581,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // is never dereferenced, and it carries no credential, no hostname of a real
       // service and no connection string (E6).
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const rejection = await captureRejection(() => repository.loadDataFromFile('products.csv'));
 
@@ -2527,7 +2596,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // The legacy default is `""`; supplying a qualifier explicitly must not open a
       // second, working code path. There is only one behaviour here.
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const rejection = await captureRejection(() =>
         repository.loadDataFromFile('products.txt', '"'),
@@ -2543,7 +2612,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // caller of a `Promise<void>` method handles. A synchronous throw from a
       // promise-returning method escapes before any `.catch` is attached and is a
       // different failure mode. Asserting the rejected-promise shape pins that.
-      const repository = new MysqlProductRepository(new RecordingExecutor());
+      const repository = new MysqlProductRepository(new RecordingExecutor(), TEST_AUDIT_ACTOR);
 
       const pending = repository.loadDataFromFile('products.csv');
 
@@ -2567,7 +2636,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
     it('binds exactly one productID and never puts the identifier in the statement text', async () => {
       // C5.1. The identifier is a bound parameter, full stop.
       const executor = new RecordingExecutor([[PRODUCT_GRAPH_ROW], [], []]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getProductByProductID(PERSISTED_PRODUCT_ID);
 
@@ -2585,7 +2654,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // answering `undefined` instead of a zero that would sell products for free -
       // substituting a default here would be the same class of error one layer up.
       const executor = new RecordingExecutor([[]]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const product = await repository.getProductByProductID(UNMATCHED_PRODUCT_ID);
 
@@ -2615,7 +2684,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
         [SKU_ROW],
         [SKU_OPTION_ROW],
       ]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
 
@@ -2687,7 +2756,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
         [SKU_ROW, secondSkuRow],
         [SKU_OPTION_ROW, colourOptionRow, repeatedSizeOptionRow],
       ]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
 
@@ -2724,7 +2793,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // groups" and silently satisfy the `minCollection:1` validation rules. A product
       // whose SKUs genuinely carry no options must therefore arrive with `[]`.
       const executor = new RecordingExecutor([[PRODUCT_GRAPH_ROW], [SKU_ROW], []]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
 
@@ -2758,7 +2827,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
         [SKU_ROW],
         [grouplessOptionRow],
       ]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
 
@@ -2810,7 +2879,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
         [SKU_ROW, foreignSkuRow],
         [SKU_OPTION_ROW, foreignOptionRow],
       ]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
 
@@ -2839,7 +2908,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
         [SKU_ROW],
         [SKU_OPTION_ROW],
       ]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getProductByProductID(PERSISTED_PRODUCT_ID);
 
@@ -2856,7 +2925,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // no SKU rows there are no SKU identifiers to bind, so the third statement is
       // short-circuited rather than sent with an empty IN list.
       const executor = new RecordingExecutor([[PRODUCT_GRAPH_ROW], []]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
 
@@ -2889,7 +2958,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
         [SKU_ROW],
         [SKU_OPTION_ROW],
       ]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const products = await repository.searchProductsByProductType(SEARCH_TERM);
 
@@ -2921,7 +2990,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // this file's header for why the seventh member was removed rather than
       // relocated.
       const executor = new RecordingExecutor([[PRODUCT_GRAPH_ROW_WITH_BRAND], [], []]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
 
@@ -2987,7 +3056,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // C5.2. Twenty columns, twenty placeholders, twenty bound parameters - and not
       // one value in the statement text.
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.saveProduct(makeWritableProduct(), NO_POPULATED_MEMBERS);
 
@@ -3017,7 +3086,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // is checked before anything is written. That is what `super.save()` did through
       // the ORM's `saveOrUpdate`.
       const executor = new RecordingExecutor([[PRODUCT_EXISTS_ROW]]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.saveProduct(makeWritableProduct(PERSISTED_PRODUCT_ID), NO_POPULATED_MEMBERS);
 
@@ -3044,7 +3113,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // let a caller that hydrated an entity without them overwrite real creation
       // provenance with NULL.
       const executor = new RecordingExecutor([[PRODUCT_EXISTS_ROW]]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.saveProduct(makeWritableProduct(PERSISTED_PRODUCT_ID), NO_POPULATED_MEMBERS);
 
@@ -3055,7 +3124,9 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       expect(setClause).not.toContain('createdDateTime');
       expect(setClause).not.toContain('createdByAccountID');
       expect(setClause).toContain('modifiedDateTime = ?');
-      expect(setClause).toContain('modifiedByAccountID = ?');
+      // S-07: present in the SET list, and self-resolving so a refused gate preserves rather
+      // than erases. Both halves matter, so both are asserted.
+      expect(setClause).toContain('modifiedByAccountID = COALESCE(?, modifiedByAccountID)');
     });
 
     it('writes the insert audit pair from ONE timestamp, byte-identical', async () => {
@@ -3063,7 +3134,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // `createdDateTime` and `modifiedDateTime`, so an inserted row's two stamps are
       // byte-identical rather than merely close. Reproduced exactly.
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.saveProduct(makeWritableProduct(), NO_POPULATED_MEMBERS);
 
@@ -3078,6 +3149,80 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       }
     });
 
+    // --- S-07: who the write is attributed to -----
+    //
+    // The finding: "Audit actor IDs are copied from caller-hydrated entities or omitted. A
+    // future caller can spoof attribution or create unattributed writes" (CWE-345).
+    //
+    // ★ WHY THESE CASES EXIST. The suite already pinned the insert and update statements to
+    // their exact text AND asserted individual parameter POSITIONS - including position 16 and
+    // 18, the two DATE stamps that bracket the account columns. Positions 17 and 19 went
+    // unasserted, so the spoof sat between two checked values without a test to announce it.
+
+    it('★★ STAMPS THE REQUEST ACTOR and ignores the account a caller put on the entity', async () => {
+      const executor = new RecordingExecutor();
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
+
+      await repository.saveProduct(
+        makeWritableProduct(undefined, {
+          // A caller naming whoever it likes as the author of the row. This is the spoof.
+          createdByAccountID: FORGED_ACCOUNT_ID,
+          modifiedByAccountID: FORGED_ACCOUNT_ID,
+        }),
+        NO_POPULATED_MEMBERS,
+      );
+
+      const insert = statementAt(executor.mutationCalls, 0);
+
+      // Both halves from one resolution, as `preInsert` calls both setters under one gate
+      // [org/Hibachi/HibachiEntity.cfc:L628-L635].
+      expect(parameterAt(insert.params, INSERT_CREATED_BY_POSITION)).toBe(
+        TEST_AUDIT_ACTOR.accountID,
+      );
+      expect(parameterAt(insert.params, INSERT_MODIFIED_BY_POSITION)).toBe(
+        TEST_AUDIT_ACTOR.accountID,
+      );
+      // The forged value reaches no position at all, not merely not those two.
+      expect(insert.params).not.toContain(FORGED_ACCOUNT_ID);
+    });
+
+    it('★★ STAMPS NOTHING FOR A NON-ADMIN, reproducing the getAdminAccountFlag half of the gate', async () => {
+      const executor = new RecordingExecutor();
+      const repository = new MysqlProductRepository(executor, NON_ADMIN_AUDIT_ACTOR);
+
+      await repository.saveProduct(
+        makeWritableProduct(undefined, { createdByAccountID: FORGED_ACCOUNT_ID }),
+        NO_POPULATED_MEMBERS,
+      );
+
+      const insert = statementAt(executor.mutationCalls, 0);
+
+      // This actor HAS an identifier, so the nulls prove the FLAG was consulted rather than
+      // that there was nothing to write - the distinction an anonymous actor cannot make.
+      expect(NON_ADMIN_AUDIT_ACTOR.accountID).toBeDefined();
+      expect(parameterAt(insert.params, INSERT_CREATED_BY_POSITION)).toBeNull();
+      expect(parameterAt(insert.params, INSERT_MODIFIED_BY_POSITION)).toBeNull();
+      expect(insert.params).not.toContain(FORGED_ACCOUNT_ID);
+    });
+
+    it('★★ PRESERVES A STORED ATTRIBUTION on update when the gate refuses, rather than erasing it', async () => {
+      const executor = new RecordingExecutor([[PRODUCT_EXISTS_ROW]]);
+      const repository = new MysqlProductRepository(executor, NON_ADMIN_AUDIT_ACTOR);
+
+      await repository.saveProduct(
+        makeWritableProduct(PERSISTED_PRODUCT_ID, { modifiedByAccountID: 'the-real-editor' }),
+        NO_POPULATED_MEMBERS,
+      );
+
+      const update = statementAt(executor.mutationCalls, 0);
+
+      // A refused gate binds null and the statement's `COALESCE` resolves it against the stored
+      // column, so whoever really did edit the row survives. Without that, this fix for spoofed
+      // attribution would itself DESTROY attribution on every non-admin save.
+      expect(parameterAt(update.params, UPDATE_MODIFIED_BY_POSITION)).toBeNull();
+      expect(update.sql).toContain('modifiedByAccountID = COALESCE(?, modifiedByAccountID)');
+    });
+
     it('binds a monetary column as a decimal STRING, never as a float', async () => {
       // P4/E4 - the single arithmetic surface. `decimalNumbers` is unset on the pool,
       // so a DECIMAL column round-trips as TEXT and `Money` is constructed from it.
@@ -3085,7 +3230,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // so no IEEE-754 representation ever touches a currency value - not in the
       // adapter, and not in this expectation either.
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.saveProduct(makeWritableProduct(), NO_POPULATED_MEMBERS);
 
@@ -3103,7 +3248,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // keys. An unmaterialized association is therefore written as NULL, which is
       // exactly what Hibernate did with a many-to-one set to null.
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.saveProduct(makeWritableProduct(), NO_POPULATED_MEMBERS);
 
@@ -3121,7 +3266,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // that refusal is correct: writing the empty string as a foreign key would
       // create a row that satisfies no constraint and resolves to no brand.
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const rejection = await captureRejection(() =>
         repository.saveProduct(makeProductFixture(), NO_POPULATED_MEMBERS),
@@ -3176,9 +3321,10 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // insert binds, so the writer only has to answer with a persisted instance.
       const deferredRepository = new MysqlProductRepository(
         deferredExecutor,
+        TEST_AUDIT_ACTOR,
         {},
         {
-          saveSkuForProduct: (): Promise<Sku> =>
+          saveSku: (): Promise<Sku> =>
             Promise.resolve(makeSkuFixture({ skuID: PERSISTED_SKU_ID, product: undefined })),
         },
       );
@@ -3215,7 +3361,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // no writer is supplied either - which also shows the deferral is not what makes the
       // ordinary save work.
       const boundExecutor = new RecordingExecutor();
-      const boundRepository = new MysqlProductRepository(boundExecutor);
+      const boundRepository = new MysqlProductRepository(boundExecutor, TEST_AUDIT_ACTOR);
 
       await boundRepository.saveProduct(
         makeProductFixture({
@@ -3256,7 +3402,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // its own even when it does cascade - it hands the write to the sibling that
       // owns the table.
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.saveProduct(makeWritableProduct(), NO_POPULATED_MEMBERS);
 
@@ -3328,7 +3474,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       /** The executor each call was handed, so escaping the transaction is observable. */
       public readonly executors: PreparedStatementExecutor[] = [];
 
-      public saveSkuForProduct(
+      public saveSku(
         sku: Sku,
         productID: string,
         executor: PreparedStatementExecutor,
@@ -3379,7 +3525,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       const executor = new RecordingExecutor();
       const writer = new RecordingCascadeWriter();
       const draft = aTransientSku('draft-1');
-      const repository = new MysqlProductRepository(executor, {}, writer);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR, {}, writer);
 
       await repository.saveProduct(aProductWithSkus(undefined, [draft], draft), {});
 
@@ -3397,7 +3543,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       const writer = new RecordingCascadeWriter();
       const first = aTransientSku('draft-1');
       const second = aTransientSku('draft-2');
-      const repository = new MysqlProductRepository(executor, {}, writer);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR, {}, writer);
 
       const saved = await repository.saveProduct(
         aProductWithSkus(undefined, [first, second], first),
@@ -3454,7 +3600,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
 
       const writer = new RecordingCascadeWriter();
       const draft = aTransientSku('draft-1');
-      const repository = new MysqlProductRepository(splitting, {}, writer);
+      const repository = new MysqlProductRepository(splitting, TEST_AUDIT_ACTOR, {}, writer);
 
       await repository.saveProduct(aProductWithSkus(undefined, [draft], draft), {});
 
@@ -3488,7 +3634,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       const writer = new RecordingCascadeWriter();
       const first = aTransientSku('draft-1');
       const second = aTransientSku('draft-2');
-      const repository = new MysqlProductRepository(executor, {}, writer);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR, {}, writer);
 
       const saved = await repository.saveProduct(
         aProductWithSkus(undefined, [first, second], first),
@@ -3519,7 +3665,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       const writer = new RecordingCascadeWriter();
       const first = aTransientSku('draft-1');
       const second = aTransientSku('draft-2');
-      const repository = new MysqlProductRepository(executor, {}, writer);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR, {}, writer);
 
       const saved = await repository.saveProduct(
         aProductWithSkus(undefined, [first, second], second),
@@ -3544,7 +3690,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       const writer = new RecordingCascadeWriter();
       const draft = aTransientSku('draft-1');
       const alreadyPersisted = makeSkuFixture({ skuID: PERSISTED_SKU_ID, product: undefined });
-      const repository = new MysqlProductRepository(executor, {}, writer);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR, {}, writer);
 
       const saved = await repository.saveProduct(
         aProductWithSkus(undefined, [draft, alreadyPersisted], alreadyPersisted),
@@ -3564,7 +3710,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // hand need not - and the column then stays NULL, which is what the legacy leaves.
       const executor = new RecordingExecutor();
       const writer = new RecordingCascadeWriter();
-      const repository = new MysqlProductRepository(executor, {}, writer);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR, {}, writer);
 
       const saved = await repository.saveProduct(
         aProductWithSkus(undefined, [aTransientSku('draft-1')]),
@@ -3586,7 +3732,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       const executor = new RecordingExecutor([[PRODUCT_EXISTS_ROW]]);
       const writer = new RecordingCascadeWriter();
       const draft = aTransientSku('draft-1');
-      const repository = new MysqlProductRepository(executor, {}, writer);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR, {}, writer);
       const argument = aProductWithSkus(PERSISTED_PRODUCT_ID, [draft], draft);
 
       const saved = await repository.saveProduct(argument, {});
@@ -3613,7 +3759,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // memory. The two-argument constructor is still legal, because a repository used only
       // for reads and for saves of already-persisted graphs needs no writer.
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const rejection = await captureRejection(() =>
         repository.saveProduct(aProductWithSkus(undefined, [aTransientSku('draft-1')]), {}),
@@ -3634,7 +3780,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // [model/service/SkuService.cfc:L100, L128], so refusing it closes a hole.
       const executor = new RecordingExecutor();
       const writer = new RecordingCascadeWriter();
-      const repository = new MysqlProductRepository(executor, {}, writer);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR, {}, writer);
       const orphanDesignation = aTransientSku('draft-not-held');
 
       const rejection = await captureRejection(() =>
@@ -3657,7 +3803,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       const executor = new RecordingExecutor();
       const writer = new RecordingCascadeWriter();
       const draft = aTransientSku('draft-1');
-      const repository = new MysqlProductRepository(executor, {}, writer);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR, {}, writer);
 
       await repository.saveProduct(aProductWithSkus(undefined, [draft], draft), {});
 
@@ -3679,7 +3825,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       const executor = new RecordingExecutor();
       const writer = new RecordingCascadeWriter();
       const persisted = makeSkuFixture({ skuID: PERSISTED_SKU_ID, product: undefined });
-      const repository = new MysqlProductRepository(executor, {}, writer);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR, {}, writer);
 
       await repository.saveProduct(aProductWithSkus(undefined, [persisted], persisted), {});
 
@@ -3718,7 +3864,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
   describe('saveProduct - the populate step, and where a resolved url title lands', () => {
     it('binds the PAYLOAD url title, not the entity value it overrides', async () => {
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       // The service's own shape: the entity has no title, the service resolved one, and
       // the payload is how it travels.
@@ -3750,7 +3896,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
 
     it('binds the PAYLOAD product name, and the two members move independently', async () => {
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
       const saved = await repository.saveProduct(makeWritableProduct(), {
         productName: OVERRIDING_PRODUCT_NAME,
       });
@@ -3770,7 +3916,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
 
     it('writes SQL NULL for a key PRESENT and holding undefined', async () => {
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       // The entity HAS a title, and the payload explicitly says there is none. A caller
       // that read a NULL column can only express that this way, which is why
@@ -3786,7 +3932,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
 
     it('leaves the entity value in place for a key that is ABSENT', async () => {
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
       const saved = await repository.saveProduct(makeWritableProduct(), NO_POPULATED_MEMBERS);
 
       const insert = statementAt(executor.mutationCalls, 0);
@@ -3802,7 +3948,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // generates for on a second save, so the update route has to carry the payload too
       // or the title would be regenerated forever and stored never.
       const executor = new RecordingExecutor([[{ productID: PERSISTED_PRODUCT_ID }]]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
       const product = makeProductFixture({
         productID: PERSISTED_PRODUCT_ID,
         urlTitle: undefined,
@@ -3851,7 +3997,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // `Product` treats as materialized-or-not and would convert "unknown" into a
       // confident "empty".
       const executor = new RecordingExecutor([[{ productID: PERSISTED_PRODUCT_ID }]]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
       const product = makeWritableProduct(PERSISTED_PRODUCT_ID);
 
       const saved = await repository.saveProduct(product, NO_POPULATED_MEMBERS);
@@ -3861,7 +4007,10 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // A payload that RESTATES what the entity already holds overrides nothing either,
       // so it takes the same branch.
       const restatingExecutor = new RecordingExecutor([[{ productID: PERSISTED_PRODUCT_ID }]]);
-      const restated = await new MysqlProductRepository(restatingExecutor).saveProduct(product, {
+      const restated = await new MysqlProductRepository(
+        restatingExecutor,
+        TEST_AUDIT_ACTOR,
+      ).saveProduct(product, {
         urlTitle: FIXTURE_URL_TITLE,
         productName: LEGACY_FIXTURE_PRODUCT_NAME,
       });
@@ -3947,7 +4096,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // [model/service/ProductService.cfc:L317], so this reports two outcomes rather than
       // throwing on a refusal - and it reports the PRODUCT row's result, not the cascade's.
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const deleted = await repository.deleteProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
 
@@ -4026,7 +4175,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // opposite of what it used to: the five tables are named, spelled as their entities
       // spell them, and the names that are genuinely NOT declared anywhere are still absent.
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.deleteProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
 
@@ -4082,7 +4231,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // assertion would still have passed while no longer testing what it named. The
       // position is therefore pinned explicitly.
       const executor = new RecordingExecutor([], NO_ROWS_AFFECTED);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const deleted = await repository.deleteProduct(makeWritableProduct(UNMATCHED_PRODUCT_ID));
 
@@ -4105,7 +4254,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // is waste rather than economy, so the guard now earns its place. The observable answer
       // is unchanged: still `false`.
       const executor = new RecordingExecutor([], NO_ROWS_AFFECTED);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const deleted = await repository.deleteProduct(makeWritableProduct());
 
@@ -4123,7 +4272,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // nulling the association before delegating to the framework delete
       // [model/service/ProductService.cfc:L323].
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.deleteProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
 
@@ -4149,7 +4298,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // states the legacy could never reach, because Hibernate flushed the lot inside the
       // request's transaction.
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.deleteProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
 
@@ -4208,7 +4357,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       }
 
       const executor = new SplittingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const deleted = await repository.deleteProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
 
@@ -4228,7 +4377,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // table - and it has to run while `SwSku` still holds the rows, or it selects nothing
       // and the dependents survive as orphans.
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.deleteProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
 
@@ -4255,7 +4404,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // [L74-L76]. Every group keys on `productID` directly rather than through a subquery,
       // because every one of them names the product itself.
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.deleteProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
 
@@ -4294,7 +4443,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // cascade is driven by one identifier: a second bound value would mean some statement
       // was reaching for state the method was not given.
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.deleteProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
 
@@ -4311,7 +4460,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // preserves order history, and it is asserted rather than assumed because adding the
       // table would be a one-line, catastrophic, and entirely plausible-looking mistake.
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.deleteProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
 
@@ -4333,7 +4482,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // The complete inventory in the emitted order, so a table added or dropped in the
       // adapter shows up here as a diff rather than as silent behaviour drift.
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.deleteProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
 
@@ -4391,7 +4540,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
         [SKU_ROW],
         [SKU_OPTION_ROW],
       ]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
 
@@ -4425,7 +4574,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // to agree here, so the assertion is written against `cfBoolean` itself - the
       // funnel is what is being pinned, not a coincidence of one input.
       const executor = new RecordingExecutor([[PRODUCT_GRAPH_ROW], []]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
 
@@ -4441,7 +4590,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // reachable, and the legacy slice really does spell a default that way.
       const rowWithStringFalse: SqlRow = { ...PRODUCT_GRAPH_ROW, p_publishedFlag: 'false' };
       const executor = new RecordingExecutor([[rowWithStringFalse], []]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
 
@@ -4462,7 +4611,9 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
           [],
         ]);
         const product = requireProduct(
-          await new MysqlProductRepository(executor).getProductByProductID(PERSISTED_PRODUCT_ID),
+          await new MysqlProductRepository(executor, TEST_AUDIT_ACTOR).getProductByProductID(
+            PERSISTED_PRODUCT_ID,
+          ),
         );
 
         expect(product.getPublishedFlag()).toBe(true);
@@ -4551,7 +4702,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
         [SKU_ROW],
         [SKU_OPTION_ROW],
       ]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getProductByProductID(PERSISTED_PRODUCT_ID);
       await repository.saveProduct(makeWritableProduct(), NO_POPULATED_MEMBERS);
@@ -4584,7 +4735,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // them. Swept over every statement so a `Slatwall*` name cannot creep back in
       // through a different method.
       const executor = new RecordingExecutor([[PRODUCT_SEARCH_ROW], [PRODUCT_GRAPH_ROW], []]);
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.searchProductsByProductType(SEARCH_TERM, MERCHANDISE_PRODUCT_TYPE_ID);
 
@@ -4638,10 +4789,14 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // What IS assertable here: the two ported reads emit ONE statement text each
       // for a given shape, with no engine-conditional variant.
       const firstRun = new RecordingExecutor([[], []]);
-      await new MysqlProductRepository(firstRun).searchProductsByProductType(SEARCH_TERM);
+      await new MysqlProductRepository(firstRun, TEST_AUDIT_ACTOR).searchProductsByProductType(
+        SEARCH_TERM,
+      );
 
       const secondRun = new RecordingExecutor([[], []]);
-      await new MysqlProductRepository(secondRun).searchProductsByProductType(SEARCH_TERM);
+      await new MysqlProductRepository(secondRun, TEST_AUDIT_ACTOR).searchProductsByProductType(
+        SEARCH_TERM,
+      );
 
       expect(onlyStatement(firstRun.calls).sql).toBe(onlyStatement(secondRun.calls).sql);
 
@@ -4667,7 +4822,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // `Date` instances, and `tests/setup.ts` pins `process.env.TZ = 'UTC'` before any
       // suite imports a subject. No global fake timer is installed here.
       const executor = new RecordingExecutor();
-      const repository = new MysqlProductRepository(executor);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.saveProduct(makeWritableProduct(), NO_POPULATED_MEMBERS);
 
@@ -4696,6 +4851,286 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
         expect(statement).not.toContain('127.0.0.1');
         expect(statement).not.toContain('localhost');
       }
+    });
+  });
+
+  // =========================================================================
+  // C-9  The sale-price collaborator on the read hydration path
+  // =========================================================================
+
+  describe('the sale-price collaborator - NET-NEW, and the reason the entity can refuse a reach', () => {
+    // T2, SERVICE-LOCATOR REMOVAL, ASSERTED AT THE ONE PLACE IT CAN BE.
+    // [model/entity/Product.cfc:L517-L521] resolved sale prices by NAME at the point of use -
+    // `getService("promotionService").getSalePriceDetailsForProductSkus(...)` at [L519] - and
+    // `src/domain/entities/product.ts` refuses to reproduce that reach: it takes
+    // `salePriceDetailsForSkus` as an ALREADY-RESOLVED, already-ROUNDED map. A refusal alone would be a
+    // capability lost, so the adapter that constructs a product from rows resolves the map first. These
+    // cases pin BOTH halves: that a supplied resolver reaches the constructed entity, and that an absent
+    // one costs nothing and fabricates nothing.
+    //
+    // B8: net-new. `meta/tests/unit/dao/` holds only `AccountDAOTest` and `PaymentDAOTest`, and
+    // `meta/tests/unit/entity/ProductTest.cfc` covers only `getProductURL()`.
+
+    /**
+     * A recording double for the narrow sale-price capability.
+     *
+     * The adapter's contract is module-local and un-exported, so this satisfies it structurally - which
+     * is exactly how `src/handlers/bootstrap.ts` satisfies it, by adapting the ported
+     * `PromotionService.getSalePriceDetailsForProductSkus` surface. The recorded argument list is what
+     * makes the FETCH SHAPE assertable: one resolution per distinct product and no more.
+     */
+    function makeRecordingSalePriceResolver(details: Readonly<Record<string, SalePriceDetail>>): {
+      readonly getSalePriceDetailsForProductSkus: (
+        productID: string,
+      ) => Promise<Readonly<Record<string, SalePriceDetail>>>;
+      readonly calls: string[];
+    } {
+      const calls: string[] = [];
+
+      return {
+        getSalePriceDetailsForProductSkus(
+          productID: string,
+        ): Promise<Readonly<Record<string, SalePriceDetail>>> {
+          calls.push(productID);
+
+          return Promise.resolve(details);
+        },
+        calls,
+      };
+    }
+
+    /**
+     * One detail, keyed by the SKU identifier the canned SKU row carries.
+     *
+     * `salePrice` is a `Money` because the projection declares it monetary and the value is the price
+     * AFTER the rounding rule has run [model/service/PromotionService.cfc:L1026] - the repository never
+     * recomputes it, and neither does this fixture.
+     */
+    const CANNED_SALE_PRICE_DETAILS: Readonly<Record<string, SalePriceDetail>> = Object.freeze({
+      [PERSISTED_SKU_ID]: Object.freeze({
+        skuID: PERSISTED_SKU_ID,
+        discountLevel: 'sku',
+        salePriceDiscountType: 'percentageOff',
+        salePrice: Money.fromDecimalString('52.47'),
+        promotionID: 'promo-1',
+      }) satisfies SalePriceDetail,
+    });
+
+    it('reaches the constructed entity, so a loaded product carries its sale-price detail', async () => {
+      const resolver = makeRecordingSalePriceResolver(CANNED_SALE_PRICE_DETAILS);
+      const executor = new RecordingExecutor([
+        [PRODUCT_GRAPH_ROW_WITH_DEFAULT_SKU],
+        [SKU_ROW],
+        [SKU_OPTION_ROW],
+      ]);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR, {
+        salePriceResolver: resolver,
+      });
+
+      const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
+
+      // ⭐ THE ASSERTION THE WHOLE WIRING EXISTS FOR. Before the collaborator was bound into hydration,
+      // this answered `undefined` for every product loaded from the real repository even when sale-price
+      // rows existed, because the entity reads ONLY the map it was constructed with.
+      const detail = await product.getSkuSalePriceDetails(PERSISTED_SKU_ID);
+
+      expect(detail?.skuID).toBe(PERSISTED_SKU_ID);
+      expect(detail?.salePrice.toFixed2()).toBe('52.47');
+      expect(detail?.discountLevel).toBe('sku');
+
+      // ONE resolution, for the ONE product materialized, keyed on its identifier.
+      expect(resolver.calls).toStrictEqual([PERSISTED_PRODUCT_ID]);
+    });
+
+    it('answers undefined for a sku the map does not carry, rather than a zero', async () => {
+      // The same discipline that keeps `Sku.getPriceByCurrencyCode()`
+      // [model/entity/Sku.cfc:L269-L273] answering `undefined`: a miss is the legacy's own `return {}`
+      // at [model/entity/Product.cfc:L186], which every caller already probes for, and a substituted
+      // zero would report a sale price that does not exist.
+      const resolver = makeRecordingSalePriceResolver(CANNED_SALE_PRICE_DETAILS);
+      const executor = new RecordingExecutor([[PRODUCT_GRAPH_ROW], [], []]);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR, {
+        salePriceResolver: resolver,
+      });
+
+      const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
+
+      expect(await product.getSkuSalePriceDetails(UNMATCHED_PRODUCT_ID)).toBeUndefined();
+    });
+
+    it('issues no statement of its own and leaves the documented three-statement shape intact', async () => {
+      // The collaborator is a CAPABILITY, not a query this adapter emits: it reaches the executor IT was
+      // constructed with. So binding it cannot change this adapter's emitted SQL, which is what keeps
+      // every SQL-shape case in this file valid whether or not a resolver is present.
+      const resolver = makeRecordingSalePriceResolver(CANNED_SALE_PRICE_DETAILS);
+      const executor = new RecordingExecutor([
+        [PRODUCT_GRAPH_ROW_WITH_DEFAULT_SKU],
+        [SKU_ROW],
+        [SKU_OPTION_ROW],
+      ]);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR, {
+        salePriceResolver: resolver,
+      });
+
+      await repository.getProductByProductID(PERSISTED_PRODUCT_ID);
+
+      expect(executor.calls).toHaveLength(3);
+      expect(executor.mutationCalls).toHaveLength(0);
+    });
+
+    it('costs nothing and fabricates nothing when no resolver was supplied', async () => {
+      // The collaborator is OPTIONAL, and over a hundred construction sites in this file rely on that.
+      // An absent resolver must mean NO resolution attempt at all - not an empty query, not a thrown
+      // error, and above all not an invented detail.
+      const executor = new RecordingExecutor([
+        [PRODUCT_GRAPH_ROW_WITH_DEFAULT_SKU],
+        [SKU_ROW],
+        [SKU_OPTION_ROW],
+      ]);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
+
+      const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
+
+      expect(await product.getSkuSalePriceDetails(PERSISTED_SKU_ID)).toBeUndefined();
+      expect(executor.calls).toHaveLength(3);
+    });
+
+    it('resolves once per DISTINCT product on the multi-product search path', async () => {
+      // THE FETCH SHAPE, ASSERTED. `getSalePriceDetailsForProductSkus` takes a single `productID`
+      // [model/service/PromotionService.cfc:L1022] and there is no batched variant on the promotion
+      // surface, so a multi-product read resolves once per product - exactly as the legacy entity did,
+      // once per product, at [model/entity/Product.cfc:L519]. Duplicates in the caller's list are
+      // collapsed, so the count follows the ROWS the graph read returned and not the list length.
+      const resolver = makeRecordingSalePriceResolver(CANNED_SALE_PRICE_DETAILS);
+      const secondProductID = UNMATCHED_PRODUCT_ID;
+      const executor = new RecordingExecutor([
+        [
+          { productID: PERSISTED_PRODUCT_ID },
+          { productID: secondProductID },
+          { productID: PERSISTED_PRODUCT_ID },
+        ],
+        [PRODUCT_GRAPH_ROW, { ...PRODUCT_GRAPH_ROW, p_productID: secondProductID }],
+        [],
+      ]);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR, {
+        salePriceResolver: resolver,
+      });
+
+      const products = await repository.searchProductsByProductType(SEARCH_TERM);
+
+      expect(products).toHaveLength(3);
+      expect([...resolver.calls].sort()).toStrictEqual(
+        [PERSISTED_PRODUCT_ID, secondProductID].sort(),
+      );
+    });
+  });
+});
+
+// =============================================================================
+// THE TWO RESOURCE CEILINGS (S-08)
+//
+// A security review raised finding S-08, MEDIUM, CWE-400: wildcard-broadened unpaginated searches
+// can exhaust database or container resources. Values are bound on every path, so this is denial of
+// service rather than injection - no case below asserts a change to any statement's TEXT, and the
+// pinned parity claim that the search statement emits no `ORDER BY`, `DISTINCT` or `LIMIT` still
+// holds exactly.
+//
+// One ceiling is DERIVED from the column the term is matched against and is therefore provably
+// non-binding on any term that could match a row. The other bounds graph materialization THIS PORT
+// introduced: the legacy projected `productID, productName` and reduced each row to a two-key
+// autocomplete structure [model/dao/ProductDAO.cfc:L429-L435], building no graph at all.
+//
+// Each ceiling gets a case AT the limit and a case ABOVE it, so the boundary is inclusive rather
+// than approximate.
+// =============================================================================
+
+describe('the two resource ceilings refuse only what could not have been answered', () => {
+  describe('the search-term length', () => {
+    it('searches with a term AT the column width, so the limit is inclusive', async () => {
+      const executor = new RecordingExecutor([[PRODUCT_SEARCH_ROW], [PRODUCT_GRAPH_ROW], []]);
+      const atTheWidth = 'a'.repeat(255);
+
+      await new MysqlProductRepository(executor, TEST_AUDIT_ACTOR).searchProductsByProductType(
+        atTheWidth,
+      );
+
+      // `productName` declares NO length [model/entity/Product.cfc:L55], and a Hibernate string
+      // property without one maps to `varchar(255)` - so 255 is the longest term that could be an
+      // entire name.
+      expect(statementAt(executor.calls, 0).params).toStrictEqual([`%${atTheWidth}%`]);
+    });
+
+    it('★★ refuses a term ABOVE the column width before issuing any statement', async () => {
+      const executor = new RecordingExecutor([[PRODUCT_SEARCH_ROW]]);
+
+      await expect(
+        new MysqlProductRepository(executor, TEST_AUDIT_ACTOR).searchProductsByProductType(
+          'a'.repeat(256),
+        ),
+      ).rejects.toThrow(/searchTermLength is 256 and at most 255/u);
+
+      expect(executor.calls).toHaveLength(0);
+    });
+
+    it('leaves a LIKE metacharacter live inside an admissible term, exactly as the legacy did', async () => {
+      // S-08 suggests escaping LIKE wildcards where literal matching is intended. It is NOT intended
+      // here: [model/dao/ProductDAO.cfc:L422] binds `%#arguments.term#%` with the metacharacters
+      // active, so `%` legitimately matches every name and escaping would change which rows a
+      // CORRECT search returns. The ceilings bound the resource instead; this pins that the matching
+      // semantics were left alone. The identical case sits in the SKU sibling's suite.
+      const executor = new RecordingExecutor([[PRODUCT_SEARCH_ROW], [PRODUCT_GRAPH_ROW], []]);
+
+      await new MysqlProductRepository(executor, TEST_AUDIT_ACTOR).searchProductsByProductType(
+        '%_%',
+      );
+
+      expect(statementAt(executor.calls, 0).params).toStrictEqual(['%%_%%']);
+    });
+  });
+
+  describe('the search-result materialization count', () => {
+    /** `count` distinct search rows, which is all the ceiling inspects. */
+    function searchRowsOf(count: number): readonly SqlRow[] {
+      return Array.from({ length: count }, (_unused, index) => ({
+        ...PRODUCT_SEARCH_ROW,
+        productID: index.toString(16).padStart(32, '0'),
+      }));
+    }
+
+    it('★★ refuses a result set ABOVE the ceiling before materializing any graph', async () => {
+      const executor = new RecordingExecutor([searchRowsOf(2_001)]);
+
+      await expect(
+        new MysqlProductRepository(executor, TEST_AUDIT_ACTOR).searchProductsByProductType(
+          SEARCH_TERM,
+        ),
+      ).rejects.toThrow(/searchResultMaterialization is 2001 and at most 2000/u);
+
+      // ONE statement was issued - the search - and none of the three the graph load would have
+      // needed. That is what bounds the amplification.
+      expect(executor.calls).toHaveLength(1);
+    });
+
+    it('proceeds past a result set AT the ceiling, so the limit is inclusive', async () => {
+      const executor = new RecordingExecutor([searchRowsOf(2_000), [PRODUCT_GRAPH_ROW], [], []]);
+
+      await new MysqlProductRepository(executor, TEST_AUDIT_ACTOR).searchProductsByProductType(
+        SEARCH_TERM,
+      );
+
+      // Not refused: the graph statements were issued, which is what distinguishes "at the ceiling"
+      // from "above it". Which products come back is the graph fixture's business, not this case's.
+      expect(executor.calls.length).toBeGreaterThan(1);
+    });
+
+    it('names the ceiling it enforced, so an operator need not read the source to find it', async () => {
+      const executor = new RecordingExecutor([searchRowsOf(2_001)]);
+
+      await expect(
+        new MysqlProductRepository(executor, TEST_AUDIT_ACTOR).searchProductsByProductType(
+          SEARCH_TERM,
+        ),
+      ).rejects.toThrow(/Narrow the term or the product-type list/u);
     });
   });
 });

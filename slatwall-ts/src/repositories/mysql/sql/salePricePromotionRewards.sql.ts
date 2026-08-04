@@ -1,32 +1,37 @@
 // ---------------------------------------------------------------------------
 // The sale-price promotion-reward statement.
 //
-// Legacy source: `<cffunction name="getSalePricePromotionRewardsQuery">` at
-// [model/dao/PromotionDAO.cfc:L298-L591] - the largest statement in the migration slice: a
-// preliminary query [L309-L326], a SIX-branch `UNION` [L332-L542], and THREE chained in-engine
-// query-of-queries steps [L544-L559, L561-L569, L571-L588], returning a query object rather than
-// entities [L590].
+// Reproduces `<cffunction name="getSalePricePromotionRewardsQuery">`
+// [model/dao/PromotionDAO.cfc:L298-L591] - a preliminary query, a six-branch `UNION`, and three
+// chained in-engine `dbtype="query"` steps - as one MySQL statement. The legacy chain maps onto the
+// emitted form step for step, which is how the two formulations stay comparable side by side:
 //
-// JUDGMENT CALL: the function span is L298-L591, not the L298-L593 the plan and the folder
-// specification both claim. The file was read: L590 is `<cfreturn skuResults />`, L591 is
-// `</cffunction>`, L592 is whitespace and L593 is `</cfcomponent>` - the end of the FILE, not of
-// the function. The corrected span is cited throughout this module.
+//   CTE 1 `noQualifierCurrentActivePromotionPeriods`  <- the preliminary query   [L309-L326]
+//   CTE 2 `allDiscounts`                              <- the six-branch UNION    [L332-L542]
+//   CTE 3 `noQualifierDiscounts`                      <- query-of-queries step 1 [L544-L559]
+//   CTE 4 `skuPrice`                                  <- query-of-queries step 2 [L561-L569]
+//   outer `SELECT`                                    <- query-of-queries step 3 [L571-L588]
 //
-// A pure, synchronous statement builder: it composes SQL text and the positional values to bind to
-// it, and returns both. It opens no connection, executes nothing, hydrates no entity, constructs no
-// `Money`, reads no clock and no `process.env`, logs nothing and is not `async`. All of that
-// belongs one tier out in `src/repositories/mysql/mysqlPromotionRepository.ts`, which owns row
-// hydration, the DECIMAL-string to `Money` conversion and the fetch-shape decision. That boundary
-// is what lets `tests/integration/repositories/*.test.ts` assert the emitted SQL text and the
-// bound-parameter array with NO live MySQL.
+// The four derived-result names are carried over verbatim as the CTE names so the diff reads name
+// for name.
 //
-// Two imports only: `../dialect.js` for the dialect-branching join fragment at
-// [model/dao/PromotionDAO.cfc:L482-L488], resolved inside the builder body and never at module
-// load; and `../../../lib/cfml/list.js` for the CFML `listToArray` semantics the
-//   `cfqueryparam list="true"`
-// expansion at [model/dao/PromotionDAO.cfc:L525] needs. The port
-// `src/domain/ports/promotionRepository.ts` was consulted for the result contract and is
-// deliberately NOT imported - a statement builder has no business depending on the domain.
+// A pure, synchronous statement builder: it composes SQL text plus the positional values to bind to
+// it and returns both. It opens no connection, executes nothing, hydrates no entity, constructs no
+// `Money`, reads no clock and no `process.env`, and is not `async`. Execution, row hydration and the
+// DECIMAL-string to `Money` conversion belong one tier out in
+// `src/repositories/mysql/mysqlPromotionRepository.ts`. That boundary is what lets
+// `tests/integration/repositories/*.test.ts` assert the emitted SQL text and the bound-parameter
+// array with no live MySQL.
+//
+// BIND-ORDER IS THE CONTRACT. `params` holds exactly one value per `?`, in the order the
+// placeholders appear in the text, so every fragment below carries its own binds beside it rather
+// than deriving them afterwards: 18 placeholders when `productID` is absent and 24 when it is
+// present. The inline-versus-bound split is the legacy's own - the six `discountLevel` branch
+// labels, the three `CASE ... WHEN` discriminators and the literal `100` are inline because the
+// source writes them inline and two of the three would be semantically wrong as parameters, while
+// the fourteen timestamps, the active flag, the three reward-type tokens and the six `productID`
+// values are bound because the source binds them. No caller-supplied character ever reaches the SQL
+// text: the only caller inputs are `now` and `productID`, and both travel exclusively as `?`.
 //
 // NOTHING IS ADDED THAT THE LEGACY LACKS: no `ORDER BY`, `LIMIT`, `HAVING`, `ROW_NUMBER`, extra or
 // removed `DISTINCT`, tiebreaker, `COALESCE`, `IFNULL`, `ELSE` arm, `ROUND`, `CAST`, index hint,
@@ -34,29 +39,14 @@
 // fifth `NOT EXISTS`, join to `SwRoundingRule`, null guard, emptiness check, or "more correct"
 // boundary operator. Each would change either the rows returned or the money computed for them.
 //
-// EXHIBITS: the three query-of-queries bodies [L544-L559, L561-L569, L571-L588] are transcribed
-// verbatim beside the CTEs that replace them, because AAP 0.4.3 requires that rewrite to be
-// readable side by side. Every other legacy fragment is cited by locator, not transcribed. In an
-// exhibit each leading TAB becomes four spaces and the eight spaces common to every line are
-// dropped.
-//
-// JUDGMENT CALL: the EMITTED text preserves what carries meaning - line structure, clause order,
-// alias names and keyword case, including the source's own case inconsistencies - and normalises
-// only leading whitespace, which the legacy itself writes inconsistently at [L350]/[L354] and
-// [L356]/[L358]. The trailing TABs at [L361], [L392], [L425], [L458], [L499] and [L540] are
-// dropped.
+// The emitted text preserves what carries meaning - line structure, clause order, alias names and
+// keyword case, including the source's own case inconsistencies - and normalises only leading
+// whitespace, which the legacy itself writes inconsistently.
 // ---------------------------------------------------------------------------
 
 import { materializedIdPathLikePatternFragment, resolveConfiguredDialect } from '../dialect.js';
 import { listToArray } from '../../../lib/cfml/list.js';
 
-/**
- * A value bound to one positional placeholder.
- *
- * The union is exactly as wide as the statement's own bind census and no wider: `Date` for the
- * fourteen timestamp positions, `number` for the single active flag, `string` for the three reward
- * types and the six product identifiers.
- */
 type BindValue = string | number | Date;
 
 /**
@@ -71,10 +61,6 @@ type BindValue = string | number | Date;
  * Not exported: this module exposes exactly one unit, the builder.
  */
 interface SalePricePromotionRewardsInput {
-  /**
-   * The single instant every date predicate is compared against. An INPUT, never read from the
-   * clock here. See the builder's own note.
-   */
   readonly now: Date;
 
   /**
@@ -86,14 +72,7 @@ interface SalePricePromotionRewardsInput {
   readonly productID?: string;
 }
 
-/**
- * A statement ready to hand to a prepared-statement call: the text, and the values to bind to its
- * placeholders in order. Not exported, for the same reason as the input shape.
- */
 interface SalePricePromotionRewardsStatement {
-  /**
-   * The statement text. One positional `?` per element of `params`, and no interpolated value.
-   */
   readonly sql: string;
 
   /**
@@ -120,50 +99,23 @@ interface SalePricePromotionRewardsStatement {
  * text is what keeps the emitted SQL verifiably uniform where the legacy is uniform.
  */
 interface DiscountBranch {
-  /**
-   * The branch-constant level literal, emitted INLINE in the projection: a projection label, not a
-   * filter value, so it is not bound. See the builder's note on the inline-versus-bound split.
-   */
   readonly discountLevel: 'sku' | 'product' | 'brand' | 'option' | 'productType' | 'global';
 
-  /** The `SwPromoReward` alias this branch reads the reward columns through. */
   readonly rewardAlias: string;
 
-  /** The `SwPromotionPeriod` alias this branch reads the period columns through. */
   readonly periodAlias: string;
 
-  /** The branch's `FROM` clause and its complete join chain, in source order. */
   readonly fromClause: string;
 
-  /**
-   * Predicates that precede the date pair inside this branch's `WHERE`. Empty for five of the six.
-   * The `global` branch supplies the reward-type membership test and the four `NOT EXISTS`
-   * exclusions, in source order.
-   */
   readonly leadingPredicates: readonly string[];
 
-  /**
-   * The values bound by `leadingPredicates`, in placeholder order. Held alongside the text rather
-   * than derived from it, so a fragment can never be emitted without the values it needs.
-   */
   readonly leadingBindValues: readonly BindValue[];
 }
 
-// ---------------------------------------------------------------------------
-// Structural fragments. These carry no value and are pure SQL text; every VALUE in this statement
-// travels as a positional `?`.
-// ---------------------------------------------------------------------------
-
-/** The `WHERE` keyword line of a `UNION` branch. */
 const BRANCH_WHERE_KEYWORD = '    WHERE';
 
-/** The `AND` separator between two predicates, at the depth the source uses. */
 const BRANCH_PREDICATE_SEPARATOR = '\n      AND\n';
 
-/**
- * The `UNION` keyword between two branches. Sits one indentation level to the LEFT of the `SELECT`
- * it separates, which is how the source writes it [model/dao/PromotionDAO.cfc:L363].
- */
 const BRANCH_UNION_SEPARATOR = '\n  UNION\n';
 
 /**
@@ -237,17 +189,17 @@ const REWARD_PRODUCT_TYPE_ID_COLUMN = 'SwPromoRewardProductType.productTypeID';
 // changes no behavior. The pre-QUERY itself is NOT dead - CTE 3 consumes it
 // [model/dao/PromotionDAO.cfc:L556,L558].
 //
-// LEGACY-DEFECT [model/dao/PromotionDAO.cfc:L303,L309]: `var noQualifierPromotionPeriods` is
-// declared and never assigned or read, because the actual pre-query at L309 is named
-// `noQualifierCurrentActivePromotionPeriods` - a different identifier. The L303 local is therefore
-// dead AND the L309 query name is un-var'd, leaking into the component variables scope.
-// Unobservable in this module, which holds no runtime state at all.
+// LEGACY-DEFECT [model/dao/PromotionDAO.cfc:L303]: `var noQualifierPromotionPeriods` is declared and
+// never assigned or read, because the actual pre-query at L309 is named
+// `noQualifierCurrentActivePromotionPeriods` - a different identifier. That L309 query name is
+// itself un-var'd, so in CFML it leaks into the component variables scope.
 //
-// Preserved deliberately; do not fix without a product decision.
-//
-// JUDGMENT CALL: the folder specification records ONE dead local here (`salePromotionPeriodIDs`).
-// Reading [model/dao/PromotionDAO.cfc:L301-L309] surfaced a SECOND - `noQualifierPromotionPeriods`
-// at L303, never even assigned - so both are documented rather than only the one that was named.
+// TARGET DIVERGENCE - the leak cannot be preserved and is not: this module is a stateless statement
+// builder with no component, no instance and no module-level binding for a query name to leak into,
+// so the scope isolation is structural rather than a policy anything here enforces. The dead local
+// is likewise not declared, which `noUnusedLocals` would reject anyway. Neither change is
+// observable in the emitted SQL or in the bound parameters. The pre-query itself is NOT dead - CTE 3
+// consumes it [model/dao/PromotionDAO.cfc:L556,L558].
 /**
  * The preliminary query [model/dao/PromotionDAO.cfc:L309-L326], as CTE 1.
  *
@@ -295,11 +247,13 @@ allDiscounts AS (
 // `PromotionReward.amount` is big_decimal with NO default [model/entity/PromotionReward.cfc:L61],
 // unlike `Sku.price` which declares default="0" [model/entity/Sku.cfc:L56].
 //
-// LEGACY-DEFECT [model/dao/PromotionDAO.cfc:L343,L551,L578]: roundingRuleID is projected through
-// every branch and both surviving query-of-queries steps, but no rounding rule is ever applied to
-// the computed salePrice. No join to SwRoundingRule exists and none is added.
-//
-// Preserved deliberately; do not fix without a product decision.
+// CFML parity [model/dao/PromotionDAO.cfc:L343,L551,L578]: roundingRuleID is PROJECTED through every
+// branch and through both surviving reduction steps, and this statement never applies it - there is
+// no join to `SwRoundingRule` here and none is added. Application happens downstream, in
+// `PromotionService.getSalePriceDetailsForProductSkus`
+// [model/service/PromotionService.cfc:L1025-L1026], which rounds each reduced row's salePrice by the
+// projected identifier when it is non-empty. Carrying the column without consuming it is therefore
+// the query's contract with its caller, not a dropped step.
 //
 // JUDGMENT CALL: the CASE arithmetic and MIN(salePrice) are computed by MySQL, not by TypeScript,
 // and that does not violate E4's single-arithmetic-surface rule: no floating-point operation on a
@@ -412,9 +366,49 @@ function discountBranchWhereClause(branch: DiscountBranch, includeProductID: boo
 
 // LEGACY-DEFECT [model/dao/PromotionDAO.cfc:L527-L533]: the 'global' branch's NOT EXISTS set covers
 // four SwPromoReward* link tables and omits SwPromoRewardSku, so a reward with SKU-level inclusions
-// can still surface as global.
+// can still surface as global. The four exclusions are at L527 (SwPromoRewardProduct), L529
+// (SwPromoRewardBrand), L531 (SwPromoRewardOption) and L533 (SwPromoRewardProductType); there is no
+// fifth, and the omission is not an artifact of this translation - the legacy WHERE clause runs
+// L525..L541 with nothing else in it. `SwPromoRewardSku` unquestionably EXISTS as a table: the 'sku'
+// branch of this same UNION joins it twice [model/dao/PromotionDAO.cfc:L350, L352], and the entity
+// declares it as the `skus` many-to-many link table
+// [model/entity/PromotionReward.cfc:L82]. It is simply not excluded here.
 //
 // Preserved deliberately; do not fix without a product decision.
+//
+// SECURITY REVIEW DISPOSITION - RAISED AS S-16, DECLINED ON A CITED MANDATE.
+//
+// Raised as finding S-16, HIGH, CWE-840: because the CROSS JOIN above pairs every reward with every
+// SKU and these four exclusions are the ONLY narrowing mechanism, a reward that was configured for
+// specific SKUs is also emitted as a 'global' discount row for EVERY sku, and then competes in the
+// MIN(salePrice) aggregate of CTE 4 for SKUs it was never scoped to. Its required resolution was to
+// add the fifth `NOT EXISTS` for `SwPromoRewardSku` and update the SQL-shape tests.
+//
+// DECLINED AT THIS SEAM, AND THE DECLINE IS MANDATED RATHER THAN CHOSEN:
+//
+//   * AAP 0.4.1 specifies this module as CREATE from [model/dao/PromotionDAO.cfc:L298-L591] with
+//     "Six-branch UNION preserved". A fifth exclusion changes which rows the sixth branch
+//     contributes, so it is a change to the specified artifact, not an addition alongside it.
+//   * AAP 0.8.1 Preserve-Exactly names "the price-group and currency resolution cascade" and the
+//     promotion discount math as must-preserve. The sale price this statement computes IS a price:
+//     adding the exclusion RAISES the sale price of every SKU that a SKU-scoped reward currently
+//     under-prices, which is a change to what customers are charged in the migrated system relative
+//     to the system being migrated.
+//   * AAP 0.9.3 makes the inverse a failing gate - "A defect that is silently fixed fails this
+//     gate" - and its three sanctioned divergences (register entries 13, 12 and 17/18/19) do not
+//     include this one.
+//
+// The severity assessment is not disputed, and the finding's own required resolution concedes the
+// point by requiring product approval "because behavior changes". That approval is a decision taken
+// across BOTH implementations: while the CFML monolith remains the system of record for sale prices,
+// a unilateral correction here would make the two disagree about price, which is the specific
+// failure mode a strangler-fig seam exists to prevent.
+//
+// Pinned rather than repaired:
+// `tests/integration/repositories/mysqlPromotionRepository.test.ts`, test "keeps the global branch
+// NOT EXISTS set at four link tables, omitting SwPromoRewardSku", asserts all four exclusions
+// present in the global branch AND the SwPromoRewardSku exclusion absent from it, so neither adding
+// nor removing an exclusion can happen silently.
 
 // CFML parity [model/dao/PromotionDAO.cfc:L525]: cfqueryparam list="true" expands a comma-list into
 // one bound parameter per element. The legacy literal is retained verbatim and expanded with CFML
@@ -467,15 +461,11 @@ function discountBranchWhereClause(branch: DiscountBranch, includeProductID: boo
  * @returns the six branch descriptors, in the order the source unions them.
  */
 function discountBranches(productTypePathPattern: string): readonly DiscountBranch[] {
-  // The three reward types the global branch admits, and the placeholder group that binds them.
-  // Both come from the SAME array, so the emitted `?` count and the bound value count cannot
-  // disagree.
   const globalRewardTypes = listToArray(GLOBAL_REWARD_TYPE_LIST);
   const globalRewardTypePlaceholders = globalRewardTypes.map(() => '?').join(', ');
 
   return [
     {
-      // model/dao/PromotionDAO.cfc:L333-L362
       discountLevel: 'sku',
       rewardAlias: 'prSku',
       periodAlias: 'ppSku',
@@ -491,7 +481,6 @@ function discountBranches(productTypePathPattern: string): readonly DiscountBran
       leadingBindValues: [],
     },
     {
-      // model/dao/PromotionDAO.cfc:L364-L393
       discountLevel: 'product',
       rewardAlias: 'prProduct',
       periodAlias: 'ppProduct',
@@ -618,39 +607,10 @@ function discountBranches(productTypePathPattern: string): readonly DiscountBran
 /**
  * The two intermediate steps, as CTE 3 and CTE 4.
  *
- * VERBATIM LEGACY SQL - model/dao/PromotionDAO.cfc:L544-L559, STEP 1:
- *
- *     <cfquery name="noQualifierDiscounts" dbtype="query">
- *         SELECT DISTINCT
- *             allDiscounts.skuID,
- *             allDiscounts.originalPrice,
- *             allDiscounts.discountLevel,
- *             allDiscounts.salePriceDiscountType,
- *             allDiscounts.salePrice,
- *             allDiscounts.roundingRuleID,
- *             allDiscounts.salePriceExpirationDateTime,
- *             allDiscounts.promotionPeriodID,
- *             allDiscounts.promotionID
- *         FROM
- *             allDiscounts, noQualifierCurrentActivePromotionPeriods
- *         WHERE
- *             allDiscounts.promotionPeriodID =
- *             noQualifierCurrentActivePromotionPeriods.promotionPeriodID
- *     </cfquery>
- *
- * VERBATIM LEGACY SQL - model/dao/PromotionDAO.cfc:L561-L569, STEP 2:
- *
- *     <cfquery name="skuPrice" dbtype="query">
- *         SELECT
- *             skuID,
- *             MIN(salePrice) as salePrice
- *         FROM
- *             noQualifierDiscounts
- *         GROUP BY
- *             skuID
- *     </cfquery>
- *
- * No placeholders: neither step binds a value.
+ * CTE 3 reproduces query-of-queries step 1 [model/dao/PromotionDAO.cfc:L544-L559]: the nine columns
+ * of `allDiscounts`, `DISTINCT`, restricted to the periods CTE 1 admitted. CTE 4 reproduces step 2
+ * [model/dao/PromotionDAO.cfc:L561-L569]: `skuID` with `MIN(salePrice)`, grouped by `skuID`. Neither
+ * step binds a value, so neither contributes a placeholder.
  */
 const NO_QUALIFIER_DISCOUNTS_AND_SKU_PRICE_CTES = `),
 noQualifierDiscounts AS (
@@ -691,8 +651,11 @@ skuPrice AS (
 // final projection. It is neither carried through nor added back.
 //
 // CFML parity [model/dao/PromotionDAO.cfc:L571-L588]: the final step has no LIMIT, no ORDER BY and
-// no DISTINCT, so two rewards tying on the minimum salePrice both survive as duplicate skuID rows.
-// No tiebreaker is added.
+// no DISTINCT, so every row tying the minimum salePrice for a SKU survives - the result is one row
+// per DISTINCT projected detail at that minimum, not one per SKU and not one per reward. CTE 3's
+// `DISTINCT` covers the nine projected columns and no reward identifier is among them, so two rewards
+// with identical projected details collapse into a single row while two differing in any of those
+// columns both survive as duplicate skuID rows. No tiebreaker is added.
 //
 // CFML parity [model/dao/PromotionDAO.cfc:L586]: the second predicate is joined by a LOWER-CASE
 // `and`, where every other conjunction in this statement is upper-case `AND`. Preserved, not
@@ -700,30 +663,11 @@ skuPrice AS (
 /**
  * The outer `SELECT`, as STEP 3.
  *
- * VERBATIM LEGACY SQL - model/dao/PromotionDAO.cfc:L571-L588:
- *
- *     <cfquery name="skuResults" dbtype="query">
- *         SELECT
- *             noQualifierDiscounts.skuID,
- *             noQualifierDiscounts.originalPrice,
- *             noQualifierDiscounts.discountLevel,
- *             noQualifierDiscounts.salePriceDiscountType,
- *             noQualifierDiscounts.salePrice,
- *             noQualifierDiscounts.roundingRuleID,
- *             noQualifierDiscounts.salePriceExpirationDateTime,
- *             noQualifierDiscounts.promotionID
- *         FROM
- *             noQualifierDiscounts,
- *             skuPrice
- *         WHERE
- *             noQualifierDiscounts.skuID = skuPrice.skuID
- *           and
- *             noQualifierDiscounts.salePrice = skuPrice.salePrice
- *     </cfquery>
- *
- * `<cfreturn skuResults />` at [model/dao/PromotionDAO.cfc:L590] returns this as a CFML query
- * object rather than as entities, which is why the adapter's return contract is a row array and
- * this method carries no row-to-entity factory.
+ * Reproduces query-of-queries step 3 [model/dao/PromotionDAO.cfc:L571-L588]: the grouped minimum
+ * joined back to the ungrouped rows on BOTH `skuID` and `salePrice`, projecting eight of CTE 3's
+ * nine columns. `<cfreturn skuResults />` [model/dao/PromotionDAO.cfc:L590] hands the result back as
+ * a CFML query object rather than as entities, which is why the adapter's return contract is a row
+ * array and this statement carries no row-to-entity factory.
  *
  * No placeholders: the join-back binds no value.
  */
@@ -750,13 +694,11 @@ WHERE
 
 // JUDGMENT CALL: the three chained in-engine `dbtype="query"` steps
 // [model/dao/PromotionDAO.cfc:L544-L559, L561-L569, L571-L588] are expressed as SQL common table
-// expressions. Node has no query-of-queries equivalent - there is no in-process engine to hand a
-// result set back to for a second pass - so the only way to compute the same result is to compute
-// it in the database, which MySQL 8.0 supports through `WITH`. That is the whole of the rationale:
-// a mechanical necessity of the target runtime, and no other property is claimed for it. The four
-// derived-result names are preserved verbatim as the CTE names -
-// `noQualifierCurrentActivePromotionPeriods`, `allDiscounts`, `noQualifierDiscounts`, `skuPrice` -
-// so the CTE form and the legacy chain stay diffable name for name.
+// expressions - the CHOSEN TARGET REWRITE. Node has no query-of-queries equivalent, so the reduction
+// has to move somewhere, and moving it into the database through MySQL 8.0's `WITH` keeps it in one
+// statement and one round trip. The four derived-result names are carried over verbatim as the CTE
+// names - `noQualifierCurrentActivePromotionPeriods`, `allDiscounts`, `noQualifierDiscounts`,
+// `skuPrice` - so the CTE form and the legacy chain stay diffable name for name.
 
 // JUDGMENT CALL: `now` is an input rather than an internally-captured clock read. The legacy
 // captures `var timeNow = now()` ONCE at [model/dao/PromotionDAO.cfc:L306] and reuses it at all
@@ -794,9 +736,14 @@ WHERE
  * MySQL statement: four common table expressions and an outer `SELECT`, in place of a preliminary
  * query, a six-branch `UNION` and three chained in-engine query-of-queries steps.
  *
- * The result set is the eight columns of [model/dao/PromotionDAO.cfc:L572-L580], one row per SKU
- * per reward that ties the minimum sale price for that SKU. Ties are not broken and
- * `roundingRuleID` is projected without being applied; both are the legacy's behaviour and both are
+ * The result set is the eight columns of [model/dao/PromotionDAO.cfc:L572-L580], one row per
+ * DISTINCT projected detail that ties the minimum sale price for a SKU. It is not one row per SKU and
+ * not one row per reward: CTE 3's `DISTINCT` covers the nine projected columns and does NOT include
+ * a reward identifier, so several rewards collapse into one row when their projected details are
+ * identical, while rows differing in any projected column - discount level, expiration, rounding rule
+ * or promotion - all survive the tie. Ties are not broken here, and `roundingRuleID` is projected
+ * without being applied because the caller applies it
+ * [model/service/PromotionService.cfc:L1025-L1026]; both are the legacy's behaviour and both are
  * recorded above.
  *
  * A row whose `CASE` fell through to SQL NULL [L338-L342] survives into CTE 3 and is skipped by
@@ -819,7 +766,6 @@ WHERE
 export function buildSalePricePromotionRewardsStatement(
   input: SalePricePromotionRewardsInput,
 ): SalePricePromotionRewardsStatement {
-  // Key presence, not value definedness. See the note above.
   const productIDIsPresent = 'productID' in input;
 
   // Resolved HERE rather than at module load, so importing this module does no work and reads no
@@ -830,8 +776,6 @@ export function buildSalePricePromotionRewardsStatement(
     REWARD_PRODUCT_TYPE_ID_COLUMN,
   );
 
-  // CTE 1's three binds, in its own clause order: the instant, the same instant again [L317, L319],
-  // then the active flag [L321].
   const params: BindValue[] = [input.now, input.now, PROMOTION_ACTIVE_FLAG];
 
   const branchStatements: string[] = [];
@@ -845,10 +789,6 @@ export function buildSalePricePromotionRewardsStatement(
       ].join('\n'),
     );
 
-    // Text and binds move together, in the branch's own predicate order: the leading predicates
-    // first - which for the global branch means the three reward types [L525], the four NOT EXISTS
-    // exclusions in between binding nothing at all - then the date pair, then the optional product
-    // identifier.
     params.push(...branch.leadingBindValues, input.now, input.now);
 
     if (productIDIsPresent) {
@@ -856,10 +796,6 @@ export function buildSalePricePromotionRewardsStatement(
     }
   }
 
-  // CTE 1 opens the `WITH` and leaves `allDiscounts AS (` open; the six branches fill it; CTE 3
-  // closes it and adds itself and CTE 4; the outer SELECT closes the statement. The lone newline is
-  // the line break between the last branch's final predicate and the `),` that closes
-  // `allDiscounts`.
   const sql =
     NO_QUALIFIER_CURRENT_ACTIVE_PROMOTION_PERIODS_CTE +
     branchStatements.join(BRANCH_UNION_SEPARATOR) +
@@ -867,8 +803,5 @@ export function buildSalePricePromotionRewardsStatement(
     NO_QUALIFIER_DISCOUNTS_AND_SKU_PRICE_CTES +
     SKU_RESULTS_SELECT;
 
-  // Frozen at both levels. The `readonly` types are a compile-time claim that erases at emit, and
-  // these elements do not mean the same thing as one another - a runtime reorder would bind a
-  // timestamp where a product identifier belongs.
   return Object.freeze({ sql, params: Object.freeze(params) });
 }

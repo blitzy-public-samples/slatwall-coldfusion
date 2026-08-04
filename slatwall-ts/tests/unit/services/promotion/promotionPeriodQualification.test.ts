@@ -333,7 +333,6 @@ function createPromotionRepositoryDouble(program: UseCountProgram = {}): Promoti
     getSalePricePromotionRewardsQuery: () =>
       unreachedPortMember('getSalePricePromotionRewardsQuery'),
     getRoundingRuleQuery: () => unreachedPortMember('getRoundingRuleQuery'),
-    saveRoundingRule: () => unreachedPortMember('saveRoundingRule'),
   };
 
   return { repository, calls };

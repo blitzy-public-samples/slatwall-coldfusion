@@ -85,17 +85,28 @@
 //
 // PLANNED VERSUS ACTUAL, recorded because the difference is material and a reader
 // will otherwise trip over it. The layout in AAP 0.3.1 implies eight handler
-// modules; two exist (`router.ts` and `errorMapper.ts`), the composition root and
-// the five capability handlers not having been delivered at this checkpoint. One
-// module exists beyond that layout, `src/integrations/europeanCentralBankCurrencyConverter.ts`.
+// modules; THREE exist - `bootstrap.ts`, `router.ts` and `errorMapper.ts` - the five
+// capability handlers not having been delivered at this checkpoint. One module
+// exists beyond that layout, `src/integrations/europeanCentralBankCurrencyConverter.ts`.
 // Coverage runs BOTH ways against that plan. It exceeds it in three places:
 // `lib/logger.ts`, `repositories/mysql/connection.ts` and
 // `sql/skusBySelectedOptions.sql.ts` each own a dedicated suite that the planned
-// layout did not budget for. It falls short of the planned five handler suites,
-// because only two handler modules exist at all - one of them owns a suite, and the
-// other is in the pending register below with its planned path named. Because the
-// assertions derive their census from disk, none of that drift needs to be
-// reconciled by hand; it is recorded here so the drift itself is visible.
+// layout did not budget for. It falls short of the planned eight handler suites,
+// because only three handler modules exist at all - two of them own a suite, and
+// the third, `router.ts`, is in the pending register below with its planned path
+// named. Because the assertions derive their census from disk, none of that drift
+// needs to be reconciled by hand; it is recorded here so the drift itself is
+// visible.
+//
+// The composition root's own promotion is the worked example of how this register is
+// meant to move. `src/handlers/bootstrap.ts` sat in `pendingModules` with
+// `tests/unit/handlers/bootstrap.test.ts` named as its planned path; that suite now
+// exists, so the entry was deleted and the module appears in `coveredModules`
+// instead. Authoring the suite WITHOUT making that move fails four assertions - two
+// in A9, because a pending module would then own a suite named after it and a
+// planned path would exist on disk, and two in A14, because the suite census would
+// no longer balance. That coupling is deliberate: it is what stops coverage being
+// added without being declared, and stops the register going stale in silence.
 //
 // JUDGMENT CALL: the module census is partitioned THREE ways - covered, exempt and
 // pending - where a two-way split would have been simpler. Folding a module that is
@@ -417,6 +428,21 @@ export const LEGACY_TEST_MAP: {
   // Every runtime module that owns a suite named after it. Enumerated rather than
   // globbed, because an enumeration is checkable and a glob is not.
   coveredModules: [
+    // Both entries below were authored to close the two Test Assurance Gaps a security
+    // review recorded. `src/handlers/bootstrap.ts` moved up out of `pendingModules`,
+    // where its suite was already named as owed; `src/lib/config.ts` moved up out of
+    // `exemptModules`, where it had been recorded as needing no suite of its own.
+    //
+    // THE SECOND MOVE IS A CORRECTION, NOT JUST AN ADDITION. That exemption read that
+    // the module "has no behaviour of its own to pin beyond reading the environment",
+    // and it was true when written. Findings S-15 and S-20 then moved two security
+    // decisions into it - the product-feed host allow-list and the currency rate
+    // table, each with its own validation and refusal paths - so the module acquired
+    // exactly the behaviour the exemption denied it had. Leaving the exemption in place
+    // would have let a register whose purpose is to find uncovered behaviour assert
+    // that none existed.
+    { module: 'src/handlers/bootstrap.ts', test: 'tests/unit/handlers/bootstrap.test.ts' },
+    { module: 'src/lib/config.ts', test: 'tests/unit/lib/config.test.ts' },
     { module: 'src/domain/entities/brand.ts', test: 'tests/unit/domain/entities/brand.test.ts' },
     {
       module: 'src/domain/entities/category.ts',
@@ -753,28 +779,6 @@ export const LEGACY_TEST_MAP: {
       exercisedBy: [],
     },
     {
-      module: 'src/lib/config.ts',
-      kind: 'runtime',
-      reason:
-        'The environment-driven configuration surface. It has no behaviour of its own to ' +
-        'pin beyond reading the environment, and every repository suite that resolves a ' +
-        'dialect or a connection setting loads it for real.',
-      exercisedBy: [
-        {
-          path: 'tests/integration/repositories/mysqlPriceGroupRepository.test.ts',
-          evidence: 'lib/config.js',
-        },
-        {
-          path: 'tests/integration/repositories/mysqlPromotionRepository.test.ts',
-          evidence: 'lib/config.js',
-        },
-        {
-          path: 'tests/integration/repositories/mysqlSkuRepository.test.ts',
-          evidence: 'lib/config.js',
-        },
-      ],
-    },
-    {
       module: 'src/repositories/mysql/dialect.ts',
       kind: 'runtime',
       reason:
@@ -865,16 +869,16 @@ export const LEGACY_TEST_MAP: {
   // ever shrink: the moment one of these suites is authored, the gate fails until the
   // module moves up into `coveredModules`.
   pendingModules: [
-    {
-      module: 'src/handlers/bootstrap.ts',
-      owningBoundary: 'src/handlers/bootstrap.ts',
-      reason:
-        'The composition root that replaces the framework container\u2019s convention scan. ' +
-        'Every collaborator it hands out is asserted at the suite of the service that ' +
-        'receives it, but the wiring itself - which adapter satisfies which port, and the ' +
-        'single-instance reuse the two exported functions govern - has no suite of its own.',
-      plannedCoverage: ['tests/unit/handlers/bootstrap.test.ts'],
-    },
+    // `src/handlers/bootstrap.ts` WAS registered here. It has since been promoted
+    // into `coveredModules` above, because `tests/unit/handlers/bootstrap.test.ts`
+    // now exists and pins the wiring itself: which adapter satisfies which port,
+    // the eager `SwCurrency` read and the eligible-currency list it resolves, the
+    // dialect refusal, the memo's three exits, per-request instance freshness, and
+    // the cross-service ordering constraint the legacy leaves implicit
+    // [model/service/PromotionService.cfc:L241-L254 reads what
+    // model/service/PriceGroupService.cfc:L364-L375 writes]. This is the shrink
+    // direction the register was designed to permit; the entry is not restorable
+    // while that suite is on disk, because A9 would then fail.
     {
       module: 'src/handlers/router.ts',
       owningBoundary: 'src/handlers/router.ts',
@@ -886,17 +890,51 @@ export const LEGACY_TEST_MAP: {
     },
   ],
 
-  // A suite that is nobody's dedicated suite. It exists because one write path needed
-  // pinning on its own, and it is declared so that the test-file census balances
-  // without loosening the one-suite-per-module rule.
+  // Suites that are nobody's dedicated suite. Each exists because one narrow path needed pinning
+  // on its own, and each is declared so that the test-file census balances without loosening the
+  // one-suite-per-module rule.
+  //
+  // ★ AN ENTRY HERE IS A SIGNAL, NOT A CONVENIENCE, so the bar for adding one is stated where it
+  // will be read. A supplementary suite usually means a module grew a surface the plan did not give
+  // it - which is exactly how a rounding-rule WRITE suite came to be listed here, before
+  // `PromotionRepository` was restored to the SEVEN READS the plan locks it at. That suite and the
+  // eighth port method it exercised are both gone, so its entry is gone with them; the repository
+  // integration tier is once again exactly the six adapter suites plus the one SQL-module suite,
+  // every one of which IS some module's dedicated suite and is declared above. Adding an entry back
+  // is a plan change to be recorded, not something to reach for.
+  //
+  //
+  // ★ THE ENTRY THAT DID NOT SURVIVE, RECORDED RATHER THAN ERASED.
+  // `tests/integration/repositories/mysqlPromotionRepositoryRoundingRuleWrite.test.ts` was declared
+  // here to pin a rounding-rule WRITE on `src/repositories/mysql/mysqlPromotionRepository.ts`, on
+  // the stated reason that the write "is the only place a repository in this slice persists an
+  // entity that the discount arithmetic then reads back". The reason was sound for the code as it
+  // then stood; the code was not. That write was an eighth method on a port specified as SEVEN
+  // READS, so the suite existed to pin behaviour that should not have been there, and a second suite
+  // over one module was the visible consequence of the first mistake rather than a coverage need.
+  // Port, adapter, service, suite and its entry have all been withdrawn together.
+  //
+  // The field is KEPT rather than deleted either way, because the census arithmetic below partitions
+  // the suites on disk into primary plus supplementary, and the size of the second part - whether
+  // zero or one - is a claim worth asserting.
+  //
+  // The one entry that survives that bar is below, and it survives because its subject is a
+  // statement CONSTANT rather than a grown surface.
   supplementarySuites: [
     {
-      test: 'tests/integration/repositories/mysqlPromotionRepositoryRoundingRuleWrite.test.ts',
-      subject: 'src/repositories/mysql/mysqlPromotionRepository.ts',
+      test: 'tests/unit/handlers/bootstrapStatements.test.ts',
+      subject: 'src/handlers/bootstrap.ts',
       reason:
-        'The rounding-rule write path is the only place a repository in this slice ' +
-        'persists an entity that the discount arithmetic then reads back, so it is pinned ' +
-        'apart from the read-shape assertions in the repository owner suite.',
+        'Two statement constants in the composition root each port a LEGACY-DECLARED value - ' +
+        'the smart list\u2019s default page size [org/Hibachi/HibachiSmartList.cfc:L39] and ' +
+        '`OptionGroup.options`\u2019 declared association order ' +
+        '[model/entity/OptionGroup.cfc:L70] - and each had diverged from it while no suite ' +
+        'could observe either. They are pinned here, through the published executor override, ' +
+        'against the statement the graph really emits. It is deliberately SEPARATE from the ' +
+        'module\u2019s own suite `tests/unit/handlers/bootstrap.test.ts`, which pins the wiring ' +
+        'and the trust boundaries rather than the SQL text: this one would still be the right ' +
+        'home for a statement constant even once the wiring is fully covered, which it now is - ' +
+        '`src/handlers/bootstrap.ts` sits in `coveredModules` above.',
     },
   ],
 
@@ -2119,6 +2157,166 @@ describe('A13 preserved-defect register: derived from the source tree', () => {
   });
 });
 
+// --- A13b: the divergence budget, derived rather than declared -------------
+
+describe('A13b deliberate-divergence budget: derived from the source tree', () => {
+  // WHY THIS GATE EXISTS, stated plainly because it was added in response to a real
+  // escape. The budget assertion in A12 above reads only THIS FILE's own
+  // `deliberateDivergences` array, so a module could add a fourth divergence, announce
+  // it in its own comments, and the suite would still pass - the array simply never
+  // mentioned it. That happened: a cycle guard was added to
+  // `src/domain/valueObjects/materializedIdPath.ts` and consumed by three entity
+  // setters, each labelling itself a divergence outside the budgeted three, and every
+  // gate stayed green. This block closes that hole by deriving the census FROM DISK and
+  // checking it against an authorized allow-list, so an undeclared divergence fails the
+  // suite wherever it is written.
+  //
+  // ONE CANONICAL MARKER SYNTAX, WHICH IS WHAT MAKES DERIVATION POSSIBLE. A divergence
+  // is annotated `DELIBERATE DIVERGENCE [<legacy path>:<locator>]`, exactly as a
+  // preserved defect is annotated `LEGACY-DEFECT [...]`. Only an occurrence immediately
+  // followed by a bracket counts as a marker, so prose discussing divergences - and
+  // there is a lot of it, including the record-of-removal notes left where the cycle
+  // guard used to be - cannot inflate the count.
+  const MARKER_OPENING = 'DELIBERATE DIVERGENCE [';
+  const CITATION_PATTERN = /DELIBERATE DIVERGENCE \[([^\]]+)\]/g;
+
+  // The five citations the three budgeted divergences are allowed to name. It is five
+  // rather than three because group (c) - the entity memo defects - spans three legacy
+  // sites across two modules, which is why this file's declared array carries one
+  // representative citation per GROUP while the tree annotates every SITE.
+  const AUTHORIZED_CITATIONS: readonly string[] = [
+    'model/entity/Product.cfc:L524-L532',
+    'model/entity/Sku.cfc:L500-L510',
+    'model/entity/Sku.cfc:L512-L522',
+    'model/service/PromotionService.cfc:L998',
+    'model/service/PromotionService.cfc:L1007',
+  ];
+
+  // The only modules permitted to carry a marker. `discountAmount.ts` appears alongside
+  // `promotionService.ts` because groups (a) and (b) are IMPLEMENTED in the decomposed
+  // module and RECORDED at the service surface, so both sites annotate the same two
+  // citations on purpose.
+  const AUTHORIZED_OWNERS: readonly string[] = [
+    'src/domain/entities/product.ts',
+    'src/domain/entities/sku.ts',
+    'src/services/promotion/discountAmount.ts',
+    'src/services/promotionService.ts',
+  ];
+
+  const modulesByCitation = new Map<string, string[]>();
+  let markerCount = 0;
+  for (const module of SOURCE_MODULES_ON_DISK) {
+    const contents = readSubtreeFile(module);
+    markerCount += contents.split(MARKER_OPENING).length - 1;
+    for (const match of contents.matchAll(CITATION_PATTERN)) {
+      const citation = (match[1] ?? '').trim();
+      const holders = modulesByCitation.get(citation) ?? [];
+      holders.push(module);
+      modulesByCitation.set(citation, holders);
+    }
+  }
+
+  it('finds the markers on disk at all, so this block can never pass vacuously', () => {
+    // ANTI-VACUITY. If the source tree were missing, empty, or stripped of markers,
+    // every subset check below would pass trivially against nothing. These floors are
+    // what make the rest of the block meaningful, and they are floors rather than exact
+    // counts so that re-wording an annotation is not a test failure.
+    expect(SOURCE_MODULES_ON_DISK.length).toBeGreaterThanOrEqual(80);
+    expect(markerCount).toBeGreaterThanOrEqual(5);
+    expect(modulesByCitation.size).toBeGreaterThanOrEqual(5);
+  });
+
+  it('and every citation it finds is one the budget authorizes', () => {
+    // THE GATE THAT WOULD HAVE CAUGHT THE CYCLE GUARD. Any new divergence names a
+    // legacy site the budget does not cover, so it lands here as an unauthorized
+    // citation and fails by name.
+    const unauthorized = [...modulesByCitation.keys()]
+      .filter((citation) => !AUTHORIZED_CITATIONS.includes(citation))
+      .map(
+        (citation) =>
+          `${citation} is annotated as a deliberate divergence but is not one of the three ` +
+          `budgeted groups (carried by ${(modulesByCitation.get(citation) ?? []).join(', ')})`,
+      );
+    expect(unauthorized.sort()).toEqual([]);
+  });
+
+  it('and every module carrying a marker is one the budget authorizes', () => {
+    // The companion check, in case a future divergence reuses an authorized citation
+    // from an unauthorized file - which is exactly how a fourth divergence would try to
+    // hide behind the reasoning of an approved one.
+    const carrying = [...new Set([...modulesByCitation.values()].flat())].sort();
+    const unauthorized = carrying
+      .filter((module) => !AUTHORIZED_OWNERS.includes(module))
+      .map((module) => `${module} carries a deliberate-divergence marker but does not own one`);
+    expect(unauthorized).toEqual([]);
+  });
+
+  it('and each of the three declared groups is really annotated on disk', () => {
+    // The reverse direction: the declared budget must not drift into fiction either. A
+    // group that no marker cites has been silently abandoned rather than spent.
+    expect(LEGACY_TEST_MAP.deliberateDivergences.length).toBe(3);
+    const derived = [...modulesByCitation.keys()];
+    const missing = LEGACY_TEST_MAP.deliberateDivergences
+      .filter((divergence) => !derived.includes(divergence.citation))
+      .map(
+        (divergence) =>
+          `${divergence.citation} is declared as a spent divergence but no marker on disk cites it`,
+      );
+    expect(missing.sort()).toEqual([]);
+  });
+
+  it('and the loose banner form is gone, so there is exactly one way to declare one', () => {
+    // A three-star `DELIBERATE DIVERGENCE` banner carrying NO bracketed citation was the
+    // form the cycle guard used, and it is precisely the form that evades a
+    // citation-derived census. It is therefore banned outright: a divergence declares
+    // itself with a citation or it does not declare itself at all. Note that the
+    // three-star glyph on its own is ordinary emphasis, used widely for security and
+    // atomicity boundaries, so only this two-token combination is forbidden.
+    const offenders = SOURCE_MODULES_ON_DISK.filter((module) =>
+      readSubtreeFile(module).includes('\u2605\u2605\u2605 DELIBERATE DIVERGENCE'),
+    ).map((module) => `${module} uses the uncitable three-star divergence banner`);
+    expect(offenders.sort()).toEqual([]);
+  });
+
+  it('and no module admits in prose to spending a divergence outside the budget', () => {
+    // The vocabulary a self-aware fourth divergence reaches for. Every phrase below was
+    // present in the shipped tree while all four preceding gates were green, which is
+    // what makes them worth banning rather than a hypothetical: between them they cover
+    // all four modules that carried the unbudgeted cycle guard - `materializedIdPath.ts`,
+    // `priceGroup.ts`, `productType.ts` and `category.ts`. Matched case-insensitively so
+    // a re-capitalisation does not slip through.
+    //
+    // EACH PHRASE IS AN ADMISSION AND CANNOT BE A DENIAL, and that precision is the
+    // point rather than pedantry. The bare phrase "NOT ONE OF THE THREE" was tried first
+    // and rejected: `src/services/optionService.ts` legitimately writes "This is a
+    // secondary-register item, NOT one of the three deliberate divergences", which is a
+    // correct DISCLAIMER, so banning the bare phrase would have punished an annotation
+    // for being accurate. The longer form banned here - "divergence that is not one of
+    // the three" - can only be an admission, because it asserts a divergence and then
+    // places it outside the budget.
+    //
+    // "FOURTH DIVERGENCE" is likewise NOT on this list: it is used legitimately in
+    // prohibition form - "NO FOURTH DIVERGENCE MAY EVER BE SPENT ANYWHERE" - at eight
+    // sites, and banning it would punish the annotation that states the rule.
+    const BANNED_ADMISSIONS: readonly string[] = [
+      'NON-BUDGETED',
+      'DIVERGENCE THAT IS NOT ONE OF THE THREE',
+      'FOURTH, PROJECT-LOCAL',
+      'RATHER THAN A SPEND AGAINST THE BUDGETED',
+    ];
+    const offenders: string[] = [];
+    for (const module of SOURCE_MODULES_ON_DISK) {
+      const upperCased = readSubtreeFile(module).toUpperCase();
+      for (const admission of BANNED_ADMISSIONS) {
+        if (upperCased.includes(admission)) {
+          offenders.push(`${module} describes a divergence as "${admission}"`);
+        }
+      }
+    }
+    expect(offenders.sort()).toEqual([]);
+  });
+});
+
 // --- A14: the suite census balances too -----------------------------------
 
 describe('A14 suite completeness: every test file is accounted for exactly once', () => {
@@ -2208,5 +2406,134 @@ describe('A15 routed regression cases', () => {
       'tests/unit/domain/entities/product.test.ts',
     ]);
     expect(routedSuites.size).toBeGreaterThan(alsoExtended.length);
+  });
+});
+
+// --- A16: the runtime platform pin the S-17 declination rests on -----------
+//
+// Finding S-17 (HIGH/MAJOR, CWE-1104) reports that Node 20 and the `nodejs20.x` Lambda
+// runtime are out of maintenance, and asks for a successor-runtime migration. That
+// upgrade is DECLINED, because AAP 0.1.1, AAP 0.5.1 and AAP 0.9.1 each freeze the
+// runtime independently and the AAP is to be aligned to rather than edited. The full
+// reasoning, including why the AWS block dates are deliberately not restated as fact,
+// is recorded at `esbuild.config.mjs`.
+//
+// A DECLINATION THAT LIVES ONLY IN PROSE IS ONE A LATER EDIT CAN QUIETLY FALSIFY, in
+// either direction: by drifting off the frozen line without authorization, or by
+// deleting the disposition that explains why the line is frozen at all. This block
+// makes both failure modes fail the suite.
+//
+// It reads files only, in keeping with this module's stated contract. That costs
+// nothing here, because all three artifacts the finding cites - `.nvmrc`,
+// `package.json` engines, and `esbuild.config.mjs` - are files, and the invariant that
+// actually matters is that they AGREE WITH EACH OTHER. A partial bump - `.nvmrc` moved
+// but `engines` left behind, or an esbuild target raised without the runtime under it -
+// is how a pin decays in practice, and is exactly what a single-file assertion misses.
+
+describe('A16 runtime platform pin (S-17): the frozen Node line, across every artifact stating it', () => {
+  const FROZEN_NODE_VERSION = '20.20.2';
+  const FROZEN_MAJOR = 20;
+
+  type Manifest = {
+    readonly engines?: { readonly node?: string };
+    readonly dependencies?: Readonly<Record<string, string>>;
+    readonly devDependencies?: Readonly<Record<string, string>>;
+  };
+
+  const manifest = (): Manifest => JSON.parse(readSubtreeFile('package.json')) as Manifest;
+
+  const asTuple = (version: string): readonly number[] =>
+    version.split('.').map((piece) => Number.parseInt(piece, 10));
+
+  /** True when `candidate` is greater than or equal to `floor`, compared piecewise. */
+  const atLeast = (candidate: readonly number[], floor: readonly number[]): boolean => {
+    for (let index = 0; index < Math.max(candidate.length, floor.length); index += 1) {
+      const left = candidate[index] ?? 0;
+      const right = floor[index] ?? 0;
+      if (left !== right) {
+        return left > right;
+      }
+    }
+    return true;
+  };
+
+  it('pins .nvmrc to the exact version AAP 0.5.1 verified', () => {
+    expect(
+      readSubtreeFile('.nvmrc').trim(),
+      '.nvmrc drifted off the AAP-frozen Node line: ' +
+        'the S-17 declination in esbuild.config.mjs explains why this line is frozen; changing it is a plan-owner decision, not a code fix.',
+    ).toBe(FROZEN_NODE_VERSION);
+  });
+
+  it('and bounds package.json engines to that same major line', () => {
+    const declared = manifest().engines?.node ?? '';
+    // The UPPER bound is the load-bearing half. Without `<21` the range would admit the
+    // successor runtimes S-17 asks for, and admitting them silently is the one outcome
+    // this declination exists to prevent - the choice belongs to the plan owner.
+    expect(
+      declared,
+      'package.json engines lost its upper bound, so it now admits a successor runtime: ' +
+        'the S-17 declination in esbuild.config.mjs explains why this line is frozen; changing it is a plan-owner decision, not a code fix.',
+    ).toContain(`<${String(FROZEN_MAJOR + 1)}`);
+    expect(declared).toContain(`>=${String(FROZEN_MAJOR)}.`);
+  });
+
+  it('and keeps the pinned version inside the range the manifest declares', () => {
+    const declared = manifest().engines?.node ?? '';
+    const floor = /> *= *(\d+\.\d+\.\d+)/.exec(declared);
+    const ceiling = /< *(\d+)/.exec(declared);
+    expect(floor).not.toBeNull();
+    expect(ceiling).not.toBeNull();
+    const pinned = asTuple(FROZEN_NODE_VERSION);
+    expect(atLeast(pinned, asTuple(floor?.[1] ?? ''))).toBe(true);
+    expect(pinned[0] ?? 0).toBeLessThan(Number.parseInt(ceiling?.[1] ?? '', 10));
+  });
+
+  it('and holds the esbuild target on that line, in the format AAP 0.5.2 proved by experiment', () => {
+    const config = readSubtreeFile('esbuild.config.mjs');
+    expect(
+      config,
+      'the esbuild target drifted off the AAP-frozen Node line: ' +
+        'the S-17 declination in esbuild.config.mjs explains why this line is frozen; changing it is a plan-owner decision, not a code fix.',
+    ).toContain(`target: 'node${String(FROZEN_MAJOR)}'`);
+    // CJS is not a style preference: AAP 0.5.2 records that the ESM bundle builds and
+    // then fails at runtime on `Dynamic require of "node:buffer"` from the MySQL driver.
+    expect(config).toContain("format: 'cjs'");
+  });
+
+  it('and types the runtime, and TypeScript itself, against the majors AAP 0.9.1 names', () => {
+    const development = manifest().devDependencies ?? {};
+    expect(development['@types/node'] ?? '').toMatch(
+      new RegExp(`^${String(FROZEN_MAJOR)}\\.`, 'u'),
+    );
+    // AAP 0.5.1 records why this one cannot float: the registry's `latest` tag now
+    // resolves to a 7.x release, which would violate the plan's TypeScript 5.x bound.
+    expect(development['typescript'] ?? '').toMatch(/^5\./u);
+  });
+
+  it('so no dependency is left on a caret range or a floating tag', () => {
+    const declared = { ...(manifest().dependencies ?? {}), ...(manifest().devDependencies ?? {}) };
+    const offenders = Object.entries(declared)
+      .filter(([, specifier]) => !/^\d+\.\d+\.\d+$/u.test(specifier))
+      .map(([name, specifier]) => `${name}@${specifier}`);
+    // AAP 0.9.1's pass condition is "no caret ranges, no `latest`", so an exact triple
+    // is the only acceptable specifier shape for every direct dependency.
+    expect(
+      offenders.sort(),
+      'AAP 0.9.1 requires an exact version triple for every direct dependency - ' +
+        'no caret ranges, no `latest` - so each name listed here has drifted.',
+    ).toEqual([]);
+    expect(Object.keys(declared).length).toBeGreaterThan(10);
+  });
+
+  it('and keeps the S-17 declination present, and attributed to S-17 rather than S-09', () => {
+    const config = readSubtreeFile('esbuild.config.mjs');
+    expect(config).toContain('RAISED AS S-17, DECLINED ON A CITED MANDATE');
+    expect(config).toContain('CWE-1104');
+    // S-09 in this review is a DIFFERENT finding - the product-feed URL scheme, CWE-319,
+    // resolved in the renderer and feed service, each carrying its own S-09 block. This
+    // file wore that label until the ids were reconciled; asserting the collision stays
+    // fixed is cheaper than rediscovering which disposition answered which finding.
+    expect(config).not.toContain('RAISED AS S-09');
   });
 });

@@ -12,12 +12,8 @@
 // entities. Every collection defaults to `[]`, the state a repository that did not fetch the join
 // must present.
 //
-// [meta/tests/unit/Helper.cfc] is the legacy tree's only fixture-construction artefact; its build
-// -> save -> flush SHAPE is carried over and its ORM MECHANISM is not.
-//
-// CFML parity [meta/tests/unit/Helper.cfc:L53]: the helper assigns `productData` with no `var`,
-// leaking it into component `variables` scope. A harness hygiene defect, not a preserved
-// business-logic one, so deliberately not reproduced.
+// Fixture construction follows the build -> save -> flush SHAPE of the legacy tree's only such
+// artefact [meta/tests/unit/Helper.cfc]; its ORM mechanism is not carried over.
 // ---------------------------------------------------------------------------
 
 import { PriceGroup } from '../../src/domain/entities/priceGroup.js';
@@ -34,13 +30,6 @@ import type { RoundingRuleDirection } from '../../src/domain/entities/roundingRu
 import type { Sku } from '../../src/domain/entities/sku.js';
 import type { DecimalString } from '../../src/lib/cfml/numberFormat.js';
 
-// --- Structurally derived types -------------------------------------------
-//
-// JUDGMENT CALL: two types this graph needs are declared in modules that are NOT among its
-// dependencies, so they are DERIVED from the entity surfaces already in scope, keeping the import
-// set exactly the whitelist.
-
-/** Element type of any array or readonly array. */
 type ElementOf<TArray> = TArray extends readonly (infer TElement)[] ? TElement : never;
 
 /**
@@ -57,9 +46,6 @@ type PriceGroupActiveFlag = ConstructorParameters<typeof PriceGroup>[0]['activeF
  */
 type PromotionRewardRef = ElementOf<ReturnType<PriceGroup['getPromotionRewards']>>;
 
-// --- The collaborator double ---------------------------------------------
-
-/** One recorded delegation from `RoundingRule.roundValue`. */
 type RecordedRoundValueCall = {
   readonly value: Money;
   readonly rule: RoundingRule;
@@ -80,7 +66,6 @@ type RecordedRoundValueCall = {
 interface RecordingValueRounder {
   roundValueByRoundingRule(value: Money, rule: RoundingRule): Money;
 
-  /** Every delegation so far, in call order. */
   readonly calls: readonly RecordedRoundValueCall[];
 }
 
@@ -100,18 +85,10 @@ interface RecordingValueRounder {
  * predicate has a hole.
  */
 type RoundingExpressionCase = {
-  /** The raw `SwRoundingRule.roundingRuleExpression` column value. */
   readonly expression: string;
 
-  /** What `hasExpressionWithListOfNumericValuesOnly()` answers, measured not reasoned. */
   readonly accepted: boolean;
 
-  /**
-   * `10 ^ (len(element) - 3)` per comma-list element, as decimal numerals - the step increment
-   * added to or subtracted from the two-decimal input [model/service/RoundingRuleService.cfc:L95,
-   * L101, L108]. A FRACTIONAL value means an increment smaller than one cent, the defect the
-   * accepting-but-fractional row exposes.
-   */
   readonly derivedPowerPerElement: readonly DecimalString[];
 };
 
@@ -122,27 +99,15 @@ type RoundingExpressionCase = {
  * slices a prefix off it.
  */
 type RoundValueCase = {
-  /** The value handed in, as the caller's own numeral. */
   readonly input: DecimalString;
 
-  /**
-   * The rounding expression. A plain `string`, never a branded numeral: neither the comma-list form
-   * `'.95,.99'` nor the leading-dot form the legacy data uses is a decimal numeral.
-   */
   readonly roundingExpression: string;
 
-  /** One of the three directions the entity publishes. */
   readonly roundingDirection: RoundingRuleDirection;
 
-  /** The measured result. */
   readonly expected: DecimalString;
 };
 
-/**
- * The migration's reference calculation as decimal numerals, so a suite can drive it off the same
- * numbers the arithmetic substrate is pinned against with no floating-point step. `quantity` is a
- * COUNT and so a plain `number`; the rest are numerals destined for `Money`.
- */
 type ReferenceCalculation = {
   readonly unitPrice: DecimalString;
   readonly quantity: number;
@@ -165,11 +130,6 @@ type ReferenceCalculation = {
  * nothing" must be stated rather than omitted.
  */
 interface PriceGroupFixtureOverrides {
-  /**
-   * Prefix for every generated primary key. Default `'pgfx'`. Identifiers derive from this argument
-   * alone - no counter, no sequence, no registry - so two calls with different prefixes yield
-   * disjoint keys and two with the same prefix yield the same keys on genuinely separate instances.
-   */
   readonly idPrefix?: string | undefined;
 
   /**
@@ -182,16 +142,10 @@ interface PriceGroupFixtureOverrides {
    */
   readonly activeFlag?: PriceGroupActiveFlag;
 
-  /**
-   * Membership for BOTH sku-level rates on the child price group. Default `[]`. Both receive the
-   * same members on purpose - that is what makes last-match-wins observable.
-   */
   readonly skuLevelRateSkus?: readonly Sku[] | undefined;
 
-  /** Membership for the product-level rate on the child price group. Default `[]`. */
   readonly productLevelRateProducts?: readonly Product[] | undefined;
 
-  /** Membership for the product-type-level rate on the child price group. Default `[]`. */
   readonly productTypeLevelRateProductTypes?: readonly ProductType[] | undefined;
 
   /**
@@ -207,16 +161,12 @@ interface PriceGroupFixtureOverrides {
    */
   readonly parentProductLevelRateProducts?: readonly Product[] | undefined;
 
-  /** Exclusions for the rates that carry them. Default `[]`. */
   readonly excludedSkus?: readonly Sku[] | undefined;
 
-  /** Exclusions for the rates that carry them. Default `[]`. */
   readonly excludedProducts?: readonly Product[] | undefined;
 
-  /** Exclusions for the rates that carry them. Default `[]`. */
   readonly excludedProductTypes?: readonly ProductType[] | undefined;
 
-  /** Eligible rewards for the child group. Default `[]`; [model/entity/PriceGroup.cfc:L70]. */
   readonly promotionRewards?: readonly PromotionRewardRef[] | undefined;
 
   /**
@@ -231,32 +181,20 @@ interface PriceGroupFixtureOverrides {
  * preserved defect each artefact exercises.
  */
 interface PriceGroupFixtureGraph {
-  // --- The collaborator double ---------------------------------------------
-
-  /** The recording double injected into every `RoundingRule` in this graph. */
   readonly roundingRuleValueRounder: RecordingValueRounder;
 
-  /** Exactly what `roundingRuleValueRounder` answers, for assertions. */
   readonly roundValueDoubleAnswer: Money;
 
-  // --- Rounding rules -------------------------------------------------------
-
-  /** In-vocabulary direction `'Closest'`, expression `'.99'`. */
   readonly closestRoundingRule: RoundingRule;
 
-  /** In-vocabulary direction `'Up'`, expression `'.99'`. */
   readonly roundUpRoundingRule: RoundingRule;
 
-  /** In-vocabulary direction `'Down'`, expression `'.99'`. */
   readonly roundDownRoundingRule: RoundingRule;
 
-  /** Direction outside the published vocabulary; see the marker on its builder. */
   readonly outOfVocabularyDirectionRoundingRule: RoundingRule;
 
-  /** Expression `'0.00'` written out explicitly - the non-inert default. */
   readonly defaultExpressionRoundingRule: RoundingRule;
 
-  /** Expression absent, so the service's declared default applies instead. */
   readonly absentExpressionRoundingRule: RoundingRule;
 
   /**
@@ -268,17 +206,14 @@ interface PriceGroupFixtureGraph {
    */
   readonly undeletableRoundingRule: RoundingRule;
 
-  /** The rate that populates `undeletableRoundingRule.getPriceGroupRates()`. */
   readonly rateBlockingRoundingRuleDelete: PriceGroupRate;
 
-  /** The three directions the entity publishes, in source order. */
   readonly roundingRuleDirectionVocabulary: readonly [
     RoundingRuleDirection,
     RoundingRuleDirection,
     RoundingRuleDirection,
   ];
 
-  /** The direction string `outOfVocabularyDirectionRoundingRule` carries, exposed as data. */
   readonly outOfVocabularyRoundingRuleDirection: string;
 
   // --- The two verified data tables ----------------------------------------
@@ -292,95 +227,57 @@ interface PriceGroupFixtureGraph {
   /** The migration's reference calculation, as numerals. */
   readonly referenceCalculation: ReferenceCalculation;
 
-  // --- Rates on the child price group, in collection order -----------------
-
-  /** Cascade level 3 membership: `productTypes`. */
   readonly productTypeLevelRate: PriceGroupRate;
 
-  /** Cascade level 2 membership: `products`. */
   readonly productLevelRate: PriceGroupRate;
 
-  /** Cascade level 1, FIRST matching rate in collection order. */
   readonly skuLevelRateFirstMatch: PriceGroupRate;
 
-  /** Cascade level 1, LAST matching rate in collection order - the winner. */
   readonly skuLevelRateLastMatch: PriceGroupRate;
 
-  // --- Rates on the parent price group --------------------------------------
-
-  /** The sku-level rate the cascade never consults; see the marker on its builder. */
   readonly parentSkuLevelRate: PriceGroupRate;
 
-  /** The product-level rate the parent recursion does reach. */
   readonly parentProductLevelRate: PriceGroupRate;
 
-  // --- Rates on the global-rate price group ---------------------------------
-
-  /** FIRST global rate in collection order. */
   readonly globalRateFirstMatch: PriceGroupRate;
 
-  /** LAST global rate in collection order. */
   readonly globalRateLastMatch: PriceGroupRate;
 
-  // --- The rate on the root price group -------------------------------------
-
-  /** The deepest fallback: the only rate on the top of the parent chain. */
   readonly rootGlobalRate: PriceGroupRate;
 
-  // --- Amount-type exhibits -------------------------------------------------
-
-  /** The three values the amount-type dispatch recognises, in source order. */
   readonly recognisedAmountTypes: readonly [
     PriceGroupRateAmountType,
     PriceGroupRateAmountType,
     PriceGroupRateAmountType,
   ];
 
-  /** `'percentageOff'` WITH a rounding rule - the one branch that rounds. */
   readonly percentageOffRateWithRoundingRule: PriceGroupRate;
 
-  /** `'amountOff'` WITH a rounding rule attached and ignored. */
   readonly amountOffRateWithRoundingRule: PriceGroupRate;
 
-  /** `'amount'` WITH a rounding rule attached and ignored. */
   readonly fixedAmountRateWithRoundingRule: PriceGroupRate;
 
-  /** `'percentageOff'` with NO rounding rule - the nullable far side absent. */
   readonly percentageOffRateWithoutRoundingRule: PriceGroupRate;
 
-  /** A rate whose amount type the dispatch does not recognise. */
   readonly unrecognisedAmountTypeRate: PriceGroupRate;
 
-  /**
-   * A raw out-of-vocabulary `SwPriceGroupRate.amountType` column value. Data, not an entity: see
-   * the marker on the unrecognised-amount-type rate for why the column can hold it.
-   */
   readonly unrecognisedAmountTypeColumnValue: string;
 
   /** A non-global rate carrying all six association collections. */
   readonly appliesToIncludingAndExcludingRate: PriceGroupRate;
 
-  // --- Price groups ---------------------------------------------------------
-
-  /** Top of the three-level parent chain; holds only `rootGlobalRate`. */
   readonly rootPriceGroup: PriceGroup;
 
-  /** Middle of the chain, and the exhibit for the snapshot-loop guard. */
   readonly parentPriceGroup: PriceGroup;
 
-  /** The primary cascade subject: four membership rates, no global rate. */
   readonly childPriceGroup: PriceGroup;
 
-  /** The parent's second child, so the child collection holds more than one. */
   readonly siblingPriceGroup: PriceGroup;
 
-  /** Isolates the global level and its two opposite tie-breaks. */
   readonly globalRatePriceGroup: PriceGroup;
 
-  /** No rates, no parent, no children: the cascade resolves to nothing. */
   readonly isolatedPriceGroup: PriceGroup;
 
-  /** Stored path absent, so the accessor rebuilds and memoizes it. */
   readonly unpathedPriceGroup: PriceGroup;
 
   // --- Materialized paths ---------------------------------------------------
@@ -397,27 +294,17 @@ interface PriceGroupFixtureGraph {
   };
 }
 
-// --- Module-scope constants ------------------------------------------------
-//
-// Every one an immutable primitive, so nothing carries state from one factory call to the next.
-// That is the discipline the port applies to the four legacy component-level caches.
-
 const DEFAULT_ID_PREFIX = 'pgfx';
 
-/** See `roundValueAnswer` on the overrides for why this is unrelated to any input. */
 const DEFAULT_ROUND_VALUE_ANSWER = '77.77';
 
 const OUT_OF_VOCABULARY_ROUNDING_DIRECTION = 'Sideways';
 
 const UNRECOGNISED_AMOUNT_TYPE_COLUMN_VALUE = 'flatRate';
 
-// Explicit UTC instants, never a clock read: a relative offset would make an assertion depend on
-// the day it ran, and the runner pins the process timezone to UTC.
 const CREATED_DATE_TIME_UTC = '2024-06-01T00:00:00.000Z';
 const MODIFIED_DATE_TIME_UTC = '2024-06-15T12:30:00.000Z';
 
-// Rate amounts, as decimal numerals destined for `Money`, each distinct so "which rate won" is
-// answerable from the amount alone.
 const PRODUCT_TYPE_LEVEL_RATE_AMOUNT = '30.00';
 const PRODUCT_LEVEL_RATE_AMOUNT = '20.00';
 const SKU_LEVEL_RATE_FIRST_MATCH_AMOUNT = '10.00';
@@ -433,7 +320,6 @@ const UNRECOGNISED_AMOUNT_TYPE_RATE_AMOUNT = '7.50';
 const APPLIES_TO_RATE_AMOUNT = '1.00';
 const DELETE_GUARD_RATE_AMOUNT = '3.00';
 
-// The reference calculation, verified against the pinned arithmetic substrate.
 const REFERENCE_UNIT_PRICE = '19.99';
 const REFERENCE_QUANTITY = 3;
 const REFERENCE_EXTENDED_PRICE = '59.97';
@@ -442,12 +328,6 @@ const REFERENCE_DISCOUNT_AMOUNT = '7.49625';
 const REFERENCE_NET_AMOUNT = '52.47375';
 const REFERENCE_PRESENTED_NET_AMOUNT = '52.47';
 
-// ---------------------------------------------------------------------------
-// Module-scope pure builders: functions, never data, each returning a FRESHLY constructed value on
-// every call, so no array and no object is ever shared between two graphs.
-// ---------------------------------------------------------------------------
-
-/** The audit columns every entity in one graph carries. */
 type AuditTrail = {
   readonly createdDateTime: Date;
   readonly createdByAccountID: string;
@@ -455,7 +335,6 @@ type AuditTrail = {
   readonly modifiedByAccountID: string;
 };
 
-/** Fresh `Date` instances per graph: a `Date` is mutable, so it is never shared. */
 function makeAuditTrail(idPrefix: string): AuditTrail {
   return {
     createdDateTime: new Date(CREATED_DATE_TIME_UTC),
@@ -465,10 +344,6 @@ function makeAuditTrail(idPrefix: string): AuditTrail {
   };
 }
 
-/**
- * Builds the recording collaborator double. The recording array is created inside the call, so two
- * graphs never observe each other's calls.
- */
 function makeRecordingValueRounder(answer: Money): RecordingValueRounder {
   const calls: RecordedRoundValueCall[] = [];
 
@@ -495,31 +370,24 @@ function makeRecordingValueRounder(answer: Money): RecordingValueRounder {
  */
 function makeRoundingExpressionCases(): RoundingExpressionCase[] {
   return [
-    // Accepted, and correctly so: a two-character fractional part after the point.
     { expression: '.99', accepted: true, derivedPowerPerElement: [toDecimalString('1')] },
     { expression: '0.99', accepted: true, derivedPowerPerElement: [toDecimalString('10')] },
     { expression: '9.99', accepted: true, derivedPowerPerElement: [toDecimalString('10')] },
 
-    // Accepted, and the signature default. Not inert - see the `roundValue` rows.
     { expression: '0.00', accepted: true, derivedPowerPerElement: [toDecimalString('10')] },
 
-    // Accepted per ELEMENT: the predicate walks the comma list.
     {
       expression: '.95,.99',
       accepted: true,
       derivedPowerPerElement: [toDecimalString('1'), toDecimalString('1')],
     },
 
-    // Rejected: one character after the point.
     { expression: '.9', accepted: false, derivedPowerPerElement: [toDecimalString('0.1')] },
 
-    // Rejected: no point at all, and three characters.
     { expression: '999', accepted: false, derivedPowerPerElement: [toDecimalString('1')] },
 
-    // Rejected: three characters after the point.
     { expression: '0.999', accepted: false, derivedPowerPerElement: [toDecimalString('100')] },
 
-    // THE HOLE: accepted, no decimal point, and a fractional derived step.
     { expression: '99', accepted: true, derivedPowerPerElement: [toDecimalString('0.1')] },
   ];
 }
@@ -574,43 +442,36 @@ function makeRoundValueCases(): RoundValueCase[] {
       expected: toDecimalString('11.99'),
     },
     {
-      // Both accumulators survive across comma-list elements, so the best candidate across BOTH
-      // expressions wins [model/service/RoundingRuleService.cfc:L90-L93].
       input: toDecimalString('12.3456'),
       roundingExpression: '.95,.99',
       roundingDirection: 'Closest',
       expected: toDecimalString('11.99'),
     },
     {
-      // The trailing-zero branch: same expression as row two, opposite outcome.
       input: toDecimalString('12.30'),
       roundingExpression: '.99',
       roundingDirection: 'Closest',
       expected: toDecimalString('12.99'),
     },
     {
-      // Short-input collapse: the answer is the expression, 2.57 ABOVE the input.
       input: toDecimalString('7.42'),
       roundingExpression: '9.99',
       roundingDirection: 'Closest',
       expected: toDecimalString('9.99'),
     },
     {
-      // Short-input collapse AND a trailing zero: a 57 per cent reduction.
       input: toDecimalString('2.30'),
       roundingExpression: '0.99',
       roundingDirection: 'Closest',
       expected: toDecimalString('0.99'),
     },
     {
-      // The negative-intermediate branch: the lower candidate is signed.
       input: toDecimalString('0.42'),
       roundingExpression: '.99',
       roundingDirection: 'Closest',
       expected: toDecimalString('0.99'),
     },
     {
-      // The signature default written out: a 19 per cent reduction nobody asked for.
       input: toDecimalString('12.3456'),
       roundingExpression: '0.00',
       roundingDirection: 'Closest',
@@ -619,7 +480,6 @@ function makeRoundValueCases(): RoundValueCase[] {
   ];
 }
 
-/** The reference calculation, freshly constructed per graph. */
 function makeReferenceCalculation(): ReferenceCalculation {
   return {
     unitPrice: toDecimalString(REFERENCE_UNIT_PRICE),
@@ -664,21 +524,11 @@ function makeRoundingRule(
   );
 }
 
-/** The data one `SwPriceGroupRate` row needs, before `Money` and defensive copies. */
 type PriceGroupRateSpec = {
   readonly priceGroupRateID: string;
 
-  /**
-   * CFML parity [model/entity/PriceGroupRate.cfc:L53]: the column declares `default="false"`, so
-   * unlike `PriceGroup.activeFlag` this one has a real default and every rate states it.
-   */
   readonly globalFlag: boolean;
 
-  /**
-   * CFML parity [model/entity/PriceGroupRate.cfc:L54]: a `big_decimal` column with NO default, so
-   * the value is a decimal NUMERAL fed to `Money` - never a `number`, since no `Money` factory
-   * takes one, deliberately.
-   */
   readonly amount: string;
 
   /**
@@ -821,13 +671,8 @@ function readIdPathNodeParent(node: IdPathNode): IdPathNode | undefined {
 export function makePriceGroupFixtures(
   overrides?: PriceGroupFixtureOverrides,
 ): PriceGroupFixtureGraph {
-  // `??` and not `||`: an empty prefix and a `false` flag are legitimate values, and truthiness
-  // would silently replace both.
-
   const idPrefix = overrides?.idPrefix ?? DEFAULT_ID_PREFIX;
 
-  // No `??` here. An absent key and an explicit `undefined` both mean the undefaulted column, and
-  // an explicit `false` must survive as `false`.
   const activeFlag: PriceGroupActiveFlag = overrides?.activeFlag;
 
   const skuLevelRateSkus = overrides?.skuLevelRateSkus ?? [];
@@ -843,10 +688,6 @@ export function makePriceGroupFixtures(
 
   const audit = makeAuditTrail(idPrefix);
 
-  // Identifiers derived from this call's own argument and nothing else. Every one is a non-empty
-  // string, so `isNew()` reports `false` and the bidirectional helpers take their duplicate-guarded
-  // branch rather than their unconditional-append branch.
-
   const rootPriceGroupID = `${idPrefix}-pricegroup-root`;
   const parentPriceGroupID = `${idPrefix}-pricegroup-parent`;
   const childPriceGroupID = `${idPrefix}-pricegroup-child`;
@@ -854,10 +695,6 @@ export function makePriceGroupFixtures(
   const globalRatePriceGroupID = `${idPrefix}-pricegroup-globalrates`;
   const isolatedPriceGroupID = `${idPrefix}-pricegroup-isolated`;
   const unpathedPriceGroupID = `${idPrefix}-pricegroup-unpathed`;
-
-  // Materialized paths produced by the domain's own builder over the identifier chain; see the
-  // judgment call on `IdPathNode`. The three chained groups yield one, two and three elements,
-  // which makes "root-first, self-last, includes self, never empty" checkable.
 
   const rootIdPathNode: IdPathNode = { priceGroupID: rootPriceGroupID, parent: undefined };
   const parentIdPathNode: IdPathNode = {
@@ -912,13 +749,8 @@ export function makePriceGroupFixtures(
     readIdPathNodeParent,
   );
 
-  // --- The collaborator double ---------------------------------------------
-
   const roundValueDoubleAnswer = Money.fromDecimalString(roundValueAnswer);
   const roundingRuleValueRounder = makeRecordingValueRounder(roundValueDoubleAnswer);
-
-  // CFML parity [model/entity/RoundingRule.cfc:L70-L76]: the direction vocabulary is published by
-  // the ENTITY as an advisory admin option list, and nothing narrows the column to it.
 
   const closestRoundingRule = makeRoundingRule(
     {
@@ -956,12 +788,13 @@ export function makePriceGroupFixtures(
     audit,
   );
 
-  // LEGACY-DEFECT [model/entity/RoundingRule.cfc:L55 + model/validation/RoundingRule.json:L5]:
-  //   roundingRuleDirection is required but UNCONSTRAINED - no enumeration is enforced by the
-  //   column, the form metadata or the validation schema - so an out-of-vocabulary direction
-  //   reaches the switch's missing default branch
-  //   [model/service/RoundingRuleService.cfc:L132-L166], no candidate is selected, and the
-  //   input falls out of the tail at L173.
+  // LEGACY-DEFECT [model/entity/RoundingRule.cfc:L55]: roundingRuleDirection is required but
+  //   UNCONSTRAINED - the column enforces no enumeration and neither does the form metadata - so an
+  //   out-of-vocabulary direction reaches the switch's missing default branch
+  //   [model/service/RoundingRuleService.cfc:L132-L166], no candidate is selected, and the input
+  //   falls out of the tail [model/service/RoundingRuleService.cfc:L173]. The validation schema does
+  //   not constrain it either: it requires the property on save and stops there
+  //   [model/validation/RoundingRule.json:L5].
   // Preserved deliberately; do not fix without a product decision.
   const outOfVocabularyDirectionRoundingRule = makeRoundingRule(
     {
@@ -1005,10 +838,6 @@ export function makePriceGroupFixtures(
     roundingRuleValueRounder,
     audit,
   );
-
-  // Rates on the child group, in deliberate collection order: the sku loop
-  // [model/service/PriceGroupService.cfc:L146-L150] walks the WHOLE collection, so the order these
-  // four are appended in is the order the algorithm sees.
 
   const productTypeLevelRate = makePriceGroupRate(
     {
@@ -1131,11 +960,11 @@ export function makePriceGroupFixtures(
 
   // --- Rates on the global-rate price group ---------------------------------
 
-  // LEGACY-DEFECT [model/entity/PriceGroup.cfc:L83-L90 versus
-  //   model/service/PriceGroupService.cfc:L165-L169]: TWO GLOBAL-RATE LOOKUPS BREAK TIES IN
-  //   OPPOSITE DIRECTIONS. The entity accessor returns on the first rate whose global flag is
-  //   set, so the FIRST wins; the cascade's loop has no `break` and the LAST wins. The two
-  //   global rates below have different amounts, so they provably disagree.
+  // LEGACY-DEFECT [model/entity/PriceGroup.cfc:L83-L90]: TWO GLOBAL-RATE LOOKUPS BREAK TIES IN
+  //   OPPOSITE DIRECTIONS. The entity accessor returns on the first rate whose global flag is set,
+  //   so the FIRST wins. The cascade runs its own loop instead, and that loop has no `break`, so the
+  //   LAST wins [model/service/PriceGroupService.cfc:L165-L169]. The two global rates below have
+  //   different amounts, so they provably disagree.
   // Preserved deliberately; do not fix without a product decision.
   const globalRateFirstMatch = makePriceGroupRate(
     {
@@ -1170,8 +999,6 @@ export function makePriceGroupFixtures(
     },
     audit,
   );
-
-  // --- The rate on the root price group -------------------------------------
 
   const rootGlobalRate = makePriceGroupRate(
     {
@@ -1236,8 +1063,6 @@ export function makePriceGroupFixtures(
     audit,
   );
 
-  // CFML parity [model/entity/PriceGroupRate.cfc:L87-L93]: the third option is LABELLED
-  // `define.fixedAmount` and STORED as `amount`. The stored value is the contract.
   const fixedAmountRateWithRoundingRule = makePriceGroupRate(
     {
       priceGroupRateID: `${idPrefix}-rate-fixedamount-withroundingrule`,
@@ -1255,10 +1080,6 @@ export function makePriceGroupFixtures(
     audit,
   );
 
-  // CFML parity [model/entity/PriceGroupRate.cfc:L68]: the far side of a NULLABLE many-to-one,
-  // absent. Paired with `percentageOffRateWithRoundingRule`, which carries the same type and the
-  // same amount with the rule removed, so rounding is the only variable between the two and L326's
-  // `isNull` guard sees both branches.
   const percentageOffRateWithoutRoundingRule = makePriceGroupRate(
     {
       priceGroupRateID: `${idPrefix}-rate-percentageoff-withoutroundingrule`,
@@ -1469,14 +1290,18 @@ export function makePriceGroupFixtures(
 
   // --- Wiring: parent and child edges ---------------------------------------
   //
-  // LEGACY-DEFECT [model/service/PriceGroupService.cfc:L461-L470]: `deletePriceGroup` takes
-  //   `getChildPriceGroups()` into a local and loops `while(arrayLen(local) != 0)` calling
-  //   `removeChildPriceGroup`, which mutates the ENTITY's collection and not the local. CFML
-  //   hands arrays over BY VALUE, so the local is a snapshot that never shrinks: `arrayLen`
-  //   stays constant and the loop cannot terminate. TypeScript reference semantics would let it
-  //   shrink and would SILENTLY FIX the defect, which is why the port keeps a bounded-iteration
-  //   guard. `parentPriceGroup` below carries TWO children so a suite can trip it.
-  // Preserved deliberately; do not fix without a product decision.
+  // LEGACY-DEFECT [model/service/PriceGroupService.cfc:L461-L470] - IDENTIFIED, NOT REPRODUCED:
+  //   `deletePriceGroup` takes `getChildPriceGroups()` into a local and loops
+  //   `while(arrayLen(local) != 0)` calling `removeChildPriceGroup`, which mutates the ENTITY's
+  //   collection and not the local. CFML hands arrays over BY VALUE, so the local is a snapshot that
+  //   never shrinks: `arrayLen` stays constant and the loop cannot terminate.
+  //
+  //   THE NON-TERMINATION IS TARGET-CONTAINED, NOT PRESERVED. TypeScript hands the array over by
+  //   reference, so the same loop shrinks its own condition, and the port additionally carries a
+  //   bounded-iteration guard. Both are deliberate divergences from the legacy control flow, stated
+  //   here rather than presented as parity. What this fixture preserves is the SHAPE the defect
+  //   needs: `parentPriceGroup` below carries TWO children, so a suite can drive the loop and assert
+  //   that it terminates within its bound.
   //
   // CFML parity [model/service/PriceGroupService.cfc:L466]: the legacy line reads
   // `priceGroup.removeChildPriceGroup(...)` unscoped rather than `arguments.priceGroup`. CFML
@@ -1489,8 +1314,6 @@ export function makePriceGroupFixtures(
   rootPriceGroup.addChildPriceGroup(unpathedPriceGroup);
   parentPriceGroup.addChildPriceGroup(childPriceGroup);
   parentPriceGroup.addChildPriceGroup(siblingPriceGroup);
-
-  // --- Wiring: rate edges, in the order the loops will read them ------------
 
   childPriceGroup.addPriceGroupRate(productTypeLevelRate);
   childPriceGroup.addPriceGroupRate(productLevelRate);
@@ -1505,8 +1328,6 @@ export function makePriceGroupFixtures(
   globalRatePriceGroup.addPriceGroupRate(globalRateFirstMatch);
   globalRatePriceGroup.addPriceGroupRate(globalRateLastMatch);
 
-  // The amount-type and `getAppliesTo` exhibits live on the sibling, which is not a cascade
-  // subject: every one is non-global with empty membership and matches nothing at any level.
   siblingPriceGroup.addPriceGroupRate(percentageOffRateWithRoundingRule);
   siblingPriceGroup.addPriceGroupRate(amountOffRateWithRoundingRule);
   siblingPriceGroup.addPriceGroupRate(fixedAmountRateWithRoundingRule);
@@ -1514,11 +1335,6 @@ export function makePriceGroupFixtures(
   siblingPriceGroup.addPriceGroupRate(unrecognisedAmountTypeRate);
   siblingPriceGroup.addPriceGroupRate(appliesToIncludingAndExcludingRate);
   siblingPriceGroup.addPriceGroupRate(rateBlockingRoundingRuleDelete);
-
-  // --- Vocabularies, read from the entities that publish them ---------------
-  //
-  // Read rather than restated, so the graph cannot drift from the component that owns the list.
-  // Both accessors return fixed-length tuples, so indexing them is checked rather than asserted.
 
   const directionOptions = closestRoundingRule.getRoundingRuleDirectionOptions();
   const roundingRuleDirectionVocabulary: readonly [
@@ -1533,10 +1349,6 @@ export function makePriceGroupFixtures(
     PriceGroupRateAmountType,
     PriceGroupRateAmountType,
   ] = [amountTypeOptions[0].value, amountTypeOptions[1].value, amountTypeOptions[2].value];
-
-  // Every member below was constructed during THIS call: the two data tables and the reference
-  // calculation come from builders that allocate afresh, the vocabularies are fresh tuples, and
-  // each entity copied every collection handed to it on the way in.
 
   return {
     roundingRuleValueRounder,

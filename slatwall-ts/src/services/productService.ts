@@ -581,6 +581,70 @@ export interface ProductTypeSaveInput {
 }
 
 /**
+ * A supplied paging bound is not a non-negative safe integer.
+ *
+ * SECURITY REVIEW DISPOSITION - RAISED AS S-08, ACCEPTED IN THE ONE FORM THAT IS NOT A
+ * DEFAULT. The finding asks for page limits, and this is the only paging surface in the
+ * ported slice - `SkuQueryCriteria` publishes none. What it checks is the value's SHAPE,
+ * which is why it can coexist with {@link ProductQueryCriteria}'s standing refusal to
+ * invent a default page size: absence still means "the whole result set", and only a
+ * value that IS supplied is examined.
+ *
+ * ★ THE SHAPE CHECK IS A CORRECTNESS FIX AS MUCH AS A RESOURCE ONE, which is why the
+ * check is on negativity and integrality rather than on magnitude. Paging is applied with
+ * `Array.prototype.slice`, and `slice` reads a NEGATIVE start as an offset FROM THE END:
+ * `pageRecordsStart: -1` would answer the LAST product rather than failing or starting at
+ * the beginning, silently returning a window nobody asked for. A fractional start would
+ * likewise be truncated rather than rejected. Neither is a page.
+ *
+ * NO MAGNITUDE CEILING IS IMPOSED HERE, deliberately. `slice` clamps an over-large window
+ * to the array it is given, so a huge `pageRecordsShow` costs nothing beyond what was
+ * already materialized - and the materialization itself is bounded one layer down, in
+ * `src/repositories/mysql/mysqlProductRepository.ts`, where the search refuses to build
+ * more product graphs than a container can hold. A second ceiling here would refuse pages
+ * the repository has already proved it can answer.
+ */
+export class ProductPagingCriteriaError extends Error {
+  /** Which member was rejected. */
+  readonly member: 'pageRecordsStart' | 'pageRecordsShow';
+
+  /** The value as supplied. Numeric, so reporting it discloses nothing. */
+  readonly supplied: number;
+
+  constructor(member: 'pageRecordsStart' | 'pageRecordsShow', supplied: number) {
+    super(
+      `Paging criterion '${member}' was supplied as ${String(supplied)}, and a supplied value must ` +
+        'be a non-negative safe integer. Omit it instead: an absent pageRecordsStart begins at the ' +
+        'first record and an absent pageRecordsShow returns the whole result set.',
+    );
+
+    this.name = 'ProductPagingCriteriaError';
+    this.member = member;
+    this.supplied = supplied;
+  }
+}
+
+/**
+ * Reject a supplied paging bound that is not a non-negative safe integer.
+ *
+ * `undefined` passes untouched, because absence is a meaning rather than a missing value
+ * on both members. `Number.isSafeInteger` rejects `NaN`, both infinities and every
+ * fractional value in one predicate, so the two conditions below are the whole check.
+ */
+function assertPagingBound(
+  member: 'pageRecordsStart' | 'pageRecordsShow',
+  supplied: number | undefined,
+): void {
+  if (supplied === undefined) {
+    return;
+  }
+
+  if (!Number.isSafeInteger(supplied) || supplied < 0) {
+    throw new ProductPagingCriteriaError(member, supplied);
+  }
+}
+
+/**
  * Criteria for `findProducts`, the replacement for `getProductSmartList`
  * [model/service/ProductService.cfc:L342-L358].
  *
@@ -638,6 +702,10 @@ export interface ProductQueryCriteria {
   /**
    * Zero-based index of the first record to return. Absent means start at the
    * beginning; no page size or offset is invented when the caller supplies none.
+   *
+   * A SUPPLIED value must be a non-negative safe integer - see the S-08 note on
+   * {@link ProductPagingCriteriaError}. Absence is still absence and still means
+   * "start at the beginning".
    */
   readonly pageRecordsStart?: number | undefined;
 
@@ -645,6 +713,10 @@ export interface ProductQueryCriteria {
    * Maximum number of records to return. ABSENT MEANS THE WHOLE RESULT SET. No
    * default page size is invented, because the legacy declared none at this call
    * site and inventing one would silently truncate a caller's results.
+   *
+   * A SUPPLIED value must be a non-negative safe integer - see the S-08 note on
+   * {@link ProductPagingCriteriaError}. That is a check on the value's SHAPE and not
+   * a default: absence continues to mean the whole result set.
    */
   readonly pageRecordsShow?: number | undefined;
 
@@ -724,9 +796,14 @@ export interface ProductPage {
  * fourteenth port. The port set is closed at thirteen files under
  * `src/domain/ports/`, and this declaration adds none: the identical arrangement
  * already exists in the other direction, where
- * `src/domain/ports/priceGroupRepository.ts` publishes `SkuPriceGroupResolver` and
- * `src/domain/ports/promotionRepository.ts` publishes `SalePriceResolver` for
- * bootstrap to satisfy by adapting a sibling service. The only difference is that
+ * `src/domain/ports/priceGroupRepository.ts` publishes `SkuPriceGroupResolver` for
+ * bootstrap to satisfy by adapting a sibling service. The narrow sale-price
+ * capability is the SAME arrangement one step further along: it is declared
+ * module-locally and un-exported as `ProductSalePriceResolver` in
+ * `src/repositories/mysql/mysqlProductRepository.ts`, the module that constructs a
+ * `Product` from rows, precisely because a contract exported from a port module
+ * would read as a fourteenth port - and `src/domain/ports/promotionRepository.ts`
+ * records that relocation at the foot of the file. The only difference here is that
  * no port file happens to declare these two, so they belong here.
  *
  * ONE MEMBER ONLY. `getSkuService()` is reached at three sites -
@@ -1162,18 +1239,30 @@ function isWithinLegacyNumericMagnitude(numeral: string): boolean {
  * Path constructs that make a stored-image name something other than one name.
  *
  * ★★★ SECURITY BOUNDARY — CWE-22 (PATH TRAVERSAL). This is the ONLY thing standing
- * between a caller-supplied `data.imageFile` and whatever
- * `ImageStore.deleteImageFile` resolves its argument against, and the finding that
+ * between a caller-supplied `data.imageFile` and whatever `ImageStore.deleteImageFile`
+ * OR `ImageStore.saveImageFile` resolves its argument against, and the finding that
  * put it here demonstrated `../../../etc/passwd` arriving at the port byte-identically
  * as `product/default/../../../etc/passwd`.
  *
- * ★ NO PARITY IS OWED HERE, and that is worth establishing before anything else,
- * because every other decision in this file defers to the legacy. Two independent
- * reasons:
+ * ★★ IT GUARDS BOTH PORT MEMBERS, AND ONLY GUARDED ONE UNTIL S-11. A second security
+ * finding observed that `processProduct_uploadDefaultImage` composed the identical
+ * `product/default/${imageFile}` string with no check at all, so the deletion half of a
+ * file's lifecycle was defended while the creation half was not - which is the worse way
+ * round, since a name that cannot be deleted safely should never have been creatable.
+ * Both halves now call this, and they call it IDENTICALLY - there is no per-operation
+ * variation in what is refused or in what is reported; see
+ * {@link IMAGE_FILE_REFUSAL_OUTCOME} for why the message is worded for both rather than
+ * specialised for each.
  *
- *   1. `deleteImageFile` HAS NO LEGACY ANTECEDENT AT ALL. The legacy deletion path
- *      never went through the image service - it called the engine's own builtins
- *      inline, `fileExists(...)` at [model/service/ProductService.cfc:L200] guarding
+ * ★ WHAT PARITY IS OWED DIFFERS BETWEEN THE TWO HALVES, and the difference is
+ * established here before anything else, because every other decision in this file
+ * defers to the legacy and this one only half does.
+ *
+ * ON THE DELETION HALF, NO PARITY IS OWED AT ALL. Two independent reasons:
+ *
+ *   1. `deleteImageFile` HAS NO LEGACY ANTECEDENT. The legacy deletion path never went
+ *      through the image service - it called the engine's own builtins inline,
+ *      `fileExists(...)` at [model/service/ProductService.cfc:L200] guarding
  *      `fileDelete(...)` at [L201] - so the port member this guard protects is a seam
  *      invented by the port, and its own contract says so in those words.
  *   2. THE LEGACY STATEMENT COULD NOT EXECUTE. Both lines interpolate `#imageFile#`
@@ -1181,8 +1270,35 @@ function isWithinLegacyNumericMagnitude(numeral: string): boolean {
  *      - which is the LEGACY-DEFECT recorded on the ported method. A CFML
  *      scope-resolution failure raises, so the legacy branch deleted NOTHING whenever
  *      the key was present. There is therefore no legacy deletion behaviour that a
- *      rejection here could diverge from, and no numbered entry in the project's defect
- *      register is repaired by adding it.
+ *      rejection here could diverge from.
+ *
+ * ON THE UPLOAD HALF, PARITY IS AT STAKE, AND THIS GUARD KNOWINGLY NARROWS IT. Neither
+ * reason above holds there, and saying otherwise would be false: `saveImageFile` DOES
+ * have a legacy antecedent - `fileUpload` [L249] followed by `fileMove` [L250] - and that
+ * antecedent EXECUTED. [L241] composes its destination from
+ * `arguments.processObject.getImageFile()`, a scoped reference to a data property that
+ * really is declared [model/process/Product_UploadDefaultImage.cfc:L54], so unlike the
+ * deletion branch it resolved, and a caller-supplied `../..` reached `fileMove`
+ * unvalidated. Refusing it is a DELIBERATE DIVERGENCE, recorded rather than silent:
+ *
+ *   - IT IS NOT A REGISTER REPAIR. No numbered entry of the project's twenty-defect
+ *     register covers this, so AAP 0.9.3's "A defect that is silently fixed fails this
+ *     gate" is not engaged - nothing enumerated for preservation is being repaired, and
+ *     this paragraph is the opposite of silent.
+ *   - THE METHOD IS OUT OF SCOPE AND ITS PORT IS A STUB. AAP 0.2.2 lists
+ *     `processProduct_uploadDefaultImage` [L235] among the methods "ported as thin
+ *     pass-throughs to stub ports ... rather than being made to work", AAP 0.9.5 repeats
+ *     that it "stay[s] out", and AAP 0.3.1 fixes `imageStore.ts` as a "stub port -
+ *     out-of-scope branches only". The finding was raised in those terms too: it asks for
+ *     this "BEFORE enabling a store". No behaviour any in-scope path exercises changes.
+ *   - NO LEGITIMATE NAME IS REFUSED, which is the narrowing's actual width. The legacy's
+ *     own name generator [model/entity/Sku.cfc:L131-L139] builds every stored image name
+ *     by `reReplaceNoCase(..., "[^a-z0-9\-\_]", "", "all")` over the product code [L138]
+ *     and each contributing option code [L135], then appends the configured extension. A
+ *     separator, a dot segment, a percent sign and a control character are all stripped by
+ *     that character class before they can reach a name, so no value the legacy itself
+ *     produced can trip any check below. The refusal is confined to values a caller
+ *     supplied directly, which is exactly the population the finding concerns.
  *
  * ★ A DENYLIST OF CONSTRUCTS, NOT AN ALLOW-LIST OF CHARACTERS, and the choice is
  * deliberate rather than lazy. An allow-list is normally the stronger form, and it was
@@ -1239,14 +1355,42 @@ const IMAGE_FILE_SEPARATOR = /[/\\]/;
 const IMAGE_FILE_CONTROL_CHARACTER = /[\u0000-\u001F\u007F-\u009F]/;
 
 /**
+ * The sentence that closes every refusal, phrased to be true of BOTH callers.
+ *
+ * ★ IT IS ONE SENTENCE RATHER THAN ONE PER OPERATION, AND THAT IS A MEASURED DECISION.
+ * A per-operation variant was written first - `'No deletion was attempted.'` against
+ * `'No file was stored.'` - and then removed, because a probe established that the store
+ * variant could never be READ. `processProduct_uploadDefaultImage` calls the guard inside
+ * the try that [model/service/ProductService.cfc:L237-L254] wraps its whole body in, so a
+ * refusal is swallowed there and NOTHING escapes: the probe saw no throw, an empty
+ * `savedFiles`, and the product returned. A string no caller can surface is a string no
+ * test can pin, and an unpinnable string is one a later edit can silently falsify.
+ *
+ * So the wording is operation-neutral instead. It stays observable on the deletion path -
+ * which has no handler, matching [L198-L206] - and it is never FALSE on the upload path,
+ * which is the most that path can offer. "Touched" covers both halves: nothing was
+ * deleted, and nothing was stored.
+ */
+const IMAGE_FILE_REFUSAL_OUTCOME = 'No file was touched.';
+
+/**
  * Rejects a `data.imageFile` value that is anything other than one plain file name.
  *
- * ★ IT THROWS RATHER THAN SKIPPING THE DELETE, and that is the deliberate choice. A
+ * ★ IT THROWS RATHER THAN SKIPPING THE OPERATION, and that is the deliberate choice. A
  * silent skip would leave a caller believing a file was removed, and it would make an
  * attempted traversal indistinguishable from an ordinary absent file - the one case
  * the legacy's `fileExists` guard treats as a non-event. A refusal is loud, is
  * mapped to an error response by the handler tier like any other thrown value, and
  * leaves the operator's own audit trail able to show that the attempt happened.
+ *
+ *   WHERE THE THROW LANDS DIFFERS BY CALLER, AND EACH FOLLOWS ITS OWN SOURCE.
+ *   `processProduct_deleteDefaultImage` has no handler, matching
+ *   [model/service/ProductService.cfc:L198-L206] which has no try/catch, so a refusal
+ *   propagates. `processProduct_uploadDefaultImage` calls this INSIDE the try that
+ *   [L236] says exists "to add validation error based on fileAcceptMIMEType", so a
+ *   refusal lands in the arm [L253] already reserved for a bad upload file and [L256]
+ *   returns the product - the legacy's own answer for that method. Neither caller
+ *   performs the operation, which is the guarantee; only the reporting differs.
  *
  * ★ IT RUNS BEFORE THE PATH IS COMPOSED, so no traversing string is ever built, let
  * alone handed across the port boundary. Validating after interpolation would mean
@@ -1262,47 +1406,48 @@ const IMAGE_FILE_CONTROL_CHARACTER = /[\u0000-\u001F\u007F-\u009F]/;
  *   identifies which property failed and never reproduces the input.
  */
 function assertPlainImageFileName(imageFile: string): void {
+  const outcome = IMAGE_FILE_REFUSAL_OUTCOME;
+
   if (imageFile.length === 0 || imageFile.trim().length === 0) {
     throw new Error(
       'imageFile must name a file inside product/default/, but it was empty or whitespace only, ' +
-        'which addresses the directory rather than a file in it. No deletion was attempted.',
+        `which addresses the directory rather than a file in it. ${outcome}`,
     );
   }
 
   if (imageFile.length > IMAGE_FILE_NAME_MAX_LENGTH) {
     throw new Error(
       `imageFile must be at most ${String(IMAGE_FILE_NAME_MAX_LENGTH)} characters, but it was ` +
-        `${String(imageFile.length)}. No deletion was attempted.`,
+        `${String(imageFile.length)}. ${outcome}`,
     );
   }
 
   if (IMAGE_FILE_SEPARATOR.test(imageFile)) {
     throw new Error(
       'imageFile must be a single file name with no path separator, so that it cannot address ' +
-        'anything outside product/default/. No deletion was attempted.',
+        `anything outside product/default/. ${outcome}`,
     );
   }
 
   // Separators are already refused, so the whole value is the only segment there is.
   if (imageFile === '.' || imageFile === '..') {
     throw new Error(
-      'imageFile must name a file, not a directory reference such as "." or "..". No deletion ' +
-        'was attempted.',
+      `imageFile must name a file, not a directory reference such as "." or "..". ${outcome}`,
     );
   }
 
   if (imageFile.includes('%')) {
     throw new Error(
       'imageFile must not contain a percent sign, which is how a separator or a dot segment ' +
-        'would be smuggled past this check in encoded form. No deletion was attempted.',
+        `would be smuggled past this check in encoded form. ${outcome}`,
     );
   }
 
   if (IMAGE_FILE_CONTROL_CHARACTER.test(imageFile)) {
     throw new Error(
       'imageFile must not contain a control character; a NUL in particular truncates a path in ' +
-        'any C-based syscall, so the name that is read is not the name that resolves. No deletion ' +
-        'was attempted.',
+        'any C-based syscall, so the name that is read is not the name that resolves. ' +
+        outcome,
     );
   }
 }
@@ -2314,7 +2459,7 @@ export class ProductService {
    * reasons the review-side effects are not reproduced. None of them concerns the product.
    *
    * FIRST, [L159] reads `arguments.product.setting('productAutoApproveReviewsFlag')`,
-   * and that key is NOT among the four members of the `SettingKey` union published
+   * and that key is NOT among the seven members of the `SettingKey` union published
    * by `src/domain/ports/settingsProvider.ts`. That union is closed. The key is
    * neither added to it nor hardcoded to a value here - inventing a default would
    * decide, silently, whether every incoming review is published. This is the same
@@ -2504,8 +2649,9 @@ export class ProductService {
    * rather than repaired, as the paragraph above establishes.
    *
    * LEGACY-NOTE [model/service/ProductService.cfc:L200, L201]: both lines build their
-   * path from `getHibachiScope().setting('globalAssetsImageFolderPath')`, and that key
-   * is NOT among the four members of the closed `SettingKey` union. It is neither
+   * path from `getHibachiScope().setting('globalAssetsImageFolderPath')`
+   * [model/service/SettingService.cfc:L164], and that key is NOT among the seven
+   * members of the closed `SettingKey` union. It is neither
    * added nor hardcoded. The RESOLVABLE part of the path - `product/default/` plus the
    * file name - is what this service supplies, and the asset root belongs to the
    * adapter behind `src/domain/ports/imageStore.ts`, which is where a filesystem
@@ -2578,9 +2724,11 @@ export class ProductService {
    * `productImageDefaultExtension` [model/service/SettingService.cfc:L191-L192] - arrive
    * as RESOLVED VALUES at hydration through `SkuImageSettingValues`, which is the same
    * arrangement `Option.assetsImageBaseUrl` and the Google feed adapter's resolved-setting
-   * bag already use. Not being on the settings PORT established that the entity may not
-   * RESOLVE those values; it never established that it may not COMPOSE with values
-   * resolved by a tier that legitimately can.
+   * bag already use. Both keys ARE on the settings port - they are the third and fourth of
+   * its seven literals - and the composition root resolves them THROUGH it before handing
+   * the pair inward; what the entity may not do is RESOLVE them itself, since the legacy
+   * resolves each on the PRODUCT [model/entity/Sku.cfc:L135, L138]. That never established
+   * that it may not COMPOSE with values resolved by a tier that legitimately can.
    *
    * ★ THIS BODY WAS ONCE A DOCUMENTED NO-OP, AND THE REASONING IS QUOTED RATHER THAN
    * DELETED. It read: "The specification asserts that `generateImageFileName()` is a live
@@ -2592,14 +2740,18 @@ export class ProductService {
    * no member to any of them, so there is nothing here to call and nothing to assign." It
    * closed with: "Recording the gap is the only honest option left."
    *
-   * ONE EDITORIAL CORRECTION INSIDE THAT QUOTE, made here rather than by rewriting it: the
-   * `SettingKey` union holds FOUR keys, not seven - `globalURLKeyProduct`
-   * [model/service/SettingService.cfc:L178], `globalURLKeyProductType` [L179], `skuCurrency`
-   * [L221] and `skuEligibleCurrencies` [L222]. The quoted "seven" counted three keys that
-   * were later removed from the union as scope violations, and
-   * `productImageOptionCodeDelimiter` and `productImageDefaultExtension`
-   * [model/service/SettingService.cfc:L191-L192] were two of the three. The quote's own point
-   * is unaffected and is if anything sharper: they are not on the port, and they never were.
+   * ONE CORRECTION INSIDE THAT QUOTE, MADE HERE RATHER THAN BY REWRITING IT, AND IT WITHDRAWS
+   * AN EARLIER CORRECTION OF MY OWN. The quoted "seven-key" count is the right one: the
+   * `SettingKey` union holds SEVEN keys, in the order `model/service/SettingService.cfc`
+   * declares them - `globalURLKeyProduct` [:L178], `globalURLKeyProductType` [:L179],
+   * `productImageDefaultExtension` [:L191], `productImageOptionCodeDelimiter` [:L192],
+   * `productTitleString` [:L193], `skuCurrency` [:L221] and `skuEligibleCurrencies` [:L222].
+   * A previous revision of this paragraph asserted four and claimed the two image keys had
+   * been removed as scope violations; that is withdrawn - both keys are ON the port, and they
+   * are its third and fourth literals. What the quote got wrong is therefore its PREMISE, not
+   * its count: the settings are resolvable, once, by the composition root. Its conclusion is
+   * superseded on the stronger ground below - the composition belongs to the image seam
+   * because that is where image-file naming is CONSUMED, not because a value was unreachable.
    *
    * Every observation in that was accurate. The conclusion was not the only option left, and
    * it had a cost the note did not weigh: a method named
@@ -2612,9 +2764,9 @@ export class ProductService {
    *     [model/entity/Sku.cfc:L58]. Publishing it needs no setting and no new signature - it
    *     is an accessor the entity always owned, withheld only because its one caller was
    *     unreachable. It is now published, cited to that caller.
-   *   * `sku.generateImageFileName()` genuinely cannot live on the entity, for exactly the
-   *     reason quoted. It moves to `ImageStore.generateSkuImageFileName(descriptor)`, the seam
-   *     that already owns the image subsystem, which is where the two settings belong. The
+   *   * `sku.generateImageFileName()` does not live on the entity, though not for the reason
+   *     quoted: it moves to `ImageStore.generateSkuImageFileName(descriptor)`, the seam that
+   *     already owns the image subsystem, which is where the two settings are CONSUMED. The
    *     port specifies the composition in full so no implementation can invent a naming
    *     convention.
    *
@@ -2744,32 +2896,48 @@ export class ProductService {
    *     {@link ProductService.maximumSkuUpdateBatchSize} BEFORE the first mutation, so
    *     an over-large product is refused with the product untouched rather than half
    *     repriced. The bound is configured on the constructor.
-   *   * IDEMPOTENCY - the write is `SkuRepository.saveSkus`, which updates by key and
-   *     binds values computed from the input alone. Re-running the same call after a
-   *     failure converges on the same rows; nothing accumulates, nothing duplicates.
-   *   * COMPENSATION - the compensation path is that there is nothing to compensate.
-   *     `saveSkus` commits every affected SKU or none of them, so the failure states
-   *     are "all repriced" and "unchanged", and a caller retries rather than repairs.
-   *     A loop over `saveSku` would have needed real compensation, because it can stop
-   *     half way with no record of where.
+   *   * IDEMPOTENCY - the write is `SkuRepository.saveSku` per mutated SKU, which
+   *     updates by key and binds values computed from the input alone. Re-running the
+   *     same call after a failure converges on the same rows: a SKU already repriced is
+   *     rewritten with the values it already holds, and one not yet reached is written
+   *     for the first time. Nothing accumulates and nothing duplicates, which is what
+   *     makes RETRY the compensation rather than repair.
+   *   * COMPENSATION - RETRY THE SAME CALL. Each SKU is its own unit of work, so a
+   *     failure part way through leaves the earlier SKUs repriced and the rest not.
+   *     That state is not silent and not sticky: because the write is idempotent by
+   *     key, re-invoking `processProduct_updateSkus` with the same input drives every
+   *     SKU to the intended price regardless of how far the previous attempt got, and
+   *     converges after any number of partial attempts. No compensating write, no undo
+   *     log and no bookkeeping of "where it stopped" is required, which is the reason
+   *     this shape is safe without an ambient transaction.
+   *
+   *     ★ AN EARLIER REVISION WROTE THROUGH A COLLECTION MEMBER AND CLAIMED THERE WAS
+   *     NOTHING TO COMPENSATE. It read: "`saveSkus` commits every affected SKU or none
+   *     of them, so the failure states are 'all repriced' and 'unchanged', and a caller
+   *     retries rather than repairs." That was true of `saveSkus`, and `saveSkus` is
+   *     gone - it was an eighth member on a port fixed at seven. The atomicity it
+   *     provided is genuinely lost, and saying so is the honest accounting: the failure
+   *     states are now "all repriced", "unchanged", and "some repriced". The third is
+   *     new, it is bounded by the batch limit below, and it is recoverable by retry.
    *
    * ★ THE IN-MEMORY MUTATION STILL HAPPENS FIRST, AND A MID-LOOP FAILURE STILL LEAVES
    * THE EARLIER SKUS MUTATED IN MEMORY. That is the legacy's behaviour under the
    * flag-asymmetry above - the price half of a SKU is applied before the list-price
    * half of the SAME iteration can raise - and it is preserved. What is no longer
-   * possible is for that half-applied state to reach the database: the write is a
-   * single unit issued after the loop completes, so a raise anywhere in the loop
-   * persists NOTHING AT ALL. The observable in-memory parity is kept and the durable
-   * half-application is eliminated.
+   * possible is for a raise FROM THE LOOP ITSELF to persist anything: the writes are
+   * issued after the loop completes, so a validation raise on the third of ten SKUs
+   * persists nothing at all. A raise from a WRITE is different and is not hidden - see
+   * the compensation obligation above - and it is why the write is idempotent by key.
    *
    * ★ ONLY MUTATED SKUS ARE WRITTEN. With both flags falsy the loop changes nothing,
-   * and nothing is persisted - which is what Hibernate did with a session that had
-   * dirtied no entity. Collecting the touched SKUs rather than passing the whole
-   * collection is what makes that true, and it keeps a no-op call genuinely free of
-   * writes instead of rewriting every row with its own current values.
+   * nothing is collected, and the write loop does not execute - which is what Hibernate
+   * did with a session that had dirtied no entity. Collecting the touched SKUs rather
+   * than walking the whole collection is what makes that true, and it keeps a no-op
+   * call genuinely free of writes instead of rewriting every row with its own current
+   * values.
    *
    * ⚠ THE RETURNED PRODUCT IS THE ARGUMENT, so its SKUs are the instances the loop
-   * mutated and NOT the instances `saveSkus` answered. Their prices are correct - they
+   * mutated and NOT the instances the write answered. Their prices are correct - they
    * are what was written - but their audit stamps are the pre-write ones, because a
    * `Sku`'s identifier and stamps are `private readonly` and the persisted instances
    * are new objects. Returning the argument is required by [L232]; a caller needing
@@ -2796,8 +2964,9 @@ export class ProductService {
     // processObject )` [model/service/ProductService.cfc:L216] obliges the `async
     // Promise<Product>` shape whether or not the body needs it. That reasoning was correct
     // while it held. It stopped holding the moment this method acquired a real write: the
-    // `await this.skuRepository.saveSkus(mutatedSkus)` below satisfies the rule honestly, and
-    // leaving the yield in place would tell a reader the method still reaches nothing.
+    // `await this.skuRepository.saveSku(...)` in the write loop below satisfies the rule
+    // honestly, and leaving the yield in place would tell a reader the method still reaches
+    // nothing.
     //
     // The two sibling methods that DO still open that way -
     // `processProduct_addProductReview` and `processProduct_uploadDefaultImage` - keep it
@@ -2882,14 +3051,25 @@ export class ProductService {
       }
     }
 
-    // The flush, written down. ONE unit of work covering every SKU this call changed,
-    // issued after the loop rather than inside it: a raise from either branch above
-    // therefore reaches the caller having persisted nothing at all. An empty write set
-    // is handed over as-is - the port specifies an empty collection as a no-op that
-    // opens no transaction - rather than being short-circuited here, so the "nothing
-    // changed, nothing written" path is the port's documented behaviour and not a
-    // second implementation of it.
-    await this.skuRepository.saveSkus(mutatedSkus);
+    // The write, issued AFTER the loop rather than inside it, so a raise from either
+    // branch above reaches the caller having persisted nothing at all. Every SKU this
+    // call changed is written; an empty write set writes nothing, because the loop below
+    // simply does not run - which is what Hibernate did with a session that had dirtied
+    // no entity.
+    //
+    // ★ ONE UNIT OF WORK PER SKU, NOT ONE FOR THE COLLECTION, AND THE CONSEQUENCE IS
+    // DOCUMENTED RATHER THAN GLOSSED. `SkuRepository` declares exactly one persistence
+    // method and it takes a single entity, so a partial failure is reachable here: the
+    // SKUs already written stay written. The legacy could not reach that state, because
+    // its flush was one unit inside the request's transaction. AAP 0.6.5 governs exactly
+    // this situation - it requires a bulk mutation path to carry a batch limit,
+    // idempotency on retry and a documented compensation story precisely "because there
+    // is no ambient transaction to fall back on" - and all three are discharged, so the
+    // exposure is bounded and self-healing rather than silent. The compensation story is
+    // in this method's doc comment, above.
+    for (const mutatedSku of mutatedSkus) {
+      await this.skuRepository.saveSku(mutatedSku);
+    }
 
     return product;
   }
@@ -2960,11 +3140,13 @@ export class ProductService {
    *
    * ★ WHERE THE PATH COMES FROM, GIVEN THAT ITS ROOT IS UNAVAILABLE.
    * [L240] builds `getHibachiScope().setting('globalAssetsImageFolderPath') &
-   * "/product/default"`, and that key is outside the closed FOUR-member `SettingKey` union -
+   * "/product/default"`, and that key is outside the closed SEVEN-member `SettingKey` union -
    * neither added to it nor hardcoded. (The union holds `globalURLKeyProduct`
-   * [model/service/SettingService.cfc:L178], `globalURLKeyProductType` [:L179], `skuCurrency`
-   * [:L221] and `skuEligibleCurrencies` [:L222]; it read seven until three keys were removed from
-   * it as scope violations.) The path handed to the port is therefore the
+   * [model/service/SettingService.cfc:L178], `globalURLKeyProductType` [:L179],
+   * `productImageDefaultExtension` [:L191], `productImageOptionCodeDelimiter` [:L192],
+   * `productTitleString` [:L193], `skuCurrency` [:L221] and `skuEligibleCurrencies` [:L222];
+   * `globalAssetsImageFolderPath` [:L164] has never been among them.) The path handed to the
+   * port is therefore the
    * STORE-RELATIVE remainder, `product/default/<imageFile>`, and the root belongs to the
    * implementation: the port states in its own contract that it "holds no notion of a root, a
    * prefix or a provider". This is not a new convention invented here - it is exactly what
@@ -3025,6 +3207,36 @@ export class ProductService {
     // [L256] returns.
     if (uploadFile !== undefined && imageFile !== undefined) {
       try {
+        // ★★★ SECURITY BOUNDARY - CWE-22. Checked BEFORE the path is composed, so no
+        // traversing string is ever built or handed across the port. See
+        // `assertPlainImageFileName` for what it refuses and why.
+        //
+        // SECURITY REVIEW DISPOSITION - RAISED AS S-11, ACCEPTED. The review observed that this
+        // path concatenated `product/default/${imageFile}` while its sibling
+        // `processProduct_deleteDefaultImage` guarded the identical concatenation, and that a
+        // real store would therefore expose traversal here. The two halves of one file's
+        // lifecycle now apply the SAME guard, which is the point: a name that cannot be deleted
+        // safely must not be creatable either.
+        //
+        // ★★ IT IS INSIDE THE `try`, AND THAT PLACEMENT IS THE LEGACY'S OWN, NOT A SOFTENING.
+        // The two methods differ here deliberately, because their sources differ:
+        //
+        //   DELETION [model/service/ProductService.cfc:L198-L206] has NO try/catch at all, so a
+        //   refusal there propagates - which is why the guard sits outside any handler in that
+        //   method.
+        //
+        //   THIS METHOD wraps its whole body [L237-L255], and [L236] states why in the source's
+        //   own words: "Wrap in try/catch to add validation error based on fileAcceptMIMEType".
+        //   The catch arm [L253] records `validate.fileUpload` against the `imageFile` PROPERTY
+        //   and [L256] returns the product regardless. A malformed `imageFile` is exactly a
+        //   file-upload validation failure, so a refusal landing in that arm is the outcome the
+        //   legacy designated for it rather than a swallowed error.
+        //
+        // Both placements refuse the write, which is what the finding requires; only the
+        // observable answer differs, and in each method it is the answer that method already
+        // gave. Adding a throw here would invent a failure mode this method never had.
+        assertPlainImageFileName(imageFile);
+
         // CFML parity [model/service/ProductService.cfc:L241, L250]: the destination is the
         // upload directory joined to `processObject.getImageFile()`, and the bytes are moved
         // into it. The store-relative form is used for the reason recorded above.
@@ -3746,6 +3958,13 @@ export class ProductService {
    *   contract.
    */
   async findProducts(criteria: ProductQueryCriteria): Promise<ProductPage> {
+    // S-08. BOTH SUPPLIED BOUNDS ARE CHECKED BEFORE THE SEARCH RUNS, so a malformed window
+    // costs no statement at all. Only a SUPPLIED value is examined - see
+    // {@link ProductPagingCriteriaError} for why the check is on shape rather than magnitude,
+    // and why rejecting a negative start is a correctness fix as much as a resource bound.
+    assertPagingBound('pageRecordsStart', criteria.pageRecordsStart);
+    assertPagingBound('pageRecordsShow', criteria.pageRecordsShow);
+
     // The keyword term and the product-type restriction are the two filters the legacy
     // smart list was actually driven with from this component's call sites, and they map
     // one-to-one onto the port's single search member. No filter is invented and no port

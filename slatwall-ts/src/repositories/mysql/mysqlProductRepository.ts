@@ -131,12 +131,19 @@ import type {
   ProductRepository,
   ProductSavePayload,
 } from '../../domain/ports/productRepository.js';
+import type { SalePriceDetail } from '../../domain/ports/promotionRepository.js';
 import { Money } from '../../domain/valueObjects/money.js';
 import { listToArray } from '../../lib/cfml/list.js';
+import type { CfStruct } from '../../lib/cfml/struct.js';
 import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import { cfBoolean, cfLen, isNullish } from '../../lib/cfml/truthiness.js';
-import type { PreparedStatementExecutor, SqlRow } from './connection.js';
-import { sqlPlaceholderList } from './connection.js';
+import type { AuditActorContext, PreparedStatementExecutor, SqlRow } from './connection.js';
+import {
+  resolveAuditActorAccountID,
+  resolveStampedModifiedByAccountID,
+  sqlPlaceholderList,
+  sqlUpdateAssignment,
+} from './connection.js';
 import type { DatabaseDialect } from './dialect.js';
 import { assertMySqlDialect } from './dialect.js';
 
@@ -263,6 +270,96 @@ class ProductUndefinedArgumentError extends Error {
         `[model/dao/ProductDAO.cfc:L422]; that outcome is preserved rather than defaulted away.`,
     );
     this.name = 'ProductUndefinedArgumentError';
+  }
+}
+
+// --- Resource ceilings (S-08) ------------------------------------------------
+//
+// SECURITY REVIEW DISPOSITION - RAISED AS S-08, ACCEPTED. AAP 0.6.5 positively requires explicit
+// resource bounds under the Lambda execution model, so these are mandated rather than discretionary.
+// They live in this adapter, and its sibling `./mysqlSkuRepository.ts` carries the full record of why
+// this layer rather than the service or the statement builders - the short version is that this is
+// the layer that decides what it will EXECUTE and, decisively, what it will MATERIALIZE, and this
+// module already owns every fetch decision in the product graph outright.
+//
+// NEITHER CEILING CHANGES A STATEMENT'S TEXT. The pinned parity claim that the search statement
+// emits "NO ORDER BY, and no DISTINCT or LIMIT either" still holds exactly.
+
+/**
+ * The greatest search-term length this adapter will execute a `productName LIKE` statement for.
+ *
+ * DERIVED FROM THE COLUMN THE TERM IS MATCHED AGAINST, with its derivation stated in full because
+ * the column's width is IMPLICIT rather than declared. `productName` is
+ * `ormtype="string" notNull="true"` with NO `length` attribute [model/entity/Product.cfc:L55], and a
+ * Hibernate string property with no declared length maps to `varchar(255)`. The legacy predicate is
+ * `productName like :prodName` with `value="%#arguments.term#%"`
+ * [model/dao/ProductDAO.cfc:L421-L422], and a substring cannot be longer than the string containing
+ * it, so a term above 255 characters cannot match any `productName` in any `Sw*` database.
+ *
+ * IT IS A LENGTH CEILING AND NOT A CONTENT CHECK: a `%` or `_` in the term still reaches the driver
+ * as a live LIKE metacharacter, exactly as [model/dao/ProductDAO.cfc:L422] sent it. The finding's
+ * escape-the-wildcard suggestion is declined for the reason its sibling records - escaping would
+ * change which rows a CORRECT search returns - and the resource risk the live wildcard creates is
+ * answered by {@link MAX_SEARCH_RESULT_MATERIALIZATION} instead.
+ */
+const MAX_PRODUCT_NAME_SEARCH_TERM_LENGTH = 255;
+
+/**
+ * The greatest number of matched identifiers this adapter will materialize into `Product` graphs
+ * from one search.
+ *
+ * ★ THIS BOUNDS AMPLIFICATION THE PORT INTRODUCED, NOT ANYTHING THE LEGACY DID. The legacy
+ * `searchProductsByProductType` projects `productID, productName` and reduces each row to a two-key
+ * autocomplete structure keyed `"id"` and `"value"` [model/dao/ProductDAO.cfc:L421, L429-L435] - it
+ * materializes NO graph at all. This port returns `Product[]`, so every matched identifier becomes a
+ * `Product` carrying its eager `brand` and `productType`, its `skus`, each SKU's `options` and its
+ * `defaultSku`. That widening is this module's own decision and so is the ceiling on it.
+ *
+ * ★ THE NUMBER IS THE SIBLING'S MEASURED CEILING, and it is deliberately the LOWER of the two
+ * candidates. `./mysqlSkuRepository.ts` carries the measurement in full: its hydration cost is
+ * super-linear, 2,000 rows cost about half a second and 10,000 cost over eighteen, so 2,000 is where
+ * that curve is still flat. This adapter's materialization is BATCHED rather than per-row - one graph
+ * statement, one SKU statement and one option statement for the whole match set - so its own curve is
+ * flatter than the sibling's, and adopting the sibling's number is therefore the conservative choice
+ * rather than a measured one. One number for one kind of amplification, and the safer of the two.
+ *
+ * It remains two orders of magnitude above the autocomplete the legacy consumer was
+ * [model/dao/ProductDAO.cfc:L429-L435].
+ */
+const MAX_SEARCH_RESULT_MATERIALIZATION = 2_000;
+
+/**
+ * Raised when a read would exceed one of the two ceilings above.
+ *
+ * It names the ceiling, the observed magnitude and the statement label - never the term itself and
+ * never a row. Caller data on a driver-adjacent path is reported as a SHAPE, which is the same
+ * discipline the statement labels in this module exist to enforce.
+ */
+class ProductReadTooLargeError extends Error {
+  /** Which ceiling was exceeded, so a handler can distinguish them without parsing the message. */
+  readonly ceiling: 'searchTermLength' | 'searchResultMaterialization';
+
+  /** The magnitude actually observed. */
+  readonly observed: number;
+
+  /** The ceiling that was exceeded. */
+  readonly maximum: number;
+
+  constructor(
+    ceiling: 'searchTermLength' | 'searchResultMaterialization',
+    observed: number,
+    maximum: number,
+    statementLabel: string,
+    why: string,
+  ) {
+    super(
+      `A read of ${statementLabel} was refused: ${ceiling} is ${String(observed)} and at most ` +
+        `${String(maximum)} is admissible. ${why}`,
+    );
+    this.name = 'ProductReadTooLargeError';
+    this.ceiling = ceiling;
+    this.observed = observed;
+    this.maximum = maximum;
   }
 }
 
@@ -1459,7 +1556,7 @@ const INSERT_PRODUCT_SQL = `INSERT INTO SwProduct (
  */
 const UPDATE_PRODUCT_SQL = `UPDATE SwProduct
 SET
-  ${PRODUCT_UPDATED_COLUMNS.map((columnName: string) => `${columnName} = ?`).join(',\n  ')}
+  ${PRODUCT_UPDATED_COLUMNS.map((columnName: string) => sqlUpdateAssignment(columnName)).join(',\n  ')}
 WHERE productID = ?`;
 
 /**
@@ -1806,9 +1903,66 @@ type MaterializedSkus = {
 type ProductHydrationCollaborators = Readonly<
   Pick<
     ProductHydrationInput,
-    'settingsProvider' | 'skuRepository' | 'optionRepository' | 'subscriptionTermProvider'
+    | 'settingsProvider'
+    | 'skuRepository'
+    | 'optionRepository'
+    | 'subscriptionTermProvider'
+    | 'salePriceResolver'
   >
->;
+> & {
+  /**
+   * The sale-price capability the read path consults before it constructs a product; see
+   * {@link ProductSalePriceResolver} for why it is a resolver here and a resolved MAP on the entity.
+   */
+  readonly salePriceResolver?: ProductSalePriceResolver;
+};
+
+/**
+ * The narrow sale-price capability this adapter consults on the read path.
+ *
+ * T2, SERVICE-LOCATOR REMOVAL, AND THE ONE MEMBER OF THIS BAG THAT IS NOT FORWARDED TO THE ENTITY.
+ * [model/entity/Product.cfc:L517-L521] resolves its sale-price details by NAME at the point of use -
+ * `getService("promotionService").getSalePriceDetailsForProductSkus(productID=getProductID())` at
+ * [L519] - and `src/domain/entities/product.ts` REFUSES to reproduce that reach: it takes
+ * `salePriceDetailsForSkus` as an ALREADY-RESOLVED, already-rounded map and says so at that member.
+ * Something therefore has to resolve the map before a product is constructed, and the only place that
+ * can is the construction site. This is it.
+ *
+ * ★ MODULE-LOCAL AND UN-EXPORTED, DELIBERATELY. `src/domain/ports/promotionRepository.ts` used to
+ * publish this contract as `export interface SalePriceResolver` and records at the foot of that file why
+ * it no longer does: the port inventory is locked at the THIRTEEN files the transformation plan
+ * enumerates (AAP 0.4.1), and an interface exported from a port module reads as an addition to that
+ * inventory whether or not it occupies a file of its own. So it lives here, un-exported, in the single
+ * module that constructs a `Product` from rows, and `src/handlers/bootstrap.ts` satisfies it
+ * STRUCTURALLY by adapting the ported `src/services/promotionService.ts` surface - which is where
+ * `getSalePriceDetailsForProductSkus` itself lives [model/service/PromotionService.cfc:L1022].
+ * Structural satisfaction needs no exported name to import.
+ *
+ * ONE MEMBER, AND ITS SIGNATURE IS THE PORTED ONE VERBATIM: `getSalePriceDetailsForProductSkus`
+ * [model/service/PromotionService.cfc:L1022], keeping the legacy CFML camelCase name so a reviewer can
+ * diff the two surfaces directly (B4). `SalePriceDetail` is imported from the promotion port, which is
+ * where the read projection is published and where the entity imports it from too.
+ *
+ * // JUDGMENT CALL: the member is OPTIONAL on the collaborators bag, exactly like the four ports beside
+ * // it. There are over a hundred construction sites in the integration suites that build this adapter
+ * // with a capturing executor and nothing else, and §0.8's injected-executor mandate is what keeps
+ * // them able to assert emitted SQL with no live database. Its absence is precise and bounded: the
+ * // hydrated product simply carries no sale-price map, which is the state
+ * // `Product.getSkuSalePriceDetails()` already answers for - the legacy's own `return {}` at
+ * // [model/entity/Product.cfc:L186] - so an absent resolver degrades to the legacy's miss answer rather
+ * // than to a fabricated price. A REQUIRED parameter would have been the stricter choice and is the
+ * // wrong one here, because the alternative to "no map" is not "a better map"; it is a hundred suites
+ * // that can no longer construct the subject.
+ */
+interface ProductSalePriceResolver {
+  /**
+   * The sale-price details for one product's SKUs, keyed by `skuID`.
+   *
+   * @param productID the product whose SKUs to resolve.
+   * @returns one detail per SKU that has one; empty when the product has no sale-price rewards.
+   */
+  getSalePriceDetailsForProductSkus(productID: string): Promise<CfStruct<SalePriceDetail>>;
+}
 
 /**
  * The one write capability this adapter borrows from its SKU sibling, to reproduce
@@ -1832,8 +1986,17 @@ type ProductHydrationCollaborators = Readonly<
  * DECLARED HERE RATHER THAN IN `src/domain/ports/`, AND THAT PLACEMENT IS FORCED. The contract mentions
  * `PreparedStatementExecutor`, which is a repositories-layer type; a port that named it would make
  * `src/domain/**` import `src/repositories/**`, which the ESLint layer boundary refuses outright. It is a
- * seam between two adapters, so it lives with the adapters. `MysqlSkuRepository.saveSkuForProduct`
- * satisfies it; the composition root supplies that instance.
+ * seam between two adapters, so it lives with the adapters. `MysqlSkuRepository.saveSku` satisfies it
+ * through its two OPTIONAL adapter-only parameters; the composition root supplies that instance.
+ *
+ * ★ THIS SEAM ONCE NAMED A DEDICATED `saveSkuForProduct` MEMBER, AND THE RECORD OF THE CHANGE
+ * BELONGS HERE. That member made `MysqlSkuRepository` publish more members than its port authorizes,
+ * so the cascade was folded into `saveSku(sku, productID?, executor?)` instead. Nothing about the
+ * mechanics changed - same bound parent key, same handed-down transaction, same private write path -
+ * but the SKU adapter's public surface is no longer widened to expose it. This interface still
+ * declares both parameters as REQUIRED, which is deliberate: an aggregate write must never omit
+ * either, and requiring them here is what makes that a compile-time guarantee rather than a
+ * convention. A structurally-typed implementation whose parameters are optional satisfies it.
  */
 export interface ProductSkuCascadeWriter {
   /**
@@ -1844,7 +2007,7 @@ export interface ProductSkuCascadeWriter {
    * @param executor the enclosing transaction's statement sink.
    * @returns the persisted SKU, carrying the key that was written.
    */
-  saveSkuForProduct(sku: Sku, productID: string, executor: PreparedStatementExecutor): Promise<Sku>;
+  saveSku(sku: Sku, productID: string, executor: PreparedStatementExecutor): Promise<Sku>;
 }
 
 /**
@@ -2477,6 +2640,13 @@ function resolvePersistedDefaultSkuKey(defaultSku: Sku | undefined): string | un
  * @param productName the product name the populate step settled on, if any.
  * @param createdDateTime the creation stamp; bound on insert, ignored on update.
  * @param modifiedDateTime the modification stamp, bound by both statements.
+ * @param auditActorAccountID the account the request's audit actor resolves to, or `undefined` when
+ *   the legacy gate refuses. S-07: this arrives as a parameter for the SAME reason `urlTitle` and
+ *   `productName` do - the entity is not the authority for it. Reading
+ *   `product.getCreatedByAccountID()` here let a caller that hand-built a `Product` name whoever it
+ *   liked as the author of the row. `HibachiEntity` took both accounts from the ambient request
+ *   scope [org/Hibachi/HibachiEntity.cfc:L628-L630, L632-L635], never from a caller, and T6 turns
+ *   that ambient scope into this parameter.
  * @returns the row, keyed by physical column name, carrying all twenty columns.
  */
 function toProductRecord(
@@ -2486,6 +2656,7 @@ function toProductRecord(
   productName: string | undefined,
   createdDateTime: Date | undefined,
   modifiedDateTime: Date,
+  auditActorAccountID: string | undefined,
 ): PersistableRecord {
   return {
     productID,
@@ -2505,9 +2676,12 @@ function toProductRecord(
     defaultSkuID: resolvePersistedDefaultSkuKey(product.getDefaultSku()),
     remoteID: product.getRemoteID(),
     createdDateTime,
-    createdByAccountID: product.getCreatedByAccountID(),
+    createdByAccountID: auditActorAccountID,
     modifiedDateTime,
-    modifiedByAccountID: product.getModifiedByAccountID(),
+    // On the UPDATE path a `null` here does NOT erase the stored value: that statement renders this
+    // column through `COALESCE(?, modifiedByAccountID)`, reproducing `preUpdate`'s leave-it-alone
+    // behaviour when the gate refuses [org/Hibachi/HibachiEntity.cfc:L676-L678].
+    modifiedByAccountID: auditActorAccountID,
   };
 }
 
@@ -2530,6 +2704,30 @@ function toProductRecord(
  * T3, stated plainly: the fetch shape of a SAVE is the four associations the ARGUMENT already carried,
  * forwarded verbatim. No statement is issued to widen it. A caller that needs the full graph after a save
  * reads it back through `getProductByProductID`, which is the one method that decides that shape.
+ *
+ * ★ AND THAT IS PRECISELY WHY NO SALE-PRICE MAP IS ATTACHED HERE, WHICH IS AN INFORMED EXCLUSION RATHER
+ * THAN AN OVERSIGHT. {@link ProductSalePriceResolver} is consulted on the READ path, in
+ * {@link MysqlProductRepository.readSalePriceDetails}, because that is where the fetch shape is decided.
+ * A rebuild cannot honestly do the same for two independent reasons, and each of them alone would be
+ * decisive:
+ *
+ *   1. A rebuild is reachable from INSIDE the aggregate transaction -
+ *      {@link MysqlProductRepository.saveProduct} opens one whenever the save carries transient SKUs -
+ *      and the resolver reaches the executor IT was constructed with, never this adapter's `tx`. Issuing
+ *      it there would take a second pooled connection while the first is held, which is the very thing
+ *      the ⚠ invariant on that method forbids. Resolving on the non-transactional route only would make
+ *      a save sometimes carry sale-price detail and sometimes not, which is worse than uniformly not:
+ *      unpredictable state is harder to reason about than absent state.
+ *   2. A save that widened its own fetch shape would issue a statement the legacy never issued. The
+ *      legacy reach at [model/entity/Product.cfc:L519] was LAZY, so persisting a product ran no
+ *      sale-price query at all, and an eager resolution on every save would invent load the source
+ *      does not have.
+ *
+ * The early-return branches of {@link MysqlProductRepository.insertProduct} and
+ * {@link MysqlProductRepository.updateProduct} hand back the ARGUMENT, so a product that was read with
+ * its sale-price map and then saved without overriding anything keeps it for free. When a rebuild does
+ * happen, the returned instance carries what was WRITTEN - which is what this function's contract says
+ * it carries - and `getProductByProductID` is the route to the graph.
  *
  * A MUTABLE DRAFT, NOT A LITERAL: `ProductHydrationInput` declares its optional members WITHOUT
  * `| undefined`, so under `exactOptionalPropertyTypes` an absent value must be OMITTED rather than
@@ -2582,6 +2780,8 @@ function rebuildProduct(
   productName: string | undefined,
   createdDateTime: Date | undefined,
   modifiedDateTime: Date,
+  createdByAccountID: string | undefined,
+  modifiedByAccountID: string | undefined,
   repository: ProductRepository,
   collaborators: ProductHydrationCollaborators,
   cascade: PersistedSkuCascade | undefined,
@@ -2673,12 +2873,14 @@ function rebuildProduct(
     draft.remoteID = remoteID;
   }
 
-  const createdByAccountID = product.getCreatedByAccountID();
+  // S-07. BOTH accounts now describe what the STATEMENT stored and arrive as parameters, exactly as
+  // the two date stamps do. Reading them off the argument meant this function reported a caller's own
+  // values back as though they had been persisted. `exactOptionalPropertyTypes` is why each is
+  // assigned only when present rather than written unconditionally.
   if (createdByAccountID !== undefined) {
     draft.createdByAccountID = createdByAccountID;
   }
 
-  const modifiedByAccountID = product.getModifiedByAccountID();
   if (modifiedByAccountID !== undefined) {
     draft.modifiedByAccountID = modifiedByAccountID;
   }
@@ -2697,6 +2899,10 @@ function rebuildProduct(
 
   if (collaborators.subscriptionTermProvider !== undefined) {
     draft.subscriptionTermProvider = collaborators.subscriptionTermProvider;
+  }
+
+  if (collaborators.salePriceResolver !== undefined) {
+    draft.salePriceResolver = collaborators.salePriceResolver;
   }
 
   return new Product(draft);
@@ -2760,6 +2966,13 @@ export class MysqlProductRepository implements ProductRepository {
    * and no writer was supplied, rather than defaulting to a no-op.
    *
    * @param executor the prepared-statement executor; see the class note for why it is a parameter.
+   * @param auditActor who writes are attributed to. S-07: REQUIRED and positioned immediately after
+   *   the executor, uniformly across all five writing adapters, so that "where writes go" and "who
+   *   they are attributed to" sit together and a reviewer can check both at a glance. It is required
+   *   rather than defaulted deliberately: a default would let a NEW construction site silently emit
+   *   unattributed rows, and "or omitted [...] create unattributed writes" is half of the finding.
+   *   Being a constructor argument also means no port method grew a channel through which a caller
+   *   could name an actor - there is nothing to validate, because there is nothing to submit.
    * @param collaborators the ports forwarded into every hydrated entity; see
    *   {@link ProductHydrationCollaborators}. Defaults to `{}` so a SQL-shape test can construct this
    *   class with a capturing executor alone.
@@ -2768,6 +2981,7 @@ export class MysqlProductRepository implements ProductRepository {
    */
   public constructor(
     private readonly executor: PreparedStatementExecutor,
+    private readonly auditActor: AuditActorContext,
     private readonly collaborators: ProductHydrationCollaborators = {},
     private readonly skuCascadeWriter?: ProductSkuCascadeWriter,
   ) {}
@@ -3006,6 +3220,21 @@ export class MysqlProductRepository implements ProductRepository {
       throw new ProductUndefinedArgumentError('term', PRODUCT_SEARCH_LABEL);
     }
 
+    // S-08. A term longer than the `productName` column cannot be a substring of any value in it, so
+    // this refuses only terms that could not have matched a row. See
+    // {@link MAX_PRODUCT_NAME_SEARCH_TERM_LENGTH}, whose derivation covers why the column's width is
+    // 255 even though [model/entity/Product.cfc:L55] declares no length.
+    if (term.length > MAX_PRODUCT_NAME_SEARCH_TERM_LENGTH) {
+      throw new ProductReadTooLargeError(
+        'searchTermLength',
+        term.length,
+        MAX_PRODUCT_NAME_SEARCH_TERM_LENGTH,
+        PRODUCT_SEARCH_LABEL,
+        'A term longer than the productName column [model/entity/Product.cfc:L55] cannot be a ' +
+          'substring of any name in it, so no row could match.',
+      );
+    }
+
     // [model/dao/ProductDAO.cfc:L423] `structKeyExists(arguments,"productTypeIDs") && len(...)` -
     // asymmetry 1 above. `cfLen` is the ported `len()`, so a whitespace-only list passes as it does there.
     const boundProductTypeIDs: readonly string[] =
@@ -3017,6 +3246,20 @@ export class MysqlProductRepository implements ProductRepository {
       `%${term}%`,
       ...boundProductTypeIDs,
     ]);
+
+    // S-08. REFUSED BEFORE MATERIALIZATION, NOT AFTER. The search rows are two columns wide and
+    // cheap; what is bounded is the product graph this port builds from each of them, which the
+    // legacy never built. See {@link MAX_SEARCH_RESULT_MATERIALIZATION}.
+    if (rows.length > MAX_SEARCH_RESULT_MATERIALIZATION) {
+      throw new ProductReadTooLargeError(
+        'searchResultMaterialization',
+        rows.length,
+        MAX_SEARCH_RESULT_MATERIALIZATION,
+        PRODUCT_SEARCH_LABEL,
+        'Narrow the term or the product-type list. The legacy projected two columns per match ' +
+          '[model/dao/ProductDAO.cfc:L421]; this port materializes a full product graph per match.',
+      );
+    }
 
     const matchedProductIDs = rows.map((row: SqlRow) =>
       readIdentifier(row, 'productID', PRODUCT_SEARCH_LABEL),
@@ -3079,10 +3322,16 @@ export class MysqlProductRepository implements ProductRepository {
    *     [model/dao/PromotionDAO.cfc:L298]. Neither the promotion repository nor the rounding-rule
    *     service is in this file's declared dependency set, and inventing a second sale-price
    *     computation here would duplicate the must-preserve discount math in a place no reviewer would
-   *     look for it. The consequence is bounded and graceful, not a failure:
+   *     look for it. WHAT IS SUPPLIED INSTEAD IS THE RESOLVER, NOT THE VALUE: the optional
+   *     `salePriceResolver` collaborator is forwarded to every product this adapter builds, and
+   *     `Product.getSalePriceDetailsForSkus()` fills the map through it on first use - the memoized
+   *     [model/entity/Product.cfc:L517-L522] shape, which is where that service-tier work legitimately
+   *     runs. The composition root satisfies the resolver by adapting `src/services/promotionService.ts`,
+   *     so this adapter still never imports the promotion tier. With NEITHER the map nor the resolver,
+   *     the consequence is bounded and graceful rather than a failure:
    *     `Product.getSkuSalePriceDetails(skuID)` answers `undefined`, which its own documentation records
-   *     as the same answer the legacy `return {};` at [model/entity/Product.cfc:L186] gave. A caller
-   *     that needs real sale prices supplies the map at construction from the promotion tier.
+   *     as the same answer the legacy `return {};` at [model/entity/Product.cfc:L186] gave. A caller may
+   *     also supply the reduced map directly at construction, which pre-seeds the same memo.
    *   * `nextOptionGroupSortOrder` IS NOT SUPPLIED. It is a GLOBAL aggregate over `SwOptionGroup`
    *     [model/dao/SkuDAO.cfc:L204-L226] owned privately by `mysqlSkuRepository.ts`, not derivable from a
    *     product's own graph. `Product.getSkus(true)` therefore returns the UNSORTED projection, which
@@ -3510,9 +3759,14 @@ export class MysqlProductRepository implements ProductRepository {
 
     const materializedSkus = await this.readSkus(foundProductIDs, [...new Set(defaultSkuIDs)]);
 
+    // AFTER the SKUs and BEFORE any product is constructed, because the entity takes the map as a
+    // constructed-with value and there is no later moment at which it could be attached - see
+    // {@link ProductSalePriceResolver}.
+    const salePriceDetails = await this.readSalePriceDetails(foundProductIDs);
+
     const productsByID = new Map<string, Product>();
     for (const row of graphRows) {
-      const product = this.buildProduct(row, materializedSkus);
+      const product = this.buildProduct(row, materializedSkus, salePriceDetails);
       productsByID.set(product.getProductID(), product);
     }
 
@@ -3595,6 +3849,60 @@ export class MysqlProductRepository implements ProductRepository {
   }
 
   /**
+   * Resolve the sale-price details of a set of products and index them by product identifier.
+   *
+   * THE FETCH SHAPE IS ONE RESOLUTION PER PRODUCT, AND THAT IS THE LEGACY'S OWN SHAPE, not a concession.
+   * `getSalePriceDetailsForProductSkus` takes a single `productID`
+   * [model/service/PromotionService.cfc:L1022] and the entity called it once per product
+   * [model/entity/Product.cfc:L519]; there is no batched variant on the promotion surface and inventing
+   * one would widen a locked port. The resolutions are issued CONCURRENTLY rather than in sequence, so a
+   * multi-product read costs one round trip's latency rather than one per product - which is a decision
+   * about how the same set of reads is scheduled, and asserts nothing about how long any of them takes.
+   *
+   * ★ WHAT CHANGES RELATIVE TO THE LEGACY, STATED PLAINLY: the legacy reach was LAZY - no query ran
+   * until something asked a product for its sale prices - and this is EAGER, because the entity takes a
+   * resolved map rather than a resolver and therefore has nothing left to be lazy with. That is T3
+   * applied exactly as the transformation plan states it: an association's fetch shape becomes an
+   * explicit, documented decision at the repository boundary instead of an implicit lazy load. The
+   * alternative - reinstating the entity's outward reach - is the thing T2 removed.
+   *
+   * NO RESOLVER MEANS AN EMPTY INDEX AND NO STATEMENT AT ALL. The collaborator is optional, so a
+   * SQL-shape suite that constructs this adapter with a capturing executor alone sees exactly the
+   * statements it saw before, and the products it hydrates carry no sale-price map - which
+   * `Product.getSkuSalePriceDetails()` already answers for with the legacy's own miss answer.
+   *
+   * @param productIDs the products whose sale-price details are wanted; duplicates are collapsed.
+   * @returns the details, indexed by product identifier; empty when no resolver was supplied.
+   */
+  private async readSalePriceDetails(
+    productIDs: readonly string[],
+  ): Promise<ReadonlyMap<string, CfStruct<SalePriceDetail>>> {
+    const indexed = new Map<string, CfStruct<SalePriceDetail>>();
+    const resolver = this.collaborators.salePriceResolver;
+
+    if (resolver === undefined) {
+      return indexed;
+    }
+
+    const distinctProductIDs = [...new Set(productIDs)];
+
+    const resolved = await Promise.all(
+      distinctProductIDs.map(
+        async (productID: string): Promise<readonly [string, CfStruct<SalePriceDetail>]> => [
+          productID,
+          await resolver.getSalePriceDetailsForProductSkus(productID),
+        ],
+      ),
+    );
+
+    for (const [productID, details] of resolved) {
+      indexed.set(productID, details);
+    }
+
+    return indexed;
+  }
+
+  /**
    * Read the options of a set of SKUs and index them by SKU identifier.
    *
    * ONE STATEMENT FOR THE WHOLE SET. `Sku.options` is a many-to-many over `SwSkuOption`
@@ -3674,11 +3982,17 @@ export class MysqlProductRepository implements ProductRepository {
    *
    * @param row one product graph row.
    * @param materializedSkus the SKU indexes from {@link readSkus}.
+   * @param salePriceDetails the sale-price index from {@link readSalePriceDetails}; a product absent
+   *   from it is hydrated without a sale-price map, which is the no-resolver state.
    * @returns the product.
    * @throws An error named `ProductColumnError` when a projected column is missing or malformed.
    * @throws An error named `ProductAssociationError` when a foreign key names a row that does not exist.
    */
-  private buildProduct(row: SqlRow, materializedSkus: MaterializedSkus): Product {
+  private buildProduct(
+    row: SqlRow,
+    materializedSkus: MaterializedSkus,
+    salePriceDetails: ReadonlyMap<string, CfStruct<SalePriceDetail>>,
+  ): Product {
     const productID = readIdentifier(row, 'p_productID', PRODUCT_GRAPH_LABEL);
 
     // Bound once because TWO members read it. `byProductID` carries only the SKUs whose `productID`
@@ -3823,6 +4137,27 @@ export class MysqlProductRepository implements ProductRepository {
       draft.subscriptionTermProvider = this.collaborators.subscriptionTermProvider;
     }
 
+    // The resolved sale-price map, which is a VALUE rather than a port and so is not forwarded from the
+    // collaborators bag - see {@link ProductSalePriceResolver}. Assigned only when the index carries an
+    // entry for this product, because `ProductHydrationInput` declares the member without `| undefined`
+    // and `exactOptionalPropertyTypes` refuses an explicit `undefined`. An absent entry and an empty map
+    // are indistinguishable to every reader - [model/entity/Sku.cfc:L547] and [L554] both probe with
+    // `structKeyExists` first - which is why omitting is safe and not merely convenient.
+    const productSalePriceDetails = salePriceDetails.get(productID);
+    if (productSalePriceDetails !== undefined) {
+      draft.salePriceDetailsForSkus = productSalePriceDetails;
+    }
+
+    // AND THE RESOLVER ITSELF, ALONGSIDE THE MAP RATHER THAN INSTEAD OF IT. The entity ports
+    // `getSalePriceDetailsForSkus()` under §3.9 branch (a), so it takes an optional
+    // `salePriceResolver` collaborator; forwarding it means a product this adapter built can still
+    // discharge the [model/entity/Product.cfc:L519] reach for a product the index had no entry for,
+    // while the pre-seeded map above means the reach never runs for one it did. Supplying both is
+    // what makes the memo's legacy precedence [L517-L521] reproducible either way.
+    if (this.collaborators.salePriceResolver !== undefined) {
+      draft.salePriceResolver = this.collaborators.salePriceResolver;
+    }
+
     return new Product(draft);
   }
 
@@ -3940,7 +4275,7 @@ export class MysqlProductRepository implements ProductRepository {
   ): Promise<PersistedSkuCascade> {
     // Keyed by the DRAFT INSTANCE rather than by an identifier, because the correspondence this map
     // records is between TWO DIFFERENT identifiers. A draft carries the provisional key
-    // `skuService.createSkus` minted for it; `saveSkuForProduct` returns an instance carrying the key
+    // `skuService.createSkus` minted for it; the cascade write returns an instance carrying the key
     // `insertSku` minted and actually wrote. Neither value is stable across the write, so neither can key
     // the lookup, and the provisional one is additionally a value that exists nowhere once the statement
     // has run. The object reference is the only thing that survives unchanged, and it is the correct
@@ -3954,7 +4289,7 @@ export class MysqlProductRepository implements ProductRepository {
     const persistedByDraft = new Map<Sku, Sku>();
 
     for (const draft of plan.transientSkus) {
-      persistedByDraft.set(draft, await plan.writer.saveSkuForProduct(draft, productID, plan.tx));
+      persistedByDraft.set(draft, await plan.writer.saveSku(draft, productID, plan.tx));
     }
 
     const skus = product.getSkus().map((held: Sku) => persistedByDraft.get(held) ?? held);
@@ -4030,6 +4365,10 @@ export class MysqlProductRepository implements ProductRepository {
     const productID = detached ? product.getProductID() : generatePersistedIdentifier();
     const executor = plan?.tx ?? this.executor;
 
+    // S-07. ONE resolution serves both account columns, because `preInsert` calls both setters
+    // under a single gate [org/Hibachi/HibachiEntity.cfc:L628-L635] and the pair cannot disagree.
+    const auditActorAccountID = resolveAuditActorAccountID(this.auditActor);
+
     const record = toProductRecord(
       product,
       productID,
@@ -4037,6 +4376,7 @@ export class MysqlProductRepository implements ProductRepository {
       productName,
       auditTimestamp,
       auditTimestamp,
+      auditActorAccountID,
     );
 
     await executor.executeMutation(
@@ -4061,6 +4401,9 @@ export class MysqlProductRepository implements ProductRepository {
       // [org/Hibachi/HibachiEntity.cfc:L609] the SAME instant in both columns, byte-identical.
       auditTimestamp,
       auditTimestamp,
+      // And the same account in both, for the same reason.
+      auditActorAccountID,
+      auditActorAccountID,
       this,
       this.collaborators,
       cascade,
@@ -4137,6 +4480,7 @@ export class MysqlProductRepository implements ProductRepository {
       productName,
       product.getCreatedDateTime(),
       modifiedDateTime,
+      resolveAuditActorAccountID(this.auditActor),
     );
 
     await executor.executeMutation(UPDATE_PRODUCT_SQL, [
@@ -4166,6 +4510,12 @@ export class MysqlProductRepository implements ProductRepository {
       // list entirely, so this reports what the row holds rather than what this write decided.
       product.getCreatedDateTime(),
       modifiedDateTime,
+      // S-07, same reasoning for the created ACCOUNT: absent from the SET list, so the row keeps
+      // what it had, and this entity was loaded from that row. The modifying account is what the
+      // statement's `COALESCE` resolved to - the new actor when the gate passed, the stored value
+      // when it refused.
+      product.getCreatedByAccountID(),
+      resolveStampedModifiedByAccountID(this.auditActor, product.getModifiedByAccountID()),
       this,
       this.collaborators,
       cascade,

@@ -89,11 +89,49 @@ import type {
   ProductTypeTreeRow,
 } from '../../../src/domain/ports/productTypeRepository.js';
 import type {
+  AuditActorContext,
   PreparedStatementExecutor,
   SqlMutationResult,
   SqlRow,
 } from '../../../src/repositories/mysql/connection.js';
 import { MysqlProductTypeRepository } from '../../../src/repositories/mysql/mysqlProductTypeRepository.js';
+
+/**
+ * The audit actor every construction in this file supplies.
+ *
+ * S-07. An ADMIN, PERSISTED actor - the arm of the legacy gate
+ * [org/Hibachi/HibachiEntity.cfc:L628, L633] that actually stamps - so the default
+ * expectation across the file is that a write carries this identifier and nothing a
+ * caller put on an entity. The refusing arms get their own dedicated cases rather than
+ * being the ambient default, because a default that stamps nothing would let a
+ * regression that dropped the stamping entirely pass unnoticed.
+ */
+const TEST_AUDIT_ACTOR: AuditActorContext = Object.freeze({
+  accountID: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1',
+  adminAccountFlag: true,
+});
+
+/**
+ * A signed-in actor WITHOUT the admin flag - the second arm of the legacy gate.
+ *
+ * It deliberately CARRIES an identifier. That is what makes it a real test of
+ * `getAdminAccountFlag()` [org/Hibachi/HibachiEntity.cfc:L628]: if the stamping were
+ * skipped merely because there was nothing to stamp, this case would pass for the wrong
+ * reason and a dropped flag check would go unnoticed.
+ */
+const NON_ADMIN_AUDIT_ACTOR: AuditActorContext = Object.freeze({
+  accountID: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2',
+  adminAccountFlag: false,
+});
+
+/** Nobody signed in - the target's spelling of the legacy `getAccount().isNew()` arm. */
+const ANONYMOUS_AUDIT_ACTOR: AuditActorContext = Object.freeze({ adminAccountFlag: false });
+
+/** An account a CALLER named on an entity. It must never reach a bound parameter. */
+const FORGED_ACCOUNT_ID = 'ffffffffffffffffffffffffffffffff';
+
+/** An account already recorded on the stored row, which a refused gate must not erase. */
+const STORED_ACCOUNT_ID = 'cccccccccccccccccccccccccccccccc';
 
 // --- The recording double -----
 
@@ -590,7 +628,14 @@ const EXPECTED_UPDATE_STATEMENT = [
   '  parentProductTypeID = ?,',
   '  remoteID = ?,',
   '  modifiedDateTime = ?,',
-  '  modifiedByAccountID = ?',
+  // S-07. This ONE column resolves against itself instead of binding a bare placeholder.
+  // `preUpdate` [org/Hibachi/HibachiEntity.cfc:L676-L678] stamps the modifying account
+  // only when the actor gate passes, and leaves the loaded value in place when it does
+  // not - so Hibernate rewrote the SAME value. A bare `?` would bind null on a refused
+  // gate and ERASE an attribution the legacy preserved, which is a worse outcome than
+  // the finding it was fixing. Resolving it in the statement keeps the stored value
+  // unreachable from a caller while reproducing that outcome in one round trip.
+  '  modifiedByAccountID = COALESCE(?, modifiedByAccountID)',
   'WHERE SwProductType.productTypeID = ?',
 ].join('\n');
 
@@ -613,6 +658,18 @@ const INSERT_PARENT_KEY_POSITION = 8;
 const INSERT_CREATED_STAMP_POSITION = 10;
 
 const INSERT_MODIFIED_STAMP_POSITION = 12;
+
+/**
+ * S-07 positions. Both are derived from the same `INSERTED_COLUMNS` order the two stamp
+ * positions above are, and they bracket them: created pair at 10 and 11, modified pair at
+ * 12 and 13. Naming them makes the assertions read as columns rather than as offsets.
+ */
+const INSERT_CREATED_BY_POSITION = 11;
+
+const INSERT_MODIFIED_BY_POSITION = 13;
+
+/** The modifying account is the LAST value in the update SET list, ahead of the key. */
+const UPDATE_MODIFIED_BY_POSITION = 10;
 
 const UPDATE_PATH_POSITION = 0;
 
@@ -806,7 +863,7 @@ async function readFlagsFromRow(
   const executor = new RecordingExecutor([
     [hydrationRow(ROOT_PRODUCT_TYPE_ID, null, ROOT_PATH, flagCells)],
   ]);
-  const repository = new MysqlProductTypeRepository(executor);
+  const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
   const productType = requireProductType(
     await repository.getProductTypeByProductTypeID(ROOT_PRODUCT_TYPE_ID),
     'the product type whose flags were projected',
@@ -840,7 +897,7 @@ async function everyEmittedStatement(): Promise<readonly RecordedStatement[]> {
     [hydrationRow(ROOT_PRODUCT_TYPE_ID, null, ROOT_PATH)],
     [hydrationRow(CHILD_PRODUCT_TYPE_ID, null, CHILD_PATH)],
   ]);
-  const repository = new MysqlProductTypeRepository(executor);
+  const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
   await repository.getProductTypeQuery();
   await repository.getProductTypeByProductTypeID(ROOT_PRODUCT_TYPE_ID);
@@ -900,8 +957,11 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
   // locator, a bootstrap or an ambient request scope. A property of the DESIGN, asserted rather
   // than assumed.
   describe('composition and the no-database invariant', () => {
-    it('declares exactly one constructor parameter, so the collaborator can only be injected', () => {
-      expect(MysqlProductTypeRepository.length).toBe(1);
+    it('declares exactly two constructor parameters, so both collaborators can only be injected', () => {
+      // S-07 widened this from one to two. The audit actor is a CONSTRUCTOR argument
+      // rather than a method parameter precisely so that no port method grew a channel
+      // through which a caller could name an actor - the count is the evidence.
+      expect(MysqlProductTypeRepository.length).toBe(2);
     });
 
     it('cannot be constructed without an explicitly supplied executor', () => {
@@ -922,6 +982,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       // C4/B4 interface-parity check done by the compiler rather than by a string comparison.
       const repository: ProductTypeRepository = new MysqlProductTypeRepository(
         new RecordingExecutor([]),
+        TEST_AUDIT_ACTOR,
       );
 
       expect(typeof repository.getProductTypeQuery).toBe('function');
@@ -938,16 +999,22 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       expect(prototypeMembers).toEqual(EXPECTED_PROTOTYPE_MEMBERS);
     });
 
-    it('retains exactly one collaborator and no other instance state', () => {
-      const repository = new MysqlProductTypeRepository(new RecordingExecutor([]));
+    it('retains exactly its two collaborators and no other instance state', () => {
+      const repository = new MysqlProductTypeRepository(
+        new RecordingExecutor([]),
+        TEST_AUDIT_ACTOR,
+      );
 
-      expect(Reflect.ownKeys(repository)).toEqual(['executor']);
+      // S-07. `auditActor` joins `executor` and NOTHING else joins either: no cached row,
+      // no memoized account, no mutable counter. The adapter is request-scoped by
+      // construction, and this assertion is what keeps it that way.
+      expect(Reflect.ownKeys(repository)).toEqual(['executor', 'auditActor']);
     });
 
     it('issues no statement of any kind when it is constructed', () => {
       const executor = new RecordingExecutor([[treeRow()]]);
 
-      new MysqlProductTypeRepository(executor);
+      new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       expect(executor.calls).toHaveLength(0);
       expect(executor.mutationCalls).toHaveLength(0);
@@ -968,8 +1035,8 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
     it('keeps two instances independent, so nothing is shared at module scope', async () => {
       const firstExecutor = new RecordingExecutor([[treeRow()]]);
       const secondExecutor = new RecordingExecutor([[treeRow()]]);
-      const firstRepository = new MysqlProductTypeRepository(firstExecutor);
-      const secondRepository = new MysqlProductTypeRepository(secondExecutor);
+      const firstRepository = new MysqlProductTypeRepository(firstExecutor, TEST_AUDIT_ACTOR);
+      const secondRepository = new MysqlProductTypeRepository(secondExecutor, TEST_AUDIT_ACTOR);
 
       await firstRepository.getProductTypeQuery();
 
@@ -987,7 +1054,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
   describe('getProductTypeQuery - the emitted statement', () => {
     it('takes no parameters, exactly as the legacy function declares', async () => {
       const executor = new RecordingExecutor([[treeRow()]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       // C1. `public query function getProductTypeQuery()` [model/dao/ProductTypeDAO.cfc:L52] has an
       // empty argument list, and the ported name is carried over verbatim rather than renamed to
@@ -1015,7 +1082,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('emits the ported statement verbatim', async () => {
       const executor = new RecordingExecutor([[treeRow()]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getProductTypeQuery();
 
@@ -1024,7 +1091,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('keeps the isAssigned correlated sub-select and its alias', async () => {
       const executor = new RecordingExecutor([[treeRow()]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getProductTypeQuery();
 
@@ -1040,7 +1107,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('keeps the childCount correlated sub-select, its spt alias and its parent predicate', async () => {
       const executor = new RecordingExecutor([[treeRow()]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getProductTypeQuery();
 
@@ -1058,7 +1125,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('preserves ORDER BY productTypeName ASC as the final clause', async () => {
       const executor = new RecordingExecutor([[treeRow()]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getProductTypeQuery();
 
@@ -1084,7 +1151,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('names the physical Sw* tables and no ORM entity name', async () => {
       const executor = new RecordingExecutor([[treeRow()]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getProductTypeQuery();
 
@@ -1097,7 +1164,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('keeps SELECT * rather than narrowing the projection', async () => {
       const executor = new RecordingExecutor([[treeRow()]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getProductTypeQuery();
 
@@ -1112,7 +1179,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('emits no dialect-dependent fragment', async () => {
       const executor = new RecordingExecutor([[treeRow()]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getProductTypeQuery();
 
@@ -1139,7 +1206,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
   describe('getProductTypeQuery - the parameter binding', () => {
     it('binds an empty parameter array', async () => {
       const executor = new RecordingExecutor([[treeRow()]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getProductTypeQuery();
 
@@ -1148,7 +1215,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('carries no positional placeholder, because it has no value to bind', async () => {
       const executor = new RecordingExecutor([[treeRow()]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getProductTypeQuery();
 
@@ -1160,9 +1227,9 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('emits a constant statement, byte-identical across calls and across instances', async () => {
       const sharedExecutor = new RecordingExecutor([[treeRow()], [treeRow()]]);
-      const repository = new MysqlProductTypeRepository(sharedExecutor);
+      const repository = new MysqlProductTypeRepository(sharedExecutor, TEST_AUDIT_ACTOR);
       const separateExecutor = new RecordingExecutor([[treeRow()]]);
-      const separateRepository = new MysqlProductTypeRepository(separateExecutor);
+      const separateRepository = new MysqlProductTypeRepository(separateExecutor, TEST_AUDIT_ACTOR);
 
       await repository.getProductTypeQuery();
       await repository.getProductTypeQuery();
@@ -1178,7 +1245,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('issues exactly one statement and writes nothing', async () => {
       const executor = new RecordingExecutor([[treeRow(), treeRow()]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getProductTypeQuery();
 
@@ -1197,7 +1264,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
   describe('getProductTypeQuery - the projected row shape', () => {
     it('projects both correlated counts as plain numbers, never as a decimal wrapper', async () => {
       const executor = new RecordingExecutor([[treeRow()]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const rows = await repository.getProductTypeQuery();
       const row = treeRowAt(rows, 0);
@@ -1220,7 +1287,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
           }),
         ],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const rows = await repository.getProductTypeQuery();
       const row = treeRowAt(rows, 0);
@@ -1256,7 +1323,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       const executor = new RecordingExecutor([
         [treeRow({ productTypeName: null, productTypeIDPath: null, parentProductTypeID: null })],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const rows = await repository.getProductTypeQuery();
       const row = treeRowAt(rows, 0);
@@ -1283,7 +1350,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
           },
         ],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const rows = await repository.getProductTypeQuery();
       const row = treeRowAt(rows, 0);
@@ -1309,7 +1376,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
           },
         ],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const rows = await repository.getProductTypeQuery();
       const row = treeRowAt(rows, 0);
@@ -1325,7 +1392,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       // configurations. Both counts here are far inside the exactly representable range, so
       // narrowing is lossless.
       const executor = new RecordingExecutor([[treeRow({ isAssigned: 12n, childCount: 0n })]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const rows = await repository.getProductTypeQuery();
       const row = treeRowAt(rows, 0);
@@ -1339,7 +1406,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       const executor = new RecordingExecutor([
         [{ productTypeID: ROOT_PRODUCT_TYPE_ID, isAssigned: ASSIGNED_PRODUCT_COUNT }],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const error = await rejectionOf(repository.getProductTypeQuery());
 
@@ -1352,7 +1419,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('raises when a count arrives fractional', async () => {
       const executor = new RecordingExecutor([[treeRow({ childCount: 1.5 })]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const error = await rejectionOf(repository.getProductTypeQuery());
 
@@ -1362,7 +1429,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('raises when a count arrives as text rather than being coerced', async () => {
       const executor = new RecordingExecutor([[treeRow({ isAssigned: '3' })]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const error = await rejectionOf(repository.getProductTypeQuery());
 
@@ -1372,7 +1439,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('raises when a projected text column arrives as something other than text', async () => {
       const executor = new RecordingExecutor([[treeRow({ productTypeName: 42 })]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const error = await rejectionOf(repository.getProductTypeQuery());
 
@@ -1382,7 +1449,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('returns an empty array for an empty result set, never a null-shaped value', async () => {
       const executor = new RecordingExecutor([[]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const rows = await repository.getProductTypeQuery();
 
@@ -1402,7 +1469,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
           treeRow({ productTypeID: GRANDCHILD_PRODUCT_TYPE_ID, productTypeName: 'Outerwear' }),
         ],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const rows = await repository.getProductTypeQuery();
 
@@ -1426,7 +1493,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       const executor = new RecordingExecutor([
         [hydrationRow(ROOT_PRODUCT_TYPE_ID, null, ROOT_PATH)],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getProductTypeByProductTypeID(ROOT_PRODUCT_TYPE_ID);
 
@@ -1441,7 +1508,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       const executor = new RecordingExecutor([
         [hydrationRow(ROOT_PRODUCT_TYPE_ID, null, ROOT_PATH)],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getProductTypeByProductTypeID(ROOT_PRODUCT_TYPE_ID);
 
@@ -1459,7 +1526,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       // here it changes the PARAMETER and cannot change one byte of the STATEMENT.
       const hostileIdentifier = "abc' OR 1=1 -- ";
       const executor = new RecordingExecutor([[]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const found = await repository.getProductTypeByProductTypeID(hostileIdentifier);
 
@@ -1478,7 +1545,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
         [hydrationRow(CHILD_PRODUCT_TYPE_ID, ROOT_PRODUCT_TYPE_ID, CHILD_PATH)],
         [hydrationRow(ROOT_PRODUCT_TYPE_ID, null, ROOT_PATH)],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const loaded = await repository.getProductTypeByProductTypeID(GRANDCHILD_PRODUCT_TYPE_ID);
       const grandchild = requireProductType(loaded, 'the grandchild product type');
@@ -1506,7 +1573,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
         [hydrationRow(CHILD_PRODUCT_TYPE_ID, ROOT_PRODUCT_TYPE_ID, CHILD_PATH)],
         [hydrationRow(ROOT_PRODUCT_TYPE_ID, null, ROOT_PATH)],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const loaded = await repository.getProductTypeByProductTypeID(CHILD_PRODUCT_TYPE_ID);
       const child = requireProductType(loaded, 'the child product type');
@@ -1540,7 +1607,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
         [hydrationRow(CHILD_PRODUCT_TYPE_ID, UNMATCHED_PRODUCT_TYPE_ID, CHILD_PATH)],
         [],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const loaded = await repository.getProductTypeByProductTypeID(CHILD_PRODUCT_TYPE_ID);
       const child = requireProductType(loaded, 'the child product type');
@@ -1558,7 +1625,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       const executor = new RecordingExecutor([
         [hydrationRow(ROOT_PRODUCT_TYPE_ID, ROOT_PRODUCT_TYPE_ID, ROOT_PATH)],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const error = await rejectionOf(
         repository.getProductTypeByProductTypeID(ROOT_PRODUCT_TYPE_ID),
@@ -1588,7 +1655,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('returns undefined for an identifier that matches no row', async () => {
       const executor = new RecordingExecutor([[]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const found = await repository.getProductTypeByProductTypeID(UNMATCHED_PRODUCT_TYPE_ID);
 
@@ -1603,7 +1670,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       const incompleteRow = hydrationRow(ROOT_PRODUCT_TYPE_ID, null, ROOT_PATH);
       const { parentProductTypeID: _omitted, ...withoutParentKey } = incompleteRow;
       const executor = new RecordingExecutor([[withoutParentKey]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const error = await rejectionOf(
         repository.getProductTypeByProductTypeID(ROOT_PRODUCT_TYPE_ID),
@@ -1626,7 +1693,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
         ],
         [hydrationRow(ROOT_PRODUCT_TYPE_ID, null, ROOT_PATH, { systemCode: 'merchandise' })],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const loaded = await repository.getProductTypeByProductTypeID(CHILD_PRODUCT_TYPE_ID);
       const child = requireProductType(loaded, 'the child product type');
@@ -1669,7 +1736,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       const executor = new RecordingExecutor([
         [hydrationRow(ROOT_PRODUCT_TYPE_ID, null, ROOT_PATH)],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getProductTypesByProductTypeIDPath(ROOT_PATH);
 
@@ -1692,7 +1759,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
           hydrationRow(CHILD_PRODUCT_TYPE_ID, ROOT_PRODUCT_TYPE_ID, CHILD_PATH),
         ],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getProductTypesByProductTypeIDPath(CHILD_PATH);
 
@@ -1714,7 +1781,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
           hydrationRow(GRANDCHILD_PRODUCT_TYPE_ID, CHILD_PRODUCT_TYPE_ID, GRANDCHILD_PATH),
         ],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.getProductTypesByProductTypeIDPath(ROOT_PATH);
       await repository.getProductTypesByProductTypeIDPath(GRANDCHILD_PATH);
@@ -1739,7 +1806,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       const executor = new RecordingExecutor([
         [hydrationRow(ROOT_PRODUCT_TYPE_ID, null, ROOT_PATH)],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const found = await repository.getProductTypesByProductTypeIDPath('');
 
@@ -1757,7 +1824,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       const executor = new RecordingExecutor([
         [hydrationRow(ROOT_PRODUCT_TYPE_ID, null, ROOT_PATH)],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       // CFML parity: `listLen()` treats consecutive delimiters as a single separator and counts NO
       // empty elements, so `","` and `",,"` are both zero-length lists. `src/lib/cfml/list.ts` is
@@ -1779,7 +1846,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
           hydrationRow(CHILD_PRODUCT_TYPE_ID, ROOT_PRODUCT_TYPE_ID, CHILD_PATH),
         ],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const productTypes = await repository.getProductTypesByProductTypeIDPath(CHILD_PATH);
 
@@ -1807,7 +1874,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
           hydrationRow(SIBLING_PRODUCT_TYPE_ID, ROOT_PRODUCT_TYPE_ID, SIBLING_PATH),
         ],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const productTypes = await repository.getProductTypesByProductTypeIDPath(CHILD_PATH);
 
@@ -1833,7 +1900,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
           hydrationRow(CHILD_PRODUCT_TYPE_ID, ROOT_PRODUCT_TYPE_ID, CHILD_PATH),
         ],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const error = await rejectionOf(repository.getProductTypesByProductTypeIDPath(CHILD_PATH));
 
@@ -1852,7 +1919,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('returns an empty array when a populated path matches no row', async () => {
       const executor = new RecordingExecutor([[]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const productTypes =
         await repository.getProductTypesByProductTypeIDPath(UNMATCHED_PRODUCT_TYPE_ID);
@@ -1868,7 +1935,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
           hydrationRow(ROOT_PRODUCT_TYPE_ID, null, ROOT_PATH),
         ],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const productTypes = await repository.getProductTypesByProductTypeIDPath(CHILD_PATH);
 
@@ -1897,7 +1964,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
   describe('saveProductType - NET-NEW, and the replacement for the ORM lifecycle hooks', () => {
     it('inserts a never-persisted product type without reading first', async () => {
       const executor = new RecordingExecutor([]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
       const productType = new ProductType({
         productTypeID: '',
         productTypeName: 'Merchandise',
@@ -1916,7 +1983,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('binds one parameter per inserted column, and interpolates none of them', async () => {
       const executor = new RecordingExecutor([]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.saveProductType(
         new ProductType({ productTypeID: '', productTypeName: ROOT_PRODUCT_TYPE_NAME }),
@@ -1933,7 +2000,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('mints an identifier of the persisted width and composes a root path from it', async () => {
       const executor = new RecordingExecutor([]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const saved = await repository.saveProductType(
         new ProductType({ productTypeID: '' }),
@@ -1955,7 +2022,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('stamps one instant into both audit columns on the insert route', async () => {
       const executor = new RecordingExecutor([]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const saved = await repository.saveProductType(
         new ProductType({ productTypeID: '' }),
@@ -1983,7 +2050,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('binds the parent foreign key rather than embedding it, and appends to the parent path', async () => {
       const executor = new RecordingExecutor([]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
       const parent = new ProductType({
         productTypeID: ROOT_PRODUCT_TYPE_ID,
         productTypeIDPath: ROOT_PATH,
@@ -2006,7 +2073,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('inserts a detached product type after its prior-row read finds nothing', async () => {
       const executor = new RecordingExecutor([[]]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
       const parent = new ProductType({
         productTypeID: ROOT_PRODUCT_TYPE_ID,
         productTypeIDPath: ROOT_PATH,
@@ -2041,7 +2108,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       const executor = new RecordingExecutor([
         [hydrationRow(CHILD_PRODUCT_TYPE_ID, ROOT_PRODUCT_TYPE_ID, CHILD_PATH)],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
       const parent = new ProductType({
         productTypeID: ROOT_PRODUCT_TYPE_ID,
         productTypeIDPath: ROOT_PATH,
@@ -2075,7 +2142,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       const executor = new RecordingExecutor([
         [hydrationRow(CHILD_PRODUCT_TYPE_ID, ROOT_PRODUCT_TYPE_ID, CHILD_PATH)],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
       const parent = new ProductType({
         productTypeID: ROOT_PRODUCT_TYPE_ID,
         productTypeIDPath: ROOT_PATH,
@@ -2113,7 +2180,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       const executor = new RecordingExecutor([
         [hydrationRow(CHILD_PRODUCT_TYPE_ID, null, CHILD_PATH)],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.saveProductType(
         new ProductType({
@@ -2132,9 +2199,174 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       expect(modifiedStamp.getTime()).toBeGreaterThan(EXISTING_CREATION_INSTANT.getTime());
     });
 
+    // --- S-07: who the write is attributed to -----
+    //
+    // The finding: "Audit actor IDs are copied from caller-hydrated entities or omitted. A future
+    // caller can spoof attribution or create unattributed writes" (CWE-345).
+    //
+    // ★ WHY THIS BLOCK EXISTS AT ALL. Before it, 90 tests in this file asserted the insert and
+    // update statements down to their exact text and parameter POSITIONS, and not one asserted what
+    // VALUE the two account columns received. The spoof therefore had no failing test to announce
+    // it, and the fix would have had none to protect it. Both halves are pinned here.
+
+    it('★★ STAMPS THE REQUEST ACTOR and ignores the account a caller put on the entity', async () => {
+      const executor = new RecordingExecutor([]);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
+
+      await repository.saveProductType(
+        new ProductType({
+          productTypeID: '',
+          // A caller naming whoever it likes as the author of the row. This is the spoof.
+          createdByAccountID: FORGED_ACCOUNT_ID,
+          modifiedByAccountID: FORGED_ACCOUNT_ID,
+        }),
+        NO_POPULATED_MEMBERS,
+      );
+
+      const { params } = onlyStatement(executor.mutationCalls);
+
+      expect(parameterAt(params, INSERT_CREATED_BY_POSITION)).toBe(TEST_AUDIT_ACTOR.accountID);
+      expect(parameterAt(params, INSERT_MODIFIED_BY_POSITION)).toBe(TEST_AUDIT_ACTOR.accountID);
+      // The forged value reaches no position at all, not merely not these two.
+      expect(params).not.toContain(FORGED_ACCOUNT_ID);
+    });
+
+    it('stamps BOTH halves on an insert, matching preInsert calling both setters under one gate', async () => {
+      const executor = new RecordingExecutor([]);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
+
+      await repository.saveProductType(
+        new ProductType({ productTypeID: '' }),
+        NO_POPULATED_MEMBERS,
+      );
+
+      const { params } = onlyStatement(executor.mutationCalls);
+
+      // [org/Hibachi/HibachiEntity.cfc:L628-L630] setCreatedByAccount and
+      // [:L632-L635] setModifiedByAccount, both inside `preInsert`, both under the same
+      // gate - so an inserted row carries the same account twice, never one and not the other.
+      expect(parameterAt(params, INSERT_CREATED_BY_POSITION)).toBe(TEST_AUDIT_ACTOR.accountID);
+      expect(parameterAt(params, INSERT_MODIFIED_BY_POSITION)).toBe(TEST_AUDIT_ACTOR.accountID);
+    });
+
+    it('stamps ONLY the modifying half on an update, because preUpdate has no created setter', async () => {
+      const executor = new RecordingExecutor([
+        [hydrationRow(CHILD_PRODUCT_TYPE_ID, null, CHILD_PATH)],
+      ]);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
+
+      await repository.saveProductType(
+        new ProductType({
+          productTypeID: CHILD_PRODUCT_TYPE_ID,
+          createdDateTime: EXISTING_CREATION_INSTANT,
+          createdByAccountID: FORGED_ACCOUNT_ID,
+        }),
+        NO_POPULATED_MEMBERS,
+      );
+
+      const { sql, params } = onlyStatement(executor.mutationCalls);
+
+      // [org/Hibachi/HibachiEntity.cfc:L676-L678] is the WHOLE of preUpdate's stamping: one
+      // setter, for the modifying account. There is no `setCreatedByAccount` on this path, so
+      // the column is absent from the SET list entirely - which is also why the forged creation
+      // account cannot be written even though the caller supplied one.
+      expect(sql).not.toContain('createdByAccountID =');
+      expect(params).not.toContain(FORGED_ACCOUNT_ID);
+      expect(parameterAt(params, UPDATE_MODIFIED_BY_POSITION)).toBe(TEST_AUDIT_ACTOR.accountID);
+    });
+
+    it('★★ STAMPS NOTHING FOR A NON-ADMIN, reproducing the getAdminAccountFlag half of the gate', async () => {
+      const executor = new RecordingExecutor([]);
+      const repository = new MysqlProductTypeRepository(executor, NON_ADMIN_AUDIT_ACTOR);
+
+      await repository.saveProductType(
+        new ProductType({ productTypeID: '', createdByAccountID: FORGED_ACCOUNT_ID }),
+        NO_POPULATED_MEMBERS,
+      );
+
+      const { params } = onlyStatement(executor.mutationCalls);
+
+      // [org/Hibachi/HibachiEntity.cfc:L628] requires BOTH `!isNew()` and
+      // `getAdminAccountFlag()`. A signed-in NON-ADMIN failed the second, so no setter ran and
+      // the insert stored null. Note what this case proves that the admin cases cannot: the
+      // account identifier is present and still is not written, so the refusal is the FLAG's
+      // doing and not an accidental consequence of having no identifier to hand.
+      expect(NON_ADMIN_AUDIT_ACTOR.accountID).toBeDefined();
+      expect(parameterAt(params, INSERT_CREATED_BY_POSITION)).toBeNull();
+      expect(parameterAt(params, INSERT_MODIFIED_BY_POSITION)).toBeNull();
+      expect(params).not.toContain(FORGED_ACCOUNT_ID);
+    });
+
+    it('stamps nothing for an anonymous request, reproducing the account isNew half of the gate', async () => {
+      const executor = new RecordingExecutor([]);
+      const repository = new MysqlProductTypeRepository(executor, ANONYMOUS_AUDIT_ACTOR);
+
+      await repository.saveProductType(
+        new ProductType({ productTypeID: '' }),
+        NO_POPULATED_MEMBERS,
+      );
+
+      const { params } = onlyStatement(executor.mutationCalls);
+
+      // The CFML scope handed back a NEW, empty account when nobody was signed in, and
+      // `!getAccount().isNew()` [org/Hibachi/HibachiEntity.cfc:L628] failed on it. Modelling
+      // that as an absent identifier reproduces the outcome without the empty object.
+      expect(parameterAt(params, INSERT_CREATED_BY_POSITION)).toBeNull();
+      expect(parameterAt(params, INSERT_MODIFIED_BY_POSITION)).toBeNull();
+    });
+
+    it('★★ PRESERVES A STORED ATTRIBUTION when the gate refuses, rather than erasing it', async () => {
+      const executor = new RecordingExecutor([
+        [hydrationRow(CHILD_PRODUCT_TYPE_ID, null, CHILD_PATH)],
+      ]);
+      const repository = new MysqlProductTypeRepository(executor, NON_ADMIN_AUDIT_ACTOR);
+
+      await repository.saveProductType(
+        new ProductType({
+          productTypeID: CHILD_PRODUCT_TYPE_ID,
+          createdDateTime: EXISTING_CREATION_INSTANT,
+        }),
+        NO_POPULATED_MEMBERS,
+      );
+
+      const { sql, params } = onlyStatement(executor.mutationCalls);
+
+      // THE POINT OF THE COALESCE, asserted rather than described. A refused gate binds null,
+      // and a bare `modifiedByAccountID = ?` would then wipe the real account that was stored -
+      // turning a fix for spoofed attribution into a cause of DESTROYED attribution. The
+      // statement resolves the null against the column, so the stored value survives, which is
+      // exactly what Hibernate did when `setModifiedByAccount` was never reached
+      // [org/Hibachi/HibachiEntity.cfc:L676-L678].
+      expect(parameterAt(params, UPDATE_MODIFIED_BY_POSITION)).toBeNull();
+      expect(sql).toContain('modifiedByAccountID = COALESCE(?, modifiedByAccountID)');
+    });
+
+    it('reports back the attribution the row will actually hold, not the one it bound', async () => {
+      const executor = new RecordingExecutor([
+        [hydrationRow(CHILD_PRODUCT_TYPE_ID, null, CHILD_PATH)],
+      ]);
+      const repository = new MysqlProductTypeRepository(executor, NON_ADMIN_AUDIT_ACTOR);
+
+      const saved = await repository.saveProductType(
+        new ProductType({
+          productTypeID: CHILD_PRODUCT_TYPE_ID,
+          createdDateTime: EXISTING_CREATION_INSTANT,
+          modifiedByAccountID: STORED_ACCOUNT_ID,
+        }),
+        // A populated member, so the save takes the re-hydrating return path rather than
+        // handing the argument straight back - the path where the bound record and the stored
+        // row could disagree.
+        { productTypeName: 'A renamed product type' },
+      );
+
+      // The statement bound null and the database resolved it to the stored value, so an entity
+      // hydrated from the BOUND record alone would claim the attribution had been cleared.
+      expect(saved.getModifiedByAccountID()).toBe(STORED_ACCOUNT_ID);
+    });
+
     it('binds absence as SQL NULL and never as undefined', async () => {
       const executor = new RecordingExecutor([]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       await repository.saveProductType(
         new ProductType({ productTypeID: '' }),
@@ -2154,7 +2386,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('refuses a transient parent before issuing any statement at all', async () => {
       const executor = new RecordingExecutor([]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
       const transientParent = new ProductType({ productTypeID: '' });
       const child = new ProductType({
         productTypeID: '',
@@ -2178,11 +2410,11 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
         [hydrationRow(CHILD_PRODUCT_TYPE_ID, null, CHILD_PATH)],
       ]);
 
-      await new MysqlProductTypeRepository(insertExecutor).saveProductType(
+      await new MysqlProductTypeRepository(insertExecutor, TEST_AUDIT_ACTOR).saveProductType(
         new ProductType({ productTypeID: '' }),
         NO_POPULATED_MEMBERS,
       );
-      await new MysqlProductTypeRepository(updateExecutor).saveProductType(
+      await new MysqlProductTypeRepository(updateExecutor, TEST_AUDIT_ACTOR).saveProductType(
         new ProductType({ productTypeID: CHILD_PRODUCT_TYPE_ID }),
         NO_POPULATED_MEMBERS,
       );
@@ -2226,7 +2458,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
   describe('saveProductType - the populate step, and where a resolved url title lands', () => {
     it('binds the PAYLOAD url title on the insert route, not the entity value it overrides', async () => {
       const executor = new RecordingExecutor([]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       // The service's own shape: neither the entity nor the incoming data had a usable
       // title, the gate generated one, and the struct is how it travels.
@@ -2257,7 +2489,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('binds the PAYLOAD product type name, and the two members move independently', async () => {
       const executor = new RecordingExecutor([]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
       const saved = await repository.saveProductType(
         new ProductType({
           productTypeID: '',
@@ -2282,7 +2514,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('writes SQL NULL for a key PRESENT and holding undefined', async () => {
       const executor = new RecordingExecutor([]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       // The entity HAS a title and the payload explicitly says there is none - the only
       // way a caller who read a NULL column can say so, which is why the payload declares
@@ -2301,7 +2533,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
 
     it('leaves the entity value in place for a key that is ABSENT', async () => {
       const executor = new RecordingExecutor([]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
       const saved = await repository.saveProductType(
         new ProductType({ productTypeID: '', urlTitle: PERSISTED_URL_TITLE }),
         NO_POPULATED_MEMBERS,
@@ -2322,7 +2554,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       const executor = new RecordingExecutor([
         [hydrationRow(CHILD_PRODUCT_TYPE_ID, null, CHILD_PATH)],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
       const productType = new ProductType({
         productTypeID: CHILD_PRODUCT_TYPE_ID,
         productTypeName: ROOT_PRODUCT_TYPE_NAME,
@@ -2360,7 +2592,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       const executor = new RecordingExecutor([
         [hydrationRow(CHILD_PRODUCT_TYPE_ID, null, CHILD_PATH)],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
       const productType = new ProductType({
         productTypeID: CHILD_PRODUCT_TYPE_ID,
         urlTitle: PERSISTED_URL_TITLE,
@@ -2376,10 +2608,13 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       ]);
 
       expect(
-        await new MysqlProductTypeRepository(restatingExecutor).saveProductType(productType, {
-          urlTitle: PERSISTED_URL_TITLE,
-          productTypeName: ROOT_PRODUCT_TYPE_NAME,
-        }),
+        await new MysqlProductTypeRepository(restatingExecutor, TEST_AUDIT_ACTOR).saveProductType(
+          productType,
+          {
+            urlTitle: PERSISTED_URL_TITLE,
+            productTypeName: ROOT_PRODUCT_TYPE_NAME,
+          },
+        ),
       ).toBe(productType);
     });
   });
@@ -2450,7 +2685,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       const executor = new RecordingExecutor([
         [hydrationRow(ROOT_PRODUCT_TYPE_ID, null, ROOT_PATH, { activeFlag: {} })],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const error = await rejectionOf(
         repository.getProductTypeByProductTypeID(ROOT_PRODUCT_TYPE_ID),
@@ -2481,7 +2716,7 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
           },
         ],
       ]);
-      const repository = new MysqlProductTypeRepository(executor);
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
 
       const loaded = await repository.getProductTypeByProductTypeID(ROOT_PRODUCT_TYPE_ID);
       const productType = requireProductType(loaded, 'the root product type');

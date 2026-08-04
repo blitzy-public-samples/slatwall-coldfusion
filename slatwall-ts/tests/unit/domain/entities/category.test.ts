@@ -1482,137 +1482,96 @@ describe('every subject is independent', () => {
 });
 
 // ===========================================================================
-// CYCLIC PARENT CHAINS ARE REFUSED, NOT FOLLOWED
+// A CYCLIC PARENT CHAIN IS ACCEPTED, EXACTLY AS THE LEGACY SETTER ACCEPTS ONE
 //
-// NET-NEW coverage - `meta/tests/` holds no Category test, and there is no
-// `model/validation/Category.json` either - pinning the port's single documented
-// divergence from the framework path builder at
-// [org/Hibachi/HibachiEntity.cfc:L314-L321], which carries no visited set and no
-// bound. Two boundaries refuse: `setParentCategory` will not CREATE a cycle, and
-// the shared walk will not PRODUCE a path from one. The reasoning is set out once,
-// on `buildIdPathList` in src/domain/valueObjects/materializedIdPath.ts.
+// NET-NEW coverage - `meta/tests/` holds no Category test, and there is no `model/validation/Category.json` either - pinning legacy PARITY rather than a divergence.
+// The legacy setter at [model/entity/Category.cfc:L101-L105] validates nothing before assigning, and the
+// legacy walk at [org/Hibachi/HibachiEntity.cfc:L314-L321] carries no visited set
+// and no bound. Both are reproduced: this setter assigns whatever it is handed,
+// and a looping chain climbs forever here exactly as it climbs forever there.
 //
-// `Category` has NO lazy path getter of its own - [model/entity/Category.cfc:L120-L122]
-// is an empty block - so the walk is reached only through `preInsert`, which is
-// exactly what these tests exercise.
+// ★ THIS BLOCK ONCE ASSERTED THE OPPOSITE, AND THE RECORD BELONGS HERE. It ran
+// under the heading "CYCLIC PARENT CHAINS ARE REFUSED, NOT FOLLOWED" and pinned a
+// throw from `setParentCategory` plus a `CyclicIdPathError` from the shared walk. Both
+// guards have been removed: a port reproduces rather than improves, and the
+// project's deliberate-divergence budget is closed at three - the un-`var`'d
+// `discountAmount` [model/service/PromotionService.cfc:L1007], the `amountOff`
+// branch routed through `Money` [model/service/PromotionService.cfc:L998], and the
+// entity memo defects in `sku.ts`/`product.ts`. None is spent in this folder.
+//
+// WHAT IS ASSERTED, AND WHAT DELIBERATELY IS NOT. Every test below asserts that
+// the ASSIGNMENT is accepted and that both sides of the link are maintained. NONE
+// of them builds a path from a cyclic graph, because that call does not return -
+// asserting non-termination would hang the suite rather than prove anything. The
+// absence of the removed guards is proven where it can be proven safely, in
+// `tests/unit/domain/valueObjects/materializedIdPath.test.ts`, by a counting
+// parent accessor that stops the walk long after either guard would have fired.
+//
+// NO ADAPTER MATERIALIZES A CATEGORY ANCESTRY, because nothing in the ported slice
+// reads one - `Category` is a read-mostly leaf here and `categoryIDPath` is a
+// persisted column this migration reads rather than rebuilds. So unlike
+// `productType.ts` and `priceGroup.ts`, whose sibling guards moved to their MySQL
+// adapters, this entity has no fetch-shape termination decision anywhere.
 // ===========================================================================
 
-describe('Category - cyclic parent chains are refused', () => {
-  /** Runs an operation expected to be refused; throws if it succeeds instead. */
-  const captureRefusal = (operation: () => unknown): { name: string; message: string } => {
-    try {
-      operation();
-    } catch (thrown) {
-      return thrown instanceof Error
-        ? { name: thrown.name, message: thrown.message }
-        : { name: 'NotAnError', message: 'a value that is not an Error was thrown' };
-    }
-
-    throw new Error(
-      'the operation was expected to be refused, but it completed. A cyclic parentCategory chain ' +
-        'must never be created and must never yield a path.',
-    );
-  };
-
-  it('refuses a category as its own parent', () => {
+describe('Category - a cyclic parent chain is accepted, per legacy parity', () => {
+  it('accepts a category as its own parent', () => {
     const subject = aCategory({ categoryID: 'cat-self' });
 
-    const refusal = captureRefusal(() => {
-      subject.setParentCategory(subject);
-    });
+    // CFML parity [model/entity/Category.cfc:L101-L105]: nothing is validated.
+    subject.setParentCategory(subject);
 
-    expect(refusal.message).toContain("Category 'cat-self' cannot take category 'cat-self'");
-    expect(refusal.message).toContain('would make the parentCategory chain cyclic');
+    expect(subject.getParentCategory()).toBe(subject);
   });
 
-  it('refuses a descendant as its parent, walking more than one level', () => {
+  it('accepts a descendant as its parent, closing a multi-level cycle', () => {
     const root = aCategory({ categoryID: 'cat-root' });
-    const middle = aCategory({ categoryID: 'cat-middle' });
+    const mid = aCategory({ categoryID: 'cat-mid' });
     const leaf = aCategory({ categoryID: 'cat-leaf' });
+    mid.setParentCategory(root);
+    leaf.setParentCategory(mid);
 
-    middle.setParentCategory(root);
-    leaf.setParentCategory(middle);
+    root.setParentCategory(leaf);
 
-    const refusal = captureRefusal(() => {
-      root.setParentCategory(leaf);
-    });
-
-    expect(refusal.message).toContain("Category 'cat-root' cannot take category 'cat-leaf'");
+    expect(root.getParentCategory()).toBe(leaf);
+    expect(leaf.getParentCategory()).toBe(mid);
+    expect(mid.getParentCategory()).toBe(root);
   });
 
-  it('changes nothing when it refuses, and preInsert still builds a path afterwards', () => {
-    const root = aCategory({ categoryID: 'cat-keep-root' });
-    const child = aCategory({ categoryID: 'cat-keep-child' });
-
-    child.setParentCategory(root);
-
-    const childrenBefore = [...root.getChildCategories()];
-
-    captureRefusal(() => {
-      root.setParentCategory(child);
-    });
-
-    expect(root.getParentCategory()).toBeUndefined();
-    expect(child.getParentCategory()).toBe(root);
-    expect(root.getChildCategories()).toStrictEqual(childrenBefore);
-
-    child.preInsert();
-    expect(child.getCategoryIDPath()).toBe('cat-keep-root,cat-keep-child');
-  });
-
-  it('refuses through addChildCategory too, since it delegates to the setter', () => {
-    const root = aCategory({ categoryID: 'cat-add-root' });
-    const leaf = aCategory({ categoryID: 'cat-add-leaf' });
-
+  it('maintains the far side when it closes a cycle, just as for any other parent', () => {
+    // The legacy guard at [model/entity/Category.cfc:L103] is a MEMBERSHIP test,
+    // not an acyclicity test.
+    const root = aCategory({ categoryID: 'cat-far-root' });
+    const leaf = aCategory({ categoryID: 'cat-far-leaf' });
     leaf.setParentCategory(root);
 
-    const refusal = captureRefusal(() => {
-      leaf.addChildCategory(root);
-    });
+    root.setParentCategory(leaf);
 
-    expect(refusal.message).toContain(
-      "Category 'cat-add-root' cannot take category 'cat-add-leaf'",
-    );
+    expect(leaf.getChildCategories()).toContain(root);
+    expect(root.getChildCategories()).toContain(leaf);
   });
 
-  it('allows every well-founded reparent, so a legitimate move is not penalised', () => {
+  it('accepts a cycle through addChildCategory too, since it delegates to the setter', () => {
+    const root = aCategory({ categoryID: 'cat-add-root' });
+    const leaf = aCategory({ categoryID: 'cat-add-leaf' });
+    leaf.setParentCategory(root);
+
+    leaf.addChildCategory(root);
+
+    expect(root.getParentCategory()).toBe(leaf);
+  });
+
+  it('still assigns every well-founded reparent, so a legitimate move is unaffected', () => {
     const oldRoot = aCategory({ categoryID: 'cat-old-root' });
     const newRoot = aCategory({ categoryID: 'cat-new-root' });
     const movable = aCategory({ categoryID: 'cat-movable' });
-
     movable.setParentCategory(oldRoot);
+
     movable.setParentCategory(newRoot);
 
     expect(movable.getParentCategory()).toBe(newRoot);
-
+    // preInsert still builds a path, because this hierarchy is well-founded.
     movable.preInsert();
     expect(movable.getCategoryIDPath()).toBe('cat-new-root,cat-movable');
-  });
-
-  it('refuses in preInsert when a cycle is forced past the setter guard', () => {
-    // The two guards are independent, so the walk has to be provable without
-    // relying on the setter having stopped anything. The bypass is confined here.
-    const lower = aCategory({ categoryID: 'cat-forced-lower' });
-    const upper = aCategory({ categoryID: 'cat-forced-upper' });
-
-    for (const [node, parent] of [
-      [lower, upper],
-      [upper, lower],
-    ] as const) {
-      Object.defineProperty(node, 'parentCategory', {
-        value: parent,
-        writable: true,
-        enumerable: true,
-        configurable: true,
-      });
-    }
-
-    const refusal = captureRefusal(() => {
-      lower.preInsert();
-    });
-
-    expect(refusal.name).toBe('CyclicIdPathError');
-    expect(refusal.message).toContain('contains a cycle');
-    expect(refusal.message).toContain('No path was produced');
   });
 });

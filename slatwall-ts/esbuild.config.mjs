@@ -93,33 +93,56 @@ const result = await build({
   outExtension: { '.js': '.cjs' },
   bundle: true,
   platform: 'node',
-  // SECURITY REVIEW DISPOSITION - RAISED AS S-09, DECLINED ON A CITED MANDATE.
+  // SECURITY REVIEW DISPOSITION - RAISED AS S-17, DECLINED ON A CITED MANDATE.
   //
-  // Finding S-09 (MAJOR, CWE-1104, Use of Unmaintained Third-Party Components)
-  // records that Node 20 reached end of life on 2026-04-30, that v20.20.2 is marked
-  // out of maintenance, and that AWS deprecated the `nodejs20.x` Lambda runtime on
-  // the same date - blocking new functions from 2027-02-01 and updates from
-  // 2027-03-03. The assessment is accepted as accurate; it is a platform-lifecycle
-  // exposure rather than an allegation about any package in this tree, and
-  // `npm audit` is clean.
+  // RENUMBERED FROM S-09, WHICH THIS BLOCK CARRIED UNTIL THE FINDING IDS WERE
+  // RECONCILED. In the review this file answers, S-09 is the product-feed URL scheme
+  // finding (CWE-319), resolved in `src/integrations/google/rssFeedRenderer.ts` and
+  // `src/integrations/google/googleFeedService.ts` - both of which now carry their own
+  // S-09 dispositions. The runtime-lifecycle finding is S-17. Three blocks shared one
+  // label, so no reader could tell which finding a given disposition answered.
   //
-  // THE UPGRADE IS DECLINED HERE BECAUSE IT IS NOT THIS AGENT'S TO MAKE. The runtime
-  // is fixed by the frozen plan in three independent places: AAP 0.1.1 states the
-  // objective as re-expressing the slice "on the AWS Lambda `nodejs20.x` runtime";
-  // AAP 0.5.1 pins Node 20.20.2, npm 10.8.2, `@types/node` 20.19.43 and eleven more
-  // packages to exact verified versions, and records that the 20.20.2 floor is
-  // itself forced by eslint's `^20.19.0` engine requirement; AAP 0.9.1 makes
-  // "Node `20.x`" a pass condition of the runtime-and-toolchain-pinning gate. The
-  // AAP is the agreed, frozen source of truth and is to be aligned to, never
-  // edited - so changing the target would put this file, `package.json`,
-  // `package-lock.json`, `.nvmrc`, `@types/node` and the verified bundle recipe out
-  // of agreement with the plan, and would invalidate the packaging constraint AAP
-  // 0.5.2 established by experiment rather than by assumption.
+  // Finding S-17 (HIGH/MAJOR, CWE-1104, Use of Unmaintained Third-Party Components)
+  // records that Node 20 is out of maintenance and that the `nodejs20.x` Lambda runtime
+  // is deprecated. Both are accurate: Node 20 reached end of life on 2026-04-30, and
+  // Lambda stopped applying security patches to `nodejs20.x` on that same date. This is
+  // a platform-lifecycle exposure rather than an allegation about any package in this
+  // tree, and `npm audit` is clean.
   //
-  // It is therefore recorded for the plan owner as a platform decision with a dated
-  // deadline (new functions blocked 2027-02-01), not resolved by unilateral drift in
-  // a code-remediation pass. The four artifacts that would have to move together are
-  // named above so the change is a single deliberate edit when it is authorized.
+  // THE BLOCK DATES ARE DELIBERATELY NOT RESTATED AS FACT. This block previously
+  // asserted "new functions blocked 2027-02-01, updates 2027-03-03" as a dated deadline.
+  // AWS publishes block-function-create and block-function-update dates as forecasts
+  // "subject to change" and has repeatedly moved them for Node runtimes; currently
+  // published dates for `nodejs20.x` disagree with each other, and with the review, by
+  // many months - some of them EARLIER than the dates this block used to assert. A date
+  // frozen into a build script is exactly where such a figure rots unnoticed, and a
+  // deadline later than the real one is worse than no deadline at all. The plan owner
+  // must read the current figure from the AWS Lambda runtimes table rather than from
+  // here. What is NOT in doubt, and correctly bounds the exposure: Lambda never blocks
+  // INVOCATION of a deprecated runtime, so an already-deployed function keeps serving
+  // traffic; what lapses is the ability to create or update one.
+  //
+  // THE UPGRADE IS DECLINED HERE BECAUSE IT IS NOT THIS AGENT'S TO MAKE. The runtime is
+  // fixed by the frozen plan in three independent places: AAP 0.1.1 states the objective
+  // as re-expressing the slice so that it "runs on the AWS Lambda `nodejs20.x` runtime";
+  // AAP 0.5.1 pins Node 20.20.2 and npm 10.8.2 and resolves every package to an exact
+  // verified version, recording that the 20.20.2 floor is itself forced by eslint's
+  // `^20.19.0` engine requirement; and AAP 0.9.1 makes "Node `20.x`, TypeScript `5.x`,
+  // and all fourteen packages at the exact versions in 0.5.1 - no caret ranges, no
+  // `latest`" a pass condition of its runtime-and-toolchain-pinning gate. ("Fourteen" is
+  // the AAP's own count, quoted rather than recomputed; the manifest carries thirteen
+  // direct dependencies alongside the pinned Node runtime.) The AAP is the agreed, frozen
+  // source of truth and is to be aligned to, never edited - so changing the target would
+  // put this file, `package.json`, `package-lock.json`, `.nvmrc`, `@types/node` and the
+  // verified bundle recipe out of agreement with the plan, and would invalidate the
+  // packaging constraint AAP 0.5.2 established by experiment rather than by assumption.
+  //
+  // It is therefore recorded for the plan owner as a platform decision requiring a
+  // successor-runtime selection OUTSIDE this AAP, not resolved by unilateral drift in a
+  // code-remediation pass. The six artifacts that must move together are named above so
+  // the change is one deliberate edit when it is authorized, and the pin is enforced
+  // executably by "A16" in `tests/traceability/legacyTestMap.ts`, so drift off the
+  // frozen line fails the suite instead of passing unnoticed.
   target: 'node20',
   format: 'cjs',
   sourcemap: true,

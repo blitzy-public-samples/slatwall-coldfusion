@@ -92,21 +92,28 @@
 // container. No sibling fixture applies: none of the five produces a feed-row projection.
 // ---------------------------------------------------------------------------
 
+// THREE NODE BUILT-INS APPEAR BELOW, AND SECTION 10 IS THE ONLY REASON. That section reads
+// this module's own source text to assert what it publishes, because a namespace import sees
+// only VALUES and two of the symbols that must stay out - an exported type alias and a
+// `declare const` brand - erase completely at compile time, so no runtime check could see
+// either one. The only other suite in this subtree that reads source,
+// `tests/traceability/legacyTestMap.ts`, reaches for exactly this trio in exactly this way.
+// Nothing else in this file touches the file system, and no case writes to it.
+
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-import {
-  GoogleFeedService,
-  UntrustedFeedHostError,
-  toTrustedFeedHost,
-} from '../../../../src/integrations/google/googleFeedService.js';
+import { GoogleFeedService } from '../../../../src/integrations/google/googleFeedService.js';
 import type {
   GoogleProductFeedRenderer,
   GoogleProductFeedRowSource,
-  TrustedFeedHost,
 } from '../../../../src/integrations/google/googleFeedService.js';
 import { renderGoogleProductFeed } from '../../../../src/integrations/google/rssFeedRenderer.js';
 import type { GoogleProductFeedRow } from '../../../../src/integrations/google/googleFeedRepository.js';
 import type { ProductFeedPort } from '../../../../src/domain/ports/productFeedPort.js';
+import type { FeedUrlScheme } from '../../../../src/lib/config.js';
 
 // ---------------------------------------------------------------------------
 // Fixed inputs
@@ -115,94 +122,72 @@ import type { ProductFeedPort } from '../../../../src/domain/ports/productFeedPo
 // factories below them, so no case can observe another case's effects.
 // ---------------------------------------------------------------------------
 
-/** The one host this suite's allow-list admits, in the normalised form. */
-const FEED_HOST_TEXT = 'feed.example.invalid';
-
-/**
- * The allow-list every host in this file is checked against.
- *
- * One entry, because one is enough to exercise both outcomes: a candidate that
- * normalises onto it is admitted, and anything else is refused.
- */
-const ALLOWED_FEED_HOSTS: readonly string[] = [FEED_HOST_TEXT];
-
 /**
  * The host handed to the subject, and a non-routable placeholder by design.
  *
- * `.invalid` is reserved precisely so that it can never resolve, which is the
- * point: the ported adapter performs no live Google call and needs no
- * credentials, so a host reaches this suite as a validated input and nothing is
- * ever dialled. No real hostname, address or endpoint appears in this file.
+ * `.invalid` is reserved precisely so that it can never resolve, which is the point: the
+ * ported adapter performs no live Google call and needs no credentials, so a host reaches
+ * this suite as an ordinary configured input and nothing is ever dialled. No real hostname,
+ * address or endpoint appears in this file.
  *
- * ★ THIS WAS A PLAIN STRING LITERAL. The constructor takes a `TrustedFeedHost`
- * now, so the value is produced by the branded factory - which is the whole point
- * of the brand: a raw string cannot reach the renderer's scheme composition without
- * having passed the allow-list first.
+ * ★ THIS WAS BRIEFLY A BRANDED VALUE MINTED THROUGH AN ALLOW-LIST FACTORY, AND IT IS A
+ * PLAIN STRING LITERAL AGAIN. Two companions stood with it - a `FEED_HOST_TEXT` holding the
+ * canonical spelling and an `ALLOWED_FEED_HOSTS` array to check candidates against - and
+ * both are gone, because the subject's constructor takes a plain `string` and no allow-list
+ * exists anywhere in the module under test. Section 10 holds that surface and carries the
+ * record of why the allow-list was withdrawn rather than moved.
  */
-const FEED_HOST: TrustedFeedHost = toTrustedFeedHost(FEED_HOST_TEXT, ALLOWED_FEED_HOSTS);
+const FEED_HOST = 'feed.example.invalid';
 
 /**
  * The same placeholder wearing MIXED CASE, and nothing else.
  *
- * ★★ THIS DOCBLOCK ONCE READ "USED BY ONE CASE TO PROVE THE HOST IS FORWARDED
- * BYTE-IDENTICALLY", AND WENT ON: "THE SHIPPED MODULE STATES THAT THE HOST IS NOT
- * PARSED, TRIMMED, LOWER-CASED, VALIDATED, PREFIXED WITH A SCHEME OR DEFAULTED,
- * BECAUSE THE LEGACY INTERPOLATED WHATEVER THE ENGINE REPORTED AND CHECKED
- * NOTHING. A GUARD WOULD BE BEHAVIOUR THE LEGACY NEVER HAD, SO ITS ABSENCE IS
- * ASSERTED RATHER THAN ASSUMED."
+ * Used by one case to prove the host is forwarded BYTE-IDENTICALLY. The shipped module does
+ * not parse, trim, lower-case, validate, prefix with a scheme or default the value it holds;
+ * it hands the field to the renderer exactly as the constructor received it. This constant
+ * is visibly non-canonical, so a subject that lower-cased its field could not pass.
  *
- * The observation about the legacy was correct - `CGI.HTTP_HOST` was interpolated
- * unchecked at five sites [integrationServices/google/views/feed/product.cfm:L14,
- * L15, L22, L23, L24]. The conclusion applied the reproduce-rather-than-repair rule
- * to a SECURITY boundary, and that is where the rule stops: behind a fixed CFML
- * virtual host the engine reported a value the deployment controlled, whereas an
- * API Gateway `Host` header is chosen by whoever sends the request, so reproducing
- * "checked nothing" would newly let a caller decide which origin every link in a
- * Google Merchant Center document points at.
+ * ★★ THIS DOCBLOCK ONCE DESCRIBED THIS CONSTANT AS A PROBE OF "TWO CONTROLS THE SHIPPED
+ * MODULE NOW CARRIES" - an allow-list factory that trimmed and lower-cased, and a
+ * constructor check that accepted or refused without normalising. Neither control exists in
+ * the module under test: together they were an unplanned host-policy subsystem, and section
+ * 10 records why it was withdrawn rather than relocated. The paragraph above is what this
+ * constant was originally named for, and it is accurate again.
  *
- * ★★ THE SHIPPED MODULE NOW CARRIES TWO CONTROLS, AND THIS CONSTANT PROBES BOTH.
- * Mixed case is SHAPE-VALID - a host's letters may be either case - so the value is
- * accepted wherever the grammar is what is being checked, and it is NOT canonical, so
- * it is visibly changed wherever normalisation is what is being checked. That makes it
- * the right probe on both sides of the boundary:
- *   through `toTrustedFeedHost` (section 10) it is trimmed, lower-cased and matched
- *   against the allow-list, so what the service receives is the canonical form and NOT
- *   these bytes - which is the property section 3 asserts;
- *   reaching the constructor's own runtime check directly (section 11, through that
- *   section's single documented cast) it is ACCEPTED AND FORWARDED UNCHANGED, because
- *   that check accepts or refuses and never normalises - which is the property
- *   section 11 asserts, and it is the original reason this constant was named.
+ * The observation that surrounded the withdrawn version was correct and is worth keeping:
+ * `CGI.HTTP_HOST` was interpolated unchecked at five legacy sites
+ * [integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24], and an API
+ * Gateway `Host` header is chosen by whoever sends the request rather than by the
+ * deployment. What follows from that is an obligation on the composition root to supply a
+ * CONFIGURED host, stated there and on the constructor parameter - not a policy this module
+ * is authorised to enforce.
  *
- * Trimming deserves one sentence of its own, because the two positions differ and both
- * are deliberate. At the factory, trimming cannot admit a host nobody configured: the
- * normalised form still has to appear on the allow-list, so stray whitespace in an
- * already-trusted value is tolerated rather than obeyed. At the constructor, the brand
- * is erased and provenance is unknown, so altering bytes would be silently correcting a
- * value nothing vouched for - it refuses instead. {@link PADDED_FEED_HOST} pins that
- * half, and this constant pins the casing half.
+ * Mixed case is SHAPE-VALID - a host's letters may be either case - so this value is also
+ * accepted by the grammar the renderer still enforces, which section 10 asserts alongside
+ * the values that grammar refuses.
  */
 const MIXED_CASE_FEED_HOST = 'Feed.EXAMPLE.invalid';
 
 /**
- * The placeholder wearing surrounding whitespace, whose disposition depends on WHERE it
- * arrives - and that is the point of keeping it named.
+ * The placeholder wearing surrounding whitespace, which the SERVICE forwards untouched and
+ * the RENDERER refuses.
  *
- * ★ THIS DOCBLOCK ONCE READ "WHICH THE CONSTRUCTOR REFUSES", AND WENT ON: "A PADDED
- * HOST IS NOT A HOST, SO IT IS NOW REFUSED RATHER THAN FORWARDED OR TRIMMED." Half of
- * that is still exactly right, and the half that is not was true of a module that had
- * only one control. Both dispositions are now asserted, and neither is an accident:
- *   `toTrustedFeedHost` TRIMS it, lower-cases it, and then requires the result to be on
- *   the deployment's allow-list. Tolerating whitespace there cannot admit an untrusted
- *   host, because the allow-list is the authority and the trimmed form still has to
- *   match it. Section 3 uses it this way and asserts that the canonical form, not these
- *   bytes, is what the service forwards.
- *   `assertConfiguredFeedHost` REFUSES it, because by the time a value reaches the
- *   constructor the brand is erased and provenance is unknown, so trimming would mean
- *   silently correcting bytes nothing vouched for. Section 11 asserts that refusal,
- *   through the one cast that can reach the check without the factory.
+ * Both halves matter, and holding them in one named constant is what makes the seam
+ * legible. The service performs no check and no normalisation, so a padded value reaches
+ * the renderer with its padding intact - section 3 asserts that. The renderer's grammar
+ * refuses whitespace, leading, trailing or internal, and refuses by throwing, because a bad
+ * origin poisons every URL in the document rather than one field - section 10 asserts that.
  *
- * It stays a named constant because it is the value whose handling CHANGED from the
- * legacy, which interpolated whatever the engine reported and checked nothing.
+ * ★ THIS DOCBLOCK ONCE SAID THE CONSTRUCTOR REFUSED THIS VALUE, AND THEN, ONE REVISION
+ * LATER, THAT AN ALLOW-LIST FACTORY TRIMMED IT WHILE THE CONSTRUCTOR REFUSED IT. Neither
+ * describes the shipped module: the constructor takes a plain string and inspects nothing.
+ * The refusal did not lapse, it MOVED - from construction to render - and section 10 proves
+ * it still arrives.
+ *
+ * It stays a named constant because it is the value whose handling differs most visibly
+ * between the two layers, and because the legacy interpolated whatever the engine reported
+ * and checked nothing at all [integrationServices/google/views/feed/product.cfm:L14, L15,
+ * L22, L23, L24].
  */
 const PADDED_FEED_HOST = '  Feed.EXAMPLE.invalid  ';
 
@@ -212,6 +197,17 @@ const PADDED_FEED_HOST = '  Feed.EXAMPLE.invalid  ';
  * The subject holds an instant rather than reading a clock, which is what makes it deterministic;
  * nothing in this file consults the system clock.
  */
+/**
+ * The scheme this suite constructs with, and it is the LEGACY one on purpose.
+ *
+ * Finding S-09 made the scheme a constructor argument taken from deployment
+ * configuration rather than a literal in the renderer. This suite keeps supplying `'http'`
+ * so that every existing assertion about an `http://` URL still asserts LEGACY PARITY;
+ * that the service forwards whatever it was given, rather than a scheme of its own
+ * choosing, is asserted directly in the S-09 case below.
+ */
+const FEED_SCHEME: FeedUrlScheme = 'http';
+
 const FEED_INSTANT = new Date('2024-06-01T12:34:56.789Z');
 
 /** The wire form of {@link FEED_INSTANT}, for the no-mutation case. */
@@ -321,6 +317,7 @@ function makeFeedRow(overrides: Partial<GoogleProductFeedRow> = {}): GoogleProdu
 interface RecordedRendererCall {
   readonly rows: FeedRows;
   readonly feedHost: string;
+  readonly feedScheme: FeedUrlScheme;
   readonly now: Date;
 }
 
@@ -357,8 +354,18 @@ interface FeedServiceHarnessOptions {
   /** Invoked by the double renderer to produce the document. Defaults to the sentinel. */
   readonly render?: (call: RecordedRendererCall) => string;
 
-  /** The host given to the constructor. Defaults to {@link FEED_HOST}. */
-  readonly feedHost?: TrustedFeedHost;
+  /**
+   * The host given to the constructor. Defaults to {@link FEED_HOST}.
+   *
+   * ★ A PLAIN `string`, WHICH IS THE SHIPPED CONSTRUCTOR'S OWN PARAMETER TYPE. This was
+   * briefly a branded `TrustedFeedHost`, which meant a case could not hand the subject a
+   * value the withdrawn allow-list had not minted - and therefore could not probe what the
+   * subject does with an arbitrary host at all. The type is the contract's again.
+   */
+  readonly feedHost?: string;
+
+  /** The scheme given to the constructor. Defaults to {@link FEED_SCHEME}. */
+  readonly feedScheme?: FeedUrlScheme;
 
   /** The instant given to the constructor. Defaults to {@link FEED_INSTANT}. */
   readonly now?: Date;
@@ -412,11 +419,11 @@ function makeFeedServiceHarness(options: FeedServiceHarnessOptions): FeedService
     },
   };
 
-  // The double renderer. Its three parameters are contextually typed by the shipped renderer
+  // The double renderer. Its four parameters are contextually typed by the shipped renderer
   // collaborator type, and it is SYNCHRONOUS, exactly as the contract needs.
-  const renderFeed: GoogleProductFeedRenderer = (rows, feedHost, now) => {
+  const renderFeed: GoogleProductFeedRenderer = (rows, feedHost, feedScheme, now) => {
     callLog.push(RENDERER_STEP);
-    const call: RecordedRendererCall = { rows, feedHost, now };
+    const call: RecordedRendererCall = { rows, feedHost, feedScheme, now };
     rendererCalls.push(call);
     return render(call);
   };
@@ -424,6 +431,7 @@ function makeFeedServiceHarness(options: FeedServiceHarnessOptions): FeedService
   const service = new GoogleFeedService(
     repository,
     options.feedHost ?? FEED_HOST,
+    options.feedScheme ?? FEED_SCHEME,
     options.now ?? FEED_INSTANT,
     renderFeed,
   );
@@ -628,29 +636,41 @@ describe('GoogleFeedService - what each collaborator receives', () => {
   });
 
   it('forwards the constructor host byte-identically, doing no normalising of its own', async () => {
-    const normalised = toTrustedFeedHost(PADDED_FEED_HOST, ALLOWED_FEED_HOSTS);
     const harness = makeFeedServiceHarness({
       read: () => Promise.resolve([makeFeedRow()]),
-      feedHost: normalised,
+      feedHost: PADDED_FEED_HOST,
     });
 
     await harness.service.generateProductFeed();
 
-    // ★ THIS CASE ONCE ASSERTED THAT SURROUNDING WHITESPACE AND MIXED CASE BOTH
-    // SURVIVED THE CALL, UNDER THE TITLE "WITHOUT TRIMMING OR NORMALISING". The
-    // normalising moved rather than appeared: the FACTORY trims and lower-cases at the
-    // boundary, and the SERVICE still does nothing at all to what it holds. Both
-    // halves are asserted, because "the service forwards its field unchanged" is only
-    // meaningful alongside "and the field was normalised before it got there".
+    // ★ THIS CASE BRIEFLY ASSERTED THE OPPOSITE OF ITS OWN TITLE. It minted a host
+    // through an allow-list factory, asserted that the factory had trimmed and lower-cased
+    // the value, and then asserted that what the renderer received was NOT the bytes the
+    // case supplied. The factory is gone - it was part of an unplanned host-policy
+    // subsystem, and section 10 records why it was withdrawn rather than relocated - so the
+    // title is accurate again: the subject holds what it was handed and hands it on.
     //
-    // The companion property - that the CONSTRUCTOR'S OWN check accepts mixed case and
-    // forwards it unchanged, normalising nothing itself - is asserted in section 11,
-    // where the cast that reaches that check without the factory is declared. It cannot
-    // be asserted here, because by this route the factory has already canonicalised the
-    // value, which is exactly what the third assertion below proves.
-    expect(normalised).toBe(FEED_HOST_TEXT);
-    expect(soleRendererCall(harness).feedHost).toBe(normalised);
-    expect(soleRendererCall(harness).feedHost).not.toBe(PADDED_FEED_HOST);
+    // A padded host is deliberately the probe. It is the value most likely to be silently
+    // tidied by a well-meaning field initialiser, and it is also a value the RENDERER
+    // refuses, which section 10 asserts. The two together are the whole seam: this module
+    // does not inspect the host, and the grammar is still enforced one layer down.
+    expect(soleRendererCall(harness).feedHost).toBe(PADDED_FEED_HOST);
+  });
+
+  it('forwards mixed case unchanged, so no lower-casing hides in the field', async () => {
+    const harness = makeFeedServiceHarness({
+      read: () => Promise.resolve([makeFeedRow()]),
+      feedHost: MIXED_CASE_FEED_HOST,
+    });
+
+    await harness.service.generateProductFeed();
+
+    // Casing is the second way a field initialiser quietly normalises, and it is separable
+    // from padding: a subject could trim without lower-casing, or lower-case without
+    // trimming, and one assertion covering both would not say which. Mixed case is also
+    // SHAPE-VALID, so this value proves the pass-through without borrowing the previous
+    // case's refusal.
+    expect(soleRendererCall(harness).feedHost).toBe(MIXED_CASE_FEED_HOST);
   });
 
   it('forwards the constructor instant without cloning it or mutating it', async () => {
@@ -1020,7 +1040,7 @@ describe('GoogleFeedService - the surface admits no invented input', () => {
     // @ts-expect-error - a promise-returning renderer is not assignable: the contract returns string.
     const asyncRenderer: GoogleProductFeedRenderer = () => Promise.resolve(feedDocument);
 
-    expect(asyncRenderer([], FEED_HOST, FEED_INSTANT)).toBeInstanceOf(Promise);
+    expect(asyncRenderer([], FEED_HOST, FEED_SCHEME, FEED_INSTANT)).toBeInstanceOf(Promise);
   });
 });
 
@@ -1129,542 +1149,366 @@ describe('GoogleFeedService - nothing else happens', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 10. The trusted feed host
+// 10. The narrow surface, and where the host obligations actually live
 //
-// NET-NEW COVERAGE, declared as such per AAP 0.6.6. There is no legacy
-// antecedent - the legacy performed no validation of any kind on the value it
-// interpolated - so nothing below extends a legacy test, and the header's
-// statement that this whole file is net-new applies here too.
+// NET-NEW COVERAGE, declared as such per AAP 0.6.6. There is no legacy antecedent: the
+// legacy interpolated `CGI.HTTP_HOST` unchecked at five sites
+// [integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24] and published
+// nothing resembling a module surface for a suite to hold.
 //
-// WHY A BOUNDARY EXISTS WHERE THE LEGACY HAD NONE. The legacy read
-// `CGI.HTTP_HOST` and wrote it, unchecked, into five absolute addresses
-// [integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24].
-// Behind a fixed CFML virtual host that value was chosen by the deployment. An
-// API Gateway `Host` header is chosen by whoever sends the request, so carrying
-// the legacy's absence of a check across would newly let a caller decide which
-// origin every channel, product and image URL in a Google Merchant Center
-// document points at. Escaping the value - which the renderer does, with all five
-// XML entities - prevents markup injection and says nothing whatsoever about
-// whether the origin is trusted. This is the one place in this migration where
-// the reproduce-rather-than-repair rule is deliberately not applied, and the
-// reason is that it is a security boundary rather than a behaviour.
+// ★ TWO TIERS STOOD HERE FOR ONE REVISION AND HAVE BEEN REPLACED BY THIS ONE. They were
+// "toTrustedFeedHost - the allow-listed authority the feed URLs are built from" and
+// "GoogleFeedService - feed origin validation", together roughly 540 lines exercising an
+// exported `UntrustedFeedHostError`, a branded `TrustedFeedHost` type, an allow-list mint and
+// a second private copy of the renderer's host grammar reached through the constructor. That
+// header argued that "this is the one place in this migration where the
+// reproduce-rather-than-repair rule is deliberately not applied, and the reason is that it is
+// a security boundary rather than a behaviour."
 //
-// WHAT IS NOT CHANGED BY IT. `generateProductFeed()` is still zero-argument, the
-// renderer is still pure and still takes a plain string, no default host exists,
-// and nothing here is dialled.
+// THE ARGUMENT IS COHERENT AND THE SUBJECT MODULE WAS NOT AUTHORISED TO HOLD IT. Its
+// authoring authority excludes an allow-list BY NAME - together with an API key, a token
+// check, a signature check and a rate limit - because the legacy endpoint is public and
+// unauthenticated as a matter of verified source fact
+// [integrationServices/google/controllers/feed.cfc:L54-L56], and authorization, if a
+// deployment wants it, is an API Gateway concern owned OUTSIDE this subtree. A suite that
+// exercises an unauthorised surface is the thing that makes that surface look settled, so
+// those cases went with it rather than staying behind to vouch for it.
+//
+// WHAT THIS TIER ASSERTS INSTEAD, and why it is not a reduction in real coverage:
+//   1. The EXPORTED SURFACE is exactly the three symbols the plan permits, read from the
+//      module's own `export` lines for the erasure reason given at the imports.
+//   2. None of the eight withdrawn host-policy symbols is DECLARED at all, exported or not,
+//      so the subsystem cannot return module-privately either.
+//   3. The constructor takes a PLAIN STRING - asserted by the compiler, not by prose - and
+//      performs no check, so no origin policy can hide inside it.
+//   4. The host GRAMMAR is still enforced, by the renderer, and it still THROWS. Every
+//      malformed host the withdrawn constructor guard refused is still refused; the refusal
+//      MOVED from construction to render, and these cases prove it arrives.
+//   5. The residual risk - a well-formed but untrusted host is accepted end to end - is
+//      asserted rather than only argued, because it is the honest consequence of the removal
+//      and a reader deserves to find it pinned rather than reasoned about.
 // ---------------------------------------------------------------------------
 
-describe('toTrustedFeedHost - the allow-listed authority the feed URLs are built from', () => {
-  it('admits an allow-listed authority and returns it unchanged', () => {
-    expect(toTrustedFeedHost(FEED_HOST_TEXT, ALLOWED_FEED_HOSTS)).toBe(FEED_HOST_TEXT);
-  });
+describe('GoogleFeedService - the module surface, which is the finding this tier holds', () => {
+  /** The module whose published surface these cases read. */
+  const SUBJECT_MODULE_PATH = 'src/integrations/google/googleFeedService.ts';
 
-  it('normalises surrounding whitespace and casing before comparing', () => {
-    expect(toTrustedFeedHost('  FEED.Example.INVALID ', ALLOWED_FEED_HOSTS)).toBe(FEED_HOST_TEXT);
-    expect(toTrustedFeedHost('feed.EXAMPLE.invalid', ALLOWED_FEED_HOSTS)).toBe(FEED_HOST_TEXT);
-  });
+  /**
+   * The keywords that can follow `export ` and name a symbol.
+   *
+   * `abstract` is deliberately absent: it PRECEDES `class`, so leaving it out makes
+   * `export abstract class X` resolve to `X` rather than to `class`.
+   */
+  const DECLARATION_KEYWORDS: readonly string[] = [
+    'class',
+    'function',
+    'const',
+    'let',
+    'var',
+    'type',
+    'interface',
+    'enum',
+  ];
 
-  it('compares against an allow-list entry that itself carries whitespace or casing', () => {
-    // Configuration is read from an environment variable in production, where a stray
-    // space or a capital letter is an ordinary transcription accident rather than an
-    // attack. Normalising both sides means such an entry still matches, and it is the
-    // SHAPE rule below - not the comparison - that refuses anything malformed.
-    expect(toTrustedFeedHost(FEED_HOST_TEXT, ['  Feed.Example.Invalid  '])).toBe(FEED_HOST_TEXT);
-  });
+  /** Identifier characters, spelled out so no regular expression is needed to trim a token. */
+  const IDENTIFIER_CHARACTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_$';
 
-  it('admits an authority carrying an explicit port, because a host header may', () => {
-    expect(toTrustedFeedHost('feed.example.invalid:8443', ['feed.example.invalid:8443'])).toBe(
-      'feed.example.invalid:8443',
-    );
-  });
+  /** Line openings that introduce a declaration, exported or module-private. */
+  const DECLARATION_LINE_PREFIXES: readonly string[] = [
+    'export ',
+    'declare ',
+    'abstract ',
+    'class ',
+    'const ',
+    'enum ',
+    'function ',
+    'interface ',
+    'let ',
+    'type ',
+    'var ',
+  ];
 
-  it('refuses an empty candidate', () => {
-    expect(() => toTrustedFeedHost('', ALLOWED_FEED_HOSTS)).toThrow(UntrustedFeedHostError);
-    expect(() => toTrustedFeedHost('', ALLOWED_FEED_HOSTS)).toThrow(
-      /it is empty or contains only whitespace/,
-    );
-  });
+  /**
+   * The eight symbols the withdrawn host-policy subsystem consisted of.
+   *
+   * Named individually rather than pattern-matched, so a reader sees exactly which subsystem
+   * these cases exist to keep out. Three were EXPORTS - the error class, the branded type and
+   * the mint - and five were module-private supports for them: the brand symbol, the
+   * allow-list authority, the second copy of the renderer's grammar, its length bound and the
+   * constructor guard that used them.
+   */
+  const WITHDRAWN_HOST_POLICY_SYMBOLS: readonly string[] = [
+    'UntrustedFeedHostError',
+    'TrustedFeedHost',
+    'toTrustedFeedHost',
+    'trustedFeedHostBrand',
+    'FEED_HOST_AUTHORITY',
+    'FEED_HOST_SHAPE',
+    'FEED_HOST_MAX_LENGTH',
+    'assertConfiguredFeedHost',
+  ];
 
-  it('refuses a candidate that is only whitespace', () => {
-    expect(() => toTrustedFeedHost('   ', ALLOWED_FEED_HOSTS)).toThrow(
-      /it is empty or contains only whitespace/,
-    );
-  });
+  /** Re-export forms that would publish a symbol without declaring one. */
+  const REEXPORT_FORMS: readonly string[] = [
+    'export {',
+    'export type {',
+    'export default',
+    'export * ',
+  ];
 
-  it('refuses a candidate carrying a scheme', () => {
-    for (const candidate of ['http://feed.example.invalid', 'https://feed.example.invalid']) {
-      expect(() => toTrustedFeedHost(candidate, ALLOWED_FEED_HOSTS)).toThrow(
-        /a scheme, credentials, path, query, fragment, whitespace or non-ASCII character is present/,
-      );
-    }
-  });
+  /** A host carrying both a scheme and a path, which the renderer's grammar refuses. */
+  const SCHEME_AND_PATH_HOST = 'https://attacker.example.invalid/attacker-path';
 
-  it('refuses a candidate carrying credentials', () => {
-    expect(() => toTrustedFeedHost('attacker@feed.example.invalid', ALLOWED_FEED_HOSTS)).toThrow(
-      UntrustedFeedHostError,
-    );
-  });
+  /** A host that is perfectly well formed and belongs to nobody this deployment trusts. */
+  const UNTRUSTED_WELL_FORMED_HOST = 'attacker.example.invalid';
 
-  it('refuses a candidate carrying a path', () => {
-    expect(() =>
-      toTrustedFeedHost('feed.example.invalid/attacker-path', ALLOWED_FEED_HOSTS),
-    ).toThrow(UntrustedFeedHostError);
-  });
+  function subjectModuleSource(): string {
+    const here = path.dirname(fileURLToPath(import.meta.url));
 
-  it('refuses a candidate carrying a query, which the earlier suites used to accept', () => {
-    // This exact shape was passed as a host by a renderer case and asserted only to be
-    // ESCAPED. A host is an authority and has no query component, and accepting one
-    // meant every absolute address in the document carried caller-chosen parameters.
-    expect(() =>
-      toTrustedFeedHost('feed.example.invalid?tenant=a&locale=b', ALLOWED_FEED_HOSTS),
-    ).toThrow(UntrustedFeedHostError);
-  });
+    return readFileSync(path.resolve(here, '..', '..', '..', '..', SUBJECT_MODULE_PATH), 'utf8');
+  }
 
-  it('refuses a candidate carrying a fragment', () => {
-    expect(() => toTrustedFeedHost('feed.example.invalid#fragment', ALLOWED_FEED_HOSTS)).toThrow(
-      UntrustedFeedHostError,
-    );
-  });
+  function leadingIdentifier(token: string): string {
+    let identifier = '';
 
-  it('refuses a candidate carrying interior whitespace or a control character', () => {
-    for (const candidate of ['feed.example .invalid', 'feed.example\t.invalid', 'feed\n.invalid']) {
-      expect(() => toTrustedFeedHost(candidate, ALLOWED_FEED_HOSTS)).toThrow(
-        UntrustedFeedHostError,
-      );
-    }
-  });
-
-  it('refuses a malformed authority, whatever the allow-list says', () => {
-    // The shape rule runs BEFORE the allow-list, so an allow-list holding a malformed
-    // entry cannot admit a malformed candidate by matching it.
-    for (const candidate of [
-      '.feed.example.invalid',
-      'feed..invalid',
-      'feed.invalid.',
-      '-feed.invalid',
-    ]) {
-      expect(() => toTrustedFeedHost(candidate, [candidate])).toThrow(
-        /a scheme, credentials, path, query, fragment, whitespace or non-ASCII character is present/,
-      );
-    }
-  });
-
-  it('refuses a well-formed authority that is not on the allow-list', () => {
-    expect(() => toTrustedFeedHost('attacker.example.invalid', ALLOWED_FEED_HOSTS)).toThrow(
-      /it is not on this deployment/,
-    );
-  });
-
-  it('refuses everything when the allow-list is empty, defaulting to no host', () => {
-    // An unconfigured deployment publishes no feed rather than publishing one pointing
-    // at whatever arrived in a header. There is no default host anywhere in this module.
-    expect(() => toTrustedFeedHost(FEED_HOST_TEXT, [])).toThrow(/it is not on this deployment/);
-  });
-
-  it('names the rejected candidate and the rule that rejected it', () => {
-    try {
-      toTrustedFeedHost('  https://attacker.example.invalid/x  ', ALLOWED_FEED_HOSTS);
-      throw new Error('the candidate was admitted, so there is no rejection to inspect');
-    } catch (error: unknown) {
-      if (!(error instanceof UntrustedFeedHostError)) {
-        throw error;
+    for (const character of token) {
+      if (!IDENTIFIER_CHARACTERS.includes(character)) {
+        break;
       }
 
-      // The candidate is reported exactly as supplied, so a reader can see the shape
-      // that was rejected rather than a normalised version of it. It is a hostname and
-      // not a secret, and no credential, bind value or SQL appears in the message.
-      expect(error.candidate).toBe('  https://attacker.example.invalid/x  ');
-      expect(error.name).toBe('UntrustedFeedHostError');
-      expect(error.reason).toContain('scheme');
-      expect(error.message).toContain('"  https://attacker.example.invalid/x  "');
-      expect(error.message).toContain('never from an unvalidated');
+      identifier += character;
+    }
+
+    return identifier;
+  }
+
+  function exportedSymbolNames(source: string): string[] {
+    const names: string[] = [];
+
+    for (const line of source.split('\n')) {
+      if (!line.startsWith('export ')) {
+        continue;
+      }
+
+      const tokens = line.split(' ').filter((token) => token.length > 0);
+      const named = tokens.find(
+        (token, index) => index > 0 && DECLARATION_KEYWORDS.includes(tokens[index - 1] ?? ''),
+      );
+      const identifier = named === undefined ? '' : leadingIdentifier(named);
+
+      // A diagnostic rather than a silent skip: an export line this reader cannot parse is a
+      // gap in the gate, and a gap that fails loudly is the only kind worth having.
+      if (identifier.length === 0) {
+        throw new Error(`could not read an exported symbol name from the line: ${line}`);
+      }
+
+      names.push(identifier);
+    }
+
+    return names;
+  }
+
+  function declarationLines(source: string): string[] {
+    return source
+      .split('\n')
+      .filter((line) =>
+        DECLARATION_LINE_PREFIXES.some((prefix) => line.trimStart().startsWith(prefix)),
+      );
+  }
+
+  it('★ exports exactly the class and its two supporting types, and nothing else', () => {
+    const source = subjectModuleSource();
+
+    // No re-export form, checked first: `export { toTrustedFeedHost }` would publish the mint
+    // again while declaring nothing, and the name reader below would not describe it.
+    for (const form of REEXPORT_FORMS) {
+      expect(source.split('\n').filter((line) => line.startsWith(form))).toStrictEqual([]);
+    }
+
+    // E7 - one principal exported unit per file plus CO-LOCATED SUPPORTING TYPES. The class is
+    // the principal unit; the renderer collaborator type and the one-method row-source
+    // narrowing are its supporting types, and both are consumed by this suite's own doubles.
+    expect([...exportedSymbolNames(source)].sort()).toStrictEqual([
+      'GoogleFeedService',
+      'GoogleProductFeedRenderer',
+      'GoogleProductFeedRowSource',
+    ]);
+  });
+
+  it('★ declares no host-policy symbol under any of the eight names it once used', () => {
+    const declared = declarationLines(subjectModuleSource());
+
+    // ANTI-VACUITY: the reader finds real declarations in this module, so the eight empty
+    // results below are absences rather than a scan that matched nothing at all.
+    expect(declared.some((line) => line.includes('GoogleFeedService'))).toBe(true);
+    expect(declared.some((line) => line.includes('GoogleProductFeedRowSource'))).toBe(true);
+
+    for (const symbol of WITHDRAWN_HOST_POLICY_SYMBOLS) {
+      expect(declared.filter((line) => line.includes(symbol))).toStrictEqual([]);
     }
   });
 
-  it('produces a host the service constructor accepts, which a raw string is not', async () => {
+  it('★ takes the host as a plain string and performs no check on it', async () => {
+    // The compile-time half. A plain string literal is assignable to the constructor's second
+    // parameter, which a branded type would reject outright - so the parameter type is
+    // asserted by the compiler and this line stops compiling if the brand comes back.
+    const plainStringIsAssignable: ConstructorParameters<typeof GoogleFeedService>[1] =
+      UNTRUSTED_WELL_FORMED_HOST;
+    expect(plainStringIsAssignable).toBe(UNTRUSTED_WELL_FORMED_HOST);
+
+    // The runtime half. A value the RENDERER refuses is accepted by the CONSTRUCTOR without
+    // complaint, which is the positive statement that no origin policy survives in here.
+    expect(() =>
+      makeFeedServiceHarness({
+        read: () => Promise.resolve([makeFeedRow()]),
+        feedHost: SCHEME_AND_PATH_HOST,
+      }),
+    ).not.toThrow();
+
     const harness = makeFeedServiceHarness({
       read: () => Promise.resolve([makeFeedRow()]),
-      feedHost: toTrustedFeedHost('FEED.example.invalid', ALLOWED_FEED_HOSTS),
+      feedHost: SCHEME_AND_PATH_HOST,
     });
 
     await harness.service.generateProductFeed();
 
-    // The compile-time half of the guarantee is the brand: the constructor's parameter
-    // is `TrustedFeedHost`, so an unvalidated string cannot reach the renderer's five
-    // interpolation sites through this class at all. The next case states that in the
-    // form the compiler enforces.
-    expect(soleRendererCall(harness).feedHost).toBe(FEED_HOST_TEXT);
+    // Forwarded byte for byte, scheme and path intact: nothing here parses, strips or repairs.
+    expect(soleRendererCall(harness).feedHost).toBe(SCHEME_AND_PATH_HOST);
+
+    // And refused one layer down, which is where the shape check lives now.
+    expect(() =>
+      renderGoogleProductFeed([], SCHEME_AND_PATH_HOST, FEED_SCHEME, FEED_INSTANT),
+    ).toThrow();
   });
 
-  it('refuses a raw string at the constructor, enforced by the compiler', () => {
-    const repository: GoogleProductFeedRowSource = {
-      fetchProductFeedRows: () => Promise.resolve([]),
-    };
-    const renderFeed: GoogleProductFeedRenderer = () => '';
+  it('★ the host grammar is still enforced, by the renderer, and it still throws', () => {
+    // Every one of these was refused by the withdrawn constructor guard, and every one is
+    // still refused: emptiness, whitespace-only, a scheme, a path, credentials, a query, a
+    // fragment, internal whitespace, a header-splitting payload, a leading dot, an empty
+    // label, a leading hyphen, a padded value and a value past the length bound.
+    for (const malformed of [
+      '',
+      '   ',
+      'https://feed.example.invalid',
+      'feed.example.invalid/attacker-path',
+      'attacker@feed.example.invalid',
+      'feed.example.invalid?tenant=a',
+      'feed.example.invalid#fragment',
+      'feed example.invalid',
+      'feed.example.invalid\r\nX-Injected: 1',
+      '.feed.example.invalid',
+      'feed..example.invalid',
+      '-feed.example.invalid',
+      PADDED_FEED_HOST,
+      'a'.repeat(260),
+    ]) {
+      expect(() => renderGoogleProductFeed([], malformed, FEED_SCHEME, FEED_INSTANT)).toThrow();
+    }
 
-    const service = new GoogleFeedService(
-      repository,
-      // @ts-expect-error a raw string is not a TrustedFeedHost: only `toTrustedFeedHost`
-      // produces one, so an unvalidated host cannot be wired in even by mistake.
-      'attacker.example.invalid',
-      FEED_INSTANT,
-      renderFeed,
-    );
+    // ANTI-VACUITY: the two hosts this suite uses throughout are ACCEPTED, so the loop above
+    // is not passing because the renderer refuses everything it is handed. Mixed case is
+    // shape-valid and proves the grammar is a grammar rather than an equality check.
+    expect(() => renderGoogleProductFeed([], FEED_HOST, FEED_SCHEME, FEED_INSTANT)).not.toThrow();
+    expect(() =>
+      renderGoogleProductFeed([], MIXED_CASE_FEED_HOST, FEED_SCHEME, FEED_INSTANT),
+    ).not.toThrow();
+  });
 
-    // The refusal above is the assertion. Naming the value keeps `noUnusedLocals`
-    // satisfied and proves the line was type-checked rather than deleted.
-    expect(service).toBeInstanceOf(GoogleFeedService);
+  it('★ a well-formed but untrusted host is accepted end to end, which is the residual risk', async () => {
+    // Stated as a case rather than only as a comment, because it is the honest consequence of
+    // withdrawing the allow-list and a reader deserves to find it asserted. A well-formed
+    // authority nobody configured passes the grammar, is not inspected by the service, and is
+    // passed through by the composition root. PROVENANCE is therefore an obligation on the
+    // caller - documented on the constructor parameter and on the composition root's input -
+    // and, if a deployment wants it enforced, an API Gateway concern owned outside this
+    // subtree.
+    const harness = makeFeedServiceHarness({
+      read: () => Promise.resolve([makeFeedRow()]),
+      feedHost: UNTRUSTED_WELL_FORMED_HOST,
+    });
+
+    await harness.service.generateProductFeed();
+
+    expect(soleRendererCall(harness).feedHost).toBe(UNTRUSTED_WELL_FORMED_HOST);
+    expect(() =>
+      renderGoogleProductFeed([], UNTRUSTED_WELL_FORMED_HOST, FEED_SCHEME, FEED_INSTANT),
+    ).not.toThrow();
   });
 });
 
-// 11. The feed origin, refused at construction rather than stored
+// ---------------------------------------------------------------------------
+// The URL scheme is forwarded, never chosen (S-09)
 //
-// ★★★ SECURITY BOUNDARY — CWE-346 (ORIGIN VALIDATION ERROR), and A DELIBERATE
-// DIVERGENCE FROM THE LEGACY, which is why the block carries this much prose.
+// Finding S-09 (MEDIUM, CWE-319) made the feed's URL scheme a deployment-owned value instead of a
+// literal hardcoded in the renderer. The service's whole part in that is custody: it accepts the
+// scheme, holds it beside the host, and hands it to the renderer unchanged. These cases pin exactly
+// that and nothing more - which scheme is SAFE is `resolveFeedUrlScheme`'s judgment, and which
+// document results is the renderer's.
 //
-// The legacy template interpolated `CGI.HTTP_HOST` at five sites
-// [integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24] and
-// validated it at none. `CGI.HTTP_HOST` is the REQUEST'S OWN `Host` HEADER: a client
-// chooses it, so the legacy feed's every item URL was in principle client-steerable.
-// This port already diverges by taking the host as an explicit constructor argument
-// rather than reading an ambient request scope - and that divergence buys nothing
-// unless the value is checked, because a caller can forward a header just as easily
-// as a setting.
-//
-// WHY THIS IS NOT A PARITY BREAK WORTH PRESERVING. AAP 0.6.7 registers twenty legacy
-// defects to reproduce and the absence of origin validation is not among them; no
-// preserve-exactly mandate covers the feed template's host handling; and AAP 0.8.1's
-// must-preserve list names promotion math, the resolution cascades and option-based
-// SKU selection, none of which touches this. What the AAP does mandate [0.1.1] is
-// preserving the feed CONTRACT - the elements, their order and their values - and a
-// refused construction emits no document at all rather than a differently-shaped
-// one, so no consumer can observe a changed contract.
-//
-// WHY IT IS CHECKED HERE AND NOT ONLY IN THE RENDERER, in two words each: the
-// renderer is SUBSTITUTABLE (it is a defaulted constructor parameter, so a caller may
-// supply one that checks nothing), and construction is EARLIER (a check deferred to
-// render time would let a bad origin drive a full catalog read first). Both are
-// asserted below.
-//
-// ★★ HOW THIS SECTION RELATES TO SECTION 10, WHICH DID NOT EXIST WHEN THE PROSE ABOVE
-// WAS WRITTEN. The shipped module now carries TWO controls over the feed origin, not
-// one, and they check DIFFERENT THINGS:
-//   PROVENANCE - `toTrustedFeedHost(candidate, allowedHosts)` normalises a candidate,
-//     matches it against the deployment's allow-list and mints a `TrustedFeedHost`.
-//     Section 10 owns it. It is the only way to obtain the brand, so the constructor's
-//     parameter type is what stops an unvalidated string being wired in AT COMPILE TIME.
-//   SHAPE - `assertConfiguredFeedHost`, called by the constructor. This section owns it.
-//     It re-checks the grammar AT RUN TIME.
-// The overlap is deliberate belt-and-braces rather than redundancy, and the reason is
-// mechanical: a branded type is ERASED AT RUNTIME, so a JavaScript caller, a `JSON.parse`
-// result, a structural cast or a `// @ts-expect-error` line reaches the constructor with
-// the brand's protection gone. The runtime check is what still refuses in that case, and
-// the cases below reach it exactly that way - through {@link asUncheckedFeedHost}, a
-// single documented cast that simulates the bypass. Every case in this section is
-// therefore a statement about the RUNTIME backstop, and none of them contradicts
-// section 10.
+// NET-NEW COVERAGE per AAP 0.6.6.
 // ---------------------------------------------------------------------------
 
-describe('GoogleFeedService - feed origin validation', () => {
-  /**
-   * Hands the constructor a host that DID NOT COME FROM THE BRANDED FACTORY.
-   *
-   * ★★ THE ONE CAST IN THIS FILE, AND THE THING IT EXISTS TO PROVE. The constructor's
-   * parameter is `TrustedFeedHost`, and section 10 asserts that a raw string cannot be
-   * passed there - the compiler refuses it. That is the COMPILE-TIME half of the
-   * guarantee. This helper deliberately defeats it, because a brand is a compile-time
-   * fiction: `TrustedFeedHost` is `string & { readonly [brand]: true }` where the brand
-   * key is a `declare const unique symbol`, so NOTHING is added to the value and nothing
-   * survives to runtime. A JavaScript caller, a value crossing a `JSON.parse` boundary,
-   * a structural cast in a composition root, or an unbundled `.js` consumer therefore
-   * arrives at this constructor with the brand contributing exactly nothing.
-   *
-   * Every case below is a statement about what happens THEN, which is the only way to
-   * assert that `assertConfiguredFeedHost` is load-bearing rather than dead code sitting
-   * behind a type that already excluded its inputs. Without the cast these cases would
-   * not compile, and the runtime backstop would be untested.
-   *
-   * It is confined to this helper on purpose: one cast, named, documented, and used by
-   * this section alone. No production module casts to obtain this brand except the mint
-   * itself, and section 10 pins that.
-   */
-  function asUncheckedFeedHost(raw: string): TrustedFeedHost {
-    return raw as TrustedFeedHost;
-  }
-
-  /** Constructs with the supplied host and returns the raised error, or throws if none was. */
-  function captureConstructionRefusal(feedHost: string): Error {
-    try {
-      makeFeedServiceHarness({
-        read: () => Promise.resolve([makeFeedRow()]),
-        feedHost: asUncheckedFeedHost(feedHost),
-      });
-    } catch (error: unknown) {
-      if (error instanceof Error) {
-        return error;
-      }
-
-      throw new Error(`expected an Error, received ${typeof error}`);
-    }
-
-    // Reached only when the guard let the value through, which a later render-time
-    // failure could otherwise disguise as a pass at this seam.
-    throw new Error(`expected a refusal for host ${JSON.stringify(feedHost)}, none was raised`);
-  }
-
-  it('accepts a bare host, a bare host with a port, and mixed case, unchanged', async () => {
-    // The shapes an operator actually configures, asserted first so the refusals below
-    // cannot be mistaken for a guard that rejects everything.
-    //
-    // ★ THE THIRD ENTRY CARRIES A PROPERTY OF ITS OWN, and it is the one this suite used
-    // to assert from section 3. {@link MIXED_CASE_FEED_HOST} is shape-valid - a host's
-    // letters may be either case - and the assertion below is `toBe(host)`, so this guard
-    // ACCEPTS OR REFUSES and never NORMALISES. Lower-casing belongs to
-    // `toTrustedFeedHost` alone, and by the sanctioned route it has already happened
-    // before a value can arrive here, which is why section 3 now asserts the factory's
-    // canonicalisation instead. Arriving by the UNSANCTIONED route, as this case does,
-    // is what keeps the no-normalisation property of the constructor assertable at all.
-    for (const host of [
-      'shop.example.invalid',
-      'shop.example.invalid:8443',
-      MIXED_CASE_FEED_HOST,
-    ]) {
-      const harness = makeFeedServiceHarness({
-        read: () => Promise.resolve([makeFeedRow()]),
-        feedHost: asUncheckedFeedHost(host),
-      });
-
-      await harness.service.generateProductFeed();
-
-      expect(soleRendererCall(harness).feedHost).toBe(host);
-    }
-  });
-
-  it('refuses an empty host, which the legacy accepted and rendered as a bare scheme', () => {
-    const error = captureConstructionRefusal('');
-
-    expect(error.message).toContain('it was empty');
-    expect(error.message).toContain('No feed service was constructed');
-  });
-
-  it('refuses a scheme, a path, credentials, a query and a fragment', () => {
-    // The five constructs that change what a feed URL resolves to. Credentials are
-    // the highest-value case: `shop.example.invalid@evil.invalid` resolves to
-    // `evil.invalid`, with the part a human reads first demoted to a username.
-    expect(captureConstructionRefusal('http://shop.example.invalid').message).toContain(
-      'no scheme',
-    );
-    expect(captureConstructionRefusal('shop.example.invalid/checkout').message).toContain(
-      'no path',
-    );
-    expect(captureConstructionRefusal('shop.example.invalid@evil.invalid').message).toContain(
-      'no credentials',
-    );
-    expect(captureConstructionRefusal('shop.example.invalid?tenant=a').message).toContain(
-      'no query',
-    );
-    expect(captureConstructionRefusal('shop.example.invalid#frag').message).toContain(
-      'no fragment',
-    );
-  });
-
-  it('refuses a padded host that reached it without passing the factory', () => {
-    // ★ THIS CASE ONCE READ "REFUSES A PADDED HOST RATHER THAN TRIMMING IT", AND WENT
-    // ON: "THE ONE VALUE WHOSE DISPOSITION CHANGED, SO IT IS ASSERTED DIRECTLY.
-    // TRIMMING WOULD ACCEPT A MALFORMED CONFIGURATION AND QUIETLY CORRECT IT, LEAVING
-    // THE OPERATOR WITH NO SIGNAL THAT IT WAS WRONG."
-    //
-    // The assertion is unchanged and still passes. The TITLE is revised, because the
-    // shipped module now trims at the SANCTIONED entry point and refuses here, and both
-    // of those are correct for their own position:
-    //   `toTrustedFeedHost` normalises, then requires the normalised form to appear on
-    //   the deployment's allow-list. A padded value is therefore admitted only when the
-    //   operator has ALREADY declared that exact host trusted, so trimming cannot admit
-    //   a host nobody configured - the worst it tolerates is stray whitespace in a value
-    //   that was going to be accepted anyway. Section 10 pins that behaviour directly.
-    //   `assertConfiguredFeedHost`, reached here, sees a value of UNKNOWN provenance,
-    //   because the brand it trusted is erased. Trimming at that point would mean
-    //   silently altering bytes that no allow-list ever vouched for, so it refuses
-    //   instead. That is the original argument, in the one position where it holds.
-    const error = captureConstructionRefusal(PADDED_FEED_HOST);
-
-    expect(error.message).toContain('no whitespace');
-  });
-
-  it('refuses control characters, including the CR and LF a header split needs', () => {
-    expect(captureConstructionRefusal('shop.example.invalid\r\nX-Injected: 1').message).toContain(
-      'no control characters',
-    );
-    expect(captureConstructionRefusal('shop.example.invalid\u0000evil.invalid').message).toContain(
-      'No feed service was constructed',
-    );
-  });
-
-  it('names the constraint and never echoes the rejected origin', () => {
-    for (const host of [
-      'http://evil.invalid',
-      'shop.example.invalid/checkout',
-      'user:secret@evil.invalid',
-      `${'a'.repeat(300)}.invalid`,
-    ]) {
-      const error = captureConstructionRefusal(host);
-
-      // Reproducing the value would write caller-controlled bytes into a log line.
-      expect(error.message).not.toContain('evil.invalid');
-      expect(error.message).not.toContain('secret');
-      expect(error.message).not.toContain('checkout');
-      expect(error.message).not.toContain('aaaa');
-      expect(error.message).toContain('No feed service was constructed');
-    }
-  });
-
-  it('states the provenance obligation this guard cannot itself enforce', () => {
-    // The guard checks SHAPE and cannot check PROVENANCE - `evil.invalid` is a
-    // perfectly well-formed host and is accepted. The obligation to source the value
-    // from configuration rather than from a request header is therefore carried by
-    // the refusal message and by the constructor's documented contract, and this case
-    // pins the limit so nobody mistakes the guard for more than it is.
-    //
-    // ★ ONE CLAUSE OF THIS NOTE IS NARROWED. It was written when SHAPE was the only
-    // control in the module, so "the guard cannot check provenance" read as "provenance
-    // is unchecked". It is not: `toTrustedFeedHost` checks it against an explicit
-    // allow-list, and `evil.invalid` does not survive that gate - section 10 asserts
-    // exactly that refusal. What remains true, and is what this case pins, is that THIS
-    // guard - the constructor's own runtime check - cannot check provenance, which is
-    // why a value that bypasses the factory can still be shape-valid and untrusted.
-    // The cast below is what lets the case demonstrate it.
-    expect(captureConstructionRefusal('http://x').message).toContain(
-      'come from configuration and never from a request Host header',
-    );
-
+describe('GoogleFeedService - the scheme is forwarded, never chosen (S-09)', () => {
+  it('★★ hands the renderer the scheme it was CONSTRUCTED with, not one of its own', async () => {
     const harness = makeFeedServiceHarness({
-      read: () => Promise.resolve([makeFeedRow()]),
-      feedHost: asUncheckedFeedHost('evil.invalid'),
+      read: (): Promise<FeedRows> => Promise.resolve([]),
+      feedScheme: 'https',
     });
 
-    expect(harness.service).toBeInstanceOf(GoogleFeedService);
+    await harness.service.generateProductFeed();
+
+    // The service neither upgrades nor downgrades. A service that hardcoded a scheme, or that
+    // "helpfully" forced https, would fail this - and would put the decision in the wrong layer.
+    expect(soleRendererCall(harness).feedScheme).toBe('https');
   });
 
-  it('refuses BEFORE constructing, so no instance holds a bad origin and no read is issued', () => {
-    // ★ THE REASON THE CHECK IS HERE AND NOT ONLY IN THE RENDERER, part two of two:
-    // `generateProductFeed` reads the row source BEFORE it renders, so a check
-    // deferred to render time would let an invalid origin drive an unbounded catalog
-    // read whose every row is then discarded. Failing at construction spends nothing,
-    // and this case proves the read never happens.
-    const reads: string[] = [];
+  it('forwards http just as faithfully, which is what keeps legacy parity reachable', async () => {
+    const harness = makeFeedServiceHarness({
+      read: (): Promise<FeedRows> => Promise.resolve([]),
+      feedScheme: 'http',
+    });
 
-    expect(() => {
-      makeFeedServiceHarness({
-        read: () => {
-          reads.push('read');
-          return Promise.resolve([makeFeedRow()]);
-        },
-        feedHost: asUncheckedFeedHost('http://evil.invalid/x'),
-      });
-    }).toThrow(/bare host/);
+    await harness.service.generateProductFeed();
 
-    expect(reads).toHaveLength(0);
+    // Custody, not policy: a deployment outside production that genuinely serves plain HTTP still
+    // gets the legacy document. `resolveFeedUrlScheme` is where production refuses this value.
+    expect(soleRendererCall(harness).feedScheme).toBe('http');
   });
 
-  it('does not delegate its precondition to the substitutable renderer', () => {
-    // ★ THE REASON THE CHECK IS HERE AND NOT ONLY IN THE RENDERER, part one of two.
-    // The renderer arrives as a DEFAULTED CONSTRUCTOR PARAMETER, so a composition
-    // root or a suite may supply one that validates nothing - as this file's own
-    // double does. A precondition this class depends on therefore cannot be delegated
-    // to a collaborator the caller chooses, and this case demonstrates the gap that
-    // delegation would leave: the double would have happily rendered the bad origin.
-    const permissiveRenderer: GoogleProductFeedRenderer = () => 'rendered-with-anything';
+  it('carries the scheme and the host as ONE origin, both from construction', async () => {
+    const harness = makeFeedServiceHarness({
+      read: (): Promise<FeedRows> => Promise.resolve([]),
+      feedScheme: 'https',
+    });
 
+    await harness.service.generateProductFeed();
+
+    const call = soleRendererCall(harness);
+
+    // Both halves of the origin arrive together and neither is read from the request. The host's
+    // provenance was fixed by S-15 and the scheme's by S-09; this asserts the pair.
+    expect({ feedHost: call.feedHost, feedScheme: call.feedScheme }).toStrictEqual({
+      // `FEED_HOST` IS THE PLAIN LITERAL, and it is what the harness constructs with now. This
+      // read `FEED_HOST_TEXT` while a branded `TrustedFeedHost` constant stood beside a raw-text
+      // companion; the brand, its mint and the companion were all withdrawn with the constructor
+      // guard, so there is one constant again and it is this one.
+      feedHost: FEED_HOST,
+      feedScheme: 'https',
+    });
+  });
+
+  it('★ will not COMPILE without a scheme, so no instance can exist without a full origin', () => {
+    // A TYPE-LEVEL assertion, and the reason the class needs no runtime check for it: the scheme is
+    // required and is a two-member union, so an instance holding a half-origin is unconstructable.
     expect(
       () =>
+        // @ts-expect-error - the scheme is REQUIRED between the host and the instant, and an
+        // arity error is reported against the call expression rather than the argument.
         new GoogleFeedService(
           { fetchProductFeedRows: (): Promise<FeedRows> => Promise.resolve([]) },
-          asUncheckedFeedHost('http://evil.invalid/x'),
+          FEED_HOST,
           FEED_INSTANT,
-          permissiveRenderer,
         ),
-    ).toThrow(/bare host/);
-
-    // And the permissive renderer really would have accepted it, which is what makes
-    // the constructor's own check load-bearing rather than redundant.
-    expect(permissiveRenderer([], 'http://evil.invalid/x', FEED_INSTANT)).toBe(
-      'rendered-with-anything',
-    );
-  });
-
-  it('agrees with the real renderer on every host, so the two grammars cannot drift', () => {
-    // ★ THE MECHANISM THAT KEEPS A DELIBERATE DUPLICATE HONEST. The constructor and
-    // the renderer enforce the same grammar from two module-private copies, because
-    // AAP 0.3.1 fixes this folder at four files and `src/lib/` at its enumerated set,
-    // so there is no shared module either could hold it in. Editing one copy alone
-    // fails this case.
-    //
-    // ★ THERE ARE NOW THREE HOST GRAMMARS IN THE FOLDER, AND THIS CASE PINS THE TWO
-    // THAT MUST BE IDENTICAL. `FEED_HOST_SHAPE` appears twice - in
-    // `googleFeedService.ts` for the constructor and in `rssFeedRenderer.ts` for the
-    // renderer - and those two are byte-identical patterns that must stay so, which is
-    // what the table below enforces. The third, `FEED_HOST_AUTHORITY`, backs
-    // `toTrustedFeedHost` and is DELIBERATELY STRICTER: it runs after the candidate has
-    // been lower-cased, so it needs no upper-case range, and it admits neither the
-    // underscore nor the bracketed IPv6 literal that the two shape copies allow.
-    // Equality is NOT asserted against it, because a stricter sanctioned gate in front
-    // of a permissive backstop is the intended ordering - tightening the outer gate must
-    // not be able to fail this case, and loosening either inner copy alone must.
-    const hosts: readonly string[] = [
-      // Accepted.
-      'shop.example.invalid',
-      'shop.example.invalid:8443',
-      'localhost',
-      'a',
-      '[2001:db8::1]',
-      'feed_internal.example.invalid',
-      'evil.invalid',
-      // Refused.
-      '',
-      '   ',
-      'http://shop.example.invalid',
-      '//shop.example.invalid',
-      'shop.example.invalid/',
-      'shop.example.invalid/checkout',
-      'user:secret@evil.invalid',
-      'shop.example.invalid?tenant=a',
-      'shop.example.invalid#frag',
-      ' shop.example.invalid',
-      'shop.example.invalid ',
-      'shop example.invalid',
-      '.shop.example.invalid',
-      'shop.example.invalid.',
-      '-shop.example.invalid',
-      'shop..example.invalid',
-      '2001:db8::1',
-      'shop.example.invalid\r\nX-Injected: 1',
-      'shop.example.invalid\u0000evil.invalid',
-      `${'a'.repeat(300)}.invalid`,
-    ];
-
-    for (const host of hosts) {
-      let constructorAccepted = true;
-      try {
-        new GoogleFeedService(
-          { fetchProductFeedRows: (): Promise<FeedRows> => Promise.resolve([]) },
-          asUncheckedFeedHost(host),
-          FEED_INSTANT,
-        );
-      } catch {
-        constructorAccepted = false;
-      }
-
-      let rendererAccepted = true;
-      try {
-        renderGoogleProductFeed([], host, FEED_INSTANT);
-      } catch {
-        rendererAccepted = false;
-      }
-
-      expect({ host, constructorAccepted }).toEqual({
-        host,
-        constructorAccepted: rendererAccepted,
-      });
-    }
+    ).not.toThrow();
   });
 });

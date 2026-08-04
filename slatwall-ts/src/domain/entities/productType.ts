@@ -102,20 +102,22 @@
 // `tests/traceability/legacyTestMap.ts` fails the suite if this module has no test. No test file
 // is authored from here - the contract that tier has to pin is enumerated at the foot of this file.
 //
-// BUDGET, STATED SO IT IS AUDITABLE: this file spends ZERO signature widenings, ZERO of the THREE
-// BUDGETED deliberate divergences, ZERO reshapings and ZERO visibility widenings. It carries
-// EXACTLY ONE `LEGACY-DEFECT` marker - the always-throws method at [L117-L119] - and every other
-// annotation is a `LEGACY-NOTE` or a secondary-register item.
-//
-// ★ THE QUALIFIER ON "DELIBERATE DIVERGENCES" IS LOAD-BEARING, AND THIS LINE ONCE OMITTED IT. It
-// read "ZERO deliberate divergences" flat, while `setParentProductType` below declares
-// "★★★ DELIBERATE DIVERGENCE - A REPARENT THAT WOULD CLOSE A CYCLE IS REFUSED" and the MySQL
-// adapter raises `ProductTypeCycleError` on the same condition. Both statements cannot be read as
-// answering the same question. The three divergences the migration budgets are spent in `sku.ts`
-// and `product.ts`, and NONE of them is spent here; the cycle refusal is a FOURTH, project-local
-// divergence that carries its own four-step justification at the setter rather than drawing on that
-// budget. Read flat, this line denied a divergence the same file declares. Nothing here asserts a service level, a latency, a
+// BUDGET, STATED SO IT IS AUDITABLE: this file spends ZERO signature widenings, ZERO deliberate
+// divergences, ZERO reshapings and ZERO visibility widenings. It carries EXACTLY ONE
+// `LEGACY-DEFECT` marker - the always-throws method at [L117-L119] - and every other annotation is
+// a `LEGACY-NOTE` or a secondary-register item. Nothing here asserts a service level, a latency, a
 // throughput or an uptime figure, because the legacy system states none.
+//
+// ★ AN EARLIER REVISION SPENT A FOURTH DIVERGENCE HERE, AND THE RECORD OF ITS REMOVAL BELONGS IN
+// THE BUDGET THAT ONCE QUALIFIED ITSELF TO ACCOMMODATE IT. `setParentProductType` REFUSED a
+// reparent that would close a cycle, under a three-star divergence banner, and this budget line
+// read "ZERO of the THREE BUDGETED deliberate divergences" so that the refusal could be counted
+// outside the budget rather than against it. Both are gone: the setter now assigns whatever it is
+// handed, exactly as [model/entity/ProductType.cfc:L149-L153] does, and the budget line above is
+// unqualified again because there is nothing left to qualify. Where termination genuinely had to be
+// decided - `hydrateWithAncestry` in `mysqlProductTypeRepository.ts`, a hand-written recursive read
+// that replaces Hibernate's lazy traversal under transformation rule T3 and has no legacy
+// antecedent to reproduce - it is decided there, as a fetch-shape decision at the adapter boundary.
 //
 // NO USER RULES WERE PROVIDED for this project (the rules source returns exactly "No user rules
 // provided."). No rule is invented to fill that gap, and the absence is not licence to lower the
@@ -131,7 +133,6 @@ import {
   buildIdPathList,
   getRootIdFromIdPath,
   resolveIdPath,
-  wouldCreateIdPathCycle,
 } from '../valueObjects/materializedIdPath.js';
 import type { PriceGroup } from './priceGroup.js';
 import type { PriceGroupRate } from './priceGroupRate.js';
@@ -1243,66 +1244,43 @@ export class ProductType {
    * The append goes through `getChildProductTypes()`, which returns the parent's LIVE array - that is
    * why that accessor is not `readonly`.
    *
-   * ★★★ DELIBERATE DIVERGENCE — A REPARENT THAT WOULD CLOSE A CYCLE IS REFUSED.
-   * The legacy setter assigns whatever it is handed, so choosing this node's own
-   * descendant as its parent is accepted and the malformed graph is created. That
-   * is not reproduced, and the reasoning is set out once, in full, on
-   * `buildIdPathList()` in src/domain/valueObjects/materializedIdPath.ts. In
-   * short: the resulting non-termination is an availability defect rather than a
-   * behaviour, it is not an entry in the project's closed defect register, no
-   * preserve-exactly mandate reaches it, and `org/Hibachi/**` is a boundary this
-   * migration REPLACES rather than reproduces.
+   * ★ WHATEVER IT IS HANDED IS ASSIGNED, INCLUDING A DESCENDANT OF THIS NODE.
+   * The legacy setter validates nothing, so choosing this node's own descendant as
+   * its parent is accepted and a cyclic `parentProductType` chain is created. That
+   * is reproduced rather than corrected, so no assignment this method accepts
+   * differs from the assignment [model/entity/ProductType.cfc:L149-L153] would
+   * have accepted.
    *
-   * WHY THE GUARD IS HERE AND NOT ONLY ON THE PATH BUILD. The path build refuses
-   * to produce a path from a cyclic chain, which is what keeps a SAVE from
-   * hanging. It does nothing for the walks over this same chain that never build
-   * a path: the price-group cascade climbs it on the READ path while pricing an
-   * order [model/service/PriceGroupService.cfc:L68-L77], and
-   * `getSimpleRepresentation()` recurses up it
-   * [model/entity/ProductType.cfc:L273-L278]. Refusing the ASSIGNMENT means a
-   * cycle never enters a live graph, so every one of those walks is safe for one
-   * reason instead of needing a guard each.
+   * ★ AN EARLIER REVISION REFUSED SUCH A REPARENT, AND THE RECORD OF ITS REMOVAL
+   * BELONGS HERE. This method used to call a `wouldCreateIdPathCycle()` helper and
+   * throw, under a three-star divergence banner. Three checkable reasons removed
+   * it. (1) A port reproduces; it does not improve. The legacy setter has no such
+   * check, so refusing an assignment it accepts is an unrequested behavioural
+   * change rather than a migration. (2) The project's deliberate-divergence budget
+   * is closed at THREE - the un-`var`'d `discountAmount`
+   * [model/service/PromotionService.cfc:L1007], the `amountOff` branch routed
+   * through `Money` [model/service/PromotionService.cfc:L998], and the entity memo
+   * defects in `sku.ts`/`product.ts` - and a guard here was a FOURTH, justified
+   * against itself rather than against that budget. (3) Termination on a cyclic
+   * chain genuinely had to be decided in exactly one place, and this is not it:
+   * `hydrateWithAncestry` in `mysqlProductTypeRepository.ts` is a hand-written
+   * recursive read that replaces Hibernate's lazy traversal under transformation
+   * rule T3, has no legacy antecedent to reproduce, and therefore owns its own
+   * fetch-shape termination decision. It still RAISES `ProductTypeCycleError`
+   * naming the chain it followed rather than truncating, because a shortened
+   * ancestry is a DIFFERENT product-type membership set, and membership decides
+   * which promotion rewards and which price-group rate apply - truncating would be
+   * a different price arrived at silently. Raising there is a decision about a
+   * query the legacy system never issued; it is not a change to this setter.
    *
-   * NOTHING IS MUTATED WHEN THE ASSIGNMENT IS REFUSED. The check runs before the
-   * near-side write, so a rejected reparent leaves both nodes exactly as they
-   * were rather than half-linked - which matters because the near side is assigned
-   * unconditionally and the far-side append is what the legacy guards.
-   *
-   * A WELL-FOUNDED REPARENT IS UNAFFECTED, including moving a subtree sideways or
-   * upward: the check answers `true` only when this node is reachable from the
-   * candidate, and a legitimate move never is. THE CONSTRUCTOR IS NOT GUARDED,
-   * deliberately - it is the hydration boundary, and a constructor that threw would
-   * duplicate a decision already taken, and taken more informatively, one layer out.
-   *
-   * ★ THIS PARAGRAPH ONCE ENDED "BOTH REPOSITORY ADAPTERS ALREADY TRUNCATE A CYCLIC
-   * ROW SET INTO AN ACYCLIC GRAPH ON PURPOSE, SO MAKING THE CONSTRUCTOR THROW WOULD
-   * UNDO A DECISION TAKEN ELSEWHERE." The conclusion still holds; the premise no longer
-   * describes the shipped adapters, so it is corrected here rather than left to mislead.
-   * `hydrateWithAncestry` in `mysqlProductTypeRepository.ts` does NOT truncate: it RAISES
-   * `ProductTypeCycleError`, naming the chain it followed. A shortened ancestry is a
-   * DIFFERENT product-type membership set, and product-type membership decides which
-   * promotion rewards and which price-group rate apply, so truncation would have been a
-   * different price arrived at silently.
-   *
-   * The reason the constructor needs no guard is therefore stronger than it was, not
-   * weaker: a cyclic ROW SET never reaches a constructor at all, and the only cyclic
-   * graph a constructor could be handed is one an operator built in memory - which is
-   * exactly what this setter refuses.
+   * THE CONSTRUCTOR IS LIKEWISE UNGUARDED, and for the same reason: it is the
+   * hydration boundary, it reproduces what the row set says, and the adapter that
+   * produced the row set has already refused to hand back a cyclic one.
    */
   setParentProductType(parentProductType: ProductType): void {
-    if (
-      wouldCreateIdPathCycle<ProductType>(this, parentProductType, (node) =>
-        node.getParentProductType(),
-      )
-    ) {
-      throw new Error(
-        `Product type '${this.getProductTypeID()}' cannot take product type ` +
-          `'${parentProductType.getProductTypeID()}' as its parent: the assignment would make the ` +
-          `parentProductType chain cyclic, so productTypeIDPath could never be built and every walk ` +
-          `up that chain would never terminate. Nothing has been changed.`,
-      );
-    }
-
+    // CFML parity [model/entity/ProductType.cfc:L149-L153]: the legacy body validates nothing
+    // before assigning, and neither does this one. A cyclic parent chain is accepted here
+    // exactly as it is accepted there.
     this.parentProductType = parentProductType;
     if (this.isNew() || !parentProductType.hasChildProductType(this)) {
       parentProductType.getChildProductTypes().push(this);

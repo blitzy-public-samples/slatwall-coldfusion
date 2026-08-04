@@ -67,7 +67,6 @@ import {
   idPathContainsAnyId,
   idPathContainsId,
   resolveIdPath,
-  wouldCreateIdPathCycle,
 } from '../../../../src/domain/valueObjects/materializedIdPath.js';
 
 // JUDGMENT CALL: the two parity helper modules below are imported only because the shipped
@@ -581,44 +580,40 @@ describe('buildIdPathList: no shared state, no input mutation', () => {
 });
 
 // ---------------------------------------------------------------------------
-// THE ONE DECLARED DIVERGENCE - a cyclic or unbounded parent chain is REFUSED
+// NO CYCLE GUARD, AND NO DEPTH CEILING - THE WALK IS REPRODUCED, NOT IMPROVED
 //
-// Authority for the legacy behaviour: the do/while at
+// Authority for the behaviour: the do/while at
 // [org/Hibachi/HibachiEntity.cfc:L314-L321] holds no visited set and no
 // iteration bound, so a `parentProductType` chain that returns to a node it has
-// already passed is followed forever. Authority for the divergence: it is not an
-// entry in the AAP defect register - the closed set of twenty entries plus eight
-// secondary items does not contain it - the preserve-exactly mandate names
-// promotion discount math, the price-group and currency cascade and
-// option-to-SKU resolution rather than the framework path builder, and
-// `org/Hibachi/**` is explicitly a boundary to REPLACE rather than reproduce.
+// already passed is followed forever. The port reproduces that, so a cyclic
+// chain does not terminate here either.
 //
-// WHY IT IS A SECURITY PROPERTY AND NOT A TIDY-UP. The legacy non-termination
-// occupied one CFML request thread. The same chain on `nodejs20.x` occupies the
-// single-threaded event loop of an invocation until the Lambda timeout, and the
-// platform then RETRIES, so one malformed row denies the capability repeatedly
-// for as long as it is reachable. `parentProductType`, `parentPriceGroup` and
-// `parentCategory` are all operator-writable, and the guard sits on the write
-// half, so the refusal happens before an entity field is assigned and before a
-// repository binds a parameter.
+// ★ THIS BLOCK ONCE ASSERTED THE OPPOSITE, AND THE RECORD BELONGS HERE. It ran
+// under the banner "THE ONE DECLARED DIVERGENCE - a cyclic or unbounded parent
+// chain is REFUSED" and pinned a `CyclicIdPathError` thrown by a visited-identity
+// set with a 4096-level depth backstop behind it, plus a `wouldCreateIdPathCycle`
+// export that let three entity setters refuse a reparent. All of it is gone,
+// because a port reproduces rather than improves and because the project's
+// deliberate-divergence budget is closed at three - none of which is spent here.
+// Where termination genuinely had to be decided, it is decided at the MySQL
+// adapters that materialize an ancestry, as a fetch-shape decision under
+// transformation rule T3.
 //
-// EVERY ASSERTION BELOW IS ABOUT REFUSAL, NEVER ABOUT TRUNCATION. Truncation was
-// rejected outright: a silently shortened path changes which promotion rewards
-// and which price-group rate apply, which is money. The contract is that NO PATH
-// IS PRODUCED - so each test proves a throw and none of them accepts a shorter
-// string as an acceptable answer.
+// HOW AN ABSENT GUARD IS ASSERTED WITHOUT HANGING THIS SUITE. A test cannot walk
+// a cyclic chain to completion, because there is no completion. So the absence is
+// proven from the other side: the parent accessor itself counts its reads and
+// throws a sentinel far beyond the point at which either removed guard would have
+// fired. Observing the sentinel - rather than a refusal at read 4, or at level
+// 4096 - is the proof that neither guard survives. The walk is never left running.
 // ---------------------------------------------------------------------------
 
 /**
  * One node of a hierarchy that is allowed to contain a cycle.
  *
  * JUDGMENT CALL: a second node shape, deliberately mutable in exactly one field,
- * rather than relaxing `HierarchyNode.parent`. `HierarchyNode` is readonly and
- * assignable only from an already-constructed node, which makes every hierarchy
- * in the well-founded blocks above provably acyclic without any assertion
- * saying so, and that guarantee is worth keeping intact. Confining mutability to
- * the block that needs it means a later edit cannot accidentally introduce a
- * cycle into a test that is not about cycles.
+ * so a cycle can be closed after construction. `HierarchyNode` above is fully
+ * readonly precisely so that a cycle cannot be built by accident in the blocks
+ * that are not about cycles; this shape is confined to the block that is.
  */
 interface CyclicNode {
   readonly id: string;
@@ -631,475 +626,82 @@ const readCyclicId: PrimaryIdAccessor<CyclicNode> = (node) => node.id;
 /** Reads a cycle-capable node's parent. Same role as {@link readParent}. */
 const readCyclicParent: ParentNodeAccessor<CyclicNode> = (node) => node.parent;
 
-/**
- * How a walk failed, in the only two terms a caller can rely on.
- *
- * The module's error class is deliberately NOT exported - the export surface is
- * a closed set of five functions, asserted as such at the end of this file, and
- * widening it is a product decision. A caller therefore discriminates on the
- * stable `name`, exactly as `src/lib/cfml/precision.ts` requires of its own
- * callers, and so does this suite. No `instanceof` appears here and none can.
- */
-interface CapturedWalkFailure {
-  readonly name: string;
-  readonly message: string;
-}
+describe('buildIdPathList: no cycle guard, and no depth ceiling', () => {
+  it('climbs a cyclic chain without refusing it, long past where a guard would have fired', () => {
+    // A three-node cycle. A visited-identity set would have refused this at the
+    // fourth read; a 4096-level cap would have refused it at level 4096. Neither
+    // happens: the accessor's own sentinel is what stops the walk, at 20000 reads.
+    const first: CyclicNode = { id: 'first', parent: null };
+    const second: CyclicNode = { id: 'second', parent: first };
+    const third: CyclicNode = { id: 'third', parent: second };
+    first.parent = third;
 
-/**
- * Runs a walk expected to be refused and reports how it was refused.
- *
- * If the walk RETURNS, this throws instead. That matters more here than in most
- * places: a subject that quietly answered a truncated path would otherwise look
- * like a passing expectation, and a truncated path is the single outcome this
- * whole block exists to rule out.
- */
-const captureWalkFailure = (walk: () => unknown): CapturedWalkFailure => {
-  try {
-    walk();
-  } catch (thrown) {
-    return thrown instanceof Error
-      ? { name: thrown.name, message: thrown.message }
-      : { name: 'NotAnError', message: 'a value that is not an Error was thrown' };
-  }
-
-  throw new Error(
-    'the walk under test was expected to be refused, but it returned a path. A cyclic parent ' +
-      'chain must produce NO path - a truncated one silently changes which promotion rewards and ' +
-      'price-group rates apply.',
-  );
-};
-
-describe('buildIdPathList: a cyclic parent chain is refused, not followed', () => {
-  it('refuses a node that is its own parent', () => {
-    // The tightest possible cycle, and the one an operator produces by choosing
-    // a product type as its own parent in a single edit. The guard is checked
-    // BEFORE the identifier is collected, so the second visit is refused rather
-    // than being allowed to contribute a duplicate segment first.
-    const selfParenting: CyclicNode = { id: 'self', parent: null };
-    selfParenting.parent = selfParenting;
-
-    const failure = captureWalkFailure(() =>
-      buildIdPathList(selfParenting, readCyclicId, readCyclicParent),
-    );
-
-    expect(failure.name).toBe('CyclicIdPathError');
-    expect(failure.message).toContain("revisited node 'self' after 1 level(s)");
-  });
-
-  it('refuses a two-node cycle', () => {
-    const first: CyclicNode = { id: 'a', parent: null };
-    const second: CyclicNode = { id: 'b', parent: first };
-    first.parent = second;
-
-    // Refused from either entry point: the cycle is a property of the chain, not
-    // of where the climb happens to start.
-    //
-    // The REASON is asserted alongside the name, not just the name. Both of this
-    // module's refusals carry the same `name`, so a name-only assertion would
-    // still pass if the identity guard were removed and the depth backstop caught
-    // the walk 4096 levels later instead - a materially worse outcome that this
-    // block must not certify as correct.
-    const fromFirst = captureWalkFailure(() =>
-      buildIdPathList(first, readCyclicId, readCyclicParent),
-    );
-    const fromSecond = captureWalkFailure(() =>
-      buildIdPathList(second, readCyclicId, readCyclicParent),
-    );
-
-    expect(fromFirst.name).toBe('CyclicIdPathError');
-    expect(fromFirst.message).toContain("revisited node 'a' after 2 level(s)");
-    expect(fromSecond.name).toBe('CyclicIdPathError');
-    expect(fromSecond.message).toContain("revisited node 'b' after 2 level(s)");
-  });
-
-  it('refuses a three-node cycle, and reports the node it returned to', () => {
-    const bottom: CyclicNode = { id: 'x', parent: null };
-    const middle: CyclicNode = { id: 'y', parent: bottom };
-    const top: CyclicNode = { id: 'z', parent: middle };
-    bottom.parent = top;
-
-    const failure = captureWalkFailure(() =>
-      buildIdPathList(bottom, readCyclicId, readCyclicParent),
-    );
-
-    expect(failure.name).toBe('CyclicIdPathError');
-    // Three levels were climbed - x, z, y - and the fourth visit landed back on
-    // x. The identifier named is the node the walk RETURNED TO, which is the one
-    // an operator has to unlink.
-    expect(failure.message).toContain("revisited node 'x' after 3 level(s)");
-  });
-
-  it('refuses a well-founded leaf that hangs off a cycle further up', () => {
-    // The starting node is NOT part of the cycle, which is the realistic shape:
-    // a leaf category is fine, and the loop is two levels above it. The walk
-    // must still be refused, because it can never reach a root.
-    const loopLower: CyclicNode = { id: 'loop-lower', parent: null };
-    const loopUpper: CyclicNode = { id: 'loop-upper', parent: loopLower };
-    loopLower.parent = loopUpper;
-    const leaf: CyclicNode = { id: 'leaf', parent: loopLower };
-
-    const failure = captureWalkFailure(() => buildIdPathList(leaf, readCyclicId, readCyclicParent));
-
-    expect(failure.name).toBe('CyclicIdPathError');
-    expect(failure.message).toContain("revisited node 'loop-lower'");
-  });
-
-  it('produces NO path at all, and stops climbing at the revisit', () => {
-    // The contract is refusal, not a shorter answer. Two things are pinned:
-    // that no string is returned - `captureWalkFailure` throws if one is - and
-    // that the walk does not keep reading the chain after it has decided. A
-    // counting accessor is used for the second, so a guard that detected the
-    // cycle but carried on regardless would show up as a read count above the
-    // cycle length.
-    const first: CyclicNode = { id: 'p', parent: null };
-    const second: CyclicNode = { id: 'q', parent: first };
-    first.parent = second;
-
-    let parentReads = 0;
+    const sentinel = 'the accessor stopped the walk; the walk did not stop itself';
+    let reads = 0;
     const countingParent: ParentNodeAccessor<CyclicNode> = (node) => {
-      parentReads += 1;
+      reads += 1;
+      if (reads >= 20000) {
+        throw new Error(sentinel);
+      }
       return node.parent;
     };
 
-    expect(
-      captureWalkFailure(() => buildIdPathList(first, readCyclicId, countingParent)).name,
-    ).toBe('CyclicIdPathError');
+    let caught = 'nothing was thrown, so the walk terminated on its own';
+    try {
+      buildIdPathList(third, readCyclicId, countingParent);
+    } catch (thrown) {
+      caught = thrown instanceof Error ? thrown.message : 'a non-Error was thrown';
+    }
 
-    // p and q were each climbed from exactly once; the third visit was refused
-    // before any further parent read.
-    expect(parentReads).toBe(2);
+    // The sentinel, not a refusal - and the read count proves the walk went far
+    // beyond both removed guards rather than being stopped early by either.
+    expect(caught).toBe(sentinel);
+    expect(reads).toBe(20000);
   });
 
-  it('explains what to do and discloses nothing beyond the offending identifier', () => {
-    // The message names the identifier, the depth reached and the remedy, and
-    // says why no path was produced. It is diagnostic text over caller-supplied
-    // structural input: this module reads no environment, holds no connection
-    // detail and sees no monetary value, so it has nothing sensitive available
-    // to disclose.
-    const selfParenting: CyclicNode = { id: 'pt-8001', parent: null };
-    selfParenting.parent = selfParenting;
+  it('answers a path for a well-founded chain deeper than the removed 4096 ceiling', () => {
+    // Positive proof the depth cap is gone: this is the exact input the old
+    // backstop refused. A well-founded chain of any depth is answered, which is
+    // the invariant [org/Hibachi/HibachiEntity.cfc:L314-L321] has.
+    const depth = 5000;
+    let cursor: CyclicNode = { id: 'level0', parent: null };
+    for (let level = 1; level < depth; level += 1) {
+      cursor = { id: `level${String(level)}`, parent: cursor };
+    }
 
-    expect(
-      captureWalkFailure(() => buildIdPathList(selfParenting, readCyclicId, readCyclicParent))
-        .message,
-    ).toBe(
-      "Materialized ID path walk revisited node 'pt-8001' after 1 level(s): the parent chain " +
-        'contains a cycle. No path was produced, because a truncated path would silently change ' +
-        'which promotion rewards and price-group rates apply. Break the cycle in the parent ' +
-        'hierarchy.',
+    const path = buildIdPathList(cursor, readCyclicId, readCyclicParent);
+
+    // Root-first, self-last, one entry per level, no leading or trailing comma.
+    expect(path.split(',')).toHaveLength(depth);
+    expect(path.startsWith('level0,level1,')).toBe(true);
+    expect(path.endsWith(`,level${String(depth - 1)}`)).toBe(true);
+  });
+
+  it('terminates for a chain whose accessor manufactures a fresh node on every call', () => {
+    // The shape the removed visited-identity set could never see: a lazily
+    // hydrating adapter or proxy never returns the same object twice. With no
+    // visited set to fill, nothing here depends on object identity at all - a
+    // well-founded chain simply terminates when the accessor answers null.
+    const manufacturingParent: ParentNodeAccessor<CyclicNode> = (node) => {
+      const level = Number(node.id.replace('level', ''));
+      return level === 0 ? null : { id: `level${String(level - 1)}`, parent: null };
+    };
+
+    expect(buildIdPathList({ id: 'level3', parent: null }, readCyclicId, manufacturingParent)).toBe(
+      'level0,level1,level2,level3',
     );
   });
 
-  it('leaves the cyclic hierarchy exactly as the caller built it', () => {
-    // Refusing is not repairing. The guard does not unlink the parent, blank an
-    // identifier or otherwise edit the caller's structure - it declines to
-    // answer, and the malformed data stays visible for an operator to fix.
-    const first: CyclicNode = { id: 'a', parent: null };
-    const second: CyclicNode = { id: 'b', parent: first };
-    first.parent = second;
-
-    captureWalkFailure(() => buildIdPathList(first, readCyclicId, readCyclicParent));
-
-    expect(first.id).toBe('a');
-    expect(first.parent).toBe(second);
-    expect(second.parent).toBe(first);
-  });
-
-  it('retains nothing between calls: a well-founded walk after a refused one is unaffected', () => {
-    // The visited set is local to one call. If it were module-scoped it would
-    // survive between unrelated invocations on a warm Lambda container - the
-    // exact hazard that puts four legacy component-level caches into request
-    // scope in this port - and the second walk here would be refused for
-    // revisiting a node the FIRST walk saw.
-    const shared: CyclicNode = { id: 'shared', parent: null };
-    shared.parent = shared;
-
-    const firstRefusal = captureWalkFailure(() =>
-      buildIdPathList(shared, readCyclicId, readCyclicParent),
-    );
-
-    expect(firstRefusal.name).toBe('CyclicIdPathError');
-    expect(firstRefusal.message).toContain("revisited node 'shared' after 1 level(s)");
-
-    const root: CyclicNode = { id: 'root', parent: null };
-    const leaf: CyclicNode = { id: 'leaf', parent: root };
-
-    expect(buildIdPathList(leaf, readCyclicId, readCyclicParent)).toBe('root,leaf');
-
-    // And the refused walk is still refused IDENTICALLY after a successful one -
-    // same reason and same reported depth, not merely the same error name. A
-    // visited set that leaked across calls would show up here as a different
-    // depth, because the second refusal would have inherited the first walk's
-    // nodes.
-    const secondRefusal = captureWalkFailure(() =>
-      buildIdPathList(shared, readCyclicId, readCyclicParent),
-    );
-
-    expect(secondRefusal.name).toBe('CyclicIdPathError');
-    expect(secondRefusal.message).toBe(firstRefusal.message);
-  });
-
-  it('tracks node IDENTITY, so a repeated identifier on distinct nodes is still a valid path', () => {
-    // The guard cannot be identifier-based. This suite already pins that an
-    // accessor may answer a different identifier on successive calls for the
-    // same node, and identifiers are carried through verbatim rather than being
-    // treated as unique keys. Two DISTINCT product types sharing an identifier
-    // is malformed data, but it is not a cycle, it terminates, and the legacy
-    // walk answers a path for it - so this port answers one too.
+  it('answers a path when two distinct nodes share an identifier, because that is not a cycle', () => {
+    // CFML parity [org/Hibachi/HibachiEntity.cfc:L314-L321]: the legacy loop
+    // advances on the OBJECT, never on the identifier, so repeating an identifier
+    // is not revisiting the same node. Two DISTINCT product types sharing an
+    // identifier is malformed data, but it terminates and the legacy walk answers
+    // a path for it - so this port answers one too.
     const root: CyclicNode = { id: 'duplicated', parent: null };
     const child: CyclicNode = { id: 'duplicated', parent: root };
 
     expect(buildIdPathList(child, readCyclicId, readCyclicParent)).toBe('duplicated,duplicated');
-  });
-});
-
-describe('buildIdPathList: the depth backstop behind the identity guard', () => {
-  // WHY A SECOND GUARD EXISTS AT ALL. Identity tracking is exact and cannot
-  // false-positive, but it can only see nodes that are the SAME OBJECT. A parent
-  // accessor that manufactures a fresh node on every call - a lazily-hydrating
-  // adapter, or a proxy - never repeats an object, so the visited set never
-  // fills and the walk climbs forever. The depth value is the backstop for that
-  // one shape, and it is deliberately set where no legitimate hierarchy can
-  // reach it.
-
-  it('refuses a parent chain that manufactures a fresh node on every read', () => {
-    const manufacturingParent: ParentNodeAccessor<CyclicNode> = (node) => ({
-      id: `${node.id}-up`,
-      parent: null,
-    });
-
-    const failure = captureWalkFailure(() =>
-      buildIdPathList({ id: 'start', parent: null }, readCyclicId, manufacturingParent),
-    );
-
-    expect(failure.name).toBe('CyclicIdPathError');
-    expect(failure.message).toContain('exceeded 4096 levels');
-    expect(failure.message).toContain('the parent chain is unbounded');
-    // The two reasons are distinguishable from the message alone, which is what a
-    // caller needs: a cycle is fixed by unlinking a parent, an unbounded chain by
-    // fixing the accessor.
-    expect(failure.message).not.toContain('contains a cycle');
-  });
-
-  it('accepts a chain of exactly 4096 levels and refuses one of 4097', () => {
-    // THE EXACT BOUNDARY, asserted rather than approximated. The limit is a count
-    // of LEVELS: 4096 of them are walked and produce a path, and the 4097th is
-    // refused.
-    //
-    // Both numbers are far beyond anything persistable, which is the point of
-    // choosing them. All three path columns are declared
-    // `ormtype="string" length="4000"` - [model/entity/ProductType.cfc:L53],
-    // [model/entity/PriceGroup.cfc:L53] and [model/entity/Category.cfc:L53] - and
-    // a 32-character identifier plus its delimiter is 33 characters, so at most
-    // 121 levels can be stored. The backstop sits 34 times above that.
-    const buildChain = (depth: number): CyclicNode => {
-      let cursor: CyclicNode = { id: 'n0', parent: null };
-
-      for (let level = 1; level < depth; level += 1) {
-        cursor = { id: `n${String(level)}`, parent: cursor };
-      }
-
-      return cursor;
-    };
-
-    const accepted = buildIdPathList(buildChain(4096), readCyclicId, readCyclicParent);
-
-    expect(listLen(accepted)).toBe(4096);
-    expect(listGetAt(accepted, 1)).toBe('n0');
-    expect(listGetAt(accepted, 4096)).toBe('n4095');
-
-    const failure = captureWalkFailure(() =>
-      buildIdPathList(buildChain(4097), readCyclicId, readCyclicParent),
-    );
-
-    expect(failure.name).toBe('CyclicIdPathError');
-    expect(failure.message).toContain('exceeded 4096 levels');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// THE SETTER-BOUNDARY HALF OF THE SAME DIVERGENCE
-//
-// `buildIdPathList` refuses to PRODUCE a path from a cyclic chain, which is what
-// keeps a save from hanging. `wouldCreateIdPathCycle` lets the three path-bearing
-// entities refuse to CREATE the cycle, which is what protects the walks over the
-// same parent chain that never build a path at all - the price-group cascade's
-// read-path ancestor climb [model/service/PriceGroupService.cfc:L68-L77] and
-// `ProductType.getSimpleRepresentation()`'s recursion
-// [model/entity/ProductType.cfc:L273-L278]. Both are needed; neither subsumes the
-// other.
-//
-// IT ANSWERS A QUESTION AND NEVER THROWS ONE. Every entity raises its own error
-// naming its own identifiers and its own association, which is more useful to an
-// operator than one generic message - and it keeps this module free of any opinion
-// about how a caller should fail. So every assertion below is on a boolean.
-// ---------------------------------------------------------------------------
-
-describe('wouldCreateIdPathCycle: refusing the assignment rather than the path', () => {
-  it('reports the tightest cycle - a node proposed as its own parent', () => {
-    const node: HierarchyNode = { id: 'self', parent: null };
-
-    expect(wouldCreateIdPathCycle(node, node, readParent)).toBe(true);
-  });
-
-  it('reports a direct child proposed as a parent', () => {
-    const parent: HierarchyNode = { id: 'parent', parent: null };
-    const child: HierarchyNode = { id: 'child', parent: parent };
-
-    expect(wouldCreateIdPathCycle(parent, child, readParent)).toBe(true);
-  });
-
-  it('WALKS rather than comparing one level, so a distant descendant is reported too', () => {
-    // A one-level comparison would miss this, and a cycle closed four levels down
-    // is exactly as fatal as a self-parent while being far easier to create by
-    // accident.
-    const a: HierarchyNode = { id: 'a', parent: null };
-    const b: HierarchyNode = { id: 'b', parent: a };
-    const c: HierarchyNode = { id: 'c', parent: b };
-    const d: HierarchyNode = { id: 'd', parent: c };
-    const e: HierarchyNode = { id: 'e', parent: d };
-
-    expect(wouldCreateIdPathCycle(a, e, readParent)).toBe(true);
-    // Every intermediate level is reported as well, not just the deepest.
-    expect(wouldCreateIdPathCycle(a, d, readParent)).toBe(true);
-    expect(wouldCreateIdPathCycle(a, c, readParent)).toBe(true);
-    expect(wouldCreateIdPathCycle(a, b, readParent)).toBe(true);
-  });
-
-  it('accepts every well-founded assignment, so a legitimate move is not penalised', () => {
-    // The whole hierarchy is one chain plus one unrelated branch. Assignments that
-    // move a node UP, SIDEWAYS or onto an unrelated root are all sound, and a
-    // guard that rejected any of them would be a regression rather than a fix.
-    const root: HierarchyNode = { id: 'root', parent: null };
-    const mid: HierarchyNode = { id: 'mid', parent: root };
-    const leaf: HierarchyNode = { id: 'leaf', parent: mid };
-    const unrelatedRoot: HierarchyNode = { id: 'other-root', parent: null };
-    const unrelatedLeaf: HierarchyNode = { id: 'other-leaf', parent: unrelatedRoot };
-
-    // Upward: the leaf reparented onto its own grandparent.
-    expect(wouldCreateIdPathCycle(leaf, root, readParent)).toBe(false);
-    // Sideways: onto an unrelated branch.
-    expect(wouldCreateIdPathCycle(leaf, unrelatedLeaf, readParent)).toBe(false);
-    expect(wouldCreateIdPathCycle(mid, unrelatedRoot, readParent)).toBe(false);
-    // And a root taking a parent for the first time.
-    expect(wouldCreateIdPathCycle(unrelatedRoot, leaf, readParent)).toBe(false);
-  });
-
-  it('reports IDENTITY, so two distinct nodes sharing an identifier are still sound', () => {
-    // The check cannot be identifier-based. Identifiers are carried into the path
-    // verbatim and are not unique keys anywhere in this module, so two DISTINCT
-    // nodes with the same identifier are malformed data but not a cycle: the chain
-    // still terminates and the legacy answers a path for it.
-    const first: CyclicNode = { id: 'duplicated', parent: null };
-    const second: CyclicNode = { id: 'duplicated', parent: null };
-
-    expect(wouldCreateIdPathCycle(second, first, readCyclicParent)).toBe(false);
-    expect(buildIdPathList(second, readCyclicId, readCyclicParent)).toBe('duplicated');
-  });
-
-  it('reports a candidate whose OWN chain is already cyclic, rather than looping on it', () => {
-    // A graph assembled before this guard existed, or by a caller that bypasses
-    // the setters, can already be cyclic. Walking it must terminate: no assignment
-    // onto a chain that never reaches a root can be sound, so this answers `true`
-    // instead of following it forever.
-    const loopLower: CyclicNode = { id: 'loop-lower', parent: null };
-    const loopUpper: CyclicNode = { id: 'loop-upper', parent: loopLower };
-    loopLower.parent = loopUpper;
-
-    const outsider: CyclicNode = { id: 'outsider', parent: null };
-
-    expect(wouldCreateIdPathCycle(outsider, loopLower, readCyclicParent)).toBe(true);
-    expect(wouldCreateIdPathCycle(outsider, loopUpper, readCyclicParent)).toBe(true);
-  });
-
-  it('reports an unbounded candidate chain that manufactures a fresh node per read', () => {
-    // The shape identity tracking cannot see: a lazily-hydrating accessor or a
-    // proxy never repeats an object, so the visited set never fills. The same
-    // depth backstop the path walk uses bounds this one, at the same limit and for
-    // the same reason.
-    const manufacturingParent: ParentNodeAccessor<CyclicNode> = (node) => ({
-      id: `${node.id}-up`,
-      parent: null,
-    });
-
-    expect(
-      wouldCreateIdPathCycle(
-        { id: 'start', parent: null },
-        { id: 'candidate', parent: null },
-        manufacturingParent,
-      ),
-    ).toBe(true);
-  });
-
-  it('accepts a candidate chain of 4095 levels and reports one of 4096', () => {
-    // THE EXACT BOUNDARY, asserted rather than approximated, and it is one level
-    // tighter than the path walk's because this walk starts at the CANDIDATE
-    // rather than at the node: the candidate's own chain contributes every level.
-    //
-    // Both numbers are far beyond anything persistable, which is why they are
-    // safe. All three path columns are declared `ormtype="string" length="4000"`
-    // and a 32-character identifier plus its delimiter is 33 characters, so at
-    // most 121 levels can be stored.
-    const buildChain = (depth: number): CyclicNode => {
-      let cursor: CyclicNode = { id: 'n0', parent: null };
-
-      for (let level = 1; level < depth; level += 1) {
-        cursor = { id: `n${String(level)}`, parent: cursor };
-      }
-
-      return cursor;
-    };
-
-    const node: CyclicNode = { id: 'assignee', parent: null };
-
-    expect(wouldCreateIdPathCycle(node, buildChain(4095), readCyclicParent)).toBe(false);
-    expect(wouldCreateIdPathCycle(node, buildChain(4096), readCyclicParent)).toBe(true);
-  });
-
-  it('retains nothing between calls', () => {
-    // The visited set is local to one call. Module-scoped, it would outlive an
-    // invocation on a warm container - the hazard that puts four legacy
-    // component-level caches into request scope in this port - and the second
-    // sound assignment below would be reported as a cycle because the first call
-    // had already seen its nodes.
-    const root: CyclicNode = { id: 'root', parent: null };
-    const leaf: CyclicNode = { id: 'leaf', parent: root };
-    const outsider: CyclicNode = { id: 'outsider', parent: null };
-
-    expect(wouldCreateIdPathCycle(root, leaf, readCyclicParent)).toBe(true);
-    expect(wouldCreateIdPathCycle(outsider, leaf, readCyclicParent)).toBe(false);
-    expect(wouldCreateIdPathCycle(outsider, leaf, readCyclicParent)).toBe(false);
-    expect(wouldCreateIdPathCycle(root, leaf, readCyclicParent)).toBe(true);
-  });
-
-  it('treats null and undefined parents identically, under the same CFML absent rule', () => {
-    // `ParentNodeAccessor` accepts both, and the module routes both through one
-    // `isNull()`-equivalent test. A root reported as `undefined` must terminate the
-    // walk exactly as a `null` one does, or the answer would depend on which
-    // absent value an accessor happened to return.
-    const nullRoot: HierarchyNode = { id: 'null-root', parent: null };
-    const child: HierarchyNode = { id: 'child', parent: nullRoot };
-    const undefinedParent: ParentNodeAccessor<HierarchyNode> = (node) =>
-      node.parent === null ? undefined : node.parent;
-
-    // The CYCLE direction: the root taking its own child as a parent. Reported
-    // identically whichever absent value the accessor uses for the top of the
-    // chain, because the walk reaches `node` before it ever reaches the root.
-    expect(wouldCreateIdPathCycle(nullRoot, child, readParent)).toBe(true);
-    expect(wouldCreateIdPathCycle(nullRoot, child, undefinedParent)).toBe(true);
-
-    // The SOUND direction, which is where the absent value actually decides the
-    // answer: the walk has to reach the top of the chain and recognise it as a
-    // root. A `null` root and an `undefined` root must both end it.
-    const outsider: HierarchyNode = { id: 'outsider', parent: null };
-    expect(wouldCreateIdPathCycle(outsider, child, readParent)).toBe(false);
-    expect(wouldCreateIdPathCycle(outsider, child, undefinedParent)).toBe(false);
-
-    // And re-assigning a node's EXISTING parent is sound, not a cycle: `child`
-    // already sits under `nullRoot`, and setting the same link again changes
-    // nothing about reachability.
-    expect(wouldCreateIdPathCycle(child, nullRoot, readParent)).toBe(false);
-    expect(wouldCreateIdPathCycle(child, nullRoot, undefinedParent)).toBe(false);
   });
 });
 
@@ -1595,7 +1197,7 @@ describe('the write half and the read half are independent', () => {
 // ---------------------------------------------------------------------------
 
 describe('the exported surface is closed', () => {
-  it('exports EXACTLY the six path functions and nothing else', () => {
+  it('exports EXACTLY the five path functions and nothing else', () => {
     // One assertion discharges several obligations at once. It proves there is
     // no path-mutation surface, no default export, and no exported mutable
     // binding that could carry state between calls.
@@ -1606,50 +1208,21 @@ describe('the exported surface is closed', () => {
     // correctly absent too, which is why the rule itself is pinned against the
     // parity helper instead.
     //
-    // WHY THE SET IS SIX AND WAS FIVE. `wouldCreateIdPathCycle` is the
-    // setter-boundary half of the cycle divergence: `buildIdPathList` refuses to
-    // PRODUCE a path from a cyclic chain, and this one lets the three
-    // path-bearing entities refuse to CREATE the cycle, which is what protects
-    // the walks over the same parent chain that never build a path at all - the
-    // price-group cascade's read-path ancestor climb
-    // [model/service/PriceGroupService.cfc:L68-L77] and
-    // `getSimpleRepresentation()`'s recursion
-    // [model/entity/ProductType.cfc:L273-L278]. It belongs HERE rather than
-    // being hand-rolled three times because parent-chain walking is this
-    // module's whole responsibility - `productType.ts` states that rule
-    // explicitly - and a shared implementation is one place to audit instead of
-    // three to keep in step.
-    //
-    // The widening is deliberate and asserted rather than accommodated: the
-    // number in this expectation is the control that makes any FURTHER widening
-    // a decision someone has to take on purpose.
+    // ★ THE SET IS FIVE, AND IT WAS BRIEFLY SIX. A `wouldCreateIdPathCycle`
+    // export was added here so three entity setters could refuse a reparent that
+    // would close a cycle. It has been removed along with the refusal itself: the
+    // legacy setters validate nothing, a port reproduces rather than improves, and
+    // the project's deliberate-divergence budget is closed at three - none of them
+    // spent in this folder. The number in this expectation is the control that
+    // makes any widening a decision someone has to take on purpose, so it is
+    // asserted exactly rather than as a lower bound.
     expect(Object.keys(materializedIdPathModule).sort()).toStrictEqual([
       'buildIdPathList',
       'getRootIdFromIdPath',
       'idPathContainsAnyId',
       'idPathContainsId',
       'resolveIdPath',
-      'wouldCreateIdPathCycle',
     ]);
-  });
-
-  it('the added export is a QUESTION, not a mutation: it cannot reparent anything', () => {
-    // `wouldCreateIdPathCycle` widens the surface, so the prohibition the next
-    // test names has to be re-established for it specifically. It takes an
-    // accessor that READS a parent and never one that writes, it answers a
-    // boolean, and it is the only member of the surface that could plausibly be
-    // mistaken for a graph-editing helper.
-    const root: HierarchyNode = { id: 'root', parent: null };
-    const leaf: HierarchyNode = { id: 'leaf', parent: root };
-
-    expect(wouldCreateIdPathCycle(root, leaf, readParent)).toBe(true);
-
-    // The hierarchy is exactly as it was: nothing was unlinked, relinked or
-    // blanked in order to answer.
-    expect(leaf.parent).toBe(root);
-    expect(root.parent).toBeNull();
-    expect(root.id).toBe('root');
-    expect(leaf.id).toBe('leaf');
   });
 
   it('offers no path-mutation helper of any kind', () => {

@@ -111,29 +111,33 @@
 //   4. CONSTRUCTED FRESH in `beforeEach`. There is no mutable module-level state
 //      in this file at all.
 //
-// Of the twenty-eight members those eight ports declare, the service reaches
-// exactly SEVENTEEN. The other ELEVEN are implemented as members that RAISE.
+// Of the twenty-seven members those eight ports declare, the service reaches
+// exactly SEVENTEEN. The other TEN are implemented as members that RAISE.
 // That is not padding and it is not deferred work: the behaviour they implement
 // IS "this must not happen, and here is which member happened", which turns a
 // silently-grown collaboration into a named failure.
 //
-// ★ QUOTE-THEN-REVISE, AND THE REACHED AND UNREACHED FIGURES BOTH MOVED. This read "of the
-// TWENTY-SEVEN members ... the service reaches exactly FOURTEEN", and a first revision carried it
-// to "TWENTY-EIGHT ... FIFTEEN ... the thirteen unreached members are unchanged". That revision
-// credited `SkuRepository`'s eighth member, `saveSkus`, which
-// `processProduct_updateSkus` does reach - but it left the unreached figure alone, and the unreached
-// figure had ALSO moved: `ProductRepository` lost `saveBrand`, an UNREACHED member, so the total
-// held at twenty-eight only because one port grew by one as another shrank by one.
+// ★ EVERY ONE OF THESE FIGURES HAS MOVED AT LEAST ONCE, WHICH IS WHY ALL OF THEM ARE READ OFF THE
+// CODE RATHER THAN CARRIED FORWARD. The history, kept because it is the record of two counting
+// mistakes worth not repeating: this read "of the TWENTY-SEVEN members ... exactly FOURTEEN"; a
+// first revision carried it to "TWENTY-EIGHT ... FIFTEEN ... the thirteen unreached members are
+// unchanged", crediting `SkuRepository`'s eighth member `saveSkus` while leaving the unreached
+// figure alone even though `ProductRepository` had lost the UNREACHED `saveBrand`, so the total held
+// at twenty-eight only because one port grew as another shrank; a second revision fixed the reached
+// and unreached figures to seventeen and eleven. `saveSkus` has since been REMOVED - it was an
+// eighth member on a port fixed at seven - and the totals settle as follows.
 //
-// All four numbers below are now read off the code rather than carried forward:
-//   * TWENTY-EIGHT declared = 6 product + 8 SKU + 4 product-type + 1 URL-title + 3 image-store
+//   * TWENTY-SEVEN declared = 6 product + 7 SKU + 4 product-type + 1 URL-title + 3 image-store
 //     + 2 subscription-term + 1 SKU-creation + 3 option-loading.
 //   * SEVENTEEN reached, counted as the distinct `this.<port>.<member>` call sites in
-//     `src/services/productService.ts`.
-//   * ELEVEN unreached, which is exactly the number of `unreachedPortMember(...)` call sites in
+//     `src/services/productService.ts`. The figure did NOT move when `saveSkus` went, because
+//     `processProduct_updateSkus` now reaches `saveSku` in its place - one reached member
+//     substituted for another.
+//   * TEN unreached, which is exactly the number of `unreachedPortMember(...)` call sites in
 //     this file - so the prose and the doubles cannot drift apart without one of the two counts
-//     visibly disagreeing with the other.
-//   * 17 + 11 = 28, which is the check that the previous figures failed.
+//     visibly disagreeing with the other. It fell by one because `saveSku` moved from the unreached
+//     column to the reached one.
+//   * 17 + 10 = 27, which is the check that the earliest figures failed.
 //
 // ---------------------------------------------------------------------------
 // WHAT THIS SUITE DELIBERATELY DOES NOT DO, EACH STATED RATHER THAN LEFT SILENT
@@ -226,7 +230,10 @@ import { Money } from '../../../src/domain/valueObjects/money.js';
 import { listToArray } from '../../../src/lib/cfml/list.js';
 import { structFindKey } from '../../../src/lib/cfml/struct.js';
 import { CfmlBooleanConversionError } from '../../../src/lib/cfml/truthiness.js';
-import { ProductService } from '../../../src/services/productService.js';
+import {
+  ProductPagingCriteriaError,
+  ProductService,
+} from '../../../src/services/productService.js';
 import { makeProductFixture } from '../../fixtures/productFixtures.js';
 import { makeSkuFixture } from '../../fixtures/skuFixtures.js';
 
@@ -387,9 +394,12 @@ const SKU_LIST_PRICE_RB_KEY = 'entity.sku.listPrice';
  * [model/service/SettingService.cfc:L192] and `productImageDefaultExtension =
  * {fieldType="text",defaultValue="jpg"}` [L191].
  *
- * They live in this file rather than behind the `SettingsProvider` port because neither key is
- * in its closed four-key union - which is the whole reason the composition moved off the entity
- * in the first place. The delimiter's legacy option list is exactly `['-','_']`
+ * Both keys ARE in the port's closed seven-key union [:L191, :L192], and the composition root
+ * resolves them THROUGH it; they are held here as literals only because this suite exercises the
+ * IMAGE SEAM directly, which receives already-resolved values rather than a resolver - which is the
+ * whole reason the composition moved off the entity in the first place. The values match the
+ * composition root's exactly, so one setting still has one value. The delimiter's legacy option
+ * list is exactly `['-','_']`
  * [model/service/SettingService.cfc:L346-L347], so `'-'` is a real value and not an invention.
  */
 const FIXTURE_IMAGE_OPTION_CODE_DELIMITER = '-';
@@ -601,7 +611,7 @@ function addOptionToGroup(
 function unreachedPortMember(portName: string, member: string): never {
   throw new Error(
     `the ${portName} double's ${member} was reached. The ported ProductService reaches exactly ` +
-      'fifteen of the twenty-eight members its eight ports declare, and this is not one of ' +
+      'seventeen of the twenty-seven members its eight ports declare, and this is not one of ' +
       'them, so reaching it means the service under test has grown a collaboration this suite ' +
       'does not describe.',
   );
@@ -806,34 +816,34 @@ class RecordingSkuRepository implements SkuRepositoryPort {
     unreachedPortMember('SKU repository', 'getSortedProductSkusID');
 
   /**
-   * ★ STILL UNREACHED, AND THAT IS NOW A LOAD-BEARING ASSERTION RATHER THAN A
-   * DEFAULT. `processProduct_updateSkus` writes through `saveSkus`, the COLLECTION
-   * member, deliberately: a loop over this one would open a transaction per SKU on a
-   * connection per SKU, which is the half-applied price change the batch member
-   * exists to make impossible. Leaving this member raising is what proves the service
-   * did not quietly take the per-SKU route.
-   */
-  readonly saveSku: SkuRepositoryPort['saveSku'] = () =>
-    unreachedPortMember('SKU repository', 'saveSku');
-
-  /**
-   * Every batch write the service issued, in order, each recorded as the exact array
-   * it was handed.
+   * Every SKU the service persisted, in the order it persisted them.
    *
-   * The array is stored BY REFERENCE rather than copied, because the service builds a
-   * fresh write set per call and never retains it - so the reference cannot be mutated
-   * afterwards, and holding it lets a case assert on identity if it needs to.
+   * ★ THIS IS THE REACHED WRITE MEMBER, AND IT ONCE RAISED HERE. While
+   * `SkuRepository` carried a `saveSkus` collection form, `processProduct_updateSkus`
+   * wrote through that member and this one was left raising - the raise being the proof
+   * that the service had not quietly taken a per-SKU route. The collection member was
+   * an eighth member on a port fixed at seven and has been removed, so the per-SKU
+   * route IS the route, and this member records instead of raising.
+   *
+   * What that costs is stated rather than glossed: a per-SKU write can stop part way,
+   * so the "nothing reached a row" guarantee a single collection write gave is gone.
+   * AAP 0.6.5 is what replaces it, and all three of its obligations are asserted in
+   * this file - the batch limit before the first mutation, idempotency across a repeat
+   * invocation, and compensation-by-retry.
+   *
+   * The instances are recorded BY REFERENCE rather than copied, so a case can assert on
+   * identity, and reading a price off a recorded instance proves the mutation preceded
+   * the write.
    */
-  readonly batchSaves: (readonly Sku[])[] = [];
+  readonly savedSkus: Sku[] = [];
 
-  saveSkus(skus: readonly Sku[]): Promise<Sku[]> {
-    this.batchSaves.push(skus);
+  saveSku(sku: Sku): Promise<Sku> {
+    this.savedSkus.push(sku);
 
-    // Answered in arrival order, as the port specifies. The instances are handed
-    // straight back rather than rehydrated: a double has no row to reflect, and
+    // Handed straight back rather than rehydrated: a double has no row to reflect, and
     // `processProduct_updateSkus` discards the result anyway - it returns the argument
     // product, whose SKUs are the ones the loop mutated.
-    return Promise.resolve([...skus]);
+    return Promise.resolve(sku);
   }
 }
 
@@ -2031,14 +2041,13 @@ describe('ProductService', () => {
       // own behaviour and is pinned here rather than glossed.
       expect(first.getPrice().toFixed2()).toBe('7.25');
 
-      // ★ QUOTE-THEN-REVISE, AND THE REVISION IS THE IMPROVEMENT THIS FIX BUYS. The
-      // note above ended: "With no ambient transaction to roll back, that partial
-      // application is exactly the transactional-integrity concern the port documents."
-      // It no longer is. The write is a single batch issued AFTER the loop, so a raise
-      // anywhere inside the loop reaches the caller having persisted NOTHING - the
-      // half-applied state exists only in the caller's own objects, exactly as it did
-      // in CFML before the flush, and it can no longer reach a row.
-      expect(skuRepository.batchSaves).toStrictEqual([]);
+      // AND NOTHING REACHED A ROW. The writes are issued AFTER the loop, so a raise
+      // from INSIDE the loop persists nothing at all: the half-applied state exists
+      // only in the caller's own objects, exactly as it did in CFML before the flush.
+      // That is the guarantee the post-loop write ordering buys, and it is independent
+      // of whether the write is one statement or many - which is why this assertion
+      // survived the removal of the collection write member unchanged.
+      expect(skuRepository.savedSkus).toStrictEqual([]);
     });
 
     it('applies the price to EVERY SKU on the product', async () => {
@@ -2122,12 +2131,11 @@ describe('ProductService', () => {
       // and its `saveProduct` recorder stays empty.
       expect(productRepository.saves).toStrictEqual([]);
 
-      // THE WRITE IS A SINGLE BATCH, NOT A LOOP. `saveSku` on the double still RAISES
-      // and is still never reached, which is what proves the service did not take the
-      // per-SKU route - the route that would open a transaction per SKU on a connection
-      // per SKU and could stop half way.
-      expect(skuRepository.batchSaves).toHaveLength(1);
-      expect(skuRepository.batchSaves[0]).toStrictEqual([first, second]);
+      // ONE WRITE PER MUTATED SKU, IN COLLECTION ORDER. `SkuRepository` declares a
+      // single persistence member and it takes one entity, so the write set is issued
+      // as a sequence rather than a batch. Order is asserted because the loop's order
+      // is the collection's order [model/service/ProductService.cfc:L218-L230].
+      expect(skuRepository.savedSkus).toStrictEqual([first, second]);
 
       // And the in-memory mutation still happened, on the instances that were written.
       expect(first.getPrice().toFixed2()).toBe('4.00');
@@ -2320,11 +2328,8 @@ describe('ProductService', () => {
         listPrice: '15.00',
       });
 
-      // ONE call, carrying all three, in collection order. A loop over `saveSku` would
-      // have raised on the double's unreached member, so the shape is proved twice:
-      // once by the recorded batch and once by the absence of a per-SKU write.
-      expect(skuRepository.batchSaves).toHaveLength(1);
-      expect(skuRepository.batchSaves[0]).toStrictEqual([skus[0], skus[1], skus[2]]);
+      // THREE writes, one per SKU, in collection order and with no repetition.
+      expect(skuRepository.savedSkus).toStrictEqual([skus[0], skus[1], skus[2]]);
     });
 
     it('collects a SKU touched by BOTH branches exactly ONCE', async () => {
@@ -2338,9 +2343,10 @@ describe('ProductService', () => {
       });
 
       // The write set is a WRITE SET, not a change log: a SKU whose price AND list
-      // price both moved is one row to update, not two. Both prices are asserted so
-      // the case cannot pass with only one branch having run.
-      expect(skuRepository.batchSaves[0]).toHaveLength(3);
+      // price both moved is one row to update, not two - so three SKUs touched by two
+      // branches are still three writes, not six. Both prices are asserted so the case
+      // cannot pass with only one branch having run.
+      expect(skuRepository.savedSkus).toHaveLength(3);
       expect(skus[0]?.getPrice().toFixed2()).toBe('3.00');
       expect(skus[0]?.getListPrice().toFixed2()).toBe('9.00');
     });
@@ -2357,7 +2363,7 @@ describe('ProductService', () => {
         updateListPriceFlag: 0,
       });
 
-      const written = skuRepository.batchSaves[0] ?? [];
+      const written = skuRepository.savedSkus;
 
       expect(written).toHaveLength(3);
 
@@ -2374,11 +2380,15 @@ describe('ProductService', () => {
         updateListPriceFlag: 0,
       });
 
-      // The port specifies an empty collection as a no-op that opens no transaction, so
-      // the empty write set is handed over rather than short-circuited here - which is
-      // why the call is recorded at all. What matters is that it carries no SKU: a
-      // no-op must not rewrite every row with its own current values.
-      expect(skuRepository.batchSaves).toStrictEqual([[]]);
+      // NO WRITE AT ALL, and that is a behaviour change this assertion records rather
+      // than hides. It read `toStrictEqual([[]])` - ONE recorded call carrying an empty
+      // collection - because the write was a collection member the service handed an
+      // empty array to, the port specifying an empty collection as a no-op that opened
+      // no transaction. With a per-SKU write there is no empty call to make: the loop
+      // simply does not run. What the assertion is FOR is unchanged and is what matters
+      // - a no-op must not rewrite every row with its own current values - and it is
+      // now proved by the absence of any write rather than by the emptiness of one.
+      expect(skuRepository.savedSkus).toStrictEqual([]);
       expect(skus[0]?.getPrice().toFixed2()).toBe('19.99');
     });
 
@@ -2391,7 +2401,9 @@ describe('ProductService', () => {
         updateListPriceFlag: 0,
       });
 
-      expect(skuRepository.batchSaves).toStrictEqual([[]]);
+      // As above: a product with no SKUs issues no write whatsoever, where it once
+      // issued one empty collection write.
+      expect(skuRepository.savedSkus).toStrictEqual([]);
       expect(answered).toBe(skuless);
     });
 
@@ -2408,13 +2420,25 @@ describe('ProductService', () => {
       await service.processProduct_updateSkus(product, input);
 
       // AAP 0.6.5's idempotency obligation, asserted at the seam that discharges it.
-      // Two invocations, two identical write sets over the same three SKUs, and the
-      // prices converge rather than compounding - nothing is doubled, nothing
-      // accumulates, and no fourth SKU appears. This is what makes a retry after a
-      // rolled-back attempt safe.
-      expect(skuRepository.batchSaves).toHaveLength(2);
-      expect(skuRepository.batchSaves[0]).toStrictEqual([skus[0], skus[1], skus[2]]);
-      expect(skuRepository.batchSaves[1]).toStrictEqual([skus[0], skus[1], skus[2]]);
+      // Two invocations, six writes, the same three SKUs twice over in the same order -
+      // and the prices CONVERGE rather than compounding. Nothing is doubled, nothing
+      // accumulates, and no fourth SKU appears.
+      //
+      // ★ THIS IS NOW THE OBLIGATION THAT CARRIES THE RECOVERY STORY, not merely one of
+      // three. While the write was a single collection member, a failed attempt rolled
+      // back whole and "retry" was a convenience. With a per-SKU write a failure can
+      // leave a PREFIX of the SKUs repriced, so retry is the compensation - and it works
+      // precisely because the write is keyed and value-idempotent: re-running drives an
+      // already-repriced SKU to the value it already holds and an unreached one to the
+      // value it should hold, converging after any number of partial attempts.
+      expect(skuRepository.savedSkus).toStrictEqual([
+        skus[0],
+        skus[1],
+        skus[2],
+        skus[0],
+        skus[1],
+        skus[2],
+      ]);
       expect(skus[2]?.getPrice().toFixed2()).toBe('11.25');
     });
 
@@ -2429,7 +2453,7 @@ describe('ProductService', () => {
 
       // The comparison is `>` and not `>=`, so the bound itself is admitted. Asserting
       // the boundary in both directions is what makes the off-by-one visible.
-      expect(skuRepository.batchSaves[0]).toHaveLength(DEFAULT_UPDATE_BOUND);
+      expect(skuRepository.savedSkus).toHaveLength(DEFAULT_UPDATE_BOUND);
     });
 
     it('REFUSES one SKU past the default bound, before mutating and before writing', async () => {
@@ -2448,9 +2472,11 @@ describe('ProductService', () => {
       await expect(rejected).rejects.toThrow(/product 'product-at-the-bound'/);
       await expect(rejected).rejects.toThrow(/\[model\/service\/ProductService\.cfc:L218-L230\]/);
 
-      // NOTHING was mutated and NOTHING was written. Both halves matter: a bound
-      // checked after the loop would leave the caller holding prices no row carries.
-      expect(skuRepository.batchSaves).toStrictEqual([]);
+      // NOTHING was mutated and NOTHING was written. Both halves matter, and the second
+      // matters MORE now than it did: with a per-SKU write, a bound checked after the
+      // loop would not merely leave the caller holding prices no row carries - it would
+      // have already written some of them.
+      expect(skuRepository.savedSkus).toStrictEqual([]);
       expect(overTheBound.getSkus()[0]?.getPrice().toFixed2()).toBe('19.99');
     });
 
@@ -2464,7 +2490,7 @@ describe('ProductService', () => {
         updateListPriceFlag: 0,
       });
 
-      expect(skuRepository.batchSaves[0]).toHaveLength(2);
+      expect(skuRepository.savedSkus).toHaveLength(2);
 
       const threeSkus = productWithSkuCount(3);
 
@@ -2476,8 +2502,9 @@ describe('ProductService', () => {
         }),
       ).rejects.toThrow(/above the configured bound of 2/);
 
-      // Still exactly the one successful write - the refusal added nothing.
-      expect(skuRepository.batchSaves).toHaveLength(1);
+      // Still exactly the two writes the successful call issued - the refusal added
+      // nothing, which is what "before mutating and before writing" means.
+      expect(skuRepository.savedSkus).toHaveLength(2);
     });
 
     it('refuses on COUNT ALONE, even when the flags would have selected no SKU', async () => {
@@ -2495,7 +2522,7 @@ describe('ProductService', () => {
         }),
       ).rejects.toThrow(/above the configured bound of 1/);
 
-      expect(skuRepository.batchSaves).toStrictEqual([]);
+      expect(skuRepository.savedSkus).toStrictEqual([]);
     });
 
     it('validates the declarative rules BEFORE the bound, so a malformed request fails as validation', async () => {
@@ -2511,7 +2538,7 @@ describe('ProductService', () => {
       );
 
       expect(issues).toHaveLength(1);
-      expect(skuRepository.batchSaves).toStrictEqual([]);
+      expect(skuRepository.savedSkus).toStrictEqual([]);
     });
 
     it('REFUSES A NONSENSE BOUND AT CONSTRUCTION, not on the first call that hits it', () => {
@@ -2755,6 +2782,158 @@ describe('ProductService', () => {
     });
   });
 
+  // --- findProducts: the paging SHAPE check (S-08) -----
+  //
+  // A security review raised finding S-08, MEDIUM, CWE-400, asking for page limits. This is the
+  // only paging surface in the ported slice - `SkuQueryCriteria` publishes none - and what shipped
+  // is a check on the value's SHAPE rather than on its magnitude.
+  //
+  // ★ THAT CHOICE IS A CORRECTNESS FIX AS MUCH AS A RESOURCE ONE, and the `slice(-1)` case below is
+  // the evidence: paging is applied with `Array.prototype.slice`, which reads a NEGATIVE start as an
+  // offset FROM THE END, so `pageRecordsStart: -1` would have answered the LAST product rather than
+  // failing or starting at the beginning. Every case here is NET-NEW COVERAGE per AAP 0.6.6; a
+  // legacy smart list took no such argument in a form that could be shaped wrongly.
+  describe('findProducts - the paging shape check (S-08)', () => {
+    /** Three products, so a wrong window is DISTINGUISHABLE from a right one. */
+    function threeProducts(): readonly Product[] {
+      const alpha = makeProductFixture({ productID: 'product-alpha' });
+      const beta = makeProductFixture({ productID: 'product-beta' });
+      const gamma = makeProductFixture({ productID: 'product-gamma' });
+
+      productRepository.searchResult = [alpha, beta, gamma];
+
+      return [alpha, beta, gamma];
+    }
+
+    it('★★ refuses a NEGATIVE start, which slice would have read as an offset from the END', async () => {
+      const [, , gamma] = threeProducts();
+
+      await expect(
+        service.findProducts({ keyword: REQUIRED_KEYWORD, pageRecordsStart: -1 }),
+      ).rejects.toThrow(ProductPagingCriteriaError);
+
+      // ★ AND HERE IS WHY IT IS A CORRECTNESS FIX. This asserts the behaviour that was REFUSED:
+      // `slice(-1)` on the same three products answers the LAST one. A caller sending -1 would
+      // have received `gamma` - a window nobody asked for - reported back as
+      // `pageRecordsStart: -1` and `recordsCount: 3`, with nothing anywhere signalling that the
+      // page was nonsense. The guard converts a silently wrong answer into a named refusal.
+      expect(productRepository.searchResult.slice(-1)).toStrictEqual([gamma]);
+    });
+
+    it('refuses the malformed bound BEFORE the search runs, so it costs no statement', async () => {
+      threeProducts();
+
+      await expect(
+        service.findProducts({ keyword: REQUIRED_KEYWORD, pageRecordsStart: -1 }),
+      ).rejects.toThrow(ProductPagingCriteriaError);
+
+      // Not one search was issued. Checking after the read would still have refused the page, but
+      // it would have paid for the query first, which is exactly the cost the finding names.
+      expect(productRepository.searches).toStrictEqual([]);
+    });
+
+    it('refuses a FRACTIONAL bound, which slice would have truncated', async () => {
+      threeProducts();
+
+      // `slice(1.5)` truncates to `slice(1)` rather than raising, so a fractional start is a page
+      // the caller did not describe answered as though they had.
+      await expect(
+        service.findProducts({ keyword: REQUIRED_KEYWORD, pageRecordsStart: 1.5 }),
+      ).rejects.toThrow(/'pageRecordsStart' was supplied as 1\.5/u);
+
+      await expect(
+        service.findProducts({ keyword: REQUIRED_KEYWORD, pageRecordsShow: 0.5 }),
+      ).rejects.toThrow(/'pageRecordsShow' was supplied as 0\.5/u);
+    });
+
+    it('refuses NaN and both infinities, on both members', async () => {
+      threeProducts();
+
+      for (const member of ['pageRecordsStart', 'pageRecordsShow'] as const) {
+        for (const supplied of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+          // `Number.isSafeInteger` rejects all three in one predicate, which is why the shipped
+          // check is two conditions rather than five.
+          await expect(
+            service.findProducts({ keyword: REQUIRED_KEYWORD, [member]: supplied }),
+          ).rejects.toThrow(ProductPagingCriteriaError);
+        }
+      }
+
+      expect(productRepository.searches).toStrictEqual([]);
+    });
+
+    it('reports WHICH member was rejected and WHAT was supplied, and nothing else', async () => {
+      threeProducts();
+
+      const raised = await service
+        .findProducts({ keyword: REQUIRED_KEYWORD, pageRecordsShow: -7 })
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+
+      expect(raised).toBeInstanceOf(ProductPagingCriteriaError);
+
+      const error = raised as ProductPagingCriteriaError;
+
+      expect(error.member).toBe('pageRecordsShow');
+      expect(error.supplied).toBe(-7);
+      expect(error.name).toBe('ProductPagingCriteriaError');
+
+      // The message discloses the numeric bound and NOT the keyword, so a rejected page cannot be
+      // used to echo caller-supplied text back out of the service.
+      expect(error.message).not.toContain(REQUIRED_KEYWORD);
+    });
+
+    it('★ leaves ABSENCE meaning absence, which is the standing contract it must not disturb', async () => {
+      const [alpha, beta, gamma] = threeProducts();
+
+      // The whole reason the check is on SHAPE and not on magnitude: `ProductQueryCriteria` refuses
+      // to invent a default page size, because the legacy declared none at this call site. A guard
+      // that treated an omitted member as invalid would have broken that outright.
+      const page = await service.findProducts({ keyword: REQUIRED_KEYWORD });
+
+      expect(page.records).toStrictEqual([alpha, beta, gamma]);
+      expect(page.pageRecordsStart).toBe(0);
+      expect(page.pageRecordsShow).toBeUndefined();
+    });
+
+    it('admits ZERO on both members, which is a bound rather than an absence', async () => {
+      threeProducts();
+
+      // Zero is a non-negative safe integer and therefore admissible on both: a zero start is the
+      // first record, and a zero page size is an EMPTY window - distinct from an absent one, which
+      // means the whole result set. Rejecting zero would have conflated the two.
+      const page = await service.findProducts({
+        keyword: REQUIRED_KEYWORD,
+        pageRecordsStart: 0,
+        pageRecordsShow: 0,
+      });
+
+      expect(page.records).toStrictEqual([]);
+      expect(page.recordsCount).toBe(3);
+      expect(page.pageRecordsShow).toBe(0);
+    });
+
+    it('imposes NO MAGNITUDE CEILING, because slice clamps and materialization is bounded below', async () => {
+      const [alpha, beta, gamma] = threeProducts();
+
+      // Deliberate absence, pinned so it reads as a decision rather than an oversight. An
+      // implausibly large window is ADMITTED: `slice` clamps it to the array it was given, so it
+      // costs nothing beyond what was already materialized - and that materialization is bounded
+      // one layer down, by `MAX_SEARCH_RESULT_MATERIALIZATION` in
+      // `src/repositories/mysql/mysqlProductRepository.ts`. A second ceiling here would refuse
+      // pages the repository has already proved it can answer.
+      const page = await service.findProducts({
+        keyword: REQUIRED_KEYWORD,
+        pageRecordsShow: Number.MAX_SAFE_INTEGER,
+      });
+
+      expect(page.records).toStrictEqual([alpha, beta, gamma]);
+      expect(page.pageRecordsShow).toBe(Number.MAX_SAFE_INTEGER);
+    });
+  });
+
   // --- Out-of-scope methods: delegation only, never feature behaviour -----
   //
   // These four serve out-of-scope features but live in an in-scope file, so they are ported for
@@ -2786,7 +2965,7 @@ describe('ProductService', () => {
       // NOT ONE port member is reached, which is the half of the old case that was
       // right and is kept: the review entity is not among the eighteen the ported
       // domain models, the account arrives from ambient request scope, and the
-      // setting at [L159] is outside the four-key settings union.
+      // setting at [L159] is outside the seven-key settings union.
       expect(productRepository.saves).toStrictEqual([]);
       expect(skuCreation.requests).toStrictEqual([]);
       expect(subscriptionTermProvider.requestedTermIDs).toStrictEqual([]);
@@ -2913,6 +3092,147 @@ describe('ProductService', () => {
       // exported, so it is not asserted from here; exporting a string only so a test
       // could read it would widen the module's surface for no behaviour.
       expect(answered).toBe(product);
+    });
+
+    // =======================================================================
+    // SECURITY REVIEW COVERAGE - RAISED AS S-11 (CWE-22, PATH TRAVERSAL), UPLOAD HALF.
+    //
+    // NET-NEW COVERAGE, DECLARED AS SUCH per AAP 0.6.6. No legacy test exercises this
+    // method; `meta/tests/unit/entity/ProductTest.cfc` covers only `getProductURL()`.
+    //
+    // WHAT THE FINDING OBSERVED: `processProduct_uploadDefaultImage` composed
+    // `product/default/${imageFile}` from a caller-supplied name with NO guard, while its
+    // sibling `processProduct_deleteDefaultImage` guarded the identical concatenation.
+    //
+    // ★★ THIS HALF NARROWS THE LEGACY, AND THAT IS DELIBERATE. Unlike the deletion
+    // branch - whose legacy statements could not execute at all, because
+    // [model/service/ProductService.cfc:L200-L201] interpolate an unresolvable bare
+    // `#imageFile#` - the legacy UPLOAD ran: [L241] composes its destination from
+    // `arguments.processObject.getImageFile()`, a data property really declared at
+    // [model/process/Product_UploadDefaultImage.cfc:L54], and [L250] `fileMove`s to it.
+    // A traversing name therefore reached the filesystem in the legacy. Refusing it is a
+    // documented divergence, permitted because the method is an out-of-scope thin
+    // pass-through to a STUB port (AAP 0.2.2, AAP 0.9.5, AAP 0.3.1) and because no
+    // numbered entry of the twenty-defect register covers it, so AAP 0.9.3 is not engaged.
+    //
+    // ★★★ WHAT IS ASSERTED, AND WHY IT IS NOT THE MESSAGE. A probe established that
+    // NOTHING escapes this method: the guard throws INSIDE the try that [L237-L254] wraps
+    // the body in, the catch arm swallows it, and [L256] returns the product. So unlike the
+    // deletion cases above there is no message to inspect, and asserting on one would be
+    // asserting on something no caller can see. The three observable facts are pinned
+    // instead, and the middle one carries the protection:
+    //
+    //   1. IT DOES NOT THROW - the legacy answer for a bad upload file is preserved.
+    //   2. `imageStore.savedFiles` IS EMPTY - nothing was delegated, which is the guarantee.
+    //   3. THE PRODUCT IS RETURNED - matching [L256] on both of its paths.
+    // =======================================================================
+    describe('a traversable imageFile is refused before any upload path is composed', () => {
+      /** Runs the upload and reports what the caller can actually observe. */
+      const attemptUpload = async (
+        imageFile: string,
+      ): Promise<{ threw: boolean; answeredProduct: boolean }> => {
+        const product = makeProductFixture({ productID: 'product-under-upload-traversal' });
+
+        try {
+          const answered = await service.processProduct_uploadDefaultImage(product, {
+            imageFile,
+            uploadFile: {
+              serverDirectory: '/synthetic/upload/dir',
+              serverFile: 'incoming.png',
+              clientFileExt: 'png',
+            },
+          });
+
+          return { threw: false, answeredProduct: answered === product };
+        } catch {
+          return { threw: true, answeredProduct: false };
+        }
+      };
+
+      it('refuses the exact value the finding demonstrated, and stores nothing', async () => {
+        const observed = await attemptUpload('../../../etc/passwd');
+
+        // THE ASSERTION THAT CARRIES THE PROTECTION.
+        expect(imageStore.savedFiles).toStrictEqual([]);
+
+        // And the legacy's own answer for a failed upload survives unchanged.
+        expect(observed.threw).toBe(false);
+        expect(observed.answeredProduct).toBe(true);
+      });
+
+      it.each([
+        ['a POSIX parent reference', '../secret.png'],
+        ['a nested POSIX traversal', '../../../etc/passwd'],
+        ['a Windows parent reference', '..\\secret.png'],
+        ['a POSIX absolute path', '/etc/passwd'],
+        ['a Windows absolute path', 'C:\\Windows\\win.ini'],
+        ['a UNC path', '\\\\host\\share\\file.png'],
+        ['a bare subdirectory', 'nested/shoe.png'],
+        ['a percent-encoded traversal', '%2e%2e%2fsecret.png'],
+        ['a percent-encoded separator only', 'shoe%2Fpng'],
+        ['a NUL truncation payload', 'shoe.png\u0000../../etc/passwd'],
+        ['a bare NUL', 'shoe.png\u0000'],
+        ['a newline', 'shoe\n.png'],
+        ['a DEL', 'shoe\u007f.png'],
+        ['the current directory', '.'],
+        ['the parent directory', '..'],
+        ['an empty name', ''],
+        ['a whitespace-only name', '   '],
+      ])('refuses %s without reaching the store', async (_label, imageFile) => {
+        const observed = await attemptUpload(imageFile);
+
+        expect(imageStore.savedFiles).toStrictEqual([]);
+        expect(observed.threw).toBe(false);
+        expect(observed.answeredProduct).toBe(true);
+      });
+
+      it('refuses an over-length name, and admits the longest legitimate one', async () => {
+        // 256 characters: one past the limit the guard publishes.
+        const overLength = `${'a'.repeat(253)}.png`;
+        expect(overLength).toHaveLength(257);
+
+        await attemptUpload(overLength);
+        expect(imageStore.savedFiles).toStrictEqual([]);
+
+        // AT the limit the name is legitimate and MUST still be delegated - a ceiling that
+        // refused its own boundary would be narrowing legitimate uploads, not traversal.
+        const atTheLimit = `${'a'.repeat(251)}.png`;
+        expect(atTheLimit).toHaveLength(255);
+
+        const observed = await attemptUpload(atTheLimit);
+
+        expect(imageStore.savedFiles).toStrictEqual([
+          {
+            filePath: `product/default/${atTheLimit}`,
+            allowedExtensions: '.jpeg,.jpg,.png,.gif',
+          },
+        ]);
+        expect(observed.answeredProduct).toBe(true);
+      });
+
+      it.each([
+        ['a plain name', 'shoe.png'],
+        ['an underscore-joined option string', 'nike-air-jorden_red_10.jpg'],
+        ['a hyphenated product code', 'nike-air-jorden.gif'],
+        ['a single dot segment inside the name', 'shoe.thumb.jpeg'],
+      ])('still delegates %s unchanged', async (_label, imageFile) => {
+        // ★ THE NARROWING IS CONFINED TO TRAVERSAL, and this is the evidence. Every shape
+        // here is one the legacy's OWN generator produces: [model/entity/Sku.cfc:L131-L139]
+        // strips the product code [L138] and each contributing option code [L135] with
+        // `reReplaceNoCase(..., "[^a-z0-9\-\_]", "", "all")` before appending the configured
+        // extension, so a separator, a dot segment, a percent sign and a control character
+        // are all removed before they can reach a name. No value the legacy itself composed
+        // can trip the guard.
+        const observed = await attemptUpload(imageFile);
+
+        expect(imageStore.savedFiles).toStrictEqual([
+          {
+            filePath: `product/default/${imageFile}`,
+            allowedExtensions: '.jpeg,.jpg,.png,.gif',
+          },
+        ]);
+        expect(observed.answeredProduct).toBe(true);
+      });
     });
 
     it('loadDataFromFile delegates positionally, with the legacy empty-string default', async () => {
@@ -3058,7 +3378,12 @@ describe('ProductService', () => {
         // reached the port.
         const message = await captureRefusal('shoe.png\u0000../../etc/passwd');
 
-        expect(message).toContain('No deletion was attempted');
+        // The closing sentence is OPERATION-NEUTRAL, and the wording is deliberate rather
+        // than incidental. S-11 extended this guard to the upload half, whose refusal is
+        // swallowed by the try that [model/service/ProductService.cfc:L237-L254] wraps its
+        // body in, so a store-specific variant of this sentence could never be read by any
+        // caller or any test. One sentence true of both halves is pinned here instead.
+        expect(message).toContain('No file was touched');
         expect(imageStore.deletedPaths).toStrictEqual([]);
       });
 
@@ -3124,7 +3449,7 @@ describe('ProductService', () => {
 
         expect(message).not.toContain('etc/passwd');
         expect(message).not.toContain('..');
-        expect(message).toContain('No deletion was attempted');
+        expect(message).toContain('No file was touched');
       });
     });
 
@@ -3973,7 +4298,7 @@ describe('ProductService', () => {
       // wrong scope. The declared type is the port's own `UrlTitleTableName` union, so both
       // spellings are additionally checked against the only three values that union admits -
       // `'SwBrand'`, `'SwProduct'` and `'SwProductType'`
-      // [slatwall-ts/src/domain/ports/urlTitleGenerator.ts:L164].
+      // [slatwall-ts/src/domain/ports/urlTitleGenerator.ts:L13].
       expect(PRODUCT_TABLE_NAME).toBe('SwProduct');
       expect(PRODUCT_TYPE_TABLE_NAME).toBe('SwProductType');
     });

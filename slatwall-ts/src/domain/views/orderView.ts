@@ -303,17 +303,31 @@ export interface OrderTypeView {
  * On a read-only view they become pre-computed readonly members supplied by the caller, and the
  * view MUST NOT recompute them.
  *
- * That is the anti-corruption inversion and nothing else. Recomputing any of them would mean
- * porting the out-of-scope Order aggregate behaviour that computes it - which is exactly what this
- * boundary exists to avoid - and for two of the five it is not even expressible from what these
- * views carry: `subtotalAfterItemDiscounts` resolves through
- * `Order.getItemDiscountAmountTotal()` [model/entity/Order.cfc:L317-L327], which sums each item's
- * own applied promotions, and `OrderItemView` deliberately carries no `appliedPromotions` member;
- * `fulfillmentChargeAfterDiscountTotal` resolves through `OrderFulfillment.getChargeAfterDiscount()`
- * [model/entity/OrderFulfillment.cfc:L183-L185], and `OrderFulfillmentView` carries
- * `fulfillmentCharge` but no charge-after-discount member. THIS IS NOT AN OPTIMIZATION, NOT A
- * CACHE AND NOT A PERFORMANCE MEASURE. It is a scope boundary, and it is justified by fidelity to
- * the legacy computation rather than by anything about speed.
+ * That is the anti-corruption inversion and nothing else. THIS IS NOT AN OPTIMIZATION, NOT A CACHE
+ * AND NOT A PERFORMANCE MEASURE. It is a scope boundary, and it is justified by fidelity to the
+ * legacy computation rather than by anything about speed.
+ *
+ * ★ "THE VIEW MUST NOT RECOMPUTE THEM" IS A RULE ABOUT THE **VIEW**, NOT ABOUT ITS READERS - AND
+ * TWO OF THE FIVE ARE COMPUTED ON DEMAND BY THE LEGACY, SO A READER THAT SNAPSHOTS THEM IS WRONG.
+ * `subtotalAfterItemDiscounts` and `fulfillmentChargeAfterDiscountTotal` are read by the legacy at
+ * [model/service/PromotionService.cfc:L417] AFTER the same invocation has written the item and
+ * fulfillment discounts they are functions of. A value supplied from outside the invocation cannot
+ * reflect that, so:
+ *
+ *   - the promotion engine DERIVES both at the moment of use, from the order items and from the
+ *     discounts its own pass-one arm applied - `computeSubtotalAfterItemDiscounts` and
+ *     `computeFulfillmentChargeAfterDiscountTotal` in `src/services/promotionService.ts`. It reads
+ *     NEITHER member. What made the derivation possible is precisely that the engine holds pass one's
+ *     output: from inside, the state `OrderItemView` and `OrderFulfillmentView` "deliberately do not
+ *     carry" is state the engine computed itself and already has.
+ *   - `subtotal` IS a function of item prices, which the price-group pass rewrites, so the
+ *     composition root re-derives it between the two passes - `computeProjectedOrderSubtotal` in
+ *     `src/handlers/bootstrap.ts` - because the qualifier gates at
+ *     [model/service/PromotionService.cfc:L648, L650] read it INSIDE the promotion pass.
+ *
+ * None of that is the view recomputing anything: this module declares shape and cites provenance,
+ * and every derivation above lives in the tier that owns the moment of use. `totalSaleQuantity` and
+ * `promotionCodeList` are genuinely unaffected by either pass and are used exactly as supplied.
  */
 export interface OrderView {
   /**
@@ -539,10 +553,33 @@ export interface OrderView {
    * behaviour unless it reproduces that guard. Recorded here because this member is the value pass
    * two reads; reproducing the guard belongs to `src/services/promotion/twoPassRewardIterator.ts`.
    *
-   * PASS ONE'S OUTPUT IS THE PRODUCER'S OBLIGATION. In the legacy engine the item-level discounts
-   * are applied in place before L417 reads their effect. In the target the item pass returns intents
-   * instead, so the value supplied here must reflect them; a stale snapshot taken before the item
-   * pass would compute the order-level discount from the wrong base.
+   * ★★ NO LONGER READ BY THE PROMOTION ENGINE, AND NOT AN OBLIGATION ON THE PRODUCER.
+   * `src/services/promotionService.ts` derives pass two's base from live engine state instead, and
+   * for this addend the derivation is an identity rather than an approximation: at L417 the item
+   * discount total is necessarily ZERO, because the blanket clear at
+   * [model/service/PromotionService.cfc:L64-L68] emptied every item's applied-promotion collection and
+   * the item rows are created only at [L521-L537], after both passes and after over-use stripping. So
+   * `getSubtotalAfterItemDiscounts()` equals `getSubtotal()` at the single point it is read, and the
+   * engine recomputes `getSubtotal()` from the order items - `computeSubtotalAfterItemDiscounts` in
+   * `src/services/promotionService.ts`, reproducing the `oitSale` / `oitReturn` discrimination of
+   * [model/entity/Order.cfc:L686-L694] - rather than reading either pre-computed total from here.
+   *
+   * ★ QUOTE-THEN-REVISE. An earlier revision assigned the value to the view's producer: "PASS ONE'S
+   * OUTPUT IS THE PRODUCER'S OBLIGATION. In the legacy engine the item-level discounts are applied in
+   * place before L417 reads their effect. In the target the item pass returns intents instead, so the
+   * value supplied here must reflect them; a stale snapshot taken before the item pass would compute
+   * the order-level discount from the wrong base."
+   *
+   * The final clause is right and is exactly what condemned the obligation: pass one's output is
+   * produced BY the invocation being fed, so a producer assembling the input beforehand cannot know
+   * it. The obligation was undischargeable, and in practice the value carried was the pre-invocation
+   * total. The derivation above replaces it.
+   *
+   * WHY THE MEMBER REMAINS. It is a faithful projection of a real legacy accessor
+   * [model/entity/Order.cfc:L700-L702] that the source does read at L417, and this shape is the
+   * anti-corruption record of what the engine's input looks like. Removing it would change the member
+   * census on a claim about the target's internals rather than about the source. It is retained,
+   * documented as not load-bearing, and MUST NOT be reintroduced as a discount base.
    *
    * PRE-COMPUTED - see the class note on the five pre-computed members. CFML parity
    * [model/entity/Order.cfc:L700-L702]: `precisionEvaluate('getSubtotal() -
@@ -592,15 +629,30 @@ export interface OrderView {
   /**
    * The order's fulfillment charges net of the discounts already applied to its fulfillments.
    *
-   * READ EXACTLY ONCE, on the same line as its sibling: it is the second addend of
-   * `totalDiscountableAmount` [model/service/PromotionService.cfc:L417]. Everything recorded on
+   * In the SOURCE this is read exactly once, on the same line as its sibling: it is the second addend
+   * of `totalDiscountableAmount` [model/service/PromotionService.cfc:L417]. Everything recorded on
    * {@link OrderView.subtotalAfterItemDiscounts} about pass two, about the L458-L460 guard and
    * about the plain `+` applies identically here and is not repeated.
    *
-   * PASS ONE'S FULFILLMENT OUTPUT IS THE PRODUCER'S OBLIGATION, for the same reason. The
-   * fulfillment-level branch [model/service/PromotionService.cfc:L378-L406] mutates fulfillment
-   * applied promotions in place before L417 reads their effect; in the target it returns intents, so
-   * the value supplied here must reflect them.
+   * ★★ NO LONGER READ BY THE PROMOTION ENGINE, for the same reason as its sibling, but by
+   * RECONSTRUCTION rather than by identity. `src/services/promotionService.ts` rebuilds this total per
+   * fulfillment as `fulfillmentCharge` minus the discount pass one just selected for that fulfillment,
+   * which is what [model/entity/Order.cfc:L356-L363] and
+   * [model/entity/OrderFulfillment.cfc:L183-L193] compute over the live graph. Post-clear the only
+   * applied-promotion row a fulfillment can hold is the one pass one created at [L401], so the
+   * engine's own mirror of that row is a complete account of what there is to subtract.
+   *
+   * ★ QUOTE-THEN-REVISE. An earlier revision assigned this to the producer too - "PASS ONE'S
+   * FULFILLMENT OUTPUT IS THE PRODUCER'S OBLIGATION ... in the target it returns intents, so the value
+   * supplied here must reflect them" - and justified it with the sentence retained below, that the
+   * total "is not derivable from `orderFulfillments` above". That non-derivability claim was the error:
+   * it is not derivable from the VIEW alone, which is true and beside the point, because the engine
+   * holds the missing term itself. The obligation was likewise undischargeable, pass one's output being
+   * produced by the very invocation the input feeds.
+   *
+   * WHY THE MEMBER REMAINS: as for its sibling - a faithful projection of
+   * [model/entity/Order.cfc:L356-L363], retained, not load-bearing, and never to be reintroduced as a
+   * discount base.
    *
    * PRE-COMPUTED - see the class note on the five pre-computed members. CFML parity
    * [model/entity/Order.cfc:L356-L363]: a `precisionEvaluate` sum of each fulfillment's

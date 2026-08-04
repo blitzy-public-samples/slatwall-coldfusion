@@ -4,10 +4,10 @@
 // `npm run verify`. `tsconfig.json` lists this file in its `include`, so it is
 // held to the same strict profile as `src/**` and `tests/**`.
 //
-// Two settings below are not merely stylistic and must not be relaxed:
-// module-specifier remapping is absent so a module cannot sidestep the ESLint
-// `no-restricted-imports` layer boundary, and no timeout figure is introduced
-// because the legacy source states no service-level objective.
+// One setting below is not merely stylistic and must not be relaxed: module-
+// specifier remapping is absent, so a module cannot sidestep the ESLint
+// `no-restricted-imports` layer boundary. No timeout is overridden anywhere in
+// this file, so the runner's own defaults apply.
 import { defineConfig } from 'vitest/config';
 
 // Pinning the root to this file's directory keeps the runner subtree-local, so it
@@ -20,8 +20,6 @@ export default defineConfig({
   test: {
     environment: 'node',
 
-    // Vitest members are imported explicitly in every suite rather than injected as
-    // globals, which is what lets the same tsconfig cover src/** and tests/**.
     globals: false,
 
     // Non-interactive by construction: no watch mode, no snapshot writing, and an
@@ -34,17 +32,18 @@ export default defineConfig({
 
     reporters: ['default'],
 
-    // The tiers this project collects. A suite outside these patterns is not run,
-    // so a misplaced file fails visibly instead of being skipped. The
-    // integration tier asserts emitted SQL text and bound parameters and needs
-    // NO database server.
+    // THESE GLOBS DEFINE COLLECTION. A file outside them is simply not collected -
+    // silently, with no error - so nothing in this configuration detects a suite
+    // placed off-glob, and correct placement is the author's responsibility. The
+    // integration tier asserts emitted SQL text and bound parameters and needs NO
+    // database server.
     //
     // The traceability entry is the one pattern without the `*.test.ts` infix,
     // because `tests/traceability/legacyTestMap.ts` is the fixed name of the
     // machine-readable replacement for
     // `meta/tests/coverage/EntityCoverageTest.cfc` and a `*.test.ts` glob could
-    // never match it. `passWithNoTests: false` makes anything collected there
-    // that is not a suite a hard failure rather than a silent pass.
+    // never match it. `passWithNoTests: false` fails a run that collects no tests
+    // at all; it cannot see files outside these patterns.
     include: [
       'tests/unit/**/*.test.ts',
       'tests/integration/**/*.test.ts',
@@ -57,9 +56,10 @@ export default defineConfig({
     // imports a subject, which the date-sensitive assertions depend on.
     setupFiles: ['./tests/setup.ts'],
 
-    // One fresh module registry per file, with shuffling and concurrency off: the
-    // ported promotion logic is order-dependent, so a deterministic order is what
-    // makes a failure reproducible.
+    // One fresh module registry per file, with shuffling and concurrent tests
+    // disabled: the ported promotion logic is order-dependent, so a deterministic
+    // order WITHIN a file is what makes a failure reproducible. File-level
+    // parallelism is left alone - isolated files may still run in parallel.
     isolate: true,
 
     sequence: {

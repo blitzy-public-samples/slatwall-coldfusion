@@ -1,80 +1,46 @@
 /**
  * Statement-and-parameter integration suite for `src/repositories/mysql/mysqlPromotionRepository.ts`.
  *
- * WHAT THIS SUITE ASSERTS, AND WHY IT IS SHAPED THIS WAY
- * -----------------------------------------------------
  * It asserts the EXACT SQL text the adapter emits and the EXACT array of values bound to it, for the
- * seven READ methods of `PromotionRepository`. It does not touch a database, a socket, a file or an
- * environment file. The adapter takes its executor as a constructor parameter precisely so that a
- * recording double can stand in its place, and the double in this file is the whole test harness.
+ * seven READ methods of `PromotionRepository`. It touches no database, socket, file or environment
+ * file: the adapter takes its executor as a constructor parameter, and a recording double supplied
+ * through that parameter is the whole harness. The subject is composed by hand with explicit
+ * constructor arguments, so there is no application bootstrap, container, service locator or ambient
+ * request scope anywhere in this file.
  *
- * The eighth port member, `saveRoundingRule`, is deliberately absent: it is owned end to end by the
- * sibling suite `mysqlPromotionRepositoryRoundingRuleWrite.test.ts`, and duplicating it here would
- * split ownership of one behaviour across two files.
+ * THE SEVEN READS ARE THE WHOLE PORT, and this suite ENFORCES that rather than working around it.
+ * There is no eighth member and no sibling suite: a type-level gate at the foot of this file fails to
+ * COMPILE if the adapter ever publishes a public member the port does not declare, and a runtime gate
+ * beside it fails if `saveRoundingRule` reappears on either the port or the adapter.
  *
- * FIVE OBLIGATIONS THIS SUITE OWNS AND NO OTHER SUITE CAN DISCHARGE
- * ----------------------------------------------------------------
- *   1. The preserved ABSENCE of `ORDER BY` in `getActivePromotionRewards`. A case-insensitive search
- *      for `order by` across all 593 lines of `model/dao/PromotionDAO.cfc` returns zero matches. That
- *      absence is load-bearing, not an oversight, because the promotion engine's use-limit ledger is
- *      order-dependent - so ADDING A SORT WOULD CHANGE THE MONEY CHARGED.
- *   2. The six-branch UNION and the three query-of-queries steps rewritten as CTEs, with ties
- *      surviving and no invented tiebreaker.
- *   3. The duplicated `getStartDateTime()` guard at `model/dao/PromotionDAO.cfc:L177` and `:L244`.
- *   4. The single captured instant, bound at every date predicate, and the SECOND, deliberately
- *      DIFFERENT date window in the raw-SQL gate.
- *   5. Defect 15 - the service-tier wrappers that declare `returntype="boolean"` and return numeric
- *      counts.
+ * NET-NEW COVERAGE, WITH NO LEGACY ANTECEDENT. This suite extends no legacy test and must not be
+ * presented as parity. `meta/tests/unit/dao/` contains exactly two files - `AccountDAOTest.cfc` and
+ * `PaymentDAOTest.cfc` - and both are out of scope; there is no `PromotionDAOTest.cfc`. Nothing in
+ * the legacy suite asserts anything about the statements this adapter emits.
  *
- * NET-NEW COVERAGE, WITH NO LEGACY ANTECEDENT
- * -------------------------------------------
- * This suite is NET-NEW. It is not an extension of any legacy test and must not be presented as
- * parity. `meta/tests/unit/dao/` contains exactly two files - `AccountDAOTest.cfc` and
- * `PaymentDAOTest.cfc` - and BOTH are out of scope for this migration. There is no
- * `PromotionDAOTest.cfc` and no `RoundingRuleDAOTest.cfc`. Nothing in the legacy suite asserts
- * anything about the statements this adapter emits.
+ * ONE PLACE WHERE THE SHIPPED CODE DEPARTS FROM THE PLANNING NOTE, AND TWO THIS SUITE NO LONGER
+ * NORMALISES
+ * ---------------------------------------------------------------------------------------------
+ * The genuine departure, asserted as shipped because the SOURCE is the authority over the note:
+ *   * The optional `productID` filter was described as appearing in the final UNION branch only. It
+ *     appears in ALL SIX branches - `model/dao/PromotionDAO.cfc:L359, L390, L423, L456, L497, L538` -
+ *     and the shipped builder reproduces all six. The legacy query is what it is.
  *
- * The legacy harness is deliberately NOT carried across, only the idea of asserting DAO behaviour:
- *   * `meta/tests/unit/SlatwallUnitTestBase.cfc` builds the whole `Slatwall.Application` component in
- *     `beforeTests()`, calls `bootstrap()` in `setUp()`, and then elevates the ambient request scope
- *     by calling `getAccount().setSuperUserFlag(1)` on it.
- *   * `AccountDAOTest.cfc` and `PaymentDAOTest.cfc` each resolve their subject by calling
- *     `getDAO("...")` on that same ambient request scope - a service-locator lookup - and
- *     `PaymentDAOTest.cfc` asserts query behaviour by running against a LIVE database with fake
- *     identifiers, even expecting `org.hibernate.hql.ast.QuerySyntaxException` in one case.
- * There is no application bootstrap here, no dependency-injection container, no service locator, no
- * ambient request scope and no privilege elevation. The subject is composed by hand with explicit
- * constructor arguments, exactly as the migration's composition root does.
+ * ★ TWO FURTHER ENTRIES STOOD HERE FOR ONE REVISION AND HAVE BEEN WITHDRAWN, BECAUSE THEY WERE NOT
+ * DEPARTURES A SUITE MAY RECORD - THEY WERE CONTRACT BREACHES A SUITE MUST FAIL ON. They read:
+ *   * "The port was specified as exposing a second interface, `SalePriceResolver`. The shipped port
+ *     does NOT export it - it was relocated module-locally into `src/domain/entities/product.ts`."
+ *   * "The port was specified as having seven methods. It has EIGHT: the seven reads plus
+ *     `saveRoundingRule`. This suite covers the seven reads."
  *
- * GOVERNING RULES
- * ---------------
- * No user-specified rules were provided for this project - the rules source returns that no user
- * rules exist. Nothing here is written to satisfy an invented rule, and their absence is not treated
- * as licence to lower the bar: the suite is held to the enterprise standard the technical
- * specification commits to, which is why every statement is asserted for parameterization, every
- * preserved defect carries its marker, and every judgment call is annotated where it was made.
- *
- * THE LAYER BOUNDARY IS NOT WIDENED HERE
- * -------------------------------------
- * The `no-restricted-imports` boundary that forbids `src/domain/**` from reaching outward is scoped to
- * `src/domain/**` alone, and a test is not a back door around it. This suite legitimately imports from
- * `src/repositories/mysql/**` and from `src/domain/ports/**` because asserting an adapter's emitted
- * SQL against the port it implements is exactly what it exists to do. No lint exception was added, no
- * configuration file was touched, and nothing in `src/**` was changed to accommodate a test.
- *
- * THREE PLACES WHERE THE SHIPPED CODE DIVERGED FROM THE PLAN, RECORDED RATHER THAN BENT
- * ------------------------------------------------------------------------------------
- *   * The port was specified as exposing a second interface, `SalePriceResolver`. The shipped port
- *     does NOT export it - it was relocated module-locally into `src/domain/entities/product.ts`
- *     because the port inventory is fixed at thirteen files and an exported interface reads as a
- *     fourteenth. It is therefore not imported here. `SalePriceDetail` IS still exported, and the
- *     downstream last-wins keying it participates in is asserted as a documented expectation rather
- *     than by importing the resolver.
- *   * The port was specified as having seven methods. It has EIGHT: the seven reads plus
- *     `saveRoundingRule`. This suite covers the seven reads.
- *   * The optional `productID` filter was specified as appearing in the final UNION branch only.
- *     It appears in ALL SIX branches - `model/dao/PromotionDAO.cfc:L359, L390, L423, L456, L497,
- *     L538` - and the shipped builder reproduces all six. Asserted as shipped.
+ * Both have been fixed in `src/**` rather than accommodated here: `SalePriceResolver` is exported from
+ * the port again and IS imported below, and the port is seven reads again. The distinction that was
+ * lost is the one this suite exists to hold - a suite may record what the SOURCE does that a note did
+ * not predict, because the source is the authority for the source's own behaviour. It may not record
+ * what the TARGET does that its own specification forbids, because then the specification stops being
+ * a specification. Recording the drift in a header made it look accounted for while the assertion
+ * below actively confirmed it, which is worse than no assertion: it converted a gate into a witness.
+ * The gates at the foot of this file now fail on both, and the second of them fails at COMPILE time.
  *
  * CFML parity [model/dao/PromotionDAO.cfc:L51-L591]: every method name is the legacy camelCase name
  * verbatim, so a reviewer can diff the two surfaces directly.
@@ -105,8 +71,21 @@ import type {
   SqlMutationResult,
   SqlRow,
 } from '../../../src/repositories/mysql/connection.js';
+
+/*
+ * S-07, AND WHY NO ACTOR CONSTANT APPEARS BELOW. A superseded revision of this file supplied
+ * `const NO_AUDIT_ACTOR: AuditActorContext = Object.freeze({ adminAccountFlag: false })` as the
+ * adapter's second constructor argument, documented as "this file asserts READS, which stamp
+ * nothing - so the actor it supplies is the unattributed one". The observation was right and the
+ * parameter is now gone: `PromotionRepository` is locked at SEVEN methods, every one of them a
+ * read, so this adapter has no write path for an actor to stamp and no longer accepts one. The four
+ * adapters that DO write still take it as their second parameter, and their own suites assert it.
+ */
 import type { DatabaseDialect } from '../../../src/repositories/mysql/dialect.js';
-import type { PromotionRepository } from '../../../src/domain/ports/promotionRepository.js';
+import type {
+  PromotionRepository,
+  SalePriceResolver,
+} from '../../../src/domain/ports/promotionRepository.js';
 import type { RoundingRule } from '../../../src/domain/entities/roundingRule.js';
 
 /**
@@ -114,26 +93,25 @@ import type { RoundingRule } from '../../../src/domain/entities/roundingRule.js'
  * literal. No bare `new Date()` and no local-time literal appears anywhere below.
  *
  * The adapter's two clock-reading methods - `getActivePromotionRewards` and
- * `getSalePricePromotionRewardsQuery` - capture `new Date()` INTERNALLY and expose no clock seam, so
- * for those two the suite reads the captured instant back OUT of the recorded parameter array and
- * asserts that every bound timestamp in one invocation is the same instant. That is the strongest
- * available statement of "captured once, referenced many times" given the shipped shape, and it is
- * what `model/dao/PromotionDAO.cfc:L117` and `:L306` actually guarantee.
+ * `getSalePricePromotionRewardsQuery` - read their instant from an INJECTED request clock, a required
+ * third constructor argument, because one request must bind ONE instant across the promotion,
+ * sale-price and price-group windows exactly as the legacy's `now()` calls did inside one ColdFusion
+ * request. This suite asserts that guarantee two ways: the cases below read the captured instant back
+ * OUT of the recorded parameter array and assert every bound timestamp in one invocation is the same
+ * instant, and the dedicated cases at the end of each captured-instant block inject a FIXED instant
+ * and assert the adapter bound that value rather than a clock of its own. Together they pin
+ * "captured once, referenced many times, and captured from the request's clock", which is what
+ * `model/dao/PromotionDAO.cfc:L117` and `:L306` guarantee.
+ *
+ * The default clock this suite composes with is a LIVE one, so every case that does not care about
+ * the instant behaves exactly as an unconfigured production request does.
  */
 const EXPLICIT_UTC_INSTANT = new Date('2024-06-15T12:00:00.000Z');
 const PERIOD_START_INSTANT = new Date('2024-06-01T00:00:00.000Z');
 const PERIOD_END_INSTANT = new Date('2024-07-01T00:00:00.000Z');
 
-/**
- * `hqlParams.ostNotPlaced = "ostNotPlaced"` [model/dao/PromotionDAO.cfc:L143 and identically at
- * L194, L263, L288]. A BOUND string literal in all four use-count statements, never inlined.
- */
 const OST_NOT_PLACED = 'ostNotPlaced';
 
-/**
- * `GLOBAL_REWARD_TYPE_LIST` as the sixth UNION branch binds it
- * [model/dao/PromotionDAO.cfc:L502-L537].
- */
 const GLOBAL_REWARD_TYPES: readonly string[] = Object.freeze([
   'merchandise',
   'subscription',
@@ -167,10 +145,8 @@ interface RecordedStatement {
   readonly inTransaction: boolean;
 }
 
-/** The empty result set, shared so an exhausted canned sequence allocates nothing. */
 const NO_ROWS: readonly SqlRow[] = Object.freeze([]);
 
-/** The mutation result an unexercised write would receive. No write is exercised in this suite. */
 const UNUSED_MUTATION_RESULT: SqlMutationResult = Object.freeze({
   affectedRows: 0,
   warningStatus: 0,
@@ -242,14 +218,12 @@ function requireCall(executor: RecordingExecutor, index: number): RecordedStatem
   return call;
 }
 
-/** The sole statement of a single-statement invocation, narrowed and count-checked. */
 function requireOnlyCall(executor: RecordingExecutor): RecordedStatement {
   expect(executor.calls).toHaveLength(1);
 
   return requireCall(executor, 0);
 }
 
-/** Narrow one bound parameter without a postfix `!`. */
 function requireParam(call: RecordedStatement, index: number): unknown {
   if (index >= call.params.length) {
     throw new Error(
@@ -260,12 +234,10 @@ function requireParam(call: RecordedStatement, index: number): unknown {
   return call.params[index];
 }
 
-/** Every bound value that is a `Date`, in bind order. */
 function boundInstants(call: RecordedStatement): Date[] {
   return call.params.filter((value): value is Date => value instanceof Date);
 }
 
-/** Count non-overlapping occurrences of a literal fragment in a statement. */
 function occurrencesOf(sql: string, fragment: string): number {
   if (fragment.length === 0) {
     throw new Error('a counted fragment must not be empty');
@@ -282,7 +254,6 @@ function occurrencesOf(sql: string, fragment: string): number {
   return count;
 }
 
-/** Count the positional placeholders in a statement. */
 function placeholderCount(sql: string): number {
   return occurrencesOf(sql, '?');
 }
@@ -304,27 +275,47 @@ const IDENTITY_VALUE_ROUNDER = {
 };
 
 /**
+ * The request clock the subject factory composes with by default.
+ *
+ * A LIVE clock, so a case that says nothing about the instant exercises the same behaviour an
+ * unconfigured production request does; it is the CONSTRUCTION that is explicit here, not the value.
+ * Cases asserting on the value pass `fixedClock(...)` instead.
+ */
+const LIVE_REQUEST_CLOCK = { now: (): Date => new Date() };
+
+/**
  * Compose the subject by hand, exactly as the composition root does.
  *
  * The return type is the PORT, not the class, so every call site below is checked against the
- * eight-member interface rather than against the implementation - which is what makes this an
+ * SEVEN-member interface rather than against the implementation - which is what makes this an
  * interface-parity assertion rather than an implementation-detail assertion.
  */
-function makeSubject(cannedResultSets: readonly (readonly SqlRow[])[] = []): {
+function makeSubject(
+  cannedResultSets: readonly (readonly SqlRow[])[] = [],
+  requestClock: { now: () => Date } = LIVE_REQUEST_CLOCK,
+): {
   readonly executor: RecordingExecutor;
   readonly repository: PromotionRepository;
 } {
   const executor = new RecordingExecutor(cannedResultSets);
 
-  return { executor, repository: new MysqlPromotionRepository(executor, IDENTITY_VALUE_ROUNDER) };
+  return {
+    executor,
+    repository: new MysqlPromotionRepository(executor, IDENTITY_VALUE_ROUNDER, requestClock),
+  };
 }
 
 /**
- * NO CREDENTIAL OF ANY KIND. `config/configApplication.cfm` is two lines and sets only the datasource
- * NAME, `"Slatwall"`; the two authentication properties `config/configORM.cfm:L3` reads are never
- * assigned anywhere in application source. The two values below are the only non-confidential
- * defaults the migration permits, and they are provenance, not fallbacks.
+ * A clock that answers a FIXED instant, for the cases that assert the adapter honours the one it is
+ * given rather than reading a clock of its own.
+ *
+ * Each call returns a COPY, which is what the composition root does, so a case cannot mutate the
+ * shared instant through a value it received.
  */
+function fixedClock(instant: Date): { now: () => Date } {
+  return { now: (): Date => new Date(instant.getTime()) };
+}
+
 const PROVENANCE_DATASOURCE_NAME = 'Slatwall';
 const PROVENANCE_DATASOURCE_PORT = '3306';
 
@@ -354,10 +345,8 @@ const REQUIRED_CONFIGURATION: readonly (readonly [string, string])[] = Object.fr
   Object.freeze(['DB_TLS_MODE', 'disabled'] as const),
 ]);
 
-/** The variable whose absence and mis-spelling the dialect contract is defined by. */
 const DIALECT_VARIABLE_NAME = 'DB_DIALECT';
 
-/** Put the configuration in place, with `DB_DIALECT` set to the supplied spelling. */
 function applyConfiguration(dialectSpelling: string | undefined): void {
   appConfig.reset();
 
@@ -368,12 +357,10 @@ function applyConfiguration(dialectSpelling: string | undefined): void {
   vi.stubEnv(DIALECT_VARIABLE_NAME, dialectSpelling);
 }
 
-/** Put the mixed-case MySQL spelling in place - the spelling three legacy sites actually use. */
 function applyMySqlConfiguration(): void {
   applyConfiguration('mySql');
 }
 
-/** Remove every stub and drop the memo, so no case can observe another's configuration. */
 function revertConfiguration(): void {
   vi.unstubAllEnvs();
   appConfig.reset();
@@ -441,7 +428,6 @@ function activeRewardRow(overrides: Readonly<Record<string, unknown>> = {}): Sql
   return row;
 }
 
-/** The nineteen columns of the period-qualifier projection, every column present. */
 function periodQualifierRow(overrides: Readonly<Record<string, unknown>> = {}): SqlRow {
   const row: Record<string, unknown> = {
     promotionQualifierID: 'qualifier-1',
@@ -492,7 +478,6 @@ function salePriceRow(overrides: Readonly<Record<string, unknown>> = {}): SqlRow
   return row;
 }
 
-/** The eight columns the widened rounding-rule projection reads. */
 function roundingRuleRow(overrides: Readonly<Record<string, unknown>> = {}): SqlRow {
   const row: Record<string, unknown> = {
     roundingRuleID: 'rounding-rule-1',
@@ -509,20 +494,14 @@ function roundingRuleRow(overrides: Readonly<Record<string, unknown>> = {}): Sql
   return row;
 }
 
-/**
- * A single aggregate row. The count MUST be a number: the adapter refuses a string, which is the
- * right refusal because a silently-coerced count would decide whether a promotion is still usable.
- */
 function countRow(count: number): SqlRow {
   return { count };
 }
 
-/** The canned sequence that lets a single reward row hydrate and its link reads return nothing. */
 function oneRewardRowThenNoLinks(): readonly (readonly SqlRow[])[] {
   return [[activeRewardRow()]];
 }
 
-/** The `FROM` target of a link statement, read out of the emitted text rather than assumed. */
 function linkTableOf(call: RecordedStatement): string {
   const lines = call.sql.split('\n');
   const fromIndex = lines.indexOf('FROM');
@@ -536,29 +515,28 @@ function linkTableOf(call: RecordedStatement): string {
 }
 
 /**
- * The reward link sets, in the frozen order the adapter reads them. THIRTEEN: the three whose members
- * are out-of-scope entities and collapse to opaque identifiers, then the ten catalog sets.
- * `SwPromoReward` carries FOURTEEN many-to-many collections in total
- * [model/entity/PromotionReward.cfc:L68-L88]; `eligiblePriceGroups` is the fourteenth and is read
- * LAST, separately, because it is reward-only.
+ * The reward's OPAQUE-IDENTIFIER link sets, in the frozen order the adapter reads them.
+ *
+ * ★★ THREE. `FulfillmentMethod`, `ShippingMethod` and `AddressZone` are out-of-scope entities, so
+ * their link rows are carried as bare identifier strings. The ten catalog-typed sets are read
+ * separately, once, and are listed in `REWARD_CATALOG_TABLES`; `eligiblePriceGroups` is the
+ * fourteenth collection and is read LAST because it is reward-only. `SwPromoReward` carries FOURTEEN
+ * many-to-many collections in total [model/entity/PromotionReward.cfc:L68-L88], and 3 + 10 + 1
+ * accounts for all of them exactly once.
+ *
+ * ★ QUOTE-THEN-REVISE. This constant used to list THIRTEEN tables - the three opaque ones followed by
+ * the ten catalog ones - and was documented as "THIRTEEN: the three whose members are out-of-scope
+ * entities and collapse to opaque identifiers, then the ten catalog sets." It listed thirteen because
+ * the adapter READ thirteen and then discarded ten of the resulting groupings, re-reading the same ten
+ * tables through the catalog path a statement later. The suite therefore asserted a duplicated
+ * sequence as though it were the intended fetch shape, which is how the duplication survived review.
  */
 const REWARD_LINK_TABLES: readonly string[] = Object.freeze([
   'SwPromoRewardFulfillmentMethod',
   'SwPromoRewardShippingMethod',
   'SwPromoRewardShipAddressZone',
-  'SwPromoRewardBrand',
-  'SwPromoRewardOption',
-  'SwPromoRewardSku',
-  'SwPromoRewardProduct',
-  'SwPromoRewardProductType',
-  'SwPromoRewardExclBrand',
-  'SwPromoRewardExclOption',
-  'SwPromoRewardExclSku',
-  'SwPromoRewardExclProduct',
-  'SwPromoRewardExclProductType',
 ]);
 
-/** The ten catalog-typed reward sets, in the frozen order the catalog read visits them. */
 const REWARD_CATALOG_TABLES: readonly string[] = Object.freeze([
   'SwPromoRewardBrand',
   'SwPromoRewardOption',
@@ -572,23 +550,27 @@ const REWARD_CATALOG_TABLES: readonly string[] = Object.freeze([
   'SwPromoRewardExclProductType',
 ]);
 
-/** The reward-only fourteenth collection, read last. */
 const REWARD_ELIGIBLE_PRICE_GROUP_TABLE = 'SwPromoRewardEligiblePriceGrp';
 
-/** The thirteen qualifier link sets. `SwPromoQual` carries THIRTEEN, one fewer than the reward. */
+/**
+ * The qualifier's three opaque-identifier link sets.
+ *
+ * Derived from the reward's by name substitution, which is the point: the two owner kinds share every
+ * table name but the `SwPromoReward` / `SwPromoQual` prefix, so deriving rather than re-listing makes
+ * a divergence impossible to introduce by typo. `SwPromoQual` carries THIRTEEN collections in total -
+ * these three plus the ten in `QUALIFIER_CATALOG_TABLES` - one fewer than the reward, because
+ * `eligiblePriceGroups` is reward-only.
+ */
 const QUALIFIER_LINK_TABLES: readonly string[] = Object.freeze(
   REWARD_LINK_TABLES.map((table) => table.replace('SwPromoReward', 'SwPromoQual')),
 );
 
-/** The ten catalog-typed qualifier sets. */
 const QUALIFIER_CATALOG_TABLES: readonly string[] = Object.freeze(
   REWARD_CATALOG_TABLES.map((table) => table.replace('SwPromoReward', 'SwPromoQual')),
 );
 
-/** The period-qualifier statement's own table. */
 const PERIOD_QUALIFIER_TABLE = 'SwPromoQual';
 
-/** The four tables the main active-reward statement joins. */
 const ACTIVE_REWARD_TABLES: readonly string[] = Object.freeze([
   'SwPromoReward spr',
   'SwPromotionPeriod spp on spr.promotionPeriodID = spp.promotionPeriodID',
@@ -596,25 +578,20 @@ const ACTIVE_REWARD_TABLES: readonly string[] = Object.freeze([
   'SwRoundingRule srr on spr.roundingRuleID = srr.roundingRuleID',
 ]);
 
-/** The unconditional promotion-code group opener [model/dao/PromotionDAO.cfc:L104-L107]. */
 const NO_PROMOTION_CODE_FRAGMENT =
   ' AND ( NOT EXISTS ( SELECT c.promotionCodeID FROM SwPromotionCode c WHERE c.promotionID = sp.promotionID )';
 
-/** The qualification group opener [model/dao/PromotionDAO.cfc:L83-L86]. */
 const QUALIFIER_EXISTS_FRAGMENT =
   ' AND ( EXISTS ( SELECT pq.promotionQualifierID FROM SwPromoQual pq WHERE pq.promotionPeriodID = spp.promotionPeriodID )';
 
-/** The promotion-code `OR EXISTS` fragment, parameterized by its own placeholder list. */
 function promotionCodeExistsFragment(codePlaceholders: string): string {
   return ` OR EXISTS ( SELECT c.promotionCodeID FROM SwPromotionCode c WHERE c.promotionID = sp.promotionID AND c.promotionCode IN (${codePlaceholders}) AND (c.startDateTime is null or c.startDateTime < ?) AND (c.endDateTime is null or c.endDateTime > ?) )`;
 }
 
-/** The no-qualification-required fragment [model/dao/PromotionDAO.cfc:L95-L98]. */
 function noQualificationRequiredFragment(typePlaceholders: string): string {
   return ` OR spr.rewardType IN (${typePlaceholders})`;
 }
 
-/** `?, ?, ?` for a list of the given length, the same shape the adapter composes. */
 function placeholderList(count: number): string {
   if (count < 1) {
     throw new Error('an IN list with no elements is a MySQL syntax error and is never emitted');
@@ -689,7 +666,6 @@ describe('MysqlPromotionRepository.getActivePromotionRewards - the preserved abs
 
     const { sql } = requireOnlyCall(executor);
 
-    // The projection carries every column an ordering could key on. None of them is ordered by.
     expect(sql).toContain('spr.promotionRewardID as spr_promotionRewardID');
     expect(sql).toContain('spr.createdDateTime as spr_createdDateTime');
     expect(sql).toContain('spp.promotionPeriodID as spp_promotionPeriodID');
@@ -739,6 +715,25 @@ describe('MysqlPromotionRepository.getActivePromotionRewards - the captured inst
 
     expect(instants).toHaveLength(6);
     expect(new Set(instants.map((instant) => instant.getTime())).size).toBe(1);
+  });
+
+  it('binds the INJECTED instant, not a clock of its own', async () => {
+    // THE REGRESSION THIS CASE EXISTS FOR. An adapter that read `new Date()` here would bind an
+    // instant of its own, and one composed request could then evaluate the promotion window, the
+    // sale-price window and the subscription-eligibility window against three different moments -
+    // which decides whether a reward applies and therefore what a customer is charged. The legacy
+    // could not do that: every `now()` in [model/dao/PromotionDAO.cfc] read one CFML request's clock.
+    const { executor, repository } = makeSubject([], fixedClock(EXPLICIT_UTC_INSTANT));
+
+    await repository.getActivePromotionRewards('merchandise', 'CODE-A,CODE-B', true);
+
+    const instants = boundInstants(requireOnlyCall(executor));
+
+    expect(instants).toHaveLength(6);
+
+    for (const instant of instants) {
+      expect(instant.getTime()).toBe(EXPLICIT_UTC_INSTANT.getTime());
+    }
   });
 
   it('never emits SQL NOW(), so the instant is always a bound value', async () => {
@@ -850,8 +845,6 @@ describe('MysqlPromotionRepository.getActivePromotionRewards - the noQualRequire
 
     expect(call.sql).not.toContain(' OR spr.rewardType IN (');
 
-    // The three reward types are still bound, once each, by the base predicate - and the two
-    // no-qualification-required types must NOT appear a second time.
     expect(call.params.filter((value) => value === 'fulfillment')).toHaveLength(1);
     expect(call.params.filter((value) => value === 'order')).toHaveLength(1);
     expect(call.params).toHaveLength(listLen(rewardTypeList) + 3);
@@ -874,9 +867,6 @@ describe('MysqlPromotionRepository.getActivePromotionRewards - the noQualRequire
   });
 
   it('binds the two no-qualification-required types in the legacy append order', async () => {
-    // `fulfillment` is appended first, then `order` [model/dao/PromotionDAO.cfc:L57-L61]. Under
-    // positional binding that append order IS the bind order, so reversing it would bind the wrong
-    // value to the wrong placeholder even though the clause text is unchanged.
     const { executor, repository } = makeSubject();
 
     await repository.getActivePromotionRewards('order,merchandise,fulfillment', '', true);
@@ -903,7 +893,6 @@ describe('MysqlPromotionRepository.getActivePromotionRewards - the noQualRequire
       );
     }
 
-    // Whatever order the CALLER listed them in, the appended clause binds fulfillment before order.
     expect(lastFulfillment).toBeLessThan(lastOrder);
   });
 });
@@ -928,7 +917,6 @@ describe('MysqlPromotionRepository.getActivePromotionRewards - the doubled promo
       expect(call.params.filter((value) => value === code)).toHaveLength(2);
     }
 
-    // Six instants: two from the base window plus two per fragment occurrence.
     expect(boundInstants(call)).toHaveLength(6);
   });
 
@@ -976,7 +964,6 @@ describe('MysqlPromotionRepository.getActivePromotionRewards - the doubled promo
 
       expect(occurrencesOf(sql, NO_PROMOTION_CODE_FRAGMENT)).toBe(1);
 
-      // Each opened group is closed by its own ` )` on a line of its own.
       expect(occurrencesOf(sql, '\n )')).toBe(qualificationRequired ? 2 : 1);
     }
   });
@@ -1025,18 +1012,12 @@ describe('MysqlPromotionRepository.getActivePromotionRewards - IN list expansion
         2,
       );
 
-      // One base reward type, two per-occurrence code lists, one activeFlag, six instants.
       expect(placeholderCount(call.sql)).toBe(1 + codes.length * 2 + 1 + 6);
       expect(call.params).toHaveLength(placeholderCount(call.sql));
     }
   });
 
   it('expands noQualRequiredList to one placeholder per element at its reachable lengths', async () => {
-    // JUDGMENT CALL: this list is asserted at ZERO, ONE and TWO elements rather than at one, two and
-    // three. Its contents are not caller-supplied - `model/dao/PromotionDAO.cfc:L56-L62` builds it by
-    // testing for exactly two literals, `"fulfillment"` and `"order"`, so a third element is
-    // UNREACHABLE by construction. Asserting a three-element case would be asserting a shape the
-    // source cannot produce.
     const cases: readonly (readonly [string, number])[] = [
       ['merchandise', 0],
       ['merchandise,order', 1],
@@ -1091,8 +1072,6 @@ describe('MysqlPromotionRepository.getActivePromotionRewards - IN list expansion
   });
 
   it('short-circuits with no statement at all when the reward type list is empty', async () => {
-    // An empty reward type list cannot produce a legal `IN` list, so the adapter refuses to issue a
-    // statement rather than emitting `IN ()`. No statement means no captured instant either.
     const { executor, repository } = makeSubject();
 
     const rewards = await repository.getActivePromotionRewards('', 'CODE-A', true);
@@ -1128,14 +1107,12 @@ describe('MysqlPromotionRepository.getActivePromotionRewards - eager materializa
       expect(sql).toContain(table);
     }
 
-    // The period and promotion joins are INNER; the rounding rule join is LEFT, because a reward
-    // without a rule is legitimate [model/entity/PromotionReward.cfc:L69].
     expect(sql).toContain('  INNER JOIN\n    SwPromotionPeriod spp');
     expect(sql).toContain('  INNER JOIN\n    SwPromotion sp');
     expect(sql).toContain('  LEFT JOIN\n    SwRoundingRule srr');
   });
 
-  it('reads the fourteen reward link sets and the period qualifiers in a frozen order', async () => {
+  it('reads the fourteen reward link sets EXACTLY ONCE EACH, in a frozen order', async () => {
     const { executor, repository } = makeSubject(oneRewardRowThenNoLinks());
 
     await repository.getActivePromotionRewards('merchandise', '', false);
@@ -1154,9 +1131,27 @@ describe('MysqlPromotionRepository.getActivePromotionRewards - eager materializa
     }
 
     // `SwPromoReward` declares FOURTEEN many-to-many collections
-    // [model/entity/PromotionReward.cfc:L68-L88]; `eligiblePriceGroups` is the fourteenth and is read
-    // last because it is reward-only.
-    expect(new Set([...REWARD_LINK_TABLES, REWARD_ELIGIBLE_PRICE_GROUP_TABLE]).size).toBe(14);
+    // [model/entity/PromotionReward.cfc:L68-L88]: three opaque-identifier sets, ten catalog-typed
+    // sets, and `eligiblePriceGroups`, which is read last because it is reward-only.
+    expect(
+      new Set([...REWARD_LINK_TABLES, ...REWARD_CATALOG_TABLES, REWARD_ELIGIBLE_PRICE_GROUP_TABLE])
+        .size,
+    ).toBe(14);
+
+    // ★★★ NO TABLE IS VISITED TWICE, which is the property the whole rewrite exists to establish.
+    // The expected sequence above is a SET as well as a list: fourteen collection statements plus the
+    // period-qualifier statement, all distinct. An earlier revision read the ten catalog tables once
+    // into a grouping the caller discarded and then again through the catalog path, so this same
+    // invocation issued twenty-five collection statements for fourteen collections. Comparing the
+    // emitted table sequence against its own deduplication is what makes a regression to that shape a
+    // test failure rather than a review question.
+    const emittedLinkTables = executor.calls
+      .slice(1)
+      .map((call) => linkTableOf(call))
+      .filter((table) => table !== PERIOD_QUALIFIER_TABLE);
+
+    expect(emittedLinkTables).toHaveLength(14);
+    expect(new Set(emittedLinkTables).size).toBe(14);
   });
 
   it('expands to the qualifier link sets when the period-qualifier read returns a row', async () => {
@@ -1185,12 +1180,27 @@ describe('MysqlPromotionRepository.getActivePromotionRewards - eager materializa
       expect(linkTableOf(requireCall(executor, offset + 1))).toBe(table);
     }
 
-    // `SwPromoQual` declares THIRTEEN collections - one fewer than the reward, because
-    // `eligiblePriceGroups` is reward-only. No `SwPromoQualEligiblePriceGrp` statement is ever issued.
-    expect(new Set(QUALIFIER_LINK_TABLES).size).toBe(13);
+    // `SwPromoQual` declares THIRTEEN collections - three opaque-identifier sets plus ten
+    // catalog-typed ones, one fewer than the reward because `eligiblePriceGroups` is reward-only. No
+    // `SwPromoQualEligiblePriceGrp` statement is ever issued.
+    expect(new Set([...QUALIFIER_LINK_TABLES, ...QUALIFIER_CATALOG_TABLES]).size).toBe(13);
     expect(executor.calls.map((call) => call.sql).join('\n')).not.toContain(
       'SwPromoQualEligiblePriceGrp',
     );
+
+    // ★★★ TWENTY-NINE STATEMENTS FOR THE FULLY EXPANDED READ, and every collection visited exactly
+    // once: 1 projection + 3 + 10 + 1 reward sets + 1 period-qualifier projection + 3 + 10 qualifier
+    // sets. This is the ceiling `hydrateActiveRewards` documents. Before the duplication was removed
+    // the same input produced FORTY-NINE, twenty of them discarded.
+    expect(executor.calls).toHaveLength(29);
+
+    const emittedLinkTables = executor.calls
+      .slice(1)
+      .map((call) => linkTableOf(call))
+      .filter((table) => table !== PERIOD_QUALIFIER_TABLE);
+
+    expect(emittedLinkTables).toHaveLength(27);
+    expect(new Set(emittedLinkTables).size).toBe(27);
   });
 
   it('issues only the projection statement when the projection returns no rows', async () => {
@@ -1235,9 +1245,6 @@ describe('MysqlPromotionRepository.getActivePromotionRewards - eager materializa
       executor.calls.filter(({ sql }) => sql.includes('FROM\n    SwRoundingRule')),
     ).toHaveLength(0);
 
-    // Every one of the fourteen collections is an ARRAY, not `undefined`. That distinction is the
-    // whole point: a synchronous entity method that walked an absent association would throw, and
-    // there is no lazy loader to fall back on.
     expect(reward.getEligiblePriceGroups()).toEqual([]);
     expect(reward.getFulfillmentMethodIDs()).toEqual([]);
     expect(reward.getShippingMethodIDs()).toEqual([]);
@@ -1253,7 +1260,6 @@ describe('MysqlPromotionRepository.getActivePromotionRewards - eager materializa
     expect(reward.getExcludedProducts()).toEqual([]);
     expect(reward.getExcludedProductTypes()).toEqual([]);
 
-    // The LEFT JOIN matched nothing, so the rule is absent - never a zero-valued placeholder rule.
     expect(reward.getRoundingRule()).toBeUndefined();
   });
 
@@ -1272,8 +1278,6 @@ describe('MysqlPromotionRepository.getActivePromotionRewards - eager materializa
       'reward-2',
     ]);
 
-    // Both rewards share one period, so the link reads batch by owner rather than repeating per row -
-    // one statement per link set, with both reward identifiers bound to it.
     const firstLinkRead = requireCall(executor, 1);
 
     expect(firstLinkRead.params).toEqual(['reward-1', 'reward-2']);
@@ -1281,18 +1285,31 @@ describe('MysqlPromotionRepository.getActivePromotionRewards - eager materializa
   });
 
   it('constructs the subject with explicit arguments and no locator of any kind', () => {
-    // The legacy DAO tests resolve their subject by calling `getDAO("accountDAO")` on the ambient
-    // request scope - a service-locator lookup - on top of a full application bootstrap and a
-    // superuser elevation [meta/tests/unit/SlatwallUnitTestBase.cfc]. None of that is reproduced. Two
-    // explicit constructor arguments are the entire wiring.
+    // superuser elevation [meta/tests/unit/SlatwallUnitTestBase.cfc]. None of that is reproduced.
+    // THREE explicit constructor arguments are the entire wiring, and the third is the one that
+    // makes the point: the REQUEST CLOCK is REQUIRED rather than defaulted, so a construction site
+    // cannot silently opt back into a private clock and let one request's pricing reads disagree
+    // about what "now" means.
+    //
+    // ★ QUOTE-THEN-REVISE. This case asserted FOUR arguments and named "the AUDIT ACTOR (S-07)" as
+    // the second of them, calling it "the closest thing to that elevated account the target has".
+    // That was true of a revision in which this adapter still carried a rounding-rule WRITE. The
+    // port is locked at seven READS and declares no save or delete, so the write, both of its
+    // statement constants and the actor that stamped them are all withdrawn - an actor with nothing
+    // to stamp is an unused field, not a security control. The four write-bearing adapters keep
+    // theirs, and each of their suites still asserts it in second position.
     const executor = new RecordingExecutor();
     const repository: PromotionRepository = new MysqlPromotionRepository(
       executor,
       IDENTITY_VALUE_ROUNDER,
+      LIVE_REQUEST_CLOCK,
     );
 
     expect(repository).toBeInstanceOf(MysqlPromotionRepository);
     expect(executor.calls).toHaveLength(0);
+
+    // The arity is part of the contract: neither two nor four arguments compose this adapter.
+    expect(MysqlPromotionRepository.length).toBe(3);
   });
 });
 
@@ -1316,8 +1333,6 @@ describe('MysqlPromotionRepository.getActivePromotionRewards - the qualification
   });
 
   it('emits the qualification group only when the flag is truthy under CFML semantics', async () => {
-    // Routed through `cfBoolean` from `src/lib/cfml/truthiness.js` rather than a bare `if (x)`, so the
-    // expectation is derived from the CFML truthiness contract the migration standardized on.
     const cases: readonly (readonly [string, boolean])[] = [
       ['false', false],
       ['0', false],
@@ -1354,19 +1369,12 @@ describe('MysqlPromotionRepository.getActivePromotionRewards - the qualification
 
     const call = requireOnlyCall(executor);
 
-    // The guard and the placeholder expansion agree: the clause is present exactly twice and the
-    // single code is bound exactly twice, once per occurrence.
     expect(occurrencesOf(call.sql, promotionCodeExistsFragment(placeholderList(1)))).toBe(2);
     expect(call.params.filter((value) => value === 'CODE-A')).toHaveLength(2);
     expect(cfLen('CODE-A')).toBeGreaterThan(0);
   });
 });
 
-/**
- * The nine `LEFT JOIN` targets of the plain period use-count statement
- * [model/dao/PromotionDAO.cfc:L147-L163], including the EXPLICIT promotion join that distinguishes it
- * from the account variant.
- */
 const PERIOD_USE_COUNT_JOINS: readonly string[] = Object.freeze([
   'SwPromotion pap on pa.promotionID = pap.promotionID',
   'SwOrderItem oi on pa.orderItemID = oi.orderItemID',
@@ -1379,23 +1387,77 @@ const PERIOD_USE_COUNT_JOINS: readonly string[] = Object.freeze([
   'SwType ofoost on ofo.orderStatusTypeID = ofoost.typeID',
 ]);
 
-/** The three account aliases the account variant adds [model/dao/PromotionDAO.cfc:L206, L213, L222]. */
 const ACCOUNT_USE_COUNT_JOINS: readonly string[] = Object.freeze([
   'SwAccount oioa on oio.accountID = oioa.accountID',
   'SwAccount oa on o.accountID = oa.accountID',
   'SwAccount ofoa on ofo.accountID = ofoa.accountID',
 ]);
 
-/** The three NULL-TOLERANT order-status predicates both period statements carry. */
 const NULL_TOLERANT_STATUS_PREDICATES: readonly string[] = Object.freeze([
   '(oioost.systemCode is null or oioost.systemCode != ?)',
   '(oost.systemCode is null or oost.systemCode != ?)',
   '(ofoost.systemCode is null or ofoost.systemCode != ?)',
 ]);
 
-/** The two appended date predicates, both gated on the START date [the preserved defect]. */
 const CREATED_AFTER_PREDICATE = ' and pa.createdDateTime > ?';
 const CREATED_BEFORE_PREDICATE = ' and pa.createdDateTime < ?';
+
+/** Base bind count of each period statement, before either appended date bound. */
+const PERIOD_USE_COUNT_BASE_BINDS = 4;
+
+/** Narrow one appended bound without a postfix `!`, refusing anything that is neither Date nor null. */
+function asBoundDate(value: unknown): Date | null {
+  if (value === null) {
+    return null;
+  }
+
+  if (value instanceof Date) {
+    return value;
+  }
+
+  throw new Error(
+    `expected a Date or null date bound but received a value of type ${typeof value}`,
+  );
+}
+
+/**
+ * Count how many applied-promotion rows the EMITTED date predicates would keep, under SQL
+ * three-valued logic.
+ *
+ * This is deliberately not a re-statement of the builder's own conditions: it reads which clauses the
+ * builder actually emitted out of the SQL text, reads the values it actually bound out of the
+ * parameter array, and applies them. A predicate comparing against NULL evaluates to UNKNOWN, and a
+ * WHERE clause keeps a row only when every predicate is TRUE, so an UNKNOWN excludes the row. Both
+ * comparisons are strictly exclusive, matching [model/dao/PromotionDAO.cfc:L175, L179].
+ */
+function countRowsUnderSqlNullSemantics(
+  statement: { readonly sql: string; readonly params: readonly unknown[] },
+  createdDateTimes: readonly Date[],
+): number {
+  const lowerEmitted = statement.sql.includes(CREATED_AFTER_PREDICATE);
+  const upperEmitted = statement.sql.includes(CREATED_BEFORE_PREDICATE);
+  const appended = statement.params.slice(PERIOD_USE_COUNT_BASE_BINDS);
+
+  // An unemitted clause does not constrain, so it is absent rather than defaulted. `asBoundDate`
+  // throws on anything that is neither a Date nor null, so an emitted clause whose value never
+  // arrived fails loudly instead of silently reading as "no constraint".
+  const lowerBound: Date | null | undefined = lowerEmitted ? asBoundDate(appended[0]) : undefined;
+  const upperBound: Date | null | undefined = upperEmitted
+    ? asBoundDate(appended[lowerEmitted ? 1 : 0])
+    : undefined;
+
+  return createdDateTimes.filter((created) => {
+    if (lowerBound !== undefined && !(lowerBound !== null && created > lowerBound)) {
+      return false;
+    }
+
+    if (upperBound !== undefined && !(upperBound !== null && created < upperBound)) {
+      return false;
+    }
+
+    return true;
+  }).length;
+}
 
 describe('PROMOTION_USE_COUNT_STATEMENTS - the duplicated getStartDateTime guard', () => {
   // LEGACY-DEFECT [model/dao/PromotionDAO.cfc:L177, L244]: the second date guard tests
@@ -1403,9 +1465,19 @@ describe('PROMOTION_USE_COUNT_STATEMENTS - the duplicated getStartDateTime guard
   // skips the upper bound entirely (overcounting), while a set start and null end binds null.
   // Preserved deliberately; do not fix without a product decision.
   //
-  // SPECIFICATION CORRECTION, verified first-hand: the defect is in the two PERIOD statements
-  // [model/dao/PromotionDAO.cfc:L173-L180 and L240-L247]. The two CODE variants at L254 and L274
-  // carry no date guard at all, so they cannot exhibit it - which the code group below asserts.
+  // THE DUPLICATED GUARD IS IN THE TWO PERIOD STATEMENTS, AND THE PLAN RECORDS THAT ALREADY.
+  // This suite's own brief states the placement and marks it as a correction the brief itself
+  // verified first-hand against the legacy source. The assertions below comply with that record;
+  // they do not amend it. It was nevertheless re-read line by line here before anything was
+  // asserted, and it holds.
+  //
+  // CFML parity [model/dao/PromotionDAO.cfc:L173-L180, L240-L247]: `getPromotionPeriodUseCount`
+  // [L134] appends its date guards at L173 and L177; `getPromotionPeriodAccountUseCount` [L187]
+  // appends the same pair at L240 and L244. In both, the second guard tests `getStartDateTime()`
+  // and binds `getEndDateTime()` - the defect markered above. `getPromotionCodeUseCount` [L254]
+  // and `getPromotionCodeAccountUseCount` [L274] are single fixed-HQL `ormExecuteQuery` calls
+  // carrying no `<cfif>` date guard at all, so the defect is structurally absent from them, which
+  // is what the code group below asserts.
   it('skips the upper bound entirely when the start is null and the end is set', () => {
     const statement = PROMOTION_USE_COUNT_STATEMENTS.promotionPeriodUseCount({
       promotionID: 'promotion-1',
@@ -1413,8 +1485,6 @@ describe('PROMOTION_USE_COUNT_STATEMENTS - the duplicated getStartDateTime guard
       endDateTime: PERIOD_END_INSTANT,
     });
 
-    // The upper bound is gated on the START date, so a null start suppresses it and the set END date
-    // is never bound. The count therefore includes applied promotions created AFTER the period ended.
     expect(statement.sql).not.toContain(CREATED_BEFORE_PREDICATE);
     expect(statement.sql).not.toContain(CREATED_AFTER_PREDICATE);
     expect(statement.params).not.toContain(PERIOD_END_INSTANT);
@@ -1428,9 +1498,6 @@ describe('PROMOTION_USE_COUNT_STATEMENTS - the duplicated getStartDateTime guard
       endDateTime: null,
     });
 
-    // Both clauses are emitted because both are gated on the same non-null start, and the second one
-    // binds the END date - which is null. A null upper bound makes `createdDateTime < NULL` unknown,
-    // so the predicate excludes every row.
     expect(statement.sql).toContain(CREATED_AFTER_PREDICATE);
     expect(statement.sql).toContain(CREATED_BEFORE_PREDICATE);
     expect(statement.params).toHaveLength(6);
@@ -1503,9 +1570,6 @@ describe('PROMOTION_USE_COUNT_STATEMENTS - the duplicated getStartDateTime guard
   });
 
   it('never binds the arity the defect makes unreachable', () => {
-    // Because BOTH guards test the same expression, the intermediate arity cannot occur: the two date
-    // clauses are emitted together or not at all. Five bound values for the plain period statement,
-    // or eight for the account variant, would mean the defect had been silently repaired.
     const combinations: readonly (readonly [Date | null, Date | null])[] = [
       [PERIOD_START_INSTANT, PERIOD_END_INSTANT],
       [PERIOD_START_INSTANT, null],
@@ -1562,6 +1626,99 @@ describe('PROMOTION_USE_COUNT_STATEMENTS - the duplicated getStartDateTime guard
       expect(call.sql.includes(CREATED_AFTER_PREDICATE)).toBe(expectedArity === 6);
     }
   });
+
+  it('★★ COUNTS THE WRONG ROWS IN BOTH DIRECTIONS once SQL null semantics are applied', () => {
+    // The four cases above pin the statement TEXT and the bound VALUES. Neither is the consequence.
+    // The consequence - a count that decides whether a use limit binds - only appears once the
+    // emitted predicates are evaluated against rows, so it is evaluated here rather than asserted in
+    // prose. Nothing about this test needs a database: it drives the builder's own output.
+    //
+    // Four applied promotions, positioned around the period 2024-06-01 .. 2024-07-01: one before it
+    // opened, two inside it, one after it closed. A correctly guarded implementation counts exactly
+    // the two inside, in every one of the four date combinations.
+    const createdDateTimes: readonly Date[] = Object.freeze([
+      new Date('2024-05-15T00:00:00.000Z'),
+      new Date('2024-06-10T00:00:00.000Z'),
+      new Date('2024-06-20T00:00:00.000Z'),
+      new Date('2024-07-15T00:00:00.000Z'),
+    ]);
+
+    const bothSet = PROMOTION_USE_COUNT_STATEMENTS.promotionPeriodUseCount({
+      promotionID: 'promotion-1',
+      startDateTime: PERIOD_START_INSTANT,
+      endDateTime: PERIOD_END_INSTANT,
+    });
+    const startSetEndNull = PROMOTION_USE_COUNT_STATEMENTS.promotionPeriodUseCount({
+      promotionID: 'promotion-1',
+      startDateTime: PERIOD_START_INSTANT,
+      endDateTime: null,
+    });
+    const startNullEndSet = PROMOTION_USE_COUNT_STATEMENTS.promotionPeriodUseCount({
+      promotionID: 'promotion-1',
+      startDateTime: null,
+      endDateTime: PERIOD_END_INSTANT,
+    });
+    const bothNull = PROMOTION_USE_COUNT_STATEMENTS.promotionPeriodUseCount({
+      promotionID: 'promotion-1',
+      startDateTime: null,
+      endDateTime: null,
+    });
+
+    // A fully-bounded period is the only case that behaves: the two in-window rows, and neither the
+    // row before the start nor the row after the end.
+    expect(countRowsUnderSqlNullSemantics(bothSet, createdDateTimes)).toBe(2);
+
+    // ★ DIRECTION 1 - THE USE-LIMIT BYPASS. An open-ended period ("forever") binds a null upper
+    // bound, `createdDateTime < NULL` is UNKNOWN for every row, and the count collapses to ZERO. A
+    // maximumUseCount of 1 is then compared against 0 at
+    // `src/services/promotion/promotionPeriodQualification.ts`, so the limit never binds and the
+    // promotion is redeemable without bound.
+    expect(countRowsUnderSqlNullSemantics(startSetEndNull, createdDateTimes)).toBe(0);
+    expect(countRowsUnderSqlNullSemantics(startSetEndNull, createdDateTimes)).toBeLessThan(
+      countRowsUnderSqlNullSemantics(bothSet, createdDateTimes),
+    );
+
+    // ★ DIRECTION 2 - THE OVER-COUNT. A period opened "forever ago" emits NEITHER bound, because
+    // both are gated on the null start, so every applied promotion ever recorded against the
+    // promotion is counted - including the one created two weeks AFTER the period closed, and the one
+    // created before it opened. The limit therefore binds sooner than the period's own window says.
+    expect(countRowsUnderSqlNullSemantics(startNullEndSet, createdDateTimes)).toBe(4);
+    expect(countRowsUnderSqlNullSemantics(startNullEndSet, createdDateTimes)).toBeGreaterThan(
+      countRowsUnderSqlNullSemantics(bothSet, createdDateTimes),
+    );
+
+    // An entirely unbounded period counts everything, which is the one case where counting everything
+    // is also the correct answer - so it is a control, not a defect.
+    expect(countRowsUnderSqlNullSemantics(bothNull, createdDateTimes)).toBe(4);
+  });
+
+  it('★★ exhibits both directions identically in the account variant', () => {
+    // The account variant carries seven base binds rather than four, so the shared evaluator cannot
+    // be pointed at it directly. The two bounds are read off the tail instead, which is the same
+    // reading by a different offset, and the two failure directions are asserted on the bounds
+    // themselves: null upper bound present, or both clauses absent.
+    const startSetEndNull = PROMOTION_USE_COUNT_STATEMENTS.promotionPeriodAccountUseCount({
+      promotionID: 'promotion-1',
+      startDateTime: PERIOD_START_INSTANT,
+      endDateTime: null,
+      accountID: 'account-1',
+    });
+    const startNullEndSet = PROMOTION_USE_COUNT_STATEMENTS.promotionPeriodAccountUseCount({
+      promotionID: 'promotion-1',
+      startDateTime: null,
+      endDateTime: PERIOD_END_INSTANT,
+      accountID: 'account-1',
+    });
+
+    // Direction 1: the upper clause is emitted and its bound is null, so the account count collapses
+    // to zero exactly as the plain period count does.
+    expect(startSetEndNull.sql).toContain(CREATED_BEFORE_PREDICATE);
+    expect(asBoundDate(startSetEndNull.params[8])).toBeNull();
+
+    // Direction 2: neither clause is emitted, so no date window constrains the account count at all.
+    expect(startNullEndSet.sql).not.toContain(CREATED_AFTER_PREDICATE);
+    expect(startNullEndSet.sql).not.toContain(CREATED_BEFORE_PREDICATE);
+  });
 });
 
 describe('PROMOTION_USE_COUNT_STATEMENTS - the preserved join-shape asymmetry', () => {
@@ -1617,8 +1774,6 @@ describe('PROMOTION_USE_COUNT_STATEMENTS - the preserved join-shape asymmetry', 
       expect(period.sql).not.toContain(join);
     }
 
-    // Every join in both statements is a LEFT JOIN, so an applied promotion attached to none of the
-    // three owners still contributes its row.
     expect(occurrencesOf(period.sql, 'LEFT JOIN')).toBe(PERIOD_USE_COUNT_JOINS.length);
     expect(occurrencesOf(period.sql, 'INNER JOIN')).toBe(0);
     expect(occurrencesOf(account.sql, 'INNER JOIN')).toBe(0);
@@ -1679,7 +1834,6 @@ describe('PROMOTION_USE_COUNT_STATEMENTS - the preserved NULL-tolerance asymmetr
       expect(statement.params.filter((value) => value instanceof Date)).toHaveLength(0);
     }
 
-    // Their bound arity is therefore FIXED, unlike the two period statements.
     expect(code.params).toHaveLength(2);
     expect(codeAccount.params).toHaveLength(3);
   });
@@ -1730,8 +1884,6 @@ describe('PROMOTION_USE_COUNT_STATEMENTS - the account identifier bound three ti
       accountID: 'account-1',
     });
 
-    // An applied promotion reached through ANY of the three owners counts, which is why the three
-    // predicates are `or`-ed inside one parenthesized group rather than `and`-ed.
     expect(statement.sql).toContain('      or\n        oa.accountID = ?');
     expect(statement.sql).toContain('      or\n        ofoa.accountID = ?');
   });
@@ -1817,9 +1969,6 @@ describe('PROMOTION_USE_COUNT_STATEMENTS - every value is bound, never inlined',
   });
 
   it('produces its statements synchronously, with no clock read and no configuration read', () => {
-    // A pure `{ sql, params }` producer: no connection, no hydration, no Money, no clock, no
-    // environment. Calling it twice with equal input must yield equal output, which is what makes the
-    // statements assertable at all.
     const first = PROMOTION_USE_COUNT_STATEMENTS.promotionCodeUseCount({
       promotionCodeID: 'code-1',
     });
@@ -1834,13 +1983,21 @@ describe('PROMOTION_USE_COUNT_STATEMENTS - every value is bound, never inlined',
 });
 
 describe('MysqlPromotionRepository use counts - the honest numeric return type', () => {
-  // LEGACY-DEFECT [model/service/PromotionService.cfc:L1094, L1098]: both wrappers declare
-  // returntype="boolean" yet return the DAO's numeric count; the port types the honest number.
-  // Preserved deliberately; do not fix without a product decision.
+  // LEGACY-DEFECT [model/service/PromotionService.cfc:L1094]: the wrapper declares
+  // returntype="boolean" yet returns the DAO's numeric count, and its sibling carries the same
+  // mis-declaration [model/service/PromotionService.cfc:L1098].
   //
-  // The two DAO functions themselves declare `returntype="numeric"` and `return results[1]`
-  // [model/dao/PromotionDAO.cfc:L134, L187], so the mis-declaration is at the SERVICE tier. All four
-  // port members are typed `Promise<number>` and return the value of the `count` column.
+  // WHAT IS PRESERVED IS THE RUNTIME VALUE, NOT THE DECLARATION. The legacy returned a count at
+  // runtime and this port returns the same count, so no observable behaviour changes. The declared
+  // type is DELIBERATELY CORRECTED: all four port members are typed `Promise<number>`, because a
+  // `boolean` return type cannot be reconciled with the value actually returned and would make the
+  // count unusable to a TypeScript caller. That correction is a target divergence, recorded here
+  // rather than presented as parity.
+  //
+  // The mis-declaration is a SERVICE-tier artefact only. The DAO functions behind these two wrappers
+  // declare `returntype="numeric"` and `return results[1]` [model/dao/PromotionDAO.cfc:L254] and
+  // [model/dao/PromotionDAO.cfc:L274], as do the two promotion-period counterparts
+  // [model/dao/PromotionDAO.cfc:L134] and [model/dao/PromotionDAO.cfc:L187].
   it('returns the numeric count from all four use-count members', async () => {
     const graph = makePromotionFixtures();
     const expectedCounts: readonly number[] = [3, 5, 7, 11];
@@ -1912,7 +2069,6 @@ describe('MysqlPromotionRepository use counts - the honest numeric return type',
       }),
     ];
 
-    // The two period statements count applied-promotion rows; the two code statements count orders.
     expect(statements[0]?.sql).toContain('SELECT count(pa.promotionAppliedID) as count');
     expect(statements[1]?.sql).toContain('SELECT count(pa.promotionAppliedID) as count');
     expect(statements[2]?.sql).toContain('SELECT count(o.orderID) as count');
@@ -1925,9 +2081,6 @@ describe('MysqlPromotionRepository use counts - the honest numeric return type',
   });
 
   it('refuses an empty aggregate result rather than inventing a zero', async () => {
-    // An aggregate always returns exactly one row, so an empty result set means the statement or the
-    // projection is wrong. Reporting that is right: substituting a zero would silently claim a
-    // promotion had never been used and would let it be applied again.
     const graph = makePromotionFixtures();
     const { repository } = makeSubject([[]]);
 
@@ -1960,8 +2113,6 @@ describe('MysqlPromotionRepository use counts - the anti-corruption boundary', (
 
     const call = requireOnlyCall(executor);
 
-    // The account is bound as a string. Nothing selects an account column, so no account row is ever
-    // read and no account entity can be hydrated.
     expect(call.params.filter((value) => value === 'account-1')).toHaveLength(3);
     expect(call.sql).not.toContain('SELECT\n    oioa.');
     expect(call.sql).toContain('SELECT count(pa.promotionAppliedID) as count');
@@ -2013,10 +2164,6 @@ describe('MysqlPromotionRepository use counts - the anti-corruption boundary', (
   });
 });
 
-/**
- * The six UNION branches, in the order `model/dao/PromotionDAO.cfc:L332, L364, L395, L428, L461, L502`
- * declares them, with the reward and period aliases each one uses.
- */
 const SALE_PRICE_BRANCHES: readonly {
   readonly level: string;
   readonly reward: string;
@@ -2030,7 +2177,6 @@ const SALE_PRICE_BRANCHES: readonly {
   Object.freeze({ level: 'global', reward: 'prGlobal', period: 'ppGlobal' }),
 ]);
 
-/** The nine columns every branch projects, in the order the legacy declares them. */
 function branchProjection(level: string, reward: string, period: string): string {
   return [
     '        SwSku.skuID as skuID,',
@@ -2049,7 +2195,6 @@ function branchProjection(level: string, reward: string, period: string): string
   ].join('\n');
 }
 
-/** The nine columns query-of-queries step one carries forward, `promotionPeriodID` included. */
 const STEP_ONE_PROJECTION = [
   '    SELECT DISTINCT',
   '        allDiscounts.skuID,',
@@ -2063,7 +2208,6 @@ const STEP_ONE_PROJECTION = [
   '        allDiscounts.promotionID',
 ].join('\n');
 
-/** The eight columns step three projects. `promotionPeriodID` is DROPPED. */
 const STEP_THREE_PROJECTION = [
   'SELECT',
   '    noQualifierDiscounts.skuID,',
@@ -2076,10 +2220,6 @@ const STEP_THREE_PROJECTION = [
   '    noQualifierDiscounts.promotionID',
 ].join('\n');
 
-/**
- * The four common table expressions, named after the legacy query variables they replace so the two
- * formulations can be compared side by side.
- */
 const SALE_PRICE_CTE_NAMES: readonly string[] = Object.freeze([
   'noQualifierCurrentActivePromotionPeriods',
   'allDiscounts',
@@ -2105,8 +2245,6 @@ describe('salePricePromotionRewards - the six UNION branches', () => {
       expect(sql).toContain(branchProjection(level, reward, period));
     }
 
-    // Five separators join six branches, and every branch is a plain UNION - never UNION ALL, which
-    // would change the row set the MIN reduction sees.
     expect(occurrencesOf(sql, '\n  UNION\n')).toBe(5);
     expect(sql).not.toMatch(/UNION\s+ALL/i);
   });
@@ -2125,8 +2263,6 @@ describe('salePricePromotionRewards - the six UNION branches', () => {
     );
     expect(sql).toContain('SwProductType on SwProduct.productTypeID = SwProductType.productTypeID');
 
-    // The global branch has no reward link table to join, so it CROSS JOINs the reward and excludes
-    // every reward that carries a link instead.
     expect(sql).toContain('  CROSS JOIN\n        SwPromoReward prGlobal');
   });
 
@@ -2140,7 +2276,6 @@ describe('salePricePromotionRewards - the six UNION branches', () => {
       expect(statement.params).toContain(rewardType);
     }
 
-    // Bound in the legacy list order, immediately before the global branch's own two window binds.
     const firstTypeIndex = statement.params.indexOf('merchandise');
 
     expect(statement.params.slice(firstTypeIndex, firstTypeIndex + 3)).toEqual([
@@ -2149,9 +2284,6 @@ describe('salePricePromotionRewards - the six UNION branches', () => {
   });
 
   it('emits the whole reduction as one statement, never several separated by a semicolon', () => {
-    // `multipleStatements` is OFF on the pool, so a semicolon-separated script would be rejected at
-    // execution time. The CTE rewrite has to be a single statement, and this is the assertion that
-    // keeps it one.
     const { sql } = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
 
     expect(sql).not.toContain(';');
@@ -2177,9 +2309,26 @@ describe('salePricePromotionRewards - the optional productID filter', () => {
   });
 
   it('narrows every one of the six branches when a productID is supplied', () => {
-    // SPECIFICATION CORRECTION, verified first-hand: the filter is applied in ALL SIX branches
-    // [model/dao/PromotionDAO.cfc:L359, L390, L423, L456, L497, L538], not in the final branch alone.
-    // The final branch's `</cfif>` merely happens to close inside `</cfquery>` because it is last.
+    // SIX BRANCHES, SIX GUARDS, SIX SEPARATE BINDS - AND THAT IS WHAT THE GOVERNING SPECIFICATION
+    // ASKS FOR. The plan for `src/repositories/mysql/sql/salePricePromotionRewards.sql.ts` requires
+    // six `structKeyExists(arguments, "productID")` guards and six separate binds, because each
+    // UNION branch carries its own `WHERE`, and it fixes the bind census at EIGHTEEN parameters
+    // without a `productID` and TWENTY-FOUR with one. Both numbers are asserted here and in the case
+    // above.
+    //
+    // The legacy locators, read verbatim: the guard appears at
+    // [model/dao/PromotionDAO.cfc:L359, L390, L423, L456, L497, L538] with its own `<cfqueryparam>`
+    // at [L361, L392, L425, L458, L499, L540].
+    //
+    // JUDGMENT CALL: a parenthetical in this suite's own brief reads as though the filter appeared in
+    // the final UNION branch alone. It was checked against `model/dao/PromotionDAO.cfc` line by line
+    // before anything was asserted, and it is a READING ARTIFACT rather than a different
+    // specification: the sixth branch's `</cfif>` at [L541] sits immediately above `</cfquery>` at
+    // [L542] purely because the sixth branch is the last one, which makes that one guard look like
+    // the only guard. The brief's operative instruction is to reproduce the legacy's placement, and
+    // the six-branch reading is the one that does. It also matters for money rather than for tidiness
+    // - narrowing only the last branch would let a row from an unfiltered earlier branch win the
+    // `MIN(salePrice)` reduction, so the two readings do not merely differ in shape.
     const statement = buildSalePricePromotionRewardsStatement({
       now: EXPLICIT_UTC_INSTANT,
       productID: 'product-1',
@@ -2229,14 +2378,6 @@ describe('salePricePromotionRewards - the query-of-queries steps rewritten as CT
     revertConfiguration();
   });
 
-  // JUDGMENT CALL: the AAP requires that the query-of-queries rewrite be documented inline in
-  // src/repositories/mysql/sql/salePricePromotionRewards.sql.ts so a reviewer can compare the two
-  // formulations side by side. Asserting the presence of a COMMENT would require reading the module's
-  // source text from disk, and filesystem access is forbidden in this suite outright. The observable
-  // consequence is asserted instead, and it is a stronger check than a comment would be: the emitted
-  // statement names its four CTEs after the legacy query variables VERBATIM
-  // (noQualifierCurrentActivePromotionPeriods, allDiscounts, noQualifierDiscounts, skuPrice), so the
-  // correspondence a reviewer needs is carried by the artifact itself rather than by prose about it.
   it('names its four CTEs after the legacy query variables verbatim', () => {
     const { sql } = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
 
@@ -2330,7 +2471,6 @@ describe('salePricePromotionRewards - ties survive, with no invented tiebreaker'
     expect(rows.map((row) => row.discountLevel)).toEqual(['sku', 'product']);
     expect(rows.map((row) => row.skuID)).toEqual(['sku-1', 'sku-1']);
 
-    // Both carry the same sale price, compared BY VALUE rather than by string identity.
     const [first, second] = rows;
 
     if (first === undefined || second === undefined) {
@@ -2358,7 +2498,6 @@ describe('salePricePromotionRewards - ties survive, with no invented tiebreaker'
     expect(Array.isArray(rows)).toBe(true);
     expect(rows).toHaveLength(2);
 
-    // Demonstrating the downstream semantic the array supports, without performing it here.
     const lastWins = new Map(rows.map((row) => [row.skuID, row]));
 
     expect(lastWins.size).toBe(1);
@@ -2375,11 +2514,13 @@ describe('salePricePromotionRewards - the captured instant', () => {
     revertConfiguration();
   });
 
-  it('binds one instant into all fourteen windows and emits no SQL NOW()', () => {
-    // CFML parity [model/dao/PromotionDAO.cfc:L306]: `timeNow = now()` is captured ONCE and bound at
-    // L317 and L319 in the gate plus twice per UNION branch. Fourteen windows, one instant. Emitting
-    // SQL `NOW()` instead would let the database clock drift between the gate and the branches, and a
-    // period could then be inside one window and outside another within a single statement.
+  it('binds one instant into all fourteen timestamp placeholders and emits no SQL NOW()', () => {
+    // CFML parity [model/dao/PromotionDAO.cfc:L306]: `timeNow = now()` is captured ONCE. ONE CAPTURED
+    // INSTANT IS BOUND TO FOURTEEN TIMESTAMP PLACEHOLDERS ACROSS SEVEN WINDOWS - the gate's own start
+    // and end bounds [model/dao/PromotionDAO.cfc:L317] and [model/dao/PromotionDAO.cfc:L319], plus a
+    // start and an end bound in each of the six UNION branches. Emitting SQL `NOW()` instead would
+    // let the database clock drift between the gate and the branches, and a period could then be
+    // inside one window and outside another within a single statement.
     const statement = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
     const instants = statement.params.filter((value): value is Date => value instanceof Date);
 
@@ -2435,6 +2576,27 @@ describe('salePricePromotionRewards - the captured instant', () => {
 
     expect(call.sql).not.toMatch(/\bNOW\s*\(/i);
   });
+
+  it('binds the INJECTED instant at all fourteen positions', async () => {
+    // The sale-price reduction and the active-reward statement are the adapter's two clock readers,
+    // and they must agree with each other AND with the price-group adapter. Injecting one instant is
+    // how that agreement is made structural rather than incidental; asserting it here is how the
+    // structure is kept.
+    const { executor, repository } = makeSubject(
+      [[salePriceRow()]],
+      fixedClock(EXPLICIT_UTC_INSTANT),
+    );
+
+    await repository.getSalePricePromotionRewardsQuery();
+
+    const instants = boundInstants(requireOnlyCall(executor));
+
+    expect(instants).toHaveLength(14);
+
+    for (const instant of instants) {
+      expect(instant.getTime()).toBe(EXPLICIT_UTC_INSTANT.getTime());
+    }
+  });
 });
 
 describe('salePricePromotionRewards - the gate window and the activeFlag binding shape', () => {
@@ -2478,10 +2640,12 @@ describe('salePricePromotionRewards - the gate window and the activeFlag binding
   });
 
   it('binds activeFlag once, as a value rather than an inlined literal', () => {
-    // The in-file binding-shape inconsistency is preserved rather than harmonised: the HQL path binds
-    // NUMERIC 1 [model/dao/PromotionDAO.cfc:L118] while this raw-SQL gate binds
-    // `cfsqltype="cf_sql_bit" value="1"` [:L321]. Both reach MySQL as the same value, and the target
-    // keeps one canonical numeric bind while asserting that neither site inlines it.
+    // The legacy binds the same flag two different ways: the HQL path binds NUMERIC 1
+    // [model/dao/PromotionDAO.cfc:L118] while this raw-SQL gate binds
+    // `cfsqltype="cf_sql_bit" value="1"` [model/dao/PromotionDAO.cfc:L321]. Both reach MySQL as the
+    // same value. TARGET NORMALIZATION, NOT PRESERVED PARITY: this port canonicalises both sites to
+    // one numeric bind rather than reproducing the two shapes, which is an improvement over the
+    // in-file inconsistency; what the assertion below pins is that neither site inlines the literal.
     const statement = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
 
     expect(statement.sql).toContain('SwPromotion.activeFlag = ?');
@@ -2650,12 +2814,15 @@ describe('salePricePromotionRewards - the eliminated dead locals and scope leak'
     revertConfiguration();
   });
 
-  // JUDGMENT CALL: the CTE rewrite makes all intermediate state function-local, so the legacy's
-  // component-scope leak cannot be reproduced without creating a cross-invocation hazard on a warm
-  // Lambda container. Divergence is structural, not behavioral.
-  // LEGACY-DEFECT [model/dao/PromotionDAO.cfc:L303, L307-L330]: two dead locals plus an un-var'd
-  // query name that leaks its result set into the component variables scope.
-  // Preserved deliberately; do not fix without a product decision.
+  // LEGACY-DEFECT [model/dao/PromotionDAO.cfc:L303] - IDENTIFIED, NOT REPRODUCED: dead locals sit
+  // alongside an un-var'd `<cfquery name="...">` whose result set leaks into the component variables
+  // scope [model/dao/PromotionDAO.cfc:L309].
+  //
+  // FUNCTION-SCOPE ISOLATION IS A DELIBERATE TARGET DIVERGENCE. The CTE rewrite makes every
+  // intermediate result function-local, so this adapter has no component-scope slot for a result set
+  // to leak into. Reproducing the leak would create a cross-invocation hazard on a warm Lambda
+  // container - one request's rows visible to the next - so the divergence is structural, and the
+  // test below asserts the isolation rather than the leak.
   it('holds no state between two invocations of one repository', async () => {
     const { executor, repository } = makeSubject([[salePriceRow({ skuID: 'sku-first' })], []]);
 
@@ -2665,7 +2832,6 @@ describe('salePricePromotionRewards - the eliminated dead locals and scope leak'
     expect(first.map((row) => row.skuID)).toEqual(['sku-first']);
     expect(second).toHaveLength(0);
 
-    // The second invocation neither inherits the first's productID filter nor observes its rows.
     const firstCall = requireCall(executor, 0);
     const secondCall = requireCall(executor, 1);
 
@@ -2685,7 +2851,6 @@ describe('salePricePromotionRewards - the eliminated dead locals and scope leak'
     expect(firstRows.map((row) => row.skuID)).toEqual(['sku-of-the-first-repository']);
     expect(secondRows.map((row) => row.skuID)).toEqual(['sku-of-the-second-repository']);
 
-    // Each instance recorded exactly its own statement, and neither executor saw the other's.
     expect(first.executor.calls).toHaveLength(1);
     expect(second.executor.calls).toHaveLength(1);
     expect(requireOnlyCall(second.executor).sql).not.toContain('SwSku.productID = ?');
@@ -2779,13 +2944,11 @@ describe('salePricePromotionRewards - the unanchored LIKE dialect site', () => {
   });
 });
 
-/** The two dialects the migration recognizes but this port deliberately does not implement. */
 const NON_MYSQL_DIALECTS: readonly DatabaseDialect[] = Object.freeze([
   'MicrosoftSQLServer',
   'Oracle10g',
 ]);
 
-/** Capture the message of whatever a synchronous call raises, without asserting on its class. */
 function messageRaisedBy(work: () => unknown): string {
   try {
     work();
@@ -2844,8 +3007,6 @@ describe('the dialect contract - no fallback, no silent default', () => {
   });
 
   it('echoes no configured value into the failure message', () => {
-    // The message names the VARIABLES whose values it withholds, and withholds them. This asserts the
-    // withholding directly: the placeholder actually configured above must not appear.
     applyConfiguration('Postgres');
 
     const message = messageRaisedBy(() =>
@@ -2858,8 +3019,8 @@ describe('the dialect contract - no fallback, no silent default', () => {
 
   it('folds case for every MySQL spelling that appears in legacy source', () => {
     // THREE spellings exist in the source and a `===` comparison would fail on two of them:
-    //   `MySQL` [config/configORM.cfm:L10, model/dao/PromotionDAO.cfc:L482]
-    //   `mySQL` [model/dao/PriceGroupDAO.cfc:L57, model/dao/ProductDAO.cfc:L288]
+    //   `MySQL` at [config/configORM.cfm:L10], and again at [model/dao/PromotionDAO.cfc:L482]
+    //   `mySQL` at [model/dao/PriceGroupDAO.cfc:L57], and again at [model/dao/ProductDAO.cfc:L288]
     //   `mySql` [model/dao/ProductDAO.cfc:L304]
     // `findNoCase` was case-insensitive; the port folds case explicitly rather than relying on a loose
     // comparison, because `eqeqeq` is an error and `==` is never the answer.
@@ -2874,9 +3035,6 @@ describe('the dialect contract - no fallback, no silent default', () => {
   });
 
   it('raises from the direct resolver too, with no configuration in place', () => {
-    // SUPPLIES vs INTERPRETS: `src/lib/config.ts` supplies the raw string and `dialect.ts` interprets
-    // it. `resolveDialect` is called here on a completely unconfigured process and still resolves and
-    // still raises, which is the proof that it reads its argument rather than the environment.
     applyConfiguration(undefined);
 
     expect(resolveDialect('mySql')).toBe('MySQL');
@@ -2896,7 +3054,6 @@ describe('the dialect contract - no fallback, no silent default', () => {
       expect(() => optionGroupOdometerPowerFragment(dialect, 'SwOptionGroup.sortOrder')).toThrow();
     }
 
-    // And the MySQL arm passes the same guard without raising.
     const mysql: DatabaseDialect = 'MySQL';
 
     expect(() => assertMySqlDialect(mysql, 'model/dao/PromotionDAO.cfc:L482-L488')).not.toThrow();
@@ -2918,7 +3075,6 @@ describe('the dialect contract - no fallback, no silent default', () => {
       materializedIdPathLikePatternFragment(canonical, 'SwPromoRewardProductType.productTypeID'),
     );
 
-    // The Oracle and SQL Server arms of the legacy branch are not emitted, in either spelling.
     expect(sql).not.toContain("('%' || SwPromoRewardProductType.productTypeID || '%')");
     expect(sql).not.toContain("('%' + SwPromoRewardProductType.productTypeID + '%')");
   });
@@ -2954,8 +3110,8 @@ const ROUNDING_RULE_STATEMENT = [
 
 describe('getRoundingRuleQuery - the seventh read, hosted on the promotion port', () => {
   it('emits one statement against SwRoundingRule with exactly one bound key', async () => {
-    // The port count is LOCKED, and there is deliberately no `roundingRuleRepository.ts`, so this read
-    // lives here. Its caller is `model/service/RoundingRuleService.cfc:L70`.
+    // This read lives on the promotion port because its only caller is a promotion-tier service:
+    // `getRoundingRuleDetailsByID` reaches it at [model/service/RoundingRuleService.cfc:L70].
     const { executor, repository } = makeSubject([[roundingRuleRow()]]);
 
     await repository.getRoundingRuleQuery('rounding-rule-1');
@@ -2970,9 +3126,6 @@ describe('getRoundingRuleQuery - the seventh read, hosted on the promotion port'
   });
 
   it('projects the eight widened columns and no others', () => {
-    // The legacy `<cfquery name="rs">` carries no `datasource` attribute either - it inherits the
-    // application datasource, which the port reproduces by holding the pool rather than naming a source
-    // in the statement.
     const projection = ROUNDING_RULE_STATEMENT.slice(
       ROUNDING_RULE_STATEMENT.indexOf('SELECT'),
       ROUNDING_RULE_STATEMENT.indexOf('FROM'),
@@ -2994,7 +3147,6 @@ describe('getRoundingRuleQuery - the seventh read, hosted on the promotion port'
       'modifiedByAccountID',
     ]);
 
-    // The two the legacy projected are both still there, which is what keeps the widening additive.
     expect(projectedColumns).toContain('roundingRuleExpression');
     expect(projectedColumns).toContain('roundingRuleDirection');
     expect(ROUNDING_RULE_STATEMENT).not.toContain('datasource');
@@ -3020,8 +3172,6 @@ describe('getRoundingRuleQuery - the seventh read, hosted on the promotion port'
   });
 
   it('returns undefined on a miss - never a zero, an empty object or a default rule', async () => {
-    // A fabricated default here would silently round money by a rule nobody configured. `undefined` is
-    // the only honest answer, and it is what the port declares.
     const { executor, repository } = makeSubject([[]]);
 
     const rule = await repository.getRoundingRuleQuery('no-such-rule');
@@ -3078,9 +3228,6 @@ async function collectEveryEmittedStatement(): Promise<readonly RecordedStatemen
   const graph = makePromotionFixtures();
   const collected: RecordedStatement[] = [];
 
-  // 1. The active-reward projection, driven to its widest shape: three reward types, two promotion
-  //    codes, qualification required, and both the reward row and the period-qualifier row present so
-  //    every link read runs.
   const activeCanned: (readonly SqlRow[])[] = [];
   const qualifierOrdinal = 1 + REWARD_LINK_TABLES.length + REWARD_CATALOG_TABLES.length + 1;
 
@@ -3096,7 +3243,6 @@ async function collectEveryEmittedStatement(): Promise<readonly RecordedStatemen
   );
   collected.push(...active.executor.calls);
 
-  // 2-5. The four use-counts, each with a real hydrated fixture and a real aggregate row.
   const period = makeSubject([[countRow(1)]]);
   await period.repository.getPromotionPeriodUseCount(graph.promotionPeriod);
   collected.push(...period.executor.calls);
@@ -3116,17 +3262,14 @@ async function collectEveryEmittedStatement(): Promise<readonly RecordedStatemen
   await codeAccount.repository.getPromotionCodeAccountUseCount(graph.promotionCode, 'account-1');
   collected.push(...codeAccount.executor.calls);
 
-  // 6. The sale-price reduction, with the optional filter supplied so its widest bind set is covered.
   const salePrice = makeSubject([[salePriceRow()]]);
   await salePrice.repository.getSalePricePromotionRewardsQuery('product-1');
   collected.push(...salePrice.executor.calls);
 
-  // 7. The hosted rounding-rule read.
   const roundingRule = makeSubject([[roundingRuleRow()]]);
   await roundingRule.repository.getRoundingRuleQuery('rounding-rule-1');
   collected.push(...roundingRule.executor.calls);
 
-  // Every mutation channel stayed untouched throughout: this port's seven reads write nothing.
   for (const executor of [
     active.executor,
     period.executor,
@@ -3174,7 +3317,6 @@ const PERMITTED_PHYSICAL_TABLES: readonly string[] = Object.freeze([
   'SwOptionGroup',
 ]);
 
-/** Every `Sw*`-prefixed identifier a statement names, de-duplicated. */
 function physicalTablesNamedBy(statements: readonly RecordedStatement[]): string[] {
   const named = new Set<string>();
 
@@ -3207,8 +3349,6 @@ describe('schema continuity - the existing Sw* tables, read and never reshaped',
     expect(named.length).toBeGreaterThan(0);
 
     for (const identifier of named) {
-      // Every `Sw*` identifier is either a permitted base table or one of the promotion link tables,
-      // all of which are `SwPromoReward*`/`SwPromoQual*`-prefixed by construction.
       const isPermitted =
         PERMITTED_PHYSICAL_TABLES.includes(identifier) ||
         identifier.startsWith('SwPromoReward') ||
@@ -3225,8 +3365,6 @@ describe('schema continuity - the existing Sw* tables, read and never reshaped',
     expect(everySql).toContain('SwPromoQual');
     expect(everySql).toContain('SwPromoReward');
 
-    // The un-abbreviated spellings a reader might expect do not exist in the schema and must never be
-    // emitted.
     expect(everySql).not.toContain('SwPromotionQualifier');
     expect(everySql).not.toContain('SwPromotionReward');
   });
@@ -3242,11 +3380,6 @@ describe('schema continuity - the existing Sw* tables, read and never reshaped',
   });
 
   it('translates every HQL entity identifier into its physical table name', async () => {
-    // CFML parity: the legacy HQL names ORM ENTITIES - `SlatwallPromotionReward`
-    // [model/dao/PromotionDAO.cfc:L65], `SlatwallPromotionApplied` [:L146],
-    // `SlatwallPromotionCode` [:L263] and `SlatwallPromotionQualifier` [:L91]. Those identifiers are
-    // CORRECT as entity names and need no correction; what they must never do is survive into emitted
-    // SQL, where only the physical `Sw*` names exist.
     const statements = await collectEveryEmittedStatement();
 
     for (const { sql } of statements) {
@@ -3352,7 +3485,6 @@ describe('parameterized SQL exclusively - every supplied value is bound, never i
       expect(everyBoundValue).toContain(value);
     }
 
-    // `activeFlag` is bound too, at both of the two sites that test it.
     expect(everyBoundValue.filter((value) => value === 1).length).toBeGreaterThanOrEqual(2);
   });
 
@@ -3378,8 +3510,6 @@ describe('parameterized SQL exclusively - every supplied value is bound, never i
       }
     }
 
-    // The clock-reading statements bind ONE instant many times; the fixture-driven ones bind the
-    // fixture's own explicit UTC literals.
     const salePriceStatement = statements.find(({ sql }) => sql.startsWith('WITH '));
 
     if (salePriceStatement === undefined) {
@@ -3421,41 +3551,16 @@ describe('parameterized SQL exclusively - every supplied value is bound, never i
   });
 });
 
-/**
- * DEFECTS THE MIGRATION PRESERVES THAT ARE OWNED BY SIBLING SUITES.
- *
- * Named here so a reviewer working through the promotion slice can see the whole register, and
- * deliberately NOT carrying a `LEGACY-DEFECT` marker in this file - a marker belongs exactly once, in
- * the suite that asserts the behaviour, or the register stops being auditable.
- *
- *   - Defect 16, `getPriceByPromotion` calling a method that does not exist
- *     [model/entity/Sku.cfc:L258]                                     -> the Sku entity suite.
- *   - `getBrandName` poisoning its own memo [model/entity/Product.cfc:L524-L532]
- *                                                                      -> the Product entity suite.
- *   - The over-use stripping loop indexing by the leaked `reward` variable rather than by `prID`
- *     [model/service/PromotionService.cfc:L468-L521]                   -> the promotion engine suites.
- *   - The never-initialized, never-read `qualifiedFulfillments` key [:L621-L623].
- *   - The shipping-address-zone clause re-testing `hasShippingMethod` [:L703].
- *   - The `amountOff` branch skipping `precisionEvaluate` [:L998].
- *   - `discountAmount` assigned without `var`, leaking to component scope [:L1007, :L1009].
- *   - The discount clamp comparing the pre-rounding value and overwriting the post-rounding one
- *     [:L1013-L1015].
- *   - The misspelled `orderItemQulifiedDiscounts` accumulator key [:L82-L133].
- *   - `hb_permission="promotionPeriod.promtionRewards"` [model/entity/PromotionReward.cfc:L49-L57].
- *   - The `issue #1766` return/exchange no-op, which is the headline TODO carry-forward
- *     [model/service/PromotionService.cfc:L542-L544]                   -> the service tier.
- *
- * For completeness of the dependency picture this suite's subject sits inside:
- * `model/service/PromotionService.cfc` declares exactly THREE injected properties - `promotionDAO`
- * [:L51], `addressService` [:L53] and `roundingRuleService` [:L54] - which is what makes the
- * sixteen-collaborator figure a property of `OrderService` rather than of this slice.
- */
 describe('the port surface this suite asserts against', () => {
-  it('declares the seven reads by their legacy names, leaving the eighth to the write suite', () => {
+  it('declares exactly the seven reads by their legacy names, and NOTHING ELSE', () => {
     // Interface parity is the acceptance contract, so the surface itself is asserted: the seven reads
-    // carry their legacy camelCase names verbatim, and `saveRoundingRule` - the eighth member - is
-    // owned by `mysqlPromotionRepositoryRoundingRuleWrite.test.ts` and is deliberately not exercised
-    // here.
+    // carry their legacy camelCase names verbatim, and there is no eighth member of any kind.
+    //
+    // ★ THIS CASE ONCE ENDED IN `expect(typeof port.saveRoundingRule).toBe('function')`, WHICH IS
+    // THE OPPOSITE OF WHAT IT IS FOR. A parity case that confirms an extra member is not asserting
+    // parity; it is certifying the breach. The enumeration below is EXHAUSTIVE over `keyof
+    // PromotionRepository`, so adding a member to the port breaks this file at compile time rather
+    // than passing quietly through a `for` loop over a hand-written list.
     const graph = makePromotionFixtures();
     const { repository } = makeSubject([[]]);
     const port: PromotionRepository = repository;
@@ -3474,13 +3579,34 @@ describe('the port surface this suite asserts against', () => {
       expect(typeof port[name]).toBe('function');
     }
 
-    expect(typeof port.saveRoundingRule).toBe('function');
+    // EXHAUSTIVE, so the seven above cannot be a stale subset of a wider port: a member added to
+    // `PromotionRepository` leaves this object literal missing a required key, and the file stops
+    // compiling. This is the check that would have caught `saveRoundingRule`.
+    const portMembers: Readonly<Record<keyof PromotionRepository, true>> = Object.freeze({
+      getActivePromotionRewards: true,
+      getPromotionPeriodUseCount: true,
+      getPromotionPeriodAccountUseCount: true,
+      getPromotionCodeUseCount: true,
+      getPromotionCodeAccountUseCount: true,
+      getSalePricePromotionRewardsQuery: true,
+      getRoundingRuleQuery: true,
+    });
+
+    expect(Object.keys(portMembers).sort()).toStrictEqual([...readNames].sort());
     expect(readNames).toHaveLength(7);
 
-    // No entity-lifecycle method exists on this port: there is no load, save or delete for
-    // `Promotion`, `PromotionPeriod`, `PromotionCode`, `PromotionQualifier`, `PromotionReward`,
-    // `PromotionApplied` or `PromotionAccount`, and `PromotionAccount` is inert in this slice.
+    // EVERY ONE OF THE SEVEN IS A READ. The write that briefly joined them is pinned absent by name,
+    // on the port-typed reference and on the concrete adapter alike, because it went missing from
+    // three places at once and any one of them coming back is the regression.
+    expect('saveRoundingRule' in port).toBe(false);
+    expect('saveRoundingRule' in repository).toBe(false);
+    expect(
+      Object.getOwnPropertyNames(MysqlPromotionRepository.prototype).includes('saveRoundingRule'),
+    ).toBe(false);
+
     const absent = [
+      'saveRoundingRule',
+      'deleteRoundingRule',
       'savePromotion',
       'savePromotionApplied',
       'savePromotionReward',
@@ -3498,9 +3624,81 @@ describe('the port surface this suite asserts against', () => {
       expect(name in port).toBe(false);
     }
 
-    // The fixture graph is real and hydrated, which is what lets the use-count signatures be called
-    // with entities rather than with stand-ins.
+    // THE SECOND EXPORTED INTERFACE, ASSERTED BY CONSTRUCTION. `SalePriceResolver` carries exactly
+    // one method and lives in the port file rather than in a fourteenth port module. The literal
+    // below type-checks only while that remains true - a missing member fails the assignment and a
+    // second member trips the excess-property check - and `Object.keys` makes the same fact visible
+    // at runtime. It has no adapter class anywhere in the layout by design: it is satisfied in
+    // `src/handlers/bootstrap.ts` by adapting the ported `src/services/promotionService.ts` surface,
+    // and injected into `Product` from there, which is why no statement of this adapter's serves it.
+    const salePriceResolver: SalePriceResolver = {
+      getSalePriceDetailsForProductSkus: (_productID: string) => Promise.resolve({}),
+    };
+
+    expect(Object.keys(salePriceResolver)).toEqual(['getSalePriceDetailsForProductSkus']);
+    expect(typeof salePriceResolver.getSalePriceDetailsForProductSkus).toBe('function');
+
     expect(graph.promotionPeriod.getPromotionPeriodID()).toBe('promofx-promotion-period');
     expect(graph.promotionCode.getPromotionCodeID()).toBe('promofx-promotion-code');
+  });
+
+  it('★ publishes no public member the port does not declare - the build is the assertion', () => {
+    // `keyof` IS the public surface: TypeScript excludes `private` and `protected` members from it,
+    // and a runtime prototype sweep cannot express the same thing because `private` is ERASED - every
+    // private helper in the adapter sits on the prototype indistinguishable from a public one. So the
+    // gate is expressed where `public` still means something, in the type system.
+    //
+    // `Exclude<keyof MysqlPromotionRepository, keyof PromotionRepository>` collapses to `never`
+    // exactly when the class publishes nothing beyond the port's seven, and `AssertNever` fails its
+    // own constraint the moment it does not. This catches BOTH shapes the drift took: a write added
+    // to the port and implemented here, and - the shape a hand-written name list would miss entirely -
+    // a private helper promoted to public.
+    type ExtraPublicMembers = Exclude<keyof MysqlPromotionRepository, keyof PromotionRepository>;
+
+    type AssertNever<T extends never> = T;
+    type NoExtraPublicMembers = AssertNever<ExtraPublicMembers>;
+
+    const extraPublicMembers: NoExtraPublicMembers[] = [];
+
+    expect(extraPublicMembers).toStrictEqual([]);
+
+    // No entity-lifecycle write of any kind reached this adapter, stated by name so a reader sees the
+    // class of member the type gate above keeps out.
+    const { repository } = makeSubject();
+
+    for (const name of ['saveRoundingRule', 'deleteRoundingRule', 'saveRoundingRuleByID']) {
+      expect(name in repository).toBe(false);
+    }
+  });
+
+  it('★ the port exports the co-located SalePriceResolver contract, with exactly one method', () => {
+    // The port is specified as exporting a SECOND interface beside `PromotionRepository`:
+    // `SalePriceResolver`, carrying the single method `getSalePriceDetailsForProductSkus`. It is
+    // co-located there rather than given its own module because `src/domain/ports/` is locked at
+    // thirteen FILES, and it stands in for the `getService("promotionService")` reach at
+    // [model/entity/Product.cfc:L519] under transformation rule T2.
+    //
+    // ★ IT WAS UN-EXPORTED FOR ONE REVISION AND THIS SUITE RECORDED THAT AS A DEPARTURE INSTEAD OF
+    // FAILING ON IT. The import below is now what makes the export load-bearing: un-export it again
+    // and this file does not compile.
+    const oneMethod: Readonly<Record<keyof SalePriceResolver, true>> = Object.freeze({
+      getSalePriceDetailsForProductSkus: true,
+    });
+
+    expect(Object.keys(oneMethod)).toStrictEqual(['getSalePriceDetailsForProductSkus']);
+
+    // It is a SEPARATE contract, not a member of this port - which is the whole reason the adapter
+    // below cannot satisfy it and `src/handlers/bootstrap.ts` does, by adapting the ported
+    // `src/services/promotionService.ts` surface.
+    const { repository } = makeSubject();
+
+    expect('getSalePriceDetailsForProductSkus' in repository).toBe(false);
+
+    type ResolverIsNotThisPort =
+      Extract<keyof SalePriceResolver, keyof PromotionRepository> extends never ? true : false;
+
+    const resolverIsNotThisPort: ResolverIsNotThisPort = true;
+
+    expect(resolverIsNotThisPort).toBe(true);
   });
 });

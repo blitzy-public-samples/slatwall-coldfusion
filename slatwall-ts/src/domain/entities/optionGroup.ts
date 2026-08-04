@@ -1,163 +1,72 @@
 // ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
-//
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
-//
-//   tests/unit/domain/entities/optionGroup.test.ts  optionGroup entity suite
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // slatwall-ts - the SwOptionGroup domain entity
 //
 // PROVENANCE
-//   A 1:1 logic extraction of model/entity/OptionGroup.cfc (109 lines), which
-//   is the sole authority for every behaviour reproduced below. Each locator in
-//   this file was re-read from the legacy tree while authoring it and all of
-//   them matched, so there is no corrected locator to record.
+//   A 1:1 logic extraction of model/entity/OptionGroup.cfc (109 lines), which is
+//   the sole authority for every behaviour reproduced below. Entity name
+//   `SlatwallOptionGroup`, physical table `SwOptionGroup`
+//   [model/entity/OptionGroup.cfc:L49].
 //
-//   Verified component declaration, model/entity/OptionGroup.cfc:L49:
-//
-//     component displayname="Option Group" entityname="SlatwallOptionGroup"
-//     table="SwOptionGroup" persistent=true output=false accessors=true
-//     extends="HibachiEntity" cacheuse="transactional"
-//     hb_serviceName="optionService" hb_permission="this"
-//
-//   SCHEMA CONTINUITY. Entity name `SlatwallOptionGroup`, physical table
-//   `SwOptionGroup`. No migration, no rename and no new column: the property
-//   metadata IS the contract, and each field below quotes the declaration it
+//   SCHEMA CONTINUITY. No migration, no rename and no new column: the property
+//   metadata IS the contract, and each field below cites the declaration it
 //   serves so a reviewer can diff this file against the CFC line by line.
 //
-//   THE TWO `hb_*` ATTRIBUTES ARE CARRIED FORWARD VERBATIM, here, as doc text:
-//
-//     hb_serviceName="optionService"
-//     hb_permission="this"
-//
-//   They are recorded as documentation rather than as exported constants for
-//   one reason: this module's runtime export surface is fixed at exactly two
-//   units - the `OptionGroup` class and the shared `ENTITY_CODE_PATTERN`, plus
-//   the type aliases that belong to the class and are erased at emit - and
-//   an `hb_*` attribute needs no runtime representation to stay auditable.
-//   JavaRB is not ported and no i18n runtime is introduced, so an `hb_*`
-//   identifier is a string of documentation and nothing more. Note the service
-//   name is `optionService`, NOT an `optionGroupService`: no such service
-//   exists anywhere in the legacy tree, because Option and OptionGroup CRUD
+//   The component's two `hb_*` attributes are carried forward as documentation
+//   rather than as exported constants, because neither needs a runtime
+//   representation to stay auditable: `hb_serviceName="optionService"` and
+//   `hb_permission="this"` [model/entity/OptionGroup.cfc:L49]. The service name
+//   is `optionService`, not an `optionGroupService`: Option and OptionGroup CRUD
 //   are both served by model/service/OptionService.cfc.
 //
-// WHY THIS ENTITY IS IN SCOPE AT ALL
-//   It is not named in the migration prompt. It is required by two verified
-//   consumers, which is what puts it in implicit scope:
+// WHY THIS ENTITY IS IN SCOPE
+//   It is not named in the migration prompt. Two consumers require it.
 //
-//     * model/entity/Option.cfc:L59 declares
-//       `property name="optionGroup" cfc="OptionGroup" fieldtype="many-to-one"
-//       fkcolumn="optionGroupID";` - so every ported Option needs this type.
-//     * model/dao/SkuDAO.cfc:L172-L202 `getSortedProductSkusID` joins
+//     * [model/entity/Option.cfc:L59] declares `optionGroup` as a many-to-one
+//       onto this entity, so every ported Option needs this type.
+//     * [model/dao/SkuDAO.cfc:L172-L202] `getSortedProductSkusID` joins
 //       `SwOptionGroup` and weights its ORDER BY with
 //       `SUM(SwOption.sortOrder * POWER(10, <next> - SwOptionGroup.sortOrder))`.
-//       That expression is also why `sortOrder` is `required="true"` at L58 and
-//       is modelled here as a required `number`: a NULL would poison POWER().
+//       That expression is why `sortOrder` is `required="true"`
+//       [model/entity/OptionGroup.cfc:L58] and is modelled here as a required
+//       `number`: a NULL would poison POWER().
 //
 // NO BASE CLASS, BY DESIGN
-//   The legacy component extends `HibachiEntity` - the local
-//   model/entity/HibachiEntity.cfc (274 lines), which itself extends
-//   Slatwall.org.Hibachi.HibachiEntity, a three-level chain. None of it is
-//   ported and none of it is emulated: this is a standalone class. The
-//   intermediate class holds twelve `getService(...)` sites (L123, L130, L135,
-//   L145, L178, L180, L182, L194, L196, L207, L257, L266), seven of them
-//   `attributeService`, and they are moot here because the EAV path is not
-//   ported - but "moot" is not "quietly reimplemented", so none of them
-//   reappears in any form below.
-//
-//   `OptionGroup` declares NO `attributeValues` collection. Only Sku, Product,
-//   ProductType and Brand do. There is therefore no EAV read path in this file
-//   and no `attributeValue.ts` anywhere in this port.
-//
-//   THE ELEVEN DYNAMIC-DISPATCH PATTERNS ARE NOT EMULATED. Re-read at
-//   org/Hibachi/HibachiEntity.cfc:L507-L565, `onMissingMethod` synthesises
-//   `hasUniqueOrNullXXX`, `hasUniqueXXX`, `hasAnyXXX`, `getXXXAssignedIDList`,
-//   `getXXXID`, `getXXXOptions`, `getXXXOptionsSmartList`, `getXXXSmartList`,
-//   `getXXXStruct`, `getXXXCount` and the attribute getter, then throws for
-//   anything else. There is no `Proxy` here, no index signature and no string
-//   dispatch. Only CONCRETELY-CALLED patterns are generated as explicitly-typed
-//   methods, and the call census that decided which ones is recorded at
-//   `hasOption` below.
+//   The legacy component extends `HibachiEntity`, and none of that chain is
+//   ported or emulated: this is a standalone class with no ambient scope and no
+//   service locator. The framework's `onMissingMethod` dispatcher
+//   [org/Hibachi/HibachiEntity.cfc:L507-L565] is not reproduced either - there is
+//   no `Proxy`, no index signature and no string dispatch here, and only
+//   concretely-called members are declared, as explicitly-typed methods.
+//   `OptionGroup` declares no `attributeValues` collection, so this file has no
+//   EAV read path.
 //
 // ASSOCIATIONS ARRIVE ALREADY MATERIALIZED
 //   Hibernate lazy collections have no equivalent in a driver-only stack, so
 //   `src/repositories/mysql/**` owns row-to-entity hydration and documents the
-//   fetch shape at the producing method. This class receives what it is given
-//   and never simulates laziness. A fetch-shape census of the source found no
-//   `fetch=` and no `lazy=` attribute anywhere in model/entity/OptionGroup.cfc,
-//   so there is no eager/lazy ruling for this entity to carry.
+//   fetch shape at the producing method. This class receives what it is given and
+//   never simulates laziness.
 //
 // NO COLLABORATOR PORT IS INJECTED
-//   The component has exactly one `getService(` site - L77,
-//   `hibachiUtilityService.sortObjectArray` - and it is replaced by an explicit
-//   in-memory sort in this file rather than by a port. Nothing is imported from
-//   `../ports/`, the port budget is untouched, and `hibachiUtilityService` is
-//   not ported at all. There is no ambient scope and no service locator here.
+//   The component has exactly one `getService(` site - `sortObjectArray` on the
+//   utility service [model/entity/OptionGroup.cfc:L77] - and it is replaced by an
+//   explicit in-memory sort in this file rather than by a port. Nothing is
+//   imported from `../ports/`.
 //
-// NOT PRESENT, AND EACH ABSENCE VERIFIED RATHER THAN ASSUMED
-//   * No ORM lifecycle hook. model/entity/OptionGroup.cfc:L85-L107 is four
-//     comment-delimited banner sections - `Non-Persistent Property Methods`,
-//     `Bidirectional Helper Methods`, `Overridden Methods` and
-//     `ORM Event Hooks` - and only the second contains anything. In this port
-//     only Category, PriceGroup, ProductType and PromotionCode carry hooks.
-//     `OptionGroup` does carry an `Overridden Methods` banner that some sibling
-//     entities lack, but it is EMPTY, and an empty banner implies nothing.
-//   * No non-persistent property method, and therefore none of the memoized-
-//     accessor defects that afflict Sku and Product.
-//   * No monetary column of any kind, so neither `Money` nor `CurrencyCode` is
-//     imported. `decimal.js` is not imported either: `../valueObjects/money.ts`
-//     is the only domain module permitted to import it.
-//   * No smart list. See the OMITTED annotation where L81-L83 would have gone.
+// THE SORT THIS ENTITY REACHES IS PART OF THE CONTRACT
+//   `getOptions` returns the result of `sortObjectArray`
+//   [model/service/HibachiUtilityService.cfc:L514-L531] straight out of a public
+//   entity method, so that utility's observable behaviour is reproduced here
+//   rather than improved: random tie-breaking, a case-insensitive struct-key
+//   collision that can silently drop an element, key text taken from the first
+//   insertion, and a `numeric` mode that orders by the random tail and raises on
+//   a non-numeric composed key. The tie-breaking random source is injected
+//   through the constructor, so each of those is characterizable with plain
+//   inputs and no clock, database or environment.
 //
-// THE ONE PRESERVED DEFECT LIVES IN THE SORT THIS ENTITY REACHES
-//   model/entity/OptionGroup.cfc names no numbered entry in the port's
-//   legacy-defect register, and its own bidirectional helpers are in fact the
-//   CORRECT reference pattern: contrast model/entity/Option.cfc:L129-L131 and
-//   L145-L147, where two `remove*` methods erroneously call
-//   `addExcludedOption(this)`. Those are preserved defects owned by `option.ts`.
-//
-//   What this file DOES carry is the observable behaviour of the sort
-//   `getOptions` delegates to, model/service/HibachiUtilityService.cfc's
-//   `sortObjectArray` at L514-L531. That utility is framework code this port
-//   does not ship as a module, but its results are returned straight out of a
-//   public entity method, so its behaviour IS part of the contract and is
-//   reproduced rather than improved: random tie-breaking, a case-insensitive
-//   struct-key collision that can silently drop an element, key text taken from
-//   the first insertion, and a `numeric` mode that orders by the random tail and
-//   raises on a non-numeric composed key. Exactly ONE genuine two-line
-//   `LEGACY-DEFECT` annotation appears in this file, on the colliding-key
-//   overwrite; every other verified observation is marked `LEGACY-NOTE`, so the
-//   stronger marker keeps its meaning.
-//
-// TEST COVERAGE IS NET-NEW
-//   Coverage belongs at
-//   `slatwall-ts/tests/unit/domain/entities/optionGroup.test.ts` (planned) and ALL of it
-//   is net-new: no legacy test under `meta/tests/**` touches this entity. Only
-//   `meta/tests/unit/entity/BrandTest.cfc` and
-//   `meta/tests/unit/entity/ProductTest.cfc` are extended anywhere in this
-//   port, and `meta/tests/functional/admin/entity/ProductTest.cfc` is an empty
-//   stub contributing zero coverage. Nothing here may be presented as parity.
-//   Every method below is synchronous, and the ONE seam the suite needs is
-//   already here: the tie-breaking random source is injected through the
-//   constructor, so the reproduced non-determinism, the reproduced key-collision
-//   element loss and the two reproduced failure contracts are all
-//   characterizable with plain inputs and no clock, database or environment.
-//
-// NO USER RULES WERE PROVIDED
-//   Stated explicitly rather than assumed: the project rules document contains
-//   exactly "No user rules provided.", re-read while authoring this file. No
-//   rule is invented to fill the gap, and the absence is not licence to lower
-//   the bar - the enterprise-standard substitute applies at full strength.
-//   Zero files enter scope by rule mandate, and there is no rule conflict to
-//   resolve, because every tension in this port is specification-internal.
+// TEST COVERAGE
+//   `slatwall-ts/tests/unit/domain/entities/optionGroup.test.ts` covers this
+//   entity, and all of it is net-new: no legacy test under `meta/tests/**`
+//   touches OptionGroup, so nothing here may be presented as parity.
 // ---------------------------------------------------------------------------
 
 import { cfNumberToString } from '../../lib/cfml/numberFormat.js';
@@ -165,10 +74,10 @@ import { cfBoolean } from '../../lib/cfml/truthiness.js';
 import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import type { Option } from './option.js';
 
-// LEGACY-NOTE: `option.ts` <-> `optionGroup.ts` is an UNAVOIDABLE MUTUAL TYPE
-// CYCLE, and it is safe. model/entity/OptionGroup.cfc:L70 declares the
-// `options` one-to-many while model/entity/Option.cfc:L59 declares the
-// `optionGroup` many-to-one, so each side genuinely names the other. Both
+// `option.ts` <-> `optionGroup.ts` is an UNAVOIDABLE MUTUAL TYPE CYCLE, and it
+// is safe. [model/entity/OptionGroup.cfc:L70] declares the `options`
+// one-to-many while [model/entity/Option.cfc:L59] declares the `optionGroup`
+// many-to-one, so each side genuinely names the other. Both
 // directions use `import type` ONLY, which TypeScript erases at emit, so the
 // emitted JavaScript contains no `require`/`import` of the sibling module and
 // no initialisation-order hazard exists. Entity classes never construct
@@ -251,27 +160,12 @@ export type OptionSortDirection = 'asc' | 'desc';
 /**
  * Every SCALAR persistent property `Option` declares, in declaration order.
  *
- * This is the complete, principled set of values an Option can be sorted by,
- * not an arbitrary selection, and each entry cites the declaration it comes
- * from in model/entity/Option.cfc:
- *
- *   optionID          L52   ormtype="string" length="32" fieldtype="id"
- *   optionCode        L53   ormtype="string"
- *   optionName        L54   ormtype="string"
- *   optionDescription L55   ormtype="string" length="4000"
- *   sortOrder         L56   ormtype="integer" sortContext="optionGroup"
- *   remoteID          L73   ormtype="string"
- *   createdDateTime   L76   ormtype="timestamp" hb_populateEnabled="false"
- *   modifiedDateTime  L78   ormtype="timestamp" hb_populateEnabled="false"
- *
- * Everything Option declares that is NOT here is excluded because it has no
- * scalar sort key: the `optionGroup` (L59) and `defaultImage` (L60) many-to-one
- * associations, the `images` one-to-many (L63), the four many-to-many inverse
- * collections `skus` (L66), `promotionRewards` (L67),
- * `promotionRewardExclusions` (L68), `promotionQualifiers` (L69) and
- * `promotionQualifierExclusions` (L70), and the `createdByAccount` (L77) and
- * `modifiedByAccount` (L79) many-to-one audit associations - the last two also
- * being out-of-scope `Account` references that this port reduces to opaque IDs.
+ * These are the values an Option can be sorted by: the scalars declared at
+ * [model/entity/Option.cfc:L52-L56], plus `remoteID`
+ * [model/entity/Option.cfc:L73] and the two audit timestamps
+ * [model/entity/Option.cfc:L76-L78]. Everything else Option declares is an
+ * association and carries no scalar sort key, so no `orderby` naming one is
+ * accepted here.
  *
  * Declared `as const` so the union below has exactly one source of truth: add
  * a name here and the exhaustive switch in `readOptionSortKey` stops compiling
@@ -288,7 +182,6 @@ const SORTABLE_OPTION_PROPERTY_NAMES = [
   'modifiedDateTime',
 ] as const;
 
-/** One of {@link SORTABLE_OPTION_PROPERTY_NAMES}, derived so the two cannot drift. */
 type SortableOptionProperty = (typeof SORTABLE_OPTION_PROPERTY_NAMES)[number];
 
 /**
@@ -440,13 +333,14 @@ function optionSortKeyAsCfmlString(value: OptionSortKey): string {
 export type OptionSortTieBreaker = () => number;
 
 /**
- * The default tie breaker: `randRange(1,100)`.
+ * The default tie breaker.
  *
- * `Math.random` is the faithful analogue of CFML's default `randRange`
- * algorithm, which is likewise a non-cryptographic pseudo-random generator. No
- * security decision is taken with this value - it exists only to reproduce the
- * legacy tie-break and its key-collision behaviour - so a CSPRNG would add a
- * dependency on `node:crypto` inside a domain entity to buy nothing.
+ * Supplies an inclusive, non-cryptographic draw over 1..100, which is the range
+ * the legacy tie-break draws from [model/service/HibachiUtilityService.cfc:L522].
+ * No claim is made that the two generators share an algorithm. No security
+ * decision is taken with this value - it exists only to reproduce the legacy
+ * tie-break and its key-collision behaviour - so a CSPRNG would add a dependency
+ * on `node:crypto` inside a domain entity to buy nothing.
  */
 function randRangeOneToOneHundred(): number {
   return Math.floor(Math.random() * 100) + 1;
@@ -649,8 +543,6 @@ function sortOptionsByLegacyStructKey(
 ): Option[] {
   const sortedStruct = new Map<string, { readonly keyText: string; option: Option }>();
 
-  // CFML parity [model/service/HibachiUtilityService.cfc:L517-L524]: one pass over the input in
-  // order, one `randRange(1,100)` draw per element, one struct assignment per element.
   for (const option of options) {
     const keyText = composeLegacySortKey(
       optionSortKeyAsCfmlString(readOptionSortKey(option, property)),
@@ -669,17 +561,12 @@ function sortOptionsByLegacyStructKey(
     }
   }
 
-  // CFML parity [model/service/HibachiUtilityService.cfc:L525-L526]: the KEYS are sorted, and the
-  // sort type and direction apply to the composed keys rather than to the underlying values.
   const keyArray = sortLegacySortKeys(
     [...sortedStruct.values()].map((entry) => entry.keyText),
     sortType,
     direction,
   );
 
-  // CFML parity [model/service/HibachiUtilityService.cfc:L527-L529]: the array is rebuilt by walking
-  // the sorted keys and appending each struct member, which is why the result can be shorter than
-  // the input but never longer and never re-ordered by anything other than the keys.
   const sortedArray: Option[] = [];
 
   for (const key of keyArray) {
@@ -749,8 +636,7 @@ function sortOptionsByProperty(
  * data - `getOptions` at [model/entity/OptionGroup.cfc:L73-L79] overrides the generated collection
  * accessor with a sorting variant - and because interface parity is the acceptance contract: a
  * reviewer diffs this public surface against the CFC method by method. Method names are therefore
- * the legacy CFML names VERBATIM in camelCase, which is exactly why eslint.config.mjs deliberately
- * enables no `naming-convention`, `camelcase` or `id-match` rule.
+ * the legacy CFML names verbatim, in camelCase.
  *
  * Every method below is SYNCHRONOUS. The async boundary rule in this port is per-method - a method
  * becomes async if and only if it reaches a port or a repository - and nothing on this entity does.
@@ -760,7 +646,7 @@ function sortOptionsByProperty(
  * `getOptions` is the one method that can THROW, and both throws are reproductions rather than
  * additions: an `orderby` naming no accessor raised through `evaluate()`
  * [model/service/HibachiUtilityService.cfc:L523], and `arraySort(...,"numeric")` raised on a
- * non-numeric element [model/service/HibachiUtilityService.cfc:L526]. Nothing else here is partial.
+ * non-numeric element [model/service/HibachiUtilityService.cfc:L526].
  */
 export class OptionGroup {
   // --- Persistent Properties [model/entity/OptionGroup.cfc:L52-L58] ---------------------------
@@ -889,13 +775,10 @@ export class OptionGroup {
   /** `createdDateTime`, or `undefined`. [model/entity/OptionGroup.cfc:L64] */
   private readonly createdDateTime: Date | undefined;
 
-  /** The `createdByAccountID` column, opaque. [model/entity/OptionGroup.cfc:L65] */
   private readonly createdByAccountID: string | undefined;
 
-  /** `modifiedDateTime`, or `undefined`. [model/entity/OptionGroup.cfc:L66] */
   private readonly modifiedDateTime: Date | undefined;
 
-  /** The `modifiedByAccountID` column, opaque. [model/entity/OptionGroup.cfc:L67] */
   private readonly modifiedByAccountID: string | undefined;
 
   // --- Related Object Properties [model/entity/OptionGroup.cfc:L69-L70] -----------------------
@@ -903,11 +786,15 @@ export class OptionGroup {
   /**
    * The materialized `options` one-to-many. [model/entity/OptionGroup.cfc:L70]
    *
-   *   property name="options" singularname="option" cfc="Option" fieldtype="one-to-many"
-   *   fkcolumn="optionGroupID" inverse="true" cascade="all-delete-orphan" orderby="sortOrder";
+   * ALREADY POPULATED; laziness is not simulated.
    *
-   * ALREADY POPULATED, and `readonly` in both directions - the reference cannot be reassigned and
-   * the array cannot be mutated through this type. Laziness is not simulated.
+   * `readonly` PINS THE FIELD REFERENCE, NOT THE COLLECTION CONTENTS, and the distinction is
+   * load-bearing here. The reference can never be reassigned, so this entity always speaks about one
+   * array for its whole lifetime. The CONTENTS are intentionally mutable: `getOptions()` with no
+   * argument hands back this very array, and `option.ts` pushes into it and splices out of it when
+   * maintaining the far side of the association, exactly as [model/entity/Option.cfc:L95] and
+   * [model/entity/Option.cfc:L102-L105] do through the live Hibernate collection. Nothing in this
+   * class copies or freezes it.
    *
    * PRE-SORTED BY `sortOrder` ASCENDING. The Hibernate-level `orderby="sortOrder"` is part of the
    * mapping, so the producing repository method delivers this array already in that order, and
@@ -999,41 +886,39 @@ export class OptionGroup {
 
   // --- Accessors --------------------------------------------------------------------------------
   //
-  // ColdFusion's `accessors=true` auto-generated these from the property metadata, so there is no
-  // legacy body to port and the locator on each one cites the property declaration it serves.
-  // Getters only: the legacy component declares no setter, and the only members it declares by hand
-  // are the collection override and the two bidirectional helpers further down.
+  // `accessors=true` [model/entity/OptionGroup.cfc:L49] generated these from the property metadata,
+  // so there is no legacy body to port and the locator on each one cites the property declaration it
+  // serves. The only members the component declares by hand are the collection override
+  // [model/entity/OptionGroup.cfc:L73-L79], the smart list [model/entity/OptionGroup.cfc:L81-L83] and
+  // the two bidirectional helpers [model/entity/OptionGroup.cfc:L92-L97].
   //
-  // The set is COMPLETE with respect to the persistent properties rather than trimmed to what the
-  // legacy tree happens to call, and that is deliberate. A census of accessor call sites across the
-  // whole repository found `getOptionGroupID` used 20 times, `getOptionGroupName` 5,
-  // `getOptionGroupCode` 2, `getImageGroupFlag` once, and `getOptionGroupImage`,
-  // `getOptionGroupDescription`, `getSortOrder` and `getRemoteID` zero times. The four with no call
-  // sites are still generated, because `accessors=true` generated them, the legacy admin uses them
-  // through the framework, and interface parity is judged against the property metadata rather than
-  // against current usage.
+  // GETTER-ONLY IS A DELIBERATE READ-ONLY NARROWING, NOT PARITY. `accessors=true` generates a
+  // `set<Property>` for every persistent property as well, so the legacy surface is read AND write;
+  // this class exposes reads only. Population is a repository and service-tier concern in this port -
+  // rows are hydrated through the constructor - so a domain setter would offer a second, unvalidated
+  // way to mutate persistent state. Any caller that genuinely needs to write reaches the owning
+  // service, and adding a setter here would be a surface change rather than a fix.
+  //
+  // The set is COMPLETE with respect to the persistent properties rather than trimmed to current
+  // call sites, because interface parity is judged against the property metadata.
 
   /** [model/entity/OptionGroup.cfc:L52] */
   getOptionGroupID(): string {
     return this.optionGroupID;
   }
 
-  /** [model/entity/OptionGroup.cfc:L53] */
   getOptionGroupName(): string | undefined {
     return this.optionGroupName;
   }
 
-  /** [model/entity/OptionGroup.cfc:L54] Format constraint: {@link ENTITY_CODE_PATTERN}. */
   getOptionGroupCode(): string | undefined {
     return this.optionGroupCode;
   }
 
-  /** [model/entity/OptionGroup.cfc:L55] */
   getOptionGroupImage(): string | undefined {
     return this.optionGroupImage;
   }
 
-  /** [model/entity/OptionGroup.cfc:L56] Declared `length="4000"` in the mapping. */
   getOptionGroupDescription(): string | undefined {
     return this.optionGroupDescription;
   }
@@ -1065,32 +950,26 @@ export class OptionGroup {
     return cfBoolean(this.imageGroupFlag);
   }
 
-  /** [model/entity/OptionGroup.cfc:L58] `required="true"` in the mapping, hence never `undefined`. */
   getSortOrder(): number {
     return this.sortOrder;
   }
 
-  /** [model/entity/OptionGroup.cfc:L61] */
   getRemoteID(): string | undefined {
     return this.remoteID;
   }
 
-  /** [model/entity/OptionGroup.cfc:L64] */
   getCreatedDateTime(): Date | undefined {
     return this.createdDateTime;
   }
 
-  /** [model/entity/OptionGroup.cfc:L65] The `createdByAccountID` column, opaque. */
   getCreatedByAccountID(): string | undefined {
     return this.createdByAccountID;
   }
 
-  /** [model/entity/OptionGroup.cfc:L66] */
   getModifiedDateTime(): Date | undefined {
     return this.modifiedDateTime;
   }
 
-  /** [model/entity/OptionGroup.cfc:L67] The `modifiedByAccountID` column, opaque. */
   getModifiedByAccountID(): string | undefined {
     return this.modifiedByAccountID;
   }
@@ -1175,18 +1054,18 @@ export class OptionGroup {
   }
 
   // OMITTED [model/entity/OptionGroup.cfc:L81-L83]: getOptionsSmartList() returned
-  // getPropertySmartList(propertyName="options"). HibachiSmartList is a framework
-  // query-builder artifact replaced by explicit typed repository queries (AAP §0.6.2);
-  // a domain entity must not host a dynamic query builder. Callers use getOptions().
+  // getPropertySmartList(propertyName="options"). HibachiSmartList is a framework query-builder
+  // artifact replaced by explicit typed repository queries (AAP 0.6.2), and a domain entity must not
+  // host a dynamic query builder.
   //
-  // Two further verified notes on that omission. The legacy declaration was REDUNDANT even in CFML:
-  // `onMissingMethod` at org/Hibachi/HibachiEntity.cfc:L544-L547 already synthesises any
-  // `getXXXSmartList()` call into the same `getPropertySmartList(propertyName="XXX")`, so the
-  // hand-written L81-L83 body only restated what the dispatcher would have done. And this omission
-  // is not a one-off: it follows the same precedent as `ProductType.getAssignedAttributeSetSmartList()`
-  // at model/entity/ProductType.cfc:L280, likewise omitted. "OMITTED" means this member is not
-  // authored in the TypeScript file and the reason is recorded where it would have gone; it never
-  // means a legacy file was edited or deleted. model/entity/OptionGroup.cfc is untouched.
+  // THE LEGACY SURFACE IS CALLED, SO THE OMISSION IS DELIBERATE RATHER THAN INCIDENTAL:
+  // [admin/views/entity/optiongrouptabs/options.cfm:L53] renders a listing from
+  // `rc.optionGroup.getOptionsSmartList()`. That caller is admin presentation, which this port
+  // excludes, so the dynamic smart-list surface is intentionally left out. TARGET callers read the
+  // materialized association through `getOptions()` instead.
+  //
+  // "OMITTED" means this member is not authored in the TypeScript file and the reason is recorded
+  // where it would have gone; it never means a legacy file was edited or deleted.
 
   // --- Bidirectional Helper Methods [model/entity/OptionGroup.cfc:L89-L99] --------------------
   //
@@ -1233,49 +1112,45 @@ export class OptionGroup {
   /**
    * Whether `option` is already a member of this group's materialized options.
    *
-   * GENERATED BECAUSE IT IS CONCRETELY CALLED, which is the whole test for whether a dynamic-dispatch
-   * member survives into this port. Verified call site, [model/entity/Option.cfc:L94]:
+   * DECLARED BECAUSE IT IS CONCRETELY CALLED: [model/entity/Option.cfc:L94] guards its append with
+   * `if(isNew() or !arguments.optionGroup.hasOption( this ))`, so without this member `option.ts`
+   * cannot port `setOptionGroup` faithfully. Dispatcher patterns that no caller uses are not
+   * declared at all.
    *
-   *   if(isNew() or !arguments.optionGroup.hasOption( this )) {
+   * The component declares no hand-written `hasOption` body, and the framework's `onMissingMethod`
+   * dispatcher [org/Hibachi/HibachiEntity.cfc:L507-L565] declares no `has<Singular>` case either -
+   * it handles `hasUniqueOrNull`, `hasUnique` and `hasAny` only. It is the collection accessor the
+   * CFML ORM generates for a one-to-many carrying `singularname="option"`
+   * [model/entity/OptionGroup.cfc:L70], and it tests membership of that collection.
    *
-   * Without it, `option.ts` cannot port `setOptionGroup` faithfully. A repository-wide census of
-   * calls made on an OptionGroup reference returns exactly six distinct members - `getOptions`,
-   * `hasOption`, `getOptionGroupID`, `getOptionGroupName`, `getOptionGroupCode` and
-   * `getImageGroupFlag` - and every one of them exists on this class. The other dispatcher patterns
-   * that COULD have been synthesised for the `options` collection are called nowhere and are
-   * therefore not generated: no `hasAnyOptions`, no `getOptionsCount`, no `getOptionsStruct`, no
-   * `getOptionsAssignedIDList`, no `getOptionsOptions`. `isNew()` is likewise absent - it is called
-   * on an `Option` at L94, never on an OptionGroup anywhere in the tree, and it belongs to the
-   * unported framework base.
+   * MEMBERSHIP IS BY PRIMARY KEY. Under Hibernate the legacy `arrayFind(collection, component)`
+   * [model/entity/Option.cfc:L102] compared references, but a session returned one instance per row,
+   * so reference identity WAS row identity. A driver-only stack has no session and guarantees no
+   * such uniqueness - `getOptions()` may hold options materialized by a different query than the
+   * argument came from - so a key comparison is what preserves the legacy MEANING, and a `hasOption`
+   * answering `false` for a row it already holds would make [model/entity/Option.cfc:L94]'s guard
+   * append a DUPLICATE.
    *
-   * LEGACY-NOTE: `hasOption` has no hand-written body and, unlike its siblings, no entry in the
-   * `onMissingMethod` dispatcher either - re-read at org/Hibachi/HibachiEntity.cfc:L507-L565, which
-   * handles `hasUniqueOrNull`, `hasUnique` and `hasAny` but has no `has<Singular>` branch. It is the
-   * accessor ColdFusion's ORM generates for a collection property carrying `singularname="option"`
-   * [model/entity/OptionGroup.cfc:L70], and it tests membership of the collection.
+   * WHAT THE UNSAVED BRANCH ACTUALLY DOES, STATED PLAINLY BECAUSE IT IS NOT REFERENCE-ONLY. Every
+   * unsaved `Option` carries `optionID === ''`. When the candidate's key is empty, or the collection
+   * holds an unsaved row, the predicate WIDENS to "same object OR same key" rather than narrowing to
+   * object identity. So for an unsaved candidate, ANY unsaved member matches on the empty key, and
+   * two DISTINCT unsaved options are reported as the same member. That is the behaviour; it is not
+   * hidden here.
    *
-   * MEMBERSHIP IS BY PRIMARY KEY, WITH A REFERENCE FALLBACK FOR AN UNSAVED ROW, which is the one
-   * containment rule this folder uses everywhere - `priceGroup.ts`, `promotionCode.ts`,
-   * `promotionApplied.ts` and `promotionPeriod.ts` all decide containment the same way, and
-   * `option.ts` states the rule at its own `removeOptionGroup`. The legacy
-   * `arrayFind(collection, component)` is reference identity in CFML, but under Hibernate reference
-   * identity WAS row identity: a session returned one instance per row, so the two were the same
-   * test. A driver-only stack has no session, so the two come apart, and reproducing the letter of
-   * the legacy test would stop reproducing its meaning. Nothing in this port guarantees one instance
-   * per row, `getOptions()` may legitimately hold options materialized by a different query than the
-   * argument came from, and a `hasOption` that answers `false` for a row it already contains makes
-   * [model/entity/Option.cfc:L94]'s guard append a DUPLICATE.
-   *
-   * THE FALLBACK IS NOT A COURTESY. An unsaved `Option` has `optionID === ''`, and so does every
-   * other unsaved option, so a key comparison would report all of them as the same member. When
-   * either side is unsaved the test therefore falls back to reference identity, which is the only
-   * thing that distinguishes two unsaved rows.
+   * It is reachable only by calling this method directly, and never through the one legacy caller:
+   * [model/entity/Option.cfc:L94] evaluates `isNew()` first and short-circuits, so an unsaved option
+   * never reaches `hasOption` on that path. When the candidate IS saved the widened predicate is
+   * equivalent to the narrow one, because an empty member key cannot equal a non-empty candidate key.
+   * Narrowing the unsaved case to reference identity alone would be a behaviour change to a public
+   * entity member, so it is documented rather than quietly altered.
    */
   hasOption(option: Option): boolean {
     const candidateOptionID: string = option.getOptionID();
 
     // An empty primary key on EITHER side means at least one of the two rows has never been
-    // persisted, so keys cannot separate them and only object identity can.
+    // persisted. The test then widens to "same object OR same key" - it does not narrow to object
+    // identity, so unsaved members all match each other on the empty key.
     if (candidateOptionID === '' || this.optionsContainUnsavedRow()) {
       return this.options.some(
         (member) => member === option || member.getOptionID() === candidateOptionID,
@@ -1290,8 +1165,8 @@ export class OptionGroup {
    * persisted.
    *
    * Private, and it exists only to keep {@link OptionGroup.hasOption} readable. It carries no legacy
-   * counterpart: CFML needed no such test because `arrayFind` compared references and was therefore
-   * already correct for unsaved rows.
+   * counterpart: the legacy membership test was `arrayFind(collection, this)`
+   * [model/entity/Option.cfc:L102], which needed no key inspection at all.
    */
   private optionsContainUnsavedRow(): boolean {
     return this.options.some((member) => member.getOptionID() === '');

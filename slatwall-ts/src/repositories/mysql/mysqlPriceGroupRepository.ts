@@ -8,7 +8,18 @@
  * [model/entity/PriceGroup.cfc], [model/entity/PriceGroupRate.cfc] and
  * [model/entity/RoundingRule.cfc]. `org/Hibachi/**` is a boundary to extract from and never modify;
  * it is cited only as provenance. `src/domain/ports/priceGroupRepository.ts` is authoritative: this
- * class implements its six methods and adds no seventh public member.
+ * class implements its six methods and DECLARES NO SEVENTH PORT MEMBER.
+ *
+ * ★ QUOTE-THEN-REVISE ON THE PUBLIC SURFACE. That sentence used to end "and adds no seventh public
+ * member." It now publishes exactly one member the port does not declare -
+ * {@link MySqlPriceGroupRepository.getPriceGroupsByID}, a set-based form of the by-key read - and the
+ * distinction the old wording collapsed is the one that matters. The PORT is still locked at six, so
+ * nothing that depends on `PriceGroupRepository` can see the extra member and no service tier can
+ * reach it; only `src/handlers/bootstrap.ts`, which constructs this class and therefore already holds
+ * its concrete type, consumes it. That is the same shape the composition root already uses for
+ * `MySqlSkuRepository`, which it deliberately holds un-narrowed because one instance fills two roles.
+ * The alternative - a seventh port method - would have broken a count that file locks explicitly and
+ * that has already shaped two of its own designs.
  *
  * LEGACY-NOTE [model/dao/PriceGroupDAO.cfc:L52-L100]: three cited facts carried drift and are
  * corrected throughout. The four `now()` calls are at L65 and L70 in the MySQL arm and at L81 and
@@ -81,8 +92,20 @@ import { listAppend } from '../../lib/cfml/list.js';
 import { cfEquals } from '../../lib/cfml/struct.js';
 import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import { isNullish } from '../../lib/cfml/truthiness.js';
-import type { PreparedStatementExecutor, SqlParameter, SqlRow } from './connection.js';
-import { sqlPlaceholderList } from './connection.js';
+import type {
+  AuditActorContext,
+  PreparedStatementExecutor,
+  SqlParameter,
+  SqlRow,
+} from './connection.js';
+import {
+  resolveAuditActorAccountID,
+  resolveStampedModifiedByAccountID,
+  chunkTupleRows,
+  sqlPlaceholderList,
+  sqlTuplePlaceholderList,
+  sqlUpdateAssignment,
+} from './connection.js';
 import type { DatabaseDialect } from './dialect.js';
 import { ACCOUNT_SUBSCRIPTION_PRICE_GROUP_STATEMENTS } from './sql/accountSubscriptionPriceGroups.sql.js';
 
@@ -118,8 +141,12 @@ class PriceGroupColumnError extends Error {
  * a save routed down the wrong branch, and an insert that reported no inserted row.
  */
 class PriceGroupPersistenceError extends Error {
-  public constructor(detail: string) {
-    super(detail);
+  // `options` is optional so every existing single-argument call site is untouched. It exists for
+  // S-12: a shape rejection from `sqlTuplePlaceholderList` is re-wrapped so this adapter keeps
+  // reporting write failures in ONE error type, while `cause` preserves the original for diagnosis
+  // rather than discarding it.
+  public constructor(detail: string, options?: { readonly cause?: unknown }) {
+    super(detail, options);
     this.name = 'PriceGroupPersistenceError';
   }
 }
@@ -178,11 +205,36 @@ interface PriceGroupRoundingRuleValueRounder {
   roundValueByRoundingRule(value: Money, rule: RoundingRule): Money;
 }
 
+/**
+ * The clock this adapter reads its one instant from, supplied by the composition root.
+ *
+ * ★ WHY THE CLOCK IS INJECTED RATHER THAN READ. `getAccountSubscriptionPriceGroups` compares
+ * subscription-eligibility dates [model/dao/PriceGroupDAO.cfc:L65,L70] while the sibling promotion
+ * adapter compares promotion-period and sale-price dates [model/dao/PromotionDAO.cfc:L117,L306]. In
+ * the legacy all of those were `now()` inside ONE ColdFusion request, so an account's entitlement
+ * window and the promotion window applied to the same order could not disagree about what "now"
+ * meant. Reading the host clock independently per adapter reproduces the CALL and loses that
+ * agreement, and the price a customer sees depends on it: an eligibility window that has just
+ * closed against one instant and is still open against another selects a different price group.
+ *
+ * JUDGMENT CALL: declared module-locally and un-exported, exactly as
+ * `PriceGroupRoundingRuleValueRounder` above is, and satisfied STRUCTURALLY by whatever the
+ * composition root passes. The port set stays locked at thirteen - this is a constructor
+ * collaborator, not a fourteenth port - and no clock abstraction enters the domain layer.
+ *
+ * IMPLEMENTATIONS MUST RETURN A VALUE THE CALLER CANNOT USE TO MUTATE THE SHARED EPOCH, `Date`
+ * being mutable; the composition root returns a copy per call.
+ */
+interface PriceGroupRequestClock {
+  now(): Date;
+}
+
 // --- Statement labels ----------------------------------------------------------------------------
 // One label per statement. They appear in error messages and are the handle the integration suites
 // use when they assert emitted SQL text, so they are constants rather than inline strings a typo
 // could corrupt unnoticed.
 const SELECT_PRICE_GROUP_BY_ID = 'selectPriceGroupByID';
+const SELECT_PRICE_GROUPS_BY_ID = 'selectPriceGroupsByID';
 const SELECT_CHILD_PRICE_GROUPS = 'selectChildPriceGroupsByParentID';
 const SELECT_RATES_BY_PRICE_GROUP = 'selectPriceGroupRatesByPriceGroupID';
 const SELECT_RATE_BY_ID = 'selectPriceGroupRateByID';
@@ -271,6 +323,38 @@ const ROUNDING_RULE_COLUMNS = Object.freeze([
 const ROUNDING_RULE_ALIAS_PREFIX = 'roundingRule_';
 
 // --- Rate link tables ----------------------------------------------------------------------------
+/**
+ * The four audit values a rate write stamps, plus the fifth that says what the row will HOLD.
+ *
+ * SECURITY REVIEW DISPOSITION - RAISED AS S-07, ACCEPTED. Before this type existed, the two rate
+ * helpers took only the two DATE stamps as a parameter and read both ACCOUNT columns off the
+ * caller-supplied entity, so a caller that hand-built a `PriceGroupRate` chose the row's recorded
+ * authorship. `HibachiEntity` never consulted the entity for either: `preInsert` took both from the
+ * ambient request scope [org/Hibachi/HibachiEntity.cfc:L628-L630, L632-L635] and `preUpdate` took
+ * only the modifying one [L676-L678]. Both accounts therefore now travel the same seam the dates
+ * always did, resolved from the request-scoped {@link AuditActorContext}.
+ *
+ * The fifth member exists because BOUND and STORED can differ. `UPDATE_PRICE_GROUP_RATE_SQL` renders
+ * the modifying account through {@link sqlUpdateAssignment}, so it binds the actor resolution and
+ * lets `COALESCE` keep the stored account when the admin gate refuses - reproducing `preUpdate`
+ * never reaching its setter, which left the loaded value in place for Hibernate to write back
+ * unchanged. `modifiedByAccountID` is what the statement BINDS; `resolvedModifiedByAccountID` is
+ * what the row ends up holding, and it is that second value the re-hydrated entity must report.
+ * Using one value for both would re-admit the very defect S-07 names.
+ *
+ * The created pair has no such split: it is absent from {@link UPDATED_PRICE_GROUP_RATE_COLUMNS}, so
+ * on an update it is carried only so the returned entity can restate what the row already holds.
+ */
+interface PriceGroupRateAuditStamps {
+  readonly createdDateTime: Date | undefined;
+  readonly createdByAccountID: string | undefined;
+  readonly modifiedDateTime: Date;
+  /** What the statement BINDS for the modifying account: the actor resolution, or `undefined`. */
+  readonly modifiedByAccountID: string | undefined;
+  /** What the ROW will hold for the modifying account once `COALESCE` has resolved the binding. */
+  readonly resolvedModifiedByAccountID: string | undefined;
+}
+
 // The six many-to-many link tables declared on [model/entity/PriceGroupRate.cfc:L71-L77]. The
 // abbreviated physical name `SwPriceGrpRateExclProductType` at L75 is reproduced VERBATIM - the
 // schema is unchanged, and "correcting" it would break B5 outright. Its five siblings are not
@@ -280,6 +364,13 @@ interface RateLinkTable {
   readonly memberColumn: string;
   readonly statementLabel: string;
 }
+
+/**
+ * Columns per link row: the owning rate key then the member key
+ * [model/entity/PriceGroupRate.cfc:L71-L77]. All six tables share this shape - they carry no
+ * surrogate key, no audit columns and no payload - which is what lets one builder serve all six.
+ */
+const RATE_LINK_TUPLE_WIDTH = 2;
 
 const RATE_LINK_TABLES = Object.freeze({
   productTypes: Object.freeze({
@@ -346,6 +437,40 @@ const SELECT_PRICE_GROUP_BY_ID_SQL = [
   'WHERE pg.priceGroupID = ?',
 ].join('\n');
 
+/**
+ * The same read as {@link SELECT_PRICE_GROUP_BY_ID_SQL}, for a SET of keys.
+ *
+ * ★★ THE PROJECTION AND THE PREDICATE ARE THE SINGULAR FORM'S, WIDENED IN EXACTLY ONE RESPECT. The
+ * select list is the identical `PRICE_GROUP_SELECT_LIST`, the table is the identical `SwPriceGroup`,
+ * and the filter is the identical primary-key equality - just stated over N keys instead of one.
+ * Nothing else changes: NO `activeFlag` predicate (the singular form carries none, and adding one
+ * here would drop an inactive price group a caller can still load today), no `ORDER BY` and no
+ * `LIMIT`. The set-based form must be interchangeable with N singular calls or it is not a
+ * refactoring of the fetch shape, it is a different query.
+ *
+ * ★ WHY ROW ORDER IS NOT SPECIFIED, AND WHY THAT IS SAFE. `IN (...)` does not order its results by
+ * the order of the list, and no `ORDER BY` is added to make it. The caller does not read this
+ * statement's row order at all: the adapter keys the results by identifier and the CALLER rebuilds
+ * its own requested order from its own list. Ordering in SQL would be inventing an ordering the
+ * legacy never expressed, for a consumer that does not read one - the same restraint
+ * `SELECT_CHILD_PRICE_GROUPS_SQL` and `getActivePromotionRewards` exercise.
+ *
+ * E5: one positional `?` per identifier, each bound separately. `identifierCount` is a number this
+ * module computes from an array length and never a caller-supplied string, so the interpolated run
+ * of placeholders cannot carry caller input.
+ *
+ * @param identifierCount - how many keys the statement will bind. MUST be one or more: `IN ()` is a
+ *   MySQL syntax error, which is why the only caller returns before reaching this builder when its
+ *   key set is empty.
+ */
+function buildSelectPriceGroupsByIDSql(identifierCount: number): string {
+  return [
+    `SELECT ${PRICE_GROUP_SELECT_LIST}`,
+    'FROM SwPriceGroup pg',
+    `WHERE pg.priceGroupID IN (${new Array<string>(identifierCount).fill('?').join(', ')})`,
+  ].join('\n');
+}
+
 // CFML parity [model/service/PriceGroupService.cfc:L463]: this statement exists solely so
 // `getChildPriceGroups()` can answer with the direct children the service's detachment loop reads.
 // No `ORDER BY` - the legacy read an unordered Hibernate collection.
@@ -405,7 +530,7 @@ const INSERT_PRICE_GROUP_SQL = [
 
 const UPDATE_PRICE_GROUP_SQL = [
   'UPDATE SwPriceGroup',
-  `SET ${UPDATED_PRICE_GROUP_COLUMNS.map((columnName) => `${columnName} = ?`).join(', ')}`,
+  `SET ${UPDATED_PRICE_GROUP_COLUMNS.map((columnName) => sqlUpdateAssignment(columnName)).join(', ')}`,
   'WHERE priceGroupID = ?',
 ].join('\n');
 
@@ -416,7 +541,7 @@ const INSERT_PRICE_GROUP_RATE_SQL = [
 
 const UPDATE_PRICE_GROUP_RATE_SQL = [
   'UPDATE SwPriceGroupRate',
-  `SET ${UPDATED_PRICE_GROUP_RATE_COLUMNS.map((columnName) => `${columnName} = ?`).join(', ')}`,
+  `SET ${UPDATED_PRICE_GROUP_RATE_COLUMNS.map((columnName) => sqlUpdateAssignment(columnName)).join(', ')}`,
   'WHERE priceGroupRateID = ?',
 ].join('\n');
 
@@ -456,17 +581,29 @@ const DELETE_PRICE_GROUP_ROW_SQL = 'DELETE FROM SwPriceGroup WHERE priceGroupID 
  * grandchild kept a path still naming the deleted group. Recomputing the whole subtree here would be a
  * repair the source never performed.
  *
- * `modifiedDateTime` IS STAMPED AND `modifiedByAccountID` IS NOT.
- * [org/Hibachi/HibachiEntity.cfc:L662-L667] sets the timestamp from one captured `now()` with NO
- * dependency on the ambient scope, but [org/Hibachi/HibachiEntity.cfc:L676-L677] sets the account
- * only when that scope reports an initialized, non-new, admin account. Ambient scope is exactly what transformation rule T6 removes and
- * this method takes no context parameter, so the account half has no reproducible input - and inventing
- * one would write an attribution nothing established. `createdDateTime` and `createdByAccountID` are
- * write-once and are left alone, matching `UPDATED_PRICE_GROUP_COLUMNS` above.
+ * BOTH MODIFYING HALVES ARE STAMPED. [org/Hibachi/HibachiEntity.cfc:L662-L667] sets the timestamp from
+ * one captured `now()` with no dependency on the ambient scope, and [L676-L678] sets the account when
+ * that scope reports an initialized, non-new, admin account. The legacy detached children by loading and
+ * saving each one, so Hibernate fired `preUpdate` per dirty child and stamped both; this statement
+ * collapses that into one bulk UPDATE and must therefore stamp both itself.
+ *
+ * SECURITY REVIEW DISPOSITION - RAISED AS S-07, ACCEPTED. An earlier revision of this comment recorded
+ * that the account half was left unstamped because "this method takes no context parameter, so the
+ * account half has no reproducible input - and inventing one would write an attribution nothing
+ * established". That reasoning was SOUND WHEN WRITTEN and has since EXPIRED: S-07 introduced a
+ * request-scoped {@link AuditActorContext} on this adapter's constructor, so the account half now has
+ * exactly the reproducible input it lacked, resolved through the same gate `preUpdate` applied. Leaving
+ * it unstamped would now be the invention - a deliberate omission dressed as a limitation.
+ *
+ * The assignment renders through {@link sqlUpdateAssignment}, so a refusal by the admin gate binds NULL
+ * and `COALESCE` keeps each child's STORED attribution rather than erasing it - the same reason every
+ * other update path in this file uses it. `createdDateTime` and `createdByAccountID` remain untouched,
+ * matching `UPDATED_PRICE_GROUP_COLUMNS` above and `preUpdate` having no created setter at all.
  */
 const DETACH_CHILD_PRICE_GROUPS_SQL = [
   'UPDATE SwPriceGroup',
-  'SET parentPriceGroupID = NULL, priceGroupIDPath = priceGroupID, modifiedDateTime = ?',
+  'SET parentPriceGroupID = NULL, priceGroupIDPath = priceGroupID, modifiedDateTime = ?, ' +
+    `${sqlUpdateAssignment('modifiedByAccountID')}`,
   'WHERE parentPriceGroupID = ?',
 ].join('\n');
 
@@ -712,20 +849,25 @@ function readRateLinkMemberIDs(
  *   emitting it.
  */
 function buildRateLinkInsertSql(linkTable: RateLinkTable, memberCount: number): string {
-  if (!Number.isSafeInteger(memberCount) || memberCount < 1) {
+  // S-12. The lower bound was already refused here; the UPPER bound was not, so the member count -
+  // which originates in a caller-supplied collection - decided the size of one allocation.
+  // `sqlTuplePlaceholderList` now owns both bounds and checks them BEFORE allocating, and the caller
+  // chunks rather than being refused. Its own rejection is re-wrapped as a persistence error so this
+  // adapter keeps reporting write failures in one error type; the cause is preserved for diagnosis.
+  try {
+    return [
+      `INSERT INTO ${linkTable.tableName} (priceGroupRateID, ${linkTable.memberColumn})`,
+      `VALUES ${sqlTuplePlaceholderList(RATE_LINK_TUPLE_WIDTH, memberCount)}`,
+    ].join('\n');
+  } catch (cause) {
     throw new PriceGroupPersistenceError(
-      `A link-row insert into ${linkTable.tableName} was built for ${String(memberCount)} members. ` +
-        'An insert with no rows is not a statement, so the caller must skip the collection instead ' +
-        'of asking for empty SQL.',
+      `A link-row insert into ${linkTable.tableName} was built for ${String(memberCount)} members, ` +
+        'which is not a shape a multi-row VALUES body can take. An insert with no rows is not a ' +
+        'statement, and a batch beyond the ceiling must be chunked, so the caller must do one or the ' +
+        'other instead of asking for this SQL.',
+      { cause },
     );
   }
-
-  const rowPlaceholders = new Array<string>(memberCount).fill(`(${sqlPlaceholderList(2)})`);
-
-  return [
-    `INSERT INTO ${linkTable.tableName} (priceGroupRateID, ${linkTable.memberColumn})`,
-    `VALUES ${rowPlaceholders.join(', ')}`,
-  ].join('\n');
 }
 
 // --- Column readers ------------------------------------------------------------------------------
@@ -1329,10 +1471,29 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
    * the target is request-scoped and the pool inside `connection.ts` is the only sanctioned
    * module-scope state anywhere, which is what stops a warm container from carrying one
    * invocation's price-group state - and therefore one customer's price - into another's.
+   *
+   * S-07: the audit actor is the SECOND parameter, immediately after the executor and uniformly so
+   * across all five writing adapters. It replaces the two account columns being read off
+   * caller-hydrated entities, which let a caller name whoever it liked as the author of a row.
+   * `HibachiEntity` took both from the ambient request scope
+   * [org/Hibachi/HibachiEntity.cfc:L628-L630, L632-L635, L676-L678] and never from a caller, so this
+   * is transformation rule T6 applied to the last place that scope still had a job - and it is
+   * DISTINCT from `CurrentAccountContext`, which this file also consumes: that one answers "whose
+   * prices", carries one opaque identifier and explicitly refuses permission members, while the
+   * audit gate needs the admin flag. Two questions, two types.
+   *
+   * THE CLOCK IS A REQUIRED PARAMETER, NOT AN OPTIONAL ONE. A default of `() => new Date()` would
+   * let a future construction site silently opt back into a private clock, which is exactly the
+   * divergence the parameter removes; requiring it means every composition states which epoch its
+   * pricing reads share. See {@link PriceGroupRequestClock}. It sits LAST, after the audit actor,
+   * so the ordering rule the four writing adapters share - executor, then audit actor, then the
+   * collaborators this adapter alone needs - is not disturbed by adding one.
    */
   public constructor(
     private readonly executor: PreparedStatementExecutor,
+    private readonly auditActor: AuditActorContext,
     private readonly valueRounder: PriceGroupRoundingRuleValueRounder,
+    private readonly requestClock: PriceGroupRequestClock,
   ) {}
 
   /**
@@ -1368,7 +1529,13 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
     // `connection.ts`, which fixes the connection time zone at `'Z'`. The sibling promotion adapter
     // does the same, mirroring [model/dao/PromotionDAO.cfc:L306], where the legacy itself captures
     // once.
-    const capturedNow = new Date();
+    //
+    // AND THE INSTANT COMES FROM THE INJECTED REQUEST CLOCK, WHICH EXTENDS THAT AGREEMENT FROM ONE
+    // STATEMENT TO ONE REQUEST. Capturing here with `new Date()` would keep the two bound positions
+    // consistent with each other while letting this eligibility window disagree with the promotion
+    // and sale-price windows evaluated for the same order - a disagreement the legacy could not have,
+    // because every `now()` in the request read one CFML request's clock.
+    const capturedNow = this.requestClock.now();
 
     // The legacy developer comment at [model/dao/PriceGroupDAO.cfc:L56], carried forward VERBATIM
     // because it is the source's own explanation of why this stage is a raw query rather than HQL:
@@ -1496,6 +1663,110 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
     }
 
     return this.hydrateCascadeReadyPriceGroup(priceGroupRow, SELECT_PRICE_GROUP_BY_ID, true);
+  }
+
+  /**
+   * Loads a SET of price groups by key, in ONE seed statement, keyed by case-folded identifier.
+   *
+   * ★★ THIS IS NOT A SEVENTH PORT METHOD, AND THAT IS DELIBERATE. `PriceGroupRepository` is locked
+   * at SIX MEMBERS by its own contract, and the lock has already shaped two decisions in that file -
+   * `savePriceGroupRate` took an optional trailing parameter rather than gaining a sibling, and
+   * `deletePriceGroup` keeps its existence probes internal rather than publishing them. The same
+   * discipline applies here: this method is declared on the ADAPTER and is NOT added to the port. The
+   * composition root, which already constructs this class and already holds `MySqlSkuRepository` at
+   * its concrete type for a comparable reason, satisfies a narrow module-local contract with it. No
+   * fourteenth port file is created and no seventh port member is declared.
+   *
+   * ★★ WHY IT EXISTS AT ALL: THREE CALL SITES EACH RAN A SERIAL READ PER IDENTIFIER.
+   * `src/handlers/bootstrap.ts` resolved an account's price-group association, the price-group page,
+   * and the price groups named by pass one's intents by awaiting one `getPriceGroup` per identifier -
+   * a statement count linear in the collection, issued strictly one after another when nothing in the
+   * work depends on the previous answer. Under Hibernate those were ONE association fetch each. This
+   * method restores the single-fetch shape.
+   *
+   * FETCH SHAPE (T3): IDENTICAL TO {@link MySqlPriceGroupRepository.getPriceGroup}, ASSOCIATION FOR
+   * ASSOCIATION, because it hands the seed rows to the very same hydrator with the very same
+   * `includeDirectChildren: true`. Every returned group carries its rates, each rate's rounding rule
+   * and its six identity-only link collections, its parent chain to the ROOT, and its DIRECT children
+   * one level. Nothing is added and nothing is dropped, so a caller cannot tell which form produced
+   * the entity it holds - which is the property that makes this substitution safe.
+   *
+   * ★ AND IT IS STRICTLY BETTER ON ENTITY IDENTITY, for the reason
+   * {@link MySqlPriceGroupRepository.hydrateCascadeReadyPriceGroups} records at length: N separate
+   * singular reads hand back N separately-materialized copies of any SHARED ancestor, which Hibernate's
+   * session could never do. One batched read shares them. That is a fidelity gain, not a new
+   * behaviour: the key-based comparisons in `src/domain/entities/priceGroup.ts` already assume one row
+   * means one instance.
+   *
+   * ★★ KEYED BY CASE-FOLDED IDENTIFIER, AND THE CALLER REBUILDS ITS OWN ORDER. CFML identifiers are
+   * case-INSENSITIVE and MySQL's default collation matches them that way, so a caller asking for
+   * `'ABC'` must find the row stored as `'abc'`. The map key is therefore folded exactly as every
+   * column read in this file is folded. The map is UNORDERED by construction, which is the honest
+   * shape: `IN (...)` does not preserve list order, so an array return would be publishing an order
+   * the statement does not guarantee. Callers that need an order hold their own request list and walk
+   * it - and each of the three does something different with an absent key, which a map lets them
+   * decide and an array would not.
+   *
+   * ★ AN ABSENT KEY IS SIMPLY ABSENT FROM THE MAP, exactly as `getPriceGroup` yields `undefined`.
+   * This method reports nothing and throws nothing for a key that matches no row: whether a miss is a
+   * broken foreign key that must be refused or a variation to skip is the CALLER'S question, and the
+   * two price-group callers in the composition root answer it differently on purpose.
+   *
+   * ★ AN EMPTY REQUEST ISSUES NO STATEMENT, and that is parity rather than an optimisation: N calls
+   * to `getPriceGroup` issue N statements, so zero calls issue zero. It also mechanically prevents
+   * `IN ()`, a MySQL syntax error. This early return is NOT the `recordCount` guard reproduced in
+   * `getAccountSubscriptionPriceGroups`, which reproduces a guard the legacy SOURCE carries at
+   * [model/dao/PriceGroupDAO.cfc:L92, L98]; there is no legacy antecedent for this method at all. The
+   * two must not be conflated, and neither may be harmonised with
+   * `src/repositories/mysql/mysqlOptionRepository.ts`, which MUST bind a single empty-string element
+   * because `OptionDAO` carries no guard whatsoever.
+   *
+   * @param priceGroupIDs - the keys to load, in whatever order and with whatever repetition the
+   *   caller holds them. Repeated keys - including keys repeated only in casing - are collapsed to
+   *   ONE placeholder, so the statement never asks the database for a row twice.
+   */
+  public async getPriceGroupsByID(
+    priceGroupIDs: readonly string[],
+  ): Promise<ReadonlyMap<string, PriceGroup>> {
+    // De-duplicated by FOLDED key while BINDING the first spelling seen. Folding the key is what
+    // collapses `'ABC'` and `'abc'` into one request; binding the caller's own spelling is what keeps
+    // the bound parameter identical to the one the singular form would have bound.
+    const requestedPriceGroupIDs: string[] = [];
+    const seenFoldedIDs = new Set<string>();
+
+    for (const priceGroupID of priceGroupIDs) {
+      const foldedPriceGroupID = foldIdentifier(priceGroupID);
+
+      if (seenFoldedIDs.has(foldedPriceGroupID)) {
+        continue;
+      }
+
+      seenFoldedIDs.add(foldedPriceGroupID);
+      requestedPriceGroupIDs.push(priceGroupID);
+    }
+
+    if (requestedPriceGroupIDs.length === 0) {
+      return new Map<string, PriceGroup>();
+    }
+
+    const seedRows = await this.executor.execute(
+      buildSelectPriceGroupsByIDSql(requestedPriceGroupIDs.length),
+      requestedPriceGroupIDs,
+    );
+
+    const hydrated = await this.hydrateCascadeReadyPriceGroups(
+      seedRows,
+      SELECT_PRICE_GROUPS_BY_ID,
+      true,
+    );
+
+    const priceGroupsByFoldedID = new Map<string, PriceGroup>();
+
+    for (const priceGroup of hydrated) {
+      priceGroupsByFoldedID.set(foldIdentifier(priceGroup.getPriceGroupID()), priceGroup);
+    }
+
+    return priceGroupsByFoldedID;
   }
 
   /**
@@ -1816,7 +2087,19 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
         boundValues.push(priceGroupRateID, memberID);
       }
 
-      await tx.executeMutation(buildRateLinkInsertSql(linkTable, memberIDs.length), boundValues);
+      // S-12. Batched inside the transaction this reconciliation already runs in, so the six
+      // collections stay atomic together: a failure in the fourth table rolls the first three back
+      // and a retry rewrites all six from scratch. For every realistic membership this is one
+      // statement per table, exactly as before.
+      for (const batch of chunkTupleRows(memberIDs)) {
+        const batchValues: SqlParameter[] = [];
+
+        for (const memberID of batch) {
+          batchValues.push(priceGroupRateID, memberID);
+        }
+
+        await tx.executeMutation(buildRateLinkInsertSql(linkTable, batch.length), batchValues);
+      }
     }
   }
 
@@ -1994,7 +2277,12 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
 
       // The detachment the service decided, now performed. Before the deletes, because a child whose
       // parent row was already gone would have violated the reference in the interim.
-      await tx.executeMutation(DETACH_CHILD_PRICE_GROUPS_SQL, [auditTimestamp, priceGroupID]);
+      await tx.executeMutation(DETACH_CHILD_PRICE_GROUPS_SQL, [
+        auditTimestamp,
+        // S-07. The account half, on the same footing as the timestamp beside it.
+        resolveAuditActorAccountID(this.auditActor) ?? null,
+        priceGroupID,
+      ]);
 
       for (const collectionName of RATE_LINK_COLLECTION_NAMES) {
         const linkTable = RATE_LINK_TABLES[collectionName];
@@ -2039,15 +2327,23 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
    * stack gave out, so a cyclic chain FAILED. Raising is the behaviour-preserving choice as well as the
    * diagnosable one; truncating is the only option that can quietly change what a customer is charged.
    *
-   * ★ QUOTE-THEN-REVISE ON THE RELATIONSHIP BETWEEN THIS GUARD AND THE PATH WALK'S OWN. An earlier
-   * revision truncated here and described the two guards as complementary: "this one keeps the READ
-   * from issuing statements forever and returns a truncated graph, and that one refuses to emit a
-   * truncated PATH from whatever graph it is handed." The second half is exactly right and is unchanged
-   * - the path algorithm now DOES carry a cycle guard and THROWS on a revisited node, a documented
-   * divergence from [org/Hibachi/HibachiEntity.cfc:L314-L321]. The first half is what changed: a
-   * truncated GRAPH is not a safe thing to hand anyone, because the cascade walks the graph directly
-   * and never asks for a path at all. So both guards now refuse, and the read never produces a graph
-   * the path walk would have to reject.
+   * ★ THIS GUARD IS THE ONLY ONE, AND THAT IS DELIBERATE - IT IS A FETCH-SHAPE DECISION, NOT A
+   * DIVERGENCE. It spends no part of the three-divergence budget, because a divergence changes
+   * behaviour the source actually HAD and this read has no source behaviour to change: it is a
+   * hand-written recursive query that exists only because transformation rule T3 replaces Hibernate's
+   * lazy many-to-one traversal, and choosing where such a query STOPS is a decision the legacy system
+   * never had to take. Termination is therefore decided here, once, at the boundary that owns the
+   * query.
+   *
+   * ★ AN EARLIER REVISION SPREAD THE DECISION ACROSS THREE PLACES, AND THE RECORD BELONGS HERE. It
+   * truncated here and leaned on two guards further in: a `CyclicIdPathError` thrown by
+   * `buildIdPathList`, and a `PriceGroup.setParentPriceGroup` that refused to create a cyclic chain in
+   * the first place. Both of those have been removed - the legacy setter validates nothing
+   * [model/entity/PriceGroup.cfc:L110-L115] and the legacy walk carries no visited set
+   * [org/Hibachi/HibachiEntity.cfc:L314-L321], so reproducing them faithfully means adding neither.
+   * That makes this guard MORE load-bearing, not less, and it is the reason the read raises instead of
+   * truncating: a truncated GRAPH is not a safe thing to hand anyone, because the cascade walks the
+   * graph directly and never asks for a path at all.
    *
    * ★ ONE POLICY ACROSS ALL THREE RECURSIVE READS IN THE TARGET, so a cycle cannot mean three different
    * things depending on which adapter noticed it. `mysqlProductTypeRepository`'s ancestry walk raises
@@ -2481,6 +2777,7 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
   ): Promise<PriceGroup> {
     const mintedPriceGroupID = mintEntityIdentifier();
     const parentPriceGroup = priceGroup.getParentPriceGroup();
+    const insertedAuditActorAccountID = resolveAuditActorAccountID(this.auditActor);
 
     // Maintenance FIRST, per the ordering the entity mandates. The path is composed rather than
     // taken from `preInsert()` because the entity cannot know the key being minted for it.
@@ -2494,9 +2791,12 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
       priceGroupCode: priceGroup.getPriceGroupCode(),
       parentPriceGroupID: parentPriceGroup?.getPriceGroupID(),
       createdDateTime: auditTimestamp,
-      createdByAccountID: priceGroup.getCreatedByAccountID(),
+      // S-07. ONE actor resolution serves both columns, because `preInsert` calls both setters under
+      // a single gate [org/Hibachi/HibachiEntity.cfc:L628-L635]. Neither is read off the entity any
+      // more: doing so let a caller that hand-built a `PriceGroup` forge the row's authorship.
+      createdByAccountID: insertedAuditActorAccountID,
       modifiedDateTime: auditTimestamp,
-      modifiedByAccountID: priceGroup.getModifiedByAccountID(),
+      modifiedByAccountID: insertedAuditActorAccountID,
     };
 
     const insertion = await this.executor.executeMutation(
@@ -2527,9 +2827,10 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
       priceGroupRates: priceGroup.getPriceGroupRates(),
       promotionRewards: priceGroup.getPromotionRewards(),
       createdDateTime: auditTimestamp,
-      createdByAccountID: priceGroup.getCreatedByAccountID(),
+      // The same resolution the statement bound, so the returned entity describes the stored row.
+      createdByAccountID: insertedAuditActorAccountID,
       modifiedDateTime: auditTimestamp,
-      modifiedByAccountID: priceGroup.getModifiedByAccountID(),
+      modifiedByAccountID: insertedAuditActorAccountID,
     });
   }
 
@@ -2556,7 +2857,12 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
       priceGroupCode: priceGroup.getPriceGroupCode(),
       parentPriceGroupID: parentPriceGroup?.getPriceGroupID(),
       modifiedDateTime: auditTimestamp,
-      modifiedByAccountID: priceGroup.getModifiedByAccountID(),
+      // S-07. The actor resolution ALONE is bound. A refused gate binds null and the statement's
+      // `COALESCE` resolves it against the stored column, so the previous attribution survives -
+      // which is what Hibernate produced when `setModifiedByAccount` was never reached
+      // [org/Hibachi/HibachiEntity.cfc:L676-L678]. Binding the entity's own value instead would
+      // re-admit the forgery this fix removes.
+      modifiedByAccountID: resolveAuditActorAccountID(this.auditActor),
     };
 
     const boundValues = bindColumnValues(
@@ -2585,11 +2891,18 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
       childPriceGroups: priceGroup.getChildPriceGroups(),
       priceGroupRates: priceGroup.getPriceGroupRates(),
       promotionRewards: priceGroup.getPromotionRewards(),
-      // Write-once, and therefore read back off the entity rather than restamped.
+      // Write-once, and therefore read back off the entity rather than restamped. Both created
+      // columns are absent from `UPDATED_PRICE_GROUP_COLUMNS`, so this update touched neither and
+      // the entity - loaded from the row - is reporting what the row still holds.
       createdDateTime: priceGroup.getCreatedDateTime(),
       createdByAccountID: priceGroup.getCreatedByAccountID(),
       modifiedDateTime: auditTimestamp,
-      modifiedByAccountID: priceGroup.getModifiedByAccountID(),
+      // S-07. What the ROW will hold, which is not what was BOUND: the statement bound the actor
+      // resolution and `COALESCE` turns a refusal into the stored value.
+      modifiedByAccountID: resolveStampedModifiedByAccountID(
+        this.auditActor,
+        priceGroup.getModifiedByAccountID(),
+      ),
     });
   }
 
@@ -2599,15 +2912,15 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
     tx: PreparedStatementExecutor,
   ): Promise<PriceGroupRate> {
     const mintedPriceGroupRateID = mintEntityIdentifier();
+    // S-07. ONE resolution, shared by the statement and by the entity handed back, so the two
+    // cannot disagree about who the row is attributed to.
+    const stamps = this.insertedRateAuditStamps(auditTimestamp);
 
     const insertion = await tx.executeMutation(
       INSERT_PRICE_GROUP_RATE_SQL,
       bindColumnValues(
         PRICE_GROUP_RATE_COLUMNS,
-        this.toPriceGroupRateColumnValues(priceGroupRate, mintedPriceGroupRateID, {
-          createdDateTime: auditTimestamp,
-          modifiedDateTime: auditTimestamp,
-        }),
+        this.toPriceGroupRateColumnValues(priceGroupRate, mintedPriceGroupRateID, stamps),
         INSERT_PRICE_GROUP_RATE,
       ),
     );
@@ -2618,10 +2931,7 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
       );
     }
 
-    return this.rehydrateSavedPriceGroupRate(priceGroupRate, mintedPriceGroupRateID, {
-      createdDateTime: auditTimestamp,
-      modifiedDateTime: auditTimestamp,
-    });
+    return this.rehydrateSavedPriceGroupRate(priceGroupRate, mintedPriceGroupRateID, stamps);
   }
 
   private async updatePriceGroupRate(
@@ -2630,13 +2940,11 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
     tx: PreparedStatementExecutor,
   ): Promise<PriceGroupRate> {
     const priceGroupRateID = priceGroupRate.getPriceGroupRateID();
+    const stamps = this.updatedRateAuditStamps(priceGroupRate, auditTimestamp);
 
     const boundValues = bindColumnValues(
       UPDATED_PRICE_GROUP_RATE_COLUMNS,
-      this.toPriceGroupRateColumnValues(priceGroupRate, priceGroupRateID, {
-        createdDateTime: priceGroupRate.getCreatedDateTime(),
-        modifiedDateTime: auditTimestamp,
-      }),
+      this.toPriceGroupRateColumnValues(priceGroupRate, priceGroupRateID, stamps),
       UPDATE_PRICE_GROUP_RATE,
     );
 
@@ -2644,10 +2952,48 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
 
     await tx.executeMutation(UPDATE_PRICE_GROUP_RATE_SQL, boundValues);
 
-    return this.rehydrateSavedPriceGroupRate(priceGroupRate, priceGroupRateID, {
-      createdDateTime: priceGroupRate.getCreatedDateTime(),
+    return this.rehydrateSavedPriceGroupRate(priceGroupRate, priceGroupRateID, stamps);
+  }
+
+  /**
+   * The audit values an inserted rate carries. Both accounts are the same resolution, because
+   * `preInsert` calls both setters under one gate [org/Hibachi/HibachiEntity.cfc:L628-L635], and
+   * there is no stored value to preserve - so the bound and resolved forms coincide.
+   */
+  private insertedRateAuditStamps(auditTimestamp: Date): PriceGroupRateAuditStamps {
+    const auditActorAccountID = resolveAuditActorAccountID(this.auditActor);
+
+    return {
+      createdDateTime: auditTimestamp,
+      createdByAccountID: auditActorAccountID,
       modifiedDateTime: auditTimestamp,
-    });
+      modifiedByAccountID: auditActorAccountID,
+      resolvedModifiedByAccountID: auditActorAccountID,
+    };
+  }
+
+  /**
+   * The audit values an updated rate carries.
+   *
+   * The created pair is absent from {@link UPDATED_PRICE_GROUP_RATE_COLUMNS}, so both created values
+   * are built and never bound; they are stated so the re-hydrated entity reports what the row still
+   * holds. The modifying account is the one member where BOUND and RESOLVED differ - see
+   * {@link PriceGroupRateAuditStamps}.
+   */
+  private updatedRateAuditStamps(
+    priceGroupRate: PriceGroupRate,
+    auditTimestamp: Date,
+  ): PriceGroupRateAuditStamps {
+    return {
+      createdDateTime: priceGroupRate.getCreatedDateTime(),
+      createdByAccountID: priceGroupRate.getCreatedByAccountID(),
+      modifiedDateTime: auditTimestamp,
+      modifiedByAccountID: resolveAuditActorAccountID(this.auditActor),
+      resolvedModifiedByAccountID: resolveStampedModifiedByAccountID(
+        this.auditActor,
+        priceGroupRate.getModifiedByAccountID(),
+      ),
+    };
   }
 
   /**
@@ -2663,7 +3009,7 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
   private toPriceGroupRateColumnValues(
     priceGroupRate: PriceGroupRate,
     priceGroupRateID: string,
-    stamps: { readonly createdDateTime: Date | undefined; readonly modifiedDateTime: Date },
+    stamps: PriceGroupRateAuditStamps,
   ): ColumnValues {
     return {
       priceGroupRateID,
@@ -2674,9 +3020,13 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
       priceGroupID: priceGroupRate.getPriceGroup()?.getPriceGroupID(),
       roundingRuleID: priceGroupRate.getRoundingRule()?.getRoundingRuleID(),
       createdDateTime: stamps.createdDateTime,
-      createdByAccountID: priceGroupRate.getCreatedByAccountID(),
+      // S-07. Both accounts come off the STAMPS, alongside the two dates, and no longer off the
+      // entity - which is what let a caller that hand-built a `PriceGroupRate` forge the row's
+      // authorship. `HibachiEntity` took both from the ambient request scope
+      // [org/Hibachi/HibachiEntity.cfc:L628-L630, L632-L635] and never from a caller.
+      createdByAccountID: stamps.createdByAccountID,
       modifiedDateTime: stamps.modifiedDateTime,
-      modifiedByAccountID: priceGroupRate.getModifiedByAccountID(),
+      modifiedByAccountID: stamps.modifiedByAccountID,
     };
   }
 
@@ -2689,7 +3039,7 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
   private rehydrateSavedPriceGroupRate(
     priceGroupRate: PriceGroupRate,
     priceGroupRateID: string,
-    stamps: { readonly createdDateTime: Date | undefined; readonly modifiedDateTime: Date },
+    stamps: PriceGroupRateAuditStamps,
   ): PriceGroupRate {
     return new PriceGroupRate({
       priceGroupRateID,
@@ -2698,9 +3048,12 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
       amountType: priceGroupRate.getAmountType(),
       remoteID: priceGroupRate.getRemoteID(),
       createdDateTime: stamps.createdDateTime,
-      createdByAccountID: priceGroupRate.getCreatedByAccountID(),
+      createdByAccountID: stamps.createdByAccountID,
       modifiedDateTime: stamps.modifiedDateTime,
-      modifiedByAccountID: priceGroupRate.getModifiedByAccountID(),
+      // S-07. The RESOLVED value, not the bound one: on an update the statement binds the actor
+      // resolution and `COALESCE` turns a refusal into the stored account, so this is the only
+      // member where the two differ.
+      modifiedByAccountID: stamps.resolvedModifiedByAccountID,
       priceGroup: priceGroupRate.getPriceGroup(),
       roundingRule: priceGroupRate.getRoundingRule(),
       productTypes: priceGroupRate.getProductTypes(),

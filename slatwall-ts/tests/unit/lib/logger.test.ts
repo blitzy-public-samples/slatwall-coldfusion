@@ -630,6 +630,27 @@ const LEGIBLE_DIAGNOSTIC_KEYS: Readonly<Record<string, string | number | boolean
   route: 'POST /skus/resolve',
   occurredAt: '2024-01-02T03:04:05.000Z',
   rows: 12,
+  // Added for finding S-20's observability half, and every one of the three is a
+  // name `src/handlers/bootstrap.ts` ACTUALLY EMITS - which is the standard this
+  // fixture's own header sets for belonging here, and the standard the four
+  // near-miss names removed from it failed.
+  //
+  // They are pinned because the code that emits them is worthless without them.
+  // `bootstrap.ts` reports a stale currency rate table with `ageInDays` and an
+  // unconverted pass-through with the two qualified codes; when those names were
+  // first written they were NOT on the allow-list, so all three arrived as
+  // `[REDACTED]` and the warnings said only that something had happened without
+  // saying what. That is the regression these entries exist to prevent, and it is
+  // invisible without them: the fail-closed default redacts an unlisted name
+  // silently, so nothing else in this suite would go red.
+  //
+  // The corresponding NEGATIVE controls are the case named 'keeps the S-20
+  // observability entries narrow...' below: a bare `age` and a `currencyRate` both
+  // stay redacted, so admitting a qualified span and a qualified code did not
+  // admit a person's age or a commercial rate.
+  ageInDays: 5,
+  originalCurrencyCode: 'USD',
+  convertToCurrencyCode: 'GBP',
 };
 
 /**
@@ -769,6 +790,38 @@ describe('the never-log policy fails closed rather than open', () => {
 
     for (const [key, value] of Object.entries(LEGIBLE_DIAGNOSTIC_KEYS)) {
       expect(context[key]).toBe(value);
+    }
+  });
+
+  it('keeps the S-20 observability entries narrow, admitting no near neighbour of them', () => {
+    // The negative half of the three names finding S-20 added to the diagnostic
+    // allow-list. Each entry below is the SHORTER OR UNQUALIFIED neighbour of one
+    // of them, and every one must stay redacted - otherwise the three entries were
+    // not the narrow additions they are documented as.
+    //
+    // `age` is the sharpest of the four: a bare age is a person's, and it differs
+    // from the admitted `ageInDays` only by the qualifier that makes it a duration
+    // of a rate table rather than a fact about a customer. `currencyRate` and
+    // `rate` are the commercial data `reportRateTableAge` promises never to publish
+    // - its doc says only counts leave, and this is what holds that promise to the
+    // wall. `amount` is the customer's price the pass-through observer deliberately
+    // omits while publishing the two codes that bracket it.
+    //
+    // A fragment or word rule could not be what saves these: none of the four
+    // contains a sensitive fragment. They are redacted by the FAIL-CLOSED DEFAULT,
+    // which is exactly the property at risk if a future editor widens the
+    // allow-list by pattern instead of by name.
+    const nearNeighbours = ['age', 'rate', 'currencyRate', 'amount'] as const;
+
+    const context: Record<string, string> = {};
+    for (const key of nearNeighbours) {
+      context[key] = `${PLANTED_SECRET}:${key}`;
+    }
+    const captured = captureError('S-20 near neighbours', context);
+
+    expect(captured.line).not.toContain(PLANTED_SECRET);
+    for (const key of nearNeighbours) {
+      expect(contextOf(captured)[key]).toBe(REDACTED);
     }
   });
 

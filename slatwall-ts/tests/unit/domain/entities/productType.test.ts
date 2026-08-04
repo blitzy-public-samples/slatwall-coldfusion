@@ -274,13 +274,13 @@ function makeProductTypeRepositoryDouble(
  * rate-cascade blocks below focused on ordering and contents without any of them having to
  * establish acyclicity first.
  *
- * CYCLES ARE ASSERTED ON DIRECTLY, in their own block near the end of this file, and NOT built
- * with this helper. The production code no longer follows a cyclic parent chain forever:
- * `setParentProductType` REFUSES an assignment that would make a node reachable from itself, and
- * `buildIdPathList` in src/domain/valueObjects/materializedIdPath.ts refuses to produce a path
- * from one - the single documented divergence from
- * [org/Hibachi/HibachiEntity.cfc:L314-L321], reasoned in full there. So a cycle is now a
- * testable outcome rather than something that would hang this suite, and it is tested.
+ * CYCLES ARE BUILT ONLY IN THEIR OWN BLOCK near the end of this file, and never with this
+ * helper. That separation is load-bearing rather than tidy: the production code DOES follow a
+ * cyclic parent chain forever, because [org/Hibachi/HibachiEntity.cfc:L314-L321] does and the
+ * port reproduces it. So the block that builds a cycle asserts only that the ASSIGNMENT is
+ * accepted, and never asks for a path from the resulting graph - a call that would not return.
+ * Keeping every hierarchy here acyclic is what lets the path, base-product-type and
+ * rate-cascade blocks call the path builder freely.
  *
  * Wiring goes through the shipped `setParentProductType`, not through the constructor, so the
  * bidirectional bookkeeping under test is the bookkeeping the chains are built with.
@@ -2787,302 +2787,103 @@ describe('ProductType - the bidirectional helpers and the unsaved-row identity f
 });
 
 // ===========================================================================
-// B10 - CYCLIC PARENT CHAINS ARE REFUSED, NOT FOLLOWED
+// A CYCLIC PARENT CHAIN IS ACCEPTED, EXACTLY AS THE LEGACY SETTER ACCEPTS ONE
 //
-// NET-NEW coverage with no legacy antecedent, and it pins the port's single
-// documented divergence from the framework path builder rather than a legacy
-// behaviour. `meta/tests/` contains no ProductType test at all, so nothing here
-// extends existing coverage.
+// NET-NEW coverage - `meta/tests/` contains no ProductType test at all - pinning legacy PARITY rather than a divergence.
+// The legacy setter at [model/entity/ProductType.cfc:L149-L153] validates nothing before assigning, and the
+// legacy walk at [org/Hibachi/HibachiEntity.cfc:L314-L321] carries no visited set
+// and no bound. Both are reproduced: this setter assigns whatever it is handed,
+// and a looping chain climbs forever here exactly as it climbs forever there.
 //
-// THE TWO GUARDS AND THE DIVISION OF LABOUR BETWEEN THEM. The legacy walk at
-// [org/Hibachi/HibachiEntity.cfc:L314-L321] is a bare `do/while` with no visited
-// set and no bound, so a `parentProductType` chain that loops climbs forever. The
-// port refuses instead, at two boundaries doing two different jobs:
+// ★ THIS BLOCK ONCE ASSERTED THE OPPOSITE, AND THE RECORD BELONGS HERE. It ran
+// under the heading "CYCLIC PARENT CHAINS ARE REFUSED, NOT FOLLOWED" and pinned a
+// throw from `setParentProductType` plus a `CyclicIdPathError` from the shared walk. Both
+// guards have been removed: a port reproduces rather than improves, and the
+// project's deliberate-divergence budget is closed at three - the un-`var`'d
+// `discountAmount` [model/service/PromotionService.cfc:L1007], the `amountOff`
+// branch routed through `Money` [model/service/PromotionService.cfc:L998], and the
+// entity memo defects in `sku.ts`/`product.ts`. None is spent in this folder.
 //
-//   * `setParentProductType` refuses to CREATE the cycle. That is what protects
-//     the walks up this chain that never build a path - the price-group cascade's
-//     read-path ancestor climb [model/service/PriceGroupService.cfc:L68-L77] and
-//     `getSimpleRepresentation()`'s recursion [L273-L278].
-//   * `buildIdPathList` refuses to PRODUCE a path from a cyclic chain. That is
-//     what keeps `preInsert()` and `preUpdate()` from hanging before any SQL
-//     write, whatever graph they are handed.
+// WHAT IS ASSERTED, AND WHAT DELIBERATELY IS NOT. Every test below asserts that
+// the ASSIGNMENT is accepted and that both sides of the link are maintained. NONE
+// of them builds a path from a cyclic graph, because that call does not return -
+// asserting non-termination would hang the suite rather than prove anything. The
+// absence of the removed guards is proven where it can be proven safely, in
+// `tests/unit/domain/valueObjects/materializedIdPath.test.ts`, by a counting
+// parent accessor that stops the walk long after either guard would have fired.
 //
-// WHY THIS IS NOT A TIDY-UP. On a CFML request thread the non-termination
-// occupied one thread. On `nodejs20.x` it occupies the invocation's
-// single-threaded event loop until the platform timeout, and the platform then
-// RETRIES - so one malformed row denies the capability repeatedly for as long as
-// it is reachable. `parentProductType` is operator-writable.
-//
-// EVERY ASSERTION HERE IS ABOUT REFUSAL, NEVER TRUNCATION. A silently shortened
-// productTypeIDPath changes product-type membership, and product-type membership
-// decides which promotion rewards and which price-group rate apply. So no test
-// below accepts a shorter path as an acceptable answer, and the refusal is
-// asserted to leave both nodes untouched.
+// WHERE A TERMINATION DECISION DOES LIVE FOR THIS ENTITY: `hydrateWithAncestry`
+// in `mysqlProductTypeRepository.ts`, a hand-written recursive read with no legacy
+// antecedent, still raises `ProductTypeCycleError`. That guard is a fetch-shape
+// decision under transformation rule T3 and is asserted in that adapter's own
+// integration suite, not here.
 // ===========================================================================
 
-describe('ProductType - cyclic parent chains are refused (B10)', () => {
-  /**
-   * Runs an operation expected to be refused and reports how.
-   *
-   * Throws if the operation SUCCEEDS, so a subject that quietly accepted a cyclic
-   * reparent - or answered a truncated path - can never be mistaken for a passing
-   * expectation. That is the whole point of this block.
-   */
-  const captureRefusal = (operation: () => unknown): { name: string; message: string } => {
-    try {
-      operation();
-    } catch (thrown) {
-      return thrown instanceof Error
-        ? { name: thrown.name, message: thrown.message }
-        : { name: 'NotAnError', message: 'a value that is not an Error was thrown' };
-    }
+describe('ProductType - a cyclic parent chain is accepted, per legacy parity (B10)', () => {
+  it('accepts a product type as its own parent', () => {
+    const subject = new ProductType({ productTypeID: 'pt-self' });
 
-    throw new Error(
-      'the operation was expected to be refused, but it completed. A cyclic parent chain must ' +
-        'never be created and must never yield a path - a truncated productTypeIDPath silently ' +
-        'changes product-type membership, and membership decides discounts and rates.',
-    );
-  };
+    // CFML parity [model/entity/ProductType.cfc:L149-L153]: nothing is validated.
+    subject.setParentProductType(subject);
 
-  describe('setParentProductType refuses an assignment that would close a cycle', () => {
-    it('refuses a product type as its own parent', () => {
-      const subject = new ProductType({ productTypeID: 'pt-self' });
-
-      const refusal = captureRefusal(() => {
-        subject.setParentProductType(subject);
-      });
-
-      expect(refusal.message).toContain(
-        "Product type 'pt-self' cannot take product type 'pt-self'",
-      );
-      expect(refusal.message).toContain('would make the parentProductType chain cyclic');
-    });
-
-    it('refuses its own direct child as its parent', () => {
-      const [parent, child] = makeAncestorChain(['pt-parent', 'pt-child']);
-
-      expect(parent).toBeDefined();
-      expect(child).toBeDefined();
-
-      if (parent === undefined || child === undefined) {
-        throw new Error('the chain builder must produce both nodes.');
-      }
-
-      const refusal = captureRefusal(() => {
-        parent.setParentProductType(child);
-      });
-
-      expect(refusal.message).toContain(
-        "Product type 'pt-parent' cannot take product type 'pt-child'",
-      );
-    });
-
-    it('refuses a distant descendant as its parent, not merely a direct child', () => {
-      // The ancestor test has to WALK, not just compare one level. A cycle closed
-      // four levels down is exactly as fatal as a self-parent and is much easier
-      // for an operator to create by accident.
-      const chain = makeAncestorChain(['pt-a', 'pt-b', 'pt-c', 'pt-d', 'pt-e']);
-      const root = chain[0];
-      const deepest = chain[4];
-
-      if (root === undefined || deepest === undefined) {
-        throw new Error('the chain builder must produce five nodes.');
-      }
-
-      const refusal = captureRefusal(() => {
-        root.setParentProductType(deepest);
-      });
-
-      expect(refusal.message).toContain("Product type 'pt-a' cannot take product type 'pt-e'");
-    });
-
-    it('changes NOTHING when it refuses - no half-linked graph is left behind', () => {
-      // The near-side assignment is unconditional in the legacy and in the port,
-      // so the guard has to run BEFORE it. If it ran after, a refused reparent
-      // would leave `parentProductType` pointing at the descendant while the
-      // far-side append never happened - strictly worse than either outcome.
-      const [parent, child] = makeAncestorChain(['pt-keep-parent', 'pt-keep-child']);
-
-      if (parent === undefined || child === undefined) {
-        throw new Error('the chain builder must produce both nodes.');
-      }
-
-      const childrenBefore = [...parent.getChildProductTypes()];
-
-      captureRefusal(() => {
-        parent.setParentProductType(child);
-      });
-
-      expect(parent.getParentProductType()).toBeUndefined();
-      expect(child.getParentProductType()).toBe(parent);
-      expect(parent.getChildProductTypes()).toStrictEqual(childrenBefore);
-      expect(child.getChildProductTypes()).toStrictEqual([]);
-
-      // And the path still builds, because the graph is still well-founded.
-      expect(child.getProductTypeIDPath()).toBe('pt-keep-parent,pt-keep-child');
-    });
-
-    it('refuses through addChildProductType too, since it delegates to the setter', () => {
-      // [model/entity/ProductType.cfc:L168] is a pure delegation, so the guard
-      // must be reachable from the far side as well. Asking a node to adopt its
-      // own ancestor is the same cycle approached from the other direction.
-      const [root, leaf] = makeAncestorChain(['pt-root', 'pt-leaf']);
-
-      if (root === undefined || leaf === undefined) {
-        throw new Error('the chain builder must produce both nodes.');
-      }
-
-      const refusal = captureRefusal(() => {
-        leaf.addChildProductType(root);
-      });
-
-      expect(refusal.message).toContain(
-        "Product type 'pt-root' cannot take product type 'pt-leaf'",
-      );
-    });
-
-    it('still allows every well-founded reparent, including moving a subtree', () => {
-      // The guard must not cost a legitimate move. A node is reparented sideways
-      // onto an unrelated branch, and then upward to a new root - neither makes it
-      // reachable from itself, so both are accepted and both rebuild a correct
-      // path.
-      const [oldRoot, movable] = makeAncestorChain(['pt-old-root', 'pt-movable']);
-      const [newRoot] = makeAncestorChain(['pt-new-root']);
-
-      if (oldRoot === undefined || movable === undefined || newRoot === undefined) {
-        throw new Error('the chain builders must produce their nodes.');
-      }
-
-      movable.setParentProductType(newRoot);
-
-      expect(movable.getParentProductType()).toBe(newRoot);
-      expect(newRoot.getChildProductTypes()).toStrictEqual([movable]);
-
-      // The stored path memo is what `preUpdate` refreshes; built directly here so
-      // the assertion is about the walk rather than about the memo.
-      const reparented = new ProductType({ productTypeID: 'pt-movable-probe' });
-      reparented.setParentProductType(newRoot);
-      expect(reparented.getProductTypeIDPath()).toBe('pt-new-root,pt-movable-probe');
-
-      // Reparenting the OLD root under the new one is also well-founded: the moved
-      // node is no longer beneath it.
-      oldRoot.setParentProductType(newRoot);
-      expect(oldRoot.getParentProductType()).toBe(newRoot);
-    });
-
-    it('allows two distinct product types that share an identifier', () => {
-      // The guard is identity-based, not identifier-based, and it has to be:
-      // identifiers are carried into the path verbatim and are not treated as
-      // unique keys anywhere in the walk. Two DISTINCT nodes with the same
-      // identifier are malformed data, but the chain still terminates, so the
-      // legacy answers a path and so does this port.
-      const first = new ProductType({ productTypeID: 'pt-duplicated' });
-      const second = new ProductType({ productTypeID: 'pt-duplicated' });
-
-      second.setParentProductType(first);
-
-      expect(second.getProductTypeIDPath()).toBe('pt-duplicated,pt-duplicated');
-    });
+    expect(subject.getParentProductType()).toBe(subject);
   });
 
-  describe('the path build refuses a cyclic chain whatever graph it is handed', () => {
-    /**
-     * Force a cycle past the setter guard, so the SECOND guard can be tested.
-     *
-     * JUDGMENT CALL: the guarded setter is bypassed deliberately, and this is the
-     * only place in this file that does so. The two guards are independent
-     * defences and each has to be provable on its own - a graph could reach
-     * `preInsert()` from a caller that assembled it some other way, and "the
-     * setter would have stopped it" is not evidence about the path build. The
-     * bypass is a private-field write confined to this helper rather than a change
-     * to the subject.
-     */
-    const forceCycle = (lower: ProductType, upper: ProductType): void => {
-      Object.defineProperty(lower, 'parentProductType', {
-        value: upper,
-        writable: true,
-        enumerable: true,
-        configurable: true,
-      });
-    };
+  it('accepts its own direct child as its parent', () => {
+    const root = new ProductType({ productTypeID: 'pt-root' });
+    const child = new ProductType({ productTypeID: 'pt-child' });
+    child.setParentProductType(root);
 
-    it('refuses to build a path for a self-parenting product type', () => {
-      const subject = new ProductType({ productTypeID: 'pt-forced-self' });
-      forceCycle(subject, subject);
+    root.setParentProductType(child);
 
-      const refusal = captureRefusal(() => subject.getProductTypeIDPath());
+    expect(root.getParentProductType()).toBe(child);
+    expect(child.getParentProductType()).toBe(root);
+  });
 
-      expect(refusal.name).toBe('CyclicIdPathError');
-      expect(refusal.message).toContain("revisited node 'pt-forced-self'");
-      expect(refusal.message).toContain('No path was produced');
-    });
+  it('accepts a distant descendant as its parent, not merely a direct child', () => {
+    const a = new ProductType({ productTypeID: 'pt-a' });
+    const b = new ProductType({ productTypeID: 'pt-b' });
+    const c = new ProductType({ productTypeID: 'pt-c' });
+    b.setParentProductType(a);
+    c.setParentProductType(b);
 
-    it('refuses in preInsert, so no path is assigned and no SQL write can follow', () => {
-      // This is the guarantee that matters operationally: the hook that the
-      // repository calls immediately before its INSERT throws instead of
-      // returning, so the malformed row never reaches a bind.
-      const lower = new ProductType({ productTypeID: 'pt-ins-lower' });
-      const upper = new ProductType({ productTypeID: 'pt-ins-upper' });
-      forceCycle(upper, lower);
-      forceCycle(lower, upper);
+    a.setParentProductType(c);
 
-      const refusal = captureRefusal(() => {
-        lower.preInsert();
-      });
+    expect(a.getParentProductType()).toBe(c);
+  });
 
-      expect(refusal.name).toBe('CyclicIdPathError');
-      // Nothing was assigned: the field the hook exists to set is still absent.
-      expect(refusal.message).toContain('No path was produced');
-      // The REASON is asserted, not just the name. Both of the walk's refusals
-      // share one `name`, so a name-only assertion would still pass if the
-      // visited-identity test were removed and the depth backstop caught the walk
-      // 4096 levels later - a materially worse outcome this must not certify.
-      expect(refusal.message).toContain('contains a cycle');
-    });
+  it('maintains the far side when it closes a cycle, just as for any other parent', () => {
+    // The legacy guard at [model/entity/ProductType.cfc:L151] is a MEMBERSHIP test,
+    // not an acyclicity test, so a cycle-closing assignment appends like any other.
+    const root = new ProductType({ productTypeID: 'pt-far-root' });
+    const leaf = new ProductType({ productTypeID: 'pt-far-leaf' });
+    leaf.setParentProductType(root);
 
-    it('refuses in preUpdate for the same reason', () => {
-      const lower = new ProductType({ productTypeID: 'pt-upd-lower' });
-      const upper = new ProductType({ productTypeID: 'pt-upd-upper' });
-      forceCycle(upper, lower);
-      forceCycle(lower, upper);
+    root.setParentProductType(leaf);
 
-      const refusal = captureRefusal(() => {
-        lower.preUpdate();
-      });
+    expect(leaf.getChildProductTypes()).toContain(root);
+    expect(root.getChildProductTypes()).toContain(leaf);
+  });
 
-      expect(refusal.name).toBe('CyclicIdPathError');
-      expect(refusal.message).toContain('contains a cycle');
-    });
+  it('accepts a cycle through addChildProductType too, since it delegates to the setter', () => {
+    const root = new ProductType({ productTypeID: 'pt-add-root' });
+    const leaf = new ProductType({ productTypeID: 'pt-add-leaf' });
+    leaf.setParentProductType(root);
 
-    it('refuses a well-founded leaf whose ancestry loops further up', () => {
-      // The realistic shape: the leaf is fine and the loop is above it. There is
-      // no root to reach, so no path exists to produce.
-      const loopLower = new ProductType({ productTypeID: 'pt-loop-lower' });
-      const loopUpper = new ProductType({ productTypeID: 'pt-loop-upper' });
-      forceCycle(loopLower, loopUpper);
-      forceCycle(loopUpper, loopLower);
+    leaf.addChildProductType(root);
 
-      const leaf = new ProductType({ productTypeID: 'pt-loop-leaf' });
-      forceCycle(leaf, loopLower);
+    expect(root.getParentProductType()).toBe(leaf);
+  });
 
-      const refusal = captureRefusal(() => leaf.getProductTypeIDPath());
+  it('still assigns every well-founded reparent, including moving a subtree', () => {
+    const newRoot = new ProductType({ productTypeID: 'pt-new-root' });
+    const reparented = new ProductType({ productTypeID: 'pt-movable-probe' });
+    const oldRoot = new ProductType({ productTypeID: 'pt-old-root' });
+    reparented.setParentProductType(oldRoot);
 
-      expect(refusal.name).toBe('CyclicIdPathError');
-      expect(refusal.message).toContain("revisited node 'pt-loop-lower'");
-    });
+    reparented.setParentProductType(newRoot);
 
-    it('leaves a stored path alone: a present column is returned without any walk', () => {
-      // The lazy getter only walks when the column is absent
-      // [model/entity/ProductType.cfc:L250-L255]. A row that was persisted before
-      // the cycle was introduced still reads its stored value, so the guard cannot
-      // make previously-readable data unreadable.
-      const subject = new ProductType({
-        productTypeID: 'pt-stored',
-        productTypeIDPath: 'pt-ancestor,pt-stored',
-      });
-      forceCycle(subject, subject);
-
-      expect(subject.getProductTypeIDPath()).toBe('pt-ancestor,pt-stored');
-    });
+    expect(reparented.getParentProductType()).toBe(newRoot);
+    expect(reparented.getProductTypeIDPath()).toBe('pt-new-root,pt-movable-probe');
   });
 });

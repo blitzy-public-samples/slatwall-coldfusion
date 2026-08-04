@@ -1697,9 +1697,9 @@ export class PromotionCode {
   //         ★★ AND THAT TIER DOES NOT HOLD IT TODAY, WHICH IS THE OTHER HALF OF BEING AUDITABLE.
   //         Naming the obligation without saying whether anything discharges it reads as though
   //         something does. Nothing does, and the reason is structural rather than an omission:
-  //         `src/domain/ports/promotionRepository.ts` publishes exactly EIGHT members - seven reads
-  //         and one write, `saveRoundingRule` - with no uniqueness probe among the reads and nothing
-  //         a promotion-code probe could attach to among them; the port inventory is
+  //         `src/domain/ports/promotionRepository.ts` publishes exactly SEVEN members and every one
+  //         of them is a READ, with no uniqueness probe among them and nothing a promotion-code
+  //         probe could attach to; the port inventory is
   //         CLOSED AT THIRTEEN so no fourteenth may host one; and the legacy tier that would have
   //         owned it - `HibachiService.save()` under `org/Hibachi/**` - is a designated boundary
   //         that is deliberately not ported (`model/service/PromotionService.cfc` itself declares
@@ -1870,19 +1870,19 @@ export class PromotionCode {
   //   * `org/Hibachi/**` is designated a boundary to extract from and NEVER port, and
   //     `HibachiService` is named among the framework base classes deliberately not carried forward.
   //     So the inherited writer has no target counterpart by direction, not by oversight.
-  //   * `src/domain/ports/promotionRepository.ts` publishes exactly EIGHT members, seven of them
-  //     reads and the eighth the rounding-rule write `saveRoundingRule`; the adapter
-  //     `src/repositories/mysql/mysqlPromotionRepository.ts` therefore DOES issue mutations, but
-  //     only against `SwRoundingRule`. The port inventory is CLOSED AT THIRTEEN, so neither a ninth
-  //     member on that port nor a fourteenth port may be added to host one.
-  //     ★ QUOTE-THEN-REVISE, AND THE EXISTENCE OF A WRITE DOES NOT RESCUE THE OBLIGATION. This read
-  //     "publishes exactly SEVEN members and every one of them is a read; ... issues no mutation at
-  //     all", and both halves are now false. The conclusion is unaffected, and the reason is worth
-  //     stating because a reader who knows a write now exists will ask: `saveRoundingRule` was
-  //     admitted ONLY because that contract already owned the `SwRoundingRule` table through
-  //     `getRoundingRuleQuery`, and the contract that owns a table's read owns its write. This port
-  //     owns no read of `SwPromotionCode` as an entity, so that reasoning yields nothing here. A
-  //     uniqueness probe would still be a new member on a closed port, and it is still absent.
+  //   * `src/domain/ports/promotionRepository.ts` publishes exactly SEVEN members and every one of
+  //     them is a read; the adapter `src/repositories/mysql/mysqlPromotionRepository.ts` issues no
+  //     mutation at all. The port inventory is CLOSED AT THIRTEEN, so neither an eighth member on
+  //     that port nor a fourteenth port may be added to host a uniqueness probe.
+  //     ★ FOR ONE REVISION THIS READ "publishes exactly EIGHT members, seven of them reads and the
+  //     eighth the rounding-rule write `saveRoundingRule`", and argued that the write did not rescue
+  //     this obligation anyway because `saveRoundingRule` "was admitted ONLY because that contract
+  //     already owned the `SwRoundingRule` table through `getRoundingRuleQuery`". The write has since
+  //     been withdrawn from the port, the adapter and the service, so the count is seven reads again
+  //     and the narrower argument is no longer needed - but it is recorded because it is the argument
+  //     a reader will reconstruct if the write is ever proposed again, and it fails on its own terms:
+  //     owning a table's READ does not license a WRITE to it. Either way, a uniqueness probe would be
+  //     a new member on a closed port, and it is still absent.
   //
   // The consequence, stated plainly so it is auditable: this hook is authored, correct and callable,
   // and NOTHING IN THE PORTED SURFACE CALLS IT, because the ported surface contains no promotion-code

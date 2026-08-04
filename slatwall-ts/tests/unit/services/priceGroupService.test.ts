@@ -275,8 +275,11 @@ class RecordingPriceGroupRepository implements PriceGroupRepository {
   /**
    * What the next subscription read reports.
    *
-   * Handed out BY REFERENCE and deliberately so: the defensive-copy case asserts that this
-   * exact array is unchanged after the service has finished with it.
+   * Handed out BY REFERENCE and deliberately so: the append case asserts that this exact array -
+   * the READ SIDE of [model/service/PriceGroupService.cfc:L277-L284] - is unchanged after the
+   * service has finished with it. The direction matters: the loop at [L280-L284] appends INTO the
+   * account association and only iterates this one, so exactly one of the two collaborator arrays
+   * may grow, and asserting both keeps that asymmetry visible.
    */
   subscriptionPriceGroups: PriceGroup[] = [];
 
@@ -390,17 +393,26 @@ class RecordingFrameworkReads implements PriceGroupFrameworkReads {
   pageRecordReads = 0;
 
   /**
-   * What the next direct-association read reports.
+   * The account's LIVE association, handed out BY REFERENCE on every read.
    *
-   * Handed out BY REFERENCE, for the same reason as `subscriptionPriceGroups` above: the
-   * defensive-copy case asserts this exact array is untouched afterwards.
+   * ★★ THE SAME ARRAY INSTANCE EVERY TIME, which is what the port contract now requires and what
+   * makes the request-lifetime mutation at [model/service/PriceGroupService.cfc:L276-L284]
+   * observable: the service appends into what it is handed, and a later read must see the appended
+   * members. This double therefore stands in for the memoized, request-scoped association that
+   * `SqlPriceGroupFrameworkReads` maintains in `src/handlers/bootstrap.ts`, and the cases below
+   * inspect this field directly to prove the append landed.
+   *
+   * ★ QUOTE-THEN-REVISE. The by-reference handout is unchanged; only its stated purpose is. It used
+   * to read: "Handed out BY REFERENCE, for the same reason as `subscriptionPriceGroups` above: the
+   * defensive-copy case asserts this exact array is untouched afterwards." That case asserted the
+   * opposite of the source's behaviour and is inverted below.
    */
   accountPriceGroups: PriceGroup[] = [];
 
   /** What the next paged listing reports. */
   pageRecords: PriceGroup[] = [];
 
-  getAccountPriceGroups(accountID: string): Promise<readonly PriceGroup[]> {
+  getAccountPriceGroups(accountID: string): Promise<PriceGroup[]> {
     this.accountPriceGroupReads.push(accountID);
 
     return Promise.resolve(this.accountPriceGroups);
@@ -964,13 +976,16 @@ describe('the five-level cascade: nothing matches', () => {
 
 describe('the five-level cascade: the exclusion collections are never consulted', () => {
   it('★ resolves a rate that lists the SKU, the product AND the type as EXCLUDED', () => {
-    // LEGACY-NOTE [model/entity/PriceGroupRate.cfc:L49]: the rate declares
+    // LEGACY-NOTE [model/entity/PriceGroupRate.cfc:L75-L77]: the rate declares
     // `excludedProductTypes`, `excludedProducts` and `excludedSkus` as three many-to-many link
     // collections, and NO step of the cascade [model/service/PriceGroupService.cfc:L57-L181]
     // reads any of them. `getAppliesTo()` [model/entity/PriceGroupRate.cfc:L95] renders them for
     // the admin, which is the only place they surface.
     // The collections are ported so the schema contract is unbroken (constraint C5) and the
     // exclusion is NOT implemented, because implementing it would change which rate resolves.
+    //
+    // The three declarations are at L75, L76 and L77; L49 is the component tag. An earlier revision
+    // of this comment cited L49, which is the kind of drift that makes a citation worthless.
     const product = makeProductFixture({ idPrefix: 'excl-prod-' });
     const productType = requirePresent(product.getProductType(), 'the fixture product type');
     const sku = makeSkuFixture({
@@ -999,6 +1014,53 @@ describe('the five-level cascade: the exclusion collections are never consulted'
     expect(service.getRateForSkuBasedOnPriceGroup(sku, graph.siblingPriceGroup)).toBe(
       graph.appliesToIncludingAndExcludingRate,
     );
+  });
+
+  it('★★ PRICES the excluded SKU through the excluding rate - the gap reaches money', () => {
+    // Rate resolution is where the gap lives, but resolution is not the consequence. The consequence
+    // is the amount charged, so it is asserted here: a SKU that the rate names in `excludedSkus` is
+    // priced BY that rate, and the price is not the SKU's own. Resolving the rate and then pricing
+    // through it are separate methods, so a future change that honoured exclusions in one and not the
+    // other would leave one of these two assertions standing.
+    const product = makeProductFixture({ idPrefix: 'exclmoney-prod-' });
+    const productType = requirePresent(product.getProductType(), 'the fixture product type');
+    const sku = makeSkuFixture({
+      idPrefix: 'exclmoney-sku-',
+      price: Money.fromDecimalString(SKU_BASE_PRICE),
+      product,
+    });
+    const graph = makePriceGroupFixtures({
+      idPrefix: 'exclmoney-',
+      skuLevelRateSkus: [sku],
+      excludedSkus: [sku],
+      excludedProducts: [product],
+      excludedProductTypes: [productType],
+    });
+    const { service } = makeSubject();
+    const excludingRate = graph.appliesToIncludingAndExcludingRate;
+
+    // The rate excludes this SKU three times over - by SKU, by product and by product type.
+    expect(excludingRate.getExcludedSkus()).toStrictEqual([sku]);
+    expect(excludingRate.getExcludedProducts()).toStrictEqual([product]);
+    expect(excludingRate.getExcludedProductTypes()).toStrictEqual([productType]);
+
+    const pricedThroughGroup = service.calculateSkuPriceBasedOnPriceGroup(
+      sku,
+      graph.siblingPriceGroup,
+    );
+
+    // ★ The price-group price IS the excluding rate's price. The rate is `percentageOff`, so
+    // [model/service/PriceGroupService.cfc:L322-L327] runs its rounding-rule arm and the collaborator
+    // double answers with its canned numeral - the point being only that the RATE governed, not the
+    // particular figure.
+    expect(pricedThroughGroup.toDecimalString()).toBe(ROUNDED_ABOVE_BASE);
+    expect(pricedThroughGroup.toDecimalString()).toBe(
+      service.calculateSkuPriceBasedOnPriceGroupRate(sku, excludingRate).toDecimalString(),
+    );
+
+    // ★ And it is NOT the SKU's own price, which is what honouring the exclusion would have produced.
+    expect(pricedThroughGroup.toDecimalString()).not.toBe(SKU_BASE_PRICE);
+    expect(sku.getPrice().toDecimalString()).toBe(SKU_BASE_PRICE);
   });
 });
 
@@ -1522,22 +1584,34 @@ describe('calculateSkuPriceBasedOnAccount: the account price can never EXCEED th
   });
 });
 
-describe('calculateSkuPriceBasedOnAccount: the caller collection is defensively copied', () => {
-  it('★★ leaves the account association EXACTLY as it was handed over', async () => {
-    // LEGACY-DEFECT [model/service/PriceGroupService.cfc:L276, L282]: the legacy body binds the
-    // account's price-group collection by reference and appends the subscription-derived groups
-    // into it, mutating the caller's collection. The target defensively copies; this test proves
-    // the caller's collection is untouched.
-    // Preserved deliberately; do not fix without a product decision.
-    //
-    // JUDGMENT CALL: the shipped port DOES copy - `[...accountPriceGroups]` - and that is the
-    // one place in this slice where a SAFETY correction is expressed through the port contract
-    // rather than by spending a divergence slot. The reasoning is that the legacy leak is not a
-    // behaviour a caller could depend on, it is a property of CFML array-by-reference semantics
-    // that the port's own signature already forecloses: `getAccountPriceGroups` returns
-    // `readonly PriceGroup[]`, so appending to it is not expressible. The pricing OUTPUT is
-    // unchanged either way, which is why no divergence is claimed. What this case pins is that
-    // the copy is real rather than incidental.
+describe("calculateSkuPriceBasedOnAccount: the subscription groups are APPENDED to the account's live association", () => {
+  // LEGACY-DEFECT [model/service/PriceGroupService.cfc:L276, L282]: the legacy body binds the
+  // account's price-group collection BY REFERENCE at [L276] with no defensive copy, and
+  // `arrayAppend` at [L282] mutates it. Calling this method therefore PERMANENTLY ADDS the
+  // subscription-derived price groups to the account's in-memory collection for the remainder of
+  // the request, and everything that subsequently reads `account.getPriceGroups()` sees them -
+  // including [L351] and [L365], neither of which consults the subscription statement itself.
+  //
+  // Preserved deliberately; do not fix without a product decision.
+  //
+  // ★ QUOTE-THEN-REVISE. This describe previously read
+  // "calculateSkuPriceBasedOnAccount: the caller collection is defensively copied" and its single
+  // case, "★★ leaves the account association EXACTLY as it was handed over", asserted
+  // `expect(frameworkReads.accountPriceGroups).toHaveLength(1)` after a call that had appended a
+  // second member in the source. Its JUDGMENT CALL justified the copy thus: "the legacy leak is
+  // not a behaviour a caller could depend on, it is a property of CFML array-by-reference
+  // semantics that the port's own signature already forecloses: `getAccountPriceGroups` returns
+  // `readonly PriceGroup[]`, so appending to it is not expressible. The pricing OUTPUT is
+  // unchanged either way, which is why no divergence is claimed."
+  //
+  // Both halves of that were wrong. The behaviour IS depended upon - by [L351] and [L365], which
+  // is the whole reason the defect marker names them - so it is not merely a leak. And "the
+  // pricing OUTPUT is unchanged either way" is only true of THIS call; the two cases below show a
+  // LATER call in the same request returning a different price, which is pricing output. The
+  // `readonly` return that made the append "not expressible" was itself the adapter decision under
+  // review, not a constraint the domain imposed, so citing it was circular. The port now returns
+  // `PriceGroup[]` and the append is reproduced.
+  it('★★★ APPENDS the subscription group into the very array the port handed out', async () => {
     const sku = aPricedSku('copy-sku-');
     const direct = makePriceGroupFixtures({
       idPrefix: 'copy-direct-',
@@ -1551,20 +1625,186 @@ describe('calculateSkuPriceBasedOnAccount: the caller collection is defensively 
     });
     const { service, repository, frameworkReads } = makeSubject();
 
-    frameworkReads.accountPriceGroups = [direct.childPriceGroup];
+    const association = [direct.childPriceGroup];
+
+    frameworkReads.accountPriceGroups = association;
     repository.subscriptionPriceGroups = [viaSubscription.childPriceGroup];
 
     const price = await service.calculateSkuPriceBasedOnAccount(sku, ACCOUNT_ID);
 
-    // The subscription group DID take part - so the append definitely happened somewhere.
+    // The subscription group took part in the selection, so the append happened.
     expect(price.equals(Money.fromDecimalString(ROUNDED_BELOW_BASE))).toBe(true);
 
-    // And BOTH collaborator arrays are byte-for-byte what they were. These are the exact
-    // array instances the doubles handed out, not copies of them.
-    expect(frameworkReads.accountPriceGroups).toHaveLength(1);
-    expect(frameworkReads.accountPriceGroups).toStrictEqual([direct.childPriceGroup]);
+    // ★★ AND IT LANDED IN THE EXACT ARRAY INSTANCE THE DOUBLE HANDED OUT, not in a copy the
+    // service kept to itself. `toBe` on the identity plus the grown length is what separates
+    // "appended into the live association" from "appended into a private merged list".
+    expect(frameworkReads.accountPriceGroups).toBe(association);
+    expect(association).toHaveLength(2);
+    expect(association).toStrictEqual([direct.childPriceGroup, viaSubscription.childPriceGroup]);
+
+    // The SOURCE collection is a different matter: the subscription statement's own result array
+    // is read and never written, so it stays exactly as it was. Asserting both directions keeps
+    // the case honest - one array is mutated by design, the other must not be.
     expect(repository.subscriptionPriceGroups).toHaveLength(1);
     expect(repository.subscriptionPriceGroups).toStrictEqual([viaSubscription.childPriceGroup]);
+  });
+
+  it('★★★ the append is observable by getBestPriceGroupDetailsBasedOnSkuAndAccount [L351]', async () => {
+    // LEGACY-DEFECT [model/service/PriceGroupService.cfc:L343-L362 vs L271-L298]: [L351] reads
+    // ONLY `account.getPriceGroups()` and never issues the subscription statement. So whether it
+    // sees a subscription price group at all depends on whether `calculateSkuPriceBasedOnAccount`
+    // happened to run earlier in the same request for the same account and polluted the
+    // association. That request-order dependence IS the defect, and this case pins it by asking
+    // the same question twice around one intervening call.
+    //
+    // Preserved deliberately; do not fix without a product decision.
+    const sku = aPricedSku('leak-best-');
+    const viaSubscription = makePriceGroupFixtures({
+      idPrefix: 'leak-best-subs-',
+      skuLevelRateSkus: [sku],
+      roundValueAnswer: ROUNDED_BELOW_BASE,
+    });
+    const { service, repository, frameworkReads } = makeSubject();
+
+    // The direct association is EMPTY, so on its own [L351] can find nothing.
+    frameworkReads.accountPriceGroups = [];
+    repository.subscriptionPriceGroups = [viaSubscription.childPriceGroup];
+
+    const before = await service.getBestPriceGroupDetailsBasedOnSkuAndAccount(sku, ACCOUNT_ID);
+
+    expect(before.priceGroup).toBeUndefined();
+    expect(before.price.equals(sku.getPrice())).toBe(true);
+
+    // One intervening call on the OTHER method - the only one that consults the subscription
+    // statement - and the association is no longer empty.
+    await service.calculateSkuPriceBasedOnAccount(sku, ACCOUNT_ID);
+
+    const after = await service.getBestPriceGroupDetailsBasedOnSkuAndAccount(sku, ACCOUNT_ID);
+
+    // ★★★ SAME METHOD, SAME SKU, SAME ACCOUNT, DIFFERENT ANSWER. This is the pricing output the
+    // superseded JUDGMENT CALL claimed was "unchanged either way".
+    expect(after.priceGroup).toBe(viaSubscription.childPriceGroup);
+    expect(after.price.equals(Money.fromDecimalString(ROUNDED_BELOW_BASE))).toBe(true);
+    expect(after.price.equals(before.price)).toBe(false);
+
+    // And [L351] still never issued the subscription statement itself - exactly one such read
+    // occurred, and it belongs to the intervening `calculateSkuPriceBasedOnAccount` call.
+    expect(repository.subscriptionReads).toStrictEqual([ACCOUNT_ID]);
+  });
+
+  it('★★★ the append is observable by updateOrderAmountsWithPriceGroups [L365]', async () => {
+    // LEGACY-DEFECT [model/service/PriceGroupService.cfc:L365 vs L271-L298]: [L365] gates the
+    // whole order pass on `arrayLen(order.getAccount().getPriceGroups())`, the DIRECT association
+    // only. The neighbouring case in
+    // `describe('updateOrderAmountsWithPriceGroups: what it refuses to process')` pins the
+    // unpolluted half - a subscription-only account gets NO processing. This case pins the other
+    // half: once the association HAS been polluted, the same order does get processed, and by the
+    // subscription group.
+    //
+    // Preserved deliberately; do not fix without a product decision.
+    const order = makeOrderViewFixture({ idPrefix: 'leak-ord-', accountID: ACCOUNT_ID });
+    const flat = aFlatPriceGroup('pg-leak-order-flat', ROUNDED_BELOW_BASE);
+    const { service, repository, frameworkReads } = makeSubject();
+
+    frameworkReads.accountPriceGroups = [];
+    repository.subscriptionPriceGroups = [flat];
+
+    // The gate at [L365] closes: nothing in the direct association.
+    expect(await service.updateOrderAmountsWithPriceGroups(order)).toStrictEqual([]);
+
+    const firstItem = requirePresent(order.orderItems[0], 'golden order item 0');
+
+    // One call that DOES consult the subscription statement, for one of the order's own SKUs.
+    await service.calculateSkuPriceBasedOnAccount(firstItem.sku, ACCOUNT_ID);
+
+    const afterPollution = await service.updateOrderAmountsWithPriceGroups(order);
+
+    // ★★★ THE GATE NOW OPENS AND THE ORDER IS REPRICED. The golden order's first two items are
+    // priced above 9.00 and the third below it, so two intents appear - the same split the
+    // direct-association case asserts.
+    expect(afterPollution).toHaveLength(2);
+    expect(afterPollution.map((intent) => intent.orderItemID)).toContain(firstItem.orderItemID);
+    expect(afterPollution.every((intent) => intent.priceGroupID === flat.getPriceGroupID())).toBe(
+      true,
+    );
+  });
+
+  it('★★ repeated calls do NOT compound: the [L281] guard holds across calls', async () => {
+    // CFML parity [model/service/PriceGroupService.cfc:L281]: `arrayFind` is consulted before every
+    // append, so a second call finds the member already present and adds nothing. Without that
+    // guard the association would grow without bound over a request, and the memoized adapter array
+    // makes that reachable - which is precisely why the guard has to be asserted ACROSS calls and
+    // not only within one.
+    const sku = aPricedSku('nocompound-');
+    const viaSubscription = makePriceGroupFixtures({
+      idPrefix: 'nocompound-subs-',
+      skuLevelRateSkus: [sku],
+      roundValueAnswer: ROUNDED_BELOW_BASE,
+    });
+    const { service, repository, frameworkReads } = makeSubject();
+
+    const association: PriceGroup[] = [];
+
+    frameworkReads.accountPriceGroups = association;
+    repository.subscriptionPriceGroups = [viaSubscription.childPriceGroup];
+
+    await service.calculateSkuPriceBasedOnAccount(sku, ACCOUNT_ID);
+    await service.calculateSkuPriceBasedOnAccount(sku, ACCOUNT_ID);
+    await service.calculateSkuPriceBasedOnAccount(sku, ACCOUNT_ID);
+
+    expect(association).toHaveLength(1);
+    expect(association).toStrictEqual([viaSubscription.childPriceGroup]);
+
+    // Three calls, three subscription reads - the guard suppresses the APPEND, not the statement.
+    expect(repository.subscriptionReads).toStrictEqual([ACCOUNT_ID, ACCOUNT_ID, ACCOUNT_ID]);
+  });
+
+  it('★★★ a NEW request starts clean: the pollution does not survive the scope', async () => {
+    // ★★ THE OTHER HALF OF THE SAFETY ARGUMENT. Reproducing a request-lifetime mutation is only
+    // acceptable because the association is instance state on a collaborator built per request -
+    // see `SqlPriceGroupFrameworkReads.accountPriceGroupAssociations` in
+    // `src/handlers/bootstrap.ts`. If it were module state it would survive on a warm Lambda
+    // container and carry one account's subscription pricing into an unrelated later request.
+    //
+    // `makeSubject()` builds a fresh service over fresh doubles, which is this suite's stand-in for
+    // a new request scope. Asking the SAME question that answered `ROUNDED_BELOW_BASE` a moment ago
+    // must now answer the SKU's own price again.
+    const sku = aPricedSku('fresh-scope-');
+    const viaSubscription = makePriceGroupFixtures({
+      idPrefix: 'fresh-scope-subs-',
+      skuLevelRateSkus: [sku],
+      roundValueAnswer: ROUNDED_BELOW_BASE,
+    });
+
+    const first = makeSubject();
+
+    first.frameworkReads.accountPriceGroups = [];
+    first.repository.subscriptionPriceGroups = [viaSubscription.childPriceGroup];
+
+    await first.service.calculateSkuPriceBasedOnAccount(sku, ACCOUNT_ID);
+
+    const polluted = await first.service.getBestPriceGroupDetailsBasedOnSkuAndAccount(
+      sku,
+      ACCOUNT_ID,
+    );
+
+    expect(polluted.priceGroup).toBe(viaSubscription.childPriceGroup);
+
+    // A SECOND scope, same account identifier, same SKU, and NO intervening
+    // `calculateSkuPriceBasedOnAccount`.
+    const second = makeSubject();
+
+    second.frameworkReads.accountPriceGroups = [];
+    second.repository.subscriptionPriceGroups = [viaSubscription.childPriceGroup];
+
+    const clean = await second.service.getBestPriceGroupDetailsBasedOnSkuAndAccount(
+      sku,
+      ACCOUNT_ID,
+    );
+
+    expect(clean.priceGroup).toBeUndefined();
+    expect(clean.price.equals(sku.getPrice())).toBe(true);
+    expect(second.repository.subscriptionReads).toStrictEqual([]);
   });
 });
 

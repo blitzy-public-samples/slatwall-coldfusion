@@ -326,6 +326,41 @@ const EURO_CURRENCY_CODE = 'EUR';
 export type EuropeanCentralBankRateTable = Readonly<Record<string, string>>;
 
 /**
+ * Notified when a conversion could not be performed and the amount passed through.
+ *
+ * ★ WHY OBSERVABILITY RATHER THAN A DIFFERENT RETURN VALUE. A security review
+ * raised, as finding S-20, that a missing rate makes `convertCurrency` return the
+ * original amount and "indistinguishably succeed" - a EUR numeral published as
+ * though it were USD. The VALUE cannot change: [model/service/CurrencyService.cfc:L100-L101]
+ * returns `arguments.amount` untouched, AAP 0.8.1 names the currency resolution
+ * cascade as must-preserve, and step 3 of that cascade
+ * [model/entity/Sku.cfc:L416-L428] consumes the result as a price. What CAN change,
+ * and does, is that the event stops being invisible: every pass-through is reported
+ * here, so a deployment can alert on 1:1 conversions instead of discovering them in
+ * a merchant feed.
+ *
+ * The observer is a plain callback rather than a logger, so this module keeps its
+ * single outward dependency direction and a test can assert the notification without
+ * a log sink. It is called for its effect only - a throw from an observer would turn
+ * a preserved pass-through into a rejection, so implementations must not throw, and
+ * `src/handlers/bootstrap.ts` supplies one that only logs.
+ *
+ * @param originalCurrencyCode the currency the amount was denominated in.
+ * @param convertToCurrencyCode the currency the caller asked for.
+ */
+export type CurrencyPassThroughObserver = (
+  originalCurrencyCode: string,
+  convertToCurrencyCode: string,
+) => void;
+
+/** The default observer: a pass-through that nobody asked to hear about is silent. */
+const IGNORE_PASS_THROUGH: CurrencyPassThroughObserver = () => {
+  // Intentionally empty. See CurrencyPassThroughObserver - the sink is optional so
+  // that no caller is forced to supply one, and a no-op is the honest default rather
+  // than a hidden console write.
+};
+
+/**
  * The two `SwCurrency` columns the two listing methods read, and nothing else.
  *
  * CFML parity [model/entity/Currency.cfc:L52-L53]: `currencyCode` is the entity
@@ -443,9 +478,18 @@ export class EuropeanCentralBankCurrencyConverter implements CurrencyConverter {
    * @throws {CfmlBooleanConversionError} when a supplied `activeFlag` is present
    *   but carries no boolean meaning. See {@link ResolvedCurrencyRecord}.
    */
+  /**
+   * Notified whenever a conversion takes the [L100-L101] pass-through.
+   *
+   * Defaults to a no-op, so no caller is forced to supply one and no test has to
+   * thread a sink it does not care about.
+   */
+  private readonly onUnconvertedPassThrough: CurrencyPassThroughObserver;
+
   constructor(
     currencies: readonly CurrencyRecordProjection[],
     rates: EuropeanCentralBankRateTable,
+    onUnconvertedPassThrough: CurrencyPassThroughObserver = IGNORE_PASS_THROUGH,
   ) {
     // `map` produces the defensive copy as a side effect of resolving the flags,
     // so there is no second spread to keep in step with it.
@@ -457,6 +501,7 @@ export class EuropeanCentralBankCurrencyConverter implements CurrencyConverter {
     );
 
     this.rates = { ...rates };
+    this.onUnconvertedPassThrough = onUnconvertedPassThrough;
   }
 
   /**
@@ -565,7 +610,16 @@ export class EuropeanCentralBankCurrencyConverter implements CurrencyConverter {
 
       if (source === undefined || target === undefined) {
         // [L100-L101] The pass-through. Returned as received, deliberately NOT
-        // rounded, and deliberately not distinguishable from a real conversion.
+        // rounded, and - to the CALLER - deliberately not distinguishable from a
+        // real conversion, because the legacy return value carries no such
+        // distinction and the cascade consumes it as a price.
+        //
+        // ★ IT IS NO LONGER INDISTINGUISHABLE TO THE OPERATOR. The observer is
+        // notified first, so the event is reported even though the value is
+        // unchanged. This is the whole of finding S-20's observability half; see
+        // {@link CurrencyPassThroughObserver} for why the value itself may not move.
+        this.onUnconvertedPassThrough(originalCurrencyCode, convertToCurrencyCode);
+
         resolve(amount);
       } else {
         // [L87-L91] `amountInEUR`. The euro branch divides by nothing at all,

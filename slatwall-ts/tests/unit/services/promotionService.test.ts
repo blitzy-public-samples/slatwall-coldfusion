@@ -149,8 +149,10 @@
  *      carries private members and is therefore NOMINALLY typed. A hand-written object literal is
  *      not assignable, so this suite constructs a real `RoundingRuleService` over the same
  *      in-memory repository double.
- *   3. `PromotionRepository` publishes EIGHT async members, not seven. The double below implements
- *      exactly those eight and adds none.
+ *   3. `PromotionRepository` publishes SEVEN async members, every one of them a READ. The double
+ *      below implements exactly those seven and adds none. ★ THIS ONCE READ "publishes EIGHT async
+ *      members, not seven", against a revision in which a `saveRoundingRule` write had been added to
+ *      the port; the port has been restored to seven reads and the double with it.
  *   4. `PromotionAppliedIntent` carries `promotionID` - an OPAQUE STRING - rather than the
  *      `Promotion` entity, and carries an `operation` discriminator of `'add' | 'update' |
  *      'remove'`. §1 asserts the shipped shape.
@@ -176,6 +178,7 @@ import type {
 import type { PromotionAppliedIntent } from '../../../src/domain/promotionEngine/qualifiedDiscountTypes.js';
 import type { UnlimitedUseSentinel } from '../../../src/domain/promotionEngine/rewardUsageTypes.js';
 import { Money } from '../../../src/domain/valueObjects/money.js';
+import type { AppliedPromotionView } from '../../../src/domain/views/orderFulfillmentView.js';
 import type { OrderItemView } from '../../../src/domain/views/orderItemView.js';
 import type { OrderView, ShippingMethodOptionView } from '../../../src/domain/views/orderView.js';
 import { PriceGroupService } from '../../../src/services/priceGroupService.js';
@@ -248,7 +251,7 @@ interface PromotionCodeAccountUseCountCall {
 }
 
 /**
- * The eight-member `PromotionRepository` surface, and not a member more. Every method records its
+ * The seven-member `PromotionRepository` surface, and not a member more. Every method records its
  * arguments and answers from a pre-seeded field, so a test states its world declaratively and then
  * asserts what the façade asked for.
  */
@@ -257,6 +260,9 @@ class RecordingPromotionRepository implements PromotionRepository {
   public salePriceRows: readonly SalePricePromotionRewardRow[] = [];
   public promotionPeriodUseCount = 0;
   public promotionPeriodAccountUseCount = 0;
+
+  /** Every `accountID` the per-account use-count gate was actually asked about. */
+  public readonly promotionPeriodAccountUseCountCalls: string[] = [];
   public promotionCodeUseCount = 0;
   public promotionCodeAccountUseCount = 0;
   public roundingRule: RoundingRuleEntity | undefined = undefined;
@@ -266,7 +272,6 @@ class RecordingPromotionRepository implements PromotionRepository {
   public readonly promotionCodeUseCountCalls: PromotionCode[] = [];
   public readonly promotionCodeAccountUseCountCalls: PromotionCodeAccountUseCountCall[] = [];
   public readonly roundingRuleQueryCalls: string[] = [];
-  public readonly roundingRuleSaves: RoundingRuleEntity[] = [];
 
   public getActivePromotionRewards(
     rewardTypeList: string,
@@ -297,7 +302,10 @@ class RecordingPromotionRepository implements PromotionRepository {
     accountID: string,
   ): Promise<number> {
     void promotionPeriod.getPromotionPeriodID();
-    void accountID;
+    // RECORDED, not merely consumed: [model/service/PromotionService.cfc:L575] wraps this call in an
+    // account-presence test, so "was the call issued at all" is the observable that distinguishes an
+    // enforced per-account limit from a skipped one. A guest order must produce ZERO calls.
+    this.promotionPeriodAccountUseCountCalls.push(accountID);
     return Promise.resolve(this.promotionPeriodAccountUseCount);
   }
 
@@ -326,10 +334,11 @@ class RecordingPromotionRepository implements PromotionRepository {
     return Promise.resolve(this.roundingRule);
   }
 
-  public saveRoundingRule(rule: RoundingRuleEntity): Promise<RoundingRuleEntity> {
-    this.roundingRuleSaves.push(rule);
-    return Promise.resolve(rule);
-  }
+  // AND THERE IS NO WRITE. `implements PromotionRepository` does not by itself keep an extra member
+  // out - a class may widen what it implements - so the absence is deliberate rather than compiler-
+  // enforced. `RoundingRuleService.saveRoundingRule`
+  // [model/service/RoundingRuleService.cfc:L56-L64] is framework-inherited generic CRUD that the
+  // plan places on no port, so a double carrying one would model a collaborator that does not exist.
 }
 
 /**
@@ -628,6 +637,17 @@ function armSubject(
  * except the account price-group read the ordering constraint depends on.
  */
 function makePriceGroupSubject(accountPriceGroups: readonly PriceGroupEntity[]): PriceGroupService {
+  // ★★ ONE STABLE MUTABLE ARRAY FOR THE LIFETIME OF THIS SUBJECT, which is what
+  // `PriceGroupFrameworkReads.getAccountPriceGroups` requires: every read for one account within a
+  // request must return THE SAME instance so that the request-lifetime append at
+  // [model/service/PriceGroupService.cfc:L276-L284] is observable by [L351] and [L365].
+  //
+  // ★ QUOTE-THEN-REVISE. This read used to be `() => Promise.resolve([...accountPriceGroups])`. The
+  // spread handed out a FRESH array per call, which the port contract now forbids: it silently
+  // discards any member the service appended, so a double written that way would keep passing while
+  // the behaviour it stands in for had been dropped. The copy is taken ONCE, here, purely so the
+  // `readonly` parameter is not aliased into something mutable that the caller still holds.
+  const accountAssociation: PriceGroupEntity[] = [...accountPriceGroups];
   const priceGroupRepository: PriceGroupRepositoryPort = {
     getAccountSubscriptionPriceGroups: () => Promise.resolve([]),
     getPriceGroup: () => Promise.resolve(undefined),
@@ -645,7 +665,7 @@ function makePriceGroupSubject(accountPriceGroups: readonly PriceGroupEntity[]):
     deleteProduct: () => Promise.resolve(true),
   };
   const frameworkReads: PriceGroupFrameworkReadsPort = {
-    getAccountPriceGroups: () => Promise.resolve([...accountPriceGroups]),
+    getAccountPriceGroups: () => Promise.resolve(accountAssociation),
     getPriceGroupPageRecords: () => Promise.resolve([]),
   };
 
@@ -730,7 +750,7 @@ describe('PromotionService', () => {
       const secondItemIntent = requirePresent(intents[3], 'the second order-item intent');
 
       expect(intentDiscount(fulfillmentIntent).equals(Money.fromDecimalString('4.51'))).toBe(true);
-      expect(intentDiscount(orderIntent).equals(Money.fromDecimalString('15.46'))).toBe(true);
+      expect(intentDiscount(orderIntent).equals(Money.fromDecimalString('16.95'))).toBe(true);
       expect(intentDiscount(firstItemIntent).equals(Money.fromDecimalString('2.00'))).toBe(true);
       expect(intentDiscount(secondItemIntent).equals(Money.fromDecimalString('2.00'))).toBe(true);
 
@@ -738,12 +758,46 @@ describe('PromotionService', () => {
       // `getSubtotalAfterItemDiscounts() + getFulfillmentChargeAfterDiscountTotal()` summed with a
       // PLAIN `+` - a precision gap distinct from the `amountOff` float gap at [L998] - and the
       // reward is then priced at QUANTITY 1 [L419] rather than at any order quantity. The ported
-      // pipeline reproduces both, which is why 117.95 + 9.50 = 127.45 drives this figure.
+      // pipeline reproduces both.
+      //
+      // ★ THE BASE IS THE POST-PASS-ONE BASE, WHICH IS WHAT MAKES THIS FIGURE 16.95 AND NOT 15.46.
+      // Both terms are evaluated on the state pass one produced, exactly as the legacy evaluates them
+      // against the live graph it has just written:
+      //
+      //   term 1  `getSubtotalAfterItemDiscounts()` [model/entity/Order.cfc:L700-L702] is
+      //           `getSubtotal() - getItemDiscountAmountTotal()`, and the subtrahend is ZERO here:
+      //           [model/service/PromotionService.cfc:L64-L68] detached every order-item applied
+      //           promotion before the traversal and the winners are attached only at [L523-L536],
+      //           after pass two. So term 1 is the plain subtotal over the three `oitSale` items -
+      //           59.97 + 35.98 + 34.00 = 129.95 - NOT the fixture's 117.95 snapshot, which has an
+      //           item discount already deducted that the legacy has not applied yet.
+      //   term 2  `getFulfillmentChargeAfterDiscountTotal()` [model/entity/Order.cfc:L356-L362] sums
+      //           `getFulfillmentCharge() - getDiscountAmount()`
+      //           [model/entity/OrderFulfillment.cfc:L183-L193], and pass one's fulfillment arm has
+      //           just discounted the shipping fulfillment by 4.51 - so 9.50 - 4.51 = 4.99 on
+      //           shipping plus 0.00 on pickup, NOT the fixture's gross 9.50 snapshot.
+      //
+      // 129.95 + 4.99 = 134.94; 12.5 % of that is 16.8675; the net 118.0725 rounds to 117.99 under the
+      // fixture's rounding rule; and 134.94 - 117.99 = 16.95 is what [L1007] returns.
+      const derivedOrderBase = Money.fromDecimalString('129.95').plus(
+        shippingFulfillment.fulfillmentCharge.minus(intentDiscount(fulfillmentIntent)),
+      );
+      expect(derivedOrderBase.equals(Money.fromDecimalString('134.94'))).toBe(true);
+
+      // ★ REGRESSION GUARD FOR THE STALE-SNAPSHOT DEFECT. The two `OrderView` members that used to
+      // supply this base are still published, and they still carry the caller's pre-pass figures - so
+      // if the engine ever reads them again this assertion pins exactly how wrong the answer becomes:
+      // 117.95 + 9.50 = 127.45 is what the view carries, and against THAT base the same reward priced
+      // at 15.46 rather than 16.95. The two figures differ by more than the difference between the
+      // bases, because the reward is `percentageOff` and routes through a rounding rule - so both the
+      // inequality and the explicit 15.46 exclusion below are pinned.
       expect(
         order.subtotalAfterItemDiscounts
           .plus(order.fulfillmentChargeAfterDiscountTotal)
           .equals(Money.fromDecimalString('127.45')),
       ).toBe(true);
+      expect(derivedOrderBase.isGreaterThan(Money.fromDecimalString('127.45'))).toBe(true);
+      expect(intentDiscount(orderIntent).equals(Money.fromDecimalString('15.46'))).toBe(false);
     });
 
     it('★★ mutates NOTHING on the order view - the input is read-only at this boundary', async () => {
@@ -975,33 +1029,76 @@ describe('PromotionService', () => {
       );
       expect(orderIntent.appliedType === 'order' && orderIntent.orderID).toBe(order.orderID);
 
+      // ★ ACCESSORS 4 AND 5 PIN THEIR PARTITION BEFORE THEY WALK IT.
+      //
+      // A membership check written as `for (... of intents) { if (appliedType === X) { ... } }`
+      // asserts NOTHING when the pipeline emits no intent of type X - the body never runs, the
+      // case still passes, and the claim that the accessor was read is unearned. That is the whole
+      // failure mode this pair of accessors is here to rule out, so each one collects its emitted
+      // targets first, asserts HOW MANY there are, and only then checks membership. The counts are
+      // not guesses: this graph emits exactly one fulfillment intent and two order-item intents,
+      // which is the same emission the golden-pipeline case above pins in full.
+
       // 4. `orderFulfillments` - every emitted fulfillment target is one of the order's own.
       const fulfillmentIDs = order.orderFulfillments.map(
         (fulfillment) => fulfillment.orderFulfillmentID,
       );
-      for (const intent of intents) {
-        if (intent.appliedType === 'orderFulfillment') {
-          expect(fulfillmentIDs).toContain(intent.orderFulfillmentID);
-        }
+      const emittedFulfillmentIDs = intents.flatMap((intent) =>
+        intent.appliedType === 'orderFulfillment' ? [intent.orderFulfillmentID] : [],
+      );
+      expect(emittedFulfillmentIDs).toHaveLength(1);
+
+      for (const emitted of emittedFulfillmentIDs) {
+        expect(fulfillmentIDs).toContain(emitted);
       }
 
-      // 5. `orderItems` - every emitted item target is one of the order's own.
+      // 5. `orderItems` - every emitted item target is one of the order's own. Guarded the same
+      //    way, and additionally proven DISTINCT: two intents naming one item would satisfy a bare
+      //    count while leaving the second item's accessor unread.
       const orderItemIDs = order.orderItems.map((orderItem) => orderItem.orderItemID);
-      for (const intent of intents) {
-        if (intent.appliedType === 'orderItem') {
-          expect(orderItemIDs).toContain(intent.orderItemID);
-        }
+      const emittedOrderItemIDs = intents.flatMap((intent) =>
+        intent.appliedType === 'orderItem' ? [intent.orderItemID] : [],
+      );
+      expect(emittedOrderItemIDs).toHaveLength(2);
+      expect(new Set(emittedOrderItemIDs).size).toBe(2);
+
+      for (const emitted of emittedOrderItemIDs) {
+        expect(orderItemIDs).toContain(emitted);
       }
 
-      // 6 and 7. `subtotalAfterItemDiscounts` and `fulfillmentChargeAfterDiscountTotal` - both feed
-      // the order-level base at [L417]. Raising them raises the order-level discount, which is the
-      // only way to prove both are genuinely read.
+      // The three target partitions EXHAUST the emission, so no intent slipped past accessors 3, 4
+      // and 5 unexamined - which is what stops the counts above from being satisfiable by an
+      // emission that also carried something nobody looked at.
+      const emittedOrderIDs = intents.flatMap((intent) =>
+        intent.appliedType === 'order' ? [intent.orderID] : [],
+      );
+      expect(emittedOrderIDs).toStrictEqual([order.orderID]);
+      expect(
+        emittedFulfillmentIDs.length + emittedOrderItemIDs.length + emittedOrderIDs.length,
+      ).toBe(intents.length);
+
+      // 6. `orderItems[].extendedPrice` - term 1 of the order-level base at [L417], read per ITEM
+      //    rather than as a pre-summed total. Raising ONLY the item prices must raise the
+      //    order-level discount.
+      //
+      // ★ WHY THE TWO PER-ROW MEMBERS AND NOT THE TWO TOTALS. [L417] reads
+      // `getSubtotalAfterItemDiscounts()` and `getFulfillmentChargeAfterDiscountTotal()`, but on the
+      // LIVE graph both are DERIVED on demand - [model/entity/Order.cfc:L686-L702] sums the items'
+      // extended prices, and the item-discount subtrahend [model/entity/Order.cfc:L317-L327] is
+      // necessarily zero at L417 under the blanket clear at [L64-L68]; [model/entity/Order.cfc:L356-L362]
+      // with [model/entity/OrderFulfillment.cfc:L183-L193] sums each fulfillment's charge less the
+      // promotion pass one just applied to it. So raising the two per-row members is what raises the
+      // base, and the engine reads them rather than the caller's `subtotalAfterItemDiscounts` /
+      // `fulfillmentChargeAfterDiscountTotal` snapshots - which are pinned as INERT below.
       const richerCapture: OrderViewFixtureCapture = {};
       const richerOrder = makeOrderViewFixture({
         capture: richerCapture,
         promotionCodes: ['SPRING24', 'VIP'],
-        subtotalAfterItemDiscounts: Money.fromDecimalString('400.00'),
-        fulfillmentChargeAfterDiscountTotal: Money.fromDecimalString('50.00'),
+        itemOverrides: [
+          { extendedPrice: Money.fromDecimalString('400.00') },
+          { extendedPrice: Money.fromDecimalString('400.00') },
+          { extendedPrice: Money.fromDecimalString('400.00') },
+        ],
       });
       const richerGraph = buildQualifyingGraph(
         'reads-rich-',
@@ -1020,12 +1117,70 @@ describe('PromotionService', () => {
         true,
       );
 
+      // 7. `orderFulfillments[].fulfillmentCharge` - term 2 of the same base, and read per
+      //    fulfillment rather than as a pre-summed total. Raising ONLY the shipping charge, with the
+      //    subtotal left at its default, must also raise the order-level discount.
+      const chargeCapture: OrderViewFixtureCapture = {};
+      const richerChargeOrder = makeOrderViewFixture({
+        capture: chargeCapture,
+        promotionCodes: ['SPRING24', 'VIP'],
+        fulfillmentOverrides: [{ fulfillmentCharge: Money.fromDecimalString('250.00') }],
+      });
+      const richerChargeGraph = buildQualifyingGraph(
+        'reads-charge-',
+        richerChargeOrder,
+        chargeCapture.acceptedPriceGroup,
+      );
+      const richerChargeSubject = makeSubject();
+      armSubject(
+        richerChargeSubject,
+        richerChargeGraph,
+        rewardSequence(richerChargeGraph, 'orderRewardLast'),
+      );
+      const richerChargeIntents =
+        await richerChargeSubject.service.updateOrderAmountsWithPromotions(richerChargeOrder);
+      const richerChargeOrderIntent = requirePresent(
+        richerChargeIntents.find((intent) => intent.appliedType === 'order'),
+        'the richer-charge order-level intent',
+      );
+      expect(
+        intentDiscount(richerChargeOrderIntent).isGreaterThan(intentDiscount(orderIntent)),
+      ).toBe(true);
+
+      // ★ THE NEGATIVE CONTROL, AND THE REGRESSION GUARD FOR THE STALE-SNAPSHOT DEFECT. The same
+      // order with ONLY the two caller-supplied totals inflated - every item price and every
+      // fulfillment charge left exactly as the baseline has them - must produce the IDENTICAL
+      // order-level discount, BIT-IDENTICAL rather than merely close. That is the executable form
+      // of the claim the notes on those two members in `../../../src/domain/views/orderView.ts`
+      // make: a caller cannot inflate an order-level discount by mis-stating a total it does not
+      // own, and a future edit that reintroduces the snapshot read fails here.
+      const staleCapture: OrderViewFixtureCapture = {};
+      const staleOrder = makeOrderViewFixture({
+        capture: staleCapture,
+        promotionCodes: ['SPRING24', 'VIP'],
+        subtotalAfterItemDiscounts: Money.fromDecimalString('400.00'),
+        fulfillmentChargeAfterDiscountTotal: Money.fromDecimalString('50.00'),
+      });
+      const staleGraph = buildQualifyingGraph(
+        'reads-stale-',
+        staleOrder,
+        staleCapture.acceptedPriceGroup,
+      );
+      const staleSubject = makeSubject();
+      armSubject(staleSubject, staleGraph, rewardSequence(staleGraph, 'orderRewardLast'));
+      const staleIntents = await staleSubject.service.updateOrderAmountsWithPromotions(staleOrder);
+      const staleOrderIntent = requirePresent(
+        staleIntents.find((intent) => intent.appliedType === 'order'),
+        'the stale-snapshot order-level intent',
+      );
+      expect(intentDiscount(staleOrderIntent).equals(intentDiscount(orderIntent))).toBe(true);
+
       // 8. `totalSaleQuantity` - the qualification count starts from it, so it is read on every
       //    order-item qualification test.
       expect(order.totalSaleQuantity).toBe(9);
     });
 
-    it('★ REPLACES the three backwards clear-out loops: the target is add-only', async () => {
+    it('★ is add-only for an order arriving with no applied promotions', async () => {
       const capture: OrderViewFixtureCapture = {};
       const order = makeOrderViewFixture({ capture });
       const graph = buildQualifyingGraph('addonly-', order, capture.acceptedPriceGroup);
@@ -1033,16 +1188,508 @@ describe('PromotionService', () => {
 
       const intents = await subject.service.updateOrderAmountsWithPromotions(order);
 
-      // JUDGMENT CALL: legacy [L64-L68], [L71-L75] and [L78-L80] walk the order's, the items' and
-      // the fulfillments' applied-promotion collections BACKWARDS and delete every existing applied
-      // promotion before recomputing. Those loops exist only because the legacy method mutates a
-      // live ORM graph in place. The target returns intents against a read-only view that arrives
-      // with no applied promotions of its own, so the clear-out is REPLACED by the boundary rather
-      // than reproduced: no removal intent is emitted, and the caller composes the delta.
+      // The COMMON case, and the reason it is add-only is the input rather than the algebra: legacy
+      // [L64-L68], [L71-L75] and [L78-L80] walk the items', the fulfillments' and the order's
+      // applied-promotion collections BACKWARDS and detach every previously-applied promotion before
+      // recomputing, and detaching nothing from an empty collection writes nothing. An order that
+      // arrives with no applied promotions therefore yields adds only.
       expect(intents.every((intent) => intent.operation === 'add')).toBe(true);
       expect(intents.some((intent) => intent.operation === 'remove')).toBe(false);
       expect(intents.some((intent) => intent.operation === 'update')).toBe(false);
       expect(order.appliedPromotions).toStrictEqual([]);
+      expect(order.orderFulfillments.every((f) => f.appliedPromotions.length === 0)).toBe(true);
+    });
+
+    it('★★ REPRODUCES the clear-out: a persisted promotion is never left standing', async () => {
+      // ★ WHAT THIS PINS, AND WHY IT IS MONEY. The clear-out at [L71-L75] and [L78-L80] is
+      // UNCONDITIONAL and runs BEFORE the reward traversal, so when the fulfillment arm first tests
+      // `!arrayLen(getAppliedPromotions())` at [L381] - and the order arm at [L427] - the collection is
+      // EMPTY however large a discount was persisted by a previous run. Three consequences, all
+      // asserted below:
+      //
+      //   1. the first reward computing a positive discount ALWAYS wins the slot, even when its
+      //      discount is SMALLER than the persisted one - there is no incumbent to lose to;
+      //   2. a slot no reward fills ends the invocation with NO applied promotion, so the persisted
+      //      row must be removed rather than silently retained;
+      //   3. a persisted row re-won by the SAME promotion nets to ONE row at the NEW amount, and it
+      //      is emitted as a remove/add PAIR rather than as an `update`.
+      //
+      // Seeding the mirror from `OrderView.appliedPromotions` instead would install the persisted row
+      // as an incumbent the legacy had already thrown away, and case 1 would keep charging the old,
+      // larger discount forever while case 2 would never expire a promotion at all.
+      //
+      // ★ QUOTE-THEN-REVISE ON CASE 3'S ENCODING. This case used to assert a single `update` intent,
+      // on the reading that "the net effect is one row at the new amount, so emit one operation". The
+      // net effect is right; the encoding was not. [L64-L68], [L71-L75] and [L78-L80] detach EVERY
+      // prior row UNCONDITIONALLY and without inspecting which promotion it names, and the winners
+      // are attached afterwards at [L381-L406] and [L521-L537] - so the legacy performs a detach and
+      // an attach even when both name one promotion, and there is no source operation an `update`
+      // could be the mirror of. Collapsing the pair would also make the emission depend on comparing
+      // the persisted promotion identifier against the winning one, which is precisely the incumbent
+      // read the clear-out exists to prevent. The sibling case below therefore holds that NO `update`
+      // is emitted at any level, and this one pins the pair.
+      const capture: OrderViewFixtureCapture = {};
+
+      // A persisted discount FAR larger than anything this reward set can compute, so "the reward
+      // still wins" cannot be explained by the comparison at [L385] / [L431].
+      const stalePromotionID = 'promotion-persisted-by-a-previous-run';
+      const staleRow: AppliedPromotionView = Object.freeze({
+        discountAmount: Money.fromDecimalString('9999.00'),
+        promotion: Object.freeze({ promotionID: stalePromotionID }),
+      });
+
+      // CASE 1 + 2 together: the SHIPPING fulfillment and the order both carry a stale row, and the
+      // PICKUP fulfillment carries one too. Pickup's charge is 0.00, so no positive discount can ever
+      // be computed for it [L378] - which is exactly the "slot nobody fills" case.
+      const order = makeOrderViewFixture({
+        capture,
+        appliedPromotions: [staleRow],
+        fulfillmentOverrides: [
+          { appliedPromotions: [staleRow] },
+          { appliedPromotions: [staleRow] },
+        ],
+      });
+      const orderGraph = buildQualifyingGraph('clearout-o-', order, capture.acceptedPriceGroup);
+      const rewardPromotionID = orderGraph.promotion.getPromotionID();
+      armSubject(subject, orderGraph, rewardSequence(orderGraph, 'orderRewardLast'));
+
+      const intents = await subject.service.updateOrderAmountsWithPromotions(order);
+
+      const shipping = requirePresent(order.orderFulfillments[0], 'the shipping fulfillment');
+      const pickup = requirePresent(order.orderFulfillments[1], 'the pickup fulfillment');
+
+      // CASE 1 - shipping: the stale row is unlinked and the reward's smaller discount is attached.
+      const shippingIntents = intents.filter(
+        (intent) =>
+          intent.appliedType === 'orderFulfillment' &&
+          intent.orderFulfillmentID === shipping.orderFulfillmentID,
+      );
+      expect(shippingIntents.map((intent) => intent.operation)).toStrictEqual(['remove', 'add']);
+      expect(requirePresent(shippingIntents[0], 'the shipping remove').promotionID).toBe(
+        stalePromotionID,
+      );
+      const shippingAdd = requirePresent(shippingIntents[1], 'the shipping add');
+      expect(shippingAdd.promotionID).toBe(rewardPromotionID);
+      expect(intentDiscount(shippingAdd).isGreaterThan(Money.zero)).toBe(true);
+      expect(intentDiscount(shippingAdd).isGreaterThan(staleRow.discountAmount)).toBe(false);
+
+      // CASE 2 - pickup: nothing could be applied, so the stale row is removed and nothing replaces it.
+      const pickupIntents = intents.filter(
+        (intent) =>
+          intent.appliedType === 'orderFulfillment' &&
+          intent.orderFulfillmentID === pickup.orderFulfillmentID,
+      );
+      expect(pickupIntents.map((intent) => intent.operation)).toStrictEqual(['remove']);
+      expect(requirePresent(pickupIntents[0], 'the pickup remove').promotionID).toBe(
+        stalePromotionID,
+      );
+
+      // The order level behaves identically - its arm reads the same mirror algebra at [L427-L451].
+      const orderIntents = intents.filter((intent) => intent.appliedType === 'order');
+      expect(orderIntents.map((intent) => intent.operation)).toStrictEqual(['remove', 'add']);
+      expect(requirePresent(orderIntents[0], 'the order remove').promotionID).toBe(
+        stalePromotionID,
+      );
+      expect(requirePresent(orderIntents[1], 'the order add').promotionID).toBe(rewardPromotionID);
+
+      // CASE 3: the persisted row carries the promotion the reward itself will re-apply. The net
+      // effect is one row at the NEW amount, reached through a remove of the prior row and an add of
+      // the recomputed one - the same two operations the legacy performs, in the same order.
+      const sameCapture: OrderViewFixtureCapture = {};
+      const sameOrder = makeOrderViewFixture({
+        capture: sameCapture,
+        appliedPromotions: [
+          Object.freeze({
+            discountAmount: Money.fromDecimalString('0.01'),
+            promotion: Object.freeze({ promotionID: rewardPromotionID }),
+          }),
+        ],
+      });
+      const sameGraph = buildQualifyingGraph(
+        'clearout-same-',
+        sameOrder,
+        sameCapture.acceptedPriceGroup,
+      );
+      // The reward graph must carry the SAME promotion identifier the persisted row names, which the
+      // shared prefix cannot guarantee - so the case is built from the graph that produced it.
+      const sameSubject = makeSubject();
+      const sameOrderWithMatchingRow = makeOrderViewFixture({
+        capture: sameCapture,
+        appliedPromotions: [
+          Object.freeze({
+            discountAmount: Money.fromDecimalString('0.01'),
+            promotion: Object.freeze({ promotionID: sameGraph.promotion.getPromotionID() }),
+          }),
+        ],
+      });
+      armSubject(sameSubject, sameGraph, rewardSequence(sameGraph, 'orderRewardLast'));
+      const sameIntents =
+        await sameSubject.service.updateOrderAmountsWithPromotions(sameOrderWithMatchingRow);
+      const sameOrderIntents = sameIntents.filter((intent) => intent.appliedType === 'order');
+      expect(sameOrderIntents.map((intent) => intent.operation)).toStrictEqual(['remove', 'add']);
+
+      // BOTH intents name the one promotion, which is what makes this the re-won case rather than a
+      // displacement - and the removal is still emitted, because the clear-out does not ask.
+      const reWonRemove = requirePresent(sameOrderIntents[0], 'the order remove');
+      const reWonAdd = requirePresent(sameOrderIntents[1], 'the order add');
+      expect(reWonRemove.promotionID).toBe(sameGraph.promotion.getPromotionID());
+      expect(reWonAdd.promotionID).toBe(sameGraph.promotion.getPromotionID());
+
+      // And the surviving amount is the RECOMPUTED one, not the 0.01 that was persisted.
+      expect(intentDiscount(reWonAdd).isGreaterThan(Money.fromDecimalString('0.01'))).toBe(true);
+    });
+  });
+
+  // ===============================================================================================
+  // §1a  THE BLANKET CLEAR - [model/service/PromotionService.cfc:L61-L80]
+  //
+  // Every case above starts from an order carrying NO applied promotions, which is the ordinary
+  // state and the one under which the clear emits nothing. This section starts from the other state:
+  // an order still carrying whatever a previous invocation left behind. The source's first act is to
+  // detach every one of those rows, unconditionally, at all three levels, before any qualification
+  // runs - and because the order aggregate is out of scope, the target has to SAY so.
+  // ===============================================================================================
+
+  describe('★★★ the blanket clear detaches every pre-existing applied promotion', () => {
+    /** One prior applied-promotion row, as a view. */
+    function priorRow(promotionID: string, discount: string): AppliedPromotionView {
+      return {
+        discountAmount: Money.fromDecimalString(discount),
+        promotion: { promotionID },
+      };
+    }
+
+    /** Only the remove intents, in emission order. */
+    function removals(intents: readonly PromotionAppliedIntent[]): readonly string[] {
+      return describeIntents(intents).filter((description) => description.startsWith('remove/'));
+    }
+
+    it('★★★ emits one remove per prior row at all three levels, in the source traversal order', async () => {
+      const capture: OrderViewFixtureCapture = {};
+      const order = makeOrderViewFixture({
+        capture,
+        // Items carry rows; both fulfillments carry rows; the order itself carries a row.
+        itemOverrides: [
+          { appliedPromotions: [priorRow('stale-item-0', '3.00')] },
+          { appliedPromotions: [priorRow('stale-item-1', '4.00')] },
+        ],
+        fulfillmentOverrides: [
+          { appliedPromotions: [priorRow('stale-ship', '5.00')] },
+          { appliedPromotions: [priorRow('stale-pickup', '6.00')] },
+        ],
+        appliedPromotions: [priorRow('stale-order', '7.00')],
+      });
+      const graph = buildQualifyingGraph('clear-', order, capture.acceptedPriceGroup);
+      armSubject(subject, graph, rewardSequence(graph, 'orderRewardLast'));
+
+      const intents = await subject.service.updateOrderAmountsWithPromotions(order);
+
+      const firstItem = requirePresent(order.orderItems[0], 'order item 0');
+      const secondItem = requirePresent(order.orderItems[1], 'order item 1');
+      const shipping = requirePresent(order.orderFulfillments[0], 'the shipping fulfillment');
+      const pickup = requirePresent(order.orderFulfillments[1], 'the pickup fulfillment');
+
+      // CFML parity [model/service/PromotionService.cfc:L64-L80]: items first, then fulfillments,
+      // then the order - and within each level the LAST element first, because all three loops count
+      // down from `arrayLen(...)` to `1`. Reverse index is the CFML idiom for deleting from a live
+      // collection while iterating it; nothing is deleted from here, so it survives purely as the
+      // order a consumer applying these intents in sequence observes.
+      expect(removals(intents)).toStrictEqual([
+        `remove/orderItem/${secondItem.orderItemID}`,
+        `remove/orderItem/${firstItem.orderItemID}`,
+        `remove/orderFulfillment/${pickup.orderFulfillmentID}`,
+        `remove/orderFulfillment/${shipping.orderFulfillmentID}`,
+        `remove/order/${order.orderID}`,
+      ]);
+
+      // Each remove NAMES THE PROMOTION THE PRIOR ROW CARRIED, never the reward's - that is the row
+      // being detached. And a remove carries no amount at all: `discountAmount` is typed `never` on
+      // the operation, so `intentDiscount` refuses one outright.
+      const removeIntents = intents.filter((intent) => intent.operation === 'remove');
+      expect(removeIntents.map((intent) => intent.promotionID)).toStrictEqual([
+        'stale-item-1',
+        'stale-item-0',
+        'stale-pickup',
+        'stale-ship',
+        'stale-order',
+      ]);
+      for (const intent of removeIntents) {
+        expect(() => intentDiscount(intent)).toThrow(/carries no discount/);
+      }
+
+      // ★ THE CLEAR COMES FIRST, exactly as it does in the source. Every removal precedes every
+      // addition in the emitted array, so a consumer applying them in order never has a stale row and
+      // a fresh row on the same target at the same moment.
+      const operations = intents.map((intent) => intent.operation);
+      const lastRemoval = operations.lastIndexOf('remove');
+      const firstAddition = operations.indexOf('add');
+      expect(lastRemoval).toBeGreaterThanOrEqual(0);
+      expect(firstAddition).toBeGreaterThan(lastRemoval);
+    });
+
+    it('★★ removes EVERY row on a target, not just the first the reward arms can see', async () => {
+      const capture: OrderViewFixtureCapture = {};
+      const order = makeOrderViewFixture({
+        capture,
+        appliedPromotions: [
+          priorRow('stale-order-a', '7.00'),
+          priorRow('stale-order-b', '8.00'),
+          priorRow('stale-order-c', '9.00'),
+        ],
+      });
+      const graph = buildQualifyingGraph('clear-many-', order, capture.acceptedPriceGroup);
+      armSubject(subject, graph, rewardSequence(graph, 'orderRewardLast'));
+
+      const intents = await subject.service.updateOrderAmountsWithPromotions(order);
+
+      // CFML parity [model/service/PromotionService.cfc:L78-L80] versus [L427-L431]: the CLEAR walks
+      // `arrayLen(...)` down to `1`, so it detaches all three, while the order-level reward arm only
+      // ever reads index `[1]`. Emitting one removal per VISIBLE row would orphan the other two
+      // forever. Reverse order, so `c` before `b` before `a`.
+      expect(removals(intents)).toStrictEqual([
+        `remove/order/${order.orderID}`,
+        `remove/order/${order.orderID}`,
+        `remove/order/${order.orderID}`,
+      ]);
+      expect(
+        intents.filter((intent) => intent.operation === 'remove').map((i) => i.promotionID),
+      ).toStrictEqual(['stale-order-c', 'stale-order-b', 'stale-order-a']);
+    });
+
+    it('★★★ a SMALLER qualifying discount still displaces a larger stale one - the money case', async () => {
+      // ★★ THIS IS THE DEFECT FINDING C1 NAMES, IN EXECUTABLE FORM. The order carries an order-level
+      // discount of 50.00 that no longer qualifies, and the reward that qualifies now is worth far
+      // less. The source removes the 50.00 at [L78-L80] and then applies the smaller figure at
+      // [L446-L451]. A winner slot SEEDED from the persisted row instead compares the new discount
+      // against 50.00, fails the strictly-greater test at [L431], and emits NOTHING - leaving the
+      // customer with a 50.00 discount forever.
+      const capture: OrderViewFixtureCapture = {};
+      const order = makeOrderViewFixture({
+        capture,
+        appliedPromotions: [priorRow('stale-generous', '50.00')],
+      });
+      const graph = buildQualifyingGraph('clear-money-', order, capture.acceptedPriceGroup);
+      armSubject(subject, graph, rewardSequence(graph, 'orderRewardLast'));
+
+      const intents = await subject.service.updateOrderAmountsWithPromotions(order);
+
+      const orderIntents = intents.filter((intent) => intent.appliedType === 'order');
+      expect(describeIntents(orderIntents)).toStrictEqual([
+        `remove/order/${order.orderID}`,
+        `add/order/${order.orderID}`,
+      ]);
+
+      const removal = requirePresent(orderIntents[0], 'the stale order-level removal');
+      const addition = requirePresent(orderIntents[1], 'the fresh order-level addition');
+      expect(removal.promotionID).toBe('stale-generous');
+      expect(addition.promotionID).toBe(graph.promotion.getPromotionID());
+
+      // The freshly qualified figure is the SAME 16.95 the golden case computes - the stale row never
+      // entered the comparison, so its 50.00 had no influence on the outcome at all.
+      expect(intentDiscount(addition).equals(Money.fromDecimalString('16.95'))).toBe(true);
+      expect(intentDiscount(addition).isGreaterThan(Money.fromDecimalString('50.00'))).toBe(false);
+    });
+
+    it('★★ when NOTHING qualifies, the stale rows are still removed', async () => {
+      // The other half of the same defect. With no rewards at all the engine reaches no arm and wins
+      // no slot, so there is nothing to add - but [L61-L80] has already run, so every prior row goes.
+      const capture: OrderViewFixtureCapture = {};
+      const order = makeOrderViewFixture({
+        capture,
+        itemOverrides: [{ appliedPromotions: [priorRow('stale-item', '3.00')] }],
+        appliedPromotions: [priorRow('stale-order', '50.00')],
+      });
+      const graph = buildQualifyingGraph('clear-none-', order, capture.acceptedPriceGroup);
+      armSubject(subject, graph, []);
+
+      const intents = await subject.service.updateOrderAmountsWithPromotions(order);
+
+      const firstItem = requirePresent(order.orderItems[0], 'order item 0');
+      expect(describeIntents(intents)).toStrictEqual([
+        `remove/orderItem/${firstItem.orderItemID}`,
+        `remove/order/${order.orderID}`,
+      ]);
+      expect(intents.every((intent) => intent.operation === 'remove')).toBe(true);
+    });
+
+    it('★ an order carrying nothing emits no removals, and the golden output is unchanged', async () => {
+      // The clear is unconditional but not unconditionally NOISY: with nothing to detach it
+      // contributes no intent, which is why every other case in this suite reads as it did before.
+      const capture: OrderViewFixtureCapture = {};
+      const order = makeOrderViewFixture({ capture });
+      const graph = buildQualifyingGraph('clear-empty-', order, capture.acceptedPriceGroup);
+      armSubject(subject, graph, rewardSequence(graph, 'orderRewardLast'));
+
+      const intents = await subject.service.updateOrderAmountsWithPromotions(order);
+
+      expect(removals(intents)).toStrictEqual([]);
+      expect(intents.every((intent) => intent.operation === 'add')).toBe(true);
+    });
+
+    it('★★ no `update` intent is ever emitted, at any level', async () => {
+      // ★ WHY, AND WHY THE VARIANT NONETHELESS EXISTS. `setDiscountAmount` at [L389] and [L435] only
+      // ever revises a row created earlier in the SAME invocation, at [L401] / [L447] - a row no
+      // consumer has been told about. Its net effect is that the row lands at the revised amount,
+      // which the single `add` already carries; emitting `add` then `update` would describe one row as
+      // two instructions. And no PRE-EXISTING row can be updated, because the blanket clear deleted
+      // every one of them - all three associations declare `cascade="all-delete-orphan"`. So the
+      // emitted vocabulary is `remove` for what was there and `add` for what wins.
+      const capture: OrderViewFixtureCapture = {};
+      const order = makeOrderViewFixture({
+        capture,
+        // A prior row carrying the SAME promotion the rewards belong to would be the one case an
+        // update could plausibly describe. It is still a remove-then-add.
+        appliedPromotions: [priorRow('clear-same-promotion', '1.00')],
+      });
+      const graph = buildQualifyingGraph('clear-same-', order, capture.acceptedPriceGroup);
+      armSubject(subject, graph, rewardSequence(graph, 'orderRewardLast'));
+
+      const intents = await subject.service.updateOrderAmountsWithPromotions(order);
+
+      expect(intents.some((intent) => intent.operation === 'update')).toBe(false);
+      expect(new Set(intents.map((intent) => intent.operation))).toStrictEqual(
+        new Set(['remove', 'add']),
+      );
+    });
+  });
+
+  // ===============================================================================================
+  // §1c  THE PASS-TWO BASE - [model/service/PromotionService.cfc:L417]
+  //
+  // Pass two prices its reward against the order total AS PASS ONE LEFT IT. In the source that is
+  // automatic: both passes write to a live ORM graph and L417 simply reads it. Here both passes
+  // return intents, so the coupling has to be rebuilt deliberately - and these cases are what prove
+  // it exists rather than being asserted in a comment.
+  // ===============================================================================================
+
+  describe("★★★ the order-level base reflects THIS invocation's fulfillment winner", () => {
+    /** The order-level discount for one arming of the golden order. */
+    async function orderDiscountFor(
+      idPrefix: string,
+      extra: Parameters<typeof buildQualifyingGraph>[3],
+    ): Promise<{ readonly order: Money; readonly fulfillment: Money | undefined }> {
+      const capture: OrderViewFixtureCapture = {};
+      const order = makeOrderViewFixture({ capture });
+      const graph = buildQualifyingGraph(idPrefix, order, capture.acceptedPriceGroup, extra);
+      const armed = makeSubject();
+      armSubject(armed, graph, rewardSequence(graph, 'orderRewardLast'));
+
+      const intents = await armed.service.updateOrderAmountsWithPromotions(order);
+      const orderIntent = requirePresent(
+        intents.find((intent) => intent.appliedType === 'order'),
+        `the order-level intent for ${idPrefix}`,
+      );
+      const fulfillmentIntent = intents.find((intent) => intent.appliedType === 'orderFulfillment');
+
+      return {
+        order: intentDiscount(orderIntent),
+        fulfillment:
+          fulfillmentIntent === undefined ? undefined : intentDiscount(fulfillmentIntent),
+      };
+    }
+
+    it('★★★ suppressing the fulfillment discount RAISES the order-level discount', async () => {
+      // ★★ THIS IS THE COUPLING FINDING C2 NAMES. Nothing about the order changes between these two
+      // armings - same subtotal, same charges, same order-level reward. The ONLY difference is whether
+      // the fulfillment arm won anything in pass one, and that alone must move the order-level figure,
+      // because [model/entity/OrderFulfillment.cfc:L183-L193] subtracts a fulfillment's applied
+      // discount from its charge and [model/entity/Order.cfc:L356-L363] sums the result into the base
+      // L417 reads. Reading the base off the immutable input instead makes these two identical - which
+      // is precisely the bug: an order-level percentage is then struck against an un-discounted total.
+      const withFulfillmentDiscount = await orderDiscountFor('base-with-', {});
+
+      // The gate at [model/service/PromotionService.cfc:L353]: a reward listing fulfillment methods
+      // that the order's fulfillments do not have skips every fulfillment, so pass one wins nothing
+      // there. An EMPTY list means "no restriction", which is why the default arming qualifies.
+      const withoutFulfillmentDiscount = await orderDiscountFor('base-without-', {
+        fulfillmentMethodIDs: ['fm-that-no-fulfillment-uses'],
+      });
+
+      expect(withFulfillmentDiscount.fulfillment).toBeDefined();
+      expect(withoutFulfillmentDiscount.fulfillment).toBeUndefined();
+
+      // Base WITH a 4.51 fulfillment discount   = 129.95 + (9.50 - 4.51) + 0.00 = 134.94
+      // Base WITHOUT one                        = 129.95 +  9.50         + 0.00 = 139.45
+      // A larger base yields a larger discount, so suppressing pass one's fulfillment win RAISES the
+      // order-level figure. Equality here would mean the coupling had been lost.
+      expect(withoutFulfillmentDiscount.order.isGreaterThan(withFulfillmentDiscount.order)).toBe(
+        true,
+      );
+      expect(withoutFulfillmentDiscount.order.equals(withFulfillmentDiscount.order)).toBe(false);
+    });
+
+    it('★★ every fulfillment contributes its charge, discounted or not', async () => {
+      // CFML parity [model/entity/Order.cfc:L356-L363]: the sum runs across `getOrderFulfillments()`
+      // unconditionally. The golden order's pickup fulfillment is charged 0.00 and wins nothing, so it
+      // contributes 0.00 - but it is still summed, and a fulfillment that merely failed to win must
+      // contribute its FULL charge rather than being skipped.
+      const capture: OrderViewFixtureCapture = {};
+      const order = makeOrderViewFixture({
+        capture,
+        // Give the pickup fulfillment a real charge. It still wins nothing in the golden arming, so its
+        // full 40.00 must land in the base and raise the order-level discount.
+        fulfillmentOverrides: [{}, { fulfillmentCharge: Money.fromDecimalString('40.00') }],
+      });
+      const graph = buildQualifyingGraph('base-all-', order, capture.acceptedPriceGroup);
+      armSubject(subject, graph, rewardSequence(graph, 'orderRewardLast'));
+
+      const intents = await subject.service.updateOrderAmountsWithPromotions(order);
+      const orderIntent = requirePresent(
+        intents.find((intent) => intent.appliedType === 'order'),
+        'the order-level intent',
+      );
+
+      const baseline = await orderDiscountFor('base-all-baseline-', {});
+      expect(intentDiscount(orderIntent).isGreaterThan(baseline.order)).toBe(true);
+    });
+
+    it('★★ a stale fulfillment row does NOT reduce the base - the clear removed it first', async () => {
+      // The two findings meet here. A fulfillment carrying a prior 25.00 row would, if that row were
+      // seeded into the winner slot, both block a smaller fulfillment discount AND subtract 25.00 from
+      // the order-level base. Post-clear it does neither: the row is removed, the fulfillment arm
+      // starts empty, and the base subtracts only what pass one actually selected.
+      const capture: OrderViewFixtureCapture = {};
+      const order = makeOrderViewFixture({
+        capture,
+        fulfillmentOverrides: [
+          {
+            appliedPromotions: [
+              {
+                discountAmount: Money.fromDecimalString('25.00'),
+                promotion: { promotionID: 'stale-ship' },
+              },
+            ],
+          },
+        ],
+      });
+      const graph = buildQualifyingGraph('base-stale-', order, capture.acceptedPriceGroup);
+      armSubject(subject, graph, rewardSequence(graph, 'orderRewardLast'));
+
+      const intents = await subject.service.updateOrderAmountsWithPromotions(order);
+
+      const shipping = requirePresent(order.orderFulfillments[0], 'the shipping fulfillment');
+      const fulfillmentIntents = intents.filter(
+        (intent) =>
+          intent.appliedType === 'orderFulfillment' &&
+          intent.orderFulfillmentID === shipping.orderFulfillmentID,
+      );
+
+      // Removed, then re-won at the freshly computed 4.51 - NOT retained at 25.00 despite 25.00 being
+      // the larger figure. The strictly-greater test at [L385] never saw it.
+      expect(describeIntents(fulfillmentIntents)).toStrictEqual([
+        `remove/orderFulfillment/${shipping.orderFulfillmentID}`,
+        `add/orderFulfillment/${shipping.orderFulfillmentID}`,
+      ]);
+      const addition = requirePresent(fulfillmentIntents[1], 'the fresh fulfillment addition');
+      expect(intentDiscount(addition).equals(Money.fromDecimalString('4.51'))).toBe(true);
+
+      // And the order-level figure is the golden 16.95, proving the base subtracted 4.51 rather than
+      // the stale 25.00.
+      const orderIntent = requirePresent(
+        intents.find((intent) => intent.appliedType === 'order'),
+        'the order-level intent',
+      );
+      expect(intentDiscount(orderIntent).equals(Money.fromDecimalString('16.95'))).toBe(true);
     });
   });
 
@@ -1092,6 +1739,61 @@ describe('PromotionService', () => {
         ],
       });
     }
+
+    it("★★★ pass ONE's fulfillment discount LOWERS the pass-two order-reward base", async () => {
+      // ★ THE SECOND HALF OF THE INTER-PASS ACCOUNTING, AND THE HALF THAT IS EASIEST TO LOSE.
+      // [model/service/PromotionService.cfc:L417] reads
+      // `getSubtotalAfterItemDiscounts() + getFulfillmentChargeAfterDiscountTotal()`, and the second
+      // addend is charge NET OF the discounts pass one just applied
+      // [model/entity/Order.cfc:L356-L362] with [model/entity/OrderFulfillment.cfc:L183-L193]. On the
+      // live graph that is automatic: the fulfillment arm wrote to the entity at [L389]/[L400-L406]
+      // and the order arm reads the entity afterwards. In an intent-returning port it is NOT
+      // automatic, and reading a caller-supplied total instead makes the order-level discount too
+      // large by 12.5 % of every fulfillment discount pass one applied.
+      //
+      // The differential below is the proof. The SAME order is priced twice against the SAME order
+      // reward; the only difference is whether pass one applied a fulfillment discount at all.
+      const capture: OrderViewFixtureCapture = {};
+      const order = makeOrderViewFixture({ capture });
+      const graph = buildQualifyingGraph('interpass-', order, capture.acceptedPriceGroup);
+
+      const runWith = async (rewards: readonly PromotionReward[]): Promise<Money> => {
+        const intents = await armSubject(
+          makeSubject(),
+          graph,
+          rewards,
+        ).service.updateOrderAmountsWithPromotions(order);
+
+        return intentDiscount(
+          requirePresent(
+            intents.find((intent) => intent.appliedType === 'order'),
+            'the order-level intent',
+          ),
+        );
+      };
+
+      // WITH the fulfillment reward: pass one discounts the 9.50 shipping charge by 4.51, so the base
+      // is 129.95 + 4.99 = 134.94 and the order-level discount is 16.95.
+      const withFulfillmentDiscount = await runWith([
+        graph.merchandiseReward,
+        graph.fulfillmentReward,
+        graph.orderReward,
+      ]);
+      expect(withFulfillmentDiscount.equals(Money.fromDecimalString('16.95'))).toBe(true);
+
+      // WITHOUT it: nothing discounts the shipping charge, so the base is 129.95 + 9.50 = 139.45 and
+      // the order-level discount is 17.46. Both figures come from the same reward at the same 12.5 %
+      // and the same rounding rule - only the base moved.
+      const withoutFulfillmentDiscount = await runWith([
+        graph.merchandiseReward,
+        graph.orderReward,
+      ]);
+      expect(withoutFulfillmentDiscount.equals(Money.fromDecimalString('17.46'))).toBe(true);
+
+      // The direction is the assertion that survives any future change to the fixture's amounts: a
+      // fulfillment discount can only ever LOWER what remains discountable at the order level.
+      expect(withoutFulfillmentDiscount.isGreaterThan(withFulfillmentDiscount)).toBe(true);
+    });
 
     it('★★ a sale price larger than every reward discount WINS the item slot', async () => {
       const capture: OrderViewFixtureCapture = {};
@@ -1676,6 +2378,56 @@ describe('PromotionService', () => {
       expect(rounded.equals(unrounded)).toBe(false);
     });
 
+    it('★★ the CLAMP does not hold: a discount can exceed the amount it discounts', () => {
+      // LEGACY-DEFECT [model/service/PromotionService.cfc:L1013-L1015]: the guard reads
+      // `if(discountAmountPreRounding > originalAmount) { discountAmount = originalAmount; }` - it
+      // TESTS the pre-rounding figure and OVERWRITES the post-rounding one. When the rounding rule
+      // pushes the rounded net amount NEGATIVE, `originalAmount - roundedFinalAmount` exceeds
+      // `originalAmount` while `discountAmountPreRounding` does not, so the clamp never fires and the
+      // returned discount is larger than the amount being discounted.
+      // Preserved deliberately; do not fix without a product decision.
+      //
+      // The declination is mandated; the full disposition is recorded at the site in
+      // `src/services/promotion/discountAmount.ts`, which also pins the arithmetic unit-wise.
+      // ★ WHAT THIS CASE ADDS is the CONSUMER-VISIBLE POSTCONDITION, which is what a caller can
+      // actually be harmed by: `getDiscountAmount` is a PUBLIC method of this service (visibility
+      // widening 5), and it offers NO guarantee that its result is bounded by `price x quantity`. A
+      // consumer that subtracts the result from the amount it passed in reaches a NEGATIVE net.
+      // The rounding rule is the ROUND-DOWN rule rather than the default Closest one, and it is the
+      // real `RoundingRuleService` doing the rounding here rather than a stub: `.99` with direction
+      // `Down` selects the LOWER candidate, and for a net this small the lower candidate is NEGATIVE -
+      // the phenomenon AAP 0.6.4 measured and named Finding D. `promotion/discountAmount.test.ts` pins
+      // the same escape unit-wise with a stubbed rounder; this case proves the rounding rule that
+      // produces it is one a merchant can actually persist.
+      const graph = makePromotionFixtures({
+        idPrefix: 'clamp-',
+        roundingRule: makePriceGroupFixtures({ idPrefix: 'clamp-pg-' }).roundDownRoundingRule,
+      });
+      const price = Money.fromDecimalString('0.42');
+
+      const discount = subject.service.getDiscountAmount(graph.percentageOffReward, price, 1);
+
+      // 0.42 at 12.5 % gives a pre-rounding discount of 0.0525 and a net of 0.3675. Rounded DOWN
+      // against `.99` the net becomes -0.99, and 0.42 - (-0.99) = 1.41 - more than three times the
+      // amount discounted, reported unchanged because the clamp tested 0.0525 instead.
+      expect(discount.toFixed2()).toBe('1.41');
+      expect(discount.isGreaterThan(price)).toBe(true);
+
+      // The postcondition a caller would reasonably assume, shown NOT to hold.
+      expect(price.minus(discount).isLessThan(Money.zero)).toBe(true);
+
+      // And it is the CLAMP that is ineffective rather than the arithmetic being unreachable: the
+      // same reward on a larger amount stays comfortably inside the bound, so the defect is
+      // input-dependent and a consumer cannot detect it from the reward alone.
+      const largerPrice = Money.fromDecimalString('59.97');
+      const largerDiscount = subject.service.getDiscountAmount(
+        graph.percentageOffReward,
+        largerPrice,
+        1,
+      );
+      expect(largerDiscount.isGreaterThan(largerPrice)).toBe(false);
+    });
+
     it('★★ promotes NO SIXTH private helper: the prototype surface is exactly what is documented', () => {
       const members = Object.getOwnPropertyNames(PromotionService.prototype).sort();
 
@@ -2007,6 +2759,147 @@ describe('PromotionService', () => {
       expect(bounded).not.toStrictEqual(absent);
     });
 
+    it('★★ a GUEST order is never blocked by maximumAccountUseCount, however high the count', async () => {
+      // LEGACY-DEFECT [model/service/PromotionService.cfc:L574-L581]: the per-account use-limit check
+      // is wrapped in `if(!isNull(arguments.order.getAccount()))` at L575, so an accountless order
+      // skips it entirely and can redeem a per-account-limited promotion repeatedly. The general
+      // period limit at L566-L571 remains the only ceiling it faces.
+      // Preserved deliberately; do not fix without a product decision.
+      //
+      // The declination is mandated - AAP 0.8.1 names use-limit ENFORCEMENT SEMANTICS as
+      // must-preserve, AAP 0.6.7 preserves latent defects rather than repairing them, and AAP 0.9.3
+      // fails a silently-fixed defect. The full disposition is recorded at the site in
+      // `src/services/promotion/promotionPeriodQualification.ts`. This case exists so the bypass
+      // cannot change by accident in EITHER direction.
+      const capture: OrderViewFixtureCapture = {};
+
+      // A per-account limit of 1, and a persisted account use count FAR above it. An identified order
+      // must be refused; a guest order must not be.
+      const overrides: PromotionFixtureOverrides = { promotionPeriodMaximumAccountUseCount: 1 };
+
+      const runFor = async (
+        idPrefix: string,
+        accountID: string | undefined,
+      ): Promise<{
+        readonly qualifies: boolean;
+        readonly intents: readonly string[];
+        readonly accountCountCalls: number;
+      }> => {
+        const order = makeOrderViewFixture({ capture, accountID });
+        const graph = buildQualifyingGraph(idPrefix, order, capture.acceptedPriceGroup, overrides);
+        const subjectForRun = armSubject(
+          makeSubject(),
+          graph,
+          rewardSequence(graph, 'orderRewardLast'),
+        );
+        subjectForRun.repository.promotionPeriodAccountUseCount = 99;
+
+        const qualification = await subjectForRun.service.getPromotionPeriodQualificationDetails(
+          graph.promotionPeriod,
+          order,
+        );
+        const intents = await subjectForRun.service.updateOrderAmountsWithPromotions(order);
+
+        return {
+          qualifies: qualification.qualificationsMeet,
+          intents: describeIntents(intents),
+          accountCountCalls: subjectForRun.repository.promotionPeriodAccountUseCountCalls.length,
+        };
+      };
+
+      const identified = await runFor('guest-identified-', 'account-with-exhausted-limit');
+      const guest = await runFor('guest-anonymous-', undefined);
+
+      // The identified order is refused, and the count really was consulted - without this the guest
+      // result could pass for the wrong reason.
+      expect(identified.qualifies).toBe(false);
+      expect(identified.accountCountCalls).toBeGreaterThan(0);
+      expect(identified.intents).toStrictEqual([]);
+
+      // The guest order qualifies, and [L575] means the repository is never even asked.
+      expect(guest.qualifies).toBe(true);
+      expect(guest.accountCountCalls).toBe(0);
+      expect(guest.intents.length).toBeGreaterThan(0);
+    });
+
+    it('★★ a FULFILLMENT reward ignores maximumUsePerOrder - the arm never touches the ledger', async () => {
+      // LEGACY-DEFECT [model/service/PromotionService.cfc:L345-L412]: no line in the fulfillment arm
+      // reads, seeds or increments `promotionRewardUsageDetails`, so the three use limits are not
+      // enforced against fulfillment discounts and over-use stripping at [L468-L521] cannot see them.
+      // Preserved deliberately; do not fix without a product decision.
+      //
+      // The declination is mandated; the full disposition is recorded on `applyFulfillmentReward` in
+      // `src/services/promotionService.ts`. What this case pins is the OBSERVABLE consequence: a
+      // reward capped at ONE use per order still discounts EVERY qualifying fulfillment.
+      const capture: OrderViewFixtureCapture = {};
+
+      // THREE qualifying fulfillments against a reward limited to TWO uses per order. Three is what
+      // makes the case non-vacuous: with the golden order's two fulfillments, "two discounts" is
+      // consistent with the limit being enforced, and the test would prove nothing. Each is derived
+      // from the golden shipping fulfillment so every gate it already passes is passed identically -
+      // only the identifier and the charge differ, and every charge is positive so none can fail the
+      // [L378] `discountAmount > 0` gate for a reason unrelated to use limits.
+      const seedOrder = makeOrderViewFixture({ capture });
+      const baseFulfillment = requirePresent(
+        seedOrder.orderFulfillments[0],
+        'the golden shipping fulfillment',
+      );
+      const order = makeOrderViewFixture({
+        capture,
+        orderFulfillments: [
+          {
+            ...baseFulfillment,
+            orderFulfillmentID: 'of-limit-probe-1',
+            fulfillmentCharge: Money.fromDecimalString('40.00'),
+          },
+          {
+            ...baseFulfillment,
+            orderFulfillmentID: 'of-limit-probe-2',
+            fulfillmentCharge: Money.fromDecimalString('30.00'),
+          },
+          {
+            ...baseFulfillment,
+            orderFulfillmentID: 'of-limit-probe-3',
+            fulfillmentCharge: Money.fromDecimalString('20.00'),
+          },
+        ],
+      });
+      const graph = buildQualifyingGraph('fulfil-limit-', order, capture.acceptedPriceGroup);
+
+      // PRECONDITION: the fulfillment reward really does carry a positive per-order limit BELOW the
+      // number of fulfillments. Without this the case could pass because no limit was set at all.
+      const fulfillmentUseLimit = requirePresent(
+        graph.fulfillmentReward.getMaximumUsePerOrder(),
+        "the fulfillment reward's per-order use limit",
+      );
+      expect(fulfillmentUseLimit).toBe(2);
+      expect(order.orderFulfillments.length).toBeGreaterThan(2);
+
+      const intents = await armSubject(
+        makeSubject(),
+        graph,
+        rewardSequence(graph, 'orderRewardLast'),
+      ).service.updateOrderAmountsWithPromotions(order);
+
+      const fulfillmentIntents = intents.filter(
+        (intent) => intent.appliedType === 'orderFulfillment',
+      );
+
+      // THREE distinct fulfillment discounts from a reward limited to TWO uses per order.
+      expect(fulfillmentIntents.length).toBe(3);
+      expect(fulfillmentIntents.length).toBeGreaterThan(fulfillmentUseLimit);
+      expect(
+        fulfillmentIntents.every((intent) => intentDiscount(intent).isGreaterThan(Money.zero)),
+      ).toBe(true);
+      expect(
+        new Set(
+          fulfillmentIntents.map((intent) =>
+            intent.appliedType === 'orderFulfillment' ? intent.orderFulfillmentID : '',
+          ),
+        ).size,
+      ).toBe(3);
+    });
+
     it('★★ the pipeline money reflects DEFECT 9 - stripping enforced against the last reward processed', async () => {
       // LEGACY-DEFECT [model/service/PromotionService.cfc:L468-L521]: over-use stripping reads the
       // maximum and the usage list from the `reward` variable left over from the previous loop rather
@@ -2144,7 +3037,7 @@ describe('PromotionService', () => {
         badFirstIntents.find((intent) => intent.appliedType === 'order'),
         'the order-level intent',
       );
-      expect(intentDiscount(orderIntent).equals(Money.fromDecimalString('15.46'))).toBe(true);
+      expect(intentDiscount(orderIntent).equals(Money.fromDecimalString('16.95'))).toBe(true);
 
       // LEGACY-NOTE [model/service/PromotionService.cfc:L417, L419]: the order-level branch sums
       // getSubtotalAfterItemDiscounts() and getFulfillmentChargeAfterDiscountTotal() with a PLAIN `+`
@@ -2153,6 +3046,14 @@ describe('PromotionService', () => {
       // target routes both through Money, so the gap is closed structurally; the aggregate discount is
       // asserted here rather than the per-iteration arithmetic, which belongs to
       // promotion/twoPassRewardIterator.test.ts.
+      //
+      // Both terms are the POST-PASS-ONE terms - 129.95 over the `oitSale` items with item discounts
+      // provably not yet applied, plus 4.99 of shipping charge net of pass one's 4.51 - so the base is
+      // 134.94 and the discount 16.95. The golden-pipeline case above derives that chain in full.
+      //
+      // ★ What THIS case adds over the golden-pipeline derivation is that the rebuilt base is
+      // reached through the SAME two-pass gate: the order-level discount exists at all only because
+      // the reward that failed qualification sat FIRST rather than last.
       expect(
         order.subtotalAfterItemDiscounts
           .plus(order.fulfillmentChargeAfterDiscountTotal)

@@ -332,6 +332,10 @@ function makeMembershipOrderItem(
     appliedPriceGroup: undefined,
     orderItemType: { systemCode: 'oitSale' },
     orderFulfillmentID: 'membership-fulfillment',
+    // Empty because membership testing never reads it. The member exists for the blanket clear at
+    // [model/service/PromotionService.cfc:L64-L68], which runs before any membership test and leaves
+    // the association empty for everything downstream.
+    appliedPromotions: [],
   };
 }
 
@@ -389,6 +393,12 @@ function recordOrderItemReads(base: OrderItemView): RecordedOrderItem {
     },
     get orderFulfillmentID() {
       return tap('orderFulfillmentID', base.orderFulfillmentID);
+    },
+    // Instrumented like every other member precisely so the suite can PROVE membership testing never
+    // touches it. The blanket clear at [model/service/PromotionService.cfc:L64-L68] is the only
+    // legacy reader of this association, and it runs before any membership test.
+    get appliedPromotions() {
+      return tap('appliedPromotions', base.appliedPromotions);
     },
   };
 

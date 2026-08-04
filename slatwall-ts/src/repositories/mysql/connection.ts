@@ -241,6 +241,195 @@ export interface SqlMutationResult {
 }
 
 /**
+ * WHO is making a write, as the write boundary is permitted to know it.
+ *
+ * SECURITY REVIEW DISPOSITION - RAISED AS S-07, ACCEPTED.
+ *
+ * The finding: "Audit actor IDs are copied from caller-hydrated entities or omitted.
+ * A future caller can spoof attribution or create unattributed writes" (CWE-345,
+ * insufficient verification of data authenticity). Required resolution: "Remove audit
+ * fields from request DTOs; thread immutable authenticated actor context; stamp audit
+ * columns at the repository boundary."
+ *
+ * ★ THE LEGACY NEVER TOOK THESE FROM THE ENTITY, AND THAT IS THE WHOLE ARGUMENT.
+ * `org/Hibachi/HibachiEntity.cfc` stamps them in its ORM lifecycle hooks, from the
+ * ambient request scope, and never from anything a caller submitted:
+ *
+ *   preInsert  [L628-L630]  setCreatedByAccount( getHibachiScope().getAccount() )
+ *              [L632-L635]  setModifiedByAccount( getHibachiScope().getAccount() )
+ *   preUpdate  [L676-L678]  setModifiedByAccount( getHibachiScope().getAccount() )
+ *
+ * Each is guarded by `!getHibachiScope().getAccount().isNew() &&
+ * getHibachiScope().getAccount().getAdminAccountFlag()` - note that `isNew()` is the
+ * ACCOUNT's, not the entity's - and both blocks sit inside an
+ * `hasApplicationValue("initialized")` gate [L622], [L670], so nothing is stamped
+ * during application setup.
+ *
+ * So reading `product.getCreatedByAccountID()` to decide what to write was never a
+ * port of that behaviour; it was a new trust relationship the legacy did not have.
+ * Threading an explicit context is also not an invention: ambient request scope is
+ * exactly what transformation rule T6 replaces with a parameter, and
+ * `CurrentAccountContext` already does the same job for price-group resolution.
+ *
+ * ★ WHY IT IS A SEPARATE TYPE FROM `CurrentAccountContext`. That one is documented as
+ * "DELIBERATELY MINIMAL, AND NOT A CONTEXT BAG", carrying one opaque account
+ * identifier and explicitly refusing "session, locale, currency, timezone,
+ * PERMISSION, request identifier or logger" members. The audit gate needs a
+ * permission - the admin flag - so widening it would breach that contract and couple
+ * price resolution to an authorization fact it has no business reading. Two
+ * questions, two types.
+ *
+ * ★ WHY IT LIVES HERE. Every one of the five writing repositories already imports
+ * this module, it is where `PreparedStatementExecutor`, `SqlRow` and
+ * `SqlMutationResult` establish the write boundary's shared vocabulary, and an actor
+ * is part of that vocabulary - it is what the boundary STAMPS. Keeping it out of
+ * `src/domain/**` also keeps an authorization concern out of the domain, which the
+ * layer-boundary lint rule and the AAP's domain-inward dependency rule both favour.
+ *
+ * IMMUTABLE AND REQUEST-SCOPED. Constructed once per invocation in
+ * `src/handlers/bootstrap.ts` and handed to each repository as a CONSTRUCTOR
+ * argument, never as a method parameter - so no port signature changes, interface
+ * parity is untouched, and a caller has no channel through which to name an actor at
+ * all. That is stronger than validating one: there is nothing to validate.
+ */
+export interface AuditActorContext {
+  /**
+   * The authenticated account, as an opaque identifier.
+   *
+   * ABSENT MEANS NO PERSISTED ACCOUNT, which is the target's representation of the
+   * legacy `getAccount().isNew()` half of the gate: the CFML scope hands back a new,
+   * empty account object when nobody is signed in, and a new account has no
+   * identifier to stamp. Modelling the absence directly reproduces that without
+   * reproducing the empty object.
+   */
+  readonly accountID?: string | undefined;
+
+  /**
+   * Whether that account carries the legacy admin flag.
+   *
+   * The second half of the gate, `getAccount().getAdminAccountFlag()`. It is
+   * REQUIRED rather than optional so that a composition site cannot omit it and
+   * accidentally stamp on behalf of a non-admin: the decision has to be made
+   * explicitly somewhere, and the type is what forces it.
+   */
+  readonly adminAccountFlag: boolean;
+}
+
+/**
+ * An actor context that stamps nothing - the shape a non-admin or anonymous request
+ * has, and the safe default.
+ */
+export const UNATTRIBUTED_AUDIT_ACTOR: AuditActorContext = Object.freeze({
+  adminAccountFlag: false,
+});
+
+/**
+ * The account identifier a write may stamp, or `undefined` when the legacy gate
+ * refuses.
+ *
+ * THE ONE PLACE THE GATE IS EVALUATED, so the four repositories cannot drift apart on
+ * it. Both conditions must hold, exactly as [org/Hibachi/HibachiEntity.cfc:L628] and
+ * [:L633] require them to: a persisted account AND the admin flag.
+ *
+ * ★ WHAT `undefined` MEANS TO EACH CALLER, BECAUSE IT IS NOT THE SAME THING. On an
+ * INSERT it means the column is written null - which is what the legacy produced,
+ * since a skipped `setCreatedByAccount` left the property unset and Hibernate
+ * inserted null. On an UPDATE it must mean LEAVE THE STORED VALUE ALONE, because a
+ * skipped `setModifiedByAccount` left the loaded entity's existing value in place and
+ * Hibernate wrote that same value back. Writing null there would DESTROY an
+ * attribution the legacy preserved, so the update statements resolve it in SQL
+ * against the stored column rather than binding a null over it.
+ */
+export function resolveAuditActorAccountID(actor: AuditActorContext): string | undefined {
+  if (!actor.adminAccountFlag) {
+    return undefined;
+  }
+
+  const accountID = actor.accountID;
+  if (accountID === undefined || accountID.length === 0) {
+    return undefined;
+  }
+
+  return accountID;
+}
+
+/**
+ * The columns whose UPDATE assignment must never overwrite a stored value with null.
+ *
+ * Exported so a test can name them without restating the literals, and so the helpers
+ * below cannot disagree about which columns are special.
+ */
+export const AUDIT_ACTOR_COLUMNS: readonly string[] = Object.freeze([
+  'createdByAccountID',
+  'modifiedByAccountID',
+]);
+
+/**
+ * Render one `SET` assignment for an UPDATE statement.
+ *
+ * Every column renders as `name = ?` - EXCEPT the two audit account columns, which
+ * render as `name = COALESCE(?, name)`.
+ *
+ * ★ WHY THOSE COLUMNS ARE DIFFERENT, AND WHY IT IS SQL RATHER THAN TYPESCRIPT.
+ * `HibachiEntity.preUpdate` [org/Hibachi/HibachiEntity.cfc:L651-L679] stamps ONE
+ * account, and only when the actor gate passes:
+ *
+ *   - `setModifiedByAccount` [L676-L678] runs when the gate passes. When it does not,
+ *     the setter is never reached, the loaded entity keeps the value it was loaded
+ *     with, and Hibernate writes that same value back - so a non-admin save PRESERVES
+ *     the previous attribution rather than erasing it.
+ *   - `setCreatedByAccount` is ABSENT from `preUpdate` entirely. It exists only in
+ *     `preInsert` [L628-L630], so an update NEVER restamps it, and Hibernate's
+ *     whole-entity flush rewrote the loaded value unchanged.
+ *
+ * Binding a plain `?` cannot reproduce either. Where a repository keeps these columns
+ * in its SET list, a refused gate would bind null and DESTROY provenance - a worse
+ * outcome than the finding being fixed. Resolving against the stored column inside the
+ * statement reproduces the legacy outcome with no extra round trip, no
+ * read-modify-write race, and no second statement whose failure mode would need its own
+ * handling. The stored value is read BY THE DATABASE, so a caller still cannot name it:
+ * a hand-built entity carrying a forged account no longer reaches the statement at all.
+ *
+ * Repositories that exclude these columns from their SET list are unaffected - the
+ * helper simply never sees them - so this is a floor rather than a requirement to
+ * restructure a statement.
+ *
+ * MySQL evaluates a self-reference on the right of a `SET` against the value the row
+ * held before the statement, and each column is assigned at most once, so the reference
+ * is unambiguous.
+ *
+ * @param columnName the column being assigned.
+ * @returns the assignment fragment, with its single placeholder.
+ */
+export function sqlUpdateAssignment(columnName: string): string {
+  if (AUDIT_ACTOR_COLUMNS.includes(columnName)) {
+    return `${columnName} = COALESCE(?, ${columnName})`;
+  }
+
+  return `${columnName} = ?`;
+}
+
+/**
+ * The value an updated row will hold for `modifiedByAccountID` once the statement above
+ * has run - the TypeScript mirror of its `COALESCE`.
+ *
+ * Repositories hand back a fresh entity describing the row they just wrote, and that
+ * description has to agree with the row. Echoing the resolved actor alone would claim
+ * null where the statement preserved a value; echoing the previous value alone would
+ * claim the old actor where the statement stamped a new one.
+ *
+ * @param actor the request's audit actor.
+ * @param previouslyStored the value the row held before this update.
+ * @returns the value the row now holds.
+ */
+export function resolveStampedModifiedByAccountID(
+  actor: AuditActorContext,
+  previouslyStored: string | undefined,
+): string | undefined {
+  return resolveAuditActorAccountID(actor) ?? previouslyStored;
+}
+
+/**
  * The narrow execution surface every repository receives.
  *
  * THIS IS A MANDATORY DESIGN CONSTRAINT, NOT A CONVENIENCE. Each of the six
@@ -396,7 +585,7 @@ export interface PreparedStatementExecutor {
    * done. But the premise no longer holds: a caller that nests DOES exist, and it is
    * load-bearing. `mysqlProductRepository.saveProduct` opens a transaction and then, for
    * every transient SKU the product carries, calls
-   * `MysqlSkuRepository.saveSkuForProduct(draft, productID, tx)` - which funnels through
+   * `MysqlSkuRepository.saveSku(draft, productID, tx)` - which funnels through
    * `persistSku` and opens `executor.transaction` of its own. That is the circular
    * foreign key between `SwSku.productID` [model/entity/Sku.cfc:L65] and
    * `SwProduct.defaultSkuID` [model/entity/Product.cfc:L70] being written atomically,
@@ -606,6 +795,162 @@ export function sqlPlaceholderList(count: number): string {
   }
 
   return new Array<string>(count).fill('?').join(', ');
+}
+
+// --- Multi-row tuple bodies --------------------------------------------------
+//
+// SECURITY REVIEW DISPOSITION - RAISED AS S-12, ACCEPTED. Two link-table writers
+// built a multi-row `VALUES` body by repeating a two-placeholder tuple once per
+// collection member: `buildSkuOptionInsertSql`
+// (`./mysqlSkuRepository.ts`, reconciling `SwSkuOption` for
+// [model/entity/Sku.cfc:L76]) and `buildRateLinkInsertSql`
+// (`./mysqlPriceGroupRepository.ts`, reconciling the six link tables of
+// [model/entity/PriceGroupRate.cfc:L71-L77]). Neither validated a row count, a row
+// width or a total before allocating, so member-count growth turned straight into
+// unbounded string and parameter allocation - the same class of defect
+// `sqlPlaceholderList` above was already hardened against, in builders that had
+// been missed because their placeholders are grouped rather than flat.
+//
+// WHY A CEILING HERE IS NOT A BEHAVIOUR CHANGE. AAP 0.6.5 requires exactly this of
+// the bulk paths on Lambda - "explicit batch limits, idempotency on retry, and a
+// documented compensation story" - because the legacy ran them under an ambient
+// `cftransaction` and a one-hour request budget that Lambda does not offer. A
+// collection larger than one batch is CHUNKED rather than refused, and the chunks
+// run inside the transaction the caller already opened, so the observable end state
+// is identical to the single statement it replaces. Nothing a legitimate write
+// could ask for is rejected.
+
+/**
+ * The widest tuple this builder will render.
+ *
+ * Both current callers write two columns, and the widest link table in the whole
+ * in-scope schema is a two-column join row - the tables carry no surrogate key, no
+ * audit columns and no payload [model/entity/PriceGroupRate.cfc:L71-L77]. Sixty-four
+ * is therefore far above any shape the schema can produce while still refusing a
+ * width that could only come from a defect in the caller.
+ */
+export const MAX_TUPLE_ROW_WIDTH = 64;
+
+/**
+ * The application batch ceiling: how many tuples one statement may carry.
+ *
+ * This is the "lower application batch ceiling" the finding asks for, and it sits
+ * far below the protocol's own `MAX_PLACEHOLDER_COUNT`. One thousand rows is orders
+ * of magnitude above any real membership - a SKU's option rows are one per option
+ * group [model/entity/Sku.cfc:L76], and a rate's exclusion lists are curated by
+ * hand - so it cannot reject a legitimate write; what it does is put a bound on the
+ * single allocation, leaving anything larger to arrive as successive chunks.
+ */
+export const SQL_TUPLE_ROW_LIMIT = 1000;
+
+// A DERIVED INVARIANT, CHECKED ONCE AT MODULE LOAD RATHER THAN ONCE PER CALL.
+// `MAX_TUPLE_ROW_WIDTH * SQL_TUPLE_ROW_LIMIT` is 64,000, which is below the 65,535
+// placeholder ceiling of `COM_STMT_PREPARE_OK`, so no admissible width/count pair
+// can exceed what the server could prepare. That is why `sqlTuplePlaceholderList`
+// below carries no third per-call total check: it would be unreachable code
+// pretending to be a guard. Asserting the relationship here instead means raising
+// either constant without re-checking the product fails loudly at import, and the
+// two exported constants let a test assert the same product independently.
+if (MAX_TUPLE_ROW_WIDTH * SQL_TUPLE_ROW_LIMIT > MAX_PLACEHOLDER_COUNT) {
+  throw new Error(
+    `The tuple builder's own limits are inconsistent with the protocol ceiling: ` +
+      `${String(MAX_TUPLE_ROW_WIDTH)} x ${String(SQL_TUPLE_ROW_LIMIT)} exceeds ` +
+      `${String(MAX_PLACEHOLDER_COUNT)} bindable placeholders. Lower one of the two limits.`,
+  );
+}
+
+/** Raised when a tuple body is asked for in a shape this builder refuses. */
+class SqlTupleShapeError extends Error {
+  /** Which dimension was rejected, for programmatic inspection. */
+  readonly dimension: 'rowWidth' | 'rowCount';
+
+  /** The rejected value. */
+  readonly value: number;
+
+  constructor(dimension: 'rowWidth' | 'rowCount', value: number, limit: number) {
+    super(
+      [
+        `A multi-row VALUES body needs a ${dimension === 'rowWidth' ? 'row width' : 'row count'}`,
+        `that is a safe integer from 1 to ${String(limit)}; received ${String(value)}.`,
+        'Zero is refused rather than rendered because `VALUES` with no rows is a parse error, not',
+        'an empty write - the caller must skip the collection instead.',
+        dimension === 'rowCount'
+          ? 'A collection larger than the batch ceiling must be chunked with `chunkTupleRows` and ' +
+            'written as successive statements inside one transaction.'
+          : 'No in-scope link table is this wide, so a width beyond the ceiling indicates a caller defect.',
+      ].join(' '),
+    );
+    this.name = 'SqlTupleShapeError';
+    this.dimension = dimension;
+    this.value = value;
+  }
+}
+
+/**
+ * The `VALUES` body of a multi-row insert: `(?, ?)` for one row, `(?, ?), (?, ?)`
+ * for two.
+ *
+ * Shared so that the row count, the tuple width and the bound-parameter count are
+ * derived from the same two numbers at every call site, which is how a grouped
+ * placeholder body and its flattened parameter array are kept from drifting apart.
+ *
+ * @param rowWidth - Columns per tuple. A safe integer from 1 to
+ *   {@link MAX_TUPLE_ROW_WIDTH}.
+ * @param rowCount - How many tuples to render. A safe integer from 1 to
+ *   {@link SQL_TUPLE_ROW_LIMIT}; callers with more members chunk first.
+ * @returns The comma-separated tuple bodies, parentheses included, ready to follow
+ *   the `VALUES` keyword.
+ * @throws An error named `SqlTupleShapeError` when either dimension is out of
+ *   range. BOTH checks precede every allocation, which is the entire point: a
+ *   rejection after `new Array(rowCount)` would already have committed the memory
+ *   the guard exists to refuse.
+ */
+export function sqlTuplePlaceholderList(rowWidth: number, rowCount: number): string {
+  if (!Number.isSafeInteger(rowWidth) || rowWidth < 1 || rowWidth > MAX_TUPLE_ROW_WIDTH) {
+    throw new SqlTupleShapeError('rowWidth', rowWidth, MAX_TUPLE_ROW_WIDTH);
+  }
+
+  if (!Number.isSafeInteger(rowCount) || rowCount < 1 || rowCount > SQL_TUPLE_ROW_LIMIT) {
+    throw new SqlTupleShapeError('rowCount', rowCount, SQL_TUPLE_ROW_LIMIT);
+  }
+
+  const rowBody = `(${sqlPlaceholderList(rowWidth)})`;
+
+  return new Array<string>(rowCount).fill(rowBody).join(', ');
+}
+
+/**
+ * Splits a collection into batches no larger than {@link SQL_TUPLE_ROW_LIMIT}.
+ *
+ * The counterpart to {@link sqlTuplePlaceholderList}: it is what lets a ceiling
+ * bound the allocation without bounding what a caller may legitimately write. Each
+ * returned batch is one statement's worth of rows, and writing them inside the
+ * transaction the caller already holds keeps the delete-then-insert reconciliation
+ * atomic - which is the compensation story AAP 0.6.5 asks to be documented, since
+ * there is no ambient `cftransaction` to inherit. A failure part-way through rolls
+ * every chunk back, so the collection is never left half-reconciled; and because
+ * the reconciliation is a full rewrite rather than a diff, a retry after rollback
+ * reaches the same end state, which is what makes it idempotent.
+ *
+ * @param rows - The members to write. Must not be empty: an empty collection means
+ *   "emit no insert at all", a decision that belongs to the caller because it also
+ *   governs whether the preceding delete is the whole operation.
+ * @returns One or more batches, in the input's order, each of length 1 to
+ *   {@link SQL_TUPLE_ROW_LIMIT}.
+ * @throws An error named `SqlTupleShapeError` when `rows` is empty.
+ */
+export function chunkTupleRows<T>(rows: readonly T[]): readonly (readonly T[])[] {
+  if (rows.length === 0) {
+    throw new SqlTupleShapeError('rowCount', 0, SQL_TUPLE_ROW_LIMIT);
+  }
+
+  const batches: (readonly T[])[] = [];
+
+  for (let offset = 0; offset < rows.length; offset += SQL_TUPLE_ROW_LIMIT) {
+    batches.push(rows.slice(offset, offset + SQL_TUPLE_ROW_LIMIT));
+  }
+
+  return batches;
 }
 
 // --- Parameter admission -----------------------------------------------------

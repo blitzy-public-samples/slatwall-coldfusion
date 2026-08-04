@@ -987,21 +987,38 @@ function selectPoolOptions(pool: readonly Option[], indexes: readonly number[]):
 }
 
 /**
- * The two URL-key settings this sku never reads, present only so the settings double satisfies the
- * port's TOTAL contract: `SettingsProvider.setting` returns `string` and never `undefined`, so a
- * partial table would make that declaration a lie [model/service/SettingService.cfc:L178, L179].
+ * The five settings this sku never reads, present only so the settings double satisfies the port's
+ * TOTAL contract: `SettingsProvider.setting` returns `string` and never `undefined`, so a partial
+ * table would make that declaration a lie.
+ *
+ * Verified legacy defaults in declaration order - the two URL keys
+ * [model/service/SettingService.cfc:L178, L179], then the three product-subsystem keys
+ * `productImageDefaultExtension` ("jpg") [L191], `productImageOptionCodeDelimiter` ("-") [L192] and
+ * `productTitleString` [L193]. The last is a TEMPLATE, not a title: its `${...}` markers are legacy
+ * template syntax read by `hibachiUtilityService.replaceStringTemplate`
+ * [model/entity/Product.cfc:L542], the value is a plain single-quoted string, and nothing in this
+ * subtree evaluates it.
+ *
+ * The two image keys reach the SKU by a DIFFERENT route and deliberately not through this table:
+ * `Sku.generateImageFileName()` [model/entity/Sku.cfc:L135, L138] resolves them on the PRODUCT, and
+ * the port hands the already-resolved pair to the entity as `SkuImageSettingValues`. Answering them
+ * here as well would create a second value for one setting inside one fixture, so the values match
+ * the composition root's exactly.
  */
 const GLOBAL_URL_KEY_PRODUCT = 'sp';
 const GLOBAL_URL_KEY_PRODUCT_TYPE = 'spt';
+const PRODUCT_IMAGE_DEFAULT_EXTENSION = 'jpg';
+const PRODUCT_IMAGE_OPTION_CODE_DELIMITER = '-';
+const PRODUCT_TITLE_STRING = '${brand.brandName} ${productName}';
 
 /**
  * A hand-written in-memory stand-in for the settings port, and the only place the base currency
  * enters the graph. The cascade reads `setting('skuCurrency')` at [model/entity/Sku.cfc:L385, L418,
  * L422, L425] and `setting('skuEligibleCurrencies')` at [L373, L375].
  *
- * The port publishes exactly FOUR keys and is not widened: its neighbours in the legacy declaration
- * block [model/service/SettingService.cfc:L219-L228] are deliberately absent, as is
- * `globalAssetsImageFolderPath`, which `Option.getImageDirectory()`
+ * The port publishes exactly SEVEN keys and is not widened: `skuAllowBackorderFlag` and the rest of
+ * its neighbours in the legacy declaration block [model/service/SettingService.cfc:L219-L228] are
+ * deliberately absent, as is `globalAssetsImageFolderPath`, which `Option.getImageDirectory()`
  * [model/entity/Option.cfc:L81-L83] reads and which is out of scope.
  *
  * JUDGMENT CALL: the double records nothing, a recorded call list not being observable through the
@@ -1014,6 +1031,9 @@ function makeFixtureSettingsProvider(
   const table: Readonly<Record<SettingKey, string>> = {
     globalURLKeyProduct: GLOBAL_URL_KEY_PRODUCT,
     globalURLKeyProductType: GLOBAL_URL_KEY_PRODUCT_TYPE,
+    productImageDefaultExtension: PRODUCT_IMAGE_DEFAULT_EXTENSION,
+    productImageOptionCodeDelimiter: PRODUCT_IMAGE_OPTION_CODE_DELIMITER,
+    productTitleString: PRODUCT_TITLE_STRING,
     skuCurrency,
     skuEligibleCurrencies,
   };
@@ -1272,23 +1292,18 @@ function makeFixtureSkuRepository(
     saveSku(sku: Sku): Promise<Sku> {
       // No persistence: the instance is handed straight back, the `ormFlush()` of
       // [meta/tests/unit/Helper.cfc:L61] being deliberately dropped.
-      return Promise.resolve(sku);
-    },
-
-    saveSkus(skus: readonly Sku[]): Promise<Sku[]> {
-      // The collection form of the member above, and it drops the same thing: the
-      // ORM flush that [model/service/ProductService.cfc:L216-L233] relied on to
-      // write every repriced SKU as one unit. A fixture has no transaction to open,
-      // so the instances are handed straight back - in the order they arrived,
-      // because the port specifies positional correspondence and a caller pairing
-      // input with output must be able to rely on it here too.
       //
-      // ★ THIS DOUBLE CANNOT DEMONSTRATE ATOMICITY, and pretending otherwise would
-      // be worse than saying so. There is nothing to roll back, so "all or none" is
-      // vacuously true here. The atomicity itself is pinned where it is
-      // implementable: against the recording executor in
-      // `tests/integration/repositories/mysqlSkuRepository.test.ts`.
-      return Promise.resolve([...skus]);
+      // ★ THE PORT'S ONLY WRITE MEMBER, AND IT TAKES ONE ENTITY. This double once
+      // carried a `saveSkus` collection form alongside it, which was an eighth member
+      // on a port fixed at seven; both are gone. A bulk caller now loops over this
+      // member, so what the loop cannot demonstrate here is ATOMICITY - a fixture has
+      // no transaction to roll back, and there is no longer a collection write that
+      // would have provided one. That is not hidden: the per-SKU write and its
+      // idempotency are pinned in
+      // `tests/integration/repositories/mysqlSkuRepository.test.ts`, and the batch
+      // limit and compensation obligations AAP 0.6.5 places on the bulk path are
+      // pinned against the service in `tests/unit/services/productService.test.ts`.
+      return Promise.resolve(sku);
     },
   };
 }

@@ -222,14 +222,16 @@
 //
 //   LEGACY-DEFECT [model/service/PromotionService.cfc:L1007, L1009, L1014]: `discountAmount` is
 //   assigned without `var` at THREE sites - not the two the specification cites - leaking into the
-//   component `variables` scope. DELIBERATE DIVERGENCE (a): made function-local. Reproducing state
+//   component `variables` scope. DELIBERATE DIVERGENCE [model/service/PromotionService.cfc:L1007] -
+//   divergence (a) of three: made function-local. Reproducing state
 //   that persists across warm Lambda invocations could leak one customer's discount into another's
 //   order. Implemented in `./promotion/discountAmount.ts`; recorded here so the budget is auditable
 //   from the service surface.
 //
 //   LEGACY-DEFECT [model/service/PromotionService.cfc:L998]: the `amountOff` branch omits
 //   `precisionEvaluate` and uses raw floating-point multiplication while its two sibling branches
-//   use it. DELIBERATE DIVERGENCE (b): closed. All arithmetic routes through `Money`, and preserving
+//   use it. DELIBERATE DIVERGENCE [model/service/PromotionService.cfc:L998] - divergence (b) of
+//   three: closed. All arithmetic routes through `Money`, and preserving
 //   one branch's drift would require deliberately bypassing the value object. Strictly more correct
 //   than the source. Implemented in `./promotion/discountAmount.ts`.
 //
@@ -340,7 +342,6 @@ import type {
 import type { PromotionRewardUsageDetail } from '../domain/promotionEngine/rewardUsageTypes.js';
 import { Money } from '../domain/valueObjects/money.js';
 import type {
-  AppliedPromotionView,
   OrderFulfillmentView,
   ShippingAddressView,
 } from '../domain/views/orderFulfillmentView.js';
@@ -415,7 +416,7 @@ type RoundingRuleValueResolver = ConstructorParameters<typeof DiscountAmountCalc
  *   4. `this.getPromotion(salePriceDetails.promotionID)` [L157] - SURVIVES, and is declared here.
  * It survives because `QualifiedDiscount.promotion` is typed to the `Promotion` ENTITY in the
  * published domain type, so the sale-price seeding step genuinely has to resolve an identifier into
- * an entity, and `PromotionRepository`'s eight locked members publish no such lookup. Declaring it
+ * an entity, and `PromotionRepository`'s seven locked members publish no such lookup. Declaring it
  * module-locally and un-exported, and taking it as a constructor argument, follows
  * `priceGroupService.ts`'s shipped `PriceGroupFrameworkReads` precedent verbatim. It is NOT a
  * fourteenth port, and it is NOT a signature widening - that ledger governs the twelve ported
@@ -468,9 +469,10 @@ export interface ShippingDiscountDetails {
 }
 
 /**
- * A local mirror of one applied-promotion slot on the live ORM graph.
+ * A local mirror of one applied-promotion slot on the live ORM graph, AS IT STANDS AFTER THE BLANKET
+ * CLEAR - which is to say, starting EMPTY.
  *
- * ★ WHY THIS EXISTS - MIRROR THE MUTATION, THEN DIFF.
+ * ★ WHY THIS EXISTS - MIRROR THE MUTATION, THEN EMIT WHAT IT HOLDS.
  * The fulfillment arm [model/service/PromotionService.cfc:L345-L412] and the order arm [L415-L454]
  * are structurally identical and both operate on a LIVE Hibernate graph: they read
  * `getAppliedPromotions()[1]`, and when a reward wins they either call `setDiscountAmount` on that
@@ -480,71 +482,74 @@ export interface ShippingDiscountDetails {
  *
  * A read-only `OrderView` cannot be mutated and this service never mutates order persistence, so
  * the mutation is replayed against this local mirror - step for step, exactly as L378-L406 and
- * L424-L451 perform it - and the NET DELTA against the state the view reported is emitted as
- * intents at the end. That is why `PromotionAppliedIntent` publishes `update` and `remove`
- * operations at the order and orderFulfillment levels but `add` alone at the orderItem level: these
- * two arms are precisely what those two extra operations exist for.
+ * L424-L451 perform it - and what the mirror holds at the end is emitted as an `add`.
  *
- * The equivalence is exact in every case, including chained ones. If reward A displaces a
- * pre-existing promotion P0 and reward B then displaces A, the legacy net effect is that P0's row is
- * unlinked, A's row is created and then unlinked before it is ever persisted, and B's row is
- * created - which is `remove(P0)` followed by `add(B)`, exactly what the diff produces. If B carries
- * the SAME promotion as A, the legacy calls `setDiscountAmount` on A's still-pending row, so the net
- * effect is `remove(P0)` plus `add` at B's amount - again what the diff produces.
+ * ★★ THE SLOT STARTS EMPTY, AND THAT IS THE WHOLE POINT. By the time the fulfillment arm first runs,
+ * the engine has already executed the blanket clear at [model/service/PromotionService.cfc:L61-L80],
+ * which detached EVERY previously applied promotion from every order item, every fulfillment and the
+ * order itself. `removeOrderFulfillment()` [model/entity/PromotionApplied.cfc:L121] and
+ * `removeOrder()` [:L139] each `arrayDeleteAt` from the owner's live association, so after L80 all
+ * three collections are EMPTY. That is why the emptiness tests at L381 and L427 are ALWAYS TRUE for
+ * the first reward of their kind, and why their else-arms at L385-L393 and L431-L439 are reachable
+ * ONLY from a row THIS SAME INVOCATION created at L401 or L447. A slot seeded from persisted rows
+ * would make those else-arms reachable on the first reward, which the legacy cannot do.
+ *
+ * ★ QUOTE-THEN-REVISE ON SEEDING, AND WHY THE EARLIER READING LOST MONEY. An earlier revision seeded
+ * this mirror from `OrderView.appliedPromotions` and emitted "the NET DELTA against the state the
+ * view reported", arguing: "If reward A displaces a pre-existing promotion P0 and reward B then
+ * displaces A, the legacy net effect is that P0's row is unlinked, A's row is created and then
+ * unlinked before it is ever persisted, and B's row is created - which is `remove(P0)` followed by
+ * `add(B)`, exactly what the diff produces."
+ *
+ * That reasoning holds for the case it examines and fails for the two it does not, both of which are
+ * ordinary rather than exotic, and both of which change what a customer is charged:
+ *
+ *   * A SMALLER DISCOUNT NOW QUALIFIES. Say the order carries P0 at 50.00 and the only reward that
+ *     qualifies this time yields 10.00. Seeded, the mirror holds 50.00, the strict greater-than test
+ *     at L385 / L431 rejects 10.00, nothing is marked mutated and NO INTENT IS EMITTED - so the
+ *     customer keeps a 50.00 discount that no longer qualifies. The legacy removes P0 at L71-L75 /
+ *     L78-L80 and then applies 10.00 at L401 / L447.
+ *   * NOTHING QUALIFIES AT ALL. Seeded, the mirror still holds P0, nothing was mutated, no intent is
+ *     emitted, and P0 survives indefinitely. The legacy removes it unconditionally.
+ *
+ * The defect is structural, not a missing case: a seeded mirror cannot distinguish "the incumbent
+ * won" from "the incumbent was never a candidate", because under the legacy it is never a candidate.
+ * So the mirror starts empty, and the pre-existing rows are detached by
+ * {@link buildBlanketClearIntents} instead of competing here.
  *
  * One instance per target per invocation; never a field on the service, never module state.
  */
 interface AppliedPromotionSlot {
   /**
-   * The promotion identifier the `OrderView` reported at index `[1]`, or `undefined` when the view
-   * reported no applied promotion. Fixed at construction: it is what a `remove` intent must NAME,
-   * because the legacy `removeOrderFulfillment()` / `removeOrder()` call is made against the
-   * PRE-EXISTING row, whose promotion is the old one and not the reward's.
-   */
-  readonly originalPromotionID: string | undefined;
-
-  /**
    * The mirror of `getAppliedPromotions()[1]` as the legacy graph would currently hold it -
-   * `undefined` while the slot is empty. Mutated in place by the replay, exactly as the source
+   * `undefined` while the slot is empty, which is its state at construction and its state for the
+   * whole invocation if no reward ever wins. Mutated in place by the replay, exactly as the source
    * mutates the entity.
+   *
+   * This single member replaces the three the seeded design needed. `originalPromotionID` is gone
+   * because post-clear there is no original - the blanket clear owns every pre-existing row. And a
+   * separate `mutated` flag is gone because it was only ever set alongside `current` and could not
+   * disagree with it: an empty slot is an untouched slot once nothing is seeded into it.
    */
   current: { promotionID: string; discountAmount: Money } | undefined;
-
-  /**
-   * Whether the replay changed anything at all. `false` means every reward either failed its gates
-   * or failed the strict greater-than comparison, in which case the legacy emitted no write and
-   * this slot emits no intent.
-   */
-  mutated: boolean;
 }
 
 /**
- * Seeds a mirror from what the view reported.
+ * A mirror in its post-clear state.
+ *
+ * CFML parity [model/service/PromotionService.cfc:L64-L80]: the blanket clear has already detached
+ * every applied promotion from this target, so the collection the legacy is about to read is empty.
+ * There is deliberately no parameter - seeding this from `OrderView.appliedPromotions` is the defect
+ * documented on {@link AppliedPromotionSlot}, and removing the parameter is what makes reintroducing
+ * it a compile error rather than a judgment call.
  *
  * CFML parity [model/service/PromotionService.cfc:L381, L385, L427, L431]: the source tests
  * `!arrayLen(getAppliedPromotions())` and then reads index `[1]`. CFML arrays are 1-based, so `[1]`
- * is the FIRST element - index `0` here. Only the first is ever read; any further applied promotions
- * on the same target are invisible to the legacy algorithm and are equally invisible here.
+ * is the FIRST element. Only the first is ever read, so the mirror holds exactly one row - and
+ * post-clear the only rows that can reach it are the ones this invocation created.
  */
-function createAppliedPromotionSlot(
-  appliedPromotions: readonly AppliedPromotionView[],
-): AppliedPromotionSlot {
-  // Narrowed rather than asserted: `noUncheckedIndexedAccess` types an indexed read as possibly
-  // absent even after a length test, and non-null assertions are unavailable by project standard.
-  const existing = appliedPromotions.length > 0 ? appliedPromotions[0] : undefined;
-
-  if (existing === undefined) {
-    return { originalPromotionID: undefined, current: undefined, mutated: false };
-  }
-
-  return {
-    originalPromotionID: existing.promotion.promotionID,
-    current: {
-      promotionID: existing.promotion.promotionID,
-      discountAmount: existing.discountAmount,
-    },
-    mutated: false,
-  };
+function createEmptyAppliedPromotionSlot(): AppliedPromotionSlot {
+  return { current: undefined };
 }
 
 /**
@@ -584,55 +589,81 @@ function mirrorRewardApplication(
   const current = slot.current;
 
   // [model/service/PromotionService.cfc:L381-L382, L427-L428] nothing applied yet, so apply this.
+  // Post-clear this is the branch the FIRST winning reward always takes, at both levels.
   if (current === undefined) {
     slot.current = { promotionID: rewardPromotionID, discountAmount };
-    slot.mutated = true;
     return;
   }
 
-  // [model/service/PromotionService.cfc:L385, L431] only a strictly greater discount displaces.
+  // [model/service/PromotionService.cfc:L385, L431] only a strictly greater discount displaces. The
+  // incumbent here is necessarily a row THIS invocation created, never a persisted one.
   if (!discountAmount.isGreaterThan(current.discountAmount)) {
     return;
   }
 
   // [model/service/PromotionService.cfc:L388-L389, L434-L435] same promotion, so the legacy revises
-  // the amount on the existing row in place.
+  // the amount on the existing row in place. The incumbent's own spelling of the identifier is kept
+  // rather than the reward's: `cfEquals` is case-insensitive, matching CFML `==` on two strings, so
+  // the two can compare equal while differing in case, and the legacy `setDiscountAmount` call
+  // leaves the row's existing promotion association - and therefore its spelling - untouched.
   if (cfEquals(current.promotionID, rewardPromotionID)) {
     slot.current = { promotionID: current.promotionID, discountAmount };
-    slot.mutated = true;
     return;
   }
 
   // [model/service/PromotionService.cfc:L392-L394, L438-L440] a different promotion, so the legacy
-  // unlinks the incumbent and attaches a new row.
+  // unlinks the incumbent and attaches a new row. Because that incumbent is a row this invocation
+  // created and has not been emitted yet, the unlink needs no `remove` intent of its own - it simply
+  // never becomes an `add`.
   slot.current = { promotionID: rewardPromotionID, discountAmount };
-  slot.mutated = true;
 }
 
 /**
  * Which of the two arms a mirror belongs to, and the opaque identifier its intents carry.
  *
  * Only the order and orderFulfillment levels appear, because only those two arms mirror a live
- * applied-promotion row; the order-item arm accumulates candidate discounts instead and is applied
- * by `./promotion/promotionApplication.ts`, which is why the intent algebra publishes `add` alone at
- * that level.
+ * applied-promotion row across rewards; the order-item arm accumulates candidate discounts instead
+ * and is applied once by `./promotion/promotionApplication.ts`, which is why the item level needs no
+ * `update` in the intent algebra.
+ *
+ * This says nothing about REMOVALS. All three levels are removed from, by the blanket clear at
+ * [model/service/PromotionService.cfc:L61-L80]; see {@link buildBlanketClearIntents}, which does not
+ * go through a mirror at all and therefore does not use this type.
  */
 type AppliedPromotionSlotTarget =
   | { readonly appliedType: 'order'; readonly orderID: string }
   | { readonly appliedType: 'orderFulfillment'; readonly orderFulfillmentID: string };
 
 /**
- * Diffs the mirror against the state the view reported, and emits the resulting intents.
+ * Emits what the mirror holds at the end of the invocation.
  *
- * The four outcomes correspond one-to-one with the writes the legacy performs, and the mapping is
- * proved case by case in {@link AppliedPromotionSlot}'s note:
- *   nothing changed          -> no intent at all
- *   slot was empty           -> `add`                       [L400-L406, L446-L451]
- *   same promotion retained  -> `update`                    [L389, L435]
- *   promotion replaced       -> `remove` then `add`         [L393-L394, L439-L440] then [L400, L446]
+ * Because the mirror starts empty - the blanket clear having already detached every pre-existing row
+ * - there are exactly two outcomes, and they map one-to-one onto the legacy's writes:
+ *   slot still empty  -> no intent at all. No reward ever passed L378 / L424 and the strict
+ *                        greater-than test, so the legacy created no row. Whatever the target used to
+ *                        carry has already been detached by {@link buildBlanketClearIntents}.
+ *   slot holds a row  -> `add`                              [L400-L406, L446-L451]
  *
- * A `remove` intent carries NO `discountAmount` - the operation shape forbids the member outright -
- * and names the ORIGINAL promotion, because that is the row the legacy unlinks.
+ * ★ WHY NO `update` AND NO `remove` IS EMITTED HERE, THOUGH BOTH EXIST IN THE ALGEBRA. Both legacy
+ * operations act exclusively on a row created earlier in THIS invocation, which no consumer has been
+ * told about yet:
+ *   * `setDiscountAmount` at [L389, L435] revises the row L401 / L447 created moments earlier. Its
+ *     net effect on persistence is simply that the row lands at the revised amount, which is what the
+ *     single `add` carries. Emitting `add` then `update` would describe one row as two instructions.
+ *   * `removeOrderFulfillment()` / `removeOrder()` at [L393, L439] unlink that same pending row. A
+ *     row that was never emitted needs no removal; it just never becomes an `add`.
+ * The pre-existing rows - the ones a consumer HAS seen - are removed unconditionally by the blanket
+ * clear, which is where every `remove` this method's arms are responsible for now comes from. So the
+ * emitted vocabulary is `remove` for everything that was there and `add` for everything that wins,
+ * which is exactly the row-level truth: `cascade="all-delete-orphan"` means the cleared rows are
+ * DELETED and the winners are INSERTED with fresh identity. An `update` would wrongly imply a
+ * surviving row.
+ *
+ * ★ QUOTE-THEN-REVISE. An earlier revision described "four outcomes" and mapped
+ * "same promotion retained -> `update`" and "promotion replaced -> `remove` then `add`". Both rows of
+ * that mapping were artefacts of seeding the mirror from persisted state: they compared against an
+ * `originalPromotionID` that, post-clear, does not exist. The two remaining outcomes below are what
+ * the legacy actually leaves behind.
  */
 function emitAppliedPromotionSlotIntents(
   slot: AppliedPromotionSlot,
@@ -640,58 +671,154 @@ function emitAppliedPromotionSlotIntents(
 ): PromotionAppliedIntent[] {
   const current = slot.current;
 
-  // Nothing displaced the state the view reported, so the legacy performed no write.
-  if (!slot.mutated || current === undefined) {
+  // No reward ever won this slot, so the legacy created no row here.
+  if (current === undefined) {
     return [];
   }
 
-  const originalPromotionID = slot.originalPromotionID;
-  const replacesADifferentPromotion =
-    originalPromotionID !== undefined && !cfEquals(originalPromotionID, current.promotionID);
-  const intents: PromotionAppliedIntent[] = [];
-
-  // [model/service/PromotionService.cfc:L393, L439] the incumbent row is unlinked, and the intent
-  // names the promotion that row carried rather than the reward's.
-  if (replacesADifferentPromotion && originalPromotionID !== undefined) {
-    if (target.appliedType === 'order') {
-      intents.push({
-        promotionID: originalPromotionID,
-        operation: 'remove',
+  if (target.appliedType === 'order') {
+    return [
+      {
+        promotionID: current.promotionID,
+        operation: 'add',
+        discountAmount: current.discountAmount,
         appliedType: 'order',
         orderID: target.orderID,
-      });
-    } else {
-      intents.push({
-        promotionID: originalPromotionID,
-        operation: 'remove',
-        appliedType: 'orderFulfillment',
-        orderFulfillmentID: target.orderFulfillmentID,
-      });
-    }
+      },
+    ];
   }
 
-  // [model/service/PromotionService.cfc:L389, L435] revising the incumbent's amount is an update;
-  // [L400-L406, L446-L451] attaching a fresh row - whether the slot was empty or has just been
-  // cleared by the remove above - is an add.
-  const operation: 'add' | 'update' =
-    originalPromotionID !== undefined && !replacesADifferentPromotion ? 'update' : 'add';
-
-  if (target.appliedType === 'order') {
-    intents.push({
+  return [
+    {
       promotionID: current.promotionID,
-      operation,
-      discountAmount: current.discountAmount,
-      appliedType: 'order',
-      orderID: target.orderID,
-    });
-  } else {
-    intents.push({
-      promotionID: current.promotionID,
-      operation,
+      operation: 'add',
       discountAmount: current.discountAmount,
       appliedType: 'orderFulfillment',
       orderFulfillmentID: target.orderFulfillmentID,
-    });
+    },
+  ];
+}
+
+/**
+ * Reproduces the three backwards clear-out loops at [model/service/PromotionService.cfc:L61-L80] as
+ * `remove` intents - one per applied-promotion row the view reported, at all three levels.
+ *
+ * ★★ THIS IS THE ENGINE'S FIRST ACT, AND IT IS UNCONDITIONAL. The source, verbatim:
+ *
+ *   L63 // Clear out all previously applied promotions
+ *   L64 for(var oi=arrayLen(arguments.order.getOrderItems()); oi >= 1; oi--) {
+ *   L65   for(var pa=arrayLen(arguments.order.getOrderItems()[oi].getAppliedPromotions()); pa >= 1; pa--) {
+ *   L66     arguments.order.getOrderItems()[oi].getAppliedPromotions()[pa].removeOrderItem();
+ *   L67   }
+ *   L68 }
+ *   L70 // Clear out all previously applied promotions on fulfillments
+ *   L71 for(var of=arrayLen(arguments.order.getOrderFulfillments()); of >= 1; of--) {
+ *   L72   for(var pa=arrayLen(arguments.order.getOrderFulfillments()[of].getAppliedPromotions()); pa >= 1; pa--) {
+ *   L73     arguments.order.getOrderFulfillments()[of].getAppliedPromotions()[pa].removeOrderFulfillment();
+ *   L74   }
+ *   L75 }
+ *   L77 // Clear out all previously applied promotions on the order
+ *   L78 for(var pa=arrayLen(arguments.order.getAppliedPromotions()); pa >= 1; pa--) {
+ *   L79   arguments.order.getAppliedPromotions()[pa].removeOrder();
+ *   L80 }
+ *
+ * No gate, no comparison, no same-promotion test: every row goes. `removeOrderItem()`,
+ * `removeOrderFulfillment()` and `removeOrder()` [model/entity/PromotionApplied.cfc:L103, L121, L139]
+ * each `arrayDeleteAt` from the owner's live association, and all three associations declare
+ * `cascade="all-delete-orphan"` [model/entity/OrderItem.cfc:L71, model/entity/OrderFulfillment.cfc:L79,
+ * model/entity/Order.cfc:L72], so an unlinked row is DELETED rather than merely detached.
+ *
+ * ★ WHY THIS IS EMITTED RATHER THAN ELIDED. The legacy performs the clear as a side effect on a live
+ * ORM graph, so it has nothing to announce. Here the order aggregate is out of scope and the returned
+ * intent array is the ONLY channel to persistence, so a clear that is not emitted is a clear that
+ * never happens. An earlier revision of this file argued the opposite - that "this service returns a
+ * fresh intent list on every call and never mutates order persistence, so the recomputation is
+ * inherently idempotent and there is nothing to clear". The premise is true and the conclusion does
+ * not follow: the recomputation is idempotent, but the DATABASE is not recomputed, it is amended by
+ * whatever the consumer is told. Told nothing, it keeps every stale row.
+ *
+ * ★ ALL THREE LEVELS, AND ALL ROWS AT EACH. Note the asymmetry with the reward arms, which read only
+ * index `[1]`: these loops walk `arrayLen(...)` down to `1`, so a target carrying several applied
+ * promotions has every one of them removed even though only the first was ever visible to the
+ * comparison at L385 / L431. Emitting only the first would leave the rest orphaned forever.
+ *
+ * ★ TRAVERSAL ORDER IS PRESERVED EXACTLY, though nothing in the target depends on it. Reverse index
+ * is the CFML idiom for deleting from a live collection while iterating it - a forward loop would
+ * skip elements as the array shrank under it. Here nothing is being deleted from, so the order is
+ * merely the order the intents appear in. It is reproduced anyway: items before fulfillments before
+ * the order, and within each, last row first. A consumer applying these intents in sequence therefore
+ * observes precisely the sequence the legacy performed, which is what makes the two comparable.
+ */
+function buildBlanketClearIntents(order: OrderView): PromotionAppliedIntent[] {
+  const intents: PromotionAppliedIntent[] = [];
+
+  // [model/service/PromotionService.cfc:L64-L68] Order items, last item first, last row first.
+  for (let itemIndex = order.orderItems.length - 1; itemIndex >= 0; itemIndex -= 1) {
+    // Narrowed rather than asserted: `noUncheckedIndexedAccess` types an indexed read as possibly
+    // absent even inside a bounded loop, and non-null assertions are unavailable by project standard.
+    const orderItem = order.orderItems[itemIndex];
+
+    if (orderItem === undefined) {
+      continue;
+    }
+
+    for (let rowIndex = orderItem.appliedPromotions.length - 1; rowIndex >= 0; rowIndex -= 1) {
+      const appliedPromotion = orderItem.appliedPromotions[rowIndex];
+
+      if (appliedPromotion !== undefined) {
+        intents.push({
+          promotionID: appliedPromotion.promotion.promotionID,
+          operation: 'remove',
+          appliedType: 'orderItem',
+          orderItemID: orderItem.orderItemID,
+        });
+      }
+    }
+  }
+
+  // [model/service/PromotionService.cfc:L71-L75] Fulfillments, last fulfillment first, last row
+  // first.
+  for (
+    let fulfillmentIndex = order.orderFulfillments.length - 1;
+    fulfillmentIndex >= 0;
+    fulfillmentIndex -= 1
+  ) {
+    const orderFulfillment = order.orderFulfillments[fulfillmentIndex];
+
+    if (orderFulfillment === undefined) {
+      continue;
+    }
+
+    for (
+      let rowIndex = orderFulfillment.appliedPromotions.length - 1;
+      rowIndex >= 0;
+      rowIndex -= 1
+    ) {
+      const appliedPromotion = orderFulfillment.appliedPromotions[rowIndex];
+
+      if (appliedPromotion !== undefined) {
+        intents.push({
+          promotionID: appliedPromotion.promotion.promotionID,
+          operation: 'remove',
+          appliedType: 'orderFulfillment',
+          orderFulfillmentID: orderFulfillment.orderFulfillmentID,
+        });
+      }
+    }
+  }
+
+  // [model/service/PromotionService.cfc:L78-L80] The order itself, last row first.
+  for (let rowIndex = order.appliedPromotions.length - 1; rowIndex >= 0; rowIndex -= 1) {
+    const appliedPromotion = order.appliedPromotions[rowIndex];
+
+    if (appliedPromotion !== undefined) {
+      intents.push({
+        promotionID: appliedPromotion.promotion.promotionID,
+        operation: 'remove',
+        appliedType: 'order',
+        orderID: order.orderID,
+      });
+    }
   }
 
   return intents;
@@ -777,6 +904,112 @@ function dereferencePromotionPeriod(reward: PromotionReward, locator: string): P
   }
 
   return promotionPeriod;
+}
+
+/**
+ * Reproduces `Order.getSubtotalAfterItemDiscounts()` as the order arm reads it in pass two.
+ *
+ * SECURITY REVIEW DISPOSITION - RAISED AS S-22, ACCEPTED. The finding reported that the
+ * order-level reward base was taken from a caller-supplied snapshot rather than from
+ * post-pass-one state, letting a caller understate what the order arm discounts against.
+ * THIS DERIVATION IS THAT FIX: the base is recomputed from the materialized order items on
+ * every call, and `OrderView.subtotalAfterItemDiscounts` is deliberately never read. The
+ * composition root supplies the matching between-pass projection, so the two passes agree -
+ * see `computeProjectedOrderSubtotal` in `../handlers/bootstrap.ts`.
+ *
+ * [model/entity/Order.cfc:L700-L702] is `precisionEvaluate('getSubtotal() - getItemDiscountAmountTotal()')`,
+ * and [L686-L699] defines the subtotal as a signed sum over the order items: `oitSale` items ADD their
+ * extended price, `oitReturn` items SUBTRACT it, and any other type code THROWS. The trichotomy is
+ * reproduced exactly, throw included - a silent zero or a silent skip would let an unrecognised order
+ * item type quietly shrink an order-level discount base, where the legacy refuses to price the order
+ * at all.
+ *
+ * ★ WHY THE SUBTRACTION IS OMITTED RATHER THAN IMPLEMENTED, AND WHY THAT IS NOT A DIVERGENCE.
+ * `getItemDiscountAmountTotal()` [model/entity/Order.cfc:L317-L330] sums `orderItem.getDiscountAmount()`,
+ * which sums the item's APPLIED PROMOTIONS. Within this invocation that collection is provably empty
+ * on every item: [model/service/PromotionService.cfc:L64-L68] detached every order-item applied
+ * promotion before the traversal began, and the winners are attached only at [L523-L536], after pass
+ * two has already run. The legacy therefore evaluates `getSubtotal() - 0` at [L417], and subtracting
+ * anything here - in particular the candidate discounts accumulated in
+ * `orderItemQualifiedDiscounts`, which are NOT applied promotions and of which only index `[1]` will
+ * ever become one - would deduct discounts the legacy has not applied yet and shrink the order-level
+ * base below what a customer is charged today.
+ *
+ * CFML parity [model/entity/Order.cfc:L689, L691]: the type-code comparisons are CFML `==` on strings,
+ * which is CASE-INSENSITIVE, so they are routed through the case-folding helper rather than `===`.
+ *
+ * Deliberately NOT reading `OrderView.subtotalAfterItemDiscounts`: that member is a caller-built
+ * snapshot, and the whole point of this derivation is that pass two must see post-price-group,
+ * post-pass-one state. See the note on `applyOrderReward`.
+ */
+function computeSubtotalAfterItemDiscounts(order: OrderView): Money {
+  let subtotal = Money.zero;
+
+  for (const orderItem of order.orderItems) {
+    const typeCode = orderItem.orderItemType.systemCode;
+
+    // [model/entity/Order.cfc:L689-L690]
+    if (cfEquals(typeCode, 'oitSale')) {
+      subtotal = subtotal.plus(orderItem.extendedPrice);
+      continue;
+    }
+
+    // [model/entity/Order.cfc:L691-L692]
+    if (cfEquals(typeCode, 'oitReturn')) {
+      subtotal = subtotal.minus(orderItem.extendedPrice);
+      continue;
+    }
+
+    // [model/entity/Order.cfc:L693-L694] the legacy `throw()`, message and all.
+    throw new TypeError(
+      'there was an issue calculating the subtotal because of a orderItemType associated with one ' +
+        `of the items. Reproduces model/entity/Order.cfc:L694 for orderItemID ` +
+        `"${orderItem.orderItemID}" carrying orderItemType systemCode "${typeCode}".`,
+    );
+  }
+
+  return subtotal;
+}
+
+/**
+ * Reproduces `Order.getFulfillmentChargeAfterDiscountTotal()` as the order arm reads it in pass two.
+ *
+ * [model/entity/Order.cfc:L356-L362] sums `orderFulfillment.getChargeAfterDiscount()` over every
+ * fulfillment, and [model/entity/OrderFulfillment.cfc:L183-L185] defines that as
+ * `getFulfillmentCharge() - getDiscountAmount()`, whose subtrahend [L187-L193] is the sum of the
+ * fulfillment's APPLIED PROMOTIONS.
+ *
+ * Which applied promotions those are is decided entirely by this invocation. [L71-L75] detached the
+ * persisted ones before the traversal, and pass one's fulfillment arm attached at most one per
+ * fulfillment - so the rows the legacy sums at [L417] are exactly the mirrors this engine holds. Any
+ * fulfillment the arm never touched, or touched without a positive discount winning, contributes its
+ * GROSS charge, which is what an empty slot yields here.
+ *
+ * CFML parity [model/entity/OrderFulfillment.cfc:L188-L191]: the subtrahend is a sum over the whole
+ * collection, but only index `[1]` is ever written by the engine [model/service/PromotionService.cfc:L381-L406],
+ * so a single-slot mirror is exact rather than an approximation.
+ *
+ * Deliberately NOT reading `OrderView.fulfillmentChargeAfterDiscountTotal`, for the same reason
+ * `computeSubtotalAfterItemDiscounts` does not read its snapshot.
+ */
+function computeFulfillmentChargeAfterDiscountTotal(
+  order: OrderView,
+  fulfillmentSlots: Record<string, AppliedPromotionSlot>,
+): Money {
+  let total = Money.zero;
+
+  for (const orderFulfillment of order.orderFulfillments) {
+    const slot = structGet(fulfillmentSlots, orderFulfillment.orderFulfillmentID);
+    const appliedDiscount = slot?.current?.discountAmount;
+
+    total = total.plus(
+      appliedDiscount === undefined
+        ? orderFulfillment.fulfillmentCharge
+        : orderFulfillment.fulfillmentCharge.minus(appliedDiscount),
+    );
+  }
+
+  return total;
 }
 
 /**
@@ -1012,17 +1245,28 @@ export class PromotionService {
 
     // [model/service/PromotionService.cfc:L61] Sales and exchange orders.
     if (listFindNoCase('otSalesOrder,otExchangeOrder', orderTypeSystemCode) !== 0) {
-      // LEGACY-NOTE [model/service/PromotionService.cfc:L64-L68, L71-L75, L78-L80]: the three
-      // backwards clear-out loops are REPLACED, not reproduced. Each walks `getAppliedPromotions()`
-      // in reverse - the CFML idiom for deleting from a live collection while iterating it - calling
-      // `removeOrderItem()`, `removeOrderFulfillment()` and `removeOrder()` to detach every
-      // previously-applied promotion before recomputation. They exist ONLY because the legacy mutates
-      // a live ORM graph. This service returns a fresh intent list on every call and never mutates
-      // order persistence, so the recomputation is inherently idempotent and there is nothing to
-      // clear. No `clearAppliedPromotions` method is published, no removal intent is emitted for this
-      // step, and the order views expose no removal affordance to invoke even if one were wanted.
-      // The `remove` intents this method does emit come from the fulfillment and order arms, where
-      // they represent a genuine displacement rather than a blanket clear-out.
+      // [model/service/PromotionService.cfc:L61-L80] THE BLANKET CLEAR, REPRODUCED, AND FIRST. Three
+      // backwards loops detach every previously applied promotion from every order item, every
+      // fulfillment and the order itself before any qualification runs. This must precede everything
+      // else in this method for the same reason it precedes everything else in the source: every
+      // emptiness test the reward arms perform - L381 for fulfillments, L427 for the order - is a test
+      // of the POST-CLEAR collection, and the item creation block at L521-L537 likewise assumes it is
+      // populating an empty association.
+      //
+      // ★ QUOTE-THEN-REVISE. An earlier revision emitted nothing here, on this reasoning: "the three
+      // backwards clear-out loops are REPLACED, not reproduced ... This service returns a fresh intent
+      // list on every call and never mutates order persistence, so the recomputation is inherently
+      // idempotent and there is nothing to clear. No `clearAppliedPromotions` method is published, no
+      // removal intent is emitted for this step". The idempotence claim is true of THIS SERVICE and
+      // irrelevant to the outcome: the intent array is the only channel to persistence, so a consumer
+      // told nothing about the pre-existing rows leaves every one of them in place. Recomputing a
+      // fresh answer and then failing to say what to delete is precisely how a stale discount
+      // survives. See {@link buildBlanketClearIntents} for the money cases.
+      //
+      // What survives from that earlier reading: no `clearAppliedPromotions` method is published, and
+      // the order views still expose no mutation affordance. The clear is expressed as intents, which
+      // is the only mechanism this boundary has.
+      appliedIntents.push(...buildBlanketClearIntents(order));
 
       // Every mutable structure the engine needs, created fresh for THIS call. These are the
       // legacy's three function-local structs [L136, L139, L142] plus the two applied-promotion
@@ -1035,7 +1279,9 @@ export class PromotionService {
         // with the original recorded in the file header.
         orderItemQualifiedDiscounts: {},
         fulfillmentSlots: {},
-        orderSlot: createAppliedPromotionSlot(order.appliedPromotions),
+        // EMPTY, because the clear above has just detached whatever the order was carrying. Seeding
+        // this from `order.appliedPromotions` is the defect documented on `AppliedPromotionSlot`.
+        orderSlot: createEmptyAppliedPromotionSlot(),
       };
 
       // [model/service/PromotionService.cfc:L145-L162] Sale-price rewards are seeded into the
@@ -1051,10 +1297,12 @@ export class PromotionService {
         async (reward, isOrderRewardsPass) => this.visitReward(state, reward, isOrderRewardsPass),
       );
 
-      // [model/service/PromotionService.cfc:L389, L393, L400-L406, L435, L439, L446-L451] The
-      // fulfillment and order arms' writes, emitted as the net delta between the mirrors and the
-      // state the view reported. Fulfillment first and the order last, because the fulfillment arm
-      // runs in pass one and the order arm only in pass two.
+      // [model/service/PromotionService.cfc:L400-L406, L446-L451] The fulfillment and order arms'
+      // row creations, emitted as `add` intents for whatever each mirror holds. Fulfillment first and
+      // the order last, because the fulfillment arm runs in pass one and the order arm only in pass
+      // two, so this is the order the legacy created the rows in. Every `remove` these two levels
+      // need was already emitted by the blanket clear above; see
+      // {@link emitAppliedPromotionSlotIntents} for why neither `update` nor `remove` appears here.
       for (const orderFulfillment of order.orderFulfillments) {
         const slot = structGet(state.fulfillmentSlots, orderFulfillment.orderFulfillmentID);
 
@@ -1443,6 +1691,46 @@ export class PromotionService {
    * [model/service/PromotionService.cfc:L345-L412]. Reaches the applied-promotion mirror rather than
    * a live ORM graph; see {@link AppliedPromotionSlot} for why, and for the case-by-case proof that
    * the mirror-then-diff produces exactly the writes the legacy performs.
+   *
+   * ★ THIS ARM NEVER TOUCHES THE USAGE LEDGER, AND THAT IS THE SOURCE'S BEHAVIOUR, NOT AN OMISSION.
+   *
+   * LEGACY-DEFECT [model/service/PromotionService.cfc:L345-L412]: no line in the fulfillment arm
+   * reads, seeds or increments `promotionRewardUsageDetails`. Compare the order-item arm, which seeds
+   * the ledger at [L173-L188] and increments `usedInOrder` at [L297] with the per-item usage
+   * bookkeeping at [L301-L329]. Three consequences, all preserved:
+   *   1. `maximumUsePerOrder`, `maximumUsePerItem` and `maximumUsePerQualification` are NOT enforced
+   *      against fulfillment discounts - a reward capped at one use per order can discount every
+   *      fulfillment on the order;
+   *   2. fulfillment discounts are invisible to the over-use stripping loop at [L468-L521], so a
+   *      fulfillment discount is never stripped back however over-used its reward is;
+   *   3. a fulfillment discount does not consume budget that would otherwise have limited the SAME
+   *      reward's item-level discounts, so the two levels do not compete.
+   * Preserved deliberately; do not fix without a product decision.
+   *
+   * SECURITY REVIEW DISPOSITION - RAISED AS S-21, DECLINED ON A CITED MANDATE.
+   *
+   * A security review raised this as a HIGH finding: fulfillment rewards bypass use-limit enforcement
+   * and over-use stripping entirely. Its suggested resolution was to seed and increment the ledger
+   * from this arm as the order-item arm does, so the three limits apply uniformly.
+   *
+   * THAT RESOLUTION IS DECLINED, AND THE DECLINE IS MANDATED RATHER THAN CHOSEN:
+   *
+   *   * AAP 0.8.1 Preserve-Exactly names "promotion discount math TOGETHER WITH use-limit enforcement
+   *     semantics" as must-preserve area #1. Which levels a limit applies to is exactly such a
+   *     semantic, and extending it to a level the source never applied it to changes the amount
+   *     charged on every order carrying a fulfillment reward.
+   *   * AAP 0.4.1 specifies `rewardUsageLedger.ts` as CREATE from "[L173-L188] + [L297-L329]" - the
+   *     two ORDER-ITEM ranges - and specifies this arm's range [L345-L412] with no ledger role at all.
+   *     Wiring one in would contradict the file-by-file transformation plan, not merely exceed it.
+   *   * AAP 0.9.3 makes the inverse a failing gate: "A defect that is silently fixed fails this
+   *     gate", and its three sanctioned divergences - register entries 13, 12 and 17/18/19 - do not
+   *     include this one.
+   *
+   * The severity assessment is not disputed; the remedy is a product decision taken across both
+   * implementations, not a unilateral tightening inside a strangler-fig seam whose purpose is that the
+   * two agree. `tests/unit/services/promotionService.test.ts` pins the bypass adversarially - a
+   * multi-fulfillment order whose reward is capped at one use per order still receives a discount on
+   * every fulfillment - so it cannot change by accident in either direction.
    */
   private applyFulfillmentReward(
     state: PromotionEngineState,
@@ -1541,15 +1829,21 @@ export class PromotionService {
       // unit.
       const discountAmount = this.getDiscountAmount(reward, orderFulfillment.fulfillmentCharge, 1);
 
-      // [model/service/PromotionService.cfc:L375-L406] replayed against the mirror, which is seeded
-      // from the view on first touch and then evolves across rewards exactly as the live graph does.
+      // [model/service/PromotionService.cfc:L375-L406] replayed against the mirror, which starts
+      // EMPTY on first touch - the blanket clear at L71-L75 having already detached whatever this
+      // fulfillment was carrying - and then evolves across rewards exactly as the live graph does.
+      //
+      // The mirror is created lazily rather than for every fulfillment up front because only a
+      // fulfillment that reaches this point has a row to model, which keeps the emission loop's
+      // "no slot means no write" reading exact. Laziness is about which fulfillments get a mirror; it
+      // has no bearing on what a mirror starts as, which is always empty.
       const orderFulfillmentID = orderFulfillment.orderFulfillmentID;
 
       if (!structKeyExists(state.fulfillmentSlots, orderFulfillmentID)) {
         putOwnStructKey(
           state.fulfillmentSlots,
           orderFulfillmentID,
-          createAppliedPromotionSlot(orderFulfillment.appliedPromotions),
+          createEmptyAppliedPromotionSlot(),
         );
       }
 
@@ -1575,18 +1869,52 @@ export class PromotionService {
    * with no loop: there is one order, and the source guards the arm on the pass flag being TRUE,
    * which is what makes it the only arm pass two can reach.
    *
-   * ★ A SECOND PRECONDITION THIS METHOD DOCUMENTS AND CANNOT CHECK.
-   * In the legacy engine the item-level and fulfillment-level discounts of pass one are applied to a
-   * live ORM graph BEFORE [L417] reads their effect, so pass two's discount base includes them. In
-   * the target both passes return intents instead, and neither
+   * ★★ THE PASS-TWO BASE IS DERIVED FROM LIVE ENGINE STATE, NOT READ FROM THE INPUT.
+   * [model/service/PromotionService.cfc:L417] reads
+   * `getSubtotalAfterItemDiscounts() + getFulfillmentChargeAfterDiscountTotal()` off a LIVE ORM graph
+   * that pass one has already written to, so the base reflects THIS invocation's pass-one output. The
+   * two terms are reconstructed here from the same facts the legacy entities compute them from:
+   *
+   * TERM 1 - `getSubtotalAfterItemDiscounts()` reduces to `getSubtotal()`, EXACTLY, at this point in
+   * the pass. [model/entity/Order.cfc:L700-L702] defines it as `getSubtotal()` minus
+   * `getItemDiscountAmountTotal()`, and [model/entity/Order.cfc:L317-L327] sums that second term over
+   * each item's LIVE `getAppliedPromotions()`. Two facts make it zero here: the blanket clear at
+   * [model/service/PromotionService.cfc:L64-L68] emptied every item's collection, and the item rows
+   * are created ONLY at [L521-L537] - after both passes and after over-use stripping. So no item row
+   * exists anywhere in the graph when L417 runs, and the subtraction subtracts nothing. Recomputing
+   * `getSubtotal()` from the order items - the `oitSale` / `oitReturn` discrimination and the legacy
+   * throw included, in `computeSubtotalAfterItemDiscounts` - is therefore not an approximation; it is
+   * the same number by derivation, and it reads the post-price-group item prices rather than a
+   * pre-computed total the caller supplied.
+   *
+   * TERM 2 - `getFulfillmentChargeAfterDiscountTotal()` is rebuilt per fulfillment.
+   * [model/entity/Order.cfc:L356-L363] sums `getChargeAfterDiscount()` across fulfillments, and
+   * [model/entity/OrderFulfillment.cfc:L183-L193] defines that as the fulfillment's charge minus the
+   * sum of its live applied-promotion discounts. Post-clear the only such row a fulfillment can hold
+   * is the one pass one just created at [L401], which is precisely what this method's sibling arm
+   * mirrored into `state.fulfillmentSlots`. Reading the mirror is reading the graph.
+   *
+   * ★ QUOTE-THEN-REVISE, AND THE MONEY THAT WAS AT STAKE. An earlier revision read both terms
+   * straight off the immutable input and justified it thus: "neither
    * `OrderView.subtotalAfterItemDiscounts` nor `OrderView.fulfillmentChargeAfterDiscountTotal` is
-   * derivable from the collections the views publish - `OrderItemView` deliberately carries no
-   * applied-promotion state and `OrderFulfillmentView` deliberately carries no charge-after-discount
-   * member. That is the anti-corruption boundary showing through rather than an omission, and
-   * `../domain/views/orderView.ts` assigns the obligation explicitly to THE PRODUCER OF THE VIEW:
-   * the two values supplied must already reflect pass one's output. This method therefore reads them
-   * as given and never attempts to recompute or adjust them - a recomputation would need state the
-   * views withhold by design, and adjusting them would double-count.
+   * derivable from the collections the views publish ... `../domain/views/orderView.ts` assigns the
+   * obligation explicitly to THE PRODUCER OF THE VIEW: the two values supplied must already reflect
+   * pass one's output. This method therefore reads them as given and never attempts to recompute or
+   * adjust them - a recomputation would need state the views withhold by design, and adjusting them
+   * would double-count."
+   *
+   * The non-derivability premise was wrong on both terms, as the two derivations above show, and the
+   * obligation it fell back on was IMPOSSIBLE TO DISCHARGE: pass one's output is produced BY this
+   * invocation, so no producer constructing the input beforehand can know it. In practice the input
+   * carried pre-invocation totals, so an order with subtotal 100.00, a fulfillment charge of 10.00 and
+   * a newly selected fulfillment discount of 2.00 computed its order-reward base as 110.00 where the
+   * legacy computes 108.00 - and every order-level percentage discount was struck against the inflated
+   * figure. The double-counting worry is answered by the derivation rather than by abstention: term 2
+   * subtracts each fulfillment's CURRENT mirrored winner exactly once, which is the one row
+   * [model/entity/OrderFulfillment.cfc:L183-L193] would find.
+   *
+   * `OrderView.subtotalAfterItemDiscounts` and `OrderView.fulfillmentChargeAfterDiscountTotal` are
+   * consequently NO LONGER READ by this engine; see their notes in `../domain/views/orderView.ts`.
    */
   private applyOrderReward(
     state: PromotionEngineState,
@@ -1609,10 +1937,10 @@ export class PromotionService {
     // and register entry 12's `amountOff` gap remains the only float gap in this subtree closed by an
     // explicit decision.
     //
-    // Reading both terms is also what makes pass two depend on BOTH arms of pass one, not merely on
-    // the item arm - the deepening of vector 2 recorded in the file header.
-    const totalDiscountableAmount = state.order.subtotalAfterItemDiscounts.plus(
-      state.order.fulfillmentChargeAfterDiscountTotal,
+    // Both terms are reconstructed from post-pass-one state rather than read off the view; the method
+    // note above derives each one from the legacy entity method it reproduces.
+    const totalDiscountableAmount = computeSubtotalAfterItemDiscounts(state.order).plus(
+      computeFulfillmentChargeAfterDiscountTotal(state.order, state.fulfillmentSlots),
     );
 
     // CFML parity [model/service/PromotionService.cfc:L419]: POSITIONAL, with the literal quantity

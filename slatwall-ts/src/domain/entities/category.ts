@@ -142,14 +142,19 @@
 // ambient state. This entity needs no context parameter at all, because it
 // performs no date comparison, no setting lookup and no I/O of any kind.
 //
-// THIS FILE OWNS ZERO NUMBERED DEFECTS
+// THIS FILE OWNS ZERO NUMBERED DEFECTS AND ZERO DELIBERATE DIVERGENCES
 // The port's thirty-entry defect register assigns nothing to Category, and none
-// of the three BUDGETED deliberate divergences is spent here - though one
-// NON-budgeted divergence is: `setParentCategory` refuses a reparent that would
-// close a cycle, annotated "★★★ DELIBERATE DIVERGENCE" at that method. The
-// qualifier matters because this paragraph read "none of the three deliberate
-// divergences is spent here" while the method below declared one, and a reader
-// meeting both in one file cannot tell which to believe. Both of its bidirectional
+// of the three deliberate divergences is spent here - they sit in `sku.ts` and
+// `product.ts`. An earlier revision of this file DID spend a fourth:
+// `setParentCategory` refused a reparent that would close a cycle, under a
+// three-star divergence banner, and this paragraph had to be qualified to admit
+// it. Both are gone - the setter assigns whatever it is handed, exactly as
+// [model/entity/Category.cfc:L101-L105] does - so the count above is unqualified
+// again. Note that NO adapter materializes a category ancestry, because nothing
+// in the ported slice reads one: `Category` is a read-mostly leaf here and its
+// `categoryIDPath` is a persisted column this migration reads rather than
+// rebuilds, so there is no fetch-shape termination decision to make anywhere for
+// this entity. Both of its bidirectional
 // pairs are the CORRECT, non-defective pattern - each `remove*` genuinely
 // removes, and neither calls an `add*`. So no `LEGACY-DEFECT` marker appears
 // below, and none may be added. One `LEGACY-NOTE` does appear, on the
@@ -201,7 +206,7 @@
 // under src/repositories, src/handlers, src/integrations or src/services.
 // ---------------------------------------------------------------------------
 
-import { buildIdPathList, wouldCreateIdPathCycle } from '../valueObjects/materializedIdPath.js';
+import { buildIdPathList } from '../valueObjects/materializedIdPath.js';
 import { cfBoolean } from '../../lib/cfml/truthiness.js';
 
 import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
@@ -1109,66 +1114,40 @@ export class Category {
    * [model/entity/Option.cfc:L92-L107] and `SkuCurrency.setSku` / `removeSku`
    * [model/entity/SkuCurrency.cfc:L89-L104]. All three now reproduce both sides of the link.
    *
-   * ★★★ DELIBERATE DIVERGENCE — A REPARENT THAT WOULD CLOSE A CYCLE IS REFUSED.
-   * The legacy setter assigns whatever it is handed, so choosing this node's own
-   * descendant as its parent is accepted and the malformed graph is created. That
-   * is not reproduced, and the reasoning is set out once, in full, on
-   * `buildIdPathList()` in src/domain/valueObjects/materializedIdPath.ts. In
-   * short: the resulting non-termination is an availability defect rather than a
-   * behaviour, it is not an entry in the project's closed defect register, no
-   * preserve-exactly mandate reaches it, and `org/Hibachi/**` is a boundary this
-   * migration REPLACES rather than reproduces.
+   * ★ WHATEVER IT IS HANDED IS ASSIGNED, INCLUDING A DESCENDANT OF THIS NODE.
+   * The legacy setter validates nothing, so choosing this node's own descendant as
+   * its parent is accepted and a cyclic `parentCategory` chain is created. That is
+   * reproduced rather than corrected, so no assignment this method accepts differs
+   * from the assignment [model/entity/Category.cfc:L101-L105] would have accepted.
    *
-   * WHY THE GUARD IS HERE AND NOT ONLY ON THE PATH BUILD. The path build refuses
-   * to produce a path from a cyclic chain, which is what keeps a SAVE from
-   * hanging. It does nothing for the walks over this same chain that never build
-   * a path: the price-group cascade climbs the product-type chain on the READ path
-   * while pricing an order [model/service/PriceGroupService.cfc:L68-L77], and
-   * `ProductType.getSimpleRepresentation()` recurses up it
-   * [model/entity/ProductType.cfc:L273-L278]. Refusing the ASSIGNMENT means a
-   * cycle never enters a live graph, so every one of those walks is safe for one
-   * reason instead of needing a guard each.
+   * ★ AN EARLIER REVISION REFUSED SUCH A REPARENT, AND THE RECORD OF ITS REMOVAL
+   * BELONGS HERE. This method used to call a `wouldCreateIdPathCycle()` helper and
+   * throw, under a three-star divergence banner. Three checkable reasons removed
+   * it. (1) A port reproduces; it does not improve. The legacy setter has no such
+   * check, so refusing an assignment it accepts is an unrequested behavioural
+   * change rather than a migration. (2) The project's deliberate-divergence budget
+   * is closed at THREE - the un-`var`'d `discountAmount`
+   * [model/service/PromotionService.cfc:L1007], the `amountOff` branch routed
+   * through `Money` [model/service/PromotionService.cfc:L998], and the entity memo
+   * defects in `sku.ts`/`product.ts` - and a guard here was a FOURTH, justified
+   * against itself rather than against that budget. (3) The one place a
+   * termination decision genuinely arises is a hand-written recursive ancestry
+   * read that replaces Hibernate's lazy traversal under transformation rule T3,
+   * and NO SUCH READ EXISTS FOR CATEGORY: no adapter materializes a category
+   * ancestry, because nothing in the ported slice reads one. `Category` is a
+   * read-mostly leaf here and `categoryIDPath` is a persisted column this
+   * migration reads rather than rebuilds. So unlike `productType.ts` and
+   * `priceGroup.ts`, whose sibling guards moved to their adapters, this one had
+   * nowhere to move to and simply had nothing to decide.
    *
-   * NOTHING IS MUTATED WHEN THE ASSIGNMENT IS REFUSED. The check runs before the
-   * near-side write, so a rejected reparent leaves both nodes exactly as they
-   * were rather than half-linked - which matters because the near side is assigned
-   * unconditionally and the far-side append is what the legacy guards.
-   *
-   * A WELL-FOUNDED REPARENT IS UNAFFECTED, including moving a subtree sideways or
-   * upward: the check answers `true` only when this node is reachable from the
-   * candidate, and a legitimate move never is. THE CONSTRUCTOR IS NOT GUARDED,
-   * deliberately - it is the hydration boundary, and a constructor that threw would
-   * duplicate a decision already taken, and taken more informatively, one layer out.
-   *
-   * ★ THIS PARAGRAPH ONCE ENDED "BOTH REPOSITORY ADAPTERS ALREADY TRUNCATE A CYCLIC
-   * ROW SET INTO AN ACYCLIC GRAPH ON PURPOSE, SO MAKING THE CONSTRUCTOR THROW WOULD
-   * UNDO A DECISION TAKEN ELSEWHERE." The conclusion still holds; the premise no longer
-   * describes the shipped adapters, so it is corrected here rather than left to mislead.
-   * Two adapters materialize an ancestry at all - `mysqlProductTypeRepository.ts` and
-   * `mysqlPriceGroupRepository.ts` - and both RAISE rather than shorten, with
-   * `ProductTypeCycleError` and `PriceGroupCycleError` naming the chain they followed.
-   * NO ADAPTER MATERIALIZES A CATEGORY ANCESTRY, because nothing in the ported slice
-   * reads one: `Category` is a read-mostly leaf here, and its `categoryIDPath` is a
-   * persisted column this migration reads rather than rebuilds.
-   *
-   * The reason the constructor needs no guard is therefore stronger than it was, not
-   * weaker: no adapter can hand this constructor a cyclic row set, and the only cyclic
-   * graph it could be handed is one an operator built in memory - which is exactly what
-   * this setter refuses.
+   * THE CONSTRUCTOR IS LIKEWISE UNGUARDED: it is the hydration boundary and it
+   * reproduces what the row set says.
    */
   setParentCategory(parentCategory: Category): void {
-    if (
-      wouldCreateIdPathCycle<Category>(this, parentCategory, (node) => node.getParentCategory())
-    ) {
-      throw new Error(
-        `Category '${this.getCategoryID()}' cannot take category ` +
-          `'${parentCategory.getCategoryID()}' as its parent: the assignment would make the ` +
-          `parentCategory chain cyclic, so categoryIDPath could never be built and every walk up that ` +
-          `chain would never terminate. Nothing has been changed.`,
-      );
-    }
-
-    // [model/entity/Category.cfc:L102] - before the guard, always.
+    // CFML parity [model/entity/Category.cfc:L101-L105]: the legacy body validates nothing before
+    // assigning, and neither does this one. A cyclic parent chain is accepted here exactly as it is
+    // accepted there.
+    // [model/entity/Category.cfc:L102] - the near-side write, always.
     this.parentCategory = parentCategory;
 
     // [model/entity/Category.cfc:L103-L105] - the guarded append onto the parent's LIVE array. `push`
@@ -1360,10 +1339,9 @@ export class Category {
   // signature-widening budgets. Those govern the ported public BEHAVIOURAL surface policed by
   // interface parity, and this transformation is explicitly mandated for all four hook-bearing
   // entities - a directed transformation, not a discretionary widening. This file spends nothing
-  // FROM THE BUDGETS: zero reshapings, zero widenings, zero visibility changes, zero of the three
-  // budgeted deliberate divergences, zero defects. The qualifier is not pedantry - `setParentCategory`
-  // does carry a non-budgeted divergence, the cycle refusal, and this line read "zero deliberate
-  // divergences" without it.
+  // FROM THE BUDGETS: zero reshapings, zero widenings, zero visibility changes, zero deliberate
+  // divergences, zero defects. That count needs no qualifier: the cycle refusal
+  // `setParentCategory` once carried has been removed, and the reasoning is recorded at the setter.
   //
   // LEGACY-NOTE [model/entity/Category.cfc:L127] and [model/entity/Category.cfc:L132] - the `super`
   // calls. There is no base class in the target and none is emulated. What the framework base's own
@@ -1452,11 +1430,12 @@ export class Category {
    * The resulting path is root-first and self-last, always includes this
    * category, is never empty, and carries neither a leading nor a trailing
    * delimiter - the properties that module reproduces from
-   * [org/Hibachi/HibachiEntity.cfc:L308-L324]. The ONE property it deliberately
-   * does NOT reproduce is the absence of a cycle guard: a cyclic or unbounded
-   * `parentCategory` chain is REFUSED there by a throw, so this method raises
-   * instead of assigning a truncated path and instead of never returning. That
-   * divergence is documented in full on the walk itself.
+   * [org/Hibachi/HibachiEntity.cfc:L308-L324]. It reproduces the absence of a
+   * cycle guard too: a cyclic `parentCategory` chain does not terminate there
+   * because it does not terminate at [org/Hibachi/HibachiEntity.cfc:L314-L321]
+   * either, and an earlier revision that refused one has been removed. Since
+   * nothing in the ported slice materializes a category ancestry, no adapter-side
+   * termination decision arises for this entity either.
    */
   preInsert(): void {
     // ★ ORDERING MARKER - [model/entity/Category.cfc:L127] `super.preInsert();` STOOD HERE, BEFORE

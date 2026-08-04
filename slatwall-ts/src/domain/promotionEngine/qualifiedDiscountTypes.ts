@@ -290,7 +290,7 @@ export type PromotionAppliedType = 'order' | 'orderItem' | 'orderFulfillment';
  * Deliberately NOT exported: consumers work with `PromotionAppliedIntent` and the
  * three operation unions below, and the project keeps its exported surface to
  * exactly what a consumer needs. This interface exists only so the promotion
- * identifier is declared once and cannot drift between the seven variants.
+ * identifier is declared once and cannot drift between the eight variants.
  */
 interface PromotionAppliedIntentPromotion {
   /**
@@ -452,14 +452,34 @@ interface UpdateOperationIntent {
 }
 
 /**
- * Detach the applied-promotion record already on the target, because a DIFFERENT promotion now
- * yields more and will be added in its place.
+ * Detach an applied-promotion record from the target - either because a DIFFERENT promotion now
+ * yields more and will be added in its place, or because the engine is clearing what a previous
+ * invocation left behind before it recalculates.
  *
- * CFML parity [model/service/PromotionService.cfc:L393, L439]: `removeOrderFulfillment()` at the
- * fulfillment level and `removeOrder()` at the order level, both followed by `addNew = true` (L394,
- * L440), so a remove is always followed by an add in the same pass. There is no order-item
+ * CFML parity - THE TWO DISTINCT ORIGINS OF A REMOVE, which are easy to conflate and must not be:
+ *
+ * 1. THE BLANKET CLEAR, at the very top of the engine
+ *    [model/service/PromotionService.cfc:L61-L80]. Three reverse-index loops detach EVERY
+ *    previously applied promotion before any qualification runs: order items at L64-L68 via
+ *    `removeOrderItem()` [model/entity/PromotionApplied.cfc:L103], fulfillments at L71-L75 via
+ *    `removeOrderFulfillment()` [:L121], and the order itself at L78-L80 via `removeOrder()`
+ *    [:L139]. Each of those methods `arrayDeleteAt`s from the owner's LIVE association, so after
+ *    L80 all three collections are EMPTY. These removes are UNCONDITIONAL and reach ALL THREE
+ *    LEVELS - which is the whole reason an order-item remove variant exists.
+ * 2. THE SAME-PROMOTION ELSE-ARM, inside the reward loop
+ *    [model/service/PromotionService.cfc:L393, L439]: `removeOrderFulfillment()` and
+ *    `removeOrder()`, each followed by `addNew = true` (L394, L440), so this kind of remove is
+ *    always followed by an add in the same pass. This kind is CONDITIONAL - it is the else-arm of
+ *    the same-promotion test at L388 and L434 - and it has no order-item counterpart, because the
+ *    item level creates its rows once at L521-L537 after every competing discount has already been
+ *    resolved to a single winner.
+ *
+ * ★ QUOTE-THEN-REVISE. An earlier revision of this comment read: "There is no order-item
  * counterpart, and no remove is unconditional - each is the else-arm of the same-promotion test at
- * L388 and L434.
+ * L388 and L434." Both halves were wrong, and wrong for the same reason: they described only
+ * origin 2 and overlooked origin 1 entirely. The blanket clear at L61-L80 is unconditional AND
+ * reaches order items, so the item level does have a remove counterpart. Origin 2's description
+ * survives unchanged and is now scoped to origin 2 explicitly.
  *
  * `discountAmount` IS FORBIDDEN on this operation, declared `?: never` rather
  * than simply left out. Detaching a record needs no amount, and the `never`
@@ -489,11 +509,15 @@ export type AddPromotionAppliedIntent = PromotionAppliedIntentPromotion &
  * Raise the discount on an existing applied-promotion record.
  *
  * TWO exact variants - order and fulfillment. There is deliberately no
- * order-item variant: the item level is add-only
- * [model/service/PromotionService.cfc:L529-L535], so
- * `{ appliedType: 'orderItem', operation: 'update', ... }` does not compile, and
- * that is the type carrying the asymmetry rather than a comment asking a
- * consumer to remember it.
+ * order-item variant, and `update` is the ONLY operation missing one: the item level never runs the
+ * same-promotion else-arm that an update reproduces, because
+ * [model/service/PromotionService.cfc:L521-L537] constructs its rows once, after the descending
+ * sort has already reduced every competing discount on an item to a single winner. So
+ * `{ appliedType: 'orderItem', operation: 'update', ... }` does not compile, and that is the type
+ * carrying the asymmetry rather than a comment asking a consumer to remember it.
+ *
+ * Do NOT infer from this that the item level is add-only - it also has a `remove`, reproducing the
+ * blanket clear at L64-L68. See `RemovePromotionAppliedIntent`.
  */
 export type UpdatePromotionAppliedIntent = PromotionAppliedIntentPromotion &
   UpdateOperationIntent &
@@ -502,12 +526,20 @@ export type UpdatePromotionAppliedIntent = PromotionAppliedIntentPromotion &
 /**
  * Detach an existing applied-promotion record.
  *
- * TWO exact variants - order and fulfillment - for the same reason `update` has
- * two, and carrying no amount at any of them.
+ * THREE exact variants - order, order item and fulfillment - carrying no amount at any of them.
+ *
+ * ★ WHY THIS IS THE ONE OPERATION THAT REACHES ALL THREE LEVELS WHILE `update` REACHES TWO. The
+ * asymmetry is not an inconsistency; the two operations answer to different legacy code. `update`
+ * exists only as the same-promotion else-arm inside the reward loop [L389, L435], which the item
+ * level never executes. `remove` additionally has to express the blanket clear at L61-L80, which
+ * detaches every previously applied promotion at EVERY level - including order items at L64-L68.
+ * Dropping the item variant would make the item half of that clear inexpressible, so a stale item
+ * row from a previous invocation could never be detached and its discount would survive a
+ * recalculation that no longer qualifies it. See `RemoveOperationIntent` for both origins.
  */
 export type RemovePromotionAppliedIntent = PromotionAppliedIntentPromotion &
   RemoveOperationIntent &
-  (OrderTargetedIntent | OrderFulfillmentTargetedIntent);
+  (OrderTargetedIntent | OrderItemTargetedIntent | OrderFulfillmentTargetedIntent);
 
 /**
  * One instruction from the promotion engine to whatever owns applied-promotion
@@ -524,29 +556,42 @@ export type RemovePromotionAppliedIntent = PromotionAppliedIntentPromotion &
  * LEGACY-NOTE [model/service/PromotionService.cfc:L389, L393, L400-L405, L435, L439, L446-L451, L529-L535]: `operation` is the ONE member name in this file with NO legacy antecedent, and it is named here rather than left to inference. Every other member - `promotionRewardID`, `promotion`, `discountAmount`, `appliedType`, `promotionID`, `orderID`, `orderItemID`, `orderFulfillmentID` - mirrors a legacy name in verbatim camelCase, and the single documented rename is the accumulator key.
  * There is no legacy field to mirror because the legacy expresses the three operations as three DIFFERENT CFML calls on an ORM entity - `setDiscountAmount`, `removeOrderFulfillment` / `removeOrder`, and `newPromotionApplied` plus its setters - rather than as data. Turning "which mutation" into a discriminant is the whole substance of the anti-corruption inversion, so the discriminant is target-only by necessity, and interface parity is unaffected: it binds public method names, and this is a field on an output value the legacy had no equivalent of.
  *
- * All three operations must stay expressible, but the three levels are NOT symmetric:
+ * All three operations must stay expressible, but the three levels are NOT symmetric. Each cell
+ * names the legacy locator the variant reproduces; `remove` has two origins, so its cells name
+ * both the blanket clear and, where one exists, the same-promotion else-arm:
  *
- *   | level            | update | remove | add        |
- *   | ---------------- | ------ | ------ | ---------- |
- *   | orderFulfillment | L389   | L393   | L400-L405  |
- *   | order            | L435   | L439   | L446-L451  |
- *   | orderItem        | none   | none   | L529-L535  |
+ *   | level            | update | remove                    | add        |
+ *   | ---------------- | ------ | ------------------------- | ---------- |
+ *   | orderFulfillment | L389   | L71-L75 clear, L393 arm   | L400-L405  |
+ *   | order            | L435   | L78-L80 clear, L439 arm   | L446-L451  |
+ *   | orderItem        | none   | L64-L68 clear             | L521-L537  |
  *
- * THE UNION HAS EXACTLY SEVEN VARIANTS, WHICH ARE EXACTLY THE SEVEN CELLS ABOVE
- * THAT ARE NOT `none`: three adds, two updates and two removes. That count is not
+ * THE UNION HAS EXACTLY EIGHT VARIANTS, WHICH ARE EXACTLY THE EIGHT CELLS ABOVE
+ * THAT ARE NOT `none`: three adds, two updates and three removes. That count is not
  * a documentation claim a reader has to trust - it is what the type
  * ALGEBRAICALLY IS, because each operation shape is intersected only with the
- * target shapes its level table row permits. The two `none` cells are therefore
- * uninhabited: `{ appliedType: 'orderItem', operation: 'update' }` and
- * `{ appliedType: 'orderItem', operation: 'remove' }` do not compile.
+ * target shapes its level table row permits. The one `none` cell is therefore
+ * uninhabited: `{ appliedType: 'orderItem', operation: 'update' }` does not compile.
  *
- * CFML parity [model/service/PromotionService.cfc:L529-L535]: the order-item level is ADD-ONLY -
- * that block constructs a new applied promotion and calls four setters, with no update and no
- * removal. It needs none: the engine cleared every previously applied item promotion up front at
- * L64-L68, and the descending sort already resolved competing discounts to one winner. So do not
- * describe the port as a uniform three-way inversion, and equally do not assume add-only
- * everywhere; dropping update and remove would lose L389, L393, L435 and L439 and change the money
- * at the other two levels.
+ * ★ QUOTE-THEN-REVISE ON THE VARIANT COUNT AND ON ITEM-LEVEL ADD-ONLY-NESS. An earlier revision
+ * declared "EXACTLY SEVEN VARIANTS ... The two `none` cells are therefore uninhabited", and
+ * justified the missing item-level remove like this: "the order-item level is ADD-ONLY - that
+ * block constructs a new applied promotion and calls four setters, with no update and no removal.
+ * It needs none: the engine cleared every previously applied item promotion up front at L64-L68".
+ * The premise of that last sentence is exactly right and is what refutes its own conclusion. The
+ * engine DOES clear every previously applied item promotion at L64-L68 - and in the target that
+ * clear is not something the runtime does to a live ORM graph, it is something the engine must
+ * EMIT, because the order aggregate is out of scope and the only channel to it is this intent
+ * array. An unexpressible clear is a clear that never happens. So the count is eight, and the item
+ * level is add-and-remove rather than add-only.
+ *
+ * What survives from that earlier revision, unchanged: the L521-L537 block itself constructs a new
+ * applied promotion and calls four setters with no update and no removal, and the descending sort
+ * has already resolved competing discounts to one winner before it runs. That is why the item level
+ * needs no `update`. And the warning still stands in both directions - do not describe the port as
+ * a uniform three-way inversion, and equally do not assume add-only everywhere; dropping update
+ * would lose L389 and L435, and dropping remove would lose L61-L80 in full plus L393 and L439, and
+ * either loss changes the money.
  *
  * HOW A CONSUMER READS AN INTENT. Narrowing works on either discriminant, and on
  * both together. `switch (intent.operation)` selects the operation and, with it,

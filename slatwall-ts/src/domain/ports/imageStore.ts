@@ -110,24 +110,26 @@
  *   operations above is unchanged by it. The paragraph immediately below is where that third
  *   member was already anticipated.)
  *
- *   Image-related SETTINGS are not this port's concern either, and they are not
- *   `settingsProvider`'s concern. `productImageDefaultExtension` (default `jpg`)
- *   [model/service/SettingService.cfc:L191] and `productImageOptionCodeDelimiter` (default `-`)
- *   [model/service/SettingService.cfc:L192] are read at exactly two sites, both inside
- *   `Sku.generateImageFileName()` [model/entity/Sku.cfc:L138] and [model/entity/Sku.cfc:L135],
- *   which composes an image FILE NAME and does nothing else. Neither key is one of the four the
- *   transformation plan allots the settings port ("only four keys", AAP 0.2.1; "exactly four
- *   keys", AAP 0.4.1), so neither is declared on `SettingKey`. Image-file-name composition is an
- *   image concern and therefore belongs behind THIS port; it does not become a settings concern
- *   by being spelled with a `setting()` call in the legacy source. No key appears here, no key
- *   appears on the settings port, and no fifth settings key may be added to make either compile.
+ *   Image-related SETTINGS are not this port's concern - but they ARE
+ *   `settingsProvider`'s concern, and that division is the whole point.
+ *   `productImageDefaultExtension` (default `jpg`) [model/service/SettingService.cfc:L191] and
+ *   `productImageOptionCodeDelimiter` (default `-`) [model/service/SettingService.cfc:L192] are
+ *   read at exactly two sites, both inside `Sku.generateImageFileName()`
+ *   [model/entity/Sku.cfc:L138] and [model/entity/Sku.cfc:L135], which composes an image FILE
+ *   NAME and does nothing else. Both keys ARE declared on `SettingKey` - they are the third and
+ *   fourth of its seven literals, in the order the legacy declares them - because the legacy read
+ *   for each is a `setting()` call and settings RESOLUTION has exactly one authority in this
+ *   target. What stays out of this port is the RESOLUTION, not the values: the composition root
+ *   reads both through `settingsProvider` and hands the already-resolved pair inward, so
+ *   `generateSkuImageFileName` receives values and never a resolver. No settings key is declared
+ *   HERE, no key is resolved twice anywhere, and no EIGHTH settings key may be added to make
+ *   anything compile.
  *
  *   ★ THAT REASONING IS NOW ACTED ON RATHER THAN ONLY RECORDED. "Image-file-name composition
  *   ... belongs behind THIS port" was written before any member expressed it, and in the
  *   meantime the service that needed it shipped as a no-op. `generateSkuImageFileName` is that
- *   member. Note what has NOT changed as a result: no key is declared here, the settings port
- *   still publishes four, and the two values stay with the implementation exactly as this
- *   paragraph requires.
+ *   member. Note what has NOT changed as a result: no key is declared here, and the two
+ *   already-resolved values stay with the implementation exactly as this paragraph requires.
  *
  * SCHEMA CONTINUITY
  *   This port touches no table at all. It moves and removes files; it reads and writes no row,
@@ -171,10 +173,10 @@
  *   not because a legacy call site asks for it - and the distinction is stated plainly at the
  *   member itself.
  *
- *   Adding it here rather than anywhere else follows from where the two settings belong: they
- *   are image-subsystem configuration, and this port is the image subsystem's only seam. The
- *   alternative placements were each worse. Widening `SettingsProvider` past the four keys the
- *   in-scope slice proves would import out-of-scope configuration into the domain layer.
+ *   Adding it here rather than anywhere else follows from where the two settings are CONSUMED:
+ *   image-file-name composition is an image concern, and this port is the image subsystem's only
+ *   seam. The alternative placements were each worse. Widening `SettingsProvider` past the seven
+ *   keys the in-scope slice proves would import out-of-scope configuration into the domain layer.
  *   Adding parameters to an entity method would spend a signature reshaping the project has
  *   fully allocated. And leaving the no-op in place would mean shipping a method whose name
  *   promises a write it never performs.

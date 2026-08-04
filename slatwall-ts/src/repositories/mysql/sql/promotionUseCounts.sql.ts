@@ -409,6 +409,12 @@ WHERE
 
   // SECURITY REVIEW DISPOSITION - RAISED AS S-02, DECLINED ON A CITED MANDATE.
   //
+  // TWO REVIEW CYCLES, TWO IDS, ONE DEFECT. `S-02` is the PRIOR cycle's id. The CURRENT
+  // review re-raises the same defect in the same file as FINDING 3 (HIGH, CWE-20 and
+  // CWE-840) and the disposition below is unchanged and answers both. Both ids are
+  // recorded because a declination a later reader cannot locate from the report in front
+  // of them is a declination that reads as an omission.
+  //
   // Raised as finding S-02, MAJOR, CWE-20 (Improper Input Validation) and CWE-840,
   // with runtime evidence that both the period and the account builder emit
   // `pa.createdDateTime < ?` with a final bound value of `null`, which SQL
@@ -423,10 +429,23 @@ WHERE
   // stop qualifying - relative to the system being migrated, which is a change to
   // money and to promotional eligibility rather than a bug fix at this seam.
   //
-  // Pinned rather than repaired: `tests/unit/domain/entities/promotionPeriod.test.ts`
-  // carries the all-four-null-combination cases and asserts the null bind and the
-  // zero count directly, so the bypass is documented behaviour rather than a latent
-  // surprise, and cannot be silently altered in either direction.
+  // Pinned rather than repaired, and the pin is named precisely because a wrong
+  // pointer is worse than none:
+  // `tests/integration/repositories/mysqlPromotionRepository.test.ts`, describe block
+  // "PROMOTION_USE_COUNT_STATEMENTS - the duplicated getStartDateTime guard", carries
+  // all four start/end null combinations for BOTH period builders, asserts the null
+  // upper bind directly, asserts that a null start suppresses the upper clause
+  // altogether, asserts that the intermediate bind arity the defect makes unreachable
+  // (5 here, 8 for the account variant) never occurs, and carries the combinations
+  // through the adapter from a hydrated PromotionPeriod.
+  //
+  // Two of those are statement-text facts; the CONSEQUENCE - a zero count, and hence a
+  // use limit that never binds - is a property of SQL three-valued logic rather than of
+  // this builder, so it is pinned separately in the same describe block by evaluating
+  // the EMITTED bounds against an in-memory row set under SQL NULL semantics. That test
+  // demonstrates both directions the defect fails in: zero counted rows when the upper
+  // bound is null, and rows created AFTER the period ended counted when the start is
+  // null. Neither direction can now be altered silently.
   //
   // LEGACY-DEFECT [model/dao/PromotionDAO.cfc:L177]: the second date guard tests getStartDateTime()
   // while assigning getEndDateTime() (L178), so the end-date filter is keyed off the START date.
@@ -622,6 +641,7 @@ WHERE
   }
 
   // SECURITY REVIEW DISPOSITION: this is the SECOND of the two sites finding S-02
+  // (FINDING 3 in the current review - see the id note at the first site)
   // names (`promotionUseCounts.sql.ts:410-437,603-617`). The disposition, the
   // citations and the pinning tests are stated once at the first site above and
   // govern both; they are not restated here, because two copies of a ruling drift.

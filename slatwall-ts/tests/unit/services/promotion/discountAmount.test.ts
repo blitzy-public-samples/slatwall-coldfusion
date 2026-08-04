@@ -129,7 +129,7 @@
 // `tests/integration/repositories/` tier.
 //
 // That claim is enforced STRUCTURALLY rather than asserted in prose: the repository the
-// collaborator is constructed with raises on every one of its eight members, so any data access
+// collaborator is constructed with raises on every one of its seven members, so any data access
 // anywhere on the discount path would fail this suite loudly. See {@link makeUnreachedRepository}
 // and the reachability case at the end of the file.
 //
@@ -178,6 +178,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { PromotionReward } from '../../../../src/domain/entities/promotionReward.js';
+import type { AmountType } from '../../../../src/domain/entities/promotionReward.js';
 import type { RoundingRule } from '../../../../src/domain/entities/roundingRule.js';
 import { Money } from '../../../../src/domain/valueObjects/money.js';
 import { DiscountAmountCalculator } from '../../../../src/services/promotion/discountAmount.js';
@@ -247,8 +248,10 @@ function unreachedRepositoryMember(memberName: string): never {
  * and two collaborators can never observe one another through a shared object.
  *
  * Each member is written as a zero-argument arrow, which is assignable to the port's wider
- * signatures and keeps the stand-in to exactly the eight members the constructor's type demands -
- * no invented member, no partial implementation, no behaviour.
+ * signatures and keeps the stand-in to exactly the seven members the constructor's type demands -
+ * no invented member, no partial implementation, no behaviour. SEVEN is the whole of
+ * `PromotionRepository`: it declares seven reads and no write, so a stand-in with an eighth member
+ * would not compile.
  *
  * @returns a repository whose every member raises.
  */
@@ -264,7 +267,6 @@ function makeUnreachedRepository(): RoundingRuleServiceRepository {
     getSalePricePromotionRewardsQuery: () =>
       unreachedRepositoryMember('getSalePricePromotionRewardsQuery'),
     getRoundingRuleQuery: () => unreachedRepositoryMember('getRoundingRuleQuery'),
-    saveRoundingRule: () => unreachedRepositoryMember('saveRoundingRule'),
   };
 }
 
@@ -442,6 +444,10 @@ describe('DiscountAmountCalculator', () => {
   // three cases - L994 `percentageOff`, L997 `amountOff`, L1000 `amount` - and closes at L1003
   // with NO `default:`. All three are covered here, and so is the fourth path: the one an
   // unrecognised discriminator takes.
+  //
+  // Each arm is covered TWICE - once with the source's canonical spelling and once with a
+  // mis-cased spelling the persisted column admits - because the legacy `switch` folds case and an
+  // arm covered only canonically is an arm whose fold is unpinned. See the banner mid-block.
   // -------------------------------------------------------------------------
   describe('amountType dispatch', () => {
     it('percentageOff scales the EXTENDED amount by the reward percentage', () => {
@@ -553,6 +559,123 @@ describe('DiscountAmountCalculator', () => {
 
       expect(result.toFixed2()).toBe('-10.00');
       expect(result.isLessThan(Money.zero)).toBe(true);
+    });
+
+    // -----------------------------------------------------------------------
+    // ★★★ CASE FOLDING IS PART OF THE DISPATCH CONTRACT, NOT AN IMPLEMENTATION DETAIL
+    //
+    // The cases above supply the source's canonical spellings, which every arm matches under an
+    // exact comparison just as readily as under a folded one. The cases below supply the spellings
+    // that ONLY a folded comparison matches, and they are the ones that fail the moment
+    // `matchesAmountType` [src/services/promotion/discountAmount.ts:L139-L141] stops delegating to
+    // `cfEquals` and starts comparing with `===`.
+    //
+    // CFML parity [model/service/PromotionService.cfc:L993]: a CFML `switch` on a string compares
+    // its `case` labels CASE-INSENSITIVELY, so a reward persisting `'AmountOff'` reaches
+    // `case "amountOff"` [L997] in the legacy engine and receives its discount.
+    // `SwPromoReward.amountType` is a plain `ormType="string"` column
+    // [model/entity/PromotionReward.cfc:L62] with no check constraint, so these spellings are states
+    // the column can genuinely hold - and `narrowOrAbsent` in
+    // src/repositories/mysql/mysqlPromotionRepository.ts hands back the PERSISTED BYTES rather than
+    // laundering them into a canonical spelling, which is exactly why the fold has to happen at the
+    // dispatch. An exact comparison here sends a mis-cased-but-valid reward down the zero-seed path:
+    // the promotion is silently skipped and the customer pays full price, with nothing reported.
+    //
+    // JUDGMENT CALL: reaching a mis-cased spelling requires an `as AmountType` assertion, because
+    // the union spells only the three canonical values. The assertion expresses a value the
+    // persisted column admits but the union does not spell - the same idiom, for the same reason, as
+    // `../../domain/entities/promotionReward.test.ts` uses on `getAmountFormatted()`. Nothing is
+    // widened, no divergence is introduced and the subject is called exactly as shipped.
+    //
+    // Every case below asserts the folded outcome AND that the outcome is not the L988 zero seed, so
+    // a regression to `===` cannot pass by quietly taking the fall-through documented below it.
+    // -----------------------------------------------------------------------
+    it('amountOff dispatches on a mis-cased amountType, in title and screaming case', () => {
+      const titleCased = new PromotionReward({
+        promotionRewardID: 'discount-amount-amount-off-title-cased',
+        rewardType: 'merchandise',
+        amountType: 'AmountOff' as AmountType,
+        amount: Money.fromDecimalString('5.00'),
+      });
+
+      const titleCasedResult = calculator.getDiscountAmount(
+        titleCased,
+        Money.fromDecimalString('19.99'),
+        3,
+      );
+
+      // The very 5.00 x 3 = 15.00 the canonical spelling produces two cases above.
+      expect(titleCasedResult.toFixed2()).toBe('15.00');
+      expect(titleCasedResult.toFixed2()).not.toBe('0.00');
+      expect(titleCasedResult.equals(Money.zero)).toBe(false);
+
+      // Screaming case as well, because a two-spelling allowlist would pass the title case and then
+      // fail here - only a genuine fold satisfies both.
+      const screamingCased = new PromotionReward({
+        promotionRewardID: 'discount-amount-amount-off-screaming-cased',
+        rewardType: 'merchandise',
+        amountType: 'AMOUNTOFF' as AmountType,
+        amount: Money.fromDecimalString('5.00'),
+      });
+
+      const screamingCasedResult = calculator.getDiscountAmount(
+        screamingCased,
+        Money.fromDecimalString('19.99'),
+        3,
+      );
+
+      expect(screamingCasedResult.toFixed2()).toBe('15.00');
+      expect(screamingCasedResult.toFixed2()).not.toBe('0.00');
+      expect(screamingCasedResult.equals(Money.zero)).toBe(false);
+
+      // The quantity-reading branch really was the one taken, not the percentage arm above it:
+      // neither reward carries a rounding rule, so neither call reached the collaborator.
+      expect(rounding.roundValueByRoundingRuleCalls).toHaveLength(0);
+    });
+
+    it('percentageOff dispatches on a mis-cased amountType, the first arm of the chain', () => {
+      // The percentage arm fails differently from `amountOff` under an exact comparison: the chain
+      // drops past all three arms rather than past only one, so the zero seed is reached from the
+      // very first link. 12.5% of the 19.99 x 3 = 59.97 extended amount is 7.49625, quantized to
+      // 7.50 - identical to the canonical-spelling case that opens this block.
+      const misCasedPercentage = new PromotionReward({
+        promotionRewardID: 'discount-amount-percentage-off-title-cased',
+        rewardType: 'merchandise',
+        amountType: 'PercentageOff' as AmountType,
+        amount: Money.fromDecimalString('12.5'),
+      });
+
+      const result = calculator.getDiscountAmount(
+        misCasedPercentage,
+        Money.fromDecimalString('19.99'),
+        3,
+      );
+
+      expect(result.toFixed2()).toBe('7.50');
+      expect(result.equals(Money.fromDecimalString('7.5'))).toBe(true);
+      expect(result.equals(Money.zero)).toBe(false);
+    });
+
+    it('amount dispatches on a mis-cased amountType, closing the fold across all arms', () => {
+      // The third arm, so no arm of the chain is left resting on canonical spelling alone. The
+      // unit-price asymmetry is preserved through the fold: (19.99 - 15.00) x 3 = 14.97, the same
+      // value the canonical spelling produces, and NOT the 134.91 an extended-amount reading gives.
+      const misCasedFixedAmount = new PromotionReward({
+        promotionRewardID: 'discount-amount-fixed-amount-title-cased',
+        rewardType: 'merchandise',
+        amountType: 'Amount' as AmountType,
+        amount: Money.fromDecimalString('15.00'),
+      });
+
+      const result = calculator.getDiscountAmount(
+        misCasedFixedAmount,
+        Money.fromDecimalString('19.99'),
+        3,
+      );
+
+      expect(result.toFixed2()).toBe('14.97');
+      expect(result.equals(Money.zero)).toBe(false);
+      expect(result.equals(Money.fromDecimalString('134.91'))).toBe(false);
     });
 
     it('an unrecognised amountType takes NO branch and yields a zero discount', () => {

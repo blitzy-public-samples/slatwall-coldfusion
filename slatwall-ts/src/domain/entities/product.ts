@@ -42,27 +42,41 @@
 // THE `getService(` VERDICT TABLE - ALL EIGHTEEN SITES ACCOUNTED FOR. Every one is a domain file
 // reaching outward, which is what the T2 transformation removes and what the ESLint
 // `no-restricted-imports` boundary makes impossible to reintroduce. The AAP's citation of the
-// `optionService` reach at "L343" is wrong; the verified site is L341. TEN of the eighteen resolve
+// `optionService` reach at "L343" is wrong; the verified site is L341. NINE of the eighteen resolve
 // to OMIT and are itemized with their locators in the OMISSION REGISTER at the foot of the class -
-// [L132], [L148], [L173], [L401], [L441], [L443], [L501], [L519], [L542], [L798]. The other eight:
+// [L132], [L148], [L173], [L401], [L441], [L443], [L501], [L542], [L798]. The other nine:
 //
 //   |  # | line | service reached        | disposition                                            |
 //   |  3 | L159 | skuService             | RESOLVED IN MEMORY - getSkus over the array            |
 //   |  5 | L254 | OptionService (cap. O) | EAGER ASSOCIATION - optionGroups materialized upstream |
 //   |  6 | L341 | optionService          | RESOLVED IN MEMORY - getOptionsByOptionGroup, see below|
 //   |  7 | L367 | productService         | PORT - skuRepository.getSkusBySelectedOptions          |
+//   | 12 | L519 | promotionService       | PORT - salePriceResolver, §3.9 branch (a), see below    |
 //   | 14 | L626 | skuService             | PORT - skuRepository.getTransactionExistsFlag          |
 //   | 15 | L637 | optionService          | PORT - optionRepository.getUnusedProductOptions        |
 //   | 16 | L644 | optionService          | PORT - optionRepository.getUnusedProductOptionGroups   |
 //   | 17 | L651 | subscriptionService    | REFUSED - the stub port declares no such member        |
 //
-// The five injected collaborators, and what each discharges:
+// The six injected collaborators, and what each discharges:
 //
 //   skuRepository            [L367] getSkusBySelectedOptions, [L626] getTransactionExistsFlag
 //   optionRepository         [L637] getUnusedProductOptions, [L644] getUnusedProductOptionGroups
 //   productRepository        [L833] getAttributeSets, the ONE ported attribute path
 //   settingsProvider         [L208] and [L212] the product URL-key setting
+//   salePriceResolver        [L519] getSalePriceDetailsForProductSkus, the §3.9 branch-(a) reach
 //   subscriptionTermProvider held only so row 17's refusal can name a real collaborator
+//
+// ROW 12 IS THE §3.9 DECISION, AND THIS IS THE STATEMENT OF WHICH ARM WAS TAKEN. The plan makes the
+// choice conditional on what `../ports/promotionRepository.js` declares: branch (a) - inject and
+// call - if a member there can serve `getSalePriceDetailsForProductSkus`
+// [model/service/PromotionService.cfc:L1022], branch (b) - omit - if none can. That file exports a
+// SECOND interface, `SalePriceResolver`, whose single method is exactly that call, so BRANCH (a) IS
+// THE LIVE ARM and `getSalePriceDetailsForSkus()` [L517-L522] ships. No fourteenth port file was
+// created, and no port member was invented: the interface is co-located in the thirteenth port
+// file, it is satisfied in `src/handlers/bootstrap.ts` by adapting the ported
+// `src/services/promotionService.ts` surface, and it is injected into this entity from there - so
+// the reduction and the rounding at [model/service/PromotionService.cfc:L1024-L1028] happen in the
+// composition root, and this file imports the TYPE only.
 //
 // LEGACY-NOTE [model/entity/Product.cfc:L254 vs L341/L637/L644/L651]: the service name's casing and
 // quoting are inconsistent in the source - [L254] writes `getService("OptionService")` with a
@@ -106,10 +120,16 @@
 // THREE SIGNATURES FOLLOW THE SHIPPED SIBLING RATHER THAN THE PLAN, because the artefact is the
 // authority: `getBaseProductType()` is ASYNC, since `ProductType.getBaseProductType()` is async and
 // src/domain/entities/sku.ts awaits it; the unused-* trio returns `readonly SelectOption[]`, which
-// is what `OptionRepository` declares; and `getTitle()` is OMITTED because the `SettingKey` union
-// publishes exactly FOUR keys - `globalURLKeyProduct`, `globalURLKeyProductType`, `skuCurrency`,
-// `skuEligibleCurrencies` - and `productTitleString` is not among them. That same four-key fact
-// omits `getTemplate`, the whole image cluster and `getAllowBackorderFlag`.
+// is what `OptionRepository` declares; and `getTitle()` is OMITTED FOR ONE REASON ONLY, WHICH IS NOT
+// A SETTINGS REASON. `productTitleString` IS published on the `SettingKey` union - it is the fifth of
+// its seven literals [model/service/SettingService.cfc:L193] - and this entity holds the provider
+// that resolves it. What is missing is the RENDERER: [model/entity/Product.cfc:L542] hands the
+// template to `getService("hibachiUtilityService").replaceStringTemplate(...)`, a framework utility
+// under `org/Hibachi/`, the boundary this migration extracts from and never ports, so the `${...}`
+// markers in the value have nothing to resolve them. `getTemplate` (`productDisplayTemplate` [:L190]),
+// the whole image cluster and `getAllowBackorderFlag` (`skuAllowBackorderFlag` [:L219]) are omitted on
+// the settings ground the title member does not have: each of those keys is genuinely outside the
+// closed seven-key union, and no eighth key may be added.
 //
 // ASYNC APPLIES PER METHOD, NOT PER ENTITY: a method stays synchronous when it only traverses
 // already-materialized state or performs pure arithmetic, and becomes `async` only where its body
@@ -121,7 +141,7 @@ import { structGet, structKeyExists, structKeyList, type CfStruct } from '../../
 import { cfBoolean, cfLen, cfTruthy, type CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import type { AttributeSetSummary, ProductRepository } from '../ports/productRepository.js';
 import type { OptionRepository, SelectOption } from '../ports/optionRepository.js';
-import type { SalePriceDetail } from '../ports/promotionRepository.js';
+import type { SalePriceDetail, SalePriceResolver } from '../ports/promotionRepository.js';
 import type { SettingsProvider } from '../ports/settingsProvider.js';
 import type { SkuRepository } from '../ports/skuRepository.js';
 import type { SubscriptionTermProvider } from '../ports/subscriptionTermProvider.js';
@@ -515,11 +535,29 @@ export type ProductHydrationInput = {
   /**
    * The sale-price details for this product's skus, keyed by `skuID`.
    *
-   * [model/entity/Product.cfc:L517-L521] computed this by reaching `promotionService`. That reach
-   * is REFUSED here under §3.9 branch (b) - see the `getSalePriceDetailsForSkus` entry in the
-   * OMISSION REGISTER - so the map arrives already reduced and already rounded from the repository
-   * boundary. Absent means "not supplied", and the reader reproduces the legacy's empty-struct
-   * answer for a miss [L186] rather than guessing.
+   * [model/entity/Product.cfc:L517-L521] computed this by reaching `promotionService`, and the
+   * ported `getSalePriceDetailsForSkus()` reproduces that reach through the injected
+   * `salePriceResolver` (§3.9 branch (a)). SUPPLYING THIS MEMBER PRE-SEEDS THAT MEMO: the legacy
+   * probe at [L518] tests the very key this field lands in, so a repository that already holds the
+   * reduced, rounded map hands it in and the reach never runs. Absent means "not supplied", not
+   * "empty" - the reader reproduces the legacy's empty-struct answer for a miss [L186] rather than
+   * guessing, and it answers absence rather than refusing when no resolver was injected either.
+   *
+   * ★ QUOTE-THEN-REVISE. This block previously read "That reach is REFUSED here under §3.9 branch
+   * (b) - see the `getSalePriceDetailsForSkus` entry in the OMISSION REGISTER". §3.9 is a
+   * CONDITIONAL decision procedure, and its branch-(a) precondition holds: `promotionRepository.ts`
+   * exports a second interface, `SalePriceResolver`, carrying exactly the member that serves
+   * `getSalePriceDetailsForProductSkus`. So branch (a) is the live arm, the method ships above, and
+   * CLUSTER 7 of the OMISSION REGISTER now records that nothing is omitted there.
+   *
+   * WHERE THE PRE-SEEDED MAP COMES FROM, so the two arrangements are not mistaken for rivals:
+   * `src/repositories/mysql/mysqlProductRepository.ts` holds a module-local
+   * `ProductSalePriceResolver` collaborator - satisfied in `src/handlers/bootstrap.ts` by adapting
+   * the ported `PromotionService.getSalePriceDetailsForProductSkus`
+   * [model/service/PromotionService.cfc:L1022] - and resolves the map on its read path BEFORE it
+   * constructs each product, forwarding the resolver itself alongside it. A repository-loaded
+   * product therefore arrives with the memo already filled AND with the collaborator that would
+   * have filled it; a hand-built one arrives with neither and answers the legacy empty struct.
    */
   readonly salePriceDetailsForSkus?: CfStruct<SalePriceDetail>;
 
@@ -541,7 +579,7 @@ export type ProductHydrationInput = {
   readonly nextOptionGroupSortOrder?: number;
 
   /**
-   * Resolves the four published settings keys. SYNCHRONOUS: `setting(key: SettingKey): string`.
+   * Resolves the seven published settings keys. SYNCHRONOUS: `setting(key: SettingKey): string`.
    *
    * Needed for exactly ONE key on this component - `globalURLKeyProduct`, read at [L208] and
    * [L212]. That key's default value is declared at [model/service/SettingService.cfc:L178] and
@@ -583,6 +621,21 @@ export type ProductHydrationInput = {
    * Adding it would be inventing an undeclared port member (prohibition 12).
    */
   readonly subscriptionTermProvider?: SubscriptionTermProvider;
+
+  /**
+   * Discharges the [L519] reach - `getSalePriceDetailsForSkus()` [L517-L522] - under §3.9 branch (a).
+   *
+   *   getSalePriceDetailsForProductSkus(productID)
+   *
+   * `SalePriceResolver` is the second interface exported by ../ports/promotionRepository.js, and it
+   * exists for exactly this constructor parameter. It is NOT a fourteenth port: the port folder
+   * still holds thirteen modules, and the resolver is co-located with `PromotionRepository` because
+   * the resolver's output is the rounding-rule-adjusted form of the rows that port's method 6
+   * returns. Satisfied in src/handlers/bootstrap.ts by adapting src/services/promotionService.ts,
+   * which is where `getSalePriceDetailsForProductSkus` itself lives
+   * [model/service/PromotionService.cfc:L1022].
+   */
+  readonly salePriceResolver?: SalePriceResolver;
 };
 
 /**
@@ -830,8 +883,17 @@ export class Product {
   /** [model/entity/Product.cfc:L118] The override slot `getPrice()` probes FIRST. */
   private readonly price: Money | undefined;
 
-  /** Reduced, rounded sale-price details keyed by `skuID`; see the §3.9 branch (b) note. */
-  private readonly salePriceDetailsForSkus: CfStruct<SalePriceDetail> | undefined;
+  /**
+   * VARIANT C memo [model/entity/Product.cfc:L518], reduced and rounded, keyed by `skuID`.
+   *
+   * NOT `readonly`, and the reason is the legacy shape rather than convenience: the memo key the
+   * source probes at [L518] IS SPELLED `variables.salePriceDetailsForSkus`, so this one field is
+   * simultaneously the memo and the slot hydration may PRE-SEED. A repository that already holds
+   * the reduced map hands it in and the [L519] reach never runs; a repository that does not leaves
+   * it absent and `getSalePriceDetailsForSkus()` fills it through the injected resolver exactly
+   * once. Both routes end at the same value, which is why one field rather than two is correct.
+   */
+  private salePriceDetailsForSkus: CfStruct<SalePriceDetail> | undefined;
 
   /** `max(SwOptionGroup.sortOrder) + 1` - the radix of the sorted-sku weighting. */
   private readonly nextOptionGroupSortOrder: number | undefined;
@@ -854,6 +916,9 @@ export class Product {
 
   /** The subscription STUB port. Present so a refusal can name a real collaborator. */
   private readonly subscriptionTermProvider: SubscriptionTermProvider | undefined;
+
+  /** Discharges [L519] `getSalePriceDetailsForProductSkus`, the §3.9 branch (a) reach. */
+  private readonly salePriceResolver: SalePriceResolver | undefined;
 
   // -------------------------------------------------------------------------
   // MEMOS
@@ -1028,6 +1093,9 @@ export class Product {
     }
     if (input.subscriptionTermProvider !== undefined) {
       this.subscriptionTermProvider = input.subscriptionTermProvider;
+    }
+    if (input.salePriceResolver !== undefined) {
+      this.salePriceResolver = input.salePriceResolver;
     }
   }
 
@@ -2195,28 +2263,91 @@ export class Product {
    *
    * `structKeyExists` / `structGet` from `../../lib/cfml/struct.js` are used rather than a bare
    * index, because CFML struct keys are CASE-INSENSITIVE and TypeScript's are not. `structGet`
-   * deliberately takes NO `defaultValue`, which is how a `0` is kept out of a price path. The
-   * detail map arrives pre-reduced and pre-ROUNDED as a hydration input; see cluster 7 of the
-   * OMISSION REGISTER for why `getSalePriceDetailsForSkus()` itself is omitted.
+   * deliberately takes NO `defaultValue`, which is how a `0` is kept out of a price path.
    *
-   * THE PROMISE IS BUILT EXPLICITLY AND THE METHOD IS NOT MARKED `async`. The promise stays because
-   * the asynchronous contract is the published one - the legacy method genuinely reaches outward
-   * ([L183] and [L184] both call `getSalePriceDetailsForSkus()`, whose body at [L519] is
-   * `getService("promotionService").getSalePriceDetailsForProductSkus(...)`) and the reach
-   * disappears here only because pre-materializing the map is a HYDRATION decision. The `async`
-   * keyword goes because there is nothing left to await; the external type is identical either way.
+   * IT DELEGATES TO `getSalePriceDetailsForSkus()`, WHICH IS WHAT THE SOURCE DOES. [L183] and
+   * [L184] each call that accessor, and the target now carries it (§3.9 branch (a)), so the
+   * delegation is literal rather than inlined. The `async` keyword is correct here because the
+   * delegate genuinely awaits: `require-await` is satisfied, and `Awaited<ReturnType<...>>` is
+   * unchanged by the keyword, so the compile-hard contract above is untouched.
+   *
+   * THE NO-COLLABORATOR EARLY RETURN IS PRESERVED BEHAVIOUR, NOT A NEW DEFAULT. When hydration
+   * supplied neither the pre-reduced map nor a resolver there is nothing to probe, and this method
+   * has always answered ABSENCE for that state rather than refusing. Routing it into the delegate's
+   * refusal instead would turn a `Product` built with no price collaborators at all - which is what
+   * a bare `new Product({ productID })` is, and what `src/repositories/mysql` builds wherever it
+   * hydrates a product stub rather than a full graph - from silent into throwing. The refusal stays
+   * where it belongs: on the delegate, which a caller reaches only by asking for the whole map. The
+   * catalog adapter itself DOES forward the resolver, so a fully hydrated product resolves.
    */
-  public getSkuSalePriceDetails(skuID: string): Promise<SalePriceDetail | undefined> {
-    const details = this.salePriceDetailsForSkus;
-    if (details === undefined) {
-      return Promise.resolve(undefined);
+  public async getSkuSalePriceDetails(skuID: string): Promise<SalePriceDetail | undefined> {
+    if (this.salePriceDetailsForSkus === undefined && this.salePriceResolver === undefined) {
+      return undefined;
     }
+    const details = await this.getSalePriceDetailsForSkus();
     // [L183] the containment probe, then [L184] the read. Both case-insensitive, as CFML's are.
     if (!structKeyExists(details, skuID)) {
       // [L186] `return {};` - absent, which every caller already treats as "no sale price".
-      return Promise.resolve(undefined);
+      return undefined;
     }
-    return Promise.resolve(structGet(details, skuID));
+    return structGet(details, skuID);
+  }
+
+  /**
+   * Every SKU's winning sale-price detail for this product, keyed by SKU identifier, memoized.
+   *
+   * Ported 1:1 from `public struct function getSalePriceDetailsForSkus()`
+   * [model/entity/Product.cfc:L517-L522]: probe the memo at [L518], fill it at [L519], return it at
+   * [L521]. The values are REDUCED and already ROUNDED, so no caller may round them again.
+   *
+   * §3.9 BRANCH (a), AND HERE IS WHY IT IS AVAILABLE. The decision procedure says to read
+   * ../ports/promotionRepository.js and take branch (a) - inject and call - if a member there can
+   * serve `getSalePriceDetailsForProductSkus`, and branch (b) - omit - if none can. That port
+   * exports `SalePriceResolver` carrying exactly that method, declared for exactly this constructor
+   * parameter, so branch (a) applies. `PromotionRepository`'s own
+   * `getSalePricePromotionRewardsQuery` still CANNOT serve it - it is the port for
+   * [model/dao/PromotionDAO.cfc:L298], the raw six-branch UNION, and it returns UNREDUCED, UNROUNDED
+   * rows, whereas the rounding happens in the service at
+   * [model/service/PromotionService.cfc:L1024-L1028] and `roundingRuleService` is outside this
+   * file's legal import surface. Reaching for that member would return unrounded prices under a
+   * method name promising rounded ones. `SalePriceResolver` is the narrow contract that closes the
+   * gap without a fourteenth port and without importing anything this entity may not see.
+   *
+   * THE LEGACY LOCATOR CALL BECOMES AN INJECTED PORT CALL - transformation rule T2:
+   *
+   *     // Legacy [model/entity/Product.cfc:L519]:
+   *     //   getService("promotionService")
+   *     //     .getSalePriceDetailsForProductSkus(productID=getProductID())
+   *     // Target:
+   *     //   this.salePriceResolver.getSalePriceDetailsForProductSkus(this.productID)
+   *
+   * ASYNC BECAUSE THE REACH IS REAL. The legacy body reaches a service that reaches a DAO, so the
+   * promise is honest rather than ceremonial; `getSkuSalePriceDetails` awaits it. The memo is
+   * INSTANCE-SCOPED and instances are REQUEST-SCOPED, so [L518]'s component-level cache does not
+   * become cross-invocation state on a warm container (AAP 0.6.5).
+   *
+   * NO SIGNATURE BUDGET IS SPENT. The name, the empty parameter list and the struct return are the
+   * source's; only `struct` becomes a typed record, which is the folder-wide treatment.
+   *
+   * @returns The reduced, rounded detail map. A SKU with no qualifying sale-price reward simply has
+   *   no key, and the map is empty when the product has none at all.
+   * @throws When hydration supplied neither the pre-reduced map nor the resolver - the uniform
+   *   refusal, because a defaulted empty map here would read as "this product is on no promotion".
+   */
+  public async getSalePriceDetailsForSkus(): Promise<CfStruct<SalePriceDetail>> {
+    // [L518] `if(!structKeyExists(variables, "salePriceDetailsForSkus"))` - the memo probe, which in
+    // the target is also the test of whether hydration pre-seeded the map.
+    if (this.salePriceDetailsForSkus === undefined) {
+      if (this.salePriceResolver === undefined) {
+        throw this.missingCollaborator('sale-price resolver', 'L519');
+      }
+      // [L519] the T2 reach, memoized into the same slot the source memoizes into.
+      this.salePriceDetailsForSkus = await this.salePriceResolver.getSalePriceDetailsForProductSkus(
+        this.productID,
+      );
+    }
+    // [L521] `return variables.salePriceDetailsForSkus;`
+    return this.salePriceDetailsForSkus;
   }
 
   // ---------------------------------------------------------------------------
@@ -2373,7 +2504,8 @@ export class Product {
   // ===========================================================================
 
   /**
-   * DEFECT 19 - FIXED. THIS IS THE THIRD AND FINAL DELIBERATE DIVERGENCE OF THE ENTIRE PROJECT.
+   * DEFECT 19 - FIXED. DELIBERATE DIVERGENCE [model/entity/Product.cfc:L524-L532] - the third and
+   * final one of the entire project.
    *
    * [model/entity/Product.cfc:L524-L532] seeds `variables.brandName` to `""` at [L526], then at
    * [L528] writes `return getBrand().getBrandName();` - computing the value and returning it
@@ -2872,8 +3004,8 @@ export class Product {
   //   getDefaultProductImageFiles()  [L497-L515]   `getService` at [L501], a sku smart list
   //
   // LEGACY-NOTE [model/entity/Product.cfc:L178-L180, L223-L225, L267-L339, L497-L515]: the image path
-  // requires `globalAssetsImageFolderPath`, which is NOT one of the four keys published by
-  // ../ports/settingsProvider.js - that port declares exactly four - and `imageStore` is a STUB port
+  // requires `globalAssetsImageFolderPath` [model/service/SettingService.cfc:L164], which is NOT one
+  // of the seven keys published by ../ports/settingsProvider.js - and `imageStore` is a STUB port
   // for out-of-scope branches only. This is the same reasoning that omitted `Option.getImageDirectory()`
   // [model/entity/Option.cfc:L81-L83] and the whole of `Sku`'s image path, and the annotation wording
   // is matched to src/domain/entities/sku.ts so the two largest entities read consistently.
@@ -2893,8 +3025,9 @@ export class Product {
   //   getAllowBackorderFlag()         [L551-L553]   reads `skuAllowBackorderFlag`
   //
   // LEGACY-NOTE [model/entity/Product.cfc:L399-L492, L547-L553]: `Stock`, `Location` and every
-  // inventory entity are out of scope, and `skuAllowBackorderFlag` is not one of the four keys
-  // ../ports/settingsProvider.js declares. The persisted snapshots `calculatedQATS` [L63] and
+  // inventory entity are out of scope, and `skuAllowBackorderFlag` [model/service/SettingService.cfc:L219]
+  // is not one of the seven keys ../ports/settingsProvider.js declares - it is explicitly excluded from
+  // that union. The persisted snapshots `calculatedQATS` [L63] and
   // `calculatedAllowBackorderFlag` [L64] ARE preserved and readable, so the schema contract is
   // intact; only the RECOMPUTATION is out of scope. `getQuantity` also holds the only three
   // `listFindNoCase` uses [L440, L442, L451], which is why that helper is not imported here.
@@ -2953,18 +3086,31 @@ export class Product {
   // snapshot `calculatedTitle` [L65] IS preserved.
   //
   // ---------------------------------------------------------------------------------------------
-  // CLUSTER 7 - `getSalePriceDetailsForSkus()` IS OMITTED.  [L517-L522], `getService` at [L519].
+  // CLUSTER 7 - NOTHING IS OMITTED HERE.  `getSalePriceDetailsForSkus()` IS PORTED, under §3.9
+  // branch (a).  [L517-L522], `getService` at [L519].
   //
-  // LEGACY-NOTE [model/entity/Product.cfc:L517-L522]: no member of ../ports/promotionRepository.js
-  // can serve `getSalePriceDetailsForProductSkus` [model/service/PromotionService.cfc:L1022]. The
-  // port declares `getSalePricePromotionRewardsQuery(productID?)`, the port for
-  // [model/dao/PromotionDAO.cfc:L298] - the raw six-branch UNION - returning unreduced, unrounded
-  // rows, whereas the SERVICE method reduces that result AND APPLIES THE ROUNDING RULE at
-  // [model/service/PromotionService.cfc:L1024-L1028], which an entity cannot do because
-  // `roundingRuleService` lives outside this file's legal import surface. Calling the raw-query
-  // member here would return UNROUNDED prices under a method name promising rounded ones - a money
-  // bug dressed as a port call. Its one in-scope consumer, `getSkuSalePriceDetails(skuID)`
-  // [L182-L187], reads the already-reduced, already-rounded map supplied at hydration.
+  // This cluster is retained rather than deleted because the register is an audit of the decision
+  // procedure, and the procedure was RUN for this member: read ../ports/promotionRepository.js, take
+  // branch (a) if a member there can serve `getSalePriceDetailsForProductSkus`
+  // [model/service/PromotionService.cfc:L1022], take branch (b) and omit if none can. The port
+  // exports `SalePriceResolver` declaring exactly that one method, so BRANCH (a) APPLIES and the
+  // member is authored above with `salePriceResolver` as an injected collaborator.
+  //
+  // The half of the argument that still holds, and that branch (a) does NOT overturn:
+  // `PromotionRepository.getSalePricePromotionRewardsQuery(productID?)` cannot serve it. That member
+  // is the port for [model/dao/PromotionDAO.cfc:L298] - the raw six-branch UNION - and it returns
+  // UNREDUCED, UNROUNDED rows, whereas the SERVICE method reduces that result AND APPLIES THE
+  // ROUNDING RULE at [model/service/PromotionService.cfc:L1024-L1028], which an entity cannot do
+  // because `roundingRuleService` lives outside this file's legal import surface. Calling that
+  // raw-query member here would return UNROUNDED prices under a method name promising rounded ones -
+  // a money bug dressed as a port call. `SalePriceResolver` is a DIFFERENT contract on the same
+  // module: one method, already-rounded output, satisfied in src/handlers/bootstrap.ts by adapting
+  // src/services/promotionService.ts, which is the tier that owns the rounding step. So branch (a)
+  // is reached without a fourteenth port and without this file importing anything it may not see.
+  //
+  // Its one in-scope consumer, `getSkuSalePriceDetails(skuID)` [L182-L187], delegates to it - and
+  // still answers from the pre-reduced map when a repository supplies one, which is what
+  // src/repositories/mysql/mysqlProductRepository.ts does not do today.
   //
   // ---------------------------------------------------------------------------------------------
   // CLUSTER 8 - THE SIX OUT-OF-SCOPE BIDIRECTIONAL HELPER PAIRS.  TWELVE MEMBERS.

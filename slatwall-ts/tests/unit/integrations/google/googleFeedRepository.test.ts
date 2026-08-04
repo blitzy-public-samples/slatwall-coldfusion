@@ -526,13 +526,20 @@ function makeSelectionRow(overrides: DriverRow = {}): DriverRow {
  * [integrationServices/google/views/feed/product.cfm:L19].
  */
 function makeAncestryRow(overrides: DriverRow = {}): DriverRow {
-  return {
+  const named: DriverRow = {
     leafProductTypeID: 'fake-product-type-id-1',
     productTypeName: 'Fake Leaf Type',
     productTypeDescription: 'Fake product type description.',
     ancestorDistance: 0,
     ...overrides,
   };
+
+  // `ancestorProductTypeID` DEFAULTS FROM THE DISTANCE, so an ordinary multi-row
+  // fixture reads as a chain of distinct ancestors rather than as a cycle. It is
+  // derived after the overrides are merged, so a case that moves a row to another
+  // distance gets the matching default, and a case that names the identifier itself -
+  // which is how the cyclic-data cases below are written - keeps its own value.
+  return { ancestorProductTypeID: `fake-ancestor-id-${String(named.ancestorDistance)}`, ...named };
 }
 
 /** One driver row for the additional-images statement. */
@@ -2510,6 +2517,249 @@ describe('the derived paths reproduce the legacy interpolations exactly', () => 
 });
 
 // ---------------------------------------------------------------------------
+// The product-type ancestry bound (S-18)
+//
+// A `parentProductTypeID` cycle is corrupt data, not a business rule, and neither
+// legacy walk guards against it: `getSimpleRepresentation()`
+// [model/entity/ProductType.cfc:L273-L278] recurses with no visited set, and
+// `buildIDPathList()` [org/Hibachi/HibachiEntity.cfc:L308-L324] is a
+// `do...while(hasParent)` loop with no visited set either. Reproducing the behaviour
+// exactly would mean reproducing a failure, so the port bounds the walk in two
+// layers, and these are the cases that hold each layer to its claim.
+//
+//   * THE DEPTH CEILING is in the statement, because the resource it bounds is the
+//     server's recursion. It was verified against a live MySQL 8.0.46: the emitted
+//     statement over a three-node cycle returns exactly 121 rows and exits 0, while
+//     the same statement with the predicate removed fails with
+//     `ERROR 3636 ... Recursive query aborted after 1001 iterations` - which is the
+//     feed-wide failure the finding names. The cases here pin the ceiling's presence
+//     and its derivation; the termination itself is not observable through a fake
+//     executor and was measured out of band.
+//   * THE VISITED-IDENTIFIER PREDICATE is in `buildProductTypeBreadcrumb`, which is
+//     where the rows become a value, and IS observable here - the recorder can hand
+//     back cyclic rows whatever the statement said. That is what the finding's
+//     "test cyclic legacy data" asks for, and it is defence in depth besides.
+// ---------------------------------------------------------------------------
+
+describe('a cyclic product-type ancestry is bounded rather than allowed to run away', () => {
+  it('renders a full acyclic chain unchanged, so the guard costs an ordinary hierarchy nothing', async () => {
+    const { rows } = await runFeed({
+      selection: [makeSelectionRow({ productTypeID: 'fake-leaf' })],
+      ancestry: [
+        makeAncestryRow({
+          leafProductTypeID: 'fake-leaf',
+          ancestorProductTypeID: 'fake-leaf',
+          productTypeName: 'Leaf',
+          ancestorDistance: 0,
+        }),
+        makeAncestryRow({
+          leafProductTypeID: 'fake-leaf',
+          ancestorProductTypeID: 'fake-middle',
+          productTypeName: 'Middle',
+          ancestorDistance: 1,
+        }),
+        makeAncestryRow({
+          leafProductTypeID: 'fake-leaf',
+          ancestorProductTypeID: 'fake-root',
+          productTypeName: 'Root',
+          ancestorDistance: 2,
+        }),
+      ],
+    });
+
+    // Root-first, every segment kept, the separator carried verbatim
+    // [model/entity/ProductType.cfc:L275]. This is the case that proves the bound is
+    // invisible to data the legacy schema can actually hold.
+    expect(rowAt(rows, 0).productTypeSimpleRepresentation).toBe('Root &raquo; Middle &raquo; Leaf');
+  });
+
+  it('★★ renders a self-referencing product type once rather than once per recursion step', async () => {
+    const { rows } = await runFeed({
+      selection: [makeSelectionRow({ productTypeID: 'self-parent' })],
+      // What the statement returns for `parentProductTypeID = productTypeID`: the same
+      // ancestor at every distance, up to the ceiling. Two rows are enough to
+      // distinguish "stops at the repeat" from "renders them all".
+      ancestry: [
+        makeAncestryRow({
+          leafProductTypeID: 'self-parent',
+          ancestorProductTypeID: 'self-parent',
+          productTypeName: 'Loops To Itself',
+          ancestorDistance: 0,
+        }),
+        makeAncestryRow({
+          leafProductTypeID: 'self-parent',
+          ancestorProductTypeID: 'self-parent',
+          productTypeName: 'Loops To Itself',
+          ancestorDistance: 1,
+        }),
+      ],
+    });
+
+    expect(rowAt(rows, 0).productTypeSimpleRepresentation).toBe('Loops To Itself');
+  });
+
+  it('★★ renders the acyclic prefix of a three-node cycle and discards everything from the repeat on', async () => {
+    const { rows } = await runFeed({
+      selection: [makeSelectionRow({ productTypeID: 'cycle-a' })],
+      // Exactly the shape a live MySQL 8.0.46 returned for a -> b -> c -> a, trimmed
+      // to two laps: distinct at distances 0-2, then the first lap repeats.
+      ancestry: [
+        makeAncestryRow({
+          leafProductTypeID: 'cycle-a',
+          ancestorProductTypeID: 'cycle-a',
+          productTypeName: 'Cycle A',
+          ancestorDistance: 0,
+        }),
+        makeAncestryRow({
+          leafProductTypeID: 'cycle-a',
+          ancestorProductTypeID: 'cycle-b',
+          productTypeName: 'Cycle B',
+          ancestorDistance: 1,
+        }),
+        makeAncestryRow({
+          leafProductTypeID: 'cycle-a',
+          ancestorProductTypeID: 'cycle-c',
+          productTypeName: 'Cycle C',
+          ancestorDistance: 2,
+        }),
+        makeAncestryRow({
+          leafProductTypeID: 'cycle-a',
+          ancestorProductTypeID: 'cycle-a',
+          productTypeName: 'Cycle A',
+          ancestorDistance: 3,
+        }),
+        makeAncestryRow({
+          leafProductTypeID: 'cycle-a',
+          ancestorProductTypeID: 'cycle-b',
+          productTypeName: 'Cycle B',
+          ancestorDistance: 4,
+        }),
+        makeAncestryRow({
+          leafProductTypeID: 'cycle-a',
+          ancestorProductTypeID: 'cycle-c',
+          productTypeName: 'Cycle C',
+          ancestorDistance: 5,
+        }),
+      ],
+    });
+
+    // Three segments, not six: the walk is leaf-first and stops the moment it meets an
+    // identifier it has already passed through, so the breadcrumb is the acyclic
+    // prefix rendered root-first.
+    expect(rowAt(rows, 0).productTypeSimpleRepresentation).toBe(
+      'Cycle C &raquo; Cycle B &raquo; Cycle A',
+    );
+  });
+
+  it('rejects the repeat wherever the driver happens to order the rows', async () => {
+    const { rows } = await runFeed({
+      selection: [makeSelectionRow({ productTypeID: 'cycle-a' })],
+      // The statement carries no ORDER BY, so row order is the server's to choose. The
+      // assembler sorts by distance itself; this case proves the rejection does not
+      // depend on the arrival order.
+      ancestry: [
+        makeAncestryRow({
+          leafProductTypeID: 'cycle-a',
+          ancestorProductTypeID: 'cycle-b',
+          productTypeName: 'Cycle B',
+          ancestorDistance: 3,
+        }),
+        makeAncestryRow({
+          leafProductTypeID: 'cycle-a',
+          ancestorProductTypeID: 'cycle-b',
+          productTypeName: 'Cycle B',
+          ancestorDistance: 1,
+        }),
+        makeAncestryRow({
+          leafProductTypeID: 'cycle-a',
+          ancestorProductTypeID: 'cycle-a',
+          productTypeName: 'Cycle A',
+          ancestorDistance: 2,
+        }),
+        makeAncestryRow({
+          leafProductTypeID: 'cycle-a',
+          ancestorProductTypeID: 'cycle-a',
+          productTypeName: 'Cycle A',
+          ancestorDistance: 0,
+        }),
+      ],
+    });
+
+    expect(rowAt(rows, 0).productTypeSimpleRepresentation).toBe('Cycle B &raquo; Cycle A');
+  });
+
+  it("still answers the leaf's own description when a cycle truncated the breadcrumb", async () => {
+    const { rows } = await runFeed({
+      selection: [makeSelectionRow({ productTypeID: 'cycle-a' })],
+      ancestry: [
+        makeAncestryRow({
+          leafProductTypeID: 'cycle-a',
+          ancestorProductTypeID: 'cycle-a',
+          productTypeName: 'Cycle A',
+          productTypeDescription: 'The leaf description.',
+          ancestorDistance: 0,
+        }),
+        makeAncestryRow({
+          leafProductTypeID: 'cycle-a',
+          ancestorProductTypeID: 'cycle-a',
+          productTypeName: 'Cycle A',
+          productTypeDescription: 'The leaf description.',
+          ancestorDistance: 1,
+        }),
+      ],
+    });
+
+    // The description is read from the `ancestorDistance === 0` row, which the
+    // truncation never removes, so the fallback `description` survives a cycle even
+    // though the breadcrumb shortened.
+    expect(rowAt(rows, 0).productTypeDescription).toBe('The leaf description.');
+    expect(rowAt(rows, 0).productTypeSimpleRepresentation).toBe('Cycle A');
+  });
+
+  it('carries the ancestor identity in the projection, which is what makes a repeat recognisable', async () => {
+    const { recorder } = await runFeed({
+      selection: [makeSelectionRow()],
+      ancestry: [makeAncestryRow()],
+    });
+    const ancestry = statementOfKind(recorder, 'ancestry');
+
+    // Both members supply it - the anchor from the requested type, the recursive member
+    // from the ancestor it just reached - and the outer projection returns it.
+    expect(occurrencesOf(ancestry.sql, 'ancestorProductTypeID')).toBe(2);
+    expect(ancestry.sql).toContain('ancestor.productTypeID');
+  });
+
+  it('★★ bounds the statement own recursion with a depth ceiling derived from the legacy path column', async () => {
+    const { recorder } = await runFeed({
+      selection: [makeSelectionRow()],
+      ancestry: [makeAncestryRow()],
+    });
+    const ancestry = statementOfKind(recorder, 'ancestry');
+
+    // 120 is the greatest distance the recursive member may PRODUCE, so a chain is at
+    // most 121 rows. The number is derived, not chosen: `productTypeID` is
+    // `length="32"` [model/entity/ProductType.cfc:L52] and `productTypeIDPath` is
+    // `length="4000"` [:L53], so N identifiers plus N-1 delimiters occupy 33N - 1
+    // characters.
+    expect(ancestry.sql).toContain('descendant.ancestorDistance < 120');
+    expect(33 * 121 - 1).toBeLessThanOrEqual(4000);
+    expect(33 * 122 - 1).toBeGreaterThan(4000);
+  });
+
+  it('keeps the ceiling out of the bound parameters, so no caller can raise it', async () => {
+    const { recorder } = await runFeed({
+      selection: [makeSelectionRow({ productTypeID: 'fake-type-a' })],
+      ancestry: [makeAncestryRow()],
+    });
+    const ancestry = statementOfKind(recorder, 'ancestry');
+
+    // The ceiling is part of the statement's structure. The only bound value is the
+    // key list, so nothing reaching this adapter from outside can widen the walk.
+    expect(boundParameters(ancestry)).toStrictEqual(['fake-type-a']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Isolation and freshness
 //
 // A warm execution container reuses a loaded module between unrelated requests,
@@ -3063,5 +3313,68 @@ describe('the sale price is resolved for the whole catalog and keyed per SKU', (
     // what keeps the six-branch union in the module that owns it.
     expect(recorder.captured).toHaveLength(3);
     expect(allStatements(recorder)).not.toContain('salePrice');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The whole-catalog materialization ceiling (S-08)
+//
+// A security review raised finding S-08, MEDIUM, CWE-400: whole-catalog feed materialization can
+// exhaust database or container resources. It is right about the shape - the selection statement
+// carries no row bound of any kind, deliberately, because the legacy controller narrowed by four
+// predicates and nothing else [integrationServices/google/controllers/feed.cfc:L58-L70], so the
+// selection is as large as the catalog and every surviving row is held in memory while four further
+// statements resolve against it.
+//
+// THE BOUND IS A REFUSAL RATHER THAN A PAGE, and that is forced rather than preferred: AAP 0.4.2
+// fixes the feed's signature as returning the document as a `string`, so a cursor or a stream would
+// change an AAP-frozen return type. The full argument is on `MAX_FEED_SELECTION_ROWS`.
+// ---------------------------------------------------------------------------
+
+describe('a catalog too large to render is refused rather than materialized', () => {
+  /** `count` distinct selection rows, which is all the ceiling inspects. */
+  function selectionRowsOf(count: number): readonly DriverRow[] {
+    return Array.from({ length: count }, (_unused, index) =>
+      makeSelectionRow({ skuID: `fake-sku-id-${String(index)}` }),
+    );
+  }
+
+  it('★★ refuses a selection ABOVE the ceiling before narrowing a single row', async () => {
+    const recorder = new RecordingExecutor({ selection: selectionRowsOf(25_001) });
+    const repository = makeRepository(recorder);
+
+    await expect(repository.fetchProductFeedRows()).rejects.toThrow(
+      /returned 25001 qualifying SKUs and at most 25000/u,
+    );
+
+    // ONE statement was issued - the selection - and none of the four the feed would have needed.
+    // Refusing before narrowing is what makes the ceiling a bound rather than a report.
+    expect(recorder.captured).toHaveLength(1);
+  });
+
+  it('materializes a selection AT the ceiling, so the limit is inclusive', async () => {
+    const recorder = new RecordingExecutor({
+      selection: selectionRowsOf(25_000),
+      ancestry: [],
+      images: [],
+    });
+    const repository = makeRepository(recorder);
+
+    const rows = await repository.fetchProductFeedRows();
+
+    expect(rows).toHaveLength(25_000);
+    expect(recorder.captured.length).toBeGreaterThan(1);
+  });
+
+  it('says what an operator should do about it, and names no row', async () => {
+    const recorder = new RecordingExecutor({ selection: selectionRowsOf(25_001) });
+    const repository = makeRepository(recorder);
+
+    // The message explains WHY it cannot be paged - the feed is one string - so the refusal is
+    // actionable rather than merely a number, and it carries no SKU identifier, price or name.
+    await expect(repository.fetchProductFeedRows()).rejects.toThrow(
+      /generated as a single string \[AAP 0\.4\.2\], so it cannot be paged or streamed/u,
+    );
+    await expect(repository.fetchProductFeedRows()).rejects.not.toThrow(/fake-sku-id-/u);
   });
 });

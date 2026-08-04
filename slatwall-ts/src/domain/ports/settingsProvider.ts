@@ -1,15 +1,24 @@
 // Settings resolver port: one synchronous, injected, string-returning resolver over a CLOSED union
-// of FOUR setting keys.
+// of SEVEN setting keys.
 //
 // The legacy platform reads a setting four different ways; all four collapse into this flat port.
 // It takes a key and returns a value - it is not an entity-graph traversal, and it is not a general
 // settings API.
 //
-// The four keys and their legacy defaults are `skuCurrency` (defaultValue="USD")
-// [model/service/SettingService.cfc:L221], `skuEligibleCurrencies` [:L222], `globalURLKeyProduct`
-// [:L178] and `globalURLKeyProductType` [:L179]. The defaults live at those declarations, not in
-// the entities that read them - notably there is no hardcoded "USD" anywhere in
-// `model/entity/Sku.cfc`.
+// The seven keys, IN THE ORDER THEIR DECLARATIONS APPEAR in `model/service/SettingService.cfc`, with
+// the defaults declared there: `globalURLKeyProduct` ("sp") [:L178], `globalURLKeyProductType`
+// ("spt") [:L179], `productImageDefaultExtension` ("jpg") [:L191],
+// `productImageOptionCodeDelimiter` ("-") [:L192], `productTitleString` (a template, not a title)
+// [:L193], `skuCurrency` ("USD") [:L221] and `skuEligibleCurrencies` (a runtime-computed list)
+// [:L222]. The defaults live at those declarations, not in the entities that read them - notably
+// there is no hardcoded "USD" anywhere in `model/entity/Sku.cfc`.
+//
+// THE UNION IS CLOSED AT SEVEN, AND AN EIGHTH KEY IS A SCOPE VIOLATION RATHER THAN A CONVENIENCE.
+// `skuAllowBackorderFlag` [:L219], `globalURLKeyBrand` ("sb") [:L177], `imageAltString` [:L183],
+// `imageMissingImagePath` [:L184], `globalAssetsImageFolderPath` [:L164],
+// `skuEligibleFulfillmentMethods` [:L223], `globalDateFormat` and `productDisplayTemplate` [:L190]
+// are each deliberately absent: every one of them belongs to a subsystem this migration does not
+// port, and adding one to make something compile would widen the slice rather than the port.
 export type SettingKey =
   /**
    * URL key segment for a product detail page.
@@ -38,6 +47,55 @@ export type SettingKey =
    * keys, and because the product-type save path is in scope.
    */
   | 'globalURLKeyProductType'
+  /**
+   * The file extension appended to a generated SKU image file name.
+   *
+   * `productImageDefaultExtension = {fieldType="text",defaultValue="jpg"}`
+   * [model/service/SettingService.cfc:L191] - default `"jpg"`.
+   *
+   * Read by `Sku.generateImageFileName()` [model/entity/Sku.cfc:L138], which appends
+   * `".#getProduct().setting('productImageDefaultExtension')#"` after the sanitized product code and
+   * the option string. THE LEGACY READ IS ON THE PRODUCT, NOT ON THE SKU - the line resolves the
+   * setting through `getProduct()` - which is exactly why ONE FLAT PROVIDER serves both entities
+   * instead of each owning its own resolution surface.
+   *
+   * The value is the extension WITHOUT the separating dot; the dot is written at the call site.
+   */
+  | 'productImageDefaultExtension'
+  /**
+   * The separator placed before each image-group option code in a generated file name.
+   *
+   * `productImageOptionCodeDelimiter = {fieldType="select", defaultValue="-"}`
+   * [model/service/SettingService.cfc:L192] - default `"-"`, whose legacy option list is exactly
+   * `['-','_']` [model/service/SettingService.cfc:L346-L347].
+   *
+   * Read by `Sku.generateImageFileName()` [model/entity/Sku.cfc:L135], once per option whose option
+   * group carries `getImageGroupFlag()`. IT IS A PREFIX PER CONTRIBUTING OPTION, NOT A JOIN
+   * SEPARATOR: the legacy concatenates the delimiter AHEAD of each code, so a single contributing
+   * option still yields a leading delimiter and none is emitted when no option group is flagged.
+   * Resolved through `getProduct()` exactly as the extension above is.
+   */
+  | 'productImageOptionCodeDelimiter'
+  /**
+   * The template a product's display title is rendered from.
+   *
+   * `productTitleString = {fieldType="text", defaultValue="${brand.brandName} ${productName}"}`
+   * [model/service/SettingService.cfc:L193].
+   *
+   * THE DEFAULT IS A TEMPLATE, NOT A TITLE. `Product.getTitle()`
+   * [model/entity/Product.cfc:L540-L545] passes it as
+   * `replaceStringTemplate(template=setting('productTitleString'), object=this)`, and the utility
+   * resolves each `${...}` marker against the entity graph. Those markers are LEGACY TEMPLATE SYNTAX
+   * with no JavaScript meaning: the value is a plain string on this port and is never evaluated here.
+   *
+   * PUBLISHED AND RESOLVED HERE, YET STILL NOT CONSUMED BY `Product.getTitle()` - and the reason has
+   * nothing to do with this key. The renderer it needs, `hibachiUtilityService.replaceStringTemplate`
+   * [model/entity/Product.cfc:L542], is a framework utility under `org/Hibachi/`, the boundary this
+   * migration extracts from and never ports, so it has no target counterpart. The key is a genuine
+   * setting of the in-scope product subsystem and belongs in this union whether or not that one
+   * renderer ever arrives.
+   */
+  | 'productTitleString'
   /**
    * The base currency a SKU's own price columns are denominated in.
    *
@@ -170,7 +228,7 @@ export interface SettingsProvider {
    * so the method is not renamed to `get`, `getSetting` or `resolve`, and the argument keeps the
    * legacy name `settingName` [model/entity/HibachiEntity.cfc:L129].
    *
-   * @param settingName - One of the four keys in {@link SettingKey}. A key
+   * @param settingName - One of the seven keys in {@link SettingKey}. A key
    *   outside that union is rejected at compile time; the legacy engine deferred
    *   the equivalent rejection to a runtime throw
    *   [model/service/SettingService.cfc:L513].

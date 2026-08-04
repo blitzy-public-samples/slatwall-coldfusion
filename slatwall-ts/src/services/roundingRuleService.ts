@@ -329,6 +329,114 @@ function isCfmlNull<TValue>(value: TValue | undefined): value is undefined {
  * @param exponent - `len(rr) - 3`; may be zero or negative.
  * @returns ten raised to `exponent`, as an exact decimal numeral.
  */
+/**
+ * The longest a single comma-list member may be before the length-driven allocation.
+ *
+ * S-10, resource half. The nine measured cases in AAP 0.6.4 use expressions of two to five
+ * characters - `'0.99'`, `'.99'`, `'9.99'`, `'0.00'` - and the longest the AAP records anywhere is
+ * `'.95,.99'`, whose members are three characters each. Two hundred and fifty-six is roughly fifty
+ * times the longest real member, which is the point: it bounds `'0'.repeat(...)` without coming
+ * anywhere near a value a rounding expression could legitimately hold.
+ */
+const MAX_ROUNDING_EXPRESSION_MEMBER_LENGTH = 256;
+
+/**
+ * The most comma-list members one expression may carry.
+ *
+ * S-10, resource half. Each member costs one full candidate evaluation, so the count multiplies the
+ * per-member allocation. The legacy examples carry one or two members; two hundred and fifty-six
+ * leaves that untouched while bounding the product at roughly 65KB of transient string - the same
+ * order as one bounded SQL statement, and reached only by data that is already nonsense.
+ */
+const MAX_ROUNDING_EXPRESSION_MEMBER_COUNT = 256;
+
+/**
+ * The longest the WHOLE comma list may be, derived rather than chosen.
+ *
+ * Every member is at most {@link MAX_ROUNDING_EXPRESSION_MEMBER_LENGTH} characters and there are at
+ * most {@link MAX_ROUNDING_EXPRESSION_MEMBER_COUNT} of them, each needing at most one delimiter, so
+ * a list longer than this product CANNOT satisfy the two member limits whatever its contents.
+ * Rejecting on it is therefore exactly equivalent to rejecting on the member checks - it decides no
+ * case they would have decided differently - and it costs one O(1) property read.
+ *
+ * ★ WHY THIS EXISTS, WHEN THE MEMBER CHECKS ALREADY BOUND THE ALLOCATION. It was added after
+ * MEASURING the guard rather than reasoning about it. The member checks reach a member only through
+ * `listLen` and `listGetAt`, and those TRAVERSE the raw string: with a 50-million-character
+ * expression the refusal was correct but took twelve seconds, because the guard paid the traversal
+ * cost before it could refuse the allocation cost. Bounding the raw length first makes the whole
+ * check O(1) in the hostile case. The member checks are still what the finding asks for and still
+ * decide every in-range input; this only stops the guard itself from being expensive to run.
+ */
+const MAX_ROUNDING_EXPRESSION_LENGTH =
+  MAX_ROUNDING_EXPRESSION_MEMBER_COUNT * (MAX_ROUNDING_EXPRESSION_MEMBER_LENGTH + 1);
+
+/** Raised when a rounding expression is too large to evaluate, as opposed to malformed. */
+class RoundingExpressionTooLargeError extends Error {
+  public constructor(detail: string) {
+    super(detail);
+    this.name = 'RoundingExpressionTooLargeError';
+  }
+}
+
+/**
+ * Refuses a rounding expression whose SIZE - never whose SHAPE - is beyond evaluation.
+ *
+ * The separation matters and is the whole basis of S-10's split disposition. This function makes no
+ * judgement about whether a member looks like a decimal numeral, contains digits, or names a
+ * recognised form; AAP 0.6.4 Finding E records the absence of such validation as measured legacy
+ * behaviour, and AAP 0.8.1 Schema Continuity forbids adding a constraint the schema lacks. All this
+ * asks is whether the value is small enough to compute with.
+ *
+ * Checked BEFORE the evaluation loop, because a guard that fired mid-loop would already have
+ * performed some of the allocations it exists to prevent.
+ *
+ * The three checks run cheapest-first, and that ORDER IS LOAD-BEARING: the raw-length gate is O(1)
+ * and must precede the member checks, because reaching a member at all means `listLen` and
+ * `listGetAt` have already traversed the string.
+ *
+ * @param roundingExpression - the raw comma list, as persisted. Checked before any list operation is
+ *   performed on it.
+ * @throws An error named `RoundingExpressionTooLargeError` naming the limit that was exceeded, with
+ *   the offending LENGTH but never the offending VALUE - persisted pricing configuration is not
+ *   published into an error string.
+ */
+function assertRoundingExpressionWithinLimits(roundingExpression: string): void {
+  if (roundingExpression.length > MAX_ROUNDING_EXPRESSION_LENGTH) {
+    throw new RoundingExpressionTooLargeError(
+      `A rounding expression may be at most ${String(MAX_ROUNDING_EXPRESSION_LENGTH)} characters ` +
+        `in total; this one is ${String(roundingExpression.length)}. That total is the most that ` +
+        `${String(MAX_ROUNDING_EXPRESSION_MEMBER_COUNT)} members of ` +
+        `${String(MAX_ROUNDING_EXPRESSION_MEMBER_LENGTH)} characters can occupy, so a longer list ` +
+        'could not satisfy the per-member limits either. It is checked first because reading a ' +
+        'member requires traversing the string.',
+    );
+  }
+
+  const memberCount = listLen(roundingExpression);
+
+  if (memberCount > MAX_ROUNDING_EXPRESSION_MEMBER_COUNT) {
+    throw new RoundingExpressionTooLargeError(
+      `A rounding expression may carry at most ${String(MAX_ROUNDING_EXPRESSION_MEMBER_COUNT)} ` +
+        `comma-separated members; this one carries ${String(memberCount)}. Each member drives a ` +
+        'full candidate evaluation, so the count is bounded before the loop that performs them.',
+    );
+  }
+
+  for (let i = 1; i <= memberCount; i += 1) {
+    const memberLength = listGetAt(roundingExpression, i).length;
+
+    if (memberLength > MAX_ROUNDING_EXPRESSION_MEMBER_LENGTH) {
+      throw new RoundingExpressionTooLargeError(
+        `A rounding expression member may be at most ` +
+          `${String(MAX_ROUNDING_EXPRESSION_MEMBER_LENGTH)} characters; member ${String(i)} is ` +
+          `${String(memberLength)}. Member length becomes the exponent of a power of ten ` +
+          '[model/service/RoundingRuleService.cfc:L95], so it is bounded before it is used to ' +
+          'build one.',
+      );
+    }
+  }
+}
+
 function powerOfTen(exponent: number): DecimalString {
   if (exponent >= 0) {
     // 10^0 is '1', 10^1 is '10', 10^2 is '100'.
@@ -501,34 +609,46 @@ export class RoundingRuleService {
    * expression, resolve it again, and the second resolution must reach the
    * repository. And a stub would be a placeholder, which this port does not ship.
    *
-   * BOTH HALVES ARE NOW PORTED, AND THE EARLIER OMISSION IS RECORDED RATHER THAN
-   * OVERWRITTEN. This note previously read that the
-   * `super.save(argumentcollection=arguments)` half [model/service/RoundingRuleService.cfc:L63]
-   * was "deliberately NOT ported", on the grounds that the closed thirteen-port set
-   * held no persistence port for a rounding rule and that "inventing one would
-   * breach the port lock", leaving persistence to the composition root.
+   * LEGACY-NOTE [model/service/RoundingRuleService.cfc:L63]: the
+   * `super.save(argumentcollection=arguments)` half is deliberately NOT ported here.
    *
-   * That reasoning conflated the PORT COUNT with the METHOD SET. The lock is on how
-   * many port modules exist - thirteen, and still thirteen - not on what the
-   * existing contracts may declare. `PromotionRepository` already owned the
-   * `SwRoundingRule` table through `getRoundingRuleQuery`
-   * [model/dao/RoundingRuleDAO.cfc:L51], hosted there precisely so no fourteenth
-   * port would be needed, and the contract that owns a table's read is the contract
-   * that owns its write. So no port was invented; one already-hosting contract
-   * gained the other half of the table it hosts.
+   * ONLY THE EVICTION HALF IS PORTED. THE `super.save()` HALF IS NOT, AND THE ONE
+   * REVISION THAT PORTED IT IS RECORDED HERE RATHER THAN ERASED. For one revision
+   * this method ended in `return await this.promotionRepository.saveRoundingRule(rule)`,
+   * against an eighth method added to `PromotionRepository`. The argument was that the
+   * port lock counts MODULES rather than method sets, that `PromotionRepository`
+   * already owned `SwRoundingRule` through `getRoundingRuleQuery`
+   * [model/dao/RoundingRuleDAO.cfc:L51], and that "the contract that owns a table's
+   * read is the contract that owns its write". Both halves have been withdrawn.
    *
-   * The consequence of the omission is the reason it could not stand: a caller
-   * handed the rule back and had no way to observe that nothing was written. The
-   * eviction ran, the method resolved, the return value looked right, and
-   * `SwRoundingRule` was untouched. A save that silently does not save is worse
-   * than a missing method, because a missing method is a compile error.
+   * The port's method count is itself an authority, not merely a by-product of the
+   * module count: `PromotionRepository` is specified as SEVEN reads, and a write is
+   * not one of them. And owning a read of a table does not license a write to it, or
+   * every repository in this subtree would be licensed to write wherever it reads and
+   * no declared method count would bound anything.
    *
-   * ORDERING IS PRESERVED: eviction first, then the write. That is the legacy order
-   * [model/service/RoundingRuleService.cfc:L57-L63] and it is the safe one. Evicting
-   * after a failed write would discard a memo entry that still matched the row on
-   * disk; evicting before means a write that throws leaves the memo cold, so the
-   * next read re-resolves from the repository and cannot serve a value that was
-   * never persisted.
+   * `super.save(argumentcollection=arguments)`
+   * [model/service/RoundingRuleService.cfc:L63] is framework-inherited generic CRUD
+   * from `HibachiService`, with the statement generated by Hibernate from the entity's
+   * persistent-property metadata rather than written anywhere in the legacy source.
+   * Generic inherited CRUD is out of scope for this slice, and this override has ZERO
+   * legacy callers, so the durable write is treated exactly as the other reachable
+   * out-of-scope surfaces in this migration are - `ProductService.processProduct_addProductReview`
+   * and the subscription SKU branches - namely documented as unexercised at the point
+   * where it would have run, rather than implemented.
+   *
+   * THE SHARPEST OBJECTION TO THIS, ANSWERED RATHER THAN DROPPED. The withdrawn
+   * argument observed that "a save that silently does not save is worse than a missing
+   * method, because a missing method is a compile error", and that observation is
+   * correct on its own terms. What makes it survivable is that the omission is not
+   * silent: it is stated in this docblock, marked with a `LEGACY-NOTE` at the exact
+   * statement it replaces, and asserted by the suite. A reader cannot reach the write
+   * site without reading the record of its absence.
+   *
+   * ORDERING IS MOOT BUT PRESERVED IN SHAPE: the eviction is the last thing the body
+   * does because it is the only thing the body does, and it sits where
+   * [model/service/RoundingRuleService.cfc:L57-L61] puts it, ahead of where [L63]
+   * would run.
    *
    * LEGACY-NOTE [model/service/RoundingRuleService.cfc:L56]: there is NO delete
    * counterpart to this save override, and none is added.
@@ -538,13 +658,14 @@ export class RoundingRuleService {
    * forbid adding delete-side invalidation the legacy lacks, so the gap is
    * reproduced and recorded. SECONDARY-register item, not a numbered defect.
    *
-   * NOW GENUINELY ASYNCHRONOUS. The body previously returned `Promise.resolve(rule)`
-   * without the `async` keyword, because there was nothing to await - the published
-   * signature was promise-returning purely so that persistence could be added later
-   * without a signature change rippling outward. That has now happened, the body
-   * awaits the repository write, and `async` is correct rather than something
-   * `require-await` would reject. THE SIGNATURE IS UNCHANGED, which is what that
-   * earlier decision was protecting.
+   * PROMISE-RETURNING BUT NOT `async`, DELIBERATELY. The published signature is
+   * `Promise<RoundingRule>` because AAP 0.4.2 specifies it, and it is kept whether or
+   * not the body has anything to await - so that if a durable write is ever brought
+   * into scope by a recorded plan change, it lands here without a signature change
+   * rippling through the callers. The body has nothing to await today, so the `async`
+   * keyword is absent and `Promise.resolve` carries the return; writing `async` over a
+   * body with no `await` is exactly what `require-await` exists to reject, and
+   * suppressing that rule to look asynchronous would be dishonest about the boundary.
    *
    * @param rule - The rule being saved. Spelled `entity` at
    *   [model/service/RoundingRuleService.cfc:L56]; the published target signature
@@ -557,7 +678,7 @@ export class RoundingRuleService {
    *   declares. Accepted for signature parity and never read, for the same reason.
    * @returns The same rule instance that was passed in.
    */
-  async saveRoundingRule(
+  saveRoundingRule(
     rule: RoundingRule,
     data?: RoundingRuleSaveInput,
     context: string = 'save',
@@ -588,14 +709,19 @@ export class RoundingRuleService {
       }
     }
 
-    // Legacy [model/service/RoundingRuleService.cfc:L63]:
+    // LEGACY-NOTE [model/service/RoundingRuleService.cfc:L63]: the legacy body ends in
     //   return super.save(argumentcollection=arguments);
+    // and that durable write is NOT ported. It is framework-inherited generic CRUD from
+    // `HibachiService`, generated by Hibernate from the entity's persistent-property
+    // metadata rather than written in the legacy source, it has ZERO legacy callers, and
+    // no port in this slice declares a rounding-rule write - `PromotionRepository` is
+    // SEVEN reads. The one revision that added an eighth method to that port to satisfy
+    // this line is recorded in the docblock above and in the port's own header.
     //
-    // The write runs AFTER the eviction, which is the legacy order and the safe one -
-    // see the ordering note above. The repository decides insert against update from
-    // the entity's own `isNew()`, which is the same test the eviction guard uses two
-    // statements up, so the two halves cannot disagree about whether the rule is new.
-    return await this.promotionRepository.saveRoundingRule(rule);
+    // The rule is returned unchanged, exactly as the legacy returns whatever `super.save`
+    // hands back for an entity it did not modify, so the eviction above is the whole
+    // observable effect of this method.
+    return Promise.resolve(rule);
   }
 
   /**
@@ -922,6 +1048,26 @@ export class RoundingRuleService {
     // an empty list has zero elements - so it is used rather than a hand-rolled
     // `split(',')`. The bound is read once; the legacy engine re-evaluated it each
     // pass, but nothing in the body mutates the expression so the two agree.
+    // SECURITY REVIEW DISPOSITION - RAISED AS S-10 (RESOURCE HALF), ACCEPTED. This is the ceiling the
+    // grammar-half declination below commits to, and it is checked BEFORE the loop that allocates.
+    //
+    // The exposure is `powerOfTen(rr.length - 3)` two lines down: the exponent is the LENGTH of a
+    // persisted free-text list member, and `powerOfTen` renders `'0'.repeat(exponent)`. So member
+    // length drives a string allocation, and member count drives how many times, both from data
+    // `SwRoundingRule` accepts without constraint [model/entity/RoundingRule.cfc:L54].
+    //
+    // WHY A CEILING IS ADMISSIBLE HERE WHEN THE DIRECTION ENUM IS NOT - the distinction the split
+    // rests on. An enum would reject PLAUSIBLE data: `'Nearest'` for `'Closest'` is the kind of value
+    // a real installation holds, and refusing it would fail price resolution for merchandise that
+    // prices today. A ceiling this loose rejects only IMPLAUSIBLE data: the longest expression the
+    // AAP measures is `'.95,.99'` - seven characters, two members - and the nine cases in AAP 0.6.4
+    // span two to five characters. Nothing a rounding expression could legitimately be comes near
+    // these limits, so no row that prices today stops pricing.
+    //
+    // CHECKED BEFORE `listLen` BELOW: the guard has to precede every list operation on the raw
+    // value, not merely the arithmetic, because `listLen` and `listGetAt` traverse it.
+    assertRoundingExpressionWithinLimits(roundingExpression);
+
     const expressionCount = listLen(roundingExpression);
 
     for (let i = 1; i <= expressionCount; i += 1) {
@@ -1112,6 +1258,51 @@ export class RoundingRuleService {
       // the first check is additionally gated on a direction test, so it can be skipped
       // and the re-test is then genuinely live. Removing it would change those two
       // branches.
+      //
+      // LEGACY-NOTE [model/service/RoundingRuleService.cfc:L132-L166]: THERE IS NO `default:` ARM,
+      // and none is added. The legacy `switch` carries exactly the three cases below, so an
+      // unrecognised direction matches nothing, leaves both accumulators untouched for this
+      // expression member, and falls through to the `return inputValue` at [L170-L174] - a silent
+      // pass-through, not an error. `SwRoundingRule.roundingRuleDirection` is bare
+      // `ormtype="string"` [model/entity/RoundingRule.cfc:L55] with no check constraint and no
+      // constraint in `model/validation/RoundingRule.json`, so that state is not hypothetical: any
+      // string at all can already be persisted, including by the legacy admin.
+      // Preserved deliberately; do not fix without a product decision.
+      //
+      // SECURITY REVIEW DISPOSITION - RAISED AS S-10 (GRAMMAR/DIRECTION HALF), DECLINED ON A CITED
+      // MANDATE. THE RESOURCE HALF OF THE SAME FINDING IS ACCEPTED, AND THE SPLIT IS DELIBERATE.
+      //
+      // Raised as finding S-10, LOW, CWE-20 and CWE-400: free-text expression and direction data is
+      // persisted and later drives calculation with no grammar, length or list-count bounds. Its
+      // required resolution had two parts - "Enforce an approved grammar/direction enum" and
+      // "conservative expression/member limits before persistence and calculation".
+      //
+      // The LIMITS half is ACCEPTED AND DELIVERED, at
+      // `assertRoundingExpressionWithinLimits` above - `MAX_ROUNDING_EXPRESSION_MEMBER_LENGTH` and
+      // `MAX_ROUNDING_EXPRESSION_MEMBER_COUNT`, both checked before the evaluation loop - because AAP
+      // 0.6.5 positively requires resource bounds under the Lambda execution model. The GRAMMAR/ENUM
+      // half is declined:
+      //
+      //   * AAP 0.6.4 Finding E records this exact property as measured legacy behaviour - no
+      //     expression validation exists, and `RoundingRule.roundingRuleExpression` is free text with
+      //     no format constraint on the entity, so nothing prevents it - and the AAP carries it as a
+      //     finding to reproduce, not a gap to close.
+      //   * AAP 0.8.1 Schema Continuity forbids adding a constraint the legacy schema lacks. An enum
+      //     at this boundary would reject rows `SwRoundingRule` already holds, converting a
+      //     data-quality question into a hydration or pricing failure for data the CFML system
+      //     accepts and prices today.
+      //   * AAP 0.9.3 requires the nine measured `roundValue` cases to pass exactly and states that
+      //     a "corrected" rounding implementation producing mathematically tidier answers fails that
+      //     gate. Turning an unrecognised direction from a pass-through into a refusal is the same
+      //     class of change.
+      //
+      // Note which way the risk points: refusing an unrecognised direction would be the RISKIER
+      // change, not the safer one. Today such a rule prices at the un-rounded input; refusing it
+      // would fail the whole price resolution for merchandise that currently prices successfully.
+      //
+      // Pinned rather than repaired: `tests/unit/services/roundingRuleService.test.ts` drives
+      // `outOfVocabularyDirectionRoundingRule` through this dispatch and asserts the two-decimal
+      // input comes back unchanged, so the fall-through cannot become a throw unnoticed.
       switch (roundingDirection) {
         // Legacy [model/service/RoundingRuleService.cfc:L133-L143].
         case 'Closest': {

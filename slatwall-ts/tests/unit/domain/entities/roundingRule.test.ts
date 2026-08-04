@@ -1,38 +1,16 @@
-// ---------------------------------------------------------------------------
-// slatwall-ts - unit suite for `src/domain/entities/roundingRule.ts`
+// slatwall-ts - unit suite for `src/domain/entities/roundingRule.ts`.
 //
-// Pins the `SwRoundingRule` row and the three behaviours [model/entity/RoundingRule.cfc] declares
-// over it:
+// NET-NEW coverage: no legacy test component constructs a RoundingRule. The scope is the three
+// behaviours [model/entity/RoundingRule.cfc] declares over the `SwRoundingRule` row - the pure
+// delegation of `roundValue()` [model/entity/RoundingRule.cfc:L66-L68], the three direction options
+// [model/entity/RoundingRule.cfc:L70-L76], and `hasExpressionWithListOfNumericValuesOnly()`, which
+// no line of CFML calls because [model/validation/RoundingRule.json:L4] names it by string
+// [model/entity/RoundingRule.cfc:L78-L86].
 //
-//   1. `roundValue()` is PURE DELEGATION [model/entity/RoundingRule.cfc:L66-L68]. The legacy
-//      body is one line, `getService("roundingRuleService")` then
-//      `.roundValueByRoundingRule(value=arguments.value, roundingRule=this)`, so what is
-//      pinned is the crossing itself: the value goes over unchanged, `this` goes over as the
-//      rule, the answer comes back untouched, and nothing is memoized.
-//   2. `getRoundingRuleDirectionOptions()` returns exactly three options, in source order,
-//      with the exact legacy strings [model/entity/RoundingRule.cfc:L70-L76].
-//   3. `hasExpressionWithListOfNumericValuesOnly()` is a DECLARATIVELY INVOKED validator:
-//      no line of CFML calls it, and [model/validation/RoundingRule.json:L4] names it by
-//      string. Its arithmetic is NOT the "two decimal places" test it resembles
-//      [model/entity/RoundingRule.cfc:L78-L86].
-//
-// THE ROUNDING ALGORITHM IS NOT TESTED HERE. The decimal-string algorithm lives in
-// [model/service/RoundingRuleService.cfc:L88-L175] and is ported to the SERVICE tier, where its
-// measured characterization outputs belong; this entity contributes exactly one line of behaviour
-// to that path [model/entity/RoundingRule.cfc:L67]. Every amount below is handed to the
-// collaborator double BY the test and returned unchanged.
-//
-// Three source facts the suite is shaped around:
-//   1. `RoundingRuleValueRounder` IS NOT EXPORTED - declared without `export` at
-//      src/domain/entities/roundingRule.ts:L419 - so importing that name would not compile
-//      and this suite declares its own {@link RecordingValueRounder} instead.
-//   2. TWO AUDIT TIMESTAMPS, NOT THREE: `createdDateTime`
-//      [model/entity/RoundingRule.cfc:L58] and `modifiedDateTime` [L60]. The other two are
-//      `many-to-one` associations to the out-of-scope `Account`, collapsed to the opaque
-//      foreign-key columns `createdByAccountID` [L59] and `modifiedByAccountID` [L61].
-//   3. AN ABSENT EXPRESSION DOES NOT THROW. The shipped predicate normalizes it at
-//      src/domain/entities/roundingRule.ts:L1034 and answers `true`.
-// ---------------------------------------------------------------------------
+// The decimal-string rounding algorithm is NOT exercised here: it lives at
+// [model/service/RoundingRuleService.cfc:L88-L175] and its measured outputs are characterized by the
+// service-tier suite. Every amount below is handed to the collaborator double by the test and comes
+// back unchanged.
 
 import { describe, expect, it } from 'vitest';
 
@@ -43,9 +21,6 @@ import type {
 } from '../../../../src/domain/entities/roundingRule.js';
 import { Money } from '../../../../src/domain/valueObjects/money.js';
 
-// --- The collaborator double ---------------------------------------------
-
-/** One recorded crossing of the entity -> collaborator boundary. */
 interface RecordedRoundValueCall {
   readonly value: Money;
   readonly rule: RoundingRule;
@@ -57,14 +32,14 @@ interface RecordedRoundValueCall {
  * The single method mirrors [model/service/RoundingRuleService.cfc:L84-L86] -
  * `roundValueByRoundingRule(required any value, required any roundingRule)` - with the two `any`
  * parameters narrowed to `Money` and `RoundingRule`, which is the shape
- * src/domain/entities/roundingRule.ts:L419-L421 declares without `export`. This suite reproduces
- * the shape and lets structural typing do the rest, exactly as
- * `src/services/roundingRuleService.ts` will satisfy it without importing the name.
+ * src/domain/entities/roundingRule.ts:L419-L421 declares without `export`. Because the name cannot
+ * be imported, structural typing carries the contract: `RoundingRuleService` structurally satisfies
+ * it with its own `roundValueByRoundingRule(value: Money, rule: RoundingRule): Money`, and this
+ * double satisfies it the same way.
  */
 interface RecordingValueRounder {
   roundValueByRoundingRule(value: Money, rule: RoundingRule): Money;
 
-  /** Every call so far, in call order. */
   readonly calls: readonly RecordedRoundValueCall[];
 }
 
@@ -94,19 +69,8 @@ function aValueRounder(...results: readonly Money[]): RecordingValueRounder {
   };
 }
 
-// --- The subject builder -------------------------------------------------
-
-/** The shipped constructor's data parameter, read off the class rather than restated. */
 type RoundingRuleInit = ConstructorParameters<typeof RoundingRule>[0];
 
-/**
- * One element of the `priceGroupRates` collection [model/entity/RoundingRule.cfc:L64].
- *
- * Derived from the shipped signature rather than imported: `priceGroupRate.ts` is not one of this
- * suite's two permitted dependencies, so the element type is read out of `RoundingRule`'s own
- * public constructor. Were that element type to change, this alias would follow it and the suite
- * would fail to compile rather than silently drift.
- */
 type AttachedPriceGroupRate = RoundingRuleInit['priceGroupRates'][number];
 
 /**
@@ -169,19 +133,10 @@ function aRoundingRule(
   );
 }
 
-/**
- * Runs the declarative validator over one expression, on a rule built for the purpose.
- *
- * @param roundingRuleExpression - the persisted expression to judge.
- */
 function expressionIsAccepted(roundingRuleExpression: string): boolean {
   return aRoundingRule({ roundingRuleExpression }).hasExpressionWithListOfNumericValuesOnly();
 }
 
-/**
- * The `maxCollection` bound the delete-context rule declares
- * [model/validation/RoundingRule.json:L6].
- */
 const DELETE_CONTEXT_MAX_COLLECTION = 0;
 
 /**
@@ -229,7 +184,6 @@ const PORTED_PUBLIC_SURFACE: readonly string[] = [
   'roundValue',
 ];
 
-/** The members the legacy dispatcher and framework base supplied, none of them ported. */
 const UNPORTED_FRAMEWORK_MEMBERS: readonly string[] = [
   'getNewFlag',
   'getPrimaryIDValue',
@@ -275,16 +229,12 @@ describe('roundValue delegates, and does nothing else', () => {
 
     const [call] = valueRounder.calls;
 
-    // The value crosses by IDENTITY, not equality: nothing re-wraps or re-scales it.
     expect(call?.value).toBe(value);
 
-    // `roundingRule=this` [model/entity/RoundingRule.cfc:L67] - the same instance.
     expect(call?.rule).toBe(subject);
   });
 
   it('hands over a rule the collaborator can read its expression and direction from', () => {
-    // [model/service/RoundingRuleService.cfc:L85] reads BOTH columns off the rule it is handed, so
-    // passing `this` is load-bearing rather than ceremonial.
     const valueRounder = aValueRounder(Money.fromDecimalString('8.25'));
     const subject = aRoundingRule(
       { roundingRuleExpression: '.95,.99', roundingRuleDirection: 'Up' },
@@ -300,8 +250,6 @@ describe('roundValue delegates, and does nothing else', () => {
   });
 
   it('returns the collaborator answer unchanged, computing nothing of its own', () => {
-    // The answer is deliberately UNRELATED to the value handed in, so local arithmetic in the
-    // entity would show up here as a mismatch.
     const answer = Money.fromDecimalString('8.25');
     const subject = aRoundingRule({ roundingRuleExpression: '.99' }, aValueRounder(answer));
 
@@ -312,7 +260,6 @@ describe('roundValue delegates, and does nothing else', () => {
   });
 
   it('delegates on every call and memoizes nothing', () => {
-    // Two calls, two DIFFERENT scripted answers: a caching entity would fail both counts.
     const first = Money.fromDecimalString('8.25');
     const second = Money.fromDecimalString('3.50');
     const valueRounder = aValueRounder(first, second);
@@ -339,8 +286,6 @@ describe('roundValue delegates, and does nothing else', () => {
   });
 
   it('reaches the collaborator from nowhere but roundValue', () => {
-    // Constructing the entity and reading every accessor must cost zero delegations, which is what
-    // makes the other twelve members pure reads.
     const valueRounder = aValueRounder(Money.fromDecimalString('8.25'));
     const subject = aRoundingRule(
       {
@@ -401,8 +346,6 @@ describe('getRoundingRuleDirectionOptions', () => {
   });
 
   it('offers exactly the three direction values the exported union names', () => {
-    // `RoundingRuleDirection` is derived from this option list at
-    // src/domain/entities/roundingRule.ts:L347, and this is where it is load-bearing.
     const expectedValues: readonly RoundingRuleDirection[] = ['Closest', 'Up', 'Down'];
 
     const values = aRoundingRule()
@@ -413,10 +356,6 @@ describe('getRoundingRuleDirectionOptions', () => {
   });
 
   it('carries hardcoded English display names rather than resource-bundle keys', () => {
-    // CFML parity [model/entity/RoundingRule.cfc:L70-L76]: the three display names are HARDCODED
-    // ENGLISH LITERALS, with no `rbKey`, no `hb_rbKey` and no `hb_nullRBKey` in the component -
-    // unusual here, where a dotted key such as `define.none` is the norm. JavaRB is not ported, so
-    // inventing keys would fabricate a legacy mechanism.
     const names = aRoundingRule()
       .getRoundingRuleDirectionOptions()
       .map((option) => option.name);
@@ -424,15 +363,12 @@ describe('getRoundingRuleDirectionOptions', () => {
     expect(names).toEqual(['Round to Closest', 'Only Round Up', 'Only Round Down']);
 
     for (const name of names) {
-      // Letters and spaces only: a resource-bundle identifier would carry a `.`.
       expect(name).toMatch(/^[A-Za-z ]+$/);
       expect(name).toContain(' ');
     }
   });
 
   it('returns a fresh array on every call, so no caller can mutate a shared list', () => {
-    // The CFML literal was re-evaluated per invocation, so no two callers shared an array. A
-    // hoisted module-scope literal would be shared state on a warm container.
     const subject = aRoundingRule();
 
     const first = subject.getRoundingRuleDirectionOptions();
@@ -443,7 +379,6 @@ describe('getRoundingRuleDirectionOptions', () => {
   });
 
   it('offers the same three options whatever the persisted direction happens to be', () => {
-    // The list is ADVISORY: it populates a select and does not describe the row.
     const outOfVocabulary = aRoundingRule({ roundingRuleDirection: 'Sideways' });
     const inVocabulary = aRoundingRule({ roundingRuleDirection: 'Down' });
 
@@ -454,9 +389,9 @@ describe('getRoundingRuleDirectionOptions', () => {
 });
 
 describe('getRoundingRuleDirection returns the persisted string, un-narrowed', () => {
-  // CFML parity [model/entity/RoundingRule.cfc:L55, model/validation/RoundingRule.json:L5]: the
-  // column is a bare `ormtype="string"` with no check constraint and no enumeration, and the schema
-  // requires it WITHOUT constraining its value. So a validated `'Sideways'` is persisted happily
+  // CFML parity [model/entity/RoundingRule.cfc:L55]: the column is a bare `ormtype="string"` with
+  // no check constraint and no enumeration, and [model/validation/RoundingRule.json:L5] requires it
+  // on save WITHOUT constraining its value. So a validated `'Sideways'` is persisted happily
   // and then reaches the rounding switch, where it matches no case and falls through. Only the
   // first half is this entity's: the accessor neither rejects nor narrows. The fall-through is
   // service-side.
@@ -469,7 +404,6 @@ describe('getRoundingRuleDirection returns the persisted string, un-narrowed', (
   });
 
   it('confirms that value really is outside the offered vocabulary', () => {
-    // Otherwise the assertion above could pass on a value that happened to be legal.
     const subject = aRoundingRule({ roundingRuleDirection: 'Sideways' });
     const offered: readonly string[] = subject
       .getRoundingRuleDirectionOptions()
@@ -489,9 +423,6 @@ describe('getRoundingRuleDirection returns the persisted string, un-narrowed', (
   });
 
   it('does not normalize case', () => {
-    // CFML parity [model/entity/RoundingRule.cfc:L55]: the accessor reports the column as written.
-    // Downstream CFML comparisons are case-insensitive, but that leniency belongs to the comparing
-    // code - normalizing HERE would rewrite persisted data on the way out.
     expect(aRoundingRule({ roundingRuleDirection: 'closest' }).getRoundingRuleDirection()).toBe(
       'closest',
     );
@@ -499,9 +430,6 @@ describe('getRoundingRuleDirection returns the persisted string, un-narrowed', (
   });
 
   it('reports undefined for a null column rather than substituting a default', () => {
-    // The `'Closest'` default lives on the SERVICE signature
-    // [model/service/RoundingRuleService.cfc:L88], where CFML applied it when the argument arrived
-    // null. Substituting it here would hide "no direction recorded".
     const subject = aRoundingRule({ roundingRuleDirection: undefined });
 
     expect(subject.getRoundingRuleDirection()).toBeUndefined();
@@ -551,14 +479,10 @@ describe('hasExpressionWithListOfNumericValuesOnly accepts', () => {
   });
 
   it('the all-zero two-decimal expression', () => {
-    // `'0.00'` is also the expression the service DECLARES AS ITS DEFAULT
-    // [model/service/RoundingRuleService.cfc:L88], which is why it must pass this predicate.
     expect(expressionIsAccepted('0.00')).toBe(true);
   });
 
   it('a multi-element comma list where every element passes', () => {
-    // The loop walks the WHOLE list [model/entity/RoundingRule.cfc:L79], reaching `return true` at
-    // L85 only once no element has offended.
     expect(expressionIsAccepted('.95,.99')).toBe(true);
   });
 
@@ -581,7 +505,6 @@ describe('hasExpressionWithListOfNumericValuesOnly rejects', () => {
   });
 
   it('a list whose first element offends, without examining the rest', () => {
-    // `return false` at L82 fires on the FIRST offending element.
     expect(expressionIsAccepted('999,.99')).toBe(false);
   });
 
@@ -590,8 +513,6 @@ describe('hasExpressionWithListOfNumericValuesOnly rejects', () => {
   });
 
   it('a non-numeric element of the right length', () => {
-    // The arithmetic half passes for `'a.99'` - len 4, dot at 2 - and `!isNumeric()` is what
-    // rejects it, so both halves are live and the arithmetic alone is not the test.
     expect(expressionIsAccepted('a.99')).toBe(false);
   });
 });
@@ -693,7 +614,6 @@ describe('the four validation-schema properties', () => {
   // unvalidated, the named predicate, and the collection the delete rule counts.
 
   it('carries all three save-context columns without validating any of them', () => {
-    // The entity is not the requiredness gate, so it does not refuse the row.
     const subject = aRoundingRule({
       roundingRuleName: undefined,
       roundingRuleExpression: undefined,
@@ -706,7 +626,6 @@ describe('the four validation-schema properties', () => {
   });
 
   it('reports the expression exactly as persisted, unnormalized', () => {
-    // No default is substituted for a null column: the accessor reports the truth.
     const subject = aRoundingRule({ roundingRuleExpression: ' .95 , .99 ' });
 
     expect(subject.getRoundingRuleExpression()).toBe(' .95 , .99 ');
@@ -752,7 +671,6 @@ describe('the four validation-schema properties', () => {
   });
 
   it('violates the delete-context bound as soon as one rate references the rule', () => {
-    // `maxCollection: 0` [model/validation/RoundingRule.json:L6]: one rate is already too many.
     const attached = [anAttachedPriceGroupRate('pgr-1')];
     const subject = aRoundingRule({ priceGroupRates: attached });
 
@@ -768,16 +686,12 @@ describe('the four validation-schema properties', () => {
     ];
     const subject = aRoundingRule({ priceGroupRates: attached });
 
-    // Handed back by IDENTITY: neither copied, filtered nor re-ordered, so the count the delete
-    // rule reads is the count the repository materialized.
     expect(subject.getPriceGroupRates()).toBe(attached);
     expect(subject.getPriceGroupRates()).toHaveLength(3);
     expect(satisfiesDeleteContextRule(subject)).toBe(false);
   });
 
   it('always reports an array, so a count is always a legal question', () => {
-    // CFML's ORM answered an initialized collection for a one-to-many, so
-    // `arrayLen(x.getPriceGroupRates())` had no absent case to guard; the port keeps that.
     expect(Array.isArray(aRoundingRule().getPriceGroupRates())).toBe(true);
     expect(Array.isArray(aRoundingRule({ priceGroupRates: undefined }).getPriceGroupRates())).toBe(
       true,
@@ -785,9 +699,6 @@ describe('the four validation-schema properties', () => {
   });
 
   it('declares no add or remove helper for the inverse collection', () => {
-    // CFML parity [model/entity/RoundingRule.cfc:L64, L92-L94]: `priceGroupRates` is
-    // `inverse="true"`, so the owning side [model/entity/PriceGroupRate.cfc:L68] holds the
-    // bookkeeping and this component's Bidirectional Helper Methods banner is EMPTY.
     const members = Object.getOwnPropertyNames(RoundingRule.prototype);
 
     expect(members).not.toContain('addPriceGroupRate');
@@ -865,8 +776,6 @@ describe('structural parity with the SwRoundingRule row', () => {
   });
 
   it('never mints an identifier of its own', () => {
-    // `generator="uuid"` [model/entity/RoundingRule.cfc:L52] is NOT reproduced on the entity: id
-    // generation belongs to the repository on insert.
     expect(aRoundingRule().getRoundingRuleID()).toBe(aRoundingRule().getRoundingRuleID());
   });
 
@@ -877,16 +786,7 @@ describe('structural parity with the SwRoundingRule row', () => {
 });
 
 describe('the audit columns', () => {
-  // TWO timestamps, not three. [model/entity/RoundingRule.cfc:L58-L61] declares four audit
-  // properties, of which two are `ormtype="timestamp"` - `createdDateTime` [L58] and
-  // `modifiedDateTime` [L60] - and two are `many-to-one` associations to the out-of-scope
-  // `Account`, collapsed to the opaque columns `createdByAccountID` [L59] and `modifiedByAccountID`
-  // [L61]. All four carry `hb_populateEnabled="false"`, the legacy exclusion from mass assignment;
-  // the port needs no mechanism, since the fields are read-only and this class ships no setter.
-
   it('round-trips both timestamps as the instants they were hydrated with', () => {
-    // Every business-date literal here is an explicit UTC ISO-8601 string and the ambient clock is
-    // never read, so no assertion can pass or fail by the calendar.
     const created = new Date('2024-06-01T00:00:00.000Z');
     const modified = new Date('2024-06-02T12:30:45.678Z');
 
@@ -899,8 +799,6 @@ describe('the audit columns', () => {
   });
 
   it('reports an absent timestamp as undefined, never as the epoch and never as zero', () => {
-    // `new Date(0)` would invent a January 1970 audit trail and `0` is not even a date - both would
-    // report a row as audited when it is not.
     const subject = aRoundingRule({ createdDateTime: undefined, modifiedDateTime: undefined });
 
     expect(subject.getCreatedDateTime()).toBeUndefined();
@@ -937,8 +835,6 @@ describe('the audit columns', () => {
   });
 
   it('maintains no timestamp of its own, because the source declares no ORM hook', () => {
-    // CFML parity [model/entity/RoundingRule.cfc:L96-L98]: the ORM Event Hooks banner is EMPTY, so
-    // the audit columns were maintained by the framework on write and by the repository now.
     const members = Object.getOwnPropertyNames(RoundingRule.prototype);
 
     for (const hook of ['preInsert', 'preUpdate', 'postInsert', 'postUpdate']) {
@@ -973,12 +869,9 @@ describe('the Hibachi base class is documented, not reproduced', () => {
   it('resolves no unknown member at run time, and inherits nothing that would', () => {
     const subject = aRoundingRule({ roundingRuleID: 'rr-1' });
 
-    // An EAV attribute code and a collection smart list: neither exists, in either direction of the
-    // prototype chain.
     expect('getSomeCustomAttributeCode' in subject).toBe(false);
     expect('getPriceGroupRatesSmartList' in subject).toBe(false);
 
-    // And nothing sits above the class but `Object`: no ported base entity.
     expect(Object.getPrototypeOf(RoundingRule.prototype)).toBe(Object.prototype);
   });
 

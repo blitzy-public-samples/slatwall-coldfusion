@@ -100,7 +100,7 @@
 //     (default `"sb"`) is deliberately out of scope. The settingsProvider port's
 //     key union is fixed and does not include it; brand URL construction is not
 //     part of this slice. If a brand URL prefix ever seems necessary here, that
-//     is the signal to stop - not to add a fifth key and not to hardcode "sb".
+//     is the signal to stop - not to add an eighth key and not to hardcode "sb".
 //   * NO VALIDATION SCHEMA. `model/validation/Brand.json` exists and is enforced
 //     by the framework validation service, which is not ported. Adding a schema
 //     here would introduce a constraint the legacy save path never applied on
@@ -344,6 +344,68 @@ function writeResolvedUrlTitle(data: BrandSaveInput, urlTitle: string): void {
   Reflect.set(data, storedKey, urlTitle);
 }
 
+// ---------------------------------------------------------------------------
+// Unavailable-capability signal
+// ---------------------------------------------------------------------------
+
+/**
+ * Raised by {@link BrandService.saveBrand} because THIS SLICE CANNOT DURABLY WRITE A
+ * BRAND, and a caller must learn that from the call rather than from a missing row.
+ *
+ * ★ WHY AN ERROR RATHER THAN A QUIET RETURN. The legacy
+ * `saveBrand` ended in `super.save(arguments.brand, arguments.data)`
+ * [model/service/BrandService.cfc:L76] - framework-inherited generic CRUD that
+ * populated the entity from the payload and flushed it. That generic CRUD is listed
+ * among the dependencies deliberately not carried forward (AAP 0.5.3), and the
+ * thirteen-port set the AAP enumerates (0.3.1) publishes no brand persistence
+ * member for it to have been replaced by. So the durable half genuinely does not
+ * exist here, and no amount of care in this file can conjure it.
+ *
+ * What DID exist before this error was introduced was a method that resolved the URL
+ * title, returned the brand it was handed, and looked from the outside exactly like
+ * a completed save. A security review raised that as CWE-703 with CWE-840:
+ * `saveBrand` "returns a success-shaped mutated Brand but performs no durable write
+ * and throws no unavailable-capability error", and required that the port "wire
+ * verified persistence or fail closed until persistence exists. Never return success
+ * for an unavailable write."
+ *
+ * ★ THE CLAIM THAT WIRING WOULD HAVE SATISFIED IT WAS CHECKED AND IS FALSE. An
+ * earlier revision of this file deferred the write to "the composition root", which
+ * would "own the flush". Nothing does: no module under `src/repositories/**` issues
+ * an INSERT or UPDATE against `SwBrand`, and `mysqlProductRepository.ts` states in
+ * terms that its eleven `SwBrand` columns are READ-ONLY there. The deferral named no
+ * actual owner, so every brand a caller "saved" was discarded silently. Failing
+ * closed is the half of the required resolution that is achievable without adding a
+ * fourteenth port the AAP's enumerated layout does not have room for.
+ *
+ * ★ WHAT A READER SHOULD DO WITH THIS. It is a scaffold, not a verdict: when brand
+ * persistence is wired, the `throw` in `saveBrand` is deleted and the flush result
+ * returned in its place. Nothing else about the method changes - the URL-title
+ * resolution above the throw is the ported logic and is already correct. The error
+ * exists so that the day that happens is a deliberate decision rather than the day
+ * somebody notices their brands were never there.
+ *
+ * Carries no caller data. The brand and the payload are the caller's own values and
+ * naming them back adds nothing an operator can act on, whereas a brand name is a
+ * commercial label this class has no reason to put into an error string that
+ * `src/handlers/errorMapper.ts` may publish.
+ */
+export class BrandPersistenceUnavailableError extends Error {
+  constructor() {
+    super(
+      [
+        'Brand persistence is not available in this service.',
+        'The URL title was resolved and written into the supplied payload, but no durable',
+        'write was performed and none can be: the legacy save was framework-inherited',
+        'generic CRUD (model/service/BrandService.cfc:L76), which is not carried forward,',
+        'and no brand persistence port exists to replace it. This error is raised instead',
+        'of returning, so that an unavailable write is never mistaken for a completed one.',
+      ].join(' '),
+    );
+    this.name = 'BrandPersistenceUnavailableError';
+  }
+}
+
 /**
  * The ported surface of `model/service/BrandService.cfc`.
  *
@@ -362,7 +424,7 @@ export class BrandService {
    *   [model/service/BrandService.cfc:L51] - the component's one and only
    *   DECLARED collaborator. It is narrowed from a general-purpose "data service"
    *   to the single method this component actually consumed
-   *   [slatwall-ts/src/domain/ports/urlTitleGenerator.ts:L237], and it is a port
+   *   [slatwall-ts/src/domain/ports/urlTitleGenerator.ts:L60], and it is a port
    *   interface rather than a concrete adapter, so a test supplies a stub without
    *   a database. Wired once, explicitly, in `src/handlers/bootstrap.ts` (planned).
    */
@@ -417,7 +479,7 @@ export class BrandService {
     // un-normalised in all three directions: the ENTITY accessor is
     // `getUrlTitle`, the DATA key stays `urlTitle`, and the PORT method keeps its
     // capitalised `createUniqueURLTitle`
-    // [slatwall-ts/src/domain/ports/urlTitleGenerator.ts:L337].
+    // [slatwall-ts/src/domain/ports/urlTitleGenerator.ts:L60].
     //
     // CFML parity [model/service/BrandService.cfc:L68]: the outer gate is a
     // CONJUNCTION OF TWO DISJUNCTIONS and fires only when the brand has no usable
@@ -528,7 +590,9 @@ export class BrandService {
     }
 
     // LEGACY-NOTE [model/service/BrandService.cfc:L76]: super.save is framework-inherited generic CRUD.
-    // No brand repository exists in the 13-port set; the persistence half is left to the composition root.
+    // No brand repository exists in the 13-port set, and nothing anywhere writes `SwBrand`, so the
+    // persistence half DOES NOT EXIST rather than living elsewhere - which is why this method now
+    // refuses instead of returning. See the S-06 disposition below.
     //
     // ★ WHY THE DURABLE HALF IS NOT PERFORMED HERE, STATED AT THE STATEMENT THAT
     // WOULD HAVE PERFORMED IT. An earlier revision of this file awaited a
@@ -545,20 +609,54 @@ export class BrandService {
     // strictly worse than no write at all.
     // `src/domain/ports/productRepository.ts` records the removal in full.
     //
-    // ★ WHAT THE CALLER OBSERVES, AND WHY IT IS STILL THE LEGACY CONTRACT. The
-    // resolved `urlTitle` sits in the payload this method was handed, exactly
-    // where the legacy `super.save(brand, data)` read it from: in CFML the save
-    // POPULATED the entity from that struct before flushing, so `data` IS the
-    // route to the column and `Brand`, being immutable and publishing no mutator,
-    // offers no other. The composition root therefore receives both halves - the
-    // brand it passed in and the payload carrying the generated title - and owns
-    // the flush. The identifier a new brand would acquire during that flush
-    // [model/entity/Brand.cfc:L52, `generator="uuid" unsavedvalue=""`] is minted
-    // by whatever performs it, not here; this method answers the same instance it
-    // was given, which is why the declared return stays `Promise<Brand>` and
-    // interface parity with
+    // ★ AND WHY THIS METHOD NOW FAILS CLOSED INSTEAD OF ANSWERING THE BRAND.
+    // SECURITY REVIEW DISPOSITION - RAISED AS S-06, ACCEPTED.
+    //
+    // The finding: `saveBrand` "returns a success-shaped mutated Brand but performs
+    // no durable write and throws no unavailable-capability error" (CWE-703,
+    // CWE-840). Required resolution: "Wire verified persistence or fail closed until
+    // persistence exists. Never return success for an unavailable write."
+    //
+    // An earlier revision of this comment answered the first half by deferring:
+    // the resolved `urlTitle` sits in the payload this method was handed, exactly
+    // where the legacy `super.save(brand, data)` read it from - in CFML the save
+    // POPULATED the entity from that struct before flushing, so `data` IS the route
+    // to the column and `Brand`, being immutable and publishing no mutator, offers
+    // no other - and on that basis it declared that the composition root "receives
+    // both halves and owns the flush".
+    //
+    // THAT DEFERRAL NAMED NO OWNER, AND THE CLAIM WAS CHECKED: no module under
+    // `src/repositories/**` issues an INSERT or UPDATE against `SwBrand`, and
+    // `src/repositories/mysql/mysqlProductRepository.ts` says in terms that its
+    // eleven `SwBrand` columns are READ-ONLY there. Nothing flushed. A caller
+    // invoking a method named `saveBrand`, published as a capability on
+    // `RequestScope` by `src/handlers/bootstrap.ts`, received a Brand back and had
+    // no way to discover that the row was discarded. Silent loss of a write is worse
+    // than a refused write, which is the whole of why the review raised it.
+    //
+    // Wiring persistence - the better half of the resolution - is not reachable from
+    // here: it needs a brand persistence member, the AAP enumerates thirteen ports
+    // (0.3.1) and none of them is one, and `super.save` is generic Hibachi CRUD that
+    // AAP 0.5.3 lists among the dependencies deliberately not carried forward. So
+    // the achievable half is taken, deliberately and visibly.
+    //
+    // WHAT IS PRESERVED, AND WHAT INTERFACE PARITY STILL REQUIRES. Everything above
+    // this point still runs: the URL-title resolution is the logic AAP 0.4.1
+    // mandates for this file ("Port `saveBrand` L67; the single `dataService`
+    // dependency becomes the URL-title port"), it still fires under exactly the
+    // legacy gate, and it still writes through to the payload - so the ported
+    // behaviour remains fully exercised and observable by a caller that inspects the
+    // payload it supplied. The symbol, its parameters and its declared
+    // `Promise<Brand>` are untouched, so the AAP 0.4.2 row for
     // `public any function saveBrand(required any brand, required struct data)`
-    // holds unchanged.
+    // still resolves and the 0.9.2 parity gate still passes; a declared promise that
+    // rejects is a promise of that type. The identifier a new brand would have
+    // acquired during the absent flush [model/entity/Brand.cfc:L52,
+    // `generator="uuid" unsavedvalue=""`] is minted by whatever eventually performs
+    // it, which is precisely the thing that does not exist yet.
+    //
+    // Deleting the throw and returning the flush result is the entire change required
+    // when persistence arrives. See {@link BrandPersistenceUnavailableError}.
     //
     // CFML parity [model/service/BrandService.cfc:L76]: the legacy call is
     // POSITIONAL - `super.save(arguments.brand, arguments.data)` - where
@@ -580,7 +678,10 @@ export class BrandService {
     // the identical construct, for the identical reason: the thirteen-port set
     // publishes no rounding-rule persistence member either. The two are the
     // slice's only `super.save`-only services, so the treatment is consistent
-    // rather than special-cased.
-    return brand;
+    // rather than special-cased. `saveRoundingRule` has the SAME unbacked-write
+    // shape and is published on `RequestScope` alongside this method; it was not
+    // reached by finding S-06 and is therefore left as it stands rather than changed
+    // on this method's authority, and is recorded as a discovered issue instead.
+    throw new BrandPersistenceUnavailableError();
   }
 }

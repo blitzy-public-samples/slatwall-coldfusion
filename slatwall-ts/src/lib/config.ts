@@ -188,6 +188,29 @@ const DATABASE_TLS_MODES = ['disabled', 'verify-ca', 'verify-identity'] as const
 export type DatabaseTlsMode = (typeof DATABASE_TLS_MODES)[number];
 
 /**
+ * The URL schemes a product feed may publish, in ascending order of safety.
+ *
+ * `http` is retained as an ACCEPTED value rather than removed, because the legacy
+ * template emitted exactly that and a local or loopback deployment can legitimately
+ * serve plain HTTP. It is refused outright when `NODE_ENV` is production - see
+ * {@link resolveFeedUrlScheme} - which is the same shape the transport mode already
+ * uses for `DB_TLS_MODE=disabled`.
+ */
+const FEED_URL_SCHEMES = ['http', 'https'] as const;
+
+/**
+ * The scheme half of the canonical feed origin.
+ *
+ * ★ THIS TYPE IS DECLARED HERE, IN THE CONFIGURATION MODULE, ON PURPOSE. The scheme
+ * is a DEPLOYMENT fact - which transport a host actually serves - not a rendering
+ * choice, so it belongs beside the allow-list that governs the other half of the
+ * origin. `src/integrations/google/rssFeedRenderer.ts` imports it as a TYPE ONLY,
+ * which keeps that module's standing promise that it never reads the environment:
+ * an erased type import pulls no runtime code and no `process.env` access with it.
+ */
+export type FeedUrlScheme = (typeof FEED_URL_SCHEMES)[number];
+
+/**
  * How to reach the MySQL server that holds the existing `Sw*` schema.
  *
  * `password` is deliberately absent from anything this object serializes to, and
@@ -325,6 +348,143 @@ export interface AppConfig {
   readonly pool: DatabasePoolConfig;
   /** Transport-security settings for that connection. */
   readonly tls: DatabaseTlsConfig;
+  /** Product-feed publication settings. */
+  readonly feed: FeedConfig;
+  /** Currency-conversion reference data. */
+  readonly currency: CurrencyConfig;
+}
+
+/**
+ * The European Central Bank reference rates, and when they were retrieved.
+ *
+ * ★ THIS EXISTS BECAUSE THE PORT HAD NO WAY AT ALL TO SUPPLY A RATE IN PRODUCTION.
+ *
+ * The legacy service fetched the table itself, over plain HTTP, from
+ * `http://www.ecb.int/stats/eurofxref/eurofxref-daily.xml`
+ * [model/service/CurrencyService.cfc:L109], memoized it on the component, and
+ * refetched whenever the memo was absent or older than a day [L105]. None of that
+ * survives the migration: an outbound fetch on a per-request Lambda path is a
+ * different execution model, the memo would be cross-invocation state under a warm
+ * container, and the legacy TODO at [L81] records that a conversion INTEGRATION was
+ * the intended supply route all along.
+ *
+ * The port's first revision therefore left the table empty in production and
+ * supplyable only through `CompositionOverrides`, which is a test seam. A security
+ * review raised the consequence as finding S-20, HIGH, CWE-754 and CWE-840: with an
+ * always-empty table, every cross-currency conversion takes the [L100-L101]
+ * pass-through and returns the amount UNCHANGED, so a EUR price is published as the
+ * same numeral in USD and JPY and the failure is indistinguishable from success.
+ *
+ * WHAT IS FIXED HERE, AND WHAT IS DELIBERATELY NOT. Fixed: a deployment can now
+ * supply rates, they are integrity-checked before the process starts, and their age
+ * is recorded so staleness is observable. NOT fixed, and declined on a cited
+ * mandate: the pass-through itself. See the disposition on
+ * `EUROPEAN_CENTRAL_BANK_RATE_MAX_AGE_DAYS` in `src/handlers/bootstrap.ts`.
+ */
+export interface CurrencyConfig {
+  /**
+   * Per-euro reference rates, keyed by upper-cased three-letter currency code.
+   *
+   * Values are plain decimal numerals, held as STRINGS and never as numbers -
+   * every rate reaches `Money`/`Decimal` arithmetic, and parsing a rate to an
+   * IEEE-754 double on the way in is exactly how drift enters a money path.
+   *
+   * EMPTY IS THE DEFAULT, and it preserves the behaviour of a deployment that
+   * configures nothing: every non-pivot conversion passes through, exactly as the
+   * legacy did when its empty `catch` [L127-L128] swallowed a fetch failure.
+   */
+  readonly europeanCentralBankRates: Readonly<Record<string, string>>;
+
+  /**
+   * When the supplied rates were retrieved, or `undefined` when none were supplied.
+   *
+   * The legacy analogue is the `retrieved` key it wrote into its own memo
+   * [model/service/CurrencyService.cfc:L124] and compared against `now() - 1` at
+   * [L105]. Required whenever rates ARE supplied: a rate table whose age is unknown
+   * cannot be assessed, and silently treating it as current is the failure mode this
+   * member exists to prevent.
+   */
+  readonly ratesRetrievedAt: Date | undefined;
+}
+
+/**
+ * Which hosts this deployment is permitted to publish a product feed for.
+ *
+ * ★ THIS EXISTS BECAUSE THE ALLOW-LIST MUST NOT COME FROM THE REQUEST.
+ *
+ * The legacy template derived the feed origin from `CGI.HTTP_HOST` at render
+ * time - the literal `http://#CGI.HTTP_HOST#` appears at five sites
+ * [integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24] -
+ * so the host published in a merchant feed was whatever authority the request
+ * carried. An earlier revision of this port reproduced that shape faithfully but
+ * moved BOTH halves of the decision into the request: `RequestScopeInput`
+ * supplied a candidate host AND the allow-list it was checked against.
+ *
+ * A security review raised that as finding S-15, MEDIUM, CWE-346 and CWE-20: a
+ * caller could submit `attacker.example` as the candidate and `['attacker.example']`
+ * as the allow-list, and mint a trusted origin - the allow-list check passes
+ * vacuously when the checked party writes the list. Its required resolution was to
+ * "Remove `allowedHosts` from request scope; inject an immutable deployment-owned
+ * canonical origin/allow-list", and that is what this member is.
+ *
+ * The candidate is still observed on the request, because that is the legacy
+ * behaviour and a deployment may legitimately answer on more than one authority.
+ * What changed is that the LIST it is checked against is now process
+ * configuration, fixed for the lifetime of the container and unreachable from any
+ * request.
+ *
+ * NOTHING HERE IS AAP-CONSTRAINED. AAP 0.4.1 specifies exactly three hardcodings
+ * to preserve in the feed renderer - `g:condition="new"`, `g:availability="in
+ * stock"` and the empty `g:google_product_category` - and the origin is not among
+ * them. The origin was never hardcoded in the legacy either; it was a runtime
+ * value. Making its provenance configuration rather than a request header is
+ * therefore a change of provenance, not a change of the feed contract.
+ */
+export interface FeedConfig {
+  /**
+   * The hosts a product feed may be published for, normalized and de-duplicated.
+   *
+   * EMPTY IS THE SAFE DEFAULT AND THE DEFAULT: `toTrustedFeedHost` refuses every
+   * candidate against an empty list, so a deployment that never configured a feed
+   * cannot publish one. That is a refusal, not a bypass, and it is why this key is
+   * optional - adding a sixth REQUIRED variable would break every existing
+   * deployment and every test that supplies only the five the database needs.
+   */
+  readonly allowedHosts: readonly string[];
+
+  /**
+   * The scheme written into the five URL sites the legacy prefixed with `http://`.
+   *
+   * ★★ THIS MEMBER REVERSES AN EARLIER DECLINATION IN THIS PORT, and the reversal is
+   * recorded rather than quietly applied. A previous revision hardcoded `http://` in
+   * `rssFeedRenderer.ts` and declined the security review's CWE-319 finding (S-09) on
+   * the ground that AAP 0.1.1 requires preserving "the Google product-feed integration
+   * contract exactly". Re-reading the AAP settles it the other way, on the more
+   * specific clause:
+   *
+   *   AAP 0.4.1 enumerates, for this exact file, the hardcodings that are preserved -
+   *   `g:condition="new"`, `g:availability="in stock"`, and the empty
+   *   `g:google_product_category` "preserved with the legacy TODO". THE SCHEME IS NOT
+   *   AMONG THEM. A specific instruction about this renderer governs a general one
+   *   about the integration, and the general clause is about the CONTRACT - the
+   *   element set, their order and their semantics - all of which are untouched here.
+   *
+   * The decisive legacy fact is that the origin was NEVER a fixed value to preserve.
+   * [integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24] read
+   * `http://#CGI.HTTP_HOST#`: the authority varied per deployment and per request
+   * already, so no two installations ever published the same URLs. Making the scheme
+   * deployment-owned puts it on exactly the footing the host has always been on. What
+   * would breach the contract is changing WHICH elements carry a URL, and nothing does.
+   *
+   * DEFAULTS TO `https`, WHICH IS A DELIBERATE CHANGE OF DEFAULT. An unconfigured
+   * deployment now publishes secure URLs instead of cleartext ones; a deployment that
+   * genuinely serves plain HTTP opts in explicitly, and cannot do so in production.
+   * Byte-for-byte legacy parity remains reachable and is still pinned by the renderer
+   * suite, which renders with `'http'` supplied explicitly and asserts the golden
+   * legacy document - so parity is demonstrated by a test rather than by a hardcoded
+   * literal nobody can override.
+   */
+  readonly scheme: FeedUrlScheme;
 }
 
 // --- Defaults ---------------------------------------------------------------
@@ -356,6 +516,15 @@ const DEFAULT_IDLE_TIMEOUT_MS = 60_000;
 
 /** Matches the template value of `NODE_ENV` in `slatwall-ts/.env.example`. */
 const DEFAULT_RUNTIME_ENVIRONMENT: RuntimeEnvironment = 'development';
+
+/**
+ * The scheme an unconfigured deployment publishes feed URLs with.
+ *
+ * `https`, NOT the legacy `http`. This is the one default in this file that is
+ * deliberately not the legacy value; {@link FeedConfig.scheme} carries the AAP
+ * reasoning and the reversal it records.
+ */
+const DEFAULT_FEED_URL_SCHEME: FeedUrlScheme = 'https';
 
 /** Highest port number expressible in a 16-bit TCP port field. */
 const MAX_TCP_PORT = 65_535;
@@ -825,6 +994,250 @@ function resolveDatabaseTls(
   return Object.freeze({ mode, certificateAuthority, minimumVersion });
 }
 
+/**
+ * A bare host authority, for validating `FEED_ALLOWED_HOSTS` at start-up.
+ *
+ * ★ THIS IS A FAIL-FAST ON DEPLOYMENT CONFIGURATION, NOT A SECOND SOURCE OF TRUTH.
+ * `toTrustedFeedHost` in `src/integrations/google/googleFeedService.ts` remains the
+ * only mint for a trusted host, and it re-checks the same shape at the point of use.
+ * Checking here as well means a typo in the deployment's own list is a start-up
+ * failure with a named variable rather than a silent refusal of every feed request
+ * later, and the two patterns are deliberately identical so a value cannot pass one
+ * and fail the other. If they ever diverge, the mint wins by construction: it runs
+ * last and its result is what gets published.
+ *
+ * A port is permitted, because the legacy `CGI.HTTP_HOST` carried one whenever the
+ * request used a non-default port.
+ */
+const FEED_ALLOWED_HOST_AUTHORITY =
+  /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:\d{1,5})?$/;
+
+/**
+ * Resolves `FEED_ALLOWED_HOSTS`, a comma-separated list of bare host authorities.
+ *
+ * Unset or blank yields an EMPTY list, which refuses every feed candidate. That is
+ * the safe default and is why no deployment is forced to configure a feed.
+ *
+ * Each member is trimmed and lower-cased before validation, because DNS names are
+ * case-insensitive and the mint normalizes the same way; duplicates that differ only
+ * in casing or surrounding space therefore collapse to one entry. Nothing else is
+ * rewritten - no punycode conversion, no default-port stripping, no trailing-dot
+ * removal - because each would make the configured host differ from the request host
+ * it is matched against.
+ *
+ * A malformed member is a recorded problem rather than a silently dropped entry: a
+ * deployment that meant to allow `shop.example.com` and wrote `https://shop.example.com`
+ * must be told, not quietly left refusing every request.
+ */
+function resolveFeedAllowedHosts(
+  source: EnvironmentSource,
+  problems: string[],
+): readonly string[] | undefined {
+  const raw = readTrimmed(source, 'FEED_ALLOWED_HOSTS');
+
+  if (raw === undefined) {
+    return Object.freeze([]);
+  }
+
+  const members = raw
+    .split(',')
+    .map((member) => member.trim().toLowerCase())
+    .filter((member) => member.length > 0);
+
+  const malformed = members.filter((member) => !FEED_ALLOWED_HOST_AUTHORITY.test(member));
+
+  if (malformed.length > 0) {
+    problems.push(
+      `FEED_ALLOWED_HOSTS contains ${malformed.length} entr${malformed.length === 1 ? 'y' : 'ies'} that ${malformed.length === 1 ? 'is' : 'are'} not a bare host authority: ${malformed.map(describeReceived).join(', ')}. Supply hosts only - no scheme, credentials, path, query or fragment - separated by commas, for example "shop.example.com,shop.example.com:8443". Leave it unset to publish no product feed at all.`,
+    );
+    return undefined;
+  }
+
+  return Object.freeze([...new Set(members)]);
+}
+
+/**
+ * Resolves `FEED_URL_SCHEME`, the scheme half of the canonical feed origin.
+ *
+ * Unset yields `https`, which is the SAFE default and a deliberate departure from the
+ * legacy literal - see {@link FeedConfig.scheme} for why AAP 0.4.1 permits it. An
+ * operator who needs the legacy value sets `http` explicitly and thereby makes a
+ * cleartext feed a recorded decision instead of an inherited accident.
+ *
+ * `http` IS REFUSED OUTRIGHT WHEN `NODE_ENV` IS PRODUCTION. That is the review's
+ * "refuse insecure origin configuration" requirement, and it deliberately mirrors the
+ * existing `DB_TLS_MODE=disabled` refusal in {@link resolveDatabaseTls}: the two are
+ * the same judgment - a transport that is defensible on a developer's loopback is not
+ * defensible for real traffic - so they are expressed the same way rather than each
+ * inventing its own shape. The refusal is a startup problem, so a production
+ * deployment cannot begin serving cleartext feed URLs and discover it later.
+ *
+ * A misspelled scheme is a recorded problem rather than a silent fallback to the
+ * default: `htps` must be reported, not quietly upgraded to `https`, because an
+ * operator who mistyped it needs to see the typo. The value is an enumeration and
+ * never a credential, so it is echoed back like every other non-secret one.
+ */
+function resolveFeedUrlScheme(
+  source: EnvironmentSource,
+  environment: RuntimeEnvironment | undefined,
+  problems: string[],
+): FeedUrlScheme | undefined {
+  const guidance = `Accepted values are ${FEED_URL_SCHEMES.join(', ')} (matched without regard to case). Leave it unset to use ${DEFAULT_FEED_URL_SCHEME}, which is the safe default; http is accepted only outside production, for a loopback or local host that genuinely serves plain HTTP.`;
+
+  const raw = readTrimmed(source, 'FEED_URL_SCHEME');
+
+  if (raw === undefined) {
+    return DEFAULT_FEED_URL_SCHEME;
+  }
+
+  const scheme = matchCanonical(FEED_URL_SCHEMES, raw);
+
+  if (scheme === undefined) {
+    problems.push(
+      `FEED_URL_SCHEME is not a recognized URL scheme; received ${describeReceived(raw)}. ${guidance}`,
+    );
+    return undefined;
+  }
+
+  if (scheme === 'http' && environment === 'production') {
+    problems.push(
+      'FEED_URL_SCHEME is http while NODE_ENV is production, which would publish every product, image and channel URL in the merchant feed over cleartext and let an on-path attacker rewrite the links a shopper follows. Set https, or leave it unset.',
+    );
+    return undefined;
+  }
+
+  return scheme;
+}
+
+/** A three-letter ISO currency code, the only key shape a rate entry may carry. */
+const CURRENCY_CODE_SHAPE = /^[A-Z]{3}$/;
+
+/**
+ * A plain, unsigned decimal numeral - no sign, no exponent, no thousands separator.
+ *
+ * Exponent notation is refused rather than normalized. `1e-2` is a perfectly good
+ * double and a perfectly bad configuration value: it reaches `Decimal` as a string,
+ * and refusing it here means the one representation a reviewer can read is also the
+ * only one a deployment can write.
+ */
+const RATE_NUMERAL_SHAPE = /^\d+(\.\d+)?$/;
+
+/**
+ * Resolves `ECB_REFERENCE_RATES` and `ECB_RATES_RETRIEVED_AT`.
+ *
+ * Format is a comma list of `CODE=RATE` pairs, matching the comma-list idiom the
+ * rest of this contract uses rather than introducing a JSON payload:
+ *
+ *     ECB_REFERENCE_RATES=USD=1.0850,GBP=0.8520,JPY=163.41
+ *
+ * THREE INTEGRITY CHECKS, ALL BEFORE THE PROCESS STARTS, and each one guards a way
+ * that a bad rate silently becomes a wrong price:
+ *
+ *   1. SHAPE. The key must be exactly three ASCII letters and the value a plain
+ *      unsigned decimal numeral. A pair missing its `=`, or carrying a second one,
+ *      is refused rather than half-read.
+ *   2. STRICT POSITIVITY. A zero rate is refused. `convertCurrency` DIVIDES by the
+ *      source rate [model/service/CurrencyService.cfc:L90], so a zero would raise
+ *      mid-conversion; and a zero TARGET rate would price everything at nothing.
+ *      Negative values cannot arrive at all, because the numeral shape admits no
+ *      sign - which is stricter than a positivity test and is the point of using a
+ *      shape that excludes the sign rather than one that accepts and then rejects it.
+ *   3. AGE. `ECB_RATES_RETRIEVED_AT` is REQUIRED whenever any rate is supplied, and
+ *      must be an ISO-8601 instant. Rates of unknown age cannot be assessed, and the
+ *      legacy always knew the age of its own table - it wrote `retrieved` into the
+ *      memo at [L124].
+ *
+ * Rates are NOT parsed to numbers here, and must not be: they are carried as strings
+ * straight through to `Money`/`Decimal`, which is the target's single arithmetic
+ * surface. Validating the string and keeping the string is what makes that possible.
+ *
+ * Unset yields an empty table and an undefined retrieval instant, which is the
+ * documented no-conversion-configured state.
+ */
+function resolveCurrencyRates(
+  source: EnvironmentSource,
+  problems: string[],
+): CurrencyConfig | undefined {
+  const raw = readTrimmed(source, 'ECB_REFERENCE_RATES');
+  const rawRetrievedAt = readTrimmed(source, 'ECB_RATES_RETRIEVED_AT');
+
+  if (raw === undefined) {
+    if (rawRetrievedAt !== undefined) {
+      problems.push(
+        'ECB_RATES_RETRIEVED_AT is set but ECB_REFERENCE_RATES is not. A retrieval instant with no rates describes nothing; supply both, or neither to publish no conversion rates at all.',
+      );
+      return undefined;
+    }
+
+    return Object.freeze({
+      europeanCentralBankRates: Object.freeze({}),
+      ratesRetrievedAt: undefined,
+    });
+  }
+
+  const rates: Record<string, string> = {};
+  const malformed: string[] = [];
+
+  for (const entry of raw.split(',')) {
+    const trimmed = entry.trim();
+
+    if (trimmed.length === 0) {
+      continue;
+    }
+
+    const separator = trimmed.indexOf('=');
+    const code = separator < 0 ? '' : trimmed.slice(0, separator).trim().toUpperCase();
+    const numeral = separator < 0 ? '' : trimmed.slice(separator + 1).trim();
+
+    if (
+      separator < 0 ||
+      !CURRENCY_CODE_SHAPE.test(code) ||
+      !RATE_NUMERAL_SHAPE.test(numeral) ||
+      !/[1-9]/.test(numeral)
+    ) {
+      malformed.push(trimmed);
+      continue;
+    }
+
+    rates[code] = numeral;
+  }
+
+  if (malformed.length > 0) {
+    problems.push(
+      `ECB_REFERENCE_RATES contains ${malformed.length} malformed entr${malformed.length === 1 ? 'y' : 'ies'}: ${malformed.map(describeReceived).join(', ')}. Each entry must read CODE=RATE, where CODE is exactly three letters and RATE is a plain positive decimal numeral with no sign and no exponent, for example "USD=1.0850". A zero rate is refused because conversion divides by the source rate.`,
+    );
+    return undefined;
+  }
+
+  if (Object.keys(rates).length === 0) {
+    problems.push(
+      'ECB_REFERENCE_RATES is set but yielded no usable entries. Leave it unset to publish no conversion rates at all, rather than setting it to a value that resolves to none.',
+    );
+    return undefined;
+  }
+
+  if (rawRetrievedAt === undefined) {
+    problems.push(
+      'ECB_RATES_RETRIEVED_AT is required whenever ECB_REFERENCE_RATES is set, and was not set (or was blank). Supply the ISO-8601 instant the rates were retrieved, for example "2026-08-04T00:00:00Z", so that their age can be assessed. Rates of unknown age cannot be reported as stale.',
+    );
+    return undefined;
+  }
+
+  const retrievedAt = new Date(rawRetrievedAt);
+
+  if (Number.isNaN(retrievedAt.getTime())) {
+    problems.push(
+      `ECB_RATES_RETRIEVED_AT is not a parsable instant; received ${describeReceived(rawRetrievedAt)}. Supply an ISO-8601 instant, for example "2026-08-04T00:00:00Z".`,
+    );
+    return undefined;
+  }
+
+  return Object.freeze({
+    europeanCentralBankRates: Object.freeze({ ...rates }),
+    ratesRetrievedAt: retrievedAt,
+  });
+}
+
 // --- The connection settings, with a credential that cannot be serialized ---
 
 /**
@@ -956,6 +1369,20 @@ function buildConfiguration(source: EnvironmentSource): AppConfig {
   // the already-validated `environment` rather than re-reading NODE_ENV.
   const tls = resolveDatabaseTls(source, environment, problems);
 
+  // Optional, and empty when unset - a deployment that publishes no product feed
+  // configures nothing. See {@link FeedConfig} for why the list lives here at all
+  // rather than arriving on the request that is being checked against it.
+  const feedAllowedHosts = resolveFeedAllowedHosts(source, problems);
+
+  // Also resolved AFTER the environment, and for the same reason as the transport
+  // mode: its production rule reads the already-validated `environment`.
+  const feedScheme = resolveFeedUrlScheme(source, environment, problems);
+
+  // Optional, and empty when unset. See {@link CurrencyConfig} for why a rate table
+  // is configuration at all, and `src/handlers/bootstrap.ts` for what an empty one
+  // means at conversion time.
+  const currency = resolveCurrencyRates(source, problems);
+
   // The pool integers are operational knobs. `DB_MAX_IDLE` alone accepts zero,
   // because retaining no idle connection is a legitimate operational choice;
   // the other three must be at least one to mean anything.
@@ -1003,7 +1430,10 @@ function buildConfiguration(source: EnvironmentSource): AppConfig {
     user === undefined ||
     password === undefined ||
     dialect === undefined ||
-    tls === undefined
+    tls === undefined ||
+    feedAllowedHosts === undefined ||
+    feedScheme === undefined ||
+    currency === undefined
   ) {
     // Unreachable. Each of these resolvers records a problem whenever it returns
     // undefined, and a non-empty problem list has already thrown above. The
@@ -1023,6 +1453,8 @@ function buildConfiguration(source: EnvironmentSource): AppConfig {
     dialect,
     pool: Object.freeze(pool),
     tls,
+    feed: Object.freeze({ allowedHosts: feedAllowedHosts, scheme: feedScheme }),
+    currency,
   });
 }
 

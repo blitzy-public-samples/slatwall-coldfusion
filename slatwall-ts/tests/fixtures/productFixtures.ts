@@ -522,7 +522,7 @@ interface ProductFixtureOverrides {
   readonly selectedOptionsCandidateSkus?: readonly Sku[] | undefined;
 
   /**
-   * Resolves the four published settings keys.
+   * Resolves the seven published settings keys.
    *
    * Default: the hand-written double from `makeFixtureSettingsProvider`. It MUST
    * be supplied by default, because `getProductURL()` and
@@ -631,6 +631,26 @@ const GLOBAL_URL_KEY_PRODUCT = 'sp';
  * [model/service/SettingService.cfc:L179].
  */
 const GLOBAL_URL_KEY_PRODUCT_TYPE = 'spt';
+
+/**
+ * The three product-subsystem settings this `Product` never reads, present only
+ * so the double satisfies the port's TOTAL contract.
+ *
+ * Verified legacy defaults, in declaration order:
+ * `productImageDefaultExtension = {fieldType="text",defaultValue="jpg"}`
+ * [model/service/SettingService.cfc:L191],
+ * `productImageOptionCodeDelimiter = {fieldType="select", defaultValue="-"}`
+ * [L192], and `productTitleString` [L193], whose default is a TEMPLATE rather
+ * than a title. The `${...}` markers below are legacy template syntax consumed by
+ * `hibachiUtilityService.replaceStringTemplate` [model/entity/Product.cfc:L542];
+ * the value is a plain single-quoted string here and nothing in this subtree
+ * evaluates it. `Product.getTitle()` is not ported - that renderer lives under
+ * `org/Hibachi/`, which this migration never ports - so no assertion in this tier
+ * consumes the value.
+ */
+const PRODUCT_IMAGE_DEFAULT_EXTENSION = 'jpg';
+const PRODUCT_IMAGE_OPTION_CODE_DELIMITER = '-';
+const PRODUCT_TITLE_STRING = '${brand.brandName} ${productName}';
 
 /**
  * The verified legacy default of `skuCurrency`
@@ -812,13 +832,15 @@ function makeAuditTrail(idPrefix: string): AuditTrail {
  * every product that must answer a URL needs one supplied - the accessors refuse
  * outright rather than degrading when it is absent.
  *
- * All FOUR published keys are answered, not just the one this entity reads, so
+ * All SEVEN published keys are answered, not just the one this entity reads, so
  * the double satisfies the port's total contract: `setting` is declared to return
  * `string` and never `undefined`, and a partial table would make that a lie. The
- * lookup is therefore exhaustive over the key union and the compiler checks it.
+ * lookup is therefore exhaustive over the key union and the compiler checks it -
+ * `Readonly<Record<SettingKey, string>>` is what turns a forgotten key into a
+ * compile error rather than a runtime `undefined`.
  *
  * NO MOCKING LIBRARY, and none may be added: the dependency set is fixed at its
- * exact pins, and a double answering a table of four values is the entire
+ * exact pins, and a double answering a table of seven values is the entire
  * requirement. The legacy suite managed without one too.
  *
  * JUDGMENT CALL: the double records nothing. A recorded call list would not be
@@ -830,6 +852,9 @@ function makeFixtureSettingsProvider(globalURLKeyProduct: string): SettingsProvi
   const table: Readonly<Record<SettingKey, string>> = {
     globalURLKeyProduct,
     globalURLKeyProductType: GLOBAL_URL_KEY_PRODUCT_TYPE,
+    productImageDefaultExtension: PRODUCT_IMAGE_DEFAULT_EXTENSION,
+    productImageOptionCodeDelimiter: PRODUCT_IMAGE_OPTION_CODE_DELIMITER,
+    productTitleString: PRODUCT_TITLE_STRING,
     skuCurrency: SKU_CURRENCY,
     skuEligibleCurrencies: SKU_ELIGIBLE_CURRENCIES,
   };
@@ -957,13 +982,6 @@ function makeFixtureSkuRepository(candidateSkus: readonly Sku[]): SkuRepository 
       // No persistence: the instance is handed straight back, which is the only
       // part of the legacy save a fixture can honour without a database.
       return Promise.resolve(sku);
-    },
-
-    saveSkus(skus: readonly Sku[]): Promise<Sku[]> {
-      // The collection form, answering in the arrival order the port specifies. No
-      // transaction and therefore no atomicity to demonstrate - that is asserted
-      // against the recording executor in the adapter's own suite, not here.
-      return Promise.resolve([...skus]);
     },
   };
 }

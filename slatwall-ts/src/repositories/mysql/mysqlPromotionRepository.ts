@@ -5,11 +5,13 @@
  * mixed cfscript and `<cffunction>` tag syntax with embedded `<cfquery>` bodies - plus the single
  * query of `model/dao/RoundingRuleDAO.cfc`, which the port hosts here as its seventh method because
  * the port inventory is locked at thirteen and no `roundingRuleRepository` exists or may be
- * created. The EIGHTH method is a write, `saveRoundingRule` - the persistence half of
- * `super.save(argumentcollection=arguments)` [model/service/RoundingRuleService.cfc:L63] - hosted
- * here for the same reason the lookup is, and it is the only statement in this file that mutates
- * anything. It is named in this opening paragraph deliberately: an adapter header that reads as
- * read-only while the class below issues an INSERT and an UPDATE misdescribes the file.
+ * created.
+ *
+ * EVERY METHOD IN THIS FILE IS A READ, AND NOTHING HERE MUTATES ANYTHING. That is worth stating in
+ * the opening paragraph because it did not hold for one revision: an eighth method, a
+ * `saveRoundingRule` write, was declared on the port and implemented here, and the INSERT, the UPDATE
+ * and the existence probe that backed it have all been removed along with it. The record of why sits
+ * where the statements used to be, and the full argument sits in the port's header.
  *
  * Three things this adapter owns that nothing else does. THE ABSENT RESULT ORDERING of
  * `getActivePromotionRewards` [model/dao/PromotionDAO.cfc:L51-L132], which the whole 593-line DAO
@@ -58,9 +60,8 @@
  * Hibernate lazy loading has no equivalent in a driver-only stack and is deliberately NOT
  * simulated: there is no proxy, no deferred loader and no on-access fetch anywhere in this file.
  * Associations are materialized at this boundary, and what is materialized is an explicit decision
- * recorded at every one of the seven READ methods. The eighth method, `saveRoundingRule`, is a WRITE
- * and materializes nothing - it has no fetch shape to decide, which is why the count in this
- * sentence is seven where the class implements eight. Materialization here is BOUNDED: the number of
+ * recorded at every one of the seven read methods, which is every method this class has.
+ * Materialization here is BOUNDED: the number of
  * statements a call issues is fixed by the call's shape, never by the number of rows it returned,
  * so no method walks a result set issuing one lookup per row.
  *
@@ -94,16 +95,14 @@
  * `meta/tests/unit/dao/` holds exactly two components, `AccountDAOTest` and `PaymentDAOTest`;
  * neither is in scope and there is no legacy `PromotionDAOTest` or `RoundingRuleDAOTest` to trace
  * to. Every obligation this file states for a test suite is therefore NET-NEW coverage. The
- * obligations, ONE OF WHICH IS NOW AUTHORED: assert the emitted statement text and the bound
- * parameter array for all eight methods against a capturing executor with no live database - the
- * seven reads remain unauthored, while the eighth, `saveRoundingRule`, IS covered, by
- * `tests/integration/repositories/mysqlPromotionRepositoryRoundingRuleWrite.test.ts`, across both
- * its INSERT and its UPDATE path. The remaining obligations, stated here and not authored here:
- * exercise multi-element, single-element and EMPTY `rewardTypeList` / `promotionCodeList` /
- * `noQualRequiredList`; exercise a PRESENT but empty-string `productID` against the sale-price
- * statement; assert `undefined` rather than a throw for an unknown rounding-rule identifier; and
- * assert that no ordering clause is emitted for the active-reward read and no row limit for the
- * sale-price join-back.
+ * obligations, WHICH ARE NOW AUTHORED IN ONE SUITE -
+ * `tests/integration/repositories/mysqlPromotionRepository.test.ts`, the only repository suite this
+ * adapter has: assert the emitted statement text and the bound parameter array for all seven
+ * methods against a capturing executor with no live database; exercise multi-element,
+ * single-element and EMPTY `rewardTypeList` / `promotionCodeList` / `noQualRequiredList`; exercise a
+ * PRESENT but empty-string `productID` against the sale-price statement; assert `undefined` rather
+ * than a throw for an unknown rounding-rule identifier; and assert that no ordering clause is
+ * emitted for the active-reward read and no row limit for the sale-price join-back.
  *
  * `PromotionService.updateOrderAmountsWithPromotions` reads price-group state that
  * `PriceGroupService.updateOrderAmountsWithPriceGroups` produces
@@ -133,7 +132,6 @@ import { PromotionQualifier } from '../../domain/entities/promotionQualifier.js'
 import type { RewardMatchingType } from '../../domain/entities/promotionQualifier.js';
 import { PromotionReward } from '../../domain/entities/promotionReward.js';
 import type { AmountType, ApplicableTerm } from '../../domain/entities/promotionReward.js';
-import { randomUUID } from 'node:crypto';
 import { RoundingRule } from '../../domain/entities/roundingRule.js';
 import type {
   PromotionRepository,
@@ -166,6 +164,34 @@ import { buildSalePricePromotionRewardsStatement } from './sql/salePricePromotio
  */
 interface RoundingRuleValueRounder {
   roundValueByRoundingRule(value: Money, rule: RoundingRule): Money;
+}
+
+/**
+ * The clock this adapter reads its one instant from, supplied by the composition root.
+ *
+ * ★ WHY THE CLOCK IS INJECTED RATHER THAN READ. Two methods here compare dates -
+ * `getActivePromotionRewards` [model/dao/PromotionDAO.cfc:L117] and
+ * `getSalePricePromotionRewardsQuery` [model/dao/PromotionDAO.cfc:L306] - and the price-group
+ * adapter compares a third [model/dao/PriceGroupDAO.cfc:L65,L70]. In the legacy every one of those
+ * was `now()` inside ONE ColdFusion request, so a promotion window, a sale-price window and a
+ * subscription-eligibility window could not disagree about what "now" meant. Reading the host clock
+ * independently in each adapter reproduces the CALL but not that agreement: an invocation that
+ * straddles a period boundary could admit a reward whose sale price has already expired, which
+ * changes the amount a customer is charged. One epoch is therefore captured per request and every
+ * date-dependent read is bound to it.
+ *
+ * JUDGMENT CALL: declared module-locally and un-exported, exactly as `RoundingRuleValueRounder`
+ * above is, and satisfied STRUCTURALLY by whatever the composition root passes. The port set stays
+ * locked at thirteen - this is a constructor collaborator, not a fourteenth port - and no clock
+ * abstraction enters the domain layer.
+ *
+ * IMPLEMENTATIONS MUST RETURN A VALUE THE CALLER CANNOT USE TO MUTATE THE SHARED EPOCH. `Date` is
+ * mutable, so a provider handing out its own instance would let one read move every other read's
+ * baseline; the composition root returns a copy per call, and this adapter additionally copies
+ * before handing the instant to an entity.
+ */
+interface PromotionRequestClock {
+  now(): Date;
 }
 
 // ---------------------------------------------------------------------------
@@ -956,6 +982,15 @@ const CLOSE_GROUP_CLAUSE = ' )';
 // does not grow with the number of rows returned. Per-row lookups are not used anywhere in this
 // file.
 //
+// ★★ ONE COLLECTION, ONE STATEMENT - the mapping is a BIJECTION and it must stay one. An earlier
+// revision issued FORTY-SEVEN collection statements rather than twenty-seven, because the tuple
+// behind `readOpaqueLinkGrouping` named the ten catalog sets alongside the three opaque ones: each
+// owner kind read its ten catalog tables once into a grouping the caller discarded, then read the
+// same ten again through `readCatalogLinkGrouping`. The claim of "TWENTY-SEVEN statements" in the
+// paragraph above was the INTENDED shape all along and is now the actual one. Nothing observable
+// changed - the discarded groupings were never consulted - but twenty statements per invocation
+// were issued for nothing. See the cardinality note on `OPAQUE_LINK_SET_NAMES`.
+//
 // WHY ALL TWENTY-SEVEN, AND NOT JUST THE SIX OPAQUE-IDENTIFIER ONES
 // An earlier revision of this adapter materialized only the six collections whose members are
 // out-of-scope entities reduced to opaque identifiers - fulfillment methods, shipping methods and
@@ -1329,92 +1364,28 @@ FROM
 WHERE
     roundingRuleID = ?`;
 
-/**
- * Inserts one rounding rule.
- *
- * NO VERBATIM LEGACY SQL EXISTS TO QUOTE, and that is the point worth recording.
- * `RoundingRuleService.saveRoundingRule` ends in `super.save(argumentcollection=arguments)`
- * [model/service/RoundingRuleService.cfc:L63], which is framework-inherited CRUD from
- * `HibachiService`; the statement was generated by Hibernate from the entity's persistent-property
- * metadata, so the AUTHORITY FOR THIS STATEMENT IS THAT METADATA rather than any hand-written query.
- * Having no query to copy is exactly why this write was easy to omit, so the mapping is spelled out:
- *
- *     roundingRuleID          [model/entity/RoundingRule.cfc:L52]  fieldtype="id" generator="uuid"
- *     roundingRuleName        [model/entity/RoundingRule.cfc:L53]
- *     roundingRuleExpression  [model/entity/RoundingRule.cfc:L54]
- *     roundingRuleDirection   [model/entity/RoundingRule.cfc:L55]
- *     createdDateTime         [model/entity/RoundingRule.cfc:L58]  hb_populateEnabled="false"
- *     modifiedDateTime        [model/entity/RoundingRule.cfc:L60]  hb_populateEnabled="false"
- *
- * THE IDENTIFIER IS SUPPLIED, NOT GENERATED BY THE SERVER. `generator="uuid"` means the application
- * produced it, which is why `SqlMutationResult` carries no `insertId` - see the judgment call on that
- * type in `src/repositories/mysql/connection.ts`.
- *
- * THE TWO ACCOUNT AUDIT COLUMNS ARE NOT WRITTEN. `createdByAccountID` and `modifiedByAccountID`
- * [model/entity/RoundingRule.cfc:L59, L61] are many-to-one keys into `Account`, which is explicitly
- * out of scope, and the target entity carries them as opaque values it never resolves. Writing an
- * account identifier this slice cannot legitimately obtain would be inventing data; leaving the
- * columns to their schema default preserves the contract without fabricating a reference. They are
- * READ back by `ROUNDING_RULE_BY_ID_STATEMENT` above, so a row written elsewhere keeps its values.
- */
-/**
- * Probes whether a row already answers to an identifier.
- *
- * The select half of Hibernate's detached-entity reconciliation - see `saveRoundingRule`. The
- * projection is the identifier column alone because existence is the whole question.
- */
-const ROUNDING_RULE_EXISTS_STATEMENT = `SELECT
-    roundingRuleID
-FROM
-    SwRoundingRule
-WHERE
-    roundingRuleID = ?`;
-
-/**
- * Mints a persisted identifier.
- *
- * FOLLOWS THE FRAMEWORK'S OWN SHAPE, not a preference: `generator="uuid"`
- * [model/entity/RoundingRule.cfc:L52] on a `length="32"` string column is Hibernate's 32-character
- * hex form, so the canonical dashed rendering is stripped to match what the column has always held.
- *
- * DECLARED MODULE-LOCALLY, mirroring the identical helper in
- * `src/repositories/mysql/mysqlProductRepository.ts`. That is this folder's established convention -
- * the same one that keeps `RoundingRuleValueRounder` local to this file rather than shared - and
- * there are no barrel files to import through. One line duplicated is cheaper than a cross-adapter
- * dependency between two secondary adapters.
- */
-function generatePersistedIdentifier(): string {
-  return randomUUID().replaceAll('-', '');
-}
-
-const ROUNDING_RULE_INSERT_STATEMENT = `INSERT INTO SwRoundingRule (
-    roundingRuleID,
-    roundingRuleName,
-    roundingRuleExpression,
-    roundingRuleDirection,
-    createdDateTime,
-    modifiedDateTime
-) VALUES (?, ?, ?, ?, ?, ?)`;
-
-/**
- * Updates one rounding rule.
- *
- * WRITES EVERY POPULATABLE COLUMN, not a computed delta. Hibernate flushed the whole dirty entity and
- * the target holds no per-field dirty tracking, so writing all three populatable columns reproduces
- * the legacy outcome; writing a subset would silently preserve a stale value the legacy would have
- * replaced.
- *
- * `createdDateTime` is deliberately absent from the SET list. It is `hb_populateEnabled="false"`
- * [model/entity/RoundingRule.cfc:L58] and describes when the row came into existence, so an update
- * that rewrote it would destroy audit history. `modifiedDateTime` is the column an update owns.
- */
-const ROUNDING_RULE_UPDATE_STATEMENT = `UPDATE SwRoundingRule SET
-    roundingRuleName = ?,
-    roundingRuleExpression = ?,
-    roundingRuleDirection = ?,
-    modifiedDateTime = ?
-WHERE
-    roundingRuleID = ?`;
+// ---------------------------------------------------------------------------
+// NO ROUNDING-RULE WRITE STATEMENT IS DECLARED HERE, AND THIS IS THE RECORD OF ITS REMOVAL
+//
+// An earlier revision declared `ROUNDING_RULE_EXISTS_STATEMENT`,
+// `ROUNDING_RULE_INSERT_STATEMENT`, `ROUNDING_RULE_UPDATE_STATEMENT` and a module-local
+// `generatePersistedIdentifier()` here, to back an eighth port method. The port is back to SEVEN
+// READS and the write is gone with it, so the statements have gone too rather than being left
+// stranded above a class that no longer issues them.
+//
+// The observation that motivated them was accurate and is worth keeping: there is NO verbatim legacy
+// SQL to quote for a rounding-rule write, because `RoundingRuleService.saveRoundingRule` ends in
+// `super.save(argumentcollection=arguments)` [model/service/RoundingRuleService.cfc:L63] - framework
+// -inherited CRUD from `HibachiService`, with the statement generated by Hibernate from the entity's
+// persistent-property metadata. What does not follow is that this adapter should supply it. That
+// generic inherited CRUD is out of scope for this slice, it has ZERO in-scope legacy callers, and the
+// port's method count is the authority - see the port header, which carries the full argument and the
+// record of the reversion.
+//
+// `ROUNDING_RULE_BY_ID_STATEMENT` above is the ONLY rounding-rule statement in this file, and it is a
+// read: it ports the single query of `model/dao/RoundingRuleDAO.cfc`. Owning a READ of `SwRoundingRule`
+// does not license a WRITE to it.
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // List tokenization and the empty-list short-circuits
@@ -2050,82 +2021,72 @@ function requirePromotionID(promotionPeriod: PromotionPeriod, methodName: string
 }
 
 /**
- * The names of the link sets one owner kind carries.
+ * The names of the link sets whose members are OUT OF SCOPE and therefore collapse to opaque
+ * identifiers.
  *
- * THIRTEEN: the three whose members are out-of-scope and collapse to opaque identifiers, then the ten
- * catalog sets. `eligiblePriceGroups` is absent by the decision recorded above the descriptors.
+ * ★★ THREE, AND ONLY THREE. `FulfillmentMethod`, `ShippingMethod` and `AddressZone` are all
+ * out-of-scope entities, so their link rows are carried as bare identifier strings rather than
+ * hydrated into anything. The ten CATALOG-typed sets - brands, options, skus, products,
+ * productTypes and their five excluded counterparts - are read by `readCatalogLinkGrouping`
+ * instead, because they project into identity-complete tokens the entity constructor adopts.
+ * `eligiblePriceGroups` is absent for the reason recorded above the catalog descriptors.
+ *
+ * ★ QUOTE-THEN-REVISE ON THE CARDINALITY. This tuple used to name THIRTEEN sets - the three opaque
+ * ones followed by the ten catalog ones - and was documented as: "THIRTEEN: the three whose members
+ * are out-of-scope and collapse to opaque identifiers, then the ten catalog sets."
+ *
+ * Naming all thirteen here made `readLinkGrouping` issue thirteen statements, and BOTH of its
+ * callers then used exactly three of the resulting groupings and threw the other ten away, only to
+ * re-read the same ten tables immediately afterwards through `readCatalogLinkGrouping`. Twenty
+ * statements per invocation - ten on the reward path and ten on the qualifier path - were issued
+ * purely to be discarded. Nothing observable depended on them: `hydrateActiveRewards` reads only
+ * `fulfillmentMethods`, `shippingMethods` and `shippingAddressZones` off this grouping, and
+ * `readPeriodQualifiers` reads only the same three. The statement LABELS in this file already
+ * described the intended shape correctly - "The three reward link reads that satisfy method 1's
+ * opaque-identifier collections" - so the tuple contradicted the file's own documentation.
  *
  * Declared as a tuple of literal names, and the descriptor and grouping records are keyed BY it, so a
  * set added to one and forgotten in the other does not compile. That matters here more than it would
  * elsewhere: the twenty catalog tables differ by one word each, and a silently missing set reads as an
  * empty collection rather than as an error.
  */
-const LINK_SET_NAMES = [
+const OPAQUE_LINK_SET_NAMES = [
   'fulfillmentMethods',
   'shippingMethods',
   'shippingAddressZones',
-  'brands',
-  'options',
-  'skus',
-  'products',
-  'productTypes',
-  'excludedBrands',
-  'excludedOptions',
-  'excludedSkus',
-  'excludedProducts',
-  'excludedProductTypes',
 ] as const;
 
-/** One of the thirteen link-set names. */
-type LinkSetName = (typeof LINK_SET_NAMES)[number];
+/** One of the three opaque link-set names. */
+type OpaqueLinkSetName = (typeof OPAQUE_LINK_SET_NAMES)[number];
 
-/** The thirteen link tables that serve one owner kind. */
-type LinkDescriptorSet = Readonly<Record<LinkSetName, LinkTableDescriptor>>;
+/** The three opaque-identifier link tables that serve one owner kind. */
+type OpaqueLinkDescriptorSet = Readonly<Record<OpaqueLinkSetName, LinkTableDescriptor>>;
 
 /**
- * The reward's thirteen [model/entity/PromotionReward.cfc:L76-L78, L80-L84, L86-L90].
+ * The reward's three opaque-identifier sets [model/entity/PromotionReward.cfc:L76-L78].
  *
- * FETCH SHAPE: thirteen statements, each keyed by every reward identifier the invocation resolved at
+ * FETCH SHAPE: three statements, each keyed by every reward identifier the invocation resolved at
  * once. The count is FIXED - it does not grow with the number of rewards, the number of periods or
  * the number of link rows - which is the property the association-materialization rule asks for. The
  * alternative it rules out is a lookup per reward, and that is what "unbounded per-row lookups are
- * not acceptable" names.
+ * not acceptable" names. The reward's ten catalog-typed sets [L80-L90] are read exactly once, by
+ * `REWARD_CATALOG_LINK_DESCRIPTORS`, and must not be duplicated here.
  */
-const REWARD_LINK_DESCRIPTORS: LinkDescriptorSet = Object.freeze({
+const REWARD_OPAQUE_LINK_DESCRIPTORS: OpaqueLinkDescriptorSet = Object.freeze({
   fulfillmentMethods: REWARD_FULFILLMENT_METHOD_LINK,
   shippingMethods: REWARD_SHIPPING_METHOD_LINK,
   shippingAddressZones: REWARD_SHIPPING_ADDRESS_ZONE_LINK,
-  brands: REWARD_BRAND_LINK,
-  options: REWARD_OPTION_LINK,
-  skus: REWARD_SKU_LINK,
-  products: REWARD_PRODUCT_LINK,
-  productTypes: REWARD_PRODUCT_TYPE_LINK,
-  excludedBrands: REWARD_EXCLUDED_BRAND_LINK,
-  excludedOptions: REWARD_EXCLUDED_OPTION_LINK,
-  excludedSkus: REWARD_EXCLUDED_SKU_LINK,
-  excludedProducts: REWARD_EXCLUDED_PRODUCT_LINK,
-  excludedProductTypes: REWARD_EXCLUDED_PRODUCT_TYPE_LINK,
 });
 
-/** The qualifier's thirteen [model/entity/PromotionQualifier.cfc:L73-L75, L77-L81, L83-L87]. */
-const QUALIFIER_LINK_DESCRIPTORS: LinkDescriptorSet = Object.freeze({
+/** The qualifier's three opaque-identifier sets [model/entity/PromotionQualifier.cfc:L73-L75]. */
+const QUALIFIER_OPAQUE_LINK_DESCRIPTORS: OpaqueLinkDescriptorSet = Object.freeze({
   fulfillmentMethods: QUALIFIER_FULFILLMENT_METHOD_LINK,
   shippingMethods: QUALIFIER_SHIPPING_METHOD_LINK,
   shippingAddressZones: QUALIFIER_SHIPPING_ADDRESS_ZONE_LINK,
-  brands: QUALIFIER_BRAND_LINK,
-  options: QUALIFIER_OPTION_LINK,
-  skus: QUALIFIER_SKU_LINK,
-  products: QUALIFIER_PRODUCT_LINK,
-  productTypes: QUALIFIER_PRODUCT_TYPE_LINK,
-  excludedBrands: QUALIFIER_EXCLUDED_BRAND_LINK,
-  excludedOptions: QUALIFIER_EXCLUDED_OPTION_LINK,
-  excludedSkus: QUALIFIER_EXCLUDED_SKU_LINK,
-  excludedProducts: QUALIFIER_EXCLUDED_PRODUCT_LINK,
-  excludedProductTypes: QUALIFIER_EXCLUDED_PRODUCT_TYPE_LINK,
 });
 
-/** The thirteen groupings one link read produces, keyed by folded owner identifier. */
-type LinkGrouping = Readonly<Record<LinkSetName, Map<string, string[]>>>;
+/** The three groupings one opaque link read produces, keyed by folded owner identifier. */
+type OpaqueLinkGrouping = Readonly<Record<OpaqueLinkSetName, Map<string, string[]>>>;
 
 /**
  * The ten catalog-typed link tables that serve one owner kind.
@@ -2302,18 +2263,17 @@ function dedupeIdentifiers(identifiers: readonly string[]): readonly string[] {
 /**
  * The MySQL implementation of `PromotionRepository`.
  *
- * Eight methods, exactly the eight the port declares, all of them `async` because all eight reach
- * the database. Seven are reads; the eighth, `saveRoundingRule`, is the only write in this file. No
- * NINTH public member exists, and no `roundingRuleRepository` accompanies this file: the port
- * inventory is thirteen, and `getRoundingRuleQuery` together with `saveRoundingRule` are hosted here
- * precisely so it stays thirteen.
+ * Seven methods, exactly the seven the port declares, all of them `async` because all seven reach
+ * the database, and ALL SEVEN ARE READS. No eighth public member exists, and no
+ * `roundingRuleRepository` accompanies this file: the port inventory is thirteen, and
+ * `getRoundingRuleQuery` is hosted here precisely so it stays thirteen.
  *
- * ★ QUOTE-THEN-REVISE. This read "Seven methods, exactly the seven the port declares ... No eighth
- * public member exists." The port has since gained `saveRoundingRule`, so this class implements
- * eight; the invariant the sentence was protecting - that this class publishes exactly what the port
- * declares and not one member more - is unchanged, and it is the count that had to be re-read off
- * the interface rather than restated from memory. The port's own header carries the full record of
- * why the write was admitted.
+ * ★ FOR ONE REVISION THIS READ "Eight methods, exactly the eight the port declares ... the eighth,
+ * `saveRoundingRule`, is the only write in this file", and the count was honest about the class as it
+ * then stood. The port has been restored to seven reads and the write has been removed from this
+ * file, so the count is seven again. The invariant the sentence exists to protect is unchanged
+ * throughout: this class publishes exactly what the port declares and not one member more, and the
+ * number is re-read off the interface rather than restated from memory.
  */
 export class MysqlPromotionRepository implements PromotionRepository {
   /**
@@ -2351,12 +2311,48 @@ export class MysqlPromotionRepository implements PromotionRepository {
   private readonly valueRounder: RoundingRuleValueRounder;
 
   /**
+   * The request clock every date-dependent read here is bound to.
+   *
+   * REQUIRED, NOT OPTIONAL, AND THAT IS THE POINT. A default of `() => new Date()` would let a
+   * future construction site silently opt back into a private clock, which is the defect this
+   * parameter exists to remove; making it required means every composition states which epoch its
+   * pricing reads share. See {@link PromotionRequestClock} for why they must share one.
+   */
+  private readonly requestClock: PromotionRequestClock;
+
+  /**
+   * NO AUDIT ACTOR IS INJECTED HERE, AND THE REASON IS RECORDED RATHER THAN LEFT AS AN ASYMMETRY.
+   *
+   * ★ QUOTE-THEN-REVISE. A superseded revision of this class carried a third parameter,
+   * `auditActor: AuditActorContext`, whose doc read: "WHO this adapter stamps its one write on
+   * behalf of ... SECURITY REVIEW DISPOSITION - RAISED AS S-07, ACCEPTED. This repository was NOT
+   * among the four the finding cited, and it is fixed here anyway because it has the identical root
+   * cause: `saveRoundingRule` is the one write in this file". That was true when written. It is no
+   * longer, because THE WRITE ITSELF IS GONE: the port's method count is locked at SEVEN reads and
+   * declares no rounding-rule save or delete, so `saveRoundingRule` and both of its statement
+   * constants were withdrawn from this file. An actor with nothing to stamp is not a security
+   * control, it is an unused field.
+   *
+   * S-07 IS STILL FULLY RESOLVED. The finding's subject is write paths that copied audit identifiers
+   * off caller-hydrated entities, and every adapter that HAS such a path - the product, product-type,
+   * price-group, price-group-rate and SKU write paths - still threads the request-scoped immutable
+   * actor and still leaves an unauthorised column untouched via `COALESCE`. This file issues no
+   * INSERT, no UPDATE and no DELETE, so it has no such path to protect. `RoundingRuleService`
+   * performs only the cache-invalidation half [model/service/RoundingRuleService.cfc:L56-L63]; the
+   * `super.save()` half has no persistence port in the locked inventory and none was invented.
+   *
    * @param executor the prepared-statement executor this repository reads through.
    * @param valueRounder the rounding arithmetic a hydrated `RoundingRule` delegates to.
+   * @param requestClock the one request epoch every date comparison in this adapter reads.
    */
-  constructor(executor: PreparedStatementExecutor, valueRounder: RoundingRuleValueRounder) {
+  constructor(
+    executor: PreparedStatementExecutor,
+    valueRounder: RoundingRuleValueRounder,
+    requestClock: PromotionRequestClock,
+  ) {
     this.executor = executor;
     this.valueRounder = valueRounder;
+    this.requestClock = requestClock;
   }
 
   /**
@@ -2440,8 +2436,11 @@ export class MysqlPromotionRepository implements PromotionRepository {
     }
 
     // CFML parity [model/dao/PromotionDAO.cfc:L117]: THE SINGLE CAPTURED INSTANT. Read once, here,
-    // and bound everywhere a date is compared. `new Date()` appears exactly once in this method.
-    const capturedInstant = new Date();
+    // and bound everywhere a date is compared. It comes from the INJECTED request clock, so it is
+    // the same instant the sale-price statement and the price-group adapter bind - the legacy's
+    // `now()` calls all sat inside one ColdFusion request and could not disagree. `new Date()`
+    // appears nowhere in this method.
+    const capturedInstant = this.requestClock.now();
 
     // The provider the period entity's constructor requires. It reads no clock: it hands back a
     // copy of the instant already captured, so a caller cannot mutate the value the statement was
@@ -2730,8 +2729,10 @@ export class MysqlPromotionRepository implements PromotionRepository {
   async getSalePricePromotionRewardsQuery(
     productID?: string,
   ): Promise<SalePricePromotionRewardRow[]> {
-    // CFML parity [model/dao/PromotionDAO.cfc:L306]: `var timeNow = now()`, captured once.
-    const capturedInstant = new Date();
+    // CFML parity [model/dao/PromotionDAO.cfc:L306]: `var timeNow = now()`, captured once - and
+    // captured from the INJECTED request clock, so this reduction and the active-reward statement
+    // above evaluate their windows against one instant rather than two.
+    const capturedInstant = this.requestClock.now();
 
     // JUDGMENT CALL: KEY PRESENCE IS PRESERVED THROUGH THE CALL. The statement module tests
     // `'productID' in input`, mirroring the legacy `structKeyExists`, and under
@@ -2784,150 +2785,40 @@ export class MysqlPromotionRepository implements PromotionRepository {
   }
 
   /**
-   * Method 8. Persists one rounding rule to `SwRoundingRule`.
-   *
-   * This is the `super.save(argumentcollection=arguments)` half of `saveRoundingRule`
-   * [model/service/RoundingRuleService.cfc:L63]. The port records why the write is hosted on this
-   * contract rather than on a fourteenth port, and the two statement constants record the
-   * entity-metadata authority for their column lists.
-   *
-   * INSERT, UPDATE OR BOTH-PATHS is decided exactly as the sibling `saveBrand`
-   * [src/repositories/mysql/mysqlProductRepository.ts] decides it, and the shape is deliberately
-   * copied rather than reinvented: an entity with NO identifier is new and is inserted under a minted
-   * one; an entity WITH an identifier is probed, then inserted if no row answers and updated if one
-   * does. The probe is not defensive padding - it is what `super.save` did. Hibachi's save reaches
-   * the ORM, and Hibernate reconciling a DETACHED entity that carries an identifier issues a select
-   * and then an insert or an update depending on what it finds. An adapter that trusted `isNew()`
-   * alone would silently update zero rows whenever a caller constructed a rule with a chosen
-   * identifier that had never been persisted, and report success.
-   *
-   * A NEW INSTANCE IS RETURNED, NOT THE ARGUMENT. `roundingRuleID` is immutable on the entity - there
-   * is no setter, by design - so a rule that arrived new cannot be told its minted identifier by
-   * mutation. It is rebuilt from the values actually written, which is also what makes the returned
-   * value trustworthy: every field on it is a field that reached the database.
-   *
-   * ONE STATEMENT PER PATH, SO NO TRANSACTION IS OPENED HERE. `transaction` exists on the executor
-   * now, and wrapping a single atomic statement in one would be cargo cult. Note that this method
-   * deliberately does not reach for `this.executor.transaction` even when it is part of a larger unit
-   * of work: a caller that needs this write inside one constructs the repository over its `tx`
-   * executor, which is why the executor is a constructor parameter.
-   *
-   * @param rule the rule to persist. Its identifier may be empty, in which case one is minted.
-   * @returns a rule carrying the identifier and audit stamps that were actually written.
-   */
-  async saveRoundingRule(rule: RoundingRule): Promise<RoundingRule> {
-    const rowExists = rule.isNew()
-      ? false
-      : await this.roundingRuleRowExists(rule.getRoundingRuleID());
-
-    if (!rowExists) {
-      // [org/Hibachi/HibachiEntity.cfc:L609] ONE timestamp, written to both audit stamps. Two
-      // `new Date()` reads would let the pair disagree with itself, which is worse than a coarse
-      // value.
-      const auditTimestamp = new Date();
-      const roundingRuleID = rule.isNew()
-        ? generatePersistedIdentifier()
-        : rule.getRoundingRuleID();
-
-      // `?? null` on all three populatable columns, deliberately. `ormtype="string"` with no
-      // `notnull="true"` [model/entity/RoundingRule.cfc:L53-L55] means the schema admits NULL, and
-      // the getters return `string | undefined` to model exactly that. Binding `undefined` is not an
-      // option - it is not a `SqlParameter`, and the executor rejects it before the statement is sent
-      // - while substituting `''` would write an empty string where the legacy wrote NULL, which
-      // `getRoundingRuleDetailsByID` [model/service/RoundingRuleService.cfc:L73-L74] would then hand
-      // to `roundValue` as a rounding expression.
-      await this.executor.executeMutation(ROUNDING_RULE_INSERT_STATEMENT, [
-        roundingRuleID,
-        rule.getRoundingRuleName() ?? null,
-        rule.getRoundingRuleExpression() ?? null,
-        rule.getRoundingRuleDirection() ?? null,
-        auditTimestamp,
-        auditTimestamp,
-      ]);
-
-      return this.rebuildRoundingRule(rule, roundingRuleID, auditTimestamp, auditTimestamp);
-    }
-
-    // [org/Hibachi/HibachiEntity.cfc:L662-L667] the modified stamp only. `createdDateTime` is absent
-    // from the SET list, so the row keeps the value it already has and the entity keeps reporting it.
-    const modifiedDateTime = new Date();
-
-    await this.executor.executeMutation(ROUNDING_RULE_UPDATE_STATEMENT, [
-      rule.getRoundingRuleName() ?? null,
-      rule.getRoundingRuleExpression() ?? null,
-      rule.getRoundingRuleDirection() ?? null,
-      modifiedDateTime,
-      rule.getRoundingRuleID(),
-    ]);
-
-    return this.rebuildRoundingRule(
-      rule,
-      rule.getRoundingRuleID(),
-      rule.getCreatedDateTime(),
-      modifiedDateTime,
-    );
-  }
-
-  /**
-   * Does a row already answer to this identifier?
-   *
-   * The select half of Hibernate's detached-entity reconciliation. It reads the identifier column
-   * only: the caller needs existence, not content, and widening the projection would invite a reader
-   * to think the row's values matter here.
-   *
-   * @param roundingRuleID the identifier to probe. Never empty - `isNew()` short-circuits first.
-   * @returns whether a row exists.
-   */
-  private async roundingRuleRowExists(roundingRuleID: string): Promise<boolean> {
-    const rows = await this.executor.execute(ROUNDING_RULE_EXISTS_STATEMENT, [roundingRuleID]);
-
-    return rows.length > 0;
-  }
-
-  /**
-   * Rebuild a rule around the identifier and audit stamps that were written.
-   *
-   * A NEW INSTANCE, because `roundingRuleID` and both audit stamps are immutable on the entity. Every
-   * other field is carried across unchanged - including `priceGroupRates`, whose fetch shape is the
-   * empty array the read path documents, since a rounding rule's rates are owned by the price-group
-   * repository and reach it from the other direction.
-   *
-   * @param rule the rule as supplied by the caller, the source of every unwritten field.
-   * @param roundingRuleID the identifier that was written - minted for an insert, carried otherwise.
-   * @param createdDateTime the creation stamp the row now holds.
-   * @param modifiedDateTime the modification stamp that was just written.
-   * @returns the persisted rule.
-   */
-  private rebuildRoundingRule(
-    rule: RoundingRule,
-    roundingRuleID: string,
-    createdDateTime: Date | undefined,
-    modifiedDateTime: Date,
-  ): RoundingRule {
-    return new RoundingRule(
-      {
-        roundingRuleID,
-        roundingRuleName: rule.getRoundingRuleName(),
-        roundingRuleExpression: rule.getRoundingRuleExpression(),
-        roundingRuleDirection: rule.getRoundingRuleDirection(),
-        createdDateTime,
-        createdByAccountID: rule.getCreatedByAccountID(),
-        modifiedDateTime,
-        modifiedByAccountID: rule.getModifiedByAccountID(),
-        priceGroupRates: [],
-      },
-      this.valueRounder,
-    );
-  }
-
-  /**
    * Hydrate the rows `getActivePromotionRewards` produced into rewards, materializing exactly the
    * associations that method's fetch-shape decision names.
    *
-   * FETCH SHAPE - the reward statement, then thirteen reward link statements, then the period
-   * qualifier statement and its own thirteen link statements: TWENTY-EIGHT statements, and fixed at
-   * twenty-eight however many rewards came back. Each is keyed by the whole deduped owner set, so no
-   * statement count anywhere in this method is a function of the row count.
+   * FETCH SHAPE - TWENTY-NINE statements, and fixed at twenty-nine however many rewards came back.
+   * Each is keyed by the whole deduped owner set, so no statement count anywhere in this method is a
+   * function of the row count. In emission order:
+   *
+   * | # | Statements | What |
+   * |---|---|---|
+   * | 1 | 1 | the active-reward projection |
+   * | 2 | 3 | the reward's opaque-identifier links, via `readOpaqueLinkGrouping` |
+   * | 3 | 10 | the reward's catalog-typed links, via `readCatalogLinkGrouping` |
+   * | 4 | 1 | the reward's `eligiblePriceGroups` [model/entity/PromotionReward.cfc:L74] |
+   * | 5 | 1 | the period-qualifier projection |
+   * | 6 | 3 | the qualifier's opaque-identifier links |
+   * | 7 | 10 | the qualifier's catalog-typed links |
+   *
+   * Rows 5 through 7 are issued ONLY when the reward rows resolved at least one period, and rows 6
+   * and 7 only when that period read returned at least one qualifier - so the floor is sixteen and
+   * the ceiling is twenty-nine. Every collection is read EXACTLY ONCE: the twenty-seven
+   * many-to-many collections named in the fetch-shape block above are covered by rows 2, 3, 4, 6
+   * and 7, and nothing is read twice.
+   *
+   * ★ QUOTE-THEN-REVISE ON THE COUNT. This paragraph used to read: "the reward statement, then
+   * thirteen reward link statements, then the period qualifier statement and its own thirteen link
+   * statements: TWENTY-EIGHT statements, and fixed at twenty-eight however many rewards came back."
+   *
+   * That accounting was wrong twice over. It counted thirteen link statements per owner kind, which
+   * was the symptom of `LINK_SET_NAMES` naming the ten catalog sets alongside the three opaque ones,
+   * and it then omitted the eleven reward catalog statements and the ten qualifier catalog statements
+   * altogether - so the stated twenty-eight was neither the shape the code had (forty-nine, twenty of
+   * them discarded) nor the shape it should have had (twenty-nine). The table above is enumerated
+   * rather than prose precisely so a reviewer can check it against the emitted sequence a statement
+   * later.
    *
    * INSTANCE SHARING: the three maps below are INVOCATION-SCOPED locals, created here and discarded
    * when the call returns. Two rewards on one period get ONE `PromotionPeriod` object, mirroring the
@@ -2962,11 +2853,14 @@ export class MysqlPromotionRepository implements PromotionRepository {
     // work; sequential emission makes the order a suite observes a deterministic function of the
     // input, which is what lets `tests/integration/repositories` assert the emitted text and the
     // bound arrays in a fixed order against a capturing fake.
-    const rewardLinks = await this.readLinkGrouping(
+    const rewardLinks = await this.readOpaqueLinkGrouping(
       rewardIDs,
-      REWARD_LINK_DESCRIPTORS,
+      REWARD_OPAQUE_LINK_DESCRIPTORS,
       REWARD_LINK_STATEMENT_LABEL,
     );
+
+    // The reward's ten catalog-typed sets plus `eligiblePriceGroups`, read HERE AND ONLY HERE.
+    // `readOpaqueLinkGrouping` above deliberately does not touch them.
     const rewardCatalogLinks = await this.readRewardCatalogLinkGrouping(rewardIDs);
     const qualifiersByPeriod = await this.readPeriodQualifiers(periodIDs);
 
@@ -3037,23 +2931,28 @@ export class MysqlPromotionRepository implements PromotionRepository {
   }
 
   /**
-   * Read the thirteen link tables for one set of owners.
+   * Read the three opaque-identifier link tables for one set of owners.
    *
-   * FETCH SHAPE - THIRTEEN statements, each keyed by EVERY owner identifier at once. The count is a
+   * FETCH SHAPE - THREE statements, each keyed by EVERY owner identifier at once. The count is a
    * CONSTANT of the method rather than a function of how many owners or how many members there are:
-   * one hundred rewards linking one thousand brands between them read in the same thirteen statements
-   * one reward linking nothing does. That property is the reason the reads are keyed by the whole
-   * owner set instead of being issued per owner, and it is what `mysqlPromotionRepository`'s
+   * one hundred rewards linking one thousand shipping methods between them read in the same three
+   * statements one reward linking nothing does. That property is the reason the reads are keyed by the
+   * whole owner set instead of being issued per owner, and it is what `mysqlPromotionRepository`'s
    * authoring contract requires of an association materialized at this boundary - a bounded set of
    * collection queries, never an unbounded per-row lookup.
    *
-   * Shared by the reward owners and the qualifier owners, which differ only in their descriptors and
-   * their label. Both descriptor sets are keyed by `LINK_SET_NAMES`, so both read all thirteen and
-   * neither can quietly read twelve.
+   * ★★ IT READS THE OPAQUE SETS AND NOTHING ELSE. The ten catalog-typed sets belong to
+   * `readCatalogLinkGrouping` and are read there EXACTLY ONCE per owner kind. Widening this method
+   * back to the catalog tables would restore a read whose result both callers discard - see the
+   * cardinality note on `OPAQUE_LINK_SET_NAMES`.
    *
-   * NO `ORDER BY` on any of the thirteen, matching the legacy exactly: not one of the twenty catalog
-   * collections declares an `orderby` in its metadata [model/entity/PromotionReward.cfc:L80-L90,
-   * model/entity/PromotionQualifier.cfc:L77-L87], so Hibernate imposed none and neither does this.
+   * Shared by the reward owners and the qualifier owners, which differ only in their descriptors and
+   * their label. Both descriptor sets are keyed by `OPAQUE_LINK_SET_NAMES`, so both read all three and
+   * neither can quietly read two.
+   *
+   * NO `ORDER BY` on any of the three, matching the legacy exactly: not one of these collections
+   * declares an `orderby` in its metadata [model/entity/PromotionReward.cfc:L76-L78,
+   * model/entity/PromotionQualifier.cfc:L73-L75], so Hibernate imposed none and neither does this.
    * Members arrive in whatever order the database produced them, which is the order the legacy's
    * membership tests saw - and since every one of those tests is an existence check rather than a
    * positional read, the order is not something any behaviour depends on.
@@ -3063,33 +2962,23 @@ export class MysqlPromotionRepository implements PromotionRepository {
    * Fresh maps are constructed rather than a shared module-level constant returned.
    *
    * @param ownerIDs the distinct owner identifiers.
-   * @param descriptors which thirteen link tables to read - the reward set or the qualifier set.
+   * @param descriptors which three link tables to read - the reward set or the qualifier set.
    * @param statementLabel which family of statement it is, for fault messages.
-   * @returns the thirteen groupings, keyed by folded owner identifier.
+   * @returns the three groupings, keyed by folded owner identifier.
    */
-  private async readLinkGrouping(
+  private async readOpaqueLinkGrouping(
     ownerIDs: readonly string[],
-    descriptors: LinkDescriptorSet,
+    descriptors: OpaqueLinkDescriptorSet,
     statementLabel: string,
-  ): Promise<LinkGrouping> {
-    // Built by iterating the name tuple rather than by naming thirteen members thirteen times, which
-    // is what keeps the empty-owner branch and the reading branch provably in step: both produce a
-    // map for every name in `LINK_SET_NAMES` and neither can produce one for a name the other
-    // forgets. `Object.fromEntries` widens its result, so the record is assembled explicitly.
-    const grouping: Record<LinkSetName, Map<string, string[]>> = {
+  ): Promise<OpaqueLinkGrouping> {
+    // Built by iterating the name tuple rather than by naming three members three times, which is what
+    // keeps the empty-owner branch and the reading branch provably in step: both produce a map for
+    // every name in `OPAQUE_LINK_SET_NAMES` and neither can produce one for a name the other forgets.
+    // `Object.fromEntries` widens its result, so the record is assembled explicitly.
+    const grouping: Record<OpaqueLinkSetName, Map<string, string[]>> = {
       fulfillmentMethods: new Map<string, string[]>(),
       shippingMethods: new Map<string, string[]>(),
       shippingAddressZones: new Map<string, string[]>(),
-      brands: new Map<string, string[]>(),
-      options: new Map<string, string[]>(),
-      skus: new Map<string, string[]>(),
-      products: new Map<string, string[]>(),
-      productTypes: new Map<string, string[]>(),
-      excludedBrands: new Map<string, string[]>(),
-      excludedOptions: new Map<string, string[]>(),
-      excludedSkus: new Map<string, string[]>(),
-      excludedProducts: new Map<string, string[]>(),
-      excludedProductTypes: new Map<string, string[]>(),
     };
 
     if (ownerIDs.length < 1) {
@@ -3101,8 +2990,8 @@ export class MysqlPromotionRepository implements PromotionRepository {
     // SEQUENTIAL, and deliberately so. The reads are independent of one another, but issuing them one
     // at a time keeps the emitted statement ORDER deterministic - which is what a suite asserting
     // statement text and bound parameters observes, and what makes a fault attributable to the read
-    // that produced it. `LINK_SET_NAMES` fixes that order.
-    for (const name of LINK_SET_NAMES) {
+    // that produced it. `OPAQUE_LINK_SET_NAMES` fixes that order.
+    for (const name of OPAQUE_LINK_SET_NAMES) {
       const descriptor = descriptors[name];
       const rows = await this.executor.execute(
         buildLinkStatement(descriptor, placeholders),
@@ -3128,8 +3017,13 @@ export class MysqlPromotionRepository implements PromotionRepository {
    * suite observes a deterministic function of the input. No performance claim is intended or implied.
    *
    * An empty owner set issues NOTHING and returns ten empty groupings, for the same reason
-   * `readLinkGrouping` guards - `IN ()` is unparseable and `sqlPlaceholderList` refuses a count of
-   * zero.
+   * `readOpaqueLinkGrouping` guards - `IN ()` is unparseable and `sqlPlaceholderList` refuses a count
+   * of zero.
+   *
+   * ★★ THESE TEN ARE READ HERE AND NOWHERE ELSE. `readOpaqueLinkGrouping` reads only the three
+   * opaque-identifier sets, so the catalog tables are visited exactly once per owner kind per
+   * invocation - see the cardinality note on `OPAQUE_LINK_SET_NAMES` for what reading them twice
+   * used to cost.
    *
    * @param ownerIDs the distinct owner identifiers.
    * @param descriptors which ten link tables to read.
@@ -3243,11 +3137,15 @@ export class MysqlPromotionRepository implements PromotionRepository {
     const qualifierIDs = dedupeIdentifiers(
       rows.map((row): string => readIdentifier(row, 'promotionQualifierID', label)),
     );
-    const qualifierLinks = await this.readLinkGrouping(
+    const qualifierLinks = await this.readOpaqueLinkGrouping(
       qualifierIDs,
-      QUALIFIER_LINK_DESCRIPTORS,
+      QUALIFIER_OPAQUE_LINK_DESCRIPTORS,
       QUALIFIER_LINK_STATEMENT_LABEL,
     );
+
+    // The qualifier's ten catalog-typed sets, read HERE AND ONLY HERE. The qualifier has no
+    // `eligiblePriceGroups` collection - that one is reward-only [model/entity/PromotionReward.cfc:L74]
+    // - so no `SwPromoQualEligiblePriceGrp` statement exists to issue.
     const qualifierCatalogLinks = await this.readCatalogLinkGrouping(
       qualifierIDs,
       QUALIFIER_CATALOG_LINK_DESCRIPTORS,

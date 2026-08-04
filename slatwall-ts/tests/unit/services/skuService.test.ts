@@ -210,8 +210,6 @@ type SortedProductSkusIDArgs = Parameters<SkuRepository['getSortedProductSkusID'
 
 type SaveSkuArgs = Parameters<SkuRepository['saveSku']>;
 
-type SaveSkusArgs = Parameters<SkuRepository['saveSkus']>;
-
 type UnusedProductOptionsArgs = Parameters<OptionRepository['getUnusedProductOptions']>;
 
 type UnusedProductOptionGroupsArgs = Parameters<OptionRepository['getUnusedProductOptionGroups']>;
@@ -436,7 +434,7 @@ interface SkuRepositorySeed {
 }
 
 /**
- * In-memory stand-in for the eight-member SKU data port.
+ * In-memory stand-in for the seven-member SKU data port.
  *
  * Replaces `property name="skuDAO" type="any";`
  * [model/service/SkuService.cfc:L51] - the component's busiest collaborator, live
@@ -445,18 +443,17 @@ interface SkuRepositorySeed {
  * instead. That is transformation rule T1 applied, and it is why no container,
  * composition root or locator is imported by this file.
  *
- * ★ IMPLEMENTS EXACTLY THE PORT'S EIGHT MEMBERS AND NO NINTH. In particular it
+ * ★ IMPLEMENTS EXACTLY THE PORT'S SEVEN MEMBERS AND NO EIGHTH. In particular it
  * declares NO `getSkuStocksDeletableFlag`, because the port declares none - see the
  * defect-28 cases, which assert that absence at both the type level and the run-time
  * level.
  *
- * ★ QUOTE-THEN-REVISE. This read "IMPLEMENTS EXACTLY THE PORT'S SEVEN MEMBERS AND
- * NO EIGHTH", and the double is unchanged in intent: it mirrors the port exactly,
- * whatever the port's width. The port gained `saveSkus` - the collection form of
- * `saveSku`, reproducing the ORM flush that
- * [model/service/ProductService.cfc:L216-L233] depended on - so the mirror has eight
- * members now. `SkuService` itself reaches NEITHER write member, which is why both
- * simply record and answer.
+ * ★ THE MIRROR WIDENED FOR ONE REVISION AND HAS NARROWED BACK. While the port
+ * carried an eighth member - a `saveSkus` collection form - this double carried it
+ * too, and this paragraph recorded the widening. The eighth member has been removed
+ * from the port, so it is removed here: the double mirrors the port exactly, whatever
+ * the port's width, and the port's width is SEVEN and locked. `SkuService` itself
+ * reaches the write member nowhere, which is why it simply records and answers.
  *
  * ★ A PRE-REVISION COPY OF THE HEADING PARAGRAPH STOOD HERE - "IMPLEMENTS EXACTLY THE PORT'S SEVEN
  * MEMBERS AND NO EIGHTH" - and is struck. Its revised form, and the record of why the figure moved,
@@ -477,8 +474,6 @@ class RecordingSkuRepository implements SkuRepository {
   readonly sortedProductSkusIDCalls: SortedProductSkusIDArgs[] = [];
 
   readonly saveSkuCalls: SaveSkuArgs[] = [];
-
-  readonly saveSkusCalls: SaveSkusArgs[] = [];
 
   constructor(private readonly seed: SkuRepositorySeed = {}) {}
 
@@ -524,18 +519,6 @@ class RecordingSkuRepository implements SkuRepository {
     const [sku] = args;
 
     return Promise.resolve(sku);
-  }
-
-  saveSkus(...args: SaveSkusArgs): Promise<Sku[]> {
-    this.saveSkusCalls.push(args);
-
-    const [skus] = args;
-
-    // Arrival order preserved, because the port specifies positional correspondence.
-    // `SkuService` reaches this member nowhere - the batch write belongs to
-    // `ProductService.processProduct_updateSkus` - so the recorded call list is
-    // asserted EMPTY by this file rather than inspected for contents.
-    return Promise.resolve([...skus]);
   }
 }
 
@@ -745,13 +728,15 @@ describe('SkuService', () => {
 
       expect(constructedWithThreePorts).toBeInstanceOf(SkuService);
 
-      // The SKU port is EXACTLY eight members wide, in declaration order, so nothing
+      // The SKU port is EXACTLY seven members wide, in declaration order, so nothing
       // in this file can accidentally describe a wider data contract than the port.
       //
-      // ★ QUOTE-THEN-REVISE: this read "EXACTLY seven members wide". `saveSkus` was
-      // added to the port to reproduce the ORM flush behind
-      // [model/service/ProductService.cfc:L216-L233], and it is listed last because
-      // this assertion is order-sensitive and the port declares it after `saveSku`.
+      // ★ THIS LIST CARRIED AN EIGHTH ENTRY FOR ONE REVISION. A `saveSkus` collection
+      // form was added to the port to reproduce the ORM flush behind
+      // [model/service/ProductService.cfc:L216-L233], and this assertion is where its
+      // arrival announced itself. It has been removed from the port - seven is the
+      // locked arithmetic - so it is removed here, and this assertion is what would
+      // announce any attempt to put it back.
       expect(Object.getOwnPropertyNames(RecordingSkuRepository.prototype)).toStrictEqual([
         'constructor',
         'getTransactionExistsFlag',
@@ -761,7 +746,6 @@ describe('SkuService', () => {
         'getProductSkus',
         'getSortedProductSkusID',
         'saveSku',
-        'saveSkus',
       ]);
 
       // LEGACY-NOTE [model/service/SkuService.cfc:L53, L74]: `optionService` is reached at exactly
@@ -2872,24 +2856,23 @@ describe('SkuService', () => {
       expect(skuRepository.transactionExistsFlagCalls).toStrictEqual([]);
       expect(skuRepository.skusBySelectedOptionsCalls).toStrictEqual([]);
       expect(skuRepository.saveSkuCalls).toStrictEqual([]);
-      expect(skuRepository.saveSkusCalls).toStrictEqual([]);
     });
 
-    it('★ is deliberately absent from the SkuRepository port, which declares exactly eight members', () => {
+    it('★ is deliberately absent from the SkuRepository port, which declares exactly seven members', () => {
       // ★ THE STRUCTURAL HALF OF DEFECT 28, and the reason the reproduction is honest
       // rather than lazy: the port set was NOT widened to give THIS method something to
       // call. `SkuRepository` publishes the six DAO read capabilities that actually
-      // exist plus two writes, and `getSkuStocksDeletableFlag` is not among them.
+      // exist plus one write, and `getSkuStocksDeletableFlag` is not among them.
       //
-      // ★ QUOTE-THEN-REVISE, AND THE DISTINCTION IS THE WHOLE ARGUMENT. This read
-      // "publishes exactly the SEVEN DAO capabilities that actually exist". Two things
-      // in that sentence needed correcting even before the port grew: only SIX of the
-      // members are DAO capabilities - `saveSku` has no antecedent on `SkuDAO.cfc` at
-      // all - and the count is now eight, because `saveSkus` was added to reproduce the
-      // Hibernate flush that [model/service/ProductService.cfc:L216-L233] relied on.
-      // What has NOT changed is that a member is added only when a legacy behaviour
-      // demands it. `getSkuStocksDeletableFlag` names a legacy call that RAISES, so
-      // there is no behaviour to reproduce, and the port stays silent about it.
+      // ★ THE COUNT WAS CORRECTED ONCE AND THE DISTINCTION IS THE WHOLE ARGUMENT. This
+      // read "publishes exactly the SEVEN DAO capabilities that actually exist", which
+      // was wrong in a way the current wording fixes: only SIX of the members are DAO
+      // capabilities, because `saveSku` has no antecedent on `SkuDAO.cfc` at all. The
+      // count then briefly read EIGHT, while the port carried a `saveSkus` collection
+      // form; that member has been removed and the arithmetic is back to seven. What has
+      // never changed is that a member is added only when a legacy behaviour demands it.
+      // `getSkuStocksDeletableFlag` names a legacy call that RAISES, so there is no
+      // behaviour to reproduce, and the port stays silent about it.
       //
       // Both assertions below are TYPE-LEVEL and use no cast, no `as`, and no
       // `@ts-expect-error`. `Exclude<K, keyof SkuRepository>` collapses to `never` the
@@ -2901,11 +2884,12 @@ describe('SkuService', () => {
 
       expect(absentMemberName).toBe('getSkuStocksDeletableFlag');
 
-      // And the port's membership is EXACTLY these eight, proved exhaustively rather than
+      // And the port's membership is EXACTLY these seven, proved exhaustively rather than
       // by counting a hand-written list. `AssertNever` constrains its parameter to `never`,
       // so if the port grows a member that the tuple below does not name, the
       // `Exclude` no longer collapses and the alias fails its own constraint. That is
-      // precisely how the addition of `saveSkus` announced itself here.
+      // precisely how the addition of `saveSkus` announced itself here, and it is what
+      // would announce any attempt to reinstate it.
       const declaredPortMembers = [
         'getTransactionExistsFlag',
         'getSkuBySkuCode',
@@ -2914,7 +2898,6 @@ describe('SkuService', () => {
         'getProductSkus',
         'getSortedProductSkusID',
         'saveSku',
-        'saveSkus',
       ] as const satisfies readonly (keyof SkuRepository)[];
 
       type AssertNever<T extends never> = T;
@@ -2925,7 +2908,7 @@ describe('SkuService', () => {
       const unnamedPortMembers: UnnamedPortMembers[] = [];
 
       expect(unnamedPortMembers).toStrictEqual([]);
-      expect(declaredPortMembers).toHaveLength(8);
+      expect(declaredPortMembers).toHaveLength(7);
       expect(declaredPortMembers).not.toContain('getSkuStocksDeletableFlag');
 
       // The SERVICE still publishes the method, because interface parity is the acceptance contract
@@ -3138,9 +3121,11 @@ describe('SkuService', () => {
       // directory is touched, and no image feature behaviour is claimed.
       //
       // AN EARLIER REVISION ASSERTED A REJECTION HERE and defended it on one ground: that
-      // `Sku.getImagePath()` [model/entity/Sku.cfc:L145-L147] reads settings that are not
-      // among the four keys `src/domain/ports/settingsProvider.ts` publishes. THE PREMISE
-      // IS TRUE AND THE CONCLUSION DOES NOT FOLLOW. It establishes that the ENTITY may not
+      // `Sku.getImagePath()` [model/entity/Sku.cfc:L145-L147] reads an asset root that is not
+      // among the seven keys `src/domain/ports/settingsProvider.ts` publishes -
+      // `globalAssetsImageFolderPath` [model/service/SettingService.cfc:L164], which that union
+      // excludes by name. THE PREMISE IS TRUE AND THE CONCLUSION DOES NOT FOLLOW. It
+      // establishes that the ENTITY may not
       // RESOLVE those settings; it says nothing about whether the entity may COMPOSE a
       // string out of values resolved by whoever legitimately can. `Option.getImageDirectory()`
       // had already settled the same question inside the same folder, and the resolved-value
