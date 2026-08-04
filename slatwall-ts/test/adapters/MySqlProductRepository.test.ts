@@ -50,7 +50,12 @@ import type {
   ProductDependencyCleanup,
   ProductPersistenceExecutor,
 } from '../../src/adapters/mysql/MySqlProductRepository';
-import { assertTableName } from '../../src/adapters/mysql/QueryRunner';
+import {
+  assertTableName,
+  attachFetchedSkuAssociations as canonicalAttachFetchedSkuAssociations,
+  attachSkuOptions as canonicalAttachSkuOptions,
+  createCatalogAggregateLoaders as canonicalCreateCatalogAggregateLoaders,
+} from '../../src/adapters/mysql/QueryRunner';
 import type { SqlExecutor } from '../../src/adapters/mysql/QueryRunner';
 import {
   DomainError,
@@ -114,6 +119,7 @@ import type {
   UrlTitleTableName,
 } from '../support/inMemoryRepositories';
 import {
+  attachFetchedSkuAssociations,
   attachSkuOptions,
   createCatalogAggregateLoaders,
   SmartListQueryBuilder,
@@ -302,6 +308,38 @@ interface StreamingSpec {
 }
 
 /**
+ * The statement text the sort-order seeding read emits, collapsed — `src/adapters/mysql/UnitOfWork.ts`
+ * composing `org/Hibachi/HibachiDAO.cfc:L157-L164` for a table declaring no `sortContext`.
+ */
+const TOP_SORT_ORDER_READ = 'SELECT COALESCE(max(sortOrder), 0) as topSortOrder FROM SwProduct';
+
+/**
+ * The maximum a fixture table is taken to hold, so an assigned position is a value a case can name.
+ */
+const FIXTURE_TOP_SORT_ORDER = 4;
+
+/**
+ * Answers the sort-order seeding read the way a real MySQL connection answers it, or declines.
+ *
+ * Two properties of the real answer are modelled deliberately, because a double that got either wrong
+ * would let a defect through that a live connection reveals immediately. First, an aggregate carrying no
+ * `GROUP BY` always produces **exactly one row**, even against an empty table — that is what the
+ * `COALESCE` is for — so answering "no rows" would be an answer no server gives. Second, the projection
+ * arrives as **integer text, not a number**: `src/config/database.ts` sets `supportBigNumbers` and
+ * `bigNumberStrings` so wide integers cannot be narrowed inside the driver, and the whole result of that
+ * choice is that `COALESCE(max(sortOrder), 0)` comes back as `"4"` rather than `4`. A double handing back
+ * a JavaScript number here would agree with no deployment this service can be run against.
+ *
+ * @param sql - the statement text as issued.
+ * @returns the single aggregate row when this is the seeding read, or `undefined` to decline.
+ */
+function topSortOrderAnswer(sql: string): readonly MySqlRow[] | undefined {
+  return collapse(sql).startsWith(TOP_SORT_ORDER_READ)
+    ? [{ topSortOrder: String(FIXTURE_TOP_SORT_ORDER) }]
+    : undefined;
+}
+
+/**
  * Builds the harness.
  *
  * @param recordSet - what the retrieval collaborator answers with.
@@ -342,7 +380,20 @@ function buildHarness(
         params: statement.params,
       });
 
-      return reply === undefined ? undefined : reply(statement);
+      const supplied = reply === undefined ? undefined : reply(statement);
+
+      if (supplied !== undefined) {
+        return supplied;
+      }
+
+      /*
+       * The seeding read is answered after the case's own responder has declined, so a case that wants to
+       * drive that read itself still can. See {@link topSortOrderAnswer} for why the answer is one row of
+       * integer text rather than no rows or a number.
+       */
+      const topSortOrder = topSortOrderAnswer(statement.sql);
+
+      return topSortOrder === undefined ? undefined : sqlRows(topSortOrder);
     },
   });
 
@@ -605,6 +656,48 @@ const QUOTE_BEARING = Object.freeze({
 const THREE_ROW_FILE = importable(['product_productCode'], ['CODE-1'], ['CODE-2'], ['CODE-3']);
 
 /* FindAttributeSets — model/dao/ProductDAO.cfc:L52-L71. */
+
+describe('NET-NEW — row mapper failures classify type drift and exact-decimal integrity loss', () => {
+  it('NET-NEW — a wrong runtime column type raises the mapper DomainError with structured column context', () => {
+    let raised: DomainError | undefined;
+
+    try {
+      mapProductRow({ productID: 123 });
+    } catch (error: unknown) {
+      if (error instanceof DomainError) {
+        raised = error;
+      }
+    }
+
+    expect(raised).toBeInstanceOf(DomainError);
+    expect(raised?.context).toEqual({
+      columnName: 'productID',
+      expectation: 'a string',
+      valueType: 'number',
+    });
+  });
+
+  it('NET-NEW — a driver-converted exact-decimal number raises DataIntegrityError before lossy hydration', () => {
+    let raised: DataIntegrityError | undefined;
+
+    try {
+      mapProductRow({ calculatedSalePrice: 9007199254740992 });
+    } catch (error: unknown) {
+      if (error instanceof DataIntegrityError) {
+        raised = error;
+      }
+    }
+
+    expect(raised).toBeInstanceOf(DataIntegrityError);
+    expect(raised?.context).toEqual({
+      columnName: 'calculatedSalePrice',
+      deliveredValue: 9007199254740992,
+    });
+    expect(raised?.getPublicError()).toMatchObject({
+      code: PUBLIC_ERROR_CODE.SERVICE_DATA,
+    });
+  });
+});
 
 describe('NET-NEW — findAttributeSets, and the D20 partial collapse', () => {
   it('NET-NEW — keeps the :L56-L61 disjunctive shape when product types are supplied', async () => {
@@ -2965,9 +3058,19 @@ describe('NET-NEW — the query discipline every statement in this adapter is he
       ),
     ];
 
-    expect(locking).toHaveLength(2);
+    /*
+     * Three, and the third is the sort-order seeding read of `org/Hibachi/HibachiEntity.cfc:L637-L647`,
+     * which `saveProduct` fires on its insert branch. It belongs in this set for exactly the reason the
+     * other two do: it is a check-then-act read whose answer decides a value the very next statement
+     * writes, so without the lock two concurrent inserts read one maximum and store one position twice.
+     * The clause is not added here — it is composed once in `src/adapters/mysql/UnitOfWork.ts`, which owns
+     * the read — and the count is still asserted exactly, so a `FOR UPDATE` appearing anywhere else in
+     * this adapter's read surface still fails this case.
+     */
+    expect(locking).toHaveLength(3);
     expect(locking.filter((sql) => sql.includes('LEFT JOIN SwOption'))).toHaveLength(1);
     expect(locking.filter((sql) => sql.includes('FROM SwSkuOption'))).toHaveLength(1);
+    expect(locking.filter((sql) => sql.startsWith(TOP_SORT_ORDER_READ))).toHaveLength(1);
     /* Each ends with the clause, which is the only position MySQL accepts. */
     for (const sql of locking) {
       expect(sql.endsWith('FOR UPDATE')).toBe(true);
@@ -3336,11 +3439,98 @@ describe('NET-NEW — saveProduct: the UPDATE branch', () => {
     await harness.repository.saveProduct(transientProduct());
     await harness.repository.saveProduct(persistedProduct());
 
-    expect(harness.statements).toHaveLength(2);
-    expect(collapse(harness.statements[0]?.sql ?? '').startsWith('INSERT INTO SwProduct')).toBe(
+    /*
+     * Three statements, and their asymmetry is the point: the insert is preceded by the sort-order
+     * seeding read of `org/Hibachi/HibachiEntity.cfc:L637-L647`, and the update is not. The legacy hook is
+     * `preInsert`; `preUpdate` at `:L649` carries no equivalent block, so a later save of the same product
+     * must leave its stored position exactly where the insert put it.
+     */
+    expect(harness.statements).toHaveLength(3);
+    expect(collapse(harness.statements[0]?.sql ?? '').startsWith(TOP_SORT_ORDER_READ)).toBe(true);
+    expect(collapse(harness.statements[1]?.sql ?? '').startsWith('INSERT INTO SwProduct')).toBe(
       true,
     );
-    expect(collapse(harness.statements[1]?.sql ?? '').startsWith('UPDATE SwProduct')).toBe(true);
+    expect(collapse(harness.statements[2]?.sql ?? '').startsWith('UPDATE SwProduct')).toBe(true);
+  });
+
+  it('NET-NEW — an insert seeds sortOrder from the stored maximum, exactly as preInsert did', async () => {
+    /*
+     * `org/Hibachi/HibachiEntity.cfc:L637-L647` — the ORM lifecycle block that ran on every insert of an
+     * entity declaring a `sortOrder` setter. `model/entity/Product.cfc:L59` declares one, with no
+     * `sortContext`, so `:L644` reads the maximum across the whole table and `:L646` stores that plus one.
+     * A stateless invocation has no flush to hang the hook on (M5), so the write seam fires it — and
+     * without that the column reached the database NULL on every product the port created, diverging from
+     * the ordering the unchanged shared schema and the still-running CFML application both read.
+     */
+    const harness = buildHarness(fileWith([]));
+    const product = transientProduct();
+
+    expect(product.sortOrder).toBeUndefined();
+
+    await harness.repository.saveProduct(product);
+
+    /* On the entity, so a caller that re-reads the instance sees what was stored. */
+    expect(product.sortOrder).toBe(FIXTURE_TOP_SORT_ORDER + 1);
+
+    /* And in the statement, in the column's declared position. */
+    const insert = only(harness, 'INSERT INTO SwProduct');
+    expect(insert.params[writeColumnIndex('sortOrder', 'insert')]).toBe(FIXTURE_TOP_SORT_ORDER + 1);
+
+    /* The read itself: whole-table, unscoped, and carrying no bound value at all. */
+    const seeding = only(harness, TOP_SORT_ORDER_READ);
+    expect(seeding.params).toEqual([]);
+    expect(collapse(seeding.sql)).not.toContain('WHERE');
+  });
+
+  it('NET-NEW — the seeded position OVERWRITES one the caller supplied, as the legacy assignment did', async () => {
+    /*
+     * `:L646` is an unconditional `setSortOrder( topSortOrder + 1 )`, not a "seed when absent" rule: the
+     * only guard above it, at `:L637`, tests whether the entity declares the setter. Reproducing the
+     * overwrite is what keeps the stored sequence dense; treating a supplied value as authoritative would
+     * let a caller collide two products onto one position, which the legacy made impossible.
+     */
+    const harness = buildHarness(fileWith([]));
+    const product = transientProduct();
+    product.sortOrder = 99;
+
+    await harness.repository.saveProduct(product);
+
+    expect(product.sortOrder).toBe(FIXTURE_TOP_SORT_ORDER + 1);
+    expect(only(harness, 'INSERT INTO SwProduct').params).not.toContain(99);
+  });
+
+  it('NET-NEW — an UPDATE takes no seeding read and leaves the stored position alone', async () => {
+    const harness = buildHarness(fileWith([]));
+    const product = persistedProduct();
+    product.sortOrder = 12;
+
+    await harness.repository.saveProduct(product);
+
+    expect(product.sortOrder).toBe(12);
+    expect(
+      harness.statements.filter((s) => collapse(s.sql).startsWith(TOP_SORT_ORDER_READ)),
+    ).toEqual([]);
+    expect(only(harness, 'UPDATE SwProduct').params[writeColumnIndex('sortOrder', 'update')]).toBe(
+      12,
+    );
+  });
+
+  it('NET-NEW — the importer seeds nothing, because its rows never met the ORM lifecycle', async () => {
+    /*
+     * `model/dao/ProductDAO.cfc` inserts imported rows with hand-built statements straight at the
+     * datasource, entirely outside Hibernate, so `preInsert` never fired for them and their `sortOrder`
+     * was stored NULL. Seeding them here would be an improvement on the legacy rather than a port of it,
+     * and it would also mean one sort-order read per imported row inside each row's own transaction (M3).
+     */
+    const harness = buildHarness(
+      importable(['product_productCode', 'product_productName'], ['IMPORTED-1', 'Imported One']),
+    );
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    expect(
+      harness.statements.filter((s) => collapse(s.sql).startsWith(TOP_SORT_ORDER_READ)),
+    ).toEqual([]);
   });
 
   it('NET-NEW — saveProduct does not read the affected-row count, so a zero-row update still resolves', async () => {
@@ -4741,6 +4931,8 @@ describe('NET-NEW — every import lookup is re-issued per row', () => {
   });
 });
 
+/* FOLDED IN FROM adapters/catalogAggregates */
+
 /*
  * Aggregate loaders
  * `createCatalogAggregateLoaders` lives in `src/adapters/mysql/QueryRunner.ts`, so its cases live in this
@@ -4748,6 +4940,19 @@ describe('NET-NEW — every import lookup is re-issued per row', () => {
  * loaders through its `aggregateLoaders` constructor parameter and hosts none of them. The identifiers
  * this section declares — `ID`, `journal`, `makeExecutor` and `makeBinderSpy` — are local to it.
  */
+
+describe('NET-NEW — aggregate loader exports resolve to one canonical implementation', () => {
+  it('NET-NEW — the QueryRunner and SmartListQueryBuilder import paths expose identical functions', () => {
+    /*
+     * Both paths are public and already have consumers. Reference equality proves the compatibility
+     * path is a re-export rather than a second copy that can drift in load-state or nested hydration.
+     */
+    expect(attachSkuOptions).toBe(canonicalAttachSkuOptions);
+    expect(attachFetchedSkuAssociations).toBe(canonicalAttachFetchedSkuAssociations);
+    expect(createCatalogAggregateLoaders).toBe(canonicalCreateCatalogAggregateLoaders);
+  });
+});
+
 /*
  * The element type is derived from the root entity, pinned here rather than assumed. Every
  * `builder.execute(...)` below passes a query and no element type, because
@@ -5555,6 +5760,20 @@ describe('NET-NEW — the joined option fetch emits a statement a real server ac
     }
   });
 
+  it('NET-NEW — shares one Option instance when two SKUs reference the same option row', async () => {
+    const { skus } = await fetchOptions();
+    const first = skus[0]?.options[0];
+    const second = skus[1]?.options[0];
+    if (first === undefined || second === undefined) {
+      throw new Error('the shared-option fixture was not hydrated');
+    }
+
+    expect(first).toBe(second);
+
+    first.optionName = 'Mutated through the first SKU';
+    expect(second.optionName).toBe('Mutated through the first SKU');
+  });
+
   it('NET-NEW — qualifies the single-table loaders too, so no shared projection is a join hazard', async () => {
     const { executor, journal } = makeExecutor({
       SwProduct: [
@@ -5815,6 +6034,8 @@ describe('NET-NEW — OptionService relationship hydration through the real buil
   });
 });
 
+/* FOLDED IN FROM adapters/MySqlProductPersistence */
+
 /*
  * Product write surface
  * The write surface belongs to `src/adapters/mysql/MySqlProductRepository.ts`, so its cases live in this
@@ -5866,6 +6087,17 @@ function makePersistenceExecutor(
   const executor: ProductPersistenceExecutor = {
     execute: (sql: string, params: readonly unknown[]): Promise<MySqlRow[]> => {
       journal.statements.push({ sql, params: [...params] });
+
+      /*
+       * Answered before the table lookup, because the seeding read names `SwProduct` in its `FROM` clause
+       * and would otherwise be handed whichever product rows the case registered — an aggregate row set
+       * shaped like an entity row set, which is not an answer any server would give.
+       */
+      const topSortOrder = topSortOrderAnswer(sql);
+
+      if (topSortOrder !== undefined) {
+        return Promise.resolve([...topSortOrder]);
+      }
 
       const table = Object.keys(rowsByTable).find((name) =>
         new RegExp(`FROM ${name}\\b`).test(sql),
@@ -7015,6 +7247,7 @@ describe('the four ProductService seams the adapter fills (DATA-03)', () => {
       productTypeRootResolver: (() => undefined) as never,
       productPropertyDescriptors: PRODUCT_PROPERTY_DESCRIPTORS,
       populationAuthorization: createPopulationAuthorizationDouble().populationAuthorization,
+      prepareProductPopulation: () => Promise.resolve(),
       /*
        * `UniqueValueProbe` takes the table name as a plain string, exactly as
        * `model/service/DataService.cfc:L53` declares `createUniqueURLTitle(titleString, tableName)`.
@@ -7209,6 +7442,7 @@ describe('a hydrated product type inherits its parent’s products', () => {
       productPropertyDescriptors: PRODUCT_PROPERTY_DESCRIPTORS,
       populationAuthorization: createPopulationAuthorizationDouble({ publicPopulateFlag: true })
         .populationAuthorization,
+      prepareProductPopulation: () => Promise.resolve(),
       urlTitleProbeBudget: GENEROUS_URL_TITLE_PROBE_BUDGET,
       isUrlTitleAvailable: (): Promise<boolean> => Promise.resolve(true),
       persistProduct: UNREACHED_COLLABORATOR,
@@ -7462,6 +7696,7 @@ describe('ProductService.getProduct returns a materialised aggregate (DATA-03)',
       productTypeRootResolver: (() => undefined) as never,
       productPropertyDescriptors: PRODUCT_PROPERTY_DESCRIPTORS,
       populationAuthorization: createPopulationAuthorizationDouble().populationAuthorization,
+      prepareProductPopulation: () => Promise.resolve(),
       /*
        * `UniqueValueProbe` takes the table name as a plain string, exactly as
        * `model/service/DataService.cfc:L53` declares `createUniqueURLTitle(titleString, tableName)`.
@@ -7536,6 +7771,8 @@ describe('ProductService.getProduct returns a materialised aggregate (DATA-03)',
     expect(product).toBeNull();
   });
 });
+
+/* FOLDED IN FROM adapters/MySqlBrandRepository */
 
 /*
  * The brand adapter's cases, and why they are here rather than in a suite of their own

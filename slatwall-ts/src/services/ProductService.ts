@@ -43,7 +43,11 @@ import {
   manageEntity,
   populate,
 } from '../domain/base/populate';
-import type { ManagedEntity, PropertyDescriptorSet } from '../domain/base/populate';
+import type {
+  ColumnPropertyDescriptor,
+  ManagedEntity,
+  PropertyDescriptorSet,
+} from '../domain/base/populate';
 import type { Option } from '../domain/option/Option';
 import type { OptionGroup } from '../domain/option/OptionGroup';
 import type { ProductAddOption } from '../domain/process/ProductAddOption';
@@ -102,7 +106,12 @@ import { buildIdentifierQuery, translateSmartListInput } from '../ports/SmartLis
 import { createUniqueURLTitle } from '../util/urlTitle';
 import { toExactDecimal, type ExactDecimal } from '../util/formatting';
 import type { UniqueValueProbe, UrlTitleProbeBudget } from '../util/urlTitle';
-import type { BaseService, BaseServiceEntity, EntityPersister } from './BaseService';
+import type {
+  BaseService,
+  BaseServiceEntity,
+  EntityPersister,
+  PopulationPreparer,
+} from './BaseService';
 import { createProductOptionFinders } from './OptionService';
 import type { OptionService, SelectOption } from './OptionService';
 import type { ProductWithErrorState, SkuService } from './SkuService';
@@ -208,6 +217,28 @@ const OPTIONS_DATA_KEY = 'options';
  * `model/service/ProductService.cfc:L132` — the creation-data key carrying the default SKU price.
  */
 const PRICE_DATA_KEY = 'price';
+
+const PRODUCT_SAVE_PRICE_DESCRIPTOR: ColumnPropertyDescriptor<'price'> = Object.freeze({
+  name: PRICE_DATA_KEY,
+  valueType: 'bigDecimal',
+});
+
+/**
+ * The one writable non-persistent Product property the save path consumes.
+ *
+ * [model/entity/Product.cfc:L118] declares `price` with `persistent="false"`, so it correctly does
+ * not belong to {@link ProductPropertyName}, the persistent schema union used by repositories and
+ * SmartList. The legacy metadata walk still visited it, however, and `saveProduct` immediately reads
+ * it through `Product.getPrice()` at [model/service/ProductService.cfc:L273]. A second, deliberately
+ * narrow descriptor set keeps that write on the same population/authorisation path without
+ * polluting the database schema type with a transient property.
+ */
+const PRODUCT_SAVE_TRANSIENT_PROPERTY_DESCRIPTORS: PropertyDescriptorSet<Product, 'price'> =
+  Object.freeze({
+    entityName: 'Product',
+    persistent: true,
+    properties: Object.freeze([PRODUCT_SAVE_PRICE_DESCRIPTOR]),
+  });
 
 /** `model/service/ProductService.cfc:L136` — the conditionally added list-price key. */
 const LIST_PRICE_DATA_KEY = 'listPrice';
@@ -398,6 +429,16 @@ interface UploadDefaultImageProcessObject {
 
 /* Section 5 — the collaborator graph. */
 
+/**
+ * The asynchronous bridge between boundary reads and the synchronous population contract.
+ *
+ * The resolver returns a fresh descriptor set per call when it carries mutable lookup caches, so no
+ * relationship object or principal-derived state can leak across warm invocations (M7).
+ */
+export type ProductPropertyDescriptorResolver = (
+  data: Readonly<Record<string, unknown>>,
+) => Promise<PropertyDescriptorSet<Product, ProductPropertyName>>;
+
 /** Everything this service needs, named. */
 export interface ProductServiceCollaborators {
   /**
@@ -469,8 +510,24 @@ export interface ProductServiceCollaborators {
    */
   readonly productPropertyDescriptors: PropertyDescriptorSet<Product, ProductPropertyName>;
 
+  /**
+   * Resolves the descriptor set for one save after asynchronous relationship rows have been loaded.
+   *
+   * `populate` keeps {@link RelatedEntityLoader} synchronous, matching
+   * [org/Hibachi/HibachiTransient.cfc:L239/L261]. SQL adapters are asynchronous, so the composition
+   * root may pre-resolve the identifiers present in this payload and return per-call cache-backed
+   * loaders. Omit this only when `productPropertyDescriptors` already contains every relationship
+   * loader the caller needs.
+   */
+  readonly resolveProductPropertyDescriptors?: ProductPropertyDescriptorResolver;
+
   /** The population authorisation gate of `org/Hibachi/HibachiTransient.cfc:L186-L190`. */
   readonly populationAuthorization: PopulationAuthorizationPort;
+
+  /**
+   * Primes repository-backed relationship loaders before the synchronous Product population pass.
+   */
+  readonly prepareProductPopulation: PopulationPreparer;
 
   /** The uniqueness probe `createUniqueURLTitle` calls once per collision candidate. */
   readonly isUrlTitleAvailable: UniqueValueProbe;
@@ -819,7 +876,11 @@ export class ProductService {
 
   private readonly productPropertyDescriptors: PropertyDescriptorSet<Product, ProductPropertyName>;
 
+  private readonly resolveProductPropertyDescriptors: ProductPropertyDescriptorResolver;
+
   private readonly populationAuthorization: PopulationAuthorizationPort;
+
+  private readonly prepareProductPopulation: PopulationPreparer;
 
   private readonly isUrlTitleAvailable: UniqueValueProbe;
 
@@ -837,7 +898,7 @@ export class ProductService {
   /**
    * Wires the graph the retired DI/1 container used to wire by name.
    *
-   * @param collaborators - The sixteen live edges of §0.6.3.1, named.
+   * @param collaborators - The declared service edges, named.
    */
   public constructor(collaborators: ProductServiceCollaborators) {
     this.productRepository = collaborators.productRepository;
@@ -855,7 +916,11 @@ export class ProductService {
     this.parentProductTypeIdReader = collaborators.parentProductTypeIdReader;
     this.productOptionFinders = createProductOptionFinders(collaborators.smartListQueryPort);
     this.productPropertyDescriptors = collaborators.productPropertyDescriptors;
+    this.resolveProductPropertyDescriptors =
+      collaborators.resolveProductPropertyDescriptors ??
+      (() => Promise.resolve(this.productPropertyDescriptors));
     this.populationAuthorization = collaborators.populationAuthorization;
+    this.prepareProductPopulation = collaborators.prepareProductPopulation;
     this.isUrlTitleAvailable = collaborators.isUrlTitleAvailable;
     this.urlTitleProbeBudget = collaborators.urlTitleProbeBudget;
     this.persistProduct = collaborators.persistProduct;
@@ -1858,8 +1923,40 @@ export class ProductService {
    * unlike `../services/baseService.save`, whose contract does.
    */
   public async saveProduct(product: Product, data: Record<string, unknown>): Promise<Product> {
-    /* step 1 — `:L266`. */
-    populate(product, data, this.productPropertyDescriptors, this.populationAuthorization);
+    /*
+     * Step 1 — `:L266`.
+     *
+     * Translation decision: the legacy entity service could synchronously resolve a relationship from
+     * inside `populate`; the SQL boundary cannot. The repositories are asynchronous but the declared
+     * population engine is intentionally synchronous, so every asynchronous read happens first and
+     * `populate` itself keeps the legacy synchronous `loadExisting` / `loadOrCreate` contract.
+     *
+     * The two steps are distinct and both are required. `prepareProductPopulation` primes the
+     * invocation-scoped relationship cache — authorization-gated, so a caller denied permission to
+     * write a property gains no existence probe as a side effect, and awaited one relationship at a
+     * time in declaration order rather than behind `Promise.all` — without warm-container bleed.
+     * `resolveProductPropertyDescriptors` then yields the descriptor set whose cache-backed loaders
+     * that priming pass filled; its default returns {@link productPropertyDescriptors}, and the seam
+     * stays published so a caller or test can substitute a narrower resolver. The target is still
+     * mutated exactly once by the unchanged population pass below, and this public signature is
+     * unchanged.
+     */
+    await this.prepareProductPopulation(data);
+
+    const propertyDescriptors = await this.resolveProductPropertyDescriptors(data);
+    populate(product, data, propertyDescriptors, this.populationAuthorization);
+
+    /*
+     * A substituted descriptor resolver may return the persistent-only set, which excludes `price`;
+     * see the declaration above for why this second pass is both required and narrower than widening
+     * Product's database schema. It is idempotent when the resolved set already carries the slot.
+     */
+    populate(
+      product,
+      data,
+      PRODUCT_SAVE_TRANSIENT_PROPERTY_DESCRIPTORS,
+      this.populationAuthorization,
+    );
 
     /* Step 2 — `:L268-L270`. Null only; `getTitle()`, not the product name; set on the entity. */
     if (product.urlTitle === undefined) {

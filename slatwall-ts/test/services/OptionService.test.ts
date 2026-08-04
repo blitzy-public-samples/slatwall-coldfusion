@@ -1811,6 +1811,8 @@ describe('OptionService — the declared public surface', () => {
  * inside an approved suite rather than in one of its own.
  */
 
+/* FOLDED IN FROM handlers/optionHandler */
+
 /**
  * `optionHandler` — the authorization gate in front of the Option boundary, and the two classifications
  * of member behind it.

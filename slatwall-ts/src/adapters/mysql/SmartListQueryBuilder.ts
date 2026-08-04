@@ -45,7 +45,6 @@ import type { Product, ProductDefaultSkuDelegate } from '../../domain/product/Pr
 import type { ProductType } from '../../domain/product/ProductType';
 import type { Sku } from '../../domain/sku/Sku';
 import { ConfigurationError, DataIntegrityError, DomainError } from '../../errors/DomainError';
-import { SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE } from '../../domain/BaseProductType';
 import { resolveSmartListPropertyIdentifier } from '../../ports/SmartListQueryPort';
 import { assertColumnName, assertTableName, toRowCountBinding } from './QueryRunner';
 import {
@@ -56,10 +55,9 @@ import {
   mapProductTypeRow,
   mapSkuRow,
   mapRows,
-  markSkuOwnedLinkLoaded,
 } from './rowMappers';
 
-import type { PhysicalTableName, SqlExecutor } from './QueryRunner';
+import type { CatalogAggregateLoader, PhysicalTableName, SqlExecutor } from './QueryRunner';
 import type { MySqlRow } from './rowMappers';
 import type {
   SmartListEntityName,
@@ -67,6 +65,7 @@ import type {
   SmartListFilterValue,
   SmartListJoin,
   SmartListJoinType,
+  SmartListOrderDirection,
   SmartListPagination,
   SmartListQuery,
   SmartListQueryPort,
@@ -76,6 +75,17 @@ import type {
   SmartListRootEntityName,
   SmartListWhereGroup,
 } from '../../ports/SmartListQueryPort';
+
+export {
+  attachFetchedSkuAssociations,
+  attachSkuOptions,
+  createCatalogAggregateLoaders,
+} from './QueryRunner';
+export type {
+  AggregateLoadRequest,
+  CatalogAggregateDependencies,
+  CatalogAggregateLoader,
+} from './QueryRunner';
 
 /*
  * Translation decisions — AAP §0.8.2 Guideline 6 requires that "all technology-specific translation
@@ -449,7 +459,10 @@ const ENTITY_ROW_MAPPERS: SmartListRowMappers = Object.freeze({
 
 /** One parameterized statement: the text, and the values bound to its placeholders in order. */
 export interface SmartListStatement {
-  /** The statement text. Every identifier in it came from a whitelist; every value is a `?`. */
+  /**
+   * The statement text. Every identifier and structural keyword came from a closed whitelist; every
+   * runtime value is represented by a `?`.
+   */
   readonly sql: string;
 
   /** The bound values, in placeholder order. */
@@ -1104,22 +1117,116 @@ const ENTITY_DEFAULT_ORDER_PROPERTY: Readonly<Record<SmartListEntityName, string
   SlatwallAlternateSkuCode: 'createdDateTime',
 });
 
-/** Composes the `ORDER BY` clause — `:L717-L744`. */
-function composeOrderClause(plan: QueryPlan, query: SmartListQuery): string {
-  const orders = query.orders ?? [];
+/** The complete set of SQL ordering keywords this builder may emit. */
+const SMART_LIST_ORDER_DIRECTIONS = Object.freeze(['ASC', 'DESC'] as const);
 
-  if (orders.length > 0) {
-    const terms = orders.map(
-      (order) => `${resolvePropertyPath(plan, order.propertyIdentifier)} ${order.direction}`,
+/**
+ * Narrows a runtime ordering token to the same closed set the port exposes statically.
+ *
+ * @param candidate - the direction found on the runtime query object.
+ * @returns the accepted canonical direction.
+ * @throws {DomainError} when erased or untyped input carries any other token.
+ */
+function assertSmartListOrderDirection(candidate: unknown): SmartListOrderDirection {
+  const matched = SMART_LIST_ORDER_DIRECTIONS.find((direction) => direction === candidate);
+
+  if (matched === undefined) {
+    throw new DomainError(
+      'A smart-list order named a direction outside the supported ASC/DESC set, so it was refused ' +
+        'before any statement text was assembled.',
+      {
+        context: {
+          receivedType: typeof candidate,
+          allowedDirections: SMART_LIST_ORDER_DIRECTIONS,
+        },
+      },
     );
-
-    return ` ORDER BY ${terms.join(', ')}`;
   }
 
-  const base = requireRegisteredEntity(plan, plan.baseEntityKey);
-  const defaultProperty = ENTITY_DEFAULT_ORDER_PROPERTY[base.entityName];
+  return matched;
+}
 
-  return ` ORDER BY ${resolvePropertyPath(plan, defaultProperty)} ASC`;
+/**
+ * The direction the tiebreaker below is appended under. `ASC` matches the direction the legacy applies
+ * to its own single default term at `:L742`, so the tiebreaker reads as a continuation of that clause
+ * rather than as a second, differently-oriented ordering.
+ */
+const ORDER_TIEBREAKER_DIRECTION = 'ASC';
+
+/**
+ * Composes the `ORDER BY` clause — `:L717-L744`, plus a final primary-key tiebreaker.
+ *
+ * Translation decision — why a term the legacy does not emit is appended, and why that is not a
+ * behaviour change.
+ *
+ * `:L717-L744` emits exactly one ordering term. When explicit orders are present it lists them; when
+ * none are, it resolves a single default property and emits `ORDER BY <property> ASC`. In neither case
+ * is there a tiebreaker, so whenever the final term's values tie, the relative order of the tied rows
+ * is left undefined — and MySQL is free to resolve it differently in two statements, or in two
+ * executions of the same statement.
+ *
+ * That is not a theoretical exposure here, because pagination is expressed as `LIMIT`/`OFFSET` over
+ * this clause (see {@link SmartListQueryBuilder.build}, where `pageRecordsSql` is `recordsSql` plus the
+ * two row bounds). A page is therefore a window into an order the statement did not fully specify: two
+ * pages can both contain a given tied row and neither can contain another, so a sweep of every page
+ * returns duplicates AND omissions rather than the record set. The default term makes that the ordinary
+ * case rather than an exotic one — every in-scope entity falls back to `createdDateTime`, `SwProduct`
+ * and `SwSku` declare it as MySQL `datetime` with no fractional seconds, and `SkuService.createSkus`
+ * writes a whole combination batch inside one transaction, so every SKU of a product shares a value.
+ * The same reasoning applies to an explicit ordering on a non-unique column, which is why the
+ * tiebreaker is appended on both paths and not only on the default one.
+ *
+ * A tiebreaker can only ever order rows the current statement leaves unordered: it is consulted after
+ * every term the caller or the fallback supplied, so any pair of rows those terms already separate
+ * keeps the ordering they gave it, byte for byte. Nothing that was defined changes; what was undefined
+ * becomes total. The column used is the base entity's primary key, which is the one column guaranteed
+ * unique and non-null, already declared in {@link ENTITY_PRIMARY_KEY}, and already the expression the
+ * legacy itself assembles for this purpose in `getBaseEntityPrimaryAliase()` at `:L713-L715`.
+ *
+ * It is skipped when the caller's own last term already resolves to that same column, so a query that
+ * ordered by the primary key does not receive it twice.
+ */
+function composeOrderClause(plan: QueryPlan, query: SmartListQuery): string {
+  const orders = query.orders ?? [];
+  const base = requireRegisteredEntity(plan, plan.baseEntityKey);
+
+  /*
+   * Resolved through the same path every other term takes, so the alias is the plan's own and the column
+   * is registry-validated rather than interpolated.
+   */
+  const tiebreakerColumn = resolvePropertyPath(plan, ENTITY_PRIMARY_KEY[base.entityName]);
+  const tiebreaker = `${tiebreakerColumn} ${ORDER_TIEBREAKER_DIRECTION}`;
+
+  if (orders.length > 0) {
+    const terms = orders.map((order) => {
+      const direction = assertSmartListOrderDirection(order.direction);
+      return `${resolvePropertyPath(plan, order.propertyIdentifier)} ${direction}`;
+    });
+
+    /*
+     * A caller that already ends on the primary key has a total order, so appending would add a
+     * redundant term. The comparison is on the resolved column, not on the property identifier, because
+     * `skuID` and a path that lands on the same column must both count as already ordered by it.
+     */
+    const lastTerm = terms[terms.length - 1];
+    const alreadyTotal = lastTerm !== undefined && lastTerm.startsWith(`${tiebreakerColumn} `);
+
+    return ` ORDER BY ${(alreadyTotal ? terms : [...terms, tiebreaker]).join(', ')}`;
+  }
+
+  const defaultProperty = ENTITY_DEFAULT_ORDER_PROPERTY[base.entityName];
+  const defaultColumn = resolvePropertyPath(plan, defaultProperty);
+
+  /*
+   * The fallback property is `createdDateTime` for all seven in-scope entities, so it is never the
+   * primary key — but the guard is kept rather than assumed, because it is the same invariant the
+   * explicit path relies on and the legacy's third fallback tier at `:L740` IS the primary key.
+   */
+  if (defaultColumn === tiebreakerColumn) {
+    return ` ORDER BY ${defaultColumn} ${ORDER_TIEBREAKER_DIRECTION}`;
+  }
+
+  return ` ORDER BY ${defaultColumn} ${ORDER_TIEBREAKER_DIRECTION}, ${tiebreaker}`;
 }
 
 /* Paging — a port of org/Hibachi/HibachiSmartList.cfc:L792-L814. */
@@ -2333,725 +2440,4 @@ function resolveMapped<TEntity>(
   const mapped = mapper(row);
   identityMap.set(key, mapped);
   return mapped;
-}
-
-/*
- * The aggregate loaders — resolving the many-to-one associations a hydrated record needs
- * Resolves the many-to-one associations a hydrated Catalog record needs before business logic reads it.
- */
-
-/* The tables and columns this module reads. */
-
-const PRODUCT_TABLE: PhysicalTableName = assertTableName('SwProduct');
-const SKU_TABLE: PhysicalTableName = assertTableName('SwSku');
-const PRODUCT_TYPE_TABLE: PhysicalTableName = assertTableName('SwProductType');
-const BRAND_TABLE: PhysicalTableName = assertTableName('SwBrand');
-const OPTION_GROUP_TABLE: PhysicalTableName = assertTableName('SwOptionGroup');
-const SKU_OPTION_TABLE: PhysicalTableName = assertTableName('SwSkuOption');
-const OPTION_TABLE: PhysicalTableName = assertTableName('SwOption');
-const SKU_ACCESS_CONTENT_TABLE: PhysicalTableName = assertTableName('SwSkuAccessContent');
-const SKU_SUBSCRIPTION_BENEFIT_TABLE: PhysicalTableName = assertTableName('SwSkuSubsBenefit');
-
-/** The identifier and foreign-key columns each loader reads or filters on. */
-const COLUMN = Object.freeze({
-  productID: assertColumnName(PRODUCT_TABLE, 'productID'),
-  productBrandID: assertColumnName(PRODUCT_TABLE, 'brandID'),
-  productProductTypeID: assertColumnName(PRODUCT_TABLE, 'productTypeID'),
-  productDefaultSkuID: assertColumnName(PRODUCT_TABLE, 'defaultSkuID'),
-  skuID: assertColumnName(SKU_TABLE, 'skuID'),
-  skuProductID: assertColumnName(SKU_TABLE, 'productID'),
-  productTypeID: assertColumnName(PRODUCT_TYPE_TABLE, 'productTypeID'),
-  brandID: assertColumnName(BRAND_TABLE, 'brandID'),
-  optionGroupID: assertColumnName(OPTION_GROUP_TABLE, 'optionGroupID'),
-  optionID: assertColumnName(OPTION_TABLE, 'optionID'),
-  optionOptionGroupID: assertColumnName(OPTION_TABLE, 'optionGroupID'),
-  skuOptionSkuID: assertColumnName(SKU_OPTION_TABLE, 'skuID'),
-  skuOptionOptionID: assertColumnName(SKU_OPTION_TABLE, 'optionID'),
-  accessContentSkuID: assertColumnName(SKU_ACCESS_CONTENT_TABLE, 'skuID'),
-  accessContentContentID: assertColumnName(SKU_ACCESS_CONTENT_TABLE, 'contentID'),
-  subscriptionBenefitSkuID: assertColumnName(SKU_SUBSCRIPTION_BENEFIT_TABLE, 'skuID'),
-  subscriptionBenefitID: assertColumnName(SKU_SUBSCRIPTION_BENEFIT_TABLE, 'subscriptionBenefitID'),
-});
-
-/** Builds an explicit, table-qualified projection for one table. */
-function projectionFor(table: PhysicalTableName, columns: readonly string[]): string {
-  return columns.map((column) => `${table}.${assertColumnName(table, column)}`).join(', ');
-}
-
-const PRODUCT_PROJECTION = projectionFor(PRODUCT_TABLE, [
-  'productID',
-  'activeFlag',
-  'urlTitle',
-  'productName',
-  'productCode',
-  'productDescription',
-  'publishedFlag',
-  'sortOrder',
-  'calculatedSalePrice',
-  'calculatedQATS',
-  'calculatedAllowBackorderFlag',
-  'calculatedTitle',
-  'brandID',
-  'productTypeID',
-  'defaultSkuID',
-  'remoteID',
-  'createdDateTime',
-  'createdByAccountID',
-  'modifiedDateTime',
-  'modifiedByAccountID',
-]);
-
-const SKU_PROJECTION = projectionFor(SKU_TABLE, [
-  'skuID',
-  'activeFlag',
-  'skuCode',
-  'listPrice',
-  'price',
-  'renewalPrice',
-  'imageFile',
-  'userDefinedPriceFlag',
-  'calculatedQATS',
-  'productID',
-  'subscriptionTermID',
-  'remoteID',
-  'createdDateTime',
-  'createdByAccountID',
-  'modifiedDateTime',
-  'modifiedByAccountID',
-]);
-
-const PRODUCT_TYPE_PROJECTION = projectionFor(PRODUCT_TYPE_TABLE, [
-  'productTypeID',
-  'productTypeIDPath',
-  'activeFlag',
-  'publishedFlag',
-  'urlTitle',
-  'productTypeName',
-  'productTypeDescription',
-  'systemCode',
-  'parentProductTypeID',
-  'remoteID',
-  'createdDateTime',
-  'createdByAccountID',
-  'modifiedDateTime',
-  'modifiedByAccountID',
-]);
-
-const BRAND_PROJECTION = projectionFor(BRAND_TABLE, [
-  'brandID',
-  'activeFlag',
-  'publishedFlag',
-  'urlTitle',
-  'brandName',
-  'brandWebsite',
-  'remoteID',
-  'createdDateTime',
-  'createdByAccountID',
-  'modifiedDateTime',
-  'modifiedByAccountID',
-]);
-
-const OPTION_GROUP_PROJECTION = projectionFor(OPTION_GROUP_TABLE, [
-  'optionGroupID',
-  'optionGroupName',
-  'optionGroupCode',
-  'optionGroupImage',
-  'optionGroupDescription',
-  'imageGroupFlag',
-  'sortOrder',
-  'remoteID',
-  'createdDateTime',
-  'createdByAccountID',
-  'modifiedDateTime',
-  'modifiedByAccountID',
-]);
-
-const OPTION_PROJECTION = projectionFor(OPTION_TABLE, [
-  'optionID',
-  'optionCode',
-  'optionName',
-  'optionDescription',
-  'sortOrder',
-  'optionGroupID',
-  'defaultImageID',
-  'remoteID',
-  'createdDateTime',
-  'createdByAccountID',
-  'modifiedDateTime',
-  'modifiedByAccountID',
-]);
-
-/* The one collaborator these loaders cannot supply themselves. */
-
-/** What a caller must provide before the product and SKU roots can be resolved. */
-export interface CatalogAggregateDependencies {
-  /** Adapts a hydrated SKU to the shape `product.defaultSku` accepts. */
-  readonly bindDefaultSkuDelegate: (sku: Sku) => ProductDefaultSkuDelegate;
-}
-
-/* The request shape. */
-
-/** One batch of hydrated records whose associations are to be resolved. */
-export interface AggregateLoadRequest {
-  /** The executor the caller is already using. */
-  readonly executor: SqlExecutor;
-  /** The raw rows, carrying the foreign-key columns the mappers deliberately skipped. */
-  readonly rows: readonly MySqlRow[];
-  /** The mapped entities, index-aligned with `rows` and mutated in place. */
-  readonly entities: readonly unknown[];
-}
-
-/** Resolves the associations one root entity's consumers require. */
-export type CatalogAggregateLoader = (request: AggregateLoadRequest) => Promise<void>;
-
-/* Reading foreign keys off a raw row. */
-
-/**
- * Reads one foreign-key column as a non-empty string, or `undefined` when the association is absent.
- *
- * @param row - one raw result row.
- * @param column - the whitelisted column name to read.
- * @returns the identifier, or `undefined` when the column is absent, NULL or empty.
- * @throws {DataIntegrityError} when the column holds something that is not a string. A foreign key that
- * is not text is a schema disagreement, and guessing at a coercion would hide it.
- */
-function readForeignKey(row: MySqlRow, column: string): string | undefined {
-  const value = row[column];
-
-  if (value === undefined || value === null || value === '') {
-    return undefined;
-  }
-
-  if (typeof value !== 'string') {
-    throw new DataIntegrityError(
-      'A Catalog foreign-key column holds a value that is not text, so the association it names ' +
-        'could not be resolved. Every identifier in this schema is a 32-character string ' +
-        '[model/entity/Sku.cfc:L52].',
-      { context: { column, receivedType: typeof value } },
-    );
-  }
-
-  return value;
-}
-
-/** Every distinct identifier the given column holds across the batch, in first-seen order. */
-function collectRowIdentifiers(rows: readonly MySqlRow[], column: string): readonly string[] {
-  const seen = new Set<string>();
-
-  for (const row of rows) {
-    const identifier = readForeignKey(row, column);
-    if (identifier !== undefined) {
-      seen.add(identifier);
-    }
-  }
-
-  return [...seen];
-}
-
-/**
- * Loads rows from one table by identifier and indexes the mapped results.
- *
- * @param request - the batch being resolved, for its executor.
- * @param table - the whitelisted table to read.
- * @param projection - that table's explicit column list.
- * @param idColumn - the whitelisted identifier column to filter on.
- * @param identifiers - the distinct identifiers wanted.
- * @param mapper - the scalar row mapper for this table.
- */
-async function loadByIdentifiers<TEntity>(
-  request: AggregateLoadRequest,
-  table: PhysicalTableName,
-  projection: string,
-  idColumn: string,
-  identifiers: readonly string[],
-  mapper: (row: MySqlRow) => TEntity,
-): Promise<Map<string, { readonly entity: TEntity; readonly row: MySqlRow }>> {
-  const indexed = new Map<string, { readonly entity: TEntity; readonly row: MySqlRow }>();
-
-  if (identifiers.length === 0) {
-    return indexed;
-  }
-
-  const placeholders = identifiers.map(() => '?').join(', ');
-  const rows = await request.executor.execute(
-    `SELECT ${projection} FROM ${table} WHERE ${idColumn} IN (${placeholders})`,
-    [...identifiers],
-  );
-
-  for (const row of rows) {
-    const identifier = readForeignKey(row, idColumn);
-    if (identifier !== undefined) {
-      indexed.set(identifier, { entity: mapper(row), row });
-    }
-  }
-
-  return indexed;
-}
-
-/* The product aggregate, shared by two roots. */
-
-/**
- * Resolves `productType`, `brand` and `defaultSku` on a batch of products.
- *
- * @param request - the batch being resolved, for its executor.
- * @param dependencies - supplies the default-SKU delegate binder.
- * @param productRows - the raw product rows, carrying the three foreign keys.
- * @param products - the mapped products, index-aligned with `productRows`.
- */
-async function attachProductAssociations(
-  request: AggregateLoadRequest,
-  dependencies: CatalogAggregateDependencies,
-  productRows: readonly MySqlRow[],
-  products: readonly Product[],
-): Promise<void> {
-  const productTypes = await loadByIdentifiers(
-    request,
-    PRODUCT_TYPE_TABLE,
-    PRODUCT_TYPE_PROJECTION,
-    COLUMN.productTypeID,
-    collectRowIdentifiers(productRows, COLUMN.productProductTypeID),
-    mapProductTypeRow,
-  );
-
-  const brands = await loadByIdentifiers(
-    request,
-    BRAND_TABLE,
-    BRAND_PROJECTION,
-    COLUMN.brandID,
-    collectRowIdentifiers(productRows, COLUMN.productBrandID),
-    mapBrandRow,
-  );
-
-  const defaultSkus = await loadByIdentifiers(
-    request,
-    SKU_TABLE,
-    SKU_PROJECTION,
-    COLUMN.skuID,
-    collectRowIdentifiers(productRows, COLUMN.productDefaultSkuID),
-    mapSkuRow,
-  );
-
-  products.forEach((product, index) => {
-    const row = productRows[index];
-    if (row === undefined) {
-      return;
-    }
-
-    const productTypeID = readForeignKey(row, COLUMN.productProductTypeID);
-    const resolvedProductType =
-      productTypeID === undefined ? undefined : productTypes.get(productTypeID);
-    if (resolvedProductType !== undefined) {
-      product.productType = resolvedProductType.entity;
-    }
-
-    /* Optional by design — see the LEFT-join note in this module's header. */
-    const brandID = readForeignKey(row, COLUMN.productBrandID);
-    const resolvedBrand = brandID === undefined ? undefined : brands.get(brandID);
-    if (resolvedBrand !== undefined) {
-      product.brand = resolvedBrand.entity;
-    }
-
-    /*
-     * Bound through the injected adapter, never assigned directly — the entity does not satisfy the
-     * delegate and deliberately never will. See {@link CatalogAggregateDependencies}.
-     */
-    const defaultSkuID = readForeignKey(row, COLUMN.productDefaultSkuID);
-    const resolvedDefaultSku =
-      defaultSkuID === undefined ? undefined : defaultSkus.get(defaultSkuID);
-    if (resolvedDefaultSku !== undefined) {
-      product.defaultSku = dependencies.bindDefaultSkuDelegate(resolvedDefaultSku.entity);
-    }
-  });
-}
-
-/* The loaders. */
-
-/** `SlatwallSku` — attaches each SKU's product, fully associated. Resolves int-02. */
-const createSkuAggregateLoader =
-  (dependencies: CatalogAggregateDependencies): CatalogAggregateLoader =>
-  async (request) => {
-    const productIdentifiers = collectRowIdentifiers(request.rows, COLUMN.skuProductID);
-
-    const products = await loadByIdentifiers(
-      request,
-      PRODUCT_TABLE,
-      PRODUCT_PROJECTION,
-      COLUMN.productID,
-      productIdentifiers,
-      mapProductRow,
-    );
-
-    const loaded = [...products.values()];
-    await attachProductAssociations(
-      request,
-      dependencies,
-      loaded.map((entry) => entry.row),
-      loaded.map((entry) => entry.entity),
-    );
-
-    request.entities.forEach((entity, index) => {
-      const row = request.rows[index];
-      if (row === undefined) {
-        return;
-      }
-
-      const productID = readForeignKey(row, COLUMN.skuProductID);
-      const resolved = productID === undefined ? undefined : products.get(productID);
-      if (resolved !== undefined) {
-        (entity as Sku).product = resolved.entity;
-      }
-    });
-  };
-
-/** `SlatwallOption` — attaches each option's option group. Resolves data-02. */
-const loadOptionAggregates: CatalogAggregateLoader = async (request) => {
-  const optionGroups = await loadByIdentifiers(
-    request,
-    OPTION_GROUP_TABLE,
-    OPTION_GROUP_PROJECTION,
-    COLUMN.optionGroupID,
-    collectRowIdentifiers(request.rows, COLUMN.optionOptionGroupID),
-    mapOptionGroupRow,
-  );
-
-  request.entities.forEach((entity, index) => {
-    const row = request.rows[index];
-    if (row === undefined) {
-      return;
-    }
-
-    const optionGroupID = readForeignKey(row, COLUMN.optionOptionGroupID);
-    const resolved = optionGroupID === undefined ? undefined : optionGroups.get(optionGroupID);
-    if (resolved !== undefined) {
-      (entity as Option).optionGroup = resolved.entity;
-    }
-  });
-};
-
-/** `SlatwallProduct` — attaches `productType`, `brand`, `defaultSku` and `skus`. */
-const createProductAggregateLoader =
-  (dependencies: CatalogAggregateDependencies): CatalogAggregateLoader =>
-  async (request) => {
-    const products = request.entities as readonly Product[];
-
-    await attachProductAssociations(request, dependencies, request.rows, products);
-
-    const productIdentifiers = collectRowIdentifiers(request.rows, COLUMN.productID);
-    if (productIdentifiers.length === 0) {
-      return;
-    }
-
-    const placeholders = productIdentifiers.map(() => '?').join(', ');
-    const skuRows = await request.executor.execute(
-      `SELECT ${SKU_PROJECTION} FROM ${SKU_TABLE} WHERE ${COLUMN.skuProductID} IN (${placeholders})`,
-      [...productIdentifiers],
-    );
-
-    /*
-     * The rows are bucketed, and each product entity then maps its own SKU instances from them.
-     */
-    const skuRowsByProduct = new Map<string, MySqlRow[]>();
-    for (const skuRow of skuRows) {
-      const owningProductID = readForeignKey(skuRow, COLUMN.skuProductID);
-      if (owningProductID === undefined) {
-        continue;
-      }
-
-      let bucket = skuRowsByProduct.get(owningProductID);
-      if (bucket === undefined) {
-        bucket = [];
-        skuRowsByProduct.set(owningProductID, bucket);
-      }
-      bucket.push(skuRow);
-    }
-
-    const hydratedSkus: Sku[] = [];
-    products.forEach((product, index) => {
-      const row = request.rows[index];
-      if (row === undefined) {
-        return;
-      }
-
-      const productID = readForeignKey(row, COLUMN.productID);
-      const bucket = productID === undefined ? undefined : skuRowsByProduct.get(productID);
-      if (bucket === undefined) {
-        return;
-      }
-
-      for (const skuRow of bucket) {
-        const sku = mapSkuRow(skuRow);
-        sku.product = product;
-        product.skus.push(sku);
-        hydratedSkus.push(sku);
-      }
-    });
-
-    /*
-     * — every hydrated SKU gets its options, and this is the statement that makes the product
-     * mutation members correct again.
-     */
-    if (hydratedSkus.length > 0) {
-      await attachSkuOptions(request.executor, hydratedSkus);
-    }
-  };
-
-/** Builds every root's loader, or `undefined` where the root has nothing to resolve. */
-export function createCatalogAggregateLoaders(
-  dependencies: CatalogAggregateDependencies,
-): Readonly<Record<SmartListEntityName, CatalogAggregateLoader | undefined>> {
-  return Object.freeze({
-    SlatwallSku: createSkuAggregateLoader(dependencies),
-    SlatwallOption: loadOptionAggregates,
-    SlatwallProduct: createProductAggregateLoader(dependencies),
-    /*
-     * `getBaseProductType` walks `productTypeIDPath` through an injected resolver and the tree query has
-     * its own projection, so `parentProductType` is not read as an association by anything in the slice.
-     */
-    SlatwallProductType: undefined,
-    /* Declares no many-to-one at all [model/entity/Brand.cfc]. */
-    SlatwallBrand: undefined,
-    /* Declares no many-to-one at all; its `options` collection is the inverse side. */
-    SlatwallOptionGroup: undefined,
-    /* No domain module and no association the slice reads. */
-    SlatwallAlternateSkuCode: undefined,
-  });
-}
-
-/* The SKU option collection — requested explicitly, not by root. */
-
-/**
- * Attaches each SKU's `options` collection, with its option groups resolved.
- *
- * @param executor - the caller's executor, so the read shares its transaction (M6).
- * @param skus - the SKUs whose options are wanted; mutated in place.
- */
-export async function attachSkuOptions(executor: SqlExecutor, skus: readonly Sku[]): Promise<void> {
-  const skuIdentifiers = distinctSkuIdentifiers(skus);
-
-  if (skuIdentifiers.length === 0) {
-    return;
-  }
-
-  const placeholders = skuIdentifiers.map(() => '?').join(', ');
-  /*
-   * The only join in this module, and therefore the only statement where an unqualified projection
-   * is fatal. Both tables declare `optionID` — the link table because that is the association, the
-   * option table because that is its primary key — so a bare `optionID` in the field list is ambiguous
-   * and MySQL refuses the statement outright with `ER_NON_UNIQ_ERROR (1052)` rather than guessing. That
-   * is what happened while {@link projectionFor} emitted bare names: this statement could not run at
-   * all, so `SkuRepository.findByProduct` with `fetchOptions` raised — the port of
-   * `model/dao/SkuDAO.cfc:L157`'s `inner join fetch sku.options` — failed on every invocation.
-   */
-  const rows = await executor.execute(
-    `SELECT link.${COLUMN.skuOptionSkuID}, ${OPTION_PROJECTION} ` +
-      `FROM ${SKU_OPTION_TABLE} link ` +
-      `INNER JOIN ${OPTION_TABLE} ON ${OPTION_TABLE}.${COLUMN.optionID} = ` +
-      `link.${COLUMN.skuOptionOptionID} ` +
-      `WHERE link.${COLUMN.skuOptionSkuID} IN (${placeholders})`,
-    [...skuIdentifiers],
-  );
-
-  const optionGroups = await loadByIdentifiers(
-    { executor, rows, entities: [] },
-    OPTION_GROUP_TABLE,
-    OPTION_GROUP_PROJECTION,
-    COLUMN.optionGroupID,
-    collectRowIdentifiers(rows, COLUMN.optionOptionGroupID),
-    mapOptionGroupRow,
-  );
-
-  const optionsBySku = new Map<string, Option[]>();
-  for (const row of rows) {
-    const owningSkuID = readForeignKey(row, COLUMN.skuOptionSkuID);
-    if (owningSkuID === undefined) {
-      continue;
-    }
-
-    const option = mapOptionRowWithGroup(row, optionGroups);
-
-    let bucket = optionsBySku.get(owningSkuID);
-    if (bucket === undefined) {
-      bucket = [];
-      optionsBySku.set(owningSkuID, bucket);
-    }
-    bucket.push(option);
-  }
-
-  for (const sku of skus) {
-    /*
-     * / rule 3c — marked before the bucket check, and the order matters. This statement runs for
-     * every SKU in the batch, including one the link table returned no rows for: the read established
-     * that such a SKU has no options, which is a fact worth recording, and recording it is what lets
-     * `MySqlSkuRepository.persistSku` clear stale rows for a SKU whose options were genuinely removed.
-     * Marking only the SKUs with rows would leave an emptied collection indistinguishable from an
-     * unloaded one, and removal would stop working.
-     */
-    markSkuOwnedLinkLoaded(sku, 'options');
-
-    const bucket = optionsBySku.get(sku.skuID);
-    if (bucket === undefined) {
-      continue;
-    }
-
-    /*
-     * Pushed onto the live array (rule 4), and not through `Sku.addOption`: that member dedupes by
-     * reference, which is right for graph construction and wrong for hydration, where each row is a
-     * distinct instance and the link table has already decided what the collection contains.
-     */
-    for (const option of bucket) {
-      sku.options.push(option);
-    }
-  }
-}
-
-/**
- * Maps one joined option row and resolves its group from the pre-loaded index.
- *
- * @param row - a row carrying the option's own columns plus the link table's SKU identifier.
- * @param optionGroups - the groups already loaded for this batch.
- * @returns the mapped option, with its group attached when the group was found.
- */
-function mapOptionRowWithGroup(
-  row: MySqlRow,
-  optionGroups: ReadonlyMap<string, { readonly entity: OptionGroup }>,
-): Option {
-  const option = mapOptionRow(row);
-
-  const optionGroupID = readForeignKey(row, COLUMN.optionOptionGroupID);
-  const resolved = optionGroupID === undefined ? undefined : optionGroups.get(optionGroupID);
-  if (resolved !== undefined) {
-    option.optionGroup = resolved.entity;
-  }
-
-  return option;
-}
-
-/* The three `inner join fetch` branches of `getProductSkus` */
-
-/**
- * Groups one link table's far identifiers by the SKU that owns them.
- *
- * @param executor - the caller's executor, so the read shares its transaction (M6).
- * @param table - the whitelisted link table.
- * @param skuColumn - its owning SKU column.
- * @param farColumn - its far identifier column.
- * @param skuIdentifiers - the SKUs wanted.
- * @returns far identifiers keyed by SKU identifier, in row order.
- */
-async function groupLinkIdentifiers(
-  executor: SqlExecutor,
-  table: PhysicalTableName,
-  skuColumn: string,
-  farColumn: string,
-  skuIdentifiers: readonly string[],
-): Promise<ReadonlyMap<string, readonly string[]>> {
-  const grouped = new Map<string, string[]>();
-
-  if (skuIdentifiers.length === 0) {
-    return grouped;
-  }
-
-  const placeholders = skuIdentifiers.map(() => '?').join(', ');
-  const rows = await executor.execute(
-    `SELECT ${skuColumn}, ${farColumn} FROM ${table} WHERE ${skuColumn} IN (${placeholders})`,
-    [...skuIdentifiers],
-  );
-
-  for (const row of rows) {
-    const owningSkuID = readForeignKey(row, skuColumn);
-    const farIdentifier = readForeignKey(row, farColumn);
-    if (owningSkuID === undefined || farIdentifier === undefined) {
-      continue;
-    }
-
-    let bucket = grouped.get(owningSkuID);
-    if (bucket === undefined) {
-      bucket = [];
-      grouped.set(owningSkuID, bucket);
-    }
-    bucket.push(farIdentifier);
-  }
-
-  return grouped;
-}
-
-/** The distinct, saved identifiers of a SKU batch, in first-seen order. */
-function distinctSkuIdentifiers(skus: readonly Sku[]): readonly string[] {
-  return [...new Set(skus.map((sku) => sku.skuID).filter((skuID) => skuID !== ''))];
-}
-
-/**
- * Performs the eager fetch `getProductSkus` requests, for whichever collection its base product type
- * selects.
- *
- * @param executor - the caller's executor, so the fetch shares its transaction (M6).
- * @param skus - the SKUs just hydrated; mutated in place.
- * @param baseProductType - the product's resolved base product type, or `undefined` when unresolved.
- */
-export async function attachFetchedSkuAssociations(
-  executor: SqlExecutor,
-  skus: readonly Sku[],
-  baseProductType: string | undefined,
-): Promise<void> {
-  if (skus.length === 0 || baseProductType === undefined) {
-    return;
-  }
-
-  if (baseProductType === SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE.merchandise.systemCode) {
-    /* `model/dao/SkuDAO.cfc:L157` — `inner join fetch sku.options`. */
-    await attachSkuOptions(executor, skus);
-    return;
-  }
-
-  if (baseProductType === SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE.contentAccess.systemCode) {
-    /* `model/dao/SkuDAO.cfc:L155` — `inner join fetch sku.accessContents`. */
-    const grouped = await groupLinkIdentifiers(
-      executor,
-      SKU_ACCESS_CONTENT_TABLE,
-      COLUMN.accessContentSkuID,
-      COLUMN.accessContentContentID,
-      distinctSkuIdentifiers(skus),
-    );
-
-    for (const sku of skus) {
-      /*
-       * / rule 3c — the fetch read this collection's rows, so it is authoritative from here on. Marked
-       * for every SKU in the batch, rows or none; see {@link attachSkuOptions} for why.
-       */
-      markSkuOwnedLinkLoaded(sku, 'accessContents');
-
-      for (const contentID of grouped.get(sku.skuID) ?? []) {
-        sku.accessContents.push({ contentID });
-      }
-    }
-    return;
-  }
-
-  if (baseProductType === SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE.subscription.systemCode) {
-    /*
-     * `model/dao/SkuDAO.cfc:L160` — `inner join fetch sku.subscriptionBenefits`. The term join at
-     * `:L159` is a plain `INNER JOIN` with no `FETCH`, so `subscriptionTerm` is deliberately left
-     * unresolved here; reproducing the restriction without the fetch is exactly what the legacy does.
-     */
-    const grouped = await groupLinkIdentifiers(
-      executor,
-      SKU_SUBSCRIPTION_BENEFIT_TABLE,
-      COLUMN.subscriptionBenefitSkuID,
-      COLUMN.subscriptionBenefitID,
-      distinctSkuIdentifiers(skus),
-    );
-
-    for (const sku of skus) {
-      /*
-       * / rule 3c — as above. Only `subscriptionBenefits` is promoted: `model/dao/SkuDAO.cfc:L160`
-       * fetches that collection alone, and `renewalSubscriptionBenefits` at `model/entity/Sku.cfc:L79` is
-       * not fetched by any legacy branch — so it stays unloaded, and `persistSku` preserves its rows.
-       */
-      markSkuOwnedLinkLoaded(sku, 'subscriptionBenefits');
-
-      for (const subscriptionBenefitID of grouped.get(sku.skuID) ?? []) {
-        sku.subscriptionBenefits.push({ subscriptionBenefitID });
-      }
-    }
-  }
 }

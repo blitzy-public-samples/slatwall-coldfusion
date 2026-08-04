@@ -31,6 +31,7 @@ import {
   DomainError,
   LegacyParityError,
   NotImplementedError,
+  RequestBudgetExhaustedError,
   UNEXPECTED_ERROR_CREATING_PRODUCT_MESSAGE,
 } from '../errors/DomainError';
 import {
@@ -952,7 +953,7 @@ export class SkuService {
      */
     const maximumCombinations = this.combinationBudget.resolveMaximumCombinations();
     if (totalCombos > maximumCombinations) {
-      throw new DomainError(
+      throw new RequestBudgetExhaustedError(
         `Creating SKUs would enumerate ${String(totalCombos)} combinations, which exceeds the ` +
           `${String(maximumCombinations)} this deployment permits one request to enumerate. No SKU was ` +
           `constructed, attached or validated.`,

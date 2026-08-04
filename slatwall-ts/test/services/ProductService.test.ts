@@ -67,6 +67,7 @@ import {
   ProductService,
   type FormattedOptionGroups,
   type ProductBaseService,
+  type ProductPropertyDescriptorResolver,
   type ProductProcessValidator,
   type ProductServiceCollaborators,
   type ProductTypeBaseService,
@@ -82,6 +83,7 @@ import type { ProductUpdateSkus } from '../../src/domain/process/ProductUpdateSk
 import {
   PRODUCT_PROPERTY_DESCRIPTORS,
   Product,
+  createProductPropertyDescriptors,
   type ProductDefaultSkuDelegate,
   type ProductPropertyName,
   type ProductTransactionExistenceChecker,
@@ -484,6 +486,8 @@ interface HarnessOptions {
   readonly onImport?: ProductImportHandler;
   /** Replaces the validator. Used only where a landed boundary makes the real rule unreachable. */
   readonly validator?: ProductProcessValidator;
+  /** Resolves a per-save Product descriptor set after any asynchronous relationship reads. */
+  readonly resolveProductPropertyDescriptors?: ProductPropertyDescriptorResolver;
 
   /*
    * The URL-title probe ceiling this harness's service carries. */
@@ -513,6 +517,8 @@ interface HarnessOptions {
   readonly account?: AccountPosture;
   /** Subscription-term identifiers the boundary port resolves. */
   readonly subscriptionTermIDs?: readonly string[];
+  /** Optional async preparation performed immediately before Product population. */
+  readonly prepareProductPopulation?: (data: Record<string, unknown>) => Promise<void>;
 }
 
 interface Harness {
@@ -545,6 +551,8 @@ interface Harness {
   readonly settingReads: readonly SettingResolverCall[];
   /** Delegations to the product-type base service, in order. */
   readonly productTypeSaves: readonly ProductTypeSaveRecord[];
+  /** Payloads handed to the async population-preparation seam, in order. */
+  readonly populationPreparations: readonly Record<string, unknown>[];
   /** Every validation request that reached the real validator, in true global order. */
   readonly validations: readonly ValidationInvocation[];
   /** How many times the account context was consulted. */
@@ -631,6 +639,7 @@ function buildHarness(options: HarnessOptions = {}): Harness {
 
   const persistence = createBaseServicePersistenceDouble<Product>();
   const productPersister = createDirectPersisterDouble<Product>();
+  const populationPreparations: Record<string, unknown>[] = [];
   const productTypeRoots = createProductTypeRootResolverDouble();
   const subscriptionTerms = createSubscriptionTermDouble({
     subscriptionTermIDs: options.subscriptionTermIDs ?? [],
@@ -735,7 +744,14 @@ function buildHarness(options: HarnessOptions = {}): Harness {
     subscriptionTermPort: subscriptionTerms.subscriptionTerms,
     productTypeRootResolver: productTypeRoots.resolver,
     productPropertyDescriptors: PRODUCT_PROPERTY_DESCRIPTORS,
+    ...(options.resolveProductPropertyDescriptors === undefined
+      ? {}
+      : { resolveProductPropertyDescriptors: options.resolveProductPropertyDescriptors }),
     populationAuthorization: populationAuthorization.populationAuthorization,
+    prepareProductPopulation: async (data) => {
+      populationPreparations.push(data);
+      await options.prepareProductPopulation?.(data);
+    },
     isUrlTitleAvailable,
     /*
      * — the probe ceiling both derivations resolve against; generous here, so the cases that
@@ -778,6 +794,7 @@ function buildHarness(options: HarnessOptions = {}): Harness {
     urlTitleProbes: urlTitles.calls,
     settingReads: settings.calls,
     productTypeSaves,
+    populationPreparations,
     validations: validator.invocations,
     accountReads: (): number => accountContext.callCount(),
     attachDefaultSku: (product: Product, sku: Sku): ProductDefaultSkuDelegate => {
@@ -3397,10 +3414,112 @@ describe('saveProduct — populate, title, validate, create, persist', () => {
     expect(harness.persistedProducts()).toEqual([product, product]);
   });
 
+  it('NET-NEW: awaits async relationship preparation before the synchronous population pass', async () => {
+    const data = validPayload();
+    const harness = buildHarness({
+      settings: [PRODUCT_TITLE_STRING_SETTING, ...IMAGE_FILE_NAME_SETTINGS],
+      prepareProductPopulation: async (preparedData) => {
+        await Promise.resolve();
+        preparedData.productName = 'Prepared Product';
+      },
+    });
+    const { product } = buildSaveFixture({
+      productID: physicalID('p-save-prepared'),
+      harness,
+    });
+
+    await harness.service.saveProduct(product, data);
+
+    expect(harness.populationPreparations).toEqual([data]);
+    expect(product.productName).toBe('Prepared Product');
+  });
+
+  it('NET-NEW: populates the declared non-persistent price override before validation', async () => {
+    const product = buildProduct({
+      productID: physicalID('p-save-price-override'),
+      productType: buildMerchandiseProductType(),
+    });
+    const harness = buildHarness();
+    const data: Record<string, unknown> = {
+      ...validPayload(),
+      urlTitle: 'price-override',
+      price: '125.50',
+    };
+
+    const answer = await harness.service.saveProduct(product, data);
+
+    expect(answer).toBe(product);
+    expect(product.price).toBe('125.50');
+    expect(product.getPrice()).toBe('125.50');
+    expect(product.hasError('price')).toBe(false);
+    expect(harness.persistedProducts()).toEqual([product]);
+  });
+
+  it('NET-NEW: awaits an invocation-local relationship descriptor set and populates transient price through the same authorization gate', async () => {
+    const productType = buildMerchandiseProductType();
+    const descriptorRequests: Readonly<Record<string, unknown>>[] = [];
+    const relationshipDescriptors = createProductPropertyDescriptors({
+      productType: {
+        loader: {
+          loadExisting: (productTypeID) =>
+            productTypeID === MERCHANDISE_PRODUCT_TYPE_ID ? productType : undefined,
+          loadOrCreate: () => {
+            throw new Error('the identifier-only payload must use loadExisting');
+          },
+        },
+        populate: () => {
+          throw new Error('the identifier-only payload must not recursively populate the type');
+        },
+      },
+    });
+    const resolveProductPropertyDescriptors: ProductPropertyDescriptorResolver = (data) => {
+      descriptorRequests.push(data);
+      return Promise.resolve(relationshipDescriptors);
+    };
+    const harness = buildHarness({
+      settings: [PRODUCT_TITLE_STRING_SETTING, ...IMAGE_FILE_NAME_SETTINGS],
+      resolveProductPropertyDescriptors,
+    });
+    const product = buildProduct({});
+    const createSkus = jest.spyOn(harness.skuService, 'createSkus').mockResolvedValue(true);
+    jest
+      .spyOn(harness.service, 'processProductUpdateDefaultImageFileNames')
+      .mockResolvedValue(product);
+    const data: Record<string, unknown> = {
+      productName: TEST_MERCHANDISE_PRODUCT_NAME,
+      productCode: TEST_MERCHANDISE_PRODUCT_CODE,
+      price: 3.21,
+      productType: { productTypeID: MERCHANDISE_PRODUCT_TYPE_ID },
+    };
+
+    const answer = await harness.service.saveProduct(product, data);
+
+    expect(answer).toBe(product);
+    expect(descriptorRequests).toStrictEqual([data]);
+    expect(product.productName).toBe(TEST_MERCHANDISE_PRODUCT_NAME);
+    expect(product.productCode).toBe(TEST_MERCHANDISE_PRODUCT_CODE);
+    expect(product.productType).toBe(productType);
+    expect(product.price).toBe('3.21');
+    expect(product.getPrice()).toBe('3.21');
+    expect(product.hasErrors()).toBe(false);
+    expect(createSkus).toHaveBeenCalledWith(product, data);
+    expect(harness.persistedProducts()).toEqual([product, product]);
+  });
+
   it('NET-NEW: delegates the unique URL title to the shared utility, consulting the probe rather than inventing a slug', async () => {
     const { product, harness } = buildSaveFixture({
       harness: buildHarness({
-        settings: [PRODUCT_TITLE_STRING_SETTING, ...IMAGE_FILE_NAME_SETTINGS],
+        /*
+         * The brand relationship is absent. Its declared `brandName` path resolves to `''` before
+         * slugging, so the utility probes `test-product`, never `brandbrandname-test-product`.
+         */
+        settings: [
+          {
+            settingName: 'productTitleString',
+            value: '${brand.brandName} ${productName}',
+          },
+          ...IMAGE_FILE_NAME_SETTINGS,
+        ],
         takenUrlTitles: [{ tableName: PRODUCT_TABLE, value: PRODUCT_TITLE_SLUG }],
       }),
     });
@@ -4255,6 +4374,8 @@ describe('IR-1 — the explicitly declared replacements for the synthesized memb
  * inside an approved suite rather than in one of its own.
  */
 
+/* FOLDED IN FROM handlers/productHandler */
+
 /**
  * `productHandler` — the Lambda boundary that exposes the `ProductService` surface, and the contracts
  * that boundary must not silently alter.
@@ -4332,6 +4453,8 @@ describe("The product surface's final wiring", () => {
     readonly product?: Product | null;
     /** What `saveProduct` answers, when it must differ from its argument. */
     readonly savedProduct?: Product;
+    /** What the selected-options lookup returns, in service order. */
+    readonly resolvedSkus?: readonly Sku[];
     /**
      * An error key `saveProductType` should attach to the product type it returns, expressing a refused
      * save. Omitted means the save succeeded.
@@ -4399,7 +4522,7 @@ describe("The product surface's final wiring", () => {
           productID: string,
         ): Promise<Sku[]> => {
           record('getProductSkusBySelectedOptions', [selectedOptions, productID]);
-          return Promise.resolve([]);
+          return Promise.resolve([...(options.resolvedSkus ?? [])]);
         },
         processProductAddOptionGroup: (
           product: Product,
@@ -4967,6 +5090,40 @@ describe("The product surface's final wiring", () => {
   /* API-01 — the prompt's own worked example, and its T5 edge case. */
 
   describe('productHandler — API-01, getProductSkusBySelectedOptions argument order and T5', () => {
+    it('NET-NEW — a non-empty result is projected to the route DTO with every optional and monetary field preserved', async () => {
+      const sku = buildSku({
+        skuID: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        skuCode: 'PROJECTED-SKU',
+        price: '19.95',
+        listPrice: '24.00',
+        renewalPrice: '9.50',
+        activeFlag: false,
+        imageFile: 'projected.jpg',
+        userDefinedPriceFlag: true,
+      });
+      const probe = admitAll({ resolvedSkus: [sku] });
+
+      const result = await probe.handler.getProductSkusBySelectedOptions({
+        pathParameters: { productID: PRODUCT_ID },
+        queryStringParameters: { selectedOptions: 'opt-1' },
+        headers: {},
+      });
+
+      expect(result.statusCode).toBe(200);
+      expect(JSON.parse(result.body)).toStrictEqual([
+        {
+          skuID: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          skuCode: 'PROJECTED-SKU',
+          price: '19.95',
+          listPrice: '24.00',
+          renewalPrice: '9.50',
+          activeFlag: false,
+          userDefinedPriceFlag: true,
+          imageFile: 'projected.jpg',
+        },
+      ]);
+    });
+
     it('NET-NEW — model/entity/Product.cfc:L366-L368 — selectedOptions FIRST, productID SECOND', async () => {
       /*
        * Both are 32-character-capable strings, so a forward written in the wrong order type-checks
@@ -5292,6 +5449,33 @@ describe("The product surface's final wiring", () => {
       expect(probe.decisions).toStrictEqual(['commit']);
     });
 
+    it('NET-NEW — flattened brand and productType identifiers are translated to the nested population contract', async () => {
+      const probe = admitAll();
+      const brandID = physicalID('handler-save-brand');
+
+      const result = await probe.handler.saveProduct(
+        unaddressedPayloadEvent(
+          JSON.stringify({
+            productName: 'Translated Product',
+            productCode: 'TRANSLATED-1',
+            price: 3.21,
+            brand: brandID,
+            productType: MERCHANDISE_PRODUCT_TYPE_ID,
+          }),
+        ),
+      );
+
+      const save = probe.calls.find((call) => call.member === 'saveProduct');
+      expect(result.statusCode).toBe(200);
+      expect(save?.args[1]).toStrictEqual({
+        productName: 'Translated Product',
+        productCode: 'TRANSLATED-1',
+        price: 3.21,
+        brand: { brandID },
+        productType: { productTypeID: MERCHANDISE_PRODUCT_TYPE_ID },
+      });
+    });
+
     it('NET-NEW — a PRESENT identifier UPDATES, and an unknown one is a 404', async () => {
       const present = admitAll();
       await present.handler.saveProduct(payloadEvent('{}'));
@@ -5543,7 +5727,7 @@ describe("The product surface's final wiring", () => {
       expect(input).toStrictEqual({ keyword: 'shirt', 'P:Current': '2', 'F:productName': 'shirt' });
     });
 
-    it('NET-NEW — the smart-list projection preserves every pagination member', async () => {
+    it('NET-NEW — the smart-list HTTP projection publishes the page and metadata, never all records', async () => {
       const probe = admitAll();
 
       const result = await probe.handler.getProductSmartList({
@@ -5552,7 +5736,6 @@ describe("The product surface's final wiring", () => {
       });
 
       expect(JSON.parse(result.body)).toStrictEqual({
-        records: [],
         pageRecords: [],
         recordsCount: 0,
         pageRecordsStart: 0,

@@ -1423,7 +1423,8 @@ async function buildExistingOptionGroupIDList(
  *
  * @param product - The entity the identifier is resolved against.
  * @param propertyIdentifier - A bare or single-dotted property identifier, delimiters already stripped.
- * @returns The resolved string value, or `undefined` to leave the token verbatim.
+ * @returns The resolved string value; `''` for a declared but unresolved property; or `undefined`
+ * to leave a genuinely undeclared token verbatim.
  */
 function resolveProductPropertyIdentifier(
   product: Product,
@@ -1442,19 +1443,11 @@ function resolveProductPropertyIdentifier(
   }
 
   if (relationshipName === 'brand') {
-    const assignedBrand = product.brand;
-    if (assignedBrand === undefined) {
-      return undefined;
-    }
-    return readBrandStringProperty(assignedBrand, relatedPropertyName);
+    return readBrandStringProperty(product.brand, relatedPropertyName);
   }
 
   if (relationshipName === 'productType') {
-    const assignedProductType = product.productType;
-    if (assignedProductType === undefined) {
-      return undefined;
-    }
-    return readProductTypeStringProperty(assignedProductType, relatedPropertyName);
+    return readProductTypeStringProperty(product.productType, relatedPropertyName);
   }
 
   return undefined;
@@ -1465,24 +1458,25 @@ function resolveProductPropertyIdentifier(
  *
  * @param product - The entity to read from.
  * @param propertyName - The property name, matched exactly and case-sensitively.
- * @returns The value, or `undefined` when the property is absent or is not a string column.
+ * @returns The value; `''` when a declared string property is absent; or `undefined` when the name
+ * is not one of the declared string properties this template resolver supports.
  */
 function readProductStringProperty(product: Product, propertyName: string): string | undefined {
   switch (propertyName) {
     case 'productID':
       return product.productID;
     case 'productName':
-      return product.productName;
+      return product.productName ?? '';
     case 'productCode':
-      return product.productCode;
+      return product.productCode ?? '';
     case 'productDescription':
-      return product.productDescription;
+      return product.productDescription ?? '';
     case 'urlTitle':
-      return product.urlTitle;
+      return product.urlTitle ?? '';
     case 'calculatedTitle':
-      return product.calculatedTitle;
+      return product.calculatedTitle ?? '';
     case 'remoteID':
-      return product.remoteID;
+      return product.remoteID ?? '';
     default:
       return undefined;
   }
@@ -1491,22 +1485,26 @@ function readProductStringProperty(product: Product, propertyName: string): stri
 /**
  * Reads one string-valued property off a brand by name, for single-dotted identifiers.
  *
- * @param brand - The related brand.
+ * @param brand - The related brand, when the relationship has an assigned instance.
  * @param propertyName - The property name, matched exactly and case-sensitively.
- * @returns The value, or `undefined` when absent or not a string column.
+ * @returns The value; `''` when the relationship or declared string value is absent; or `undefined`
+ * when the related property is undeclared by this resolver.
  */
-function readBrandStringProperty(brand: Brand, propertyName: string): string | undefined {
+function readBrandStringProperty(
+  brand: Brand | undefined,
+  propertyName: string,
+): string | undefined {
   switch (propertyName) {
     case 'brandID':
-      return brand.brandID;
+      return brand?.brandID ?? '';
     case 'brandName':
-      return brand.brandName;
+      return brand?.brandName ?? '';
     case 'brandWebsite':
-      return brand.brandWebsite;
+      return brand?.brandWebsite ?? '';
     case 'urlTitle':
-      return brand.urlTitle;
+      return brand?.urlTitle ?? '';
     case 'remoteID':
-      return brand.remoteID;
+      return brand?.remoteID ?? '';
     default:
       return undefined;
   }
@@ -1515,29 +1513,30 @@ function readBrandStringProperty(brand: Brand, propertyName: string): string | u
 /**
  * Reads one string-valued property off a product type by name, for single-dotted identifiers.
  *
- * @param productType - The related product type.
+ * @param productType - The related product type, when the relationship has an assigned instance.
  * @param propertyName - The property name, matched exactly and case-sensitively.
- * @returns The value, or `undefined` when absent or not a string column.
+ * @returns The value; `''` when the relationship or declared string value is absent; or `undefined`
+ * when the related property is undeclared by this resolver.
  */
 function readProductTypeStringProperty(
-  productType: ProductType,
+  productType: ProductType | undefined,
   propertyName: string,
 ): string | undefined {
   switch (propertyName) {
     case 'productTypeID':
-      return productType.productTypeID;
+      return productType?.productTypeID ?? '';
     case 'productTypeName':
-      return productType.productTypeName;
+      return productType?.productTypeName ?? '';
     case 'productTypeDescription':
-      return productType.productTypeDescription;
+      return productType?.productTypeDescription ?? '';
     case 'productTypeIDPath':
-      return productType.productTypeIDPath;
+      return productType?.productTypeIDPath ?? '';
     case 'systemCode':
-      return productType.systemCode;
+      return productType?.systemCode ?? '';
     case 'urlTitle':
-      return productType.urlTitle;
+      return productType?.urlTitle ?? '';
     case 'remoteID':
-      return productType.remoteID;
+      return productType?.remoteID ?? '';
     default:
       return undefined;
   }
@@ -1586,6 +1585,7 @@ export type ProductPropertyName =
   | 'vendors'
   | 'physicals'
   | 'remoteID'
+  | 'price'
   | AuditPropertyName;
 
 /** The twenty `persistent="false"` properties [model/entity/Product.cfc:L102-L123] declares. */
@@ -1651,6 +1651,7 @@ export const PRODUCT_ENTITY_METADATA: EntityMetadataDeclaration<ProductPropertyN
       vendors: true,
       physicals: true,
       remoteID: true,
+      price: true,
       createdDateTime: true,
       createdByAccount: true,
       modifiedDateTime: true,
@@ -1735,6 +1736,12 @@ const PRODUCT_SIMPLE_PROPERTY_DESCRIPTORS: readonly ColumnPropertyDescriptor<Pro
     { name: 'calculatedQATS', valueType: 'integer' },
     { name: 'calculatedAllowBackorderFlag', valueType: 'boolean' },
     { name: 'calculatedTitle', valueType: 'string' },
+    /*
+     * `price` is the non-persistent override at `model/entity/Product.cfc:L118`. The legacy
+     * `getProperties()` walk includes non-persistent declarations, so `populate` writes this slot and
+     * `getPrice()` reads it before consulting the default SKU (`Product.cfc:L561-L563`).
+     */
+    { name: 'price', valueType: 'bigDecimal' },
   ];
 
 /**

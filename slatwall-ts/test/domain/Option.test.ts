@@ -21,6 +21,8 @@
  * `optionName` at `:L4`, `optionGroup` at `:L5` and the `skus` delete guard at `:L6`.
  */
 
+import { manageEntity, populate, populateWithSubProperties } from '../../src/domain/base/populate';
+import type { RelatedEntityLoader, SubPropertyPopulator } from '../../src/domain/base/populate';
 import {
   OPTION_CLASS_NAME,
   OPTION_DECLARED_PROPERTIES,
@@ -29,13 +31,15 @@ import {
   OPTION_PRIMARY_ID_PROPERTY_NAME,
   OPTION_PROPERTY_DESCRIPTORS,
   Option,
+  createOptionPropertyDescriptors,
   type OptionImageDirectoryResolver,
   type OptionPropertyName,
   type SkuOptionOwner,
 } from '../../src/domain/option/Option';
-import { OptionGroup } from '../../src/domain/option/OptionGroup';
+import { OPTION_GROUP_ENTITY_METADATA, OptionGroup } from '../../src/domain/option/OptionGroup';
 import { Sku } from '../../src/domain/sku/Sku';
 import { ValidationError } from '../../src/errors/ValidationError';
+import type { PopulationAuthorizationPort } from '../../src/ports/AccountContextPort';
 import { Validator, type ValidationContext } from '../../src/validation/Validator';
 import {
   optionValidationRuleSet,
@@ -45,6 +49,7 @@ import {
   buildOption,
   buildOptionGroup,
   buildSku,
+  createPopulationAuthorizationDouble,
   createSettingResolverDouble,
   createValidatorHarness,
   type SettingResolverCall,
@@ -70,6 +75,18 @@ const SAVED_OPTION_IDS = Object.freeze({
   nonMember: '00000000000000000000000000000035',
   uniqueIncumbent: '00000000000000000000000000000036',
   uniqueCandidate: '00000000000000000000000000000037',
+} as const);
+
+/** Opaque identifiers reserved for the population-contract cases at the end of this suite. */
+const POPULATION_IDS = Object.freeze({
+  optionGroup: '11111111111111111111111111111111',
+  missingOptionGroup: '22222222222222222222222222222222',
+  keepSku: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  removeFirstSku: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  removeSecondSku: 'cccccccccccccccccccccccccccccccc',
+  addSku: 'dddddddddddddddddddddddddddddddd',
+  unloadableSku: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+  caseSensitiveSku: 'abcdefabcdefabcdefabcdefabcdefab',
 } as const);
 
 /** The five persistent properties of `model/entity/Option.cfc:L52-L56`, in declaration order. */
@@ -1316,6 +1333,393 @@ describe('Option — the declarative validation rules', () => {
     expect(errors.hasError('optionName')).toBe(false);
     expect(errors.hasError('optionGroup')).toBe(false);
     expect(harness.uniqueProperty.calls).toEqual([]);
+  });
+});
+
+/*
+ * NET-NEW — both relationship branches, driven through Option's REAL descriptor factory.
+ *
+ * The factory is exported because callers must supply the two relationship loaders and recursive
+ * populators explicitly; a coverage run found that no production composition root had done so yet.
+ * Exercising a hand-built descriptor here would leave that contract unproved, so every case below
+ * obtains its descriptors from createOptionPropertyDescriptors and observes the real entity methods
+ * the factory delegates to.
+ */
+describe('Option — NET-NEW — createOptionPropertyDescriptors and relationship population', () => {
+  /** A group loader with separate logs for the create-if-missing and existing-only forms. */
+  function optionGroupCatalog(groups: readonly OptionGroup[]): {
+    readonly loader: RelatedEntityLoader<OptionGroup>;
+    readonly loadExistingIds: string[];
+    readonly loadOrCreateIds: string[];
+  } {
+    const known = [...groups];
+    const loadExistingIds: string[] = [];
+    const loadOrCreateIds: string[] = [];
+
+    return {
+      loadExistingIds,
+      loadOrCreateIds,
+      loader: {
+        loadExisting: (relatedId: string): OptionGroup | undefined => {
+          loadExistingIds.push(relatedId);
+          return known.find((candidate) => candidate.optionGroupID === relatedId);
+        },
+        loadOrCreate: (relatedId: string): OptionGroup => {
+          loadOrCreateIds.push(relatedId);
+          const existing = known.find((candidate) => candidate.optionGroupID === relatedId);
+
+          if (existing !== undefined) {
+            return existing;
+          }
+
+          const created = buildOptionGroup({ optionGroupID: relatedId });
+          known.push(created);
+          return created;
+        },
+      },
+    };
+  }
+
+  /** Records the nested struct handed to the option-group recursive-population seam. */
+  function optionGroupSubPopulations(): {
+    readonly populate: SubPropertyPopulator<OptionGroup>;
+    readonly calls: {
+      readonly optionGroupID: string;
+      readonly data: Record<string, unknown>;
+    }[];
+  } {
+    const calls: {
+      readonly optionGroupID: string;
+      readonly data: Record<string, unknown>;
+    }[] = [];
+
+    return {
+      calls,
+      populate: (optionGroup: OptionGroup, data: Record<string, unknown>): void => {
+        calls.push({ optionGroupID: optionGroup.optionGroupID, data });
+      },
+    };
+  }
+
+  /**
+   * An owning-side SKU double whose add/remove methods maintain Option's live inverse array.
+   * That makes branch 5's backwards iteration observable while still exercising Option.addSku and
+   * Option.removeSku through the factory.
+   */
+  class MutatingSkuOptionOwner implements SkuOptionOwner {
+    constructor(
+      public readonly skuID: string,
+      private readonly events: string[],
+    ) {}
+
+    addOption(option: Option): void {
+      this.events.push(`add:${this.skuID}`);
+      if (!option.skus.includes(this)) {
+        option.skus.push(this);
+      }
+    }
+
+    removeOption(option: Option): void {
+      this.events.push(`remove:${this.skuID}`);
+      const index = option.skus.indexOf(this);
+      if (index !== -1) {
+        option.skus.splice(index, 1);
+      }
+    }
+  }
+
+  /** A SKU loader/populator/read-id bundle matching the five collaborators the factory requires. */
+  function skuCatalog(
+    skus: readonly MutatingSkuOptionOwner[],
+    events: string[],
+  ): {
+    readonly loader: RelatedEntityLoader<SkuOptionOwner>;
+    readonly populate: SubPropertyPopulator<SkuOptionOwner>;
+    readonly readPrimaryId: (sku: SkuOptionOwner) => string;
+    readonly loadExistingIds: string[];
+    readonly loadOrCreateIds: string[];
+    readonly populateCalls: {
+      readonly skuID: string;
+      readonly data: Record<string, unknown>;
+    }[];
+  } {
+    const known = [...skus];
+    const identifiers = new Map<SkuOptionOwner, string>(
+      known.map((sku): readonly [SkuOptionOwner, string] => [sku, sku.skuID]),
+    );
+    const loadExistingIds: string[] = [];
+    const loadOrCreateIds: string[] = [];
+    const populateCalls: {
+      readonly skuID: string;
+      readonly data: Record<string, unknown>;
+    }[] = [];
+    const readPrimaryId = (sku: SkuOptionOwner): string => identifiers.get(sku) ?? '';
+
+    return {
+      loadExistingIds,
+      loadOrCreateIds,
+      populateCalls,
+      readPrimaryId,
+      loader: {
+        loadExisting: (relatedId: string): SkuOptionOwner | undefined => {
+          loadExistingIds.push(relatedId);
+          return known.find((candidate) => candidate.skuID === relatedId);
+        },
+        loadOrCreate: (relatedId: string): SkuOptionOwner => {
+          loadOrCreateIds.push(relatedId);
+          const existing = known.find((candidate) => candidate.skuID === relatedId);
+
+          if (existing !== undefined) {
+            return existing;
+          }
+
+          const created = new MutatingSkuOptionOwner(relatedId, events);
+          known.push(created);
+          identifiers.set(created, relatedId);
+          return created;
+        },
+      },
+      populate: (sku: SkuOptionOwner, data: Record<string, unknown>): void => {
+        populateCalls.push({ skuID: readPrimaryId(sku), data });
+      },
+    };
+  }
+
+  /** Population permitted, so relationship effects are not hidden behind the persistent gate. */
+  const permitPopulation = (): PopulationAuthorizationPort =>
+    createPopulationAuthorizationDouble().populationAuthorization;
+
+  it('NET-NEW — model/entity/Option.cfc:L52-L79 — the factory appends exactly the many-to-one and many-to-many descriptors', () => {
+    const groups = optionGroupCatalog([]);
+    const groupSubPopulations = optionGroupSubPopulations();
+    const skus = skuCatalog([], []);
+    const descriptors = createOptionPropertyDescriptors(
+      groups.loader,
+      groupSubPopulations.populate,
+      skus.loader,
+      skus.populate,
+      skus.readPrimaryId,
+    );
+
+    expect(descriptors.entityName).toBe(OPTION_PROPERTY_DESCRIPTORS.entityName);
+    expect(descriptors.persistent).toBe(true);
+    expect(descriptors.properties.map((descriptor) => descriptor.name)).toStrictEqual([
+      ...OPTION_PROPERTY_DESCRIPTORS.properties.map((descriptor) => descriptor.name),
+      'optionGroup',
+      'skus',
+    ]);
+    expect(descriptors.properties).toHaveLength(OPTION_PROPERTY_DESCRIPTORS.properties.length + 2);
+    expect(Object.isFrozen(descriptors)).toBe(true);
+    expect(Object.isFrozen(descriptors.properties)).toBe(true);
+
+    expect(descriptors.properties.at(-2)).toMatchObject({
+      name: 'optionGroup',
+      kind: 'many-to-one',
+      relatedPrimaryIdPropertyName: 'optionGroupID',
+    });
+    expect(descriptors.properties.at(-1)).toMatchObject({
+      name: 'skus',
+      kind: 'many-to-many',
+      relatedPrimaryIdPropertyName: 'skuID',
+      singularName: 'sku',
+    });
+  });
+
+  it('NET-NEW — org/Hibachi/HibachiTransient.cfc:L236-L248 — a multi-key optionGroup struct loads-or-creates, populates and records the related group', () => {
+    const optionGroup = buildOptionGroup({ optionGroupID: POPULATION_IDS.optionGroup });
+    const groups = optionGroupCatalog([optionGroup]);
+    const groupSubPopulations = optionGroupSubPopulations();
+    const skus = skuCatalog([], []);
+    const option = buildOption({ optionID: SAVED_OPTION_IDS.nonMember });
+    const nestedData = {
+      optionGroupID: POPULATION_IDS.optionGroup,
+      optionGroupName: 'Size',
+    };
+
+    const result = populateWithSubProperties(
+      option,
+      { optionGroup: nestedData },
+      createOptionPropertyDescriptors(
+        groups.loader,
+        groupSubPopulations.populate,
+        skus.loader,
+        skus.populate,
+        skus.readPrimaryId,
+      ),
+      permitPopulation(),
+    );
+
+    expect(groups.loadOrCreateIds).toEqual([POPULATION_IDS.optionGroup]);
+    expect(groups.loadExistingIds).toEqual([]);
+    expect(option.optionGroup).toBe(optionGroup);
+    expect(groupSubPopulations.calls).toEqual([
+      { optionGroupID: POPULATION_IDS.optionGroup, data: nestedData },
+    ]);
+    expect(result.populatedSubProperties.optionGroup).toBe(optionGroup);
+
+    /* The real entity accessor can traverse the relationship that the descriptor just assigned. */
+    expect(option.getValueByPropertyIdentifier('optionGroup.optionGroupID')).toBe(
+      POPULATION_IDS.optionGroup,
+    );
+
+    /*
+     * The concrete entities own equivalent accessors in AuditableEntity, so they do not call the
+     * composition helper in populate.ts. Drive that exported helper explicitly with the same metadata
+     * declarations: its private isTraversableValue guard must recognise the managed related object and
+     * delegate the remaining path rather than returning the unresolved empty string.
+     */
+    const managedGroup = manageEntity(
+      { optionGroupID: POPULATION_IDS.optionGroup, optionGroupName: 'Size' },
+      OPTION_GROUP_ENTITY_METADATA,
+    );
+    const managedOption = manageEntity(
+      { optionID: SAVED_OPTION_IDS.nonMember, optionGroup: managedGroup },
+      OPTION_ENTITY_METADATA,
+    );
+    expect(managedOption.getValueByPropertyIdentifier('optionGroup.optionGroupName')).toBe('Size');
+  });
+
+  it('NET-NEW — org/Hibachi/HibachiTransient.cfc:L230-L266 — one-key optionGroup structs load, clear or preserve, while an ARRAY is not a struct', () => {
+    const optionGroup = buildOptionGroup({ optionGroupID: POPULATION_IDS.optionGroup });
+    const groups = optionGroupCatalog([optionGroup]);
+    const groupSubPopulations = optionGroupSubPopulations();
+    const skus = skuCatalog([], []);
+    const descriptors = createOptionPropertyDescriptors(
+      groups.loader,
+      groupSubPopulations.populate,
+      skus.loader,
+      skus.populate,
+      skus.readPrimaryId,
+    );
+
+    const loaded = buildOption({ optionID: SAVED_OPTION_IDS.spliceFirst });
+    populate(
+      loaded,
+      { optionGroup: { optionGroupID: POPULATION_IDS.optionGroup } },
+      descriptors,
+      permitPopulation(),
+    );
+    expect(loaded.optionGroup).toBe(optionGroup);
+
+    const preserved = buildOption({ optionID: SAVED_OPTION_IDS.spliceSecond });
+    preserved.optionGroup = optionGroup;
+    populate(
+      preserved,
+      { optionGroup: { optionGroupID: POPULATION_IDS.missingOptionGroup } },
+      descriptors,
+      permitPopulation(),
+    );
+    expect(preserved.optionGroup).toBe(optionGroup);
+
+    const cleared = buildOption({ optionID: SAVED_OPTION_IDS.crossGroup });
+    cleared.optionGroup = optionGroup;
+    populate(cleared, { optionGroup: { optionGroupID: '' } }, descriptors, permitPopulation());
+    expect(cleared.optionGroup).toBeUndefined();
+
+    const arrayPayload = buildOption({ optionID: SAVED_OPTION_IDS.nonMember });
+    arrayPayload.optionGroup = optionGroup;
+    populate(
+      arrayPayload,
+      { optionGroup: [{ optionGroupID: POPULATION_IDS.optionGroup }] },
+      descriptors,
+      permitPopulation(),
+    );
+    expect(arrayPayload.optionGroup).toBe(optionGroup);
+
+    expect(groups.loadExistingIds).toEqual([
+      POPULATION_IDS.optionGroup,
+      POPULATION_IDS.missingOptionGroup,
+    ]);
+    expect(groups.loadOrCreateIds).toEqual([]);
+    expect(groupSubPopulations.calls).toEqual([]);
+  });
+
+  it('NET-NEW — org/Hibachi/HibachiTransient.cfc:L272-L306 — an ARRAY of SKU structs delegates add, recursive population and recording through the factory', () => {
+    const events: string[] = [];
+    const relatedSku = new MutatingSkuOptionOwner(POPULATION_IDS.addSku, events);
+    const groups = optionGroupCatalog([]);
+    const groupSubPopulations = optionGroupSubPopulations();
+    const skus = skuCatalog([relatedSku], events);
+    const option = buildOption({ optionID: SAVED_OPTION_IDS.nonMember });
+    const nestedData = { skuID: POPULATION_IDS.addSku, skuCode: 'ADDED-SKU' };
+
+    const result = populateWithSubProperties(
+      option,
+      { skus: [nestedData] },
+      createOptionPropertyDescriptors(
+        groups.loader,
+        groupSubPopulations.populate,
+        skus.loader,
+        skus.populate,
+        skus.readPrimaryId,
+      ),
+      permitPopulation(),
+    );
+
+    expect(skus.loadOrCreateIds).toEqual([POPULATION_IDS.addSku]);
+    expect(skus.loadExistingIds).toEqual([]);
+    expect(events).toEqual([`add:${POPULATION_IDS.addSku}`]);
+    expect(option.skus).toStrictEqual([relatedSku]);
+    expect(skus.populateCalls).toEqual([{ skuID: POPULATION_IDS.addSku, data: nestedData }]);
+    expect(result.populatedSubProperties.skus).toStrictEqual([relatedSku]);
+  });
+
+  it('NET-NEW — org/Hibachi/HibachiTransient.cfc:L309-L359 — the delimited SKU diff keeps, removes backwards, adds, skips misses, drops empty elements and compares case-sensitively', () => {
+    const events: string[] = [];
+    const kept = new MutatingSkuOptionOwner(POPULATION_IDS.keepSku, events);
+    const removedFirst = new MutatingSkuOptionOwner(POPULATION_IDS.removeFirstSku, events);
+    const removedSecond = new MutatingSkuOptionOwner(POPULATION_IDS.removeSecondSku, events);
+    const caseSensitive = new MutatingSkuOptionOwner(POPULATION_IDS.caseSensitiveSku, events);
+    const added = new MutatingSkuOptionOwner(POPULATION_IDS.addSku, events);
+    const groups = optionGroupCatalog([]);
+    const groupSubPopulations = optionGroupSubPopulations();
+    const skus = skuCatalog([kept, removedFirst, removedSecond, caseSensitive, added], events);
+    const option = buildOption({ optionID: SAVED_OPTION_IDS.nonMember });
+    option.skus.push(kept, removedFirst, removedSecond, caseSensitive);
+    const caseVariant = POPULATION_IDS.caseSensitiveSku.toUpperCase();
+
+    const result = populateWithSubProperties(
+      option,
+      {
+        skus:
+          `,${POPULATION_IDS.keepSku},,${POPULATION_IDS.addSku},` +
+          `${POPULATION_IDS.unloadableSku},${caseVariant},,`,
+      },
+      createOptionPropertyDescriptors(
+        groups.loader,
+        groupSubPopulations.populate,
+        skus.loader,
+        skus.populate,
+        skus.readPrimaryId,
+      ),
+      permitPopulation(),
+    );
+
+    /*
+     * Reverse order is load-bearing: every removal mutates the live array. A forward walk would skip
+     * removedSecond after removing removedFirst; the observed order proves the ported backwards loop.
+     */
+    expect(events).toEqual([
+      `remove:${POPULATION_IDS.caseSensitiveSku}`,
+      `remove:${POPULATION_IDS.removeSecondSku}`,
+      `remove:${POPULATION_IDS.removeFirstSku}`,
+      `add:${POPULATION_IDS.addSku}`,
+    ]);
+    expect(option.skus).toStrictEqual([kept, added]);
+
+    /*
+     * The intersection is not reloaded. Empty list elements never reach the loader. The unloadable
+     * identifier and the case-variant miss both reach it and are silently skipped.
+     */
+    expect(skus.loadExistingIds).toEqual([
+      POPULATION_IDS.addSku,
+      POPULATION_IDS.unloadableSku,
+      caseVariant,
+    ]);
+    expect(skus.loadExistingIds).not.toContain('');
+    expect(skus.loadOrCreateIds).toEqual([]);
+    expect(skus.populateCalls).toEqual([]);
+    expect(result.populatedSubProperties.skus).toBeUndefined();
   });
 });
 

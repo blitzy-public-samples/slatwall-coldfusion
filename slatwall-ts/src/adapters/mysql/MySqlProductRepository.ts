@@ -49,6 +49,8 @@ import { DEPRECATED_SETTING_DEFAULTS } from '../settings/StaticSettingResolver';
 import type { AccountContextPort } from '../../ports/AccountContextPort';
 import type { MySqlRow } from './rowMappers';
 import type { PhysicalTableName, SqlExecutor, SqlMutationExecutor } from './QueryRunner';
+import { seedWholeTableSortOrder } from './UnitOfWork';
+
 import type { TransactionScope, UnitOfWork } from './UnitOfWork';
 import type {
   AttributeSetRow,
@@ -2813,6 +2815,28 @@ export class MySqlProductRepository implements ProductRepository {
       applyPreUpdateAudit(product, auditActor);
     }
 
+    /*
+     * The other half of the same flush — `org/Hibachi/HibachiEntity.cfc:L637-L647`, the block that sits
+     * immediately below the audit assignment this method already reproduces. `:L637` fires for any entity
+     * declaring a `sortOrder` setter, and `model/entity/Product.cfc:L59` declares
+     * `property name="sortOrder" ormtype="integer"` — with no `sortContext` attribute, so `:L644` takes
+     * the maximum across the whole of `SwProduct` and `:L646` assigns that maximum plus one.
+     *
+     * On INSERT ONLY, for two independent reasons: the legacy hook is `preInsert`, and `preUpdate`
+     * (`:L649`) carries no equivalent block, so an existing row's stored position must survive a save that
+     * changes anything else about it. And the read runs on this repository's own executor, which is the
+     * transaction-scoped one whenever a boundary supplied it, so two products inserted inside one
+     * boundary receive consecutive positions rather than the same one (M6).
+     *
+     * The importer does NOT reach this member and must not: `model/dao/ProductDAO.cfc` inserts its rows
+     * with hand-built statements against the datasource, entirely outside the ORM, so `preInsert` never
+     * fired for an imported product and its `sortOrder` was stored NULL. That asymmetry is legacy
+     * behaviour and is preserved by seeding here rather than in `composeImportInsert`.
+     */
+    if (isInsert) {
+      await seedWholeTableSortOrder(this.executor, PRODUCT_TABLE, product);
+    }
+
     const writableValues = this.collectWritableProductValues(product);
 
     if (isInsert) {
@@ -3116,6 +3140,18 @@ export class MySqlProductPersistence {
       applyPreInsertAudit(product, auditActor);
     } else {
       applyPreUpdateAudit(product, auditActor);
+    }
+
+    /*
+     * — the flush's sort-order block, `org/Hibachi/HibachiEntity.cfc:L637-L647`, which sits directly
+     * below the audit block above and fires under the same conditions. Whole-table because
+     * `model/entity/Product.cfc:L59` declares `sortOrder` with no `sortContext`; insert-only because the
+     * hook is `preInsert` and `preUpdate` at `:L649` has no counterpart, so a later save of the same
+     * product leaves its stored position alone. The read runs on the injected executor, so inside a
+     * boundary it observes this transaction's own earlier inserts (M6).
+     */
+    if (isInsert) {
+      await seedWholeTableSortOrder(this.executor, PRODUCT_TABLE, product);
     }
 
     const writableValues = this.collectProductValues(product);

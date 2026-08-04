@@ -202,6 +202,22 @@ function requireStatementText(sql: string, parameterCount: number): void {
 }
 
 /**
+ * The shape a wide-integer column takes when the driver is configured to hand it over as text.
+ *
+ * `src/config/database.ts` sets `supportBigNumbers` and `bigNumberStrings`, which is a correctness
+ * contract rather than a preference — it is what stops a wide integer being narrowed inside the driver
+ * where no mapper-side check could detect the loss. The consequence is that an aggregate projection such
+ * as `COALESCE(max(sortOrder), 0)` arrives as the *string* `"0"`, not the number `0`, on every live
+ * connection. The pattern is deliberately **signed**, unlike the count reader in `./QueryRunner.ts`
+ * whose subject cannot be negative: `model/entity/Product.cfc:L59`, `model/entity/Option.cfc:L56` and
+ * `model/entity/OptionGroup.cfc:L58` all declare `sortOrder` as a plain `ormtype="integer"` with no
+ * lower bound, so a stored negative maximum is a legal value and refusing it here would refuse a row the
+ * legacy read returned happily (`org/Hibachi/HibachiDAO.cfc:L167` returns `rs.topSortOrder`, which CFML
+ * coerces numerically without inspecting its sign).
+ */
+const INTEGER_TEXT_PATTERN = /^-?\d+$/;
+
+/**
  * Reads the sort-order maximum out of the row the ported statement produced.
  *
  * @param row - The single row the statement produced.
@@ -235,6 +251,23 @@ function readTopSortOrder(row: MySqlRow): number {
     projected <= BigInt(Number.MAX_SAFE_INTEGER)
   ) {
     return Number(projected);
+  }
+
+  /*
+   * The text form the shipped pool actually produces — see {@link INTEGER_TEXT_PATTERN}. Accepting it
+   * here is not a widening of the contract but the removal of an inconsistency: `QueryRunner.toCount`,
+   * `rowMappers.readOptionalNumber` and `MySqlSkuRepository`'s own numeric reader all already accept
+   * integer text from this same driver configuration, and this reader was the only one that did not — so
+   * every live invocation of the two sort-order members refused a value the rest of the adapter layer
+   * reads without complaint. The safe-integer bound is kept exactly as the `bigint` branch above keeps
+   * it: a position the runtime cannot hold exactly is still refused rather than silently rounded.
+   */
+  if (typeof projected === 'string' && INTEGER_TEXT_PATTERN.test(projected)) {
+    const parsed = Number(projected);
+
+    if (Number.isSafeInteger(parsed)) {
+      return parsed;
+    }
   }
 
   throw new DataIntegrityError(
@@ -527,6 +560,155 @@ export interface SortOrderSeedScope {
 }
 
 /**
+ * Reads the highest stored sort order for a table, optionally within one parent's scope.
+ *
+ * Published as a function as well as a method because the seeding this file owns has to happen inside the
+ * write path of every `sortOrder`-bearing entity, and a write path that already holds a
+ * transaction-scoped executor has no business acquiring a second boundary object just to ask one
+ * question. {@link UnitOfWork.getTableTopSortOrder} is the method form and delegates here, so the two
+ * forms are one implementation and the statement can never drift between them.
+ *
+ * @param executor - Where to run the read. Inside a boundary this must be the boundary's own executor, so
+ * the maximum observed includes rows the same transaction has written but not committed (M6).
+ *
+ * @param tableName - The table to read, whitelisted by {@link assertTableName}.
+ * @param contextIDColumn - The scoping column, whitelisted against that table's declared columns.
+ * @param contextIDValue - The scoping value, bound to a placeholder and never interpolated.
+ * @returns The highest stored position, or zero when the table — or the scope — holds no rows.
+ * @throws {DataIntegrityError} when the statement produced no row, or produced a value that is not a
+ * whole number the runtime can hold exactly.
+ */
+async function readTableTopSortOrder(
+  executor: SqlExecutor,
+  tableName: string,
+  contextIDColumn?: string,
+  contextIDValue?: string,
+): Promise<number> {
+  const table = assertTableName(tableName);
+
+  const columnSupplied = contextIDColumn !== undefined;
+
+  /*
+   * TODO(parity) org/Hibachi/HibachiDAO.cfc:L159-L164 — a half-supplied scope reads the whole table,
+   * silently, and that is the legacy behaviour reproduced rather than repaired. Both context
+   * arguments are declared optional at :L150-L151, and :L159 guards the `WHERE` clause with
+   * `structKeyExists(arguments, "contextIDColumn") && structKeyExists(arguments, "contextIDValue")`.
+   * The `&&` is the whole point: supplying one alone emits no clause at all and returns a whole-table
+   * maximum under the appearance of a scoped read. For the one in-scope scoped entity that would seed
+   * an option's position from the highest position in the entire table, with no error anywhere.
+   */
+
+  /*
+   * Composed exactly as org/Hibachi/HibachiDAO.cfc:L157-L164 composes it, including the `COALESCE`
+   * that turns an empty scope into a zero, and including the fact that the `WHERE` clause is present
+   * only when a scope was supplied.
+   */
+  let sql = `SELECT COALESCE(max(sortOrder), 0) as ${TOP_SORT_ORDER_ALIAS} FROM ${table}`;
+  const params: unknown[] = [];
+
+  if (contextIDColumn !== undefined && contextIDValue !== undefined) {
+    sql += ` WHERE ${assertColumnName(table, contextIDColumn)} = ?`;
+    params.push(contextIDValue);
+  }
+
+  /*
+   * — the locking read, appended last, after the optional `where`. that is the only
+   * position MySQL accepts, and appending it here rather than inside either branch above means the
+   * whole-table and the scoped read are protected identically. See the read is locking on the first
+   * overload for the full adjudication and for the residual gap.
+   */
+  sql += LOCKING_READ_SUFFIX;
+
+  const rows = await executor.execute(sql, params);
+
+  /*
+   * Checked rather than trusted because `noUncheckedIndexedAccess` types an indexed read as possibly
+   * absent — which is the honest type of "the first row of a result set that may be empty". An
+   * aggregate without a `GROUP BY` always produces exactly one row, so no row at all means the
+   * statement did not run as composed, and that raises rather than degrading to the zero the
+   * `COALESCE` would have produced.
+   */
+  const topRow: MySqlRow | undefined = rows[0];
+
+  if (topRow === undefined) {
+    throw new DataIntegrityError(
+      'The sort-order statement produced no row, so there was no current maximum to read.',
+      { context: { table, scoped: columnSupplied } },
+    );
+  }
+
+  return readTopSortOrder(topRow);
+}
+
+/**
+ * Assigns an entity its first sort order, reproducing `org/Hibachi/HibachiEntity.cfc:L637-L647`.
+ *
+ * The legacy block is **unconditional on insert**: `:L637` tests only that the entity declares a
+ * `sortOrder` setter, and `:L646` then assigns `topSortOrder + 1` over whatever the entity was already
+ * carrying. A caller-supplied position is therefore overwritten while the entity is transient, and that
+ * is reproduced rather than softened into a "seed only when absent" rule — the overwrite is what keeps
+ * the stored sequence dense, and it is the behaviour the still-running CFML application reads back.
+ *
+ * @param executor - the executor the insert itself will use, so the read and the insert agree (M6).
+ * @param tableName - the entity's physical table, whitelisted by {@link assertTableName}.
+ * @param entity - the entity to seed; its `sortOrder` slot is written in place.
+ * @param scope - the `sortContext` scope when the entity declares one; omitted for a whole-table seed.
+ * @returns the assigned position, which is also now on the entity.
+ */
+async function assignFirstSortOrder(
+  executor: SqlExecutor,
+  tableName: string,
+  entity: SortOrderSeedTarget,
+  scope?: SortOrderSeedScope,
+): Promise<number> {
+  /*
+   * `:L640` initialises `topSortOrder` to zero and then overwrites it from one of the two reads, so the
+   * zero is never the value that reaches `:L646` — it is dead in the source and is not reproduced.
+   */
+  const topSortOrder =
+    scope === undefined
+      ? // `:L644` — no `sortContext`, so the maximum is taken across the WHOLE table.
+        await readTableTopSortOrder(executor, tableName)
+      : // `:L642` — scoped to the parent the context names.
+        await readTableTopSortOrder(
+          executor,
+          tableName,
+          scope.contextIDColumn,
+          scope.contextIDValue,
+        );
+
+  // `:L646` — `setSortOrder( topSortOrder + 1 )`.
+  const assigned = topSortOrder + 1;
+  entity.sortOrder = assigned;
+
+  return assigned;
+}
+
+/**
+ * Seeds the first sort order of an entity that declares no `sortContext` — the whole-table variant at
+ * `org/Hibachi/HibachiEntity.cfc:L644`.
+ *
+ * This is the form the product write path takes. `model/entity/Product.cfc:L59` declares
+ * `property name="sortOrder" ormtype="integer"` with no `sortContext` attribute, so the maximum is taken
+ * across `SwProduct` rather than within any parent, and `./MySqlProductRepository.ts` calls this on its
+ * insert branch: the ORM lifecycle hook that fired the seeding in the legacy application has no
+ * equivalent in a stateless invocation (M5), so a write seam has to fire it explicitly or the column is
+ * stored `NULL` where the legacy stored a deterministic position.
+ *
+ * @param executor - the executor the insert itself will use, so the read and the insert agree (M6).
+ * @param tableName - the entity's physical table, whitelisted by {@link assertTableName}.
+ * @param entity - the entity to seed; its `sortOrder` slot is written in place.
+ * @returns the assigned position, which is also now on the entity.
+ */
+export async function seedWholeTableSortOrder(
+  executor: SqlExecutor,
+  tableName: string,
+  entity: SortOrderSeedTarget,
+): Promise<number> {
+  return assignFirstSortOrder(executor, tableName, entity);
+}
+
+/**
  * Refuses an entity that would reach the database with no `sortOrder` — the current contract.
  *
  * @param entity - the entity about to be written.
@@ -786,26 +968,12 @@ export class UnitOfWork {
     scope?: SortOrderSeedScope,
   ): Promise<number> {
     /*
-     * `:L640` initialises `topSortOrder` to zero and then overwrites it from one of the two reads, so the
-     * zero is never the value that reaches `:L646` — it is dead in the source and is not reproduced.
+     * One implementation, reached two ways. The module-level {@link assignFirstSortOrder} carries the
+     * whole of the ported lifecycle block so a write path holding a transaction-scoped executor can seed
+     * without constructing a boundary object, and so this method and that path can never disagree about
+     * what the legacy assigned.
      */
-    const topSortOrder =
-      scope === undefined
-        ? // `:L644` — no `sortContext`, so the maximum is taken across the WHOLE table.
-          await this.getTableTopSortOrder(executor, tableName)
-        : // `:L642` — scoped to the parent the context names.
-          await this.getTableTopSortOrder(
-            executor,
-            tableName,
-            scope.contextIDColumn,
-            scope.contextIDValue,
-          );
-
-    // `:L646` — `setSortOrder( topSortOrder + 1 )`.
-    const assigned = topSortOrder + 1;
-    entity.sortOrder = assigned;
-
-    return assigned;
+    return assignFirstSortOrder(executor, tableName, entity, scope);
   }
 
   /**
@@ -845,60 +1013,13 @@ export class UnitOfWork {
     contextIDColumn?: string,
     contextIDValue?: string,
   ): Promise<number> {
-    const table = assertTableName(tableName);
-
-    const columnSupplied = contextIDColumn !== undefined;
-
     /*
-     * TODO(parity) org/Hibachi/HibachiDAO.cfc:L159-L164 — a half-supplied scope reads the whole table,
-     * silently, and that is the legacy behaviour reproduced rather than repaired. Both context
-     * arguments are declared optional at :L150-L151, and :L159 guards the `WHERE` clause with
-     * `structKeyExists(arguments, "contextIDColumn") && structKeyExists(arguments, "contextIDValue")`.
-     * The `&&` is the whole point: supplying one alone emits no clause at all and returns a whole-table
-     * maximum under the appearance of a scoped read. For the one in-scope scoped entity that would seed
-     * an option's position from the highest position in the entire table, with no error anywhere.
+     * The statement, the whitelisting, the locking suffix and the empty-result refusal all live in the
+     * module-level {@link readTableTopSortOrder}, which is also what the product write path calls. This
+     * method is the boundary-object spelling of the same read, retained because the entity-lifecycle
+     * seeding contract is declared against it.
      */
-
-    /*
-     * Composed exactly as org/Hibachi/HibachiDAO.cfc:L157-L164 composes it, including the `COALESCE`
-     * that turns an empty scope into a zero, and including the fact that the `WHERE` clause is present
-     * only when a scope was supplied.
-     */
-    let sql = `SELECT COALESCE(max(sortOrder), 0) as ${TOP_SORT_ORDER_ALIAS} FROM ${table}`;
-    const params: unknown[] = [];
-
-    if (contextIDColumn !== undefined && contextIDValue !== undefined) {
-      sql += ` WHERE ${assertColumnName(table, contextIDColumn)} = ?`;
-      params.push(contextIDValue);
-    }
-
-    /*
-     * — the locking read, appended last, after the optional `where`. that is the only
-     * position MySQL accepts, and appending it here rather than inside either branch above means the
-     * whole-table and the scoped read are protected identically. See the read is locking on the first
-     * overload for the full adjudication and for the residual gap.
-     */
-    sql += LOCKING_READ_SUFFIX;
-
-    const rows = await executor.execute(sql, params);
-
-    /*
-     * Checked rather than trusted because `noUncheckedIndexedAccess` types an indexed read as possibly
-     * absent — which is the honest type of "the first row of a result set that may be empty". An
-     * aggregate without a `GROUP BY` always produces exactly one row, so no row at all means the
-     * statement did not run as composed, and that raises rather than degrading to the zero the
-     * `COALESCE` would have produced.
-     */
-    const topRow: MySqlRow | undefined = rows[0];
-
-    if (topRow === undefined) {
-      throw new DataIntegrityError(
-        'The sort-order statement produced no row, so there was no current maximum to read.',
-        { context: { table, scoped: columnSupplied } },
-      );
-    }
-
-    return readTopSortOrder(topRow);
+    return readTableTopSortOrder(executor, tableName, contextIDColumn, contextIDValue);
   }
 }
 

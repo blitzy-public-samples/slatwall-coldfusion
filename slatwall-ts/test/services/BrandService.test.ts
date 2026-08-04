@@ -2130,6 +2130,8 @@ describe('the declared surface — no synthesis, no dead injection, no invented 
  * inside an approved suite rather than in one of its own.
  */
 
+/* FOLDED IN FROM handlers/brandHandler */
+
 /**
  * `brandHandler` — the authorization gate in front of the Brand boundary, and the projection it answers
  * with instead of the entity.
@@ -2868,6 +2870,7 @@ describe("The brand surface's final wiring — the handler is a thin adapter ove
              * raising [`model/service/HibachiService.cfc:L103`]. This is the state the gate must catch.
              */
             brand.addError('brandName', 'validate.save.Brand.brandName.required');
+            brand.addError('urlTitle', 'validate.save.Brand.urlTitle.required');
           }
           return Promise.resolve(brand);
         },
@@ -2948,8 +2951,49 @@ describe("The brand surface's final wiring — the handler is a thin adapter ove
       const response = await probe.handler.saveBrand(saveEvent(BOUNDARY_BRAND_ID));
 
       expect(probe.decisions).toStrictEqual(['rollback']);
-      // The rollback surfaces as a failure response rather than a 200 projecting an unpersisted brand.
-      expect(response.statusCode).toBeGreaterThanOrEqual(400);
+      /*
+       * The runner raises a generic DomainError on the rollback decision. The handler must lift the
+       * captured entity's findings back into the public validation contract rather than publishing an
+       * opaque 500.
+       */
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body)).toStrictEqual({
+        message: 'Validation failed',
+        errors: {
+          brandName: ['validate.save.Brand.brandName.required'],
+          urlTitle: ['validate.save.Brand.urlTitle.required'],
+        },
+      });
+
+      /*
+       * The post-run `saved.hasErrors()` branch remains intentional and reachable for a substituted
+       * runner that reports the gate reading but returns the outcome. It must publish the identical
+       * contract, so the production rollback path and the override seam cannot drift.
+       */
+      const passThroughSurfaces = makeSurfaces({ savedHasErrors: true });
+      const passThroughHandler = createBrandHandler(
+        passThroughSurfaces.service,
+        () => ({
+          accountContext: { getCurrentAccount: () => account({}) },
+          entityAuthorization: { authenticateEntity: () => true },
+          populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
+        }),
+        {
+          runWrite: async <TResult>(
+            _security: RequestAuthorizationContext,
+            work: (graph: BrandHandlerService) => Promise<TResult>,
+            hasErrors: () => boolean,
+          ): Promise<TResult> => {
+            const result = await work(passThroughSurfaces.graph);
+            expect(hasErrors()).toBe(true);
+            return result;
+          },
+        },
+      );
+      const passThroughResponse = await passThroughHandler.saveBrand(saveEvent(BOUNDARY_BRAND_ID));
+
+      expect(passThroughResponse.statusCode).toBe(400);
+      expect(JSON.parse(passThroughResponse.body)).toStrictEqual(JSON.parse(response.body));
     });
 
     it('NET-NEW — the gate reads a SEPARATE capture, so it cannot throw from a temporal dead zone', async () => {

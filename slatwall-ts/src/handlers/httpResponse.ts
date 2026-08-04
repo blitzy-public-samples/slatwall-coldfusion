@@ -672,28 +672,6 @@ export function readHeader(
 
 /* The smart list data vocabulary — `org/Hibachi/HibachiSmartList.cfc:L85-L136` */
 
-/** The smart list data keys recognised by exact name. */
-const SMART_LIST_NAMED_KEYS: readonly string[] = Object.freeze([
-  'savedStateID',
-  'keyword',
-  'keywords',
-  'OrderBy',
-  'P:Show',
-  'P:Start',
-  'P:Current',
-]);
-
-/** The smart list data keys recognised by prefix. */
-const SMART_LIST_KEY_PREFIXES: readonly string[] = Object.freeze([
-  'F:',
-  'FR:',
-  'FI:',
-  'FIR:',
-  'FK:',
-  'FKR:',
-  'R:',
-]);
-
 /** The string-named subset of `SmartListInput`'s key space. */
 type SmartListInputMember = Extract<keyof SmartListInput, string>;
 
@@ -712,24 +690,61 @@ type SmartListInputKey = {
   [K in SmartListInputMember]-?: string extends SmartListInput[K] ? K : never;
 }[SmartListInputMember];
 
+/** The smart list data keys recognised by exact name. */
+const SMART_LIST_NAMED_KEYS = Object.freeze([
+  'savedStateID',
+  'keyword',
+  'keywords',
+  'OrderBy',
+  'P:Show',
+  'P:Start',
+  'P:Current',
+] as const satisfies readonly SmartListInputKey[]);
+
+/** The smart list data keys recognised by prefix. */
+const SMART_LIST_KEY_PREFIXES = Object.freeze([
+  'F:',
+  'FR:',
+  'FI:',
+  'FIR:',
+  'FK:',
+  'FKR:',
+  'R:',
+] as const);
+
 /** A writable view of `SmartListInput`, used only while one is being assembled. */
 type MutableSmartListInput = { -readonly [K in keyof SmartListInput]: SmartListInput[K] };
 
 /**
- * Reports whether a query-parameter name is one the legacy smart list would have acted on.
+ * Resolves a query-parameter name to the canonical key the downstream translator recognises.
+ *
+ * CFML struct keys and the `==` comparisons at `org/Hibachi/HibachiSmartList.cfc:L85-L136` are
+ * case-insensitive. The AWS event is not, and the TypeScript translator deliberately compares the
+ * canonical vocabulary exactly, so this edge performs the same case-insensitive recognition and then
+ * restores only the key/prefix casing. The property path after a prefix remains byte-identical.
  */
-function isSmartListInputKey(name: string): name is SmartListInputKey {
-  if (SMART_LIST_NAMED_KEYS.includes(name)) {
-    return true;
+function canonicalSmartListInputKey(name: string): SmartListInputKey | undefined {
+  const foldedName = name.toLowerCase();
+  const namedKey = SMART_LIST_NAMED_KEYS.find(
+    (candidate) => candidate.toLowerCase() === foldedName,
+  );
+
+  if (namedKey !== undefined) {
+    return namedKey;
   }
 
   for (const prefix of SMART_LIST_KEY_PREFIXES) {
-    if (name.startsWith(prefix)) {
-      return true;
+    if (foldedName.startsWith(prefix.toLowerCase())) {
+      /*
+       * The matched prefix is one of the seven template-literal key families in `SmartListInput`.
+       * Replacing only those leading bytes therefore constructs a member of SmartListInputKey; the
+       * suffix is intentionally not normalised because property identifiers remain case-sensitive.
+       */
+      return `${prefix}${name.slice(prefix.length)}` as SmartListInputKey;
     }
   }
 
-  return false;
+  return undefined;
 }
 
 /**
@@ -755,11 +770,14 @@ export function readSmartListInput(
   }
 
   for (const [name, value] of Object.entries(parameters)) {
-    if (value === undefined || !isSmartListInputKey(name)) {
+    if (value === undefined) {
       continue;
     }
 
-    input[name] = value;
+    const canonicalName = canonicalSmartListInputKey(name);
+    if (canonicalName !== undefined) {
+      input[canonicalName] = value;
+    }
   }
 
   return input;

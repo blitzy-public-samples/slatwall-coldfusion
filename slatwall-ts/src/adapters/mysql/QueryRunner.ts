@@ -22,9 +22,11 @@
  */
 
 import {
+  DatabaseStatementError,
   DataIntegrityError,
   DomainError,
   UniqueConstraintViolationError,
+  type DatabaseStatementFailureClass,
 } from '../../errors/DomainError';
 import { SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE } from '../../domain/BaseProductType';
 import {
@@ -34,6 +36,7 @@ import {
   mapProductRow,
   mapProductTypeRow,
   mapSkuRow,
+  markSkuOwnedLinkLoaded,
   toRows,
 } from './rowMappers';
 
@@ -440,8 +443,29 @@ const EXTENDED_TABLE_COLUMNS: Readonly<Record<ExtendedTableName, ReadonlySet<str
     SwStockHold: new Set(['stockID']),
     /* `model/entity/StockReceiverItem.cfc:L49` — `:L82`, mediated through stock. */
     SwStockReceiverItem: new Set(['stockID']),
-    /* `model/entity/VendorOrderItem.cfc:L49` — `:L84`, keyed directly by SKU. */
-    SwVendorOrderItem: new Set(['skuID']),
+    /*
+     * `model/entity/VendorOrderItem.cfc:L60` — `model/dao/SkuDAO.cfc:L84` reaches the SKU through the
+     * row's `stockID`, mediated by the item's `stock` relationship, exactly like the eight mediated
+     * tests above it. The entity declares `fkcolumn="stockID"` and no direct SKU association.
+     *
+     * This row used to read `new Set(['skuID'])` under a comment claiming the table was "keyed directly
+     * by SKU", and both halves were wrong. Three sources agree against that reading. `model/dao/SkuDAO.cfc:L84`
+     * writes the association path `stock.sku.skuID`, not `sku.skuID`, so this test traverses stock like
+     * `:L68`-`:L82` do and unlike the one genuinely direct test at `:L66`. `model/entity/VendorOrderItem.cfc:L60`
+     * declares `property name="stock" cfc="Stock" fieldtype="many-to-one" fkcolumn="stockID"` and declares
+     * no `sku` property at all, so `skuID` is not a column on this table under any reading. And
+     * `../mysql/MySqlSkuRepository.ts`'s own chain emits `INNER JOIN SwStock st ON st.stockID = a.stockID`
+     * for this table, so the registry was withholding the one column the statement needs while admitting
+     * one no statement anywhere in `src/` names.
+     *
+     * The registry is this subtree's stated schema contract as well as its identifier whitelist, so the
+     * disagreement was not inert: an environment provisioned from the contract got no `stockID` column and
+     * every product- and SKU-delete guard that consults `transactionExists` failed with
+     * `ER_BAD_FIELD_ERROR` instead of answering. `stockMediatedSkuExistsClause` now validates each
+     * item-side foreign key against the item table itself, so a future disagreement of this shape fails at
+     * composition rather than at the database.
+     */
+    SwVendorOrderItem: new Set(['stockID']),
 
     /*
      * The non-fetching join of `model/dao/SkuDAO.cfc:L159`.
@@ -922,6 +946,29 @@ export const MYSQL_LOCK_WAIT_TIMEOUT_ERRNO = 1205;
 /** The driver's symbolic spelling of {@link MYSQL_LOCK_WAIT_TIMEOUT_ERRNO}. */
 const MYSQL_LOCK_WAIT_TIMEOUT_CODE = 'ER_LOCK_WAIT_TIMEOUT';
 
+/** Stable server-side statement failures that receive a bounded internal classification. */
+interface DatabaseFailureDescriptor {
+  readonly errno: number;
+  readonly code: string;
+  readonly failureClass: DatabaseStatementFailureClass;
+}
+
+/** The closed mapping from MySQL identifiers to disclosure-safe failure classes. */
+const DATABASE_FAILURE_DESCRIPTORS: readonly DatabaseFailureDescriptor[] = Object.freeze([
+  { errno: 1054, code: 'ER_BAD_FIELD_ERROR', failureClass: 'unknown-column' },
+  { errno: 1146, code: 'ER_NO_SUCH_TABLE', failureClass: 'unknown-table' },
+  { errno: 1142, code: 'ER_TABLEACCESS_DENIED_ERROR', failureClass: 'permission-denied' },
+  { errno: 1406, code: 'ER_DATA_TOO_LONG', failureClass: 'data-too-long' },
+  { errno: 1064, code: 'ER_PARSE_ERROR', failureClass: 'syntax' },
+  { errno: 1210, code: 'ER_WRONG_ARGUMENTS', failureClass: 'binding' },
+]);
+
+/** A driver code is retained only when it is one bounded symbolic token. */
+const DRIVER_CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+/** SQLSTATE is a five-character alphanumeric classification. */
+const SQL_STATE_PATTERN = /^[0-9A-Z]{5}$/;
+
 /** How many characters of a constraint name are retained in the internal account. */
 const CONSTRAINT_NAME_ECHO_LIMIT = 96;
 
@@ -967,6 +1014,62 @@ function matchesMySqlFailure(cause: unknown, errno: number, code: string): boole
   return candidate.errno === errno || candidate.code === code;
 }
 
+/** The stable scalar fields that may survive driver-error sanitisation. */
+interface StableDriverFailureMetadata {
+  readonly errno?: number;
+  readonly code?: string;
+  readonly sqlState?: string;
+}
+
+/**
+ * Reads only bounded scalar identifiers from a driver failure.
+ *
+ * The driver's message, statement text and statement-specific message are deliberately not read at
+ * all, so they cannot accidentally enter a replacement error's message, context or cause.
+ */
+function readStableDriverFailureMetadata(cause: unknown): StableDriverFailureMetadata {
+  if (typeof cause !== 'object' || cause === null) {
+    return {};
+  }
+
+  const candidate = cause as {
+    readonly errno?: unknown;
+    readonly code?: unknown;
+    readonly sqlState?: unknown;
+  };
+  const errno =
+    typeof candidate.errno === 'number' && Number.isSafeInteger(candidate.errno)
+      ? candidate.errno
+      : undefined;
+  const code =
+    typeof candidate.code === 'string' && DRIVER_CODE_PATTERN.test(candidate.code)
+      ? candidate.code
+      : undefined;
+  const sqlState =
+    typeof candidate.sqlState === 'string' && SQL_STATE_PATTERN.test(candidate.sqlState)
+      ? candidate.sqlState
+      : undefined;
+
+  return {
+    ...(errno !== undefined ? { errno } : {}),
+    ...(code !== undefined ? { code } : {}),
+    ...(sqlState !== undefined ? { sqlState } : {}),
+  };
+}
+
+/** Maps stable MySQL identifiers to one bounded class, defaulting safely for every other driver error. */
+function classifyDatabaseStatementFailure(
+  metadata: StableDriverFailureMetadata,
+): DatabaseStatementFailureClass {
+  const matched = DATABASE_FAILURE_DESCRIPTORS.find(
+    (descriptor) =>
+      descriptor.errno === metadata.errno ||
+      (metadata.code !== undefined && descriptor.code === metadata.code),
+  );
+
+  return matched?.failureClass ?? 'driver';
+}
+
 /**
  * Extracts the constraint name from a duplicate-key failure, discarding the colliding value.
  *
@@ -1004,7 +1107,7 @@ export function describeDuplicateEntryConstraint(cause: unknown): string | undef
 }
 
 /**
- * Re-raises a caught driver failure, typing it when — and only when — it is one of three known conditions.
+ * Re-raises a caught driver failure through one disclosure-safe translation boundary.
  *
  * @param cause - the caught value, of unknown type.
  * @param parameterCount - how many values the failing statement bound. Recorded instead of the
@@ -1013,6 +1116,7 @@ export function describeDuplicateEntryConstraint(cause: unknown): string | undef
  *
  * @returns never — the function always throws.
  * @throws {UniqueConstraintViolationError} when the failure is a duplicate-key rejection.
+ * @throws {DatabaseStatementError} for every other non-transient driver rejection.
  */
 export function rethrowTranslatingDuplicateEntry(cause: unknown, parameterCount: number): never {
   /*
@@ -1050,7 +1154,15 @@ export function rethrowTranslatingDuplicateEntry(cause: unknown, parameterCount:
   }
 
   if (!isDuplicateEntryFailure(cause)) {
-    throw cause;
+    const metadata = readStableDriverFailureMetadata(cause);
+
+    throw new DatabaseStatementError({
+      failureClass: classifyDatabaseStatementFailure(metadata),
+      parameterCount,
+      ...(metadata.code !== undefined ? { code: metadata.code } : {}),
+      ...(metadata.errno !== undefined ? { errno: metadata.errno } : {}),
+      ...(metadata.sqlState !== undefined ? { sqlState: metadata.sqlState } : {}),
+    });
   }
 
   const constraintName = describeDuplicateEntryConstraint(cause);
@@ -1804,6 +1916,7 @@ const createProductAggregateLoader =
       bucket.push(skuRow);
     }
 
+    const hydratedSkus: Sku[] = [];
     products.forEach((product, index) => {
       const row = request.rows[index];
       if (row === undefined) {
@@ -1820,8 +1933,18 @@ const createProductAggregateLoader =
         const sku = mapSkuRow(skuRow);
         sku.product = product;
         product.skus.push(sku);
+        hydratedSkus.push(sku);
       }
     });
+
+    /*
+     * Every SKU materialised as part of a product aggregate needs the option collection that the
+     * product mutation paths consume. Keeping this second pass beside the canonical aggregate loader
+     * prevents the QueryRunner and SmartList import paths from diverging again.
+     */
+    if (hydratedSkus.length > 0) {
+      await attachSkuOptions(request.executor, hydratedSkus);
+    }
   };
 
 /** Builds every root's loader, or `undefined` where the root has nothing to resolve. */
@@ -1889,6 +2012,7 @@ export async function attachSkuOptions(executor: SqlExecutor, skus: readonly Sku
     mapOptionGroupRow,
   );
 
+  const optionsByID = new Map<string, Option>();
   const optionsBySku = new Map<string, Option[]>();
   for (const row of rows) {
     const owningSkuID = readForeignKey(row, COLUMN.skuOptionSkuID);
@@ -1896,7 +2020,12 @@ export async function attachSkuOptions(executor: SqlExecutor, skus: readonly Sku
       continue;
     }
 
-    const option = mapOptionRowWithGroup(row, optionGroups);
+    const mappedOption = mapOptionRowWithGroup(row, optionGroups);
+    let option = optionsByID.get(mappedOption.optionID);
+    if (option === undefined) {
+      option = mappedOption;
+      optionsByID.set(option.optionID, option);
+    }
 
     let bucket = optionsBySku.get(owningSkuID);
     if (bucket === undefined) {
@@ -1906,16 +2035,23 @@ export async function attachSkuOptions(executor: SqlExecutor, skus: readonly Sku
     bucket.push(option);
   }
 
-  for (const sku of skus) {
+  for (const sku of distinctSkuInstances(skus)) {
+    /*
+     * Rule 3c — the read is authoritative for every saved SKU in the batch, including one with no
+     * link rows. Recording that empty result is what makes a later clear distinguishable from a
+     * collection that was never loaded.
+     */
+    markSkuOwnedLinkLoaded(sku, 'options');
+
     const bucket = optionsBySku.get(sku.skuID);
     if (bucket === undefined) {
       continue;
     }
 
     /*
-     * Pushed onto the live array (rule 4), and not through `Sku.addOption`: that member dedupes by
-     * reference, which is right for graph construction and wrong for hydration, where each row is a
-     * distinct instance and the link table has already decided what the collection contains.
+     * Pushed onto the live array (rule 4), and not through `Sku.addOption`: hydration replays the
+     * persisted link rows in their returned order, while the per-call option identity map above makes
+     * one `SwOption` row one object even when several SKUs share it.
      */
     for (const option of bucket) {
       sku.options.push(option);
@@ -1999,6 +2135,11 @@ function distinctSkuIdentifiers(skus: readonly Sku[]): readonly string[] {
   return [...new Set(skus.map((sku) => sku.skuID).filter((skuID) => skuID !== ''))];
 }
 
+/** The distinct SKU object instances in a batch, preserving first-seen order. */
+function distinctSkuInstances(skus: readonly Sku[]): readonly Sku[] {
+  return [...new Set(skus)];
+}
+
 /**
  * Performs the eager fetch `getProductSkus` requests, for whichever collection its base product type
  * selects.
@@ -2032,7 +2173,9 @@ export async function attachFetchedSkuAssociations(
       distinctSkuIdentifiers(skus),
     );
 
-    for (const sku of skus) {
+    for (const sku of distinctSkuInstances(skus)) {
+      markSkuOwnedLinkLoaded(sku, 'accessContents');
+
       for (const contentID of grouped.get(sku.skuID) ?? []) {
         sku.accessContents.push({ contentID });
       }
@@ -2054,7 +2197,9 @@ export async function attachFetchedSkuAssociations(
       distinctSkuIdentifiers(skus),
     );
 
-    for (const sku of skus) {
+    for (const sku of distinctSkuInstances(skus)) {
+      markSkuOwnedLinkLoaded(sku, 'subscriptionBenefits');
+
       for (const subscriptionBenefitID of grouped.get(sku.skuID) ?? []) {
         sku.subscriptionBenefits.push({ subscriptionBenefitID });
       }

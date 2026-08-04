@@ -28,7 +28,7 @@ import type { Sku, SkuTransactionExistenceChecker } from '../../domain/sku/Sku';
 import { SKU_UNSAVED_ID_VALUE } from '../../domain/sku/Sku';
 import { DataIntegrityError, DomainError } from '../../errors/DomainError';
 import type { SkuRepository, SkuRow, SkuSearchRow } from '../../ports/repositories/SkuRepository';
-import type { PhysicalTableName, SqlMutationExecutor } from './QueryRunner';
+import type { PhysicalTableName, RegisteredTableName, SqlMutationExecutor } from './QueryRunner';
 import {
   assertColumnName,
   assertRegisteredColumnName,
@@ -47,6 +47,7 @@ import {
   mapRows,
   mapSkuRow,
   mapSkuSearchRow,
+  markSkuOwnedLinkLoaded,
   readHydratedSkuSubscriptionTermID,
 } from './rowMappers';
 
@@ -389,27 +390,83 @@ const SKU_ALIAS = 's';
 const ITEM_ALIAS = 'a';
 const STOCK_ALIAS = 'st';
 
+/*
+ * Why the two builders below re-validate their column arguments.
+ *
+ * `../mysql/QueryRunner.ts`'s column gate answers a pairing question, not a spelling one: it validates a
+ * name against the table that declares it, because `skuID` and `stockID` are each declared on several of
+ * the registered tables, so a mis-paired name is still a real column and still composes SQL that parses
+ * and simply answers the wrong question. `OUT_OF_SCOPE_COLUMN` above resolves each name once, against
+ * whichever table it cites — `skuID` against `SwAlternateSkuCode`, `stockID` against `SwStock` — and those
+ * resolutions are correct for their own citations. What they cannot establish is that the *item* table a
+ * clause is being applied to declares the foreign key the clause names on it, because that pairing is
+ * chosen here, at the call site, and was previously never checked anywhere.
+ *
+ * That gap is what let the registry and the emitted statement disagree about `SwVendorOrderItem`: the
+ * chain emitted `a.stockID` for it while the registry declared only `skuID`, and nothing in the port
+ * objected — the disagreement surfaced as an `ER_BAD_FIELD_ERROR` from MySQL, on an environment
+ * provisioned from the registry, in the delete guards that consult `transactionExists`. Re-validating each
+ * item-side column against its own table closes that class outright: because the chain below is a
+ * module-level constant, a disagreement of this shape now fails at composition, before a connection
+ * exists, exactly as `assertRegisteredTableName` already fails for a table.
+ *
+ * The re-validation cannot change the emitted text. `assertRegisteredColumnName` answers the declared
+ * spelling, every name passed in is already the declared spelling, and the clause templates are
+ * untouched — so these two builders produce byte-identical SQL to the statement the checkpoint measured.
+ */
+
 /**
  * Build one correlated existence test that reaches a SKU directly through its own foreign key.
  *
+ * @param table - the item table, already registry-validated.
+ * @returns the `EXISTS(...)` fragment, with the SKU foreign key validated against `table` itself.
+ * @throws {DomainError} when `table` does not declare a SKU foreign key — a composition-time refusal.
  */
-function directSkuExistsClause(table: string): string {
+function directSkuExistsClause(table: RegisteredTableName): string {
+  const itemSkuForeignKey = assertRegisteredColumnName(table, OUT_OF_SCOPE_COLUMN.skuID);
+
   return (
     `EXISTS( SELECT 1 FROM ${table} ${ITEM_ALIAS} ` +
-    `WHERE ${ITEM_ALIAS}.${OUT_OF_SCOPE_COLUMN.skuID} = ${SKU_ALIAS}.${SKU_COLUMN.skuID} )`
+    `WHERE ${ITEM_ALIAS}.${itemSkuForeignKey} = ${SKU_ALIAS}.${SKU_COLUMN.skuID} )`
   );
 }
 
 /**
  * Build one correlated existence test that reaches a SKU through a stock row.
  *
+ * @param table - the item table, already registry-validated.
+ * @param stockForeignKey - the column on `table` that references stock. Validated against `table`.
+ * @returns the `EXISTS(...)` fragment, with all three of its columns validated against their own tables.
+ * @throws {DomainError} when `table` does not declare `stockForeignKey` — a composition-time refusal.
  */
-function stockMediatedSkuExistsClause(table: string, stockForeignKey: string): string {
+function stockMediatedSkuExistsClause(table: RegisteredTableName, stockForeignKey: string): string {
+  /*
+   * Validate the foreign key against the item table that owns it, not merely against `SwStock`.
+   * This makes the whitelist enforce the relationship declared by each entity and prevents a real
+   * stock column from masking a phantom item-table column. In particular,
+   * `model/entity/VendorOrderItem.cfc:L60` declares `fkcolumn="stockID"` and no `skuID`.
+   */
+  const itemStockForeignKey = assertRegisteredColumnName(table, stockForeignKey);
+
+  /*
+   * The stock-side pair is validated against `SwStock` for the same reason, and the emitted text below
+   * uses the validated names rather than the raw constants, so every identifier in this clause has been
+   * checked against the table it is actually applied to.
+   */
+  const stockPrimaryKey = assertRegisteredColumnName(
+    OUT_OF_SCOPE_TABLE.stock,
+    OUT_OF_SCOPE_COLUMN.stockID,
+  );
+  const stockSkuForeignKey = assertRegisteredColumnName(
+    OUT_OF_SCOPE_TABLE.stock,
+    OUT_OF_SCOPE_COLUMN.skuID,
+  );
+
   return (
     `EXISTS( SELECT 1 FROM ${table} ${ITEM_ALIAS} ` +
     `INNER JOIN ${OUT_OF_SCOPE_TABLE.stock} ${STOCK_ALIAS} ` +
-    `ON ${STOCK_ALIAS}.${OUT_OF_SCOPE_COLUMN.stockID} = ${ITEM_ALIAS}.${stockForeignKey} ` +
-    `WHERE ${STOCK_ALIAS}.${OUT_OF_SCOPE_COLUMN.skuID} = ${SKU_ALIAS}.${SKU_COLUMN.skuID} )`
+    `ON ${STOCK_ALIAS}.${stockPrimaryKey} = ${ITEM_ALIAS}.${itemStockForeignKey} ` +
+    `WHERE ${STOCK_ALIAS}.${stockSkuForeignKey} = ${SKU_ALIAS}.${SKU_COLUMN.skuID} )`
   );
 }
 
@@ -769,8 +826,10 @@ export class MySqlSkuRepository implements SkuRepository {
    * TODO(parity) `model/dao/SkuDAO.cfc:L152-L163` — no DISTINCT projection, so the result fans out.
    * With the flag raised, a merchandise SKU carrying three options appears three times, and a
    * subscription SKU with two benefits twice. Contrast `:L109`, which does project distinctly. The
-   * duplication is passed through unchanged rather than collapsed, because callers observe the array
-   * length. This annotation mints no register identifier.
+   * duplication is passed through unchanged in the array cardinality, because callers observe the
+   * length. Rows carrying the same `skuID` nevertheless resolve to the same object, reproducing the
+   * identity map Hibernate applied before it returned that repeated reference. This annotation mints
+   * no register identifier.
    *
    * @param product - the product whose SKUs are wanted
    * @param fetchOptions - when `true`, restrict to SKUs carrying the structure the base product type
@@ -829,7 +888,17 @@ export class MySqlSkuRepository implements SkuRepository {
     sql += `WHERE ${SKU_ALIAS}.${SKU_COLUMN.productID} = ?`;
 
     const rows = await this.executor.execute(sql, [product.productID]);
-    const skus = mapRows(rows, mapSkuRow);
+    const mappedSkus = mapRows(rows, mapSkuRow);
+    const skusByID = new Map<string, Sku>();
+    const skus = mappedSkus.map((sku) => {
+      const existing = skusByID.get(sku.skuID);
+      if (existing !== undefined) {
+        return existing;
+      }
+
+      skusByID.set(sku.skuID, sku);
+      return sku;
+    });
 
     /* The `fetch` half of `inner join fetch`, which the joins above are only the first half of. */
     if (fetchOptions) {
@@ -848,7 +917,7 @@ export class MySqlSkuRepository implements SkuRepository {
    */
   private async hydrateSkuOptions(skus: readonly Sku[]): Promise<void> {
     const skuIDs: string[] = [];
-    const skusByID = new Map<string, Sku[]>();
+    const skusByID = new Map<string, Set<Sku>>();
     for (const sku of skus) {
       const skuID = sku.skuID;
       if (skuID === SKU_UNSAVED_ID_VALUE || skuID === '') {
@@ -856,10 +925,10 @@ export class MySqlSkuRepository implements SkuRepository {
       }
       const existing = skusByID.get(skuID);
       if (existing === undefined) {
-        skusByID.set(skuID, [sku]);
+        skusByID.set(skuID, new Set([sku]));
         skuIDs.push(skuID);
       } else {
-        existing.push(sku);
+        existing.add(sku);
       }
     }
     if (skuIDs.length === 0) {
@@ -973,6 +1042,17 @@ export class MySqlSkuRepository implements SkuRepository {
         owner.options.push(option);
       }
     }
+
+    /*
+     * A successful read establishes the complete option collection even when the link table returned
+     * no row. Mark every distinct saved SKU that participated in the query, not merely the owners that
+     * appeared in `rows`, so clearing the last option remains distinguishable from never loading any.
+     */
+    for (const owners of skusByID.values()) {
+      for (const owner of owners) {
+        markSkuOwnedLinkLoaded(owner, 'options');
+      }
+    }
   }
 
   /**
@@ -1076,6 +1156,51 @@ export class MySqlSkuRepository implements SkuRepository {
     }
 
     const skuIdentifier = sku.skuID;
+    const optionIdentifiers = sku.getOptions().map((option) => option.optionID);
+    const accessContentIdentifiers = sku.accessContents.map(
+      (accessContent) => accessContent.contentID,
+    );
+    const subscriptionBenefitIdentifiers = sku.subscriptionBenefits.map(
+      (benefit) => benefit.subscriptionBenefitID,
+    );
+    const renewalSubscriptionBenefitIdentifiers = sku.renewalSubscriptionBenefits.map(
+      (benefit) => benefit.subscriptionBenefitID,
+    );
+
+    /*
+     * Validate every owned collection before the existence probe, audit mutation or scalar write.
+     * A hydrated-but-unloaded collection may stay empty and preserve its stored rows; once a caller
+     * adds a member, however, the adapter cannot know which unseen rows should remain. Refusing here
+     * keeps that ambiguity from committing a scalar UPDATE before the link write is rejected.
+     */
+    this.assertSkuOwnedLinkWriteSafe(
+      sku,
+      'options',
+      SKU_OPTION_TABLE,
+      skuIdentifier,
+      optionIdentifiers,
+    );
+    this.assertSkuOwnedLinkWriteSafe(
+      sku,
+      'accessContents',
+      SKU_ACCESS_CONTENT_TABLE,
+      skuIdentifier,
+      accessContentIdentifiers,
+    );
+    this.assertSkuOwnedLinkWriteSafe(
+      sku,
+      'subscriptionBenefits',
+      SKU_SUBSCRIPTION_BENEFIT_TABLE,
+      skuIdentifier,
+      subscriptionBenefitIdentifiers,
+    );
+    this.assertSkuOwnedLinkWriteSafe(
+      sku,
+      'renewalSubscriptionBenefits',
+      SKU_RENEWAL_SUBSCRIPTION_BENEFIT_TABLE,
+      skuIdentifier,
+      renewalSubscriptionBenefitIdentifiers,
+    );
 
     /*
      * The existence probe is resolved before the values are collected, and that order is forced: the
@@ -1176,7 +1301,7 @@ export class MySqlSkuRepository implements SkuRepository {
       SKU_LINK_COLUMN.option,
       skuIdentifier,
       skuRowAlreadyExists,
-      sku.getOptions().map((option) => option.optionID),
+      optionIdentifiers,
     );
 
     await this.replaceSkuLinkRows(
@@ -1186,7 +1311,7 @@ export class MySqlSkuRepository implements SkuRepository {
       SKU_LINK_COLUMN.accessContent,
       skuIdentifier,
       skuRowAlreadyExists,
-      sku.accessContents.map((accessContent) => accessContent.contentID),
+      accessContentIdentifiers,
     );
 
     await this.replaceSkuLinkRows(
@@ -1196,7 +1321,7 @@ export class MySqlSkuRepository implements SkuRepository {
       SKU_LINK_COLUMN.subscriptionBenefit,
       skuIdentifier,
       skuRowAlreadyExists,
-      sku.subscriptionBenefits.map((benefit) => benefit.subscriptionBenefitID),
+      subscriptionBenefitIdentifiers,
     );
 
     await this.replaceSkuLinkRows(
@@ -1206,8 +1331,35 @@ export class MySqlSkuRepository implements SkuRepository {
       SKU_LINK_COLUMN.renewalSubscriptionBenefit,
       skuIdentifier,
       skuRowAlreadyExists,
-      sku.renewalSubscriptionBenefits.map((benefit) => benefit.subscriptionBenefitID),
+      renewalSubscriptionBenefitIdentifiers,
     );
+  }
+
+  /**
+   * Refuses a non-empty owned collection whose database rows were never loaded.
+   *
+   * @param sku - the owning entity.
+   * @param collection - the owned collection being validated.
+   * @param table - its whitelisted link table, included only in diagnostic context.
+   * @param skuIdentifier - the owning SKU identifier.
+   * @param farIdentifiers - the collection's intended far-side identifiers.
+   */
+  private assertSkuOwnedLinkWriteSafe(
+    sku: Sku,
+    collection: SkuOwnedLinkCollection,
+    table: PhysicalTableName,
+    skuIdentifier: string,
+    farIdentifiers: readonly string[],
+  ): void {
+    if (!isSkuOwnedLinkAuthoritative(sku, collection) && farIdentifiers.length > 0) {
+      throw new DomainError(
+        `The SKU's ${collection} collection was modified without having been loaded, ` +
+          'so its stored links cannot be replaced without discarding rows this save never read.',
+        {
+          context: { skuID: skuIdentifier, collection, table, entryCount: farIdentifiers.length },
+        },
+      );
+    }
   }
 
   /**
@@ -1231,15 +1383,7 @@ export class MySqlSkuRepository implements SkuRepository {
     farIdentifiers: readonly string[],
   ): Promise<void> {
     if (!isSkuOwnedLinkAuthoritative(sku, collection)) {
-      if (farIdentifiers.length > 0) {
-        throw new DomainError(
-          `The SKU's ${collection} collection was modified without having been loaded, ` +
-            'so its stored links cannot be replaced without discarding rows this save never read.',
-          {
-            context: { skuID: skuIdentifier, collection, table, entryCount: farIdentifiers.length },
-          },
-        );
-      }
+      this.assertSkuOwnedLinkWriteSafe(sku, collection, table, skuIdentifier, farIdentifiers);
 
       /*
        * Never read and still empty: the stored rows are the truth, and this save has nothing to say

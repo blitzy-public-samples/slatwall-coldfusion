@@ -55,7 +55,12 @@ import { Sku } from '../../src/domain/sku/Sku';
 import type { Product, ProductOwnedAssociation } from '../../src/domain/product/Product';
 import type { ProductType } from '../../src/domain/product/ProductType';
 import type { Brand } from '../../src/domain/product/Brand';
-import { toExactDecimal } from '../../src/util/formatting';
+import {
+  EXACT_DECIMAL_NOT_NUMERIC,
+  exactDecimalToNumber,
+  formatDate,
+  toExactDecimal,
+} from '../../src/util/formatting';
 import type { ExactDecimal } from '../../src/util/formatting';
 import { MERCHANDISE_PRODUCT_TYPE, MERCHANDISE_PRODUCT_TYPE_ID } from '../fixtures/productTypes';
 import { createTestMerchandiseProductData } from '../fixtures/testProduct';
@@ -1966,6 +1971,25 @@ function elementContent(xml: string, tag: string): string | undefined {
   }
   return xml.slice(start + open.length, end);
 }
+
+describe('NET-NEW formatting helpers — named date masks and exact-decimal projection', () => {
+  it('[NET-NEW] renders long and abbreviated English month and weekday names through the public date formatter', () => {
+    /*
+     * February 29, 2024 was a Thursday. Constructed in local time because `formatDate` deliberately
+     * follows the host-local semantics of CFML `dateFormat`, rather than converting to UTC first.
+     */
+    const leapDay = new Date(2024, 1, 29, 12, 0, 0);
+
+    expect(formatDate(leapDay, 'mmmm|mmm|dddd|ddd')).toBe('February|Feb|Thursday|Thu');
+    /* Mask matching is case-insensitive, while emitted names retain their declared casing. */
+    expect(formatDate(leapDay, 'MMMM DDDD')).toBe('February Thursday');
+  });
+
+  it('[NET-NEW] projects exact decimals to numbers and preserves the non-numeric sentinel as NaN', () => {
+    expect(exactDecimalToNumber(toExactDecimal('12.50'))).toBe(12.5);
+    expect(exactDecimalToNumber(EXACT_DECIMAL_NOT_NUMERIC)).toBeNaN();
+  });
+});
 
 describe('NET-NEW ProductFeedBuilder — sale price effective date', () => {
   it('[NET-NEW] renders both endpoints with the malformed bare-number offset twice', async () => {
@@ -5242,6 +5266,8 @@ describe('NET-NEW ProductFeedBuilder — the shipped feed wiring', () => {
  * inside an approved suite rather than in one of its own.
  */
 
+/* FOLDED IN FROM integrations/ProductFeedQuery */
+
 /** Google product-feed record selection. */
 describe('The feed record selection — the three joins, the three filters and the QATS range', () => {
   /*
@@ -5696,6 +5722,8 @@ describe('The feed record selection — the three joins, the three filters and t
  * inside an approved suite rather than in one of its own.
  */
 
+/* FOLDED IN FROM integrations/googleIntegration */
+
 /** The Google integration stub — int-05. */
 
 describe('The interface-conformant stub, which carries no feed logic at all', () => {
@@ -6084,6 +6112,8 @@ describe('The interface-conformant stub, which carries no feed logic at all', ()
  * inside an approved suite rather than in one of its own.
  */
 
+/* FOLDED IN FROM integrations/BaseIntegration */
+
 /** The base integration's default implementations — int-04. */
 
 describe('The default implementations the stub inherits', () => {
@@ -6349,6 +6379,8 @@ describe('The default implementations the stub inherits', () => {
  * AAP §0.4.1.12 declares exactly seventeen executable suites, so this subject is covered
  * inside an approved suite rather than in one of its own.
  */
+
+/* FOLDED IN FROM integrations/IntegrationContract */
 
 /** The integration contract — int-03. */
 
@@ -6791,6 +6823,8 @@ describe('The five-method `<cfinterface>` contract both of the above implement',
  * AAP §0.4.1.12 declares exactly seventeen executable suites, so this subject is covered
  * inside an approved suite rather than in one of its own.
  */
+
+/* FOLDED IN FROM handlers/googleFeedHandler */
 
 /** The Google product-feed handler — int-06. */
 

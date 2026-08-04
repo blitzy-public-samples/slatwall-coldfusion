@@ -180,8 +180,13 @@ import type { AppConfig } from '../../src/config/env';
  * after `process.env` is set, in the section that does it. `import type` is erased at emit, so naming them
  * here costs no load-time edge and keeps every other case in this file needing no environment.
  */
-import type { CatalogContainer, CatalogContainerOverrides } from '../../src/config/container';
+import type {
+  CatalogContainer,
+  CatalogContainerOverrides,
+  ProductPersistence,
+} from '../../src/config/container';
 import { NotImplementedError } from '../../src/errors/DomainError';
+import { toImageWebPath } from '../../src/ports/ImagePathPort';
 import type { CatalogAuthorizationResolver } from '../../src/handlers/httpResponse';
 import type { AccountReference } from '../../src/ports/AccountContextPort';
 import {
@@ -555,6 +560,7 @@ function buildHarness(options: HarnessOptions = {}): Harness {
     productTypeRootResolver: productTypeRoots.resolver,
     productPropertyDescriptors,
     populationAuthorization: populationAuthorization.populationAuthorization,
+    prepareProductPopulation: () => Promise.resolve(),
     // `UniqueValueProbe` takes a plain string; the double narrows to the three tables that actually
     // carry a urlTitle column. `find` performs the narrowing without a cast, and an unknown table is
     // refused rather than silently answered, so a mis-wiring surfaces as a failure.
@@ -1290,13 +1296,18 @@ describe('meta/tests/unit/IssuesTest.cfc — catalog issue regressions', () => {
       'productCode',
       'productName',
       'productType',
+      'urlTitle',
     ]);
     expect(product.getError('productName')).toStrictEqual([
       'validate.save.Product.productName.required',
     ]);
-    expect(product.getError('urlTitle')).toStrictEqual([]);
-    expect(product.urlTitle).not.toBe('');
-    expect(typeof product.urlTitle).toBe('string');
+    expect(product.getError('urlTitle')).toStrictEqual(['validate.save.Product.urlTitle.required']);
+    /*
+     * Both declared title paths are absent, so the legacy metadata/value chain resolves them to empty
+     * strings. Slugging the resulting whitespace yields `''`, and the required URL-title rule fires.
+     * The former expectation preserved Issue 4's leaked `${brand.brandName}` token.
+     */
+    expect(product.urlTitle).toBe('');
 
     // Nothing was persisted, and the new-product branch never reached SKU creation, because
     // `saveProduct` gates both on an empty error state.
@@ -1555,6 +1566,67 @@ function runBuildPipelineWithFault(stepName: string, replacementBody: string): B
   }
 }
 
+/**
+ * Whether the on-disk state a GREEN build leaves behind is present in full.
+ *
+ * Read as the negation of the four ways the state can be absent, because that is what makes the
+ * package-reading cases order-independent. `build/esbuild.mjs` writes `dist/` only in its final
+ * `promote` step, and its failure handler calls the same `purgeOwnedArtifacts` the `purge` step
+ * does — so a build that fails, and a build that is faulted deliberately, both erase `dist/` AND
+ * the relocated sourcemaps. Two cases in this file fault the pipeline on purpose and then ASSERT
+ * that erasure, which is the behaviour they exist to pin; they therefore leave the directory a
+ * sibling case needs to read.
+ *
+ * This is a probe and never a substitute for an assertion: it reports presence only. Whether the
+ * package is CORRECT — the exact entry list, the manifest's exact membership, the closure's
+ * transitive completeness, the containment of every external — stays entirely with the cases, so a
+ * build that emitted the wrong thing still fails there rather than being waved through here.
+ *
+ * @returns `true` when the package, its staged closure, the six relocated maps and the absence of
+ * the staging tree are all as a completed build leaves them.
+ */
+function packagedStateIsIntact(): boolean {
+  if (!existsSync(PACKAGE_DIR) || existsSync(STAGING_DIR)) {
+    return false;
+  }
+
+  const packagedPaths = ['handlers', 'node_modules', 'package.json'];
+
+  if (packagedPaths.some((entry) => !existsSync(join(PACKAGE_DIR, entry)))) {
+    return false;
+  }
+
+  /* The six bundles, and the six maps beside them — the maps are erased by the same purge. */
+  return EXPECTED_ARTIFACT_NAMES.every(
+    (name) =>
+      existsSync(join(PACKAGE_DIR, 'handlers', name)) &&
+      existsSync(join(RELOCATED_MAP_DIR, `${name}.map`)),
+  );
+}
+
+/**
+ * Rebuilds the package unless {@link packagedStateIsIntact} already reports it present.
+ *
+ * Runs before EVERY case in the packaging block rather than once before the first, which is the
+ * whole of the fix for the order dependence a qa run found: the block previously built once in a
+ * `beforeAll`, so whether a reading case saw a package depended on whether it happened to be
+ * declared before the case that deliberately destroys one. Jest's own `--randomize` reordered them
+ * and produced `ENOENT` on `dist/handlers/brandHandler.js` and `dist/package.json` under 6 of 10
+ * seeds. Nothing about the assertions changed; only the precondition became each case's own.
+ *
+ * The rebuild is conditional rather than unconditional so the cost stays what it was in declaration
+ * order — one build for the block, plus one more after each case that erases the package — instead
+ * of one build per case.
+ */
+function ensurePackagedState(): void {
+  if (packagedStateIsIntact()) {
+    return;
+  }
+
+  const run = runBuildScript();
+  expect(run.status).toBe(0);
+}
+
 /** Every bare `require()` specifier in `text`, excluding relative paths and Node built-ins. */
 function bareRequireSpecifiersOf(text: string): readonly string[] {
   const specifiers = new Set<string>();
@@ -1573,10 +1645,14 @@ function bareRequireSpecifiersOf(text: string): readonly string[] {
 }
 
 describe('NET-NEW — the build produces a complete, self-resolving Lambda package (case 8)', () => {
-  beforeAll(() => {
-    const run = runBuildScript();
-    expect(run.status).toBe(0);
-  }, BUILD_CASE_TIMEOUT_MS);
+  /*
+   * `beforeEach`, deliberately, and not the `beforeAll` this block used to carry. Several cases below
+   * read the real `dist/` this hook produces while one of them — `omitting the staging step FAILS the
+   * build` — asserts that a faulted pipeline leaves no package at all, and the sibling block below
+   * asserts the same thing twice more. Building once meant the readers only worked when they happened
+   * to run first, which `--randomize` is entitled not to arrange. See {@link ensurePackagedState}.
+   */
+  beforeEach(ensurePackagedState, BUILD_CASE_TIMEOUT_MS);
 
   it('[NET-NEW] emits exactly the six declared entries, the manifest and the closure — and no map, and no non-entry helper', () => {
     const packaged = readdirSync(PACKAGE_DIR).sort();
@@ -1948,6 +2024,8 @@ describe('NET-NEW — a failure after the emit leaves no package behind (case 8)
   );
 });
 
+/* FOLDED IN FROM config/container */
+
 /*
  * Net-new — the composition root and the aggregate router. These cases import
  * `createCatalogContainer`, `getCatalogContainer` and `createRouter` so the final wiring is
@@ -2018,6 +2096,22 @@ interface ShippedWiring {
   readonly getCatalogContainer: () => CatalogContainer;
 }
 
+/** The pure statement-builder and pool surface exported by the database module. */
+type ShippedDatabase = typeof import('../../src/config/database');
+
+/** Every explicitly exported raising boundary stub, selected without loading the module statically. */
+type ShippedBoundaryStubs = Pick<
+  typeof import('../../src/config/container'),
+  | 'notImplementedSubscriptionTermPort'
+  | 'notImplementedAccessContentPort'
+  | 'notImplementedImagePathPort'
+  | 'notImplementedPricingPort'
+  | 'notImplementedAccountContextPort'
+  | 'notImplementedSettingCleanupPort'
+  | 'notImplementedCommentCleanupPort'
+  | 'notImplementedProductDependencyCleanup'
+>;
+
 /**
  * Load the composition root afresh against {@link WIRING_ENVIRONMENT}.
  *
@@ -2033,6 +2127,29 @@ function loadShippedWiring(): ShippedWiring {
 
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   return require('../../src/config/container') as ShippedWiring;
+}
+
+/**
+ * Loads the database module afresh under one TLS mode. Pool construction is lazy with respect to
+ * network I/O, so this executes configuration and statement construction without opening a socket.
+ */
+function loadShippedDatabase(tlsMode: 'disabled' | 'verified'): ShippedDatabase {
+  for (const name of WIRING_VARIABLE_NAMES) {
+    delete process.env[name];
+  }
+  Object.assign(process.env, WIRING_ENVIRONMENT, { DB_TLS_MODE: tlsMode });
+  jest.resetModules();
+
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('../../src/config/database') as ShippedDatabase;
+}
+
+/** Loads the same container module as {@link loadShippedWiring}, retaining its boundary exports. */
+function loadShippedBoundaryStubs(): ShippedBoundaryStubs {
+  loadShippedWiring();
+
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('../../src/config/container') as ShippedBoundaryStubs;
 }
 
 /**
@@ -2117,6 +2234,46 @@ describe('NET-NEW — the composition root, which no approved suite used to reac
         process.env[name] = before;
       }
     }
+  });
+
+  /* F-08 — the pure database contract and the verified-transport construction branch. */
+
+  it('[NET-NEW] database.sql composes nested value-only placeholders and pool.bind refuses arity drift', () => {
+    const database = loadShippedDatabase('disabled');
+    const nested = database.sql`AND skuID = ${'sku-1'}`;
+    const statement = database.sql`SELECT * FROM SwSku WHERE productID = ${'product-1'} ${nested} AND activeFlag = ${true}`;
+
+    expect(statement.sql).toBe(
+      'SELECT * FROM SwSku WHERE productID = ? AND skuID = ? AND activeFlag = ?',
+    );
+    expect(statement.values).toStrictEqual(['product-1', 'sku-1', true]);
+    expect(Object.isFrozen(statement)).toBe(true);
+    expect(Object.isFrozen(statement.values)).toBe(true);
+
+    const bound = database.pool.bind('SELECT * FROM SwSku WHERE skuID = ?', ['sku-1']);
+    expect(bound.sql).toBe('SELECT * FROM SwSku WHERE skuID = ?');
+    expect(bound.values).toStrictEqual(['sku-1']);
+
+    expect(() => database.pool.bind('SELECT ? + ?', [1])).toThrow(
+      'exactly one placeholder for each bound value',
+    );
+    expect(() => database.pool.bind('   ', [])).toThrow(
+      'cannot be built from blank statement text',
+    );
+    expect(() => database.sql`SELECT * FROM SwSku WHERE skuID = ?`).toThrow(
+      'must not contain a literal placeholder',
+    );
+  });
+
+  it('[NET-NEW] loading the database with DB_TLS_MODE=verified executes the verified transport branch without a connection', () => {
+    const database = loadShippedDatabase('verified');
+
+    /*
+     * Merely constructing and binding proves the module completed its verified-mode pool options.
+     * No execute/getConnection member is called, preserving the suite's zero-database contract.
+     */
+    expect(Object.isFrozen(database.pool)).toBe(true);
+    expect(database.pool.bind('SELECT 1', []).sql).toBe('SELECT 1');
   });
 
   /* Case 1 — a fresh graph, the memoized graph, and the one explicit reset. */
@@ -2421,6 +2578,116 @@ describe('NET-NEW — the composition root, which no approved suite used to reac
      * the graph's — asserted here so the identity caveat above reads as measured rather than assumed.
      */
     expect(new NotImplementedError('Port.member', 'reason').name).toBe('NotImplementedError');
+  });
+
+  it('[NET-NEW] invokes every exported boundary-stub member and each one raises its own named refusal', async () => {
+    const stubs = loadShippedBoundaryStubs();
+    const imagePath = toImageWebPath('/product/default/catalog.jpg');
+    const maintenanceEntity = new Product();
+    maintenanceEntity.productID = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+
+    const refusals: readonly (readonly [member: string, operation: () => unknown])[] = [
+      [
+        'SubscriptionTermPort.getSubscriptionTerm',
+        () => stubs.notImplementedSubscriptionTermPort.getSubscriptionTerm('term'),
+      ],
+      [
+        'SubscriptionTermPort.getSubscriptionBenefit',
+        () => stubs.notImplementedSubscriptionTermPort.getSubscriptionBenefit('benefit'),
+      ],
+      [
+        'SubscriptionTermPort.getSubscriptionTermsByIDs',
+        () => stubs.notImplementedSubscriptionTermPort.getSubscriptionTermsByIDs(['term']),
+      ],
+      [
+        'SubscriptionTermPort.getSubscriptionBenefitsByIDs',
+        () => stubs.notImplementedSubscriptionTermPort.getSubscriptionBenefitsByIDs(['benefit']),
+      ],
+      [
+        'AccessContentPort.getContent',
+        () => stubs.notImplementedAccessContentPort.getContent('content'),
+      ],
+      [
+        'AccessContentPort.getContentsByIDs',
+        () => stubs.notImplementedAccessContentPort.getContentsByIDs(['content']),
+      ],
+      [
+        'ImagePathPort.getImagePath',
+        () => stubs.notImplementedImagePathPort.getImagePath('catalog.jpg'),
+      ],
+      [
+        'ImagePathPort.getResizedImagePath',
+        () =>
+          stubs.notImplementedImagePathPort.getResizedImagePath({
+            imagePath,
+            missingImagePath: '/missing.jpg',
+          }),
+      ],
+      [
+        'ImagePathPort.getImageExistsFlag',
+        () => stubs.notImplementedImagePathPort.getImageExistsFlag(imagePath),
+      ],
+      [
+        'ImagePathPort.saveImageFile',
+        () =>
+          stubs.notImplementedImagePathPort.saveImageFile({
+            uploadResult: {},
+            filePath: imagePath,
+            allowedExtensions: 'jpg,jpeg,png,gif',
+          }),
+      ],
+      [
+        'PricingPort.getSalePriceDetailsForProductSkus',
+        () => stubs.notImplementedPricingPort.getSalePriceDetailsForProductSkus('product'),
+      ],
+      [
+        'AccountContextPort.getCurrentAccount',
+        () => stubs.notImplementedAccountContextPort.getCurrentAccount(),
+      ],
+      [
+        'EntitySettingCleanupPort.removeAllEntityRelatedSettings',
+        () =>
+          stubs.notImplementedSettingCleanupPort.removeAllEntityRelatedSettings(maintenanceEntity),
+      ],
+      [
+        'EntitySettingCleanupPort.updateAllSettingValuesToRemoveSpecificID',
+        () =>
+          stubs.notImplementedSettingCleanupPort.updateAllSettingValuesToRemoveSpecificID(
+            maintenanceEntity.productID,
+          ),
+      ],
+      [
+        'EntitySettingCleanupPort.clearAllSettingsCache',
+        () => stubs.notImplementedSettingCleanupPort.clearAllSettingsCache(),
+      ],
+      [
+        'EntityCommentCleanupPort.removeAllEntityRelatedComments',
+        () =>
+          stubs.notImplementedCommentCleanupPort.removeAllEntityRelatedComments(maintenanceEntity),
+      ],
+      [
+        'ProductDependencyCleanup.removeProductDependencies',
+        () =>
+          stubs.notImplementedProductDependencyCleanup.removeProductDependencies(
+            maintenanceEntity.productID,
+          ),
+      ],
+      [
+        'ProductDependencyCleanup.removeProductTypeDependencies',
+        () =>
+          stubs.notImplementedProductDependencyCleanup.removeProductTypeDependencies(
+            'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          ),
+      ],
+    ];
+
+    for (const [member, operation] of refusals) {
+      const failure = await captureWiringFailure(operation);
+
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).name).toBe('NotImplementedError');
+      expect((failure as Error).message).toContain(member);
+    }
   });
 
   it('[NET-NEW] wires the population gate FAIL-CLOSED rather than raising, and lets a deployment supply one (case 3)', () => {
@@ -2746,6 +3013,8 @@ describe('NET-NEW — the aggregate router, which no approved suite used to reac
  * inside an approved suite rather than in one of its own.
  */
 
+/* FOLDED IN FROM handlers/httpResponse */
+
 /**
  * `httpResponse` — the request readers, pinned against the event shapes the AWS platform actually
  * delivers rather than the ones its TypeScript typings describe.
@@ -2915,11 +3184,18 @@ describe('The shared response shaping every handler funnels through', () => {
     it('NET-NEW — only the vocabulary the legacy interpreter recognised is forwarded', () => {
       const input = readSmartListInput({
         queryStringParameters: {
-          keyword: 'shirt',
-          OrderBy: 'productName|ASC',
-          'P:Show': '10',
-          'F:activeFlag': '1',
-          'FR:price': '10^20',
+          KEYWORD: 'shirt',
+          orderby: 'productName|ASC',
+          'p:show': '10',
+          'P:START': '5',
+          'p:current': '2',
+          'f:activeFlag': '1',
+          'fr:price': '10^20',
+          'fi:productType.productTypeID': 'a,b',
+          'fir:brand.brandID': 'true',
+          'fk:productName': 'shirt',
+          'fkr:productDescription': 'yes',
+          'r:createdDateTime': '2020-01-01^2020-12-31',
           madeUpKey: 'dropped',
         },
       });
@@ -2928,9 +3204,29 @@ describe('The shared response shaping every handler funnels through', () => {
         keyword: 'shirt',
         OrderBy: 'productName|ASC',
         'P:Show': '10',
+        'P:Start': '5',
+        'P:Current': '2',
         'F:activeFlag': '1',
         'FR:price': '10^20',
+        'FI:productType.productTypeID': 'a,b',
+        'FIR:brand.brandID': 'true',
+        'FK:productName': 'shirt',
+        'FKR:productDescription': 'yes',
+        'R:createdDateTime': '2020-01-01^2020-12-31',
       });
+
+      /*
+       * Two differently-cased spellings collapse onto the same CFML-style struct key; the later entry
+       * wins, matching ordinary assignment into a case-insensitive struct.
+       */
+      expect(
+        readSmartListInput({
+          queryStringParameters: {
+            OrderBy: 'productName|ASC',
+            ORDERBY: 'productCode|DESC',
+          },
+        }),
+      ).toStrictEqual({ OrderBy: 'productCode|DESC' });
     });
 
     it('NET-NEW — nothing is defaulted, clamped, ordered or paginated (AAP §0.7.3)', () => {
@@ -3354,6 +3650,8 @@ describe('The shared response shaping every handler funnels through', () => {
  * AAP §0.4.1.12 declares exactly seventeen executable suites, so this subject is covered
  * inside an approved suite rather than in one of its own.
  */
+
+/* FOLDED IN FROM handlers/entrySurface */
 
 /**
  * The Lambda entry surface — the six `handler` exports, the five per-surface route tables, and the shared
@@ -4234,6 +4532,8 @@ describe('The six Lambda entry artifacts, which belong to no single service eith
  * AAP §0.4.1.12 declares exactly seventeen executable suites, so this subject is covered
  * inside an approved suite rather than in one of its own.
  */
+
+/* FOLDED IN FROM config/env */
 
 /* Src/config/env.ts — the configuration loader, exercised through the real module-load path. */
 describe('The configuration loader, which every layer depends on and none owns', () => {
@@ -5263,6 +5563,198 @@ describe('The production composition root: the two delete-subject resolvers and 
     });
   }
 
+  describe('createCatalogContainer — relationship population and product persistence are wired', () => {
+    it('NET-NEW — prefetches the in-scope relationship graph and honours the persistence override', async () => {
+      Object.assign(process.env, REQUIRED_BASE_ENVIRONMENT);
+      jest.resetModules();
+
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const loaded = require(CONTAINER_MODULE_PATH) as {
+        readonly createCatalogContainer: (
+          overrides?: CatalogContainerOverrides,
+        ) => CatalogContainer;
+        readonly createDefaultSkuDelegateBinder: (
+          settings: ReturnType<typeof createSettingResolverDouble>['resolver'],
+        ) => (sku: InstanceType<typeof Sku>) => { readonly skuID: string };
+      };
+      // These constructors must come from the same post-reset module graph as the container because
+      // the coordinator deliberately uses `instanceof Sku` to guard the default/inverse SKU seams.
+      const productModule = jest.requireActual<typeof import('../../src/domain/product/Product')>(
+        '../../src/domain/product/Product',
+      );
+      const productTypeModule = jest.requireActual<
+        typeof import('../../src/domain/product/ProductType')
+      >('../../src/domain/product/ProductType');
+      const brandModule = jest.requireActual<typeof import('../../src/domain/product/Brand')>(
+        '../../src/domain/product/Brand',
+      );
+      const skuModule = jest.requireActual<typeof import('../../src/domain/sku/Sku')>(
+        '../../src/domain/sku/Sku',
+      );
+      const optionModule = jest.requireActual<typeof import('../../src/domain/option/Option')>(
+        '../../src/domain/option/Option',
+      );
+      const optionGroupModule = jest.requireActual<
+        typeof import('../../src/domain/option/OptionGroup')
+      >('../../src/domain/option/OptionGroup');
+
+      const brandID = '10000000000000000000000000000001';
+      const productTypeID = '20000000000000000000000000000002';
+      const childProductTypeID = '20000000000000000000000000000003';
+      const productID = '30000000000000000000000000000003';
+      const skuID = '40000000000000000000000000000004';
+      const optionID = '50000000000000000000000000000005';
+      const optionGroupID = '60000000000000000000000000000006';
+
+      const brand = new brandModule.Brand();
+      brand.brandID = brandID;
+      brand.brandName = 'Prefetched Brand';
+
+      const productType = new productTypeModule.ProductType();
+      productType.productTypeID = productTypeID;
+      productType.productTypeIDPath = productTypeID;
+      productType.productTypeName = 'Merchandise';
+      productType.systemCode = 'merchandise';
+
+      const sku = new skuModule.Sku();
+      sku.skuID = skuID;
+      sku.skuCode = 'PREFETCH-SKU';
+
+      const option = new optionModule.Option();
+      option.optionID = optionID;
+      option.optionCode = 'PREFETCH-OPTION';
+      option.optionName = 'Prefetched Option';
+
+      const optionGroup = new optionGroupModule.OptionGroup();
+      optionGroup.optionGroupID = optionGroupID;
+      optionGroup.optionGroupName = 'Prefetched Group';
+      optionGroup.sortOrder = 1;
+
+      /*
+       * `SkuService.createSkus` binds the default-SKU delegate before the SKU save path mints its
+       * identifier. The delegate therefore has to read the live SKU rather than snapshotting the
+       * unsaved sentinel, or the product's second write cannot persist `defaultSkuID`.
+       */
+      const transientDefaultSku = new skuModule.Sku();
+      const bindDefaultSkuDelegate = loaded.createDefaultSkuDelegateBinder(
+        createSettingResolverDouble({ fallback: '' }).resolver,
+      );
+      const transientDefaultSkuDelegate = bindDefaultSkuDelegate(transientDefaultSku);
+      expect(transientDefaultSkuDelegate.skuID).toBe('');
+      transientDefaultSku.skuID = '40000000000000000000000000000008';
+      expect(transientDefaultSkuDelegate.skuID).toBe(transientDefaultSku.skuID);
+      expect(bindDefaultSkuDelegate(transientDefaultSku)).toBe(transientDefaultSkuDelegate);
+
+      const recordsByEntity: Readonly<Record<string, readonly object[]>> = Object.freeze({
+        SlatwallBrand: Object.freeze([brand]),
+        SlatwallProductType: Object.freeze([productType]),
+        SlatwallSku: Object.freeze([sku]),
+        SlatwallOption: Object.freeze([option]),
+        SlatwallOptionGroup: Object.freeze([optionGroup]),
+      });
+      const smartList = createSmartListQueryDouble({
+        respond: (query) => ({
+          kind: 'page',
+          metrics: {},
+          records: recordsByEntity[query.entityName] ?? [],
+        }),
+      });
+
+      const persistedProducts: Product[] = [];
+      const persistedProductTypes: ProductType[] = [];
+      const persistence: ProductPersistence = {
+        saveProduct: (candidate) => {
+          persistedProducts.push(candidate);
+          return Promise.resolve(candidate);
+        },
+        deleteProduct: () => Promise.resolve(),
+        saveProductType: (candidate) => {
+          persistedProductTypes.push(candidate);
+          return Promise.resolve(candidate);
+        },
+        deleteProductType: () => Promise.resolve(),
+      };
+
+      const container = loaded.createCatalogContainer({
+        settings: createSettingResolverDouble({ fallback: '' }).resolver,
+        accountContext: createAccountContextDouble().accountContext,
+        populationAuthorization: createPopulationAuthorizationDouble().populationAuthorization,
+        uniqueProperty: createUniquePropertyDouble().uniqueProperty,
+        smartListQueryPort: smartList.smartList,
+        productPersistence: persistence,
+      });
+
+      const product = new productModule.Product();
+      product.productID = productID;
+      const productData: Record<string, unknown> = {
+        productName: 'Prefetched Product',
+        productCode: 'PREFETCH-PRODUCT',
+        urlTitle: 'prefetched-product',
+        price: '42.50',
+        brand: { brandID },
+        productType: { productTypeID },
+        skus: [
+          {
+            skuID,
+            options: [{ optionID, optionGroup: { optionGroupID } }],
+          },
+        ],
+      };
+
+      await expect(container.productService.saveProduct(product, productData)).resolves.toBe(
+        product,
+      );
+
+      expect(product.brand).toBe(brand);
+      expect(product.productType).toBe(productType);
+      expect(product.price).toBe('42.50');
+      expect(product.getSkus()).toContain(sku);
+      expect(sku.getOptions()).toContain(option);
+      expect(option.optionGroup).toBe(optionGroup);
+      expect(persistedProducts).toEqual([product]);
+      expect(smartList.queries.map((query) => query.entityName)).toEqual([
+        'SlatwallBrand',
+        'SlatwallProductType',
+        'SlatwallSku',
+        'SlatwallOption',
+        'SlatwallOptionGroup',
+      ]);
+
+      const child = new productTypeModule.ProductType();
+      child.productTypeID = childProductTypeID;
+      child.activeFlag = true;
+      await expect(
+        container.productService.saveProductType(child, {
+          productTypeName: 'Child Type',
+          urlTitle: 'child-type',
+          parentProductType: { productTypeID },
+        }),
+      ).resolves.toBe(child);
+
+      expect(child.parentProductType).toBe(productType);
+      expect(persistedProductTypes).toEqual([child]);
+      expect(
+        smartList.queries.filter((query) => query.entityName === 'SlatwallProductType'),
+      ).toHaveLength(2);
+
+      const identifierStringProduct = new productModule.Product();
+      identifierStringProduct.productID = '30000000000000000000000000000007';
+      const queryCountBeforeStringForm = smartList.queries.length;
+      await container.productService.saveProduct(identifierStringProduct, {
+        productName: 'String Relationship',
+        productCode: 'STRING-RELATIONSHIP',
+        urlTitle: 'string-relationship',
+        price: '10.00',
+        productType: productTypeID,
+      });
+
+      expect(identifierStringProduct.productType).toBeUndefined();
+      expect(identifierStringProduct.hasError('productType')).toBe(true);
+      expect(smartList.queries).toHaveLength(queryCountBeforeStringForm);
+      expect(persistedProducts).toEqual([product]);
+    });
+  });
+
   describe('createCatalogContainer — the Product delete guard is wired', () => {
     it('NET-NEW — a delete RESOLVES the transaction-existence flag through the graph', async () => {
       // The assertion this case turns on: an empty call log means nothing in either production
@@ -5526,6 +6018,8 @@ describe('The production composition root: the two delete-subject resolvers and 
     });
   });
 });
+
+/* FOLDED IN FROM config/writeBoundaryRebuild */
 
 /*
  * The only coverage of the AAP §0.6.6 M5/M6/M7 write-boundary rebuild: it points the module-scope pool
@@ -6330,6 +6824,76 @@ describe('The M5/M6/M7 write-boundary rebuild: every collaborator re-bound to th
       });
     }, 20000);
 
+    it('[NET-NEW] Product population uses the INVOCATION property authority and a boundary-local relationship loader', async () => {
+      await withPoisonedPool(async ({ buildProductBoundaryGraph, dependencies }) => {
+        /*
+         * `SkuService.createSkus` binds the default-SKU delegate before persistence mints `skuID`.
+         * The delegate must therefore read the live entity, not snapshot the unsaved sentinel; otherwise
+         * ProductService's second product write cannot persist `defaultSkuID`.
+         */
+        const transientDefaultSku = new Sku();
+        const liveDefaultSku = dependencies.bindDefaultSkuDelegate(transientDefaultSku);
+        expect(liveDefaultSku.skuID).toBe('');
+        transientDefaultSku.skuID = 'cccccccc0000000000000000000000f7';
+        expect(liveDefaultSku.skuID).toBe('cccccccc0000000000000000000000f7');
+
+        const executor = createRecordingExecutor();
+        const productService = buildProductBoundaryGraph(
+          productDependencies(dependencies),
+          { executor },
+          securityContext({
+            account: {
+              accountID: INVOCATION_ACCOUNT_ID,
+              newFlag: false,
+              adminAccountFlag: true,
+            },
+            populationAuthorization: WIRING_ALLOW_POPULATION,
+          }),
+        );
+        const product = new Product();
+        product.productID = 'dddddddd0000000000000000000000f6';
+        product.createdDateTime = new Date('2020-01-02T03:04:05.000Z');
+        product.createdByAccount = OTHER_ACCOUNT_ID;
+
+        const saved = await productService.saveProduct(product, {
+          productName: 'Invocation Populated Product',
+          productCode: 'INVOCATION-POPULATED',
+          urlTitle: 'invocation-populated-product',
+          price: 3.21,
+          /*
+           * More than one key deliberately takes `loadOrCreate`: the recorder answers no row, so the
+           * pre-resolved synchronous loader must create the identifier-bearing ProductType and the
+           * recursive descriptor pass must populate its name.
+           */
+          productType: {
+            productTypeID: '444df2f7ea9c87e60051f3cd87b435a1',
+            productTypeName: 'Merchandise',
+          },
+        });
+
+        expect(saved.hasErrors()).toBe(false);
+        expect(saved.productName).toBe('Invocation Populated Product');
+        expect(saved.productCode).toBe('INVOCATION-POPULATED');
+        expect(saved.price).toBe('3.21');
+        expect(saved.productType?.productTypeID).toBe('444df2f7ea9c87e60051f3cd87b435a1');
+        expect(saved.productType?.productTypeName).toBe('Merchandise');
+
+        /*
+         * The relationship pre-read and the write both used the transaction executor. Had
+         * `assembleProductService` fallen back to the memoized tier, the property authority would
+         * deny every payload field and this update would not exist.
+         */
+        expect(
+          executor.statements.some((statement) => statement.sql.includes('FROM SwProductType')),
+        ).toBe(true);
+        const update = executor.statements.find((statement) =>
+          statement.sql.startsWith('UPDATE SwProduct SET'),
+        );
+        expect(boundColumnValue(update, 'productTypeID')).toBe('444df2f7ea9c87e60051f3cd87b435a1');
+        expect(boundColumnValue(update, 'modifiedByAccountID')).toBe(INVOCATION_ACCOUNT_ID);
+      });
+    }, 20000);
+
     it('[NET-NEW] the eight CAPABILITY boundaries pass through unchanged, so the substitution cannot grow', async () => {
       await withPoisonedPool(async ({ buildSkuBoundaryParts, dependencies }) => {
         /*
@@ -6542,5 +7106,56 @@ describe('NET-NEW documentation consistency — the test provenance census', () 
       expect(tally).toBeDefined();
       expect(readme).toContain(`\`${suite}\` (${String(tally?.traceable ?? 0)})`);
     }
+  });
+
+  it('[NET-NEW] keeps the twenty-two folded-body banners and the README audit command in lockstep', () => {
+    const expected: readonly (readonly [host: string, subject: string])[] = [
+      ['test/services/ProductService.test.ts', 'handlers/productHandler'],
+      ['test/services/SkuService.test.ts', 'handlers/skuHandler'],
+      ['test/services/BrandService.test.ts', 'handlers/brandHandler'],
+      ['test/services/OptionService.test.ts', 'handlers/optionHandler'],
+      ['test/integrations/ProductFeedBuilder.test.ts', 'integrations/ProductFeedQuery'],
+      ['test/integrations/ProductFeedBuilder.test.ts', 'integrations/googleIntegration'],
+      ['test/integrations/ProductFeedBuilder.test.ts', 'integrations/BaseIntegration'],
+      ['test/integrations/ProductFeedBuilder.test.ts', 'integrations/IntegrationContract'],
+      ['test/integrations/ProductFeedBuilder.test.ts', 'handlers/googleFeedHandler'],
+      ['test/adapters/MySqlProductRepository.test.ts', 'adapters/MySqlProductPersistence'],
+      ['test/adapters/MySqlProductRepository.test.ts', 'adapters/MySqlBrandRepository'],
+      ['test/adapters/MySqlProductRepository.test.ts', 'adapters/catalogAggregates'],
+      ['test/adapters/MySqlSkuRepository.test.ts', 'adapters/UnitOfWork'],
+      ['test/adapters/MySqlSkuRepository.test.ts', 'adapters/UnitOfWorkSortOrder'],
+      ['test/adapters/MySqlOptionRepository.test.ts', 'adapters/SmartListQueryBuilder'],
+      ['test/adapters/MySqlProductTypeRepository.test.ts', 'adapters/schemaScopeRegistry'],
+      ['test/domain/Product.test.ts', 'domain/process/processObjects'],
+      ['test/regression/issues.test.ts', 'handlers/httpResponse'],
+      ['test/regression/issues.test.ts', 'handlers/entrySurface'],
+      ['test/regression/issues.test.ts', 'config/env'],
+      ['test/regression/issues.test.ts', 'config/container'],
+      ['test/regression/issues.test.ts', 'config/writeBoundaryRebuild'],
+    ];
+    const bannerPrefix = ['FOLDED', 'IN', 'FROM'].join(' ');
+    const bannerPattern = new RegExp(`${bannerPrefix} ([^\\s*]+)`, 'gu');
+    const actual: string[] = [];
+    const hosts = new Set(expected.map(([host]) => host));
+
+    for (const host of hosts) {
+      const source = readFileSync(join(SUBTREE_ROOT, ...host.split('/')), 'utf8');
+
+      for (const match of source.matchAll(bannerPattern)) {
+        const subject = match[1];
+        if (subject !== undefined) {
+          actual.push(`${host} <- ${subject}`);
+        }
+      }
+    }
+
+    const expectedPairs = expected.map(([host, subject]) => `${host} <- ${subject}`).sort();
+    expect(actual.sort()).toStrictEqual(expectedPairs);
+    expect(actual).toHaveLength(22);
+
+    const readme = readFileSync(join(SUBTREE_ROOT, 'README.md'), 'utf8');
+    expect(readme).toContain(
+      `\`grep -rh '${bannerPrefix}' test/ | wc -l\` reports **${String(expected.length)}**`,
+    );
   });
 });

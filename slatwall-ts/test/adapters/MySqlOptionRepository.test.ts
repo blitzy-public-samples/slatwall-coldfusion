@@ -42,7 +42,7 @@ import {
 import { DomainError } from '../../src/errors/DomainError';
 import { createCatalogAggregateLoaders } from '../../src/adapters/mysql/QueryRunner';
 import { PRODUCT_FEED_JOINS } from '../../src/integrations/google/ProductFeedQuery';
-import { mergeSmartListJoins } from '../../src/ports/SmartListQueryPort';
+import { mergeSmartListJoins, translateSmartListInput } from '../../src/ports/SmartListQueryPort';
 import { createFanningSqlExecutorDouble } from '../support/inMemoryRepositories';
 import type { CompiledSmartListQuery } from '../../src/adapters/mysql/SmartListQueryBuilder';
 import type { CatalogAggregateLoader } from '../../src/adapters/mysql/QueryRunner';
@@ -441,6 +441,29 @@ const OPTION_GROUP_FILTER_COLUMN = `${OPTION_TABLE}.${OPTION_GROUP_ID_ON_OPTION}
 
 /** The qualified column the second statement filters with `NOT IN` [`:L107`]. */
 const OPTION_GROUP_EXCLUSION_COLUMN = `${OPTION_GROUP_TABLE}.${OPTION_GROUP_ID}`;
+
+describe('SmartListQueryPort — NET-NEW: CFML-boolean removal keys delete every accumulated filter for their property', () => {
+  it('NET-NEW — FR/FIR/FKR truthy word and numeric spellings remove equality, IN and LIKE filters', () => {
+    const query = translateSmartListInput({
+      entityName: 'SlatwallOption',
+      input: {
+        'F:optionName': 'Large',
+        'FR:optionName': 'yes',
+        'FI:optionID': 'first,second',
+        'FIR:optionID': '1',
+        'FK:optionDescription': 'soft,red',
+        'FKR:optionDescription': '2',
+      },
+    });
+
+    /*
+     * Each add precedes its matching removal in object insertion order. A removal implementation that
+     * merely ignored the flag, read numeric text as false, or removed only a different filter family
+     * would leave a where group behind.
+     */
+    expect(query.whereGroups).toBeUndefined();
+  });
+});
 
 describe('MySqlOptionRepository.findUnusedOptions — NET-NEW: the statement, token for token', () => {
   it('NET-NEW — findUnusedOptions issues exactly the ported statement, with nothing added and nothing dropped', async () => {
@@ -1426,6 +1449,8 @@ describe('MySqlOptionRepository.withExecutor — NET-NEW: re-binding, and its is
  * the set it selects.
  */
 
+/* FOLDED IN FROM adapters/SmartListQueryBuilder */
+
 /*
  * These cases are the only direct evidence for `src/adapters/mysql/SmartListQueryBuilder.ts` — the
  * query composer, the entity aggregate loaders it hosts, and the anonymous materialisation gate that
@@ -1583,9 +1608,18 @@ describe('The smart-list query composer, its aggregate loaders and the materiali
         compiled.records.sql.startsWith('SELECT aslatwallsku.* FROM SwSku aslatwallsku '),
       ).toBe(true);
       expect(compiled.records.sql).toContain(' WHERE ');
-      expect(compiled.records.sql.endsWith(' ORDER BY aslatwallsku.createdDateTime ASC')).toBe(
-        true,
-      );
+      /*
+       * The fallback property followed by the primary-key tiebreaker `composeOrderClause` appends. `:L742`
+       * emits the fallback term alone, which leaves tied rows in an order the statement does not specify —
+       * and because the page statement below is this statement plus `LIMIT`/`OFFSET`, an unspecified order
+       * under a window produces page duplicates and omissions. The tiebreaker orders only rows the
+       * fallback term leaves unordered, so nothing this statement already defined is affected.
+       */
+      expect(
+        compiled.records.sql.endsWith(
+          ' ORDER BY aslatwallsku.createdDateTime ASC, aslatwallsku.skuID ASC',
+        ),
+      ).toBe(true);
       expect(compiled.records.sql).not.toContain('LIMIT');
       expect(compiled.records.sql).not.toContain('OFFSET');
     });
@@ -1681,10 +1715,90 @@ describe('The smart-list query composer, its aggregate loaders and the materiali
       const { compiled } = compile({ entityName: 'SlatwallBrand' });
 
       expect(compiled.records.sql).toBe(
-        'SELECT aslatwallbrand.* FROM SwBrand aslatwallbrand ORDER BY aslatwallbrand.createdDateTime ASC',
+        'SELECT aslatwallbrand.* FROM SwBrand aslatwallbrand ' +
+          'ORDER BY aslatwallbrand.createdDateTime ASC, aslatwallbrand.brandID ASC',
       );
       expect(compiled.records.params).toEqual([]);
       expect(compiled.recordsCount.sql).not.toContain('WHERE');
+    });
+
+    /*
+     * The ordering-stability cases.
+     *
+     * `org/Hibachi/HibachiSmartList.cfc:L717-L744` emits one ordering term and no tiebreaker, and the page
+     * statement is the record statement plus `LIMIT ? OFFSET ?`. A window over an order the statement did
+     * not fully specify is what produced page duplicates AND omissions once the ordering column tied — and
+     * ties are the ordinary case here, because every in-scope entity falls back to `createdDateTime`,
+     * `SwSku` declares it as `datetime` with no fractional seconds, and `SkuService.createSkus` writes an
+     * entire combination batch inside one transaction. `composeOrderClause` therefore appends the base
+     * entity's primary key last. These cases pin all four consequences of that decision.
+     */
+    it('[NET-NEW] the default order is made total by the primary key, on every base entity', () => {
+      const expectations: readonly (readonly [SmartListEntityName, string, string])[] = [
+        ['SlatwallSku', 'aslatwallsku', 'skuID'],
+        ['SlatwallProduct', 'aslatwallproduct', 'productID'],
+        ['SlatwallProductType', 'aslatwallproducttype', 'productTypeID'],
+        ['SlatwallBrand', 'aslatwallbrand', 'brandID'],
+        ['SlatwallOption', 'aslatwalloption', 'optionID'],
+        ['SlatwallOptionGroup', 'aslatwalloptiongroup', 'optionGroupID'],
+      ];
+
+      for (const [entityName, alias, primaryKey] of expectations) {
+        const { compiled } = compile({ entityName });
+
+        expect(compiled.records.sql).toContain(
+          `ORDER BY ${alias}.createdDateTime ASC, ${alias}.${primaryKey} ASC`,
+        );
+        /* The page statement is the record statement plus the bound, so the two orders cannot diverge. */
+        expect(compiled.pageRecords.sql).toBe(`${compiled.records.sql} LIMIT ? OFFSET ?`);
+        /* Ordering a scalar aggregate would be pointless, and the count statement still carries none. */
+        expect(compiled.recordsCount.sql).not.toContain('ORDER BY');
+      }
+    });
+
+    it('[NET-NEW] an explicit order on a non-unique column is made total too', () => {
+      const { compiled } = compile({
+        entityName: 'SlatwallSku',
+        orders: [{ propertyIdentifier: 'price', direction: 'DESC' }],
+      });
+
+      expect(compiled.records.sql).toContain(
+        'ORDER BY aslatwallsku.price DESC, aslatwallsku.skuID ASC',
+      );
+    });
+
+    it('[NET-NEW] a caller already ordering by the primary key last is not given it twice', () => {
+      const { compiled } = compile({
+        entityName: 'SlatwallSku',
+        orders: [
+          { propertyIdentifier: 'price', direction: 'DESC' },
+          { propertyIdentifier: 'skuID', direction: 'ASC' },
+        ],
+      });
+
+      expect(compiled.records.sql).toContain(
+        'ORDER BY aslatwallsku.price DESC, aslatwallsku.skuID ASC',
+      );
+      expect(compiled.records.sql.split('aslatwallsku.skuID')).toHaveLength(2);
+    });
+
+    it('[NET-NEW] every ordering the caller declared keeps its own direction and position', () => {
+      /*
+       * The tiebreaker is appended, never inserted, and it changes no direction: a pair of rows that any
+       * declared term already separates keeps exactly the order those terms gave it.
+       */
+      const { compiled } = compile({
+        entityName: 'SlatwallProduct',
+        orders: [
+          { propertyIdentifier: 'productName', direction: 'ASC' },
+          { propertyIdentifier: 'sortOrder', direction: 'DESC' },
+        ],
+      });
+
+      expect(compiled.records.sql).toContain(
+        'ORDER BY aslatwallproduct.productName ASC, aslatwallproduct.sortOrder DESC, ' +
+          'aslatwallproduct.productID ASC',
+      );
     });
 
     it('[NET-NEW] a where group that composes no predicate is dropped rather than emitted empty', () => {
@@ -2888,6 +3002,62 @@ describe('The smart-list query composer, its aggregate loaders and the materiali
         }),
       ).toThrow(/named a column that the extracted Catalog schema does not declare/);
       expect(scenario.calls).toHaveLength(0);
+    });
+
+    it('[NET-NEW] refuses nine erased-type direction payloads before statement composition', () => {
+      const payloads = [
+        'ASC, (SELECT 1)',
+        'ASC, (SELECT COUNT(*) FROM SwProductType)',
+        'ASC; DROP TABLE SwSku',
+        'ASC UNION SELECT 1',
+        'DESC--',
+        'asc',
+        'desc',
+        '',
+        'ASC NULLS FIRST',
+      ] as const;
+
+      for (const payload of payloads) {
+        const scenario = compileOnly();
+        const order = { propertyIdentifier: 'skuCode', direction: 'ASC' } as const;
+
+        /*
+         * The port type is intentionally correct while the runtime value is replaced underneath it,
+         * reproducing an untyped JSON/JavaScript caller without weakening this test with a cast.
+         */
+        Object.defineProperty(order, 'direction', { value: payload });
+
+        let failure: unknown;
+        try {
+          scenario.builder.build({ entityName: 'SlatwallSku', orders: [order] });
+        } catch (caught: unknown) {
+          failure = caught;
+        }
+
+        expect(failure).toBeInstanceOf(DomainError);
+        if (!(failure instanceof DomainError)) {
+          throw new Error('the direction payload was not refused as a domain failure');
+        }
+        expect(failure.message).toMatch(/supported ASC\/DESC set/);
+        expect(failure.context).toEqual({
+          receivedType: 'string',
+          allowedDirections: ['ASC', 'DESC'],
+        });
+        expect(scenario.calls).toHaveLength(0);
+      }
+    });
+
+    it('[NET-NEW] accepts only the two canonical direction tokens and emits them unchanged', () => {
+      for (const direction of ['ASC', 'DESC'] as const) {
+        const scenario = compileOnly();
+        const compiled = scenario.builder.build({
+          entityName: 'SlatwallSku',
+          orders: [{ propertyIdentifier: 'skuCode', direction }],
+        });
+
+        expect(compiled.records.sql).toContain(`ORDER BY aslatwallsku.skuCode ${direction}`);
+        expect(scenario.calls).toHaveLength(0);
+      }
     });
 
     it('[NET-NEW] a path that ENDS at a collection association is refused with its own message', () => {

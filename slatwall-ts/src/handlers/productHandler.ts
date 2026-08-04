@@ -142,6 +142,19 @@ const UPDATE_LIST_PRICE_FLAG_DATA_KEY = 'updateListPriceFlag';
 /** `model/process/Product_UpdateSkus.cfc:L58`, resource-bundle key `entity.sku.listPrice`. */
 const LIST_PRICE_DATA_KEY = 'listPrice';
 
+/**
+ * The flattened relationship identifier spellings the JSON API accepts for Product saves.
+ *
+ * The service retains the legacy population contract, where a many-to-one value is a nested struct
+ * keyed by the related entity's primary identifier
+ * [org/Hibachi/HibachiTransient.cfc:L220-L270]. This handler is the transport translation boundary,
+ * so it converts only the two in-scope Product relationships from their compact JSON form.
+ */
+const PRODUCT_RELATIONSHIP_IDENTIFIER_KEYS = Object.freeze([
+  Object.freeze({ propertyName: 'brand', identifierName: 'brandID' }),
+  Object.freeze({ propertyName: 'productType', identifierName: 'productTypeID' }),
+] as const);
+
 /* Bad-request texts. */
 
 const PRODUCT_ID_REQUIRED_MESSAGE = `A "${PRODUCT_ID_PATH_PARAMETER}" path parameter is required`;
@@ -479,9 +492,14 @@ export type FormattedOptionGroupsResponse = Readonly<
   Record<string, readonly ProductSelectOptionResponse[]>
 >;
 
-/** A page of products, with the smart list's own seven members. */
+/**
+ * The current page of products plus the smart list's count and paging metadata.
+ *
+ * `SmartListResult` still carries the unpaged `records` collection for in-process service parity, but
+ * publishing that collection over HTTP made a five-row page grow with the entire result set. The handler
+ * boundary therefore serialises only the requested window.
+ */
 export interface ProductSmartListResponse {
-  readonly records: readonly ProductResponse[];
   readonly pageRecords: readonly ProductResponse[];
   readonly recordsCount: number;
   readonly pageRecordsStart: number;
@@ -730,6 +748,26 @@ function readProductTypeIdentifier(
 }
 
 /**
+ * Translates flattened Product relationship identifiers into the nested structures `populate`
+ * consumes, leaving an already-nested payload and every unrelated key byte-for-byte untouched.
+ */
+function translateProductSavePayload(data: Record<string, unknown>): Record<string, unknown> {
+  let translated: Record<string, unknown> | undefined;
+
+  for (const relationship of PRODUCT_RELATIONSHIP_IDENTIFIER_KEYS) {
+    const value = data[relationship.propertyName];
+    if (typeof value !== 'string') {
+      continue;
+    }
+
+    translated ??= { ...data };
+    translated[relationship.propertyName] = { [relationship.identifierName]: value };
+  }
+
+  return translated ?? data;
+}
+
+/**
  * Reads the selected-option list, distinguishing "not supplied" from "supplied and empty".
  */
 function readSelectedOptions(
@@ -876,11 +914,15 @@ function toProductResponses(products: readonly Product[]): readonly ProductRespo
 }
 
 /**
- * Projects a smart list page, carrying its five paging numbers across untouched.
+ * Projects only the requested smart-list page, carrying its five paging numbers across untouched.
+ *
+ * `org/Hibachi/HibachiSmartList.cfc:L751-L755` exposes `records` to in-process FW/1 consumers; it does
+ * not define an HTTP payload that duplicates the full collection beside `pageRecords`. Keeping that
+ * collection inside the service result preserves TR-1 while this translation boundary avoids an
+ * unbounded response body.
  */
 function toProductSmartListResponse(result: SmartListResult<Product>): ProductSmartListResponse {
   return {
-    records: toProductResponses(result.records),
     pageRecords: toProductResponses(result.pageRecords),
     recordsCount: result.recordsCount,
     pageRecordsStart: result.pageRecordsStart,
@@ -1709,6 +1751,7 @@ export function createProductHandler(
       return invalidRequestBodyResponse(body.problem);
     }
 
+    const saveData = translateProductSavePayload(body.value);
     let subject: Product | null = null;
     let outcome: Product | null = null;
 
@@ -1729,7 +1772,7 @@ export function createProductHandler(
           }
 
           subject = product;
-          outcome = await graph.saveProduct(product, body.value);
+          outcome = await graph.saveProduct(product, saveData);
 
           return outcome;
         },

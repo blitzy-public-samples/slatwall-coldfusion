@@ -52,13 +52,31 @@ import {
   readProductDefaultSkuId,
 } from '../adapters/mysql/rowMappers';
 import { StaticSettingResolver } from '../adapters/settings/StaticSettingResolver';
-import type { ManagedEntity, PropertyDescriptorSet } from '../domain/base/populate';
+import type {
+  ManagedEntity,
+  PropertyDescriptorSet,
+  RelatedEntityLoader,
+} from '../domain/base/populate';
 import { populate } from '../domain/base/populate';
+import type { OptionPropertyName, SkuOptionOwner } from '../domain/option/Option';
+import { Option, createOptionPropertyDescriptors } from '../domain/option/Option';
+import type { OptionGroupPropertyName } from '../domain/option/OptionGroup';
+import { OptionGroup, createOptionGroupPropertyDescriptors } from '../domain/option/OptionGroup';
 import type { BrandPropertyName } from '../domain/product/Brand';
-import { BRAND_PROPERTY_DESCRIPTORS } from '../domain/product/Brand';
-import type { ProductPropertyName } from '../domain/product/Product';
 import {
-  PRODUCT_PROPERTY_DESCRIPTORS,
+  BRAND_PROPERTY_DESCRIPTORS,
+  Brand,
+  createBrandPropertyDescriptors,
+} from '../domain/product/Brand';
+import type {
+  ProductDefaultSkuDelegate,
+  ProductOwnedAssociation,
+  ProductPopulationCollaborators,
+  ProductPropertyName,
+  ProductSkuMember,
+} from '../domain/product/Product';
+import {
+  createProductPropertyDescriptors,
   /*
    * `product` is a value import here, not a type-only import, because the brand delete-subject
    * resolver constructs identifier-only products to fill the collection ceiling counts that
@@ -67,13 +85,18 @@ import {
   Product,
 } from '../domain/product/Product';
 import type {
-  ProductType,
+  ProductTypeAttributeValueOwner,
   ProductTypePopulationCollaborators,
   ProductTypePropertyName,
   ProductTypeRootResolver,
 } from '../domain/product/ProductType';
-import { createProductTypePropertyDescriptorSet } from '../domain/product/ProductType';
-import type { DefaultSkuIdReader, Sku } from '../domain/sku/Sku';
+import { ProductType, createProductTypePropertyDescriptorSet } from '../domain/product/ProductType';
+import type {
+  DefaultSkuIdReader,
+  SkuPopulationCollaborators,
+  SkuPropertyName,
+} from '../domain/sku/Sku';
+import { Sku, createSkuPropertyDescriptors } from '../domain/sku/Sku';
 import { DomainError, NotImplementedError } from '../errors/DomainError';
 import { GoogleIntegration } from '../integrations/google/GoogleIntegration';
 import type {
@@ -107,6 +130,7 @@ import type {
   DeleteSubjectResolver,
   EntityCommentCleanupPort,
   EntitySettingCleanupPort,
+  PopulationPreparer,
 } from '../services/BaseService';
 import { BaseService } from '../services/BaseService';
 import type { ManagedBrand } from '../services/BrandService';
@@ -343,9 +367,17 @@ export function createDefaultSkuDelegateBinder(
     const delegate: IdentifiedProductDefaultSku = {
       /*
        * Carried so `readProductDefaultSkuId` can read the identifier off the delegate without a cast
-       * — the mechanism `../adapters/mysql/rowMappers.ts` declares for exactly this slot.
+       * — the mechanism `../adapters/mysql/rowMappers.ts` declares for exactly this slot. This must
+       * remain a live read rather than a copied value: `SkuService.createSkus` elects the default and
+       * assigns the delegate before `validateNewSku` persists the new SKU and mints its identifier
+       * (`model/service/SkuService.cfc:L127-L135`). The persistence adapter mints that identifier later
+       * in the same operation, so a getter lets `readProductDefaultSkuId` observe the minted value
+       * during ProductService's second product write; copying the unsaved sentinel here would retain
+       * `''` forever and leave the later product update unable to persist `defaultSkuID`.
        */
-      skuID: sku.skuID,
+      get skuID(): string {
+        return sku.skuID;
+      },
       getPrice: () => sku.getPrice(),
       getListPrice: () => sku.getListPrice(),
       getRenewalPrice: () => sku.getRenewalPrice(),
@@ -1339,6 +1371,19 @@ export function getSkuSurfaceGraph(): SkuSurfaceGraph {
 
 /* The product surface. */
 
+/**
+ * The four product/product-type writes the composition root must be able to substitute as one unit.
+ *
+ * A structural interface is used instead of the concrete MySQL class so tests and alternate adapters
+ * can supply a plain object without inheriting the adapter's private implementation state.
+ */
+export interface ProductPersistence {
+  saveProduct(product: Product): Promise<Product>;
+  deleteProduct(product: Product): Promise<void>;
+  saveProductType(productType: ProductType): Promise<ProductType>;
+  deleteProductType(productType: ProductType): Promise<void>;
+}
+
 /** What {@link composeProductSurface} needs, and the substitutions its callers may make. */
 export interface ProductSurfaceDependencies {
   /** Everything the SKU half needs, passed through unchanged. */
@@ -1353,6 +1398,9 @@ export interface ProductSurfaceDependencies {
   /** A caller-supplied product repository, honoured in place of the MySQL adapter (AAP §0.7.3). */
   readonly productRepository?: ProductRepository;
 
+  /** A caller-supplied product write adapter, honoured for product and product-type persistence. */
+  readonly productPersistence?: ProductPersistence;
+
   /** A caller-supplied write runner, honoured in place of the MySQL boundary (AAP §0.7.3). */
   readonly productWriteRunner?: TransactionalWriteRunner<ProductService>;
 }
@@ -1360,7 +1408,7 @@ export interface ProductSurfaceDependencies {
 /** Everything the product surface builds, including the parts `../container.ts` republishes. */
 export interface ProductSurfaceParts {
   readonly productRepository: ProductRepository;
-  readonly productPersistence: MySqlProductPersistence;
+  readonly productPersistence: ProductPersistence;
   readonly productBaseService: BaseService<Product, ProductPropertyName>;
   readonly productTypeBaseService: BaseService<ManagedEntity<ProductType>, ProductTypePropertyName>;
   readonly productService: ProductService;
@@ -1371,75 +1419,740 @@ export interface ProductSurfaceParts {
 }
 
 /**
- * Builds the population contract for `ProductType`.
+ * A synchronous loader backed by asynchronous reads completed before `populate` starts.
+ *
+ * One instance belongs to one composed product graph. Production product writes rebuild that graph
+ * per transaction, and the pool-bound graph clears every loader before each top-level preparation,
+ * so no related entity can bleed across warm invocations (M7).
  */
-function createProductTypeDescriptorSet(
+interface PreparedRelatedEntityLoader<TEntity extends object> extends RelatedEntityLoader<TEntity> {
+  prepareExisting(relatedId: string): Promise<void>;
+  prepareOrCreate(relatedId: string): Promise<void>;
+  reset(): void;
+}
+
+/** The concrete invocation-scoped implementation of {@link PreparedRelatedEntityLoader}. */
+class InvocationRelatedEntityLoader<
+  TEntity extends object,
+> implements PreparedRelatedEntityLoader<TEntity> {
+  private readonly prepared = new Map<string, TEntity | null>();
+
+  public constructor(
+    private readonly relatedEntityName: string,
+    private readonly readExisting: (relatedId: string) => Promise<TEntity | undefined>,
+    private readonly createTransient: (relatedId: string) => TEntity,
+  ) {}
+
+  public async prepareExisting(relatedId: string): Promise<void> {
+    if (this.prepared.has(relatedId)) {
+      return;
+    }
+
+    this.prepared.set(relatedId, (await this.readExisting(relatedId)) ?? null);
+  }
+
+  public async prepareOrCreate(relatedId: string): Promise<void> {
+    const prepared = this.prepared.get(relatedId);
+    if (prepared !== undefined && prepared !== null) {
+      return;
+    }
+
+    if (prepared === null) {
+      this.prepared.set(relatedId, this.createTransient(relatedId));
+      return;
+    }
+
+    const existing = relatedId === '' ? undefined : await this.readExisting(relatedId);
+    this.prepared.set(relatedId, existing ?? this.createTransient(relatedId));
+  }
+
+  public loadExisting(relatedId: string): TEntity | undefined {
+    const prepared = this.requirePrepared(relatedId);
+
+    return prepared ?? undefined;
+  }
+
+  public loadOrCreate(relatedId: string): TEntity {
+    const prepared = this.requirePrepared(relatedId);
+    if (prepared === null) {
+      throw new DomainError(
+        'A create-if-missing relationship load completed without an entity in the population cache.',
+        { context: { relatedEntityName: this.relatedEntityName, relatedId } },
+      );
+    }
+
+    return prepared;
+  }
+
+  public reset(): void {
+    this.prepared.clear();
+  }
+
+  private requirePrepared(relatedId: string): TEntity | null {
+    if (!this.prepared.has(relatedId)) {
+      throw new DomainError(
+        'A synchronous relationship load was attempted before its asynchronous prefetch completed.',
+        { context: { relatedEntityName: this.relatedEntityName, relatedId } },
+      );
+    }
+
+    const prepared = this.prepared.get(relatedId);
+    if (prepared === undefined) {
+      throw new DomainError('A prepared relationship identifier had no cached resolution.', {
+        context: { relatedEntityName: this.relatedEntityName, relatedId },
+      });
+    }
+
+    return prepared;
+  }
+}
+
+/** A relationship loader that refuses every crossing into an excluded family by name. */
+function createRefusingRelatedEntityLoader<TEntity extends object>(
+  relatedEntityName: string,
+  reason: string,
+): RelatedEntityLoader<TEntity> {
+  const refuse = (operation: 'loadOrCreate' | 'loadExisting'): never =>
+    refuseBoundary(`RelatedEntityLoader.${operation}(${relatedEntityName})`, reason);
+
+  return {
+    loadOrCreate: () => refuse('loadOrCreate'),
+    loadExisting: () => refuse('loadExisting'),
+  };
+}
+
+/** Whether a payload value is one of CFML's simple values. */
+function isPopulationSimpleValue(value: unknown): value is string | number | boolean {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
+}
+
+/** Whether a payload value is a struct rather than an array or scalar. */
+function isPopulationStruct(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** The branch-four payload switch, mirrored from `domain/base/populate.ts`. */
+function shouldPrepareSubProperties(data: Record<string, unknown>): boolean {
+  if (!Object.prototype.hasOwnProperty.call(data, 'populateSubProperties')) {
+    return true;
+  }
+
+  const flag = data['populateSubProperties'];
+  if (typeof flag === 'boolean') {
+    return flag;
+  }
+  if (typeof flag === 'number') {
+    return flag !== 0;
+  }
+  if (typeof flag === 'string') {
+    const normalized = flag.trim().toLowerCase();
+
+    return !(normalized === 'false' || normalized === 'no' || normalized === '0');
+  }
+
+  return true;
+}
+
+/** The authorization arm every persistent relationship must pass before it is prefetched. */
+function mayPrepareRelationship(
+  authorization: PopulationAuthorizationPort,
+  entityName: string,
+  propertyName: string,
+): boolean {
+  return authorization.authenticateEntityProperty({
+    crudType: 'update',
+    entityName,
+    propertyName,
+  });
+}
+
+/** Primes one many-to-one nested-struct relationship exactly as population will consume it. */
+async function prepareManyToOneRelationship<TEntity extends object>(
+  data: Record<string, unknown>,
+  entityName: string,
+  propertyName: string,
+  relatedIdPropertyName: string,
+  loader: PreparedRelatedEntityLoader<TEntity>,
+  authorization: PopulationAuthorizationPort,
+  prepareRelated: (relatedData: Record<string, unknown>) => Promise<void>,
+): Promise<void> {
+  if (!mayPrepareRelationship(authorization, entityName, propertyName)) {
+    return;
+  }
+
+  const rawValue = data[propertyName];
+  if (!isPopulationStruct(rawValue)) {
+    return;
+  }
+  if (!Object.prototype.hasOwnProperty.call(rawValue, relatedIdPropertyName)) {
+    return;
+  }
+
+  const relatedIdValue = rawValue[relatedIdPropertyName];
+  if (!isPopulationSimpleValue(relatedIdValue)) {
+    return;
+  }
+
+  const relatedId = String(relatedIdValue);
+  if (Object.keys(rawValue).length > 1) {
+    await loader.prepareOrCreate(relatedId);
+    await prepareRelated(rawValue);
+  } else if (relatedId !== '') {
+    await loader.prepareExisting(relatedId);
+  }
+}
+
+/** Primes one one-to-many or many-to-many relationship exactly as population will consume it. */
+async function prepareCollectionRelationship<TEntity extends object>(
+  data: Record<string, unknown>,
+  entityName: string,
+  propertyName: string,
+  relatedIdPropertyName: string,
+  loader: PreparedRelatedEntityLoader<TEntity>,
+  authorization: PopulationAuthorizationPort,
+  prepareRelated: (relatedData: Record<string, unknown>) => Promise<void>,
+  manyToMany: boolean,
+): Promise<void> {
+  if (!mayPrepareRelationship(authorization, entityName, propertyName)) {
+    return;
+  }
+
+  const rawValue = data[propertyName];
+  if (Array.isArray(rawValue)) {
+    if (!shouldPrepareSubProperties(data)) {
+      return;
+    }
+
+    for (const item of rawValue) {
+      if (!isPopulationStruct(item)) {
+        continue;
+      }
+      if (!Object.prototype.hasOwnProperty.call(item, relatedIdPropertyName)) {
+        continue;
+      }
+
+      const relatedIdValue = item[relatedIdPropertyName];
+      if (!isPopulationSimpleValue(relatedIdValue)) {
+        continue;
+      }
+
+      await loader.prepareOrCreate(String(relatedIdValue));
+      if (Object.keys(item).length > 1) {
+        await prepareRelated(item);
+      }
+    }
+
+    return;
+  }
+
+  if (!manyToMany || !isPopulationSimpleValue(rawValue)) {
+    return;
+  }
+
+  for (const relatedId of String(rawValue)
+    .split(',')
+    .filter((candidate) => candidate.length > 0)) {
+    await loader.prepareExisting(relatedId);
+  }
+}
+
+/** The complete, recursively wired population graph used by Product and ProductType writes. */
+interface ProductPopulationCoordinator {
+  readonly brandDescriptors: PropertyDescriptorSet<Brand, BrandPropertyName>;
+  readonly optionDescriptors: PropertyDescriptorSet<Option, OptionPropertyName>;
+  readonly optionGroupDescriptors: PropertyDescriptorSet<OptionGroup, OptionGroupPropertyName>;
+  readonly productDescriptors: PropertyDescriptorSet<Product, ProductPropertyName>;
+  readonly productTypeDescriptors: PropertyDescriptorSet<ProductType, ProductTypePropertyName>;
+  readonly skuDescriptors: PropertyDescriptorSet<Sku, SkuPropertyName>;
+  readonly prepareProduct: PopulationPreparer;
+  readonly prepareProductType: PopulationPreparer;
+}
+
+/**
+ * Builds relationship descriptors plus the async-prefetch/synchronous-resolution bridge.
+ */
+function createProductPopulationCoordinator(
+  smartListQueryPort: SmartListQueryPort,
   populationAuthorization: PopulationAuthorizationPort,
-): PropertyDescriptorSet<ProductType, ProductTypePropertyName> {
-  /*
-   * The recursion seam, as `../domain/base/populate.ts` describes it: "typically a one-line call back
-   * into populate with that module's own descriptor set". `parentProductType` and
-   * `childProductTypes` are self-referencing, so the set this function returns is the set the
-   * recursion needs. A hoisted function declaration closes that loop without a lazy field: the body
-   * reads `descriptorSet` only when a nested payload is actually populated, which is necessarily
-   * after the binding below has been initialised.
-   */
-  function populateProductTypeSubProperty(
-    related: ProductType,
+  bindDefaultSkuDelegate: DefaultSkuDelegateBinder,
+): ProductPopulationCoordinator {
+  const brandLoader = new InvocationRelatedEntityLoader(
+    'Brand',
+    async (brandID) => {
+      const records = await smartListQueryPort.executeRecords(
+        buildIdentifierQuery('SlatwallBrand', 'brandID', brandID),
+      );
+
+      return records[0];
+    },
+    (brandID) => {
+      const brand = new Brand();
+      brand.brandID = brandID;
+
+      return brand;
+    },
+  );
+  const optionLoader = new InvocationRelatedEntityLoader(
+    'Option',
+    async (optionID) => {
+      const records = await smartListQueryPort.executeRecords(
+        buildIdentifierQuery('SlatwallOption', 'optionID', optionID),
+      );
+
+      return records[0];
+    },
+    (optionID) => {
+      const option = new Option();
+      option.optionID = optionID;
+
+      return option;
+    },
+  );
+  const optionGroupLoader = new InvocationRelatedEntityLoader(
+    'OptionGroup',
+    async (optionGroupID) => {
+      const records = await smartListQueryPort.executeRecords(
+        buildIdentifierQuery('SlatwallOptionGroup', 'optionGroupID', optionGroupID),
+      );
+
+      return records[0];
+    },
+    (optionGroupID) => {
+      const optionGroup = new OptionGroup();
+      optionGroup.optionGroupID = optionGroupID;
+
+      return optionGroup;
+    },
+  );
+  const productLoader = new InvocationRelatedEntityLoader(
+    'Product',
+    async (productID) => {
+      const records = await smartListQueryPort.executeRecords(
+        buildIdentifierQuery('SlatwallProduct', 'productID', productID),
+      );
+
+      return records[0];
+    },
+    (productID) => {
+      const product = new Product();
+      product.productID = productID;
+
+      return product;
+    },
+  );
+  const productTypeLoader = new InvocationRelatedEntityLoader(
+    'ProductType',
+    async (productTypeID) => {
+      const records = await smartListQueryPort.executeRecords(
+        buildIdentifierQuery('SlatwallProductType', 'productTypeID', productTypeID),
+      );
+
+      return records[0];
+    },
+    (productTypeID) => {
+      const productType = new ProductType();
+      productType.productTypeID = productTypeID;
+
+      return productType;
+    },
+  );
+  const skuLoader = new InvocationRelatedEntityLoader(
+    'Sku',
+    async (skuID) => {
+      const records = await smartListQueryPort.executeRecords(
+        buildIdentifierQuery('SlatwallSku', 'skuID', skuID),
+      );
+
+      return records[0];
+    },
+    (skuID) => {
+      const sku = new Sku();
+      sku.skuID = skuID;
+
+      return sku;
+    },
+  );
+  const defaultSkuEntities = new WeakMap<ProductDefaultSkuDelegate, Sku>();
+  const defaultSkuLoader = new InvocationRelatedEntityLoader<ProductDefaultSkuDelegate>(
+    'DefaultSku',
+    async (skuID) => {
+      const records = await smartListQueryPort.executeRecords(
+        buildIdentifierQuery('SlatwallSku', 'skuID', skuID),
+      );
+      const sku = records[0];
+      if (sku === undefined) {
+        return undefined;
+      }
+
+      const delegate = bindDefaultSkuDelegate(sku);
+      defaultSkuEntities.set(delegate, sku);
+
+      return delegate;
+    },
+    (skuID) => {
+      const sku = new Sku();
+      sku.skuID = skuID;
+      const delegate = bindDefaultSkuDelegate(sku);
+      defaultSkuEntities.set(delegate, sku);
+
+      return delegate;
+    },
+  );
+
+  const loaders: readonly PreparedRelatedEntityLoader<object>[] = [
+    brandLoader,
+    defaultSkuLoader,
+    optionLoader,
+    optionGroupLoader,
+    productLoader,
+    productTypeLoader,
+    skuLoader,
+  ];
+
+  function requireSku(related: ProductSkuMember | SkuOptionOwner, relationshipName: string): Sku {
+    if (related instanceof Sku) {
+      return related;
+    }
+
+    return refuseBoundary(
+      `ProductPopulationCoordinator.${relationshipName}`,
+      'the smart-list relationship loader returned a non-Sku object for a SKU relationship',
+    );
+  }
+
+  function requireDefaultSku(defaultSku: ProductDefaultSkuDelegate): Sku {
+    const sku = defaultSkuEntities.get(defaultSku);
+    if (sku !== undefined) {
+      return sku;
+    }
+
+    return refuseBoundary(
+      'ProductPopulationCoordinator.populateDefaultSku',
+      'the default-SKU delegate was not produced by this invocation population coordinator',
+    );
+  }
+
+  function populateBrandSubProperty(brand: Brand, data: Record<string, unknown>): void {
+    populate(brand, data, brandDescriptors, populationAuthorization);
+  }
+
+  function populateOptionSubProperty(option: Option, data: Record<string, unknown>): void {
+    populate(option, data, optionDescriptors, populationAuthorization);
+  }
+
+  function populateOptionGroupSubProperty(
+    optionGroup: OptionGroup,
     data: Record<string, unknown>,
   ): void {
-    populate(related, data, descriptorSet, populationAuthorization);
+    populate(optionGroup, data, optionGroupDescriptors, populationAuthorization);
   }
 
-  function populateProductSubProperty(related: Product, data: Record<string, unknown>): void {
-    populate(related, data, PRODUCT_PROPERTY_DESCRIPTORS, populationAuthorization);
+  function populateProductSubProperty(product: Product, data: Record<string, unknown>): void {
+    populate(product, data, productDescriptors, populationAuthorization);
   }
 
-  const refuseLoader = (relatedEntityName: string): never =>
-    refuseBoundary(
-      `RelatedEntityLoader.loadOrCreate(${relatedEntityName})`,
-      'the loader is synchronous by declaration and no adapter in this subtree can read a row synchronously',
-    );
+  function populateProductTypeSubProperty(
+    productType: ProductType,
+    data: Record<string, unknown>,
+  ): void {
+    populate(productType, data, productTypeDescriptors, populationAuthorization);
+  }
 
-  const collaborators: ProductTypePopulationCollaborators = {
-    /*
-     * One loader serves both `parentProductType` and `childProductTypes`, because the legacy resolved
-     * both through the same entity-service lookup keyed on the related component name
-     * [`org/Hibachi/HibachiTransient.cfc:L227`, `:L233`].
-     */
-    productTypeLoader: {
-      loadOrCreate: () => refuseLoader('ProductType'),
-      loadExisting: () => undefined,
-    },
-    populateProductType: populateProductTypeSubProperty,
-    productLoader: {
-      loadOrCreate: () => refuseLoader('Product'),
-      loadExisting: () => undefined,
-    },
+  function populateDefaultSkuSubProperty(
+    defaultSku: ProductDefaultSkuDelegate,
+    data: Record<string, unknown>,
+  ): void {
+    populate(requireDefaultSku(defaultSku), data, skuDescriptors, populationAuthorization);
+  }
+
+  function populateProductSkuSubProperty(
+    sku: ProductSkuMember,
+    data: Record<string, unknown>,
+  ): void {
+    populate(requireSku(sku, 'populateProductSku'), data, skuDescriptors, populationAuthorization);
+  }
+
+  function populateOptionSkuSubProperty(sku: SkuOptionOwner, data: Record<string, unknown>): void {
+    populate(requireSku(sku, 'populateOptionSku'), data, skuDescriptors, populationAuthorization);
+  }
+
+  function readOptionSkuPrimaryId(sku: SkuOptionOwner): string {
+    return requireSku(sku, 'readOptionSkuPrimaryId').skuID;
+  }
+
+  const brandDescriptors = createBrandPropertyDescriptors({
+    productLoader,
     populateProduct: populateProductSubProperty,
-    attributeValueLoader: {
-      loadOrCreate: () => refuseLoader('AttributeValue'),
-      loadExisting: () => undefined,
-    },
+  });
+  const optionGroupDescriptors = createOptionGroupPropertyDescriptors(
+    optionLoader,
+    populateOptionSubProperty,
+  );
+  const optionDescriptors = createOptionPropertyDescriptors(
+    optionGroupLoader,
+    populateOptionGroupSubProperty,
+    skuLoader,
+    populateOptionSkuSubProperty,
+    readOptionSkuPrimaryId,
+  );
+  const skuCollaborators: SkuPopulationCollaborators = {
+    productLoader,
+    populateProduct: populateProductSubProperty,
+    optionLoader,
+    populateOption: populateOptionSubProperty,
+  };
+  const skuDescriptors = createSkuPropertyDescriptors(skuCollaborators);
+  const productTypeCollaborators: ProductTypePopulationCollaborators = {
+    productTypeLoader,
+    populateProductType: populateProductTypeSubProperty,
+    productLoader,
+    populateProduct: populateProductSubProperty,
+    attributeValueLoader: createRefusingRelatedEntityLoader<ProductTypeAttributeValueOwner>(
+      'AttributeValue',
+      'AttributeValue belongs to the excluded model/**/Attribute*.cfc family',
+    ),
     populateAttributeValue: () =>
       refuseBoundary(
         'ProductTypePopulationCollaborators.populateAttributeValue',
         'AttributeValue belongs to the excluded model/**/Attribute*.cfc family, so it declares no descriptor set to recurse with',
       ),
   };
+  const productTypeDescriptors = createProductTypePropertyDescriptorSet(productTypeCollaborators);
+  const productCollaborators: ProductPopulationCollaborators = {
+    brand: { loader: brandLoader, populate: populateBrandSubProperty },
+    productType: {
+      loader: productTypeLoader,
+      populate: populateProductTypeSubProperty,
+    },
+    defaultSku: { loader: defaultSkuLoader, populate: populateDefaultSkuSubProperty },
+    skus: { loader: skuLoader, populate: populateProductSkuSubProperty },
+    productImages: {
+      loader: createRefusingRelatedEntityLoader<ProductOwnedAssociation>(
+        'ProductImage',
+        'ProductImage belongs to the excluded image family behind ImagePathPort',
+      ),
+      populate: () =>
+        refuseBoundary(
+          'ProductPopulationCollaborators.populateProductImage',
+          'ProductImage belongs to the excluded image family behind ImagePathPort',
+        ),
+    },
+    attributeValues: {
+      loader: createRefusingRelatedEntityLoader<ProductOwnedAssociation>(
+        'AttributeValue',
+        'AttributeValue belongs to the excluded model/**/Attribute*.cfc family',
+      ),
+      populate: () =>
+        refuseBoundary(
+          'ProductPopulationCollaborators.populateAttributeValue',
+          'AttributeValue belongs to the excluded model/**/Attribute*.cfc family',
+        ),
+    },
+    productReviews: {
+      loader: createRefusingRelatedEntityLoader<ProductOwnedAssociation>(
+        'ProductReview',
+        'ProductReview belongs to the excluded review family',
+      ),
+      populate: () =>
+        refuseBoundary(
+          'ProductPopulationCollaborators.populateProductReview',
+          'ProductReview belongs to the excluded review family',
+        ),
+    },
+    relatedProducts: { loader: productLoader, populate: populateProductSubProperty },
+  };
+  const productDescriptors = createProductPropertyDescriptors(productCollaborators);
 
-  const descriptorSet = createProductTypePropertyDescriptorSet(collaborators);
+  async function prepareBrandData(data: Record<string, unknown>): Promise<void> {
+    await prepareCollectionRelationship(
+      data,
+      'Brand',
+      'products',
+      'productID',
+      productLoader,
+      populationAuthorization,
+      prepareProductData,
+      false,
+    );
+  }
 
-  return descriptorSet;
+  async function prepareOptionData(data: Record<string, unknown>): Promise<void> {
+    await prepareManyToOneRelationship(
+      data,
+      'Option',
+      'optionGroup',
+      'optionGroupID',
+      optionGroupLoader,
+      populationAuthorization,
+      prepareOptionGroupData,
+    );
+    await prepareCollectionRelationship(
+      data,
+      'Option',
+      'skus',
+      'skuID',
+      skuLoader,
+      populationAuthorization,
+      prepareSkuData,
+      true,
+    );
+  }
+
+  async function prepareOptionGroupData(data: Record<string, unknown>): Promise<void> {
+    await prepareCollectionRelationship(
+      data,
+      'OptionGroup',
+      'options',
+      'optionID',
+      optionLoader,
+      populationAuthorization,
+      prepareOptionData,
+      false,
+    );
+  }
+
+  async function prepareProductData(data: Record<string, unknown>): Promise<void> {
+    await prepareManyToOneRelationship(
+      data,
+      'Product',
+      'brand',
+      'brandID',
+      brandLoader,
+      populationAuthorization,
+      prepareBrandData,
+    );
+    await prepareManyToOneRelationship(
+      data,
+      'Product',
+      'productType',
+      'productTypeID',
+      productTypeLoader,
+      populationAuthorization,
+      prepareProductTypeData,
+    );
+    await prepareManyToOneRelationship(
+      data,
+      'Product',
+      'defaultSku',
+      'skuID',
+      defaultSkuLoader,
+      populationAuthorization,
+      prepareSkuData,
+    );
+    await prepareCollectionRelationship(
+      data,
+      'Product',
+      'skus',
+      'skuID',
+      skuLoader,
+      populationAuthorization,
+      prepareSkuData,
+      false,
+    );
+    await prepareCollectionRelationship(
+      data,
+      'Product',
+      'relatedProducts',
+      'productID',
+      productLoader,
+      populationAuthorization,
+      prepareProductData,
+      true,
+    );
+  }
+
+  async function prepareProductTypeData(data: Record<string, unknown>): Promise<void> {
+    await prepareManyToOneRelationship(
+      data,
+      'ProductType',
+      'parentProductType',
+      'productTypeID',
+      productTypeLoader,
+      populationAuthorization,
+      prepareProductTypeData,
+    );
+    await prepareCollectionRelationship(
+      data,
+      'ProductType',
+      'childProductTypes',
+      'productTypeID',
+      productTypeLoader,
+      populationAuthorization,
+      prepareProductTypeData,
+      false,
+    );
+    await prepareCollectionRelationship(
+      data,
+      'ProductType',
+      'products',
+      'productID',
+      productLoader,
+      populationAuthorization,
+      prepareProductData,
+      false,
+    );
+  }
+
+  async function prepareSkuData(data: Record<string, unknown>): Promise<void> {
+    await prepareManyToOneRelationship(
+      data,
+      'Sku',
+      'product',
+      'productID',
+      productLoader,
+      populationAuthorization,
+      prepareProductData,
+    );
+    await prepareCollectionRelationship(
+      data,
+      'Sku',
+      'options',
+      'optionID',
+      optionLoader,
+      populationAuthorization,
+      prepareOptionData,
+      true,
+    );
+  }
+
+  const prepareTopLevel =
+    (prepare: (data: Record<string, unknown>) => Promise<void>): PopulationPreparer =>
+    async (data) => {
+      for (const loader of loaders) {
+        loader.reset();
+      }
+      await prepare(data);
+    };
+
+  return {
+    brandDescriptors,
+    optionDescriptors,
+    optionGroupDescriptors,
+    productDescriptors,
+    productTypeDescriptors,
+    skuDescriptors,
+    prepareProduct: prepareTopLevel(prepareProductData),
+    prepareProductType: prepareTopLevel(prepareProductTypeData),
+  };
 }
+
+/*
+ * Product relationship pre-resolution lives in {@link createProductPopulationCoordinator} above rather
+ * than in a separate narrow resolver. The coordinator covers every in-scope relationship instead of
+ * `brand`/`productType` alone, gates each prefetch on {@link mayPrepareRelationship} before any read is
+ * issued, and awaits its reads one at a time in Product's declaration order — so the descriptor-resolver
+ * seam `ProductService` publishes is wired to the coordinator's set by default and no relationship row
+ * is read twice for one save.
+ */
 
 /**
  * Builds the two product base services over one persistence adapter and one validator.
  */
 function composeProductBaseServices(
-  persistence: MySqlProductPersistence,
+  persistence: ProductPersistence,
   statements: Pick<BoundaryStatements, 'validator'>,
   populationAuthorization: PopulationAuthorizationPort,
+  populationCoordinator: ProductPopulationCoordinator,
   settingCleanup: ConstructorParameters<
     typeof BaseService<Product, ProductPropertyName>
   >[0]['settingCleanup'],
@@ -1455,8 +2168,9 @@ function composeProductBaseServices(
     productBaseService: new BaseService<Product, ProductPropertyName>({
       validator: statements.validator,
       ruleSet: productValidationRuleSet,
-      propertyDescriptors: PRODUCT_PROPERTY_DESCRIPTORS,
+      propertyDescriptors: populationCoordinator.productDescriptors,
       populationAuthorization,
+      preparePopulation: populationCoordinator.prepareProduct,
       persist: (product) => persistence.saveProduct(product),
       remove: async (product) => {
         await persistence.deleteProduct(product);
@@ -1472,8 +2186,9 @@ function composeProductBaseServices(
     productTypeBaseService: new BaseService<ManagedEntity<ProductType>, ProductTypePropertyName>({
       validator: statements.validator,
       ruleSet: productTypeValidationRuleSet,
-      propertyDescriptors: createProductTypeDescriptorSet(populationAuthorization),
+      propertyDescriptors: populationCoordinator.productTypeDescriptors,
       populationAuthorization,
+      preparePopulation: populationCoordinator.prepareProductType,
       /*
        * `saveProductType` answers the entity it was given, so returning the argument keeps the managed
        * surface the base service declared without a cast.
@@ -1500,9 +2215,10 @@ function composeProductWriteSurface(
   dependencies: SkuSurfaceDependencies,
   accountContext: AccountContextPort,
   productRepositoryOverride?: ProductRepository,
+  productPersistenceOverride?: ProductPersistence,
 ): {
   readonly productRepository: ProductRepository;
-  readonly productPersistence: MySqlProductPersistence;
+  readonly productPersistence: ProductPersistence;
 } {
   const { boundaries, statements } = dependencies;
 
@@ -1530,12 +2246,14 @@ function composeProductWriteSurface(
      * {@link assembleProductService}); it now invokes the same lifecycle the repository adapters do, so it
      * needs the same collaborator they take.
      */
-    productPersistence: new MySqlProductPersistence(
-      executor,
-      boundaries.productDependencyCleanup,
-      readDefaultSkuIdOrRefuse,
-      accountContext,
-    ),
+    productPersistence:
+      productPersistenceOverride ??
+      new MySqlProductPersistence(
+        executor,
+        boundaries.productDependencyCleanup,
+        readDefaultSkuIdOrRefuse,
+        accountContext,
+      ),
   };
 }
 
@@ -1543,11 +2261,18 @@ function composeProductWriteSurface(
  * Assembles a product service from one set of collaborators, pool-bound or boundary-scoped.
  */
 function assembleProductService(collaborators: {
-  readonly dependencies: SkuSurfaceDependencies;
+  /**
+   * The boundary tier for this exact graph. Pool-bound callers pass the memoized fail-closed tier;
+   * transaction-bound callers pass the invocation-scoped tier returned by
+   * {@link scopeBoundariesToInvocation}. Keeping the choice at the call site prevents this helper from
+   * silently replacing an authorised request principal with the pool tier.
+   */
+  readonly boundaries: CatalogBoundaries;
   readonly productRepository: ProductRepository;
-  readonly persistence: MySqlProductPersistence;
+  readonly persistence: ProductPersistence;
   readonly statements: Pick<BoundaryStatements, 'validator' | 'isUrlTitleAvailable'>;
   readonly smartListQueryPort: SkuSurfaceDependencies['smartListQueryPort'];
+  readonly populationCoordinator: ProductPopulationCoordinator;
   readonly productTypeRootResolver: SkuSurfaceDependencies['productTypeRootResolver'];
   readonly skuRepository: SkuSurfaceParts['skuRepository'];
   readonly skuService: SkuService;
@@ -1556,7 +2281,7 @@ function assembleProductService(collaborators: {
   readonly productTypeBaseService: BaseService<ManagedEntity<ProductType>, ProductTypePropertyName>;
   readonly urlTitleProbeBudget: UrlTitleProbeBudget;
 }): ProductService {
-  const { boundaries } = collaborators.dependencies;
+  const { boundaries } = collaborators;
 
   return new ProductService({
     productRepository: collaborators.productRepository,
@@ -1571,8 +2296,20 @@ function assembleProductService(collaborators: {
     smartListQueryPort: collaborators.smartListQueryPort,
     subscriptionTermPort: boundaries.subscriptionTerms,
     productTypeRootResolver: collaborators.productTypeRootResolver,
-    productPropertyDescriptors: PRODUCT_PROPERTY_DESCRIPTORS,
+    /*
+     * The fully wired population graph, not a bare descriptor set. It resolves every in-scope Product
+     * relationship — `brand`, `productType`, `defaultSku`, `skus` and `relatedProducts`, plus their
+     * nested sub-property writes — and keeps the explicit refusing loaders for the excluded families.
+     * `prepareProduct` below performs the asynchronous reads first, gated on
+     * {@link mayPrepareRelationship} so a caller denied permission to write a property gains no
+     * existence probe as a side effect, and awaited one relationship at a time in Product's declaration
+     * order rather than behind `Promise.all`. `ProductService.saveProduct` therefore still consults
+     * `resolveProductPropertyDescriptors`, whose default returns exactly this set; that seam stays
+     * published for callers and tests that need to substitute a narrower descriptor resolver.
+     */
+    productPropertyDescriptors: collaborators.populationCoordinator.productDescriptors,
     populationAuthorization: boundaries.populationAuthorization,
+    prepareProductPopulation: collaborators.populationCoordinator.prepareProduct,
     isUrlTitleAvailable: collaborators.statements.isUrlTitleAvailable,
     /* — the ceiling the two derivations probe against, resolved when a derivation runs. */
     urlTitleProbeBudget: collaborators.urlTitleProbeBudget,
@@ -1606,6 +2343,11 @@ export function buildProductBoundaryGraph(
 
   const boundarySku = buildSkuBoundaryParts(dependencies.sku, scope, security);
   const boundaryStatements = createBoundaryStatements(statements.uniquePropertyChecker, executor);
+  const populationCoordinator = createProductPopulationCoordinator(
+    boundarySku.smartListQueryPort,
+    boundaries.populationAuthorization,
+    dependencies.sku.bindDefaultSkuDelegate,
+  );
   const { productRepository, productPersistence } = composeProductWriteSurface(
     executor,
     dependencies.sku,
@@ -1618,11 +2360,14 @@ export function buildProductBoundaryGraph(
      * the fail-closed memoized port.
      */
     boundaries.accountContext,
+    dependencies.productRepository,
+    dependencies.productPersistence,
   );
   const { productBaseService, productTypeBaseService } = composeProductBaseServices(
     productPersistence,
     boundaryStatements,
     boundaries.populationAuthorization,
+    populationCoordinator,
     boundaries.settingCleanup,
     boundaries.commentCleanup,
     /* The boundary repository, not the pool's — the read must run on `scope.executor` (M6). */
@@ -1630,7 +2375,13 @@ export function buildProductBoundaryGraph(
   );
 
   return assembleProductService({
-    dependencies: dependencies.sku,
+    /*
+     * The invocation-scoped tier computed above. In particular, ProductService.populate must consult
+     * this request's `populationAuthorization`, and its account/settings/subscription reads must not
+     * fall back to the memoized fail-closed graph while the write is already inside an authorised
+     * transaction.
+     */
+    boundaries,
     /*
      * — the same ceiling the pool-bound service holds; the derivation runs inside this
      * transaction, so a budget wired only outside it would not bound the path that probes.
@@ -1640,6 +2391,7 @@ export function buildProductBoundaryGraph(
     persistence: productPersistence,
     statements: boundaryStatements,
     smartListQueryPort: boundarySku.smartListQueryPort,
+    populationCoordinator,
     productTypeRootResolver: boundarySku.productTypeRootResolver,
     skuRepository: boundarySku.skuRepository,
     skuService: boundarySku.skuService,
@@ -1658,6 +2410,11 @@ export function composeProductSurface(
   const { boundaries, statements, smartListQueryPort, productTypeRootResolver } = dependencies.sku;
 
   const skuParts = composeSkuSurface(dependencies.sku);
+  const populationCoordinator = createProductPopulationCoordinator(
+    smartListQueryPort,
+    boundaries.populationAuthorization,
+    dependencies.sku.bindDefaultSkuDelegate,
+  );
   const { productRepository, productPersistence } = composeProductWriteSurface(
     statements.queryRunner,
     dependencies.sku,
@@ -1670,11 +2427,13 @@ export function composeProductSurface(
      */
     boundaries.accountContext,
     dependencies.productRepository,
+    dependencies.productPersistence,
   );
   const { productBaseService, productTypeBaseService } = composeProductBaseServices(
     productPersistence,
     statements,
     boundaries.populationAuthorization,
+    populationCoordinator,
     boundaries.settingCleanup,
     boundaries.commentCleanup,
     skuParts.skuRepository,
@@ -1687,13 +2446,19 @@ export function composeProductSurface(
     productTypeBaseService,
     skuParts,
     productService: assembleProductService({
-      dependencies: dependencies.sku,
+      /*
+       * Deliberately the pool tier. This graph serves reads and refuses direct writes; the transactional
+       * write runner rebuilds the service with invocation-scoped boundaries in
+       * {@link buildProductBoundaryGraph}.
+       */
+      boundaries,
       /* — see the boundary rebuild above; both graphs carry the one ceiling. */
       urlTitleProbeBudget: dependencies.urlTitleProbeBudget,
       productRepository,
       persistence: productPersistence,
       statements,
       smartListQueryPort,
+      populationCoordinator,
       productTypeRootResolver,
       skuRepository: skuParts.skuRepository,
       skuService: skuParts.skuService,
@@ -1877,7 +2642,7 @@ export interface CatalogContainer {
   readonly brandRepository: BrandRepository;
 
   /** The write surface for `SwProduct` and `SwProductType`. */
-  readonly productPersistence: MySqlProductPersistence;
+  readonly productPersistence: ProductPersistence;
 
   /** The typed rule-set evaluator that replaces `org/Hibachi/HibachiValidationService.cfc`. */
   readonly validator: Validator;
@@ -1951,6 +2716,7 @@ export interface CatalogContainerOverrides {
 
   readonly smartListQueryPort?: SmartListQueryPort;
   readonly productRepository?: ProductRepository;
+  readonly productPersistence?: ProductPersistence;
   readonly skuRepository?: SkuRepository;
   readonly optionRepository?: OptionRepository;
   readonly productTypeRepository?: ProductTypeRepository;
@@ -2170,6 +2936,9 @@ export function createCatalogContainer(
     ...(overrides.productRepository === undefined
       ? {}
       : { productRepository: overrides.productRepository }),
+    ...(overrides.productPersistence === undefined
+      ? {}
+      : { productPersistence: overrides.productPersistence }),
     ...(overrides.productWriteRunner === undefined
       ? {}
       : { productWriteRunner: overrides.productWriteRunner }),

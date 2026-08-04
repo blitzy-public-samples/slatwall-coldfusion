@@ -158,6 +158,26 @@ function readBrandIdentifier(event: BrandIdentifierEvent): string | undefined {
 }
 
 /**
+ * Translates the transaction runner's generic rollback failure back into the validation findings
+ * that caused it.
+ *
+ * `UnitOfWork` deliberately knows only that the commit gate refused; it cannot know which entity
+ * owns the findings or how this handler publishes them. The brand outcome is captured before the gate
+ * runs, so this boundary can restore the same keyed `ValidationError` contract as the sibling product
+ * and SKU writes without weakening the rollback decision.
+ */
+function liftBrandWriteFindings(error: unknown, outcome: ManagedBrand | null): unknown {
+  if (outcome === null || !outcome.hasErrors()) {
+    return error;
+  }
+
+  const failure = new ValidationError();
+  failure.addErrors(outcome.getErrors());
+
+  return failure;
+}
+
+/**
  * Binds the brand service to the AWS-facing operations it backs.
  *
  * @param brandService - The brand service. Typed as {@link BrandHandlerService} so a hand-written
@@ -262,6 +282,12 @@ export function createBrandHandler(
       return invalidRequestBodyResponse(body.problem);
     }
 
+    /*
+     * Captured outside the try so the catch can recover the findings after the transaction runner
+     * replaces a validation refusal with its own generic rollback error.
+     */
+    let outcome: ManagedBrand | null = null;
+
     try {
       /*
        * — the whole operation runs inside one transaction, resolution included
@@ -276,8 +302,6 @@ export function createBrandHandler(
        * would throw a `ReferenceError` from its temporal dead zone on the very path that matters most.
        * `./productHandler` captures its subject the same way and for the same reason.
        */
-      let outcome: ManagedBrand | null = null;
-
       const saved: ManagedBrand | null = await writeRunner.runWrite<ManagedBrand | null>(
         /*
          * — the gate's own context, so population and audit run as the principal just
@@ -335,7 +359,7 @@ export function createBrandHandler(
       // The saved entity is projected, never serialised whole; see {@link BrandResponse}.
       return okResponse(toBrandResponse(saved));
     } catch (error) {
-      return errorResponse(error);
+      return errorResponse(liftBrandWriteFindings(error, outcome));
     }
   };
 

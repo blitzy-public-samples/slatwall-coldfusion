@@ -13,6 +13,12 @@
 
 import { populate, type ColumnValueType } from '../../src/domain/base/populate';
 import {
+  getCreatedByAccount,
+  getCreatedDateTime,
+  getModifiedByAccount,
+  getModifiedDateTime,
+} from '../../src/domain/base/AuditableEntity';
+import {
   BRAND_CLASS_NAME,
   BRAND_DECLARED_PROPERTIES,
   BRAND_ENTITY_NAME,
@@ -274,6 +280,33 @@ async function validateBrand(
 }
 
 /* The legacy-traceable contract — one overridden assertion plus exactly three inherited. */
+
+describe('Brand — NET-NEW — the shared audit accessor shape', () => {
+  it('NET-NEW — an unstamped entity exposes blank DateTime values and absent account attributions', () => {
+    const brand = new Brand();
+
+    expect(getCreatedDateTime(brand)).toBe('');
+    expect(getModifiedDateTime(brand)).toBe('');
+    expect(getCreatedByAccount(brand)).toBeUndefined();
+    expect(getModifiedByAccount(brand)).toBeUndefined();
+  });
+
+  it('NET-NEW — a persisted audit block returns the original Date objects and account identifiers', () => {
+    const brand = new Brand();
+    const created = new Date('2024-01-02T03:04:05.000Z');
+    const modified = new Date('2025-06-07T08:09:10.000Z');
+    brand.brandID = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    brand.createdDateTime = created;
+    brand.modifiedDateTime = modified;
+    brand.createdByAccount = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    brand.modifiedByAccount = 'cccccccccccccccccccccccccccccccc';
+
+    expect(getCreatedDateTime(brand)).toBe(created);
+    expect(getModifiedDateTime(brand)).toBe(modified);
+    expect(getCreatedByAccount(brand)).toBe('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+    expect(getModifiedByAccount(brand)).toBe('cccccccccccccccccccccccccccccccc');
+  });
+});
 
 describe('Brand — the legacy-traceable contract', () => {
   it('TRACEABLE — meta/tests/unit/entity/BrandTest.cfc:L58-L60 — a fresh Brand is constructible and its products collection is an empty, live array', () => {

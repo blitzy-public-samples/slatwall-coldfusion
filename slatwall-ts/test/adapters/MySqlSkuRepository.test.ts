@@ -28,12 +28,14 @@ import { assertColumnName, assertTableName } from '../../src/adapters/mysql/Quer
 import { attachSkuOptions } from '../../src/adapters/mysql/SmartListQueryBuilder';
 import {
   forgetHydratedSkuSubscriptionTermID,
+  isSkuOwnedLinkAuthoritative,
   mapSkuRow,
   markSkuOwnedLinkLoaded,
 } from '../../src/adapters/mysql/rowMappers';
 import { SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE } from '../../src/domain/BaseProductType';
 import { Product } from '../../src/domain/product/Product';
 import { SKU_UNSAVED_ID_VALUE } from '../../src/domain/sku/Sku';
+import type { Sku } from '../../src/domain/sku/Sku';
 import {
   buildOption,
   buildProduct,
@@ -61,10 +63,17 @@ import type {
   SqlExecutorOutcome,
   SqlExecutorResponder,
 } from '../support/inMemoryRepositories';
-import { DomainError, UniqueConstraintViolationError } from '../../src/errors/DomainError';
 import {
+  DatabaseStatementError,
+  DomainError,
+  UniqueConstraintViolationError,
+} from '../../src/errors/DomainError';
+import {
+  attachFetchedSkuAssociations,
   MYSQL_DUPLICATE_ENTRY_ERRNO,
   QueryRunner,
+  assertRegisteredColumnName,
+  assertRegisteredTableName,
   describeDuplicateEntryConstraint,
   isDuplicateEntryFailure,
 } from '../../src/adapters/mysql/QueryRunner';
@@ -1069,6 +1078,73 @@ describe('NET-NEW transactionExists — the ten OR-ed existence predicates', () 
     expect(sql).not.toContain("'");
     expect(sql).not.toContain('--');
   });
+
+  /*
+   * The guard the registry needed and did not have.
+   *
+   * `../../src/adapters/mysql/QueryRunner.ts`'s column registry is this subtree's stated schema contract
+   * as well as its identifier whitelist, so a table it registers without the column this statement names
+   * on that table is not a documentation slip: an environment provisioned from the contract answers
+   * `ER_BAD_FIELD_ERROR` on every delete guard that consults `transactionExists`. That is precisely what
+   * had happened for `SwVendorOrderItem` — the chain emitted `a.stockID`, the registry declared only
+   * `skuID`, and no case anywhere compared the two.
+   *
+   * The case below closes the class rather than the instance. It reads the emitted statement, extracts
+   * every `<table> <alias>` source and every `<alias>.<column>` reference from the text itself, resolves
+   * each alias back to its own table, and requires the registry to admit the pair. Nothing is hard-coded
+   * except the alias-to-table correspondence the builders establish, so a future clause that names a
+   * column the registry does not declare on the table it is applied to fails here, whatever table it is.
+   */
+  it('NET-NEW — every table.column pair the emitted chain names is declared on that table', async () => {
+    const harness = makeTransactionExistsHarness();
+
+    await harness.repository.transactionExists(PRODUCT_A);
+    const sql = norm(soleCall(harness.calls).sql);
+
+    /* Each `EXISTS(...)` disjunct in issue order, so every clause is measured on its own aliases. */
+    const clauses = sql.split('EXISTS(').slice(1);
+    expect(clauses).toHaveLength(11);
+
+    let pairsChecked = 0;
+
+    for (const clause of clauses) {
+      /* `FROM <table> <alias>` and `INNER JOIN <table> <alias>` are the only source forms emitted. */
+      const tableByAlias = new Map<string, string>();
+      for (const [, table, alias] of clause.matchAll(
+        /(?:FROM|INNER JOIN) (Sw[A-Za-z]+) ([a-z]+)/g,
+      )) {
+        if (table !== undefined && alias !== undefined) {
+          tableByAlias.set(alias, table);
+        }
+      }
+      expect(tableByAlias.size).toBeGreaterThan(0);
+
+      for (const [, alias, column] of clause.matchAll(/\b([a-z]+)\.([A-Za-z]+)\b/g)) {
+        const table = alias === undefined ? undefined : tableByAlias.get(alias);
+
+        /* The outer SKU alias belongs to the enclosing statement, not to this clause. */
+        if (table === undefined || column === undefined) {
+          continue;
+        }
+
+        expect(assertRegisteredColumnName(assertRegisteredTableName(table), column)).toBe(column);
+        pairsChecked += 1;
+      }
+    }
+
+    /* Ten disjuncts plus the outer scope: two columns each on the mediated form, one on the direct. */
+    expect(pairsChecked).toBeGreaterThanOrEqual(17);
+  });
+
+  /*
+   * And the instance, pinned by name so the specific correction cannot silently regress: the registry
+   * must admit the stock foreign key `model/entity/VendorOrderItem.cfc:L60` declares, and must refuse
+   * the SKU key that entity does not declare and no statement in `src/` emits.
+   */
+  it('NET-NEW — the registry admits SwVendorOrderItem.stockID and refuses SwVendorOrderItem.skuID', () => {
+    expect(assertRegisteredColumnName('SwVendorOrderItem', 'stockID')).toBe('stockID');
+    expect(() => assertRegisteredColumnName('SwVendorOrderItem', 'skuID')).toThrow(DomainError);
+  });
 });
 
 describe('NET-NEW transactionExists — a call with neither scope is rejected, freshly and deliberately', () => {
@@ -1199,6 +1275,56 @@ describe('NET-NEW findBySkuCode — the alternate-code fallback', () => {
 
     expect(sku?.skuID).toBe(SKU_ONE);
     expect(callAt(harness.calls, 0).params).toEqual(['SKU-LEGACY-ALIAS', 'SKU-LEGACY-ALIAS']);
+  });
+
+  it('NET-NEW — marks options authoritative after the follow-up read, including an empty result', async () => {
+    const harness = makeCodeHarness([{ skuID: SKU_ONE, skuCode: SKU_CODE, productID: PRODUCT_A }]);
+
+    const sku = await harness.repository.findBySkuCode(SKU_CODE);
+    if (sku === null) {
+      throw new Error('the fixture SKU was not returned');
+    }
+
+    /*
+     * The option statement ran and found no link rows. That empty answer is still authoritative: a
+     * later clear must delete stored rows rather than being mistaken for an unloaded lazy collection.
+     */
+    expect(isSkuOwnedLinkAuthoritative(sku, 'options')).toBe(true);
+    expect(sku.options).toEqual([]);
+  });
+
+  it('NET-NEW — clearing options after findBySkuCode deletes the stored link rows', async () => {
+    const harness = makeHarness({
+      respond: (call) => {
+        const sql = norm(call.sql);
+        if (isRead(call) && sql.includes(OPTION_HYDRATION_SOURCE)) {
+          return sqlRows([
+            {
+              hydrationOwnerSkuID: SKU_ONE,
+              optionID: OPTION_SMALL,
+              optionName: 'Small',
+              optionGroupID: OPTION_GROUP_SIZE,
+            },
+          ]);
+        }
+        if (sql.includes('LEFT JOIN SwAlternateSkuCode')) {
+          return sqlRows([{ skuID: SKU_ONE, skuCode: SKU_CODE, productID: PRODUCT_A }]);
+        }
+        return isRead(call) ? sqlRows([{ skuID: SKU_ONE }]) : sqlAffectedRows(1);
+      },
+    });
+
+    const sku = await harness.repository.findBySkuCode(SKU_CODE);
+    if (sku === null) {
+      throw new Error('the fixture SKU was not returned');
+    }
+    expect(sku.options.map((option) => option.optionID)).toEqual([OPTION_SMALL]);
+
+    sku.options.splice(0);
+    await harness.repository.persistSku(sku);
+
+    expect(verbsFor(harness.calls, 'SwSkuOption')).toEqual(['SELECT', 'DELETE']);
+    expect(soleStatementFor(harness.calls, 'SwSkuOption', 'DELETE').params).toEqual([SKU_ONE]);
   });
 
   it('NET-NEW — introduces no UNION, no DISTINCT and no fabricated LIMIT', async () => {
@@ -1576,6 +1702,46 @@ describe('NET-NEW findByProduct — the FETCH half of INNER JOIN FETCH', () => {
     expect(options[0]?.optionID).toBe(OPTION_SMALL);
     /* The group travels with the option, because `Sku.generateImageFileName` reads through it. */
     expect(options[0]?.optionGroup?.optionGroupCode).toBe('size');
+  });
+
+  it('NET-NEW — preserves fan-out cardinality with one SKU instance per identifier', async () => {
+    const repeatedRow = { skuID: SKU_ONE, skuCode: 'SKU-A', productID: PRODUCT_A };
+    const harness = makeStoreHarness({
+      /*
+       * The merchandise join fans this SKU out to two result rows. Hibernate returned the same
+       * identity-mapped object twice; the array cardinality is therefore two while the identity count
+       * is one.
+       */
+      SwSku: [repeatedRow, { ...repeatedRow }],
+      SwSkuOption: [
+        {
+          skuID: SKU_ONE,
+          optionID: OPTION_SMALL,
+          optionName: 'Small',
+          optionGroupID: OPTION_GROUP_SIZE,
+        },
+      ],
+      SwOptionGroup: [{ optionGroupID: OPTION_GROUP_SIZE, optionGroupCode: 'size' }],
+    });
+
+    const skus = await harness.repository.findByProduct(productFor('merchandise'), true);
+    expect(skus).toHaveLength(2);
+
+    const first = skus[0];
+    const second = skus[1];
+    if (first === undefined || second === undefined) {
+      throw new Error('the fan-out fixture did not return both array entries');
+    }
+
+    expect(first).toBe(second);
+    /*
+     * Association hydration iterates the distinct instance, so the repeated reference receives the
+     * stored option once rather than once per array slot.
+     */
+    expect(first.options.map((option) => option.optionID)).toEqual([OPTION_SMALL]);
+
+    first.skuCode = 'SKU-MUTATED-THROUGH-FIRST-REFERENCE';
+    expect(second.skuCode).toBe('SKU-MUTATED-THROUGH-FIRST-REFERENCE');
   });
 
   it('NET-NEW — populates the access-content references for contentAccess', async () => {
@@ -2329,7 +2495,92 @@ describe('NET-NEW persistSku —, a hydrated SKU keeps the links this save never
     sku.addOption(buildOption({ optionID: OPTION_SMALL }));
 
     await expect(harness.repository.persistSku(sku)).rejects.toThrow(DomainError);
-    await expect(harness.repository.persistSku(sku)).rejects.toThrow(/without having been loaded/u);
+    /*
+     * The refusal is preflight validation, not a late link-table check. No existence read, audit-stamped
+     * scalar write or link write may occur before it, otherwise a caller outside a transaction observes
+     * the same partial update the live reproduction exposed.
+     */
+    expect(harness.calls).toEqual([]);
+  });
+
+  it('NET-NEW — preflights every owned link collection before any scalar statement', async () => {
+    const mutations: readonly {
+      readonly collection: string;
+      readonly apply: (sku: Sku) => void;
+    }[] = [
+      {
+        collection: 'options',
+        apply: (sku) => sku.addOption(buildOption({ optionID: OPTION_SMALL })),
+      },
+      {
+        collection: 'accessContents',
+        apply: (sku) => sku.accessContents.push({ contentID: CONTENT_REFERENCE }),
+      },
+      {
+        collection: 'subscriptionBenefits',
+        apply: (sku) => sku.subscriptionBenefits.push({ subscriptionBenefitID: BENEFIT_REFERENCE }),
+      },
+      {
+        collection: 'renewalSubscriptionBenefits',
+        apply: (sku) =>
+          sku.renewalSubscriptionBenefits.push({
+            subscriptionBenefitID: RENEWAL_BENEFIT_REFERENCE,
+          }),
+      },
+    ];
+
+    for (const mutation of mutations) {
+      const harness = makePersistHarness([{ skuID: SKU_ONE }]);
+      const sku = mapSkuRow(skuRow());
+      mutation.apply(sku);
+
+      await expect(harness.repository.persistSku(sku)).rejects.toThrow(mutation.collection);
+      expect(harness.calls).toEqual([]);
+    }
+  });
+
+  it('NET-NEW — QueryRunner eager merchandise fetch executes its own option loader and deduplicates saved SKU identifiers', async () => {
+    const storedOption = {
+      skuID: SKU_ONE,
+      optionID: OPTION_SMALL,
+      optionGroupID: OPTION_GROUP_SIZE,
+    };
+    const harness = makeHarness({
+      respond: (call) => {
+        const sql = norm(call.sql).toUpperCase();
+        if (sql.includes('FROM SWSKUOPTION LINK')) {
+          return sqlRows([storedOption]);
+        }
+        if (sql.includes('FROM SWOPTIONGROUP')) {
+          return sqlRows([{ optionGroupID: OPTION_GROUP_SIZE, optionGroupName: 'Size' }]);
+        }
+        return sqlRows([]);
+      },
+    });
+    const first = mapSkuRow({ skuID: SKU_ONE, skuCode: 'FIRST', price: '10.00' });
+    const duplicateIdentifier = mapSkuRow({
+      skuID: SKU_ONE,
+      skuCode: 'SECOND',
+      price: '11.00',
+    });
+    const unsaved = buildSku({ skuCode: 'UNSAVED' });
+
+    await attachFetchedSkuAssociations(
+      harness.executor,
+      [first, duplicateIdentifier, unsaved],
+      SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE.merchandise.systemCode,
+    );
+
+    const optionRead = harness.calls.find((call) =>
+      norm(call.sql).toUpperCase().includes('FROM SWSKUOPTION LINK'),
+    );
+    expect(optionRead?.params).toStrictEqual([SKU_ONE]);
+    expect(first.getOptions().map((option) => option.optionID)).toStrictEqual([OPTION_SMALL]);
+    expect(duplicateIdentifier.getOptions().map((option) => option.optionID)).toStrictEqual([
+      OPTION_SMALL,
+    ]);
+    expect(first.getOptions()[0]?.optionGroup?.optionGroupID).toBe(OPTION_GROUP_SIZE);
+    expect(unsaved.getOptions()).toStrictEqual([]);
   });
 
   it('NET-NEW — round trip: read, promote through the REAL loader, add an option, keep them BOTH', async () => {
@@ -2596,6 +2847,8 @@ describe('NET-NEW withExecutor — re-binding to a transaction-scoped executor',
  * AAP §0.4.1.12 declares exactly seventeen executable suites, so this subject is covered
  * inside an approved suite rather than in one of its own.
  */
+
+/* FOLDED IN FROM adapters/UnitOfWork */
 
 /** unitOfWork and queryRunner — the two execution boundaries, tested against a driver double. */
 describe('The transaction boundary the SKU write path runs inside', () => {
@@ -2961,16 +3214,16 @@ describe('The transaction boundary the SKU write path runs inside', () => {
       expect(driver.lifecycle).not.toContain('commit');
     });
 
-    it('NET-NEW — EVERY OTHER driver failure passes through as the identical object', async () => {
+    it('NET-NEW — an unclassified driver failure is sanitised instead of passing through', async () => {
       /*
-       * The narrowing that keeps this a reporting change rather than a rewrite of the failure surface.
-       * A connection reset, a syntax error and a permission refusal must reach the caller with the same
-       * identity, message and stack they had before the translation existed — asserted by reference
-       * equality, which no re-wrapping can satisfy.
+       * The fallback class matters because a driver can fail outside MySQL's server-error catalogue.
+       * Even then its message, statement fields and object identity must not cross the adapter boundary.
        */
       const connectionReset = Object.assign(new Error('read ECONNRESET'), {
         errno: -104,
         code: 'ECONNRESET',
+        sql: 'UPDATE SwOption SET secret = 1',
+        sqlMessage: 'read ECONNRESET for database user hidden-user',
       });
       const driver = createDriverDouble(() => {
         throw connectionReset;
@@ -2984,8 +3237,132 @@ describe('The transaction boundary the SKU write path runs inside', () => {
           (failure: unknown) => failure,
         );
 
-      expect(rejection).toBe(connectionReset);
-      expect(rejection).not.toBeInstanceOf(UniqueConstraintViolationError);
+      expect(rejection).toBeInstanceOf(DatabaseStatementError);
+      if (!(rejection instanceof DatabaseStatementError)) {
+        throw new Error('the generic driver failure was not translated');
+      }
+      expect(rejection.failureClass).toBe('driver');
+      expect(rejection.context).toEqual({
+        failureClass: 'driver',
+        parameterCount: 2,
+        errno: -104,
+        code: 'ECONNRESET',
+      });
+      expect(rejection.message).toBe('A database statement could not be executed.');
+      expect('sql' in rejection).toBe(false);
+      expect('sqlMessage' in rejection).toBe(false);
+      expect('cause' in rejection).toBe(false);
+      expect(JSON.stringify(rejection)).not.toContain('hidden-user');
+      expect(rejection).not.toBe(connectionReset);
+    });
+
+    it('NET-NEW — six stable driver classes are sanitised identically on both execution paths', async () => {
+      const cases = [
+        {
+          failureClass: 'unknown-column',
+          errno: 1054,
+          code: 'ER_BAD_FIELD_ERROR',
+          sqlState: '42S22',
+        },
+        {
+          failureClass: 'unknown-table',
+          errno: 1146,
+          code: 'ER_NO_SUCH_TABLE',
+          sqlState: '42S02',
+        },
+        {
+          failureClass: 'permission-denied',
+          errno: 1142,
+          code: 'ER_TABLEACCESS_DENIED_ERROR',
+          sqlState: '42000',
+        },
+        {
+          failureClass: 'data-too-long',
+          errno: 1406,
+          code: 'ER_DATA_TOO_LONG',
+          sqlState: '22001',
+        },
+        {
+          failureClass: 'syntax',
+          errno: 1064,
+          code: 'ER_PARSE_ERROR',
+          sqlState: '42000',
+        },
+        {
+          failureClass: 'binding',
+          errno: 1210,
+          code: 'ER_WRONG_ARGUMENTS',
+          sqlState: 'HY000',
+        },
+      ] as const;
+
+      const makeDriverFailure = (classification: (typeof cases)[number]): Error =>
+        Object.assign(
+          new Error(`SECRET driver text for ${classification.failureClass}: hidden-user@192.0.2.1`),
+          {
+            errno: classification.errno,
+            code: classification.code,
+            sqlState: classification.sqlState,
+            sql: 'SELECT secret_column FROM secret_table',
+            sqlMessage: 'server-authored SECRET driver text',
+          },
+        );
+
+      const assertSanitised = (
+        rejection: unknown,
+        classification: (typeof cases)[number],
+      ): void => {
+        expect(rejection).toBeInstanceOf(DatabaseStatementError);
+        if (!(rejection instanceof DatabaseStatementError)) {
+          throw new Error('the driver failure was not translated');
+        }
+
+        expect(rejection.failureClass).toBe(classification.failureClass);
+        expect(rejection.context).toEqual({
+          failureClass: classification.failureClass,
+          parameterCount: 1,
+          errno: classification.errno,
+          code: classification.code,
+          sqlState: classification.sqlState,
+        });
+        expect(rejection.message).toBe('A database statement could not be executed.');
+        expect('sql' in rejection).toBe(false);
+        expect('sqlMessage' in rejection).toBe(false);
+        expect('cause' in rejection).toBe(false);
+        expect(JSON.stringify(rejection)).not.toContain('SECRET');
+        expect(JSON.stringify(rejection.context)).not.toContain('secret_');
+        expect(JSON.stringify(rejection.context)).not.toContain('hidden-user');
+      };
+
+      for (const classification of cases) {
+        const poolDriver = createDriverDouble(() => {
+          throw makeDriverFailure(classification);
+        });
+        const runner = new QueryRunner(poolDriver.pool);
+        const poolRejection: unknown = await runner.execute('SELECT ?', ['bound']).then(
+          () => undefined,
+          (failure: unknown) => failure,
+        );
+        assertSanitised(poolRejection, classification);
+
+        const transactionDriver = createDriverDouble(() => {
+          throw makeDriverFailure(classification);
+        });
+        const unitOfWork = new UnitOfWork(transactionDriver.pool);
+        const transactionRejection: unknown = await unitOfWork
+          .run(
+            async (scope) => scope.executor.execute('SELECT ?', ['bound']),
+            () => false,
+          )
+          .then(
+            () => undefined,
+            (failure: unknown) => failure,
+          );
+
+        assertSanitised(transactionRejection, classification);
+        expect(transactionDriver.lifecycle).toContain('rollback');
+        expect(transactionDriver.lifecycle).not.toContain('commit');
+      }
     });
 
     it('[NET-NEW] a DEADLOCK is classified as RETRYABLE', async () => {
@@ -3483,6 +3860,8 @@ describe('The transaction boundary the SKU write path runs inside', () => {
  * AAP §0.4.1.12 declares exactly seventeen executable suites, so this subject is covered
  * inside an approved suite rather than in one of its own.
  */
+
+/* FOLDED IN FROM adapters/UnitOfWorkSortOrder */
 
 /*
  * `unitOfWork` — the sort-order seeding boundary (the current contract)

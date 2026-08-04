@@ -85,6 +85,16 @@ export type EntityPersister<TEntity> = (entity: TEntity) => Promise<TEntity>;
 export type EntityRemover<TEntity> = (entity: TEntity) => Promise<void>;
 
 /**
+ * Primes asynchronous relationship reads before the synchronous population pass consumes them.
+ *
+ * The legacy ORM resolved related entities synchronously inside its request-scoped session. The
+ * extracted repositories are asynchronous, while `domain/base/populate.ts` deliberately remains
+ * synchronous and side-effect-free beyond its target. This seam lets the composition root bridge
+ * that execution-model difference without moving I/O into the domain population engine.
+ */
+export type PopulationPreparer = (data: Record<string, unknown>) => Promise<void>;
+
+/**
  * The two setting-side effects the local override reaches out of scope for, declared as one port.
  *
  * TODO(boundary): the implementation belongs to the SettingService port family under AAP §0.2.2.7 and
@@ -248,6 +258,12 @@ export interface BaseServiceCollaborators<
    */
   readonly populationAuthorization: PopulationAuthorizationPort;
 
+  /**
+   * Optional asynchronous relationship prefetch. Entities whose descriptors contain only scalar
+   * properties need no preparer and preserve the original direct population path.
+   */
+  readonly preparePopulation?: PopulationPreparer;
+
   /** The persistence step of [org/Hibachi/HibachiService.cfc:L155]. See {@link EntityPersister}. */
   readonly persist: EntityPersister<TEntity>;
 
@@ -298,6 +314,9 @@ export class BaseService<
   /** See {@link BaseServiceCollaborators.populationAuthorization}. */
   private readonly populationAuthorization: PopulationAuthorizationPort;
 
+  /** See {@link BaseServiceCollaborators.preparePopulation}. */
+  private readonly preparePopulation: PopulationPreparer | undefined;
+
   /** See {@link BaseServiceCollaborators.persist}. */
   private readonly persist: EntityPersister<TEntity>;
 
@@ -326,6 +345,7 @@ export class BaseService<
     this.ruleSet = collaborators.ruleSet;
     this.propertyDescriptors = collaborators.propertyDescriptors;
     this.populationAuthorization = collaborators.populationAuthorization;
+    this.preparePopulation = collaborators.preparePopulation;
     this.persist = collaborators.persist;
     this.remove = collaborators.remove;
     this.settingCleanup = collaborators.settingCleanup;
@@ -348,6 +368,13 @@ export class BaseService<
     data: Record<string, unknown> = {},
     context: ValidationContext = DEFAULT_SAVE_CONTEXT,
   ): Promise<TEntity> {
+    /*
+     * Prime repository-backed relationship loaders before the synchronous metadata translation runs.
+     * The preparer is invocation-scoped by the composition root and clears its cache at the beginning
+     * of every top-level call, so a memoized service cannot retain related entities across requests.
+     */
+    await this.preparePopulation?.(data);
+
     /*
      * [model/service/HibachiService.cfc:L88] — the inherited path, whose contract is
      * [org/Hibachi/HibachiService.cfc:L133-L169]. Expressed as its three observable steps.

@@ -211,6 +211,68 @@ export class DataIntegrityError extends DomainError {
   }
 }
 
+/**
+ * The bounded internal classifications a statement failure may expose after driver diagnostics have
+ * been stripped.
+ */
+export type DatabaseStatementFailureClass =
+  | 'unknown-column'
+  | 'unknown-table'
+  | 'permission-denied'
+  | 'data-too-long'
+  | 'syntax'
+  | 'binding'
+  | 'driver';
+
+/** Sanitised construction details for {@link DatabaseStatementError}. */
+export interface DatabaseStatementErrorDetails {
+  readonly failureClass: DatabaseStatementFailureClass;
+  readonly parameterCount: number;
+  readonly code?: string;
+  readonly errno?: number;
+  readonly sqlState?: string;
+}
+
+/**
+ * Raised when the database driver rejects a statement for a reason that is neither a duplicate key
+ * nor a transient lock failure.
+ *
+ * The original driver error is deliberately not retained as `cause`: mysql2 attaches the statement
+ * text and server-authored message to that object, and retaining it would preserve the disclosure this
+ * class exists to close. Only the bounded class and stable scalar identifiers survive.
+ */
+export class DatabaseStatementError extends DomainError {
+  public readonly failureClass: DatabaseStatementFailureClass;
+  public readonly parameterCount: number;
+  public readonly code?: string;
+  public readonly errno?: number;
+  public readonly sqlState?: string;
+
+  public constructor(details: DatabaseStatementErrorDetails) {
+    const context = {
+      failureClass: details.failureClass,
+      parameterCount: details.parameterCount,
+      ...(details.code !== undefined ? { code: details.code } : {}),
+      ...(details.errno !== undefined ? { errno: details.errno } : {}),
+      ...(details.sqlState !== undefined ? { sqlState: details.sqlState } : {}),
+    };
+
+    super('A database statement could not be executed.', { context });
+
+    this.failureClass = details.failureClass;
+    this.parameterCount = details.parameterCount;
+    if (details.code !== undefined) {
+      this.code = details.code;
+    }
+    if (details.errno !== undefined) {
+      this.errno = details.errno;
+    }
+    if (details.sqlState !== undefined) {
+      this.sqlState = details.sqlState;
+    }
+  }
+}
+
 /** Raised when the database refuses a write because the value it carries is already held. */
 export class UniqueConstraintViolationError extends DomainError {
   /**

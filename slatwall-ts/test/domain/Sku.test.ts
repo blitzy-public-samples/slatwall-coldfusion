@@ -16,6 +16,7 @@
 
 import { DomainError, NotImplementedError } from '../../src/errors/DomainError';
 import { ValidationError } from '../../src/errors/ValidationError';
+import { populate } from '../../src/domain/base/populate';
 import { Option } from '../../src/domain/option/Option';
 import { OptionGroup } from '../../src/domain/option/OptionGroup';
 import { Product } from '../../src/domain/product/Product';
@@ -24,6 +25,7 @@ import {
   SKU_DEFINITION_SEGMENT_DELIMITER,
   SKU_OPTIONS_DISPLAY_DEFAULT_DELIMITER,
   SKU_PRIMARY_ID_PROPERTY_NAME,
+  SKU_PROPERTY_DESCRIPTORS,
   SKU_RESIZE_METHOD_SCALE_BEST,
   SKU_SIMPLE_REPRESENTATION_PROPERTY_NAME,
   SKU_UNSAVED_ID_VALUE,
@@ -33,6 +35,7 @@ import {
   type SkuResizedImageRequest,
   type SkusBySelectedOptionsLookup,
 } from '../../src/domain/sku/Sku';
+import type { PopulationAuthorizationPort } from '../../src/ports/AccountContextPort';
 import { Validator, type ValidationRuleSet } from '../../src/validation/Validator';
 import {
   createHasUniqueOptionsConstraint,
@@ -55,6 +58,7 @@ import {
   createDefaultSkuDelegate,
   createImagePathDouble,
   createInMemorySkuRepository,
+  createPopulationAuthorizationDouble,
   createProductTypeRootResolverDouble,
   createSettingResolverDouble,
   createSkusBySelectedOptionsLookup,
@@ -2600,5 +2604,82 @@ describe('Sku — validation integration through the real Validator', () => {
       'defaultFlag',
       'transactionExistsFlag',
     ]);
+  });
+});
+
+/*
+ * NET-NEW — numeric population through the entity's declared column types.
+ *
+ * The population engine must not pass monetary text through Number: the legacy destination was
+ * BigDecimal, so arbitrary precision and the caller's decimal spelling survive. The integer column
+ * has the opposite constraint — it is represented as a number and therefore refuses values outside
+ * JavaScript's exact integer range.
+ */
+describe('Sku — NET-NEW — declared numeric population coercion', () => {
+  /** Population permitted, so the test reaches the declared-type coercion rather than the gate. */
+  const permitPopulation = (): PopulationAuthorizationPort =>
+    createPopulationAuthorizationDouble().populationAuthorization;
+
+  it('NET-NEW — model/entity/Sku.cfc:L56 — bigDecimal population normalises decimal spelling without losing arbitrary precision', () => {
+    const leadingPoint = buildSku();
+    populate(leadingPoint, { price: '  .3400  ' }, SKU_PROPERTY_DESCRIPTORS, permitPopulation());
+    expect(leadingPoint.price).toBe('0.3400');
+
+    const trailingPoint = buildSku();
+    populate(trailingPoint, { price: '12.' }, SKU_PROPERTY_DESCRIPTORS, permitPopulation());
+    expect(trailingPoint.price).toBe('12');
+
+    const beyondDoublePrecision = buildSku();
+    populate(
+      beyondDoublePrecision,
+      { price: '9007199254740993.0100' },
+      SKU_PROPERTY_DESCRIPTORS,
+      permitPopulation(),
+    );
+    expect(beyondDoublePrecision.price).toBe('9007199254740993.0100');
+  });
+
+  it('NET-NEW — model/entity/Sku.cfc:L56 — malformed or exponent-form decimal text is ambiguous and leaves the prior value intact', () => {
+    for (const refused of ['not-a-price', '1e3', '--1', '12.3.4']) {
+      const sku = buildSku({ price: '19.95' });
+
+      expect(() => {
+        populate(sku, { price: refused }, SKU_PROPERTY_DESCRIPTORS, permitPopulation());
+      }).toThrow(DomainError);
+      expect(sku.price).toBe('19.95');
+    }
+  });
+
+  it('NET-NEW — model/entity/Sku.cfc:L55-L57 — booleans are never recast as numeric monetary values', () => {
+    for (const refused of [true, false]) {
+      const sku = buildSku({ price: '8.50' });
+
+      expect(() => {
+        populate(sku, { price: refused }, SKU_PROPERTY_DESCRIPTORS, permitPopulation());
+      }).toThrow(DomainError);
+      expect(sku.price).toBe('8.50');
+    }
+  });
+
+  it('NET-NEW — model/entity/Sku.cfc:L62 — integer population accepts the safe ceiling and refuses the first inexact integer', () => {
+    const exact = buildSku();
+    populate(
+      exact,
+      { calculatedQATS: '9007199254740991' },
+      SKU_PROPERTY_DESCRIPTORS,
+      permitPopulation(),
+    );
+    expect(exact.calculatedQATS).toBe(Number.MAX_SAFE_INTEGER);
+
+    const inexact = buildSku({ calculatedQATS: 7 });
+    expect(() => {
+      populate(
+        inexact,
+        { calculatedQATS: '9007199254740992' },
+        SKU_PROPERTY_DESCRIPTORS,
+        permitPopulation(),
+      );
+    }).toThrow(DomainError);
+    expect(inexact.calculatedQATS).toBe(7);
   });
 });

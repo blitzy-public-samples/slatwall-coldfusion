@@ -20,9 +20,11 @@ import { Product } from '../../src/domain/product/Product';
 import type { SkuImagePathResolver } from '../../src/domain/sku/Sku';
 import { SKU_UNSAVED_ID_VALUE, Sku } from '../../src/domain/sku/Sku';
 import {
+  DatabaseStatementError,
   DomainError,
   LegacyParityError,
   NotImplementedError,
+  RequestBudgetExhaustedError,
   UNEXPECTED_ERROR_CREATING_PRODUCT_MESSAGE,
 } from '../../src/errors/DomainError';
 import {
@@ -32,7 +34,7 @@ import {
   ValidationError,
 } from '../../src/errors/ValidationError';
 import { IMAGE_UPLOAD_ALLOWED_EXTENSIONS } from '../../src/ports/ImagePathPort';
-import type { SmartListJoin } from '../../src/ports/SmartListQueryPort';
+import type { SmartListJoin, SmartListResult } from '../../src/ports/SmartListQueryPort';
 import { resolveSmartListPropertyIdentifier } from '../../src/ports/SmartListQueryPort';
 import type { SkuRepository, SkuSearchRow } from '../../src/ports/repositories/SkuRepository';
 /*
@@ -130,12 +132,15 @@ import {
   SKU_ACCESS_MATRIX,
   createProductSkuCreationBoundary,
   createSkuHandler,
+  createSkuHandlerFromContainer,
+  createSkuRoutes,
 } from '../../src/handlers/skuHandler';
 import type { UnitOfWorkRunner } from '../../src/adapters/mysql/UnitOfWork';
 import type { TransactionScope } from '../../src/adapters/mysql/UnitOfWork';
 import type {
   ScopedTransactionRunner,
   SkuCreationGraph,
+  SkuHandler,
   SkuSurface,
   SkuWriteGraph,
 } from '../../src/handlers/skuHandler';
@@ -1471,6 +1476,18 @@ describe('SkuService.createSkus — the content-access branch', () => {
     });
     expect(falsey.skuRepository.persisted).toHaveLength(2);
 
+    /*
+     * A numeric STRING takes the private `toCfmlNumber` path before becoming a boolean. Any non-zero
+     * number is true in CFML, so `'2'` selects the one-SKU bundled branch.
+     */
+    const numericTruthy = buildHarness({ contentIDs: [ID.firstContent, ID.secondContent] });
+    await numericTruthy.service.createSkus(buildContentAccessProduct(), {
+      price: 40,
+      accessContents: `${ID.firstContent},${ID.secondContent}`,
+      bundleContentAccess: '2',
+    });
+    expect(numericTruthy.skuRepository.persisted).toHaveLength(1);
+
     const unreadable = buildHarness({ contentIDs: [ID.firstContent] });
     await expect(
       unreadable.service.createSkus(buildContentAccessProduct(), {
@@ -1845,8 +1862,8 @@ describe('SkuService.createSkus — M6: the validation read-back contract (AAP �
       { getCurrentAccount: () => undefined },
     );
 
-    await expect(
-      unitOfWork.runScoped(
+    const rejection: unknown = await unitOfWork
+      .runScoped(
         () =>
           new SkuService(
             poolBoundRepository,
@@ -1866,8 +1883,19 @@ describe('SkuService.createSkus — M6: the validation read-back contract (AAP �
             options: `${ID.red},${ID.blue},${ID.small}`,
           }),
         () => skuBatchHasErrors(product),
-      ),
-    ).rejects.toThrow(POOL_EXECUTOR_USED_MESSAGE);
+      )
+      .then(
+        () => undefined,
+        (failure: unknown) => failure,
+      );
+
+    expect(rejection).toBeInstanceOf(DatabaseStatementError);
+    if (!(rejection instanceof DatabaseStatementError)) {
+      throw new Error('the poisoned pool path did not fail as a database statement error');
+    }
+    expect(rejection.failureClass).toBe('driver');
+    expect(rejection.message).not.toContain(POOL_EXECUTOR_USED_MESSAGE);
+    expect(JSON.stringify(rejection.context)).not.toContain(POOL_EXECUTOR_USED_MESSAGE);
 
     /* The boundary unwound rather than committing, and the offending statement is on record. */
     expect(probe.lifecycle).toEqual(['getConnection', 'begin', 'rollback', 'release']);
@@ -4346,12 +4374,13 @@ describe('SkuService.createSkus — the enumeration is bounded by the operator, 
       ),
     );
 
-    await expect(
-      harness.service.createSkus(product, {
-        price: TEST_MERCHANDISE_PRODUCT_PRICE,
-        options: selection,
-      }),
-    ).rejects.toThrow(/64/);
+    const operation = harness.service.createSkus(product, {
+      price: TEST_MERCHANDISE_PRODUCT_PRICE,
+      options: selection,
+    });
+
+    await expect(operation).rejects.toBeInstanceOf(RequestBudgetExhaustedError);
+    await expect(operation).rejects.toThrow(/64/);
 
     /*
      * Nothing was allocated, persisted or attached. Each of the three is a separate observation point, and
@@ -5131,6 +5160,8 @@ describe('SkuService sorted paths — the ordering index', () => {
  * inside an approved suite rather than in one of its own.
  */
 
+/* FOLDED IN FROM handlers/skuHandler */
+
 /** The SKU Lambda boundary — API-02 identifier binding and tx-01 transaction integration. */
 describe("The SKU surface's final wiring, and the transactional write runner", () => {
   /** A 32-character identifier, the only width the schema declares (IR-6). */
@@ -5323,6 +5354,38 @@ describe("The SKU surface's final wiring, and the transactional write runner", (
       expect(decisions).toEqual(['commit']);
       // Judgment (n): the boolean is the body, not wrapped in an envelope.
       expect(JSON.parse(response.body)).toBe(true);
+    });
+
+    it('NET-NEW — an over-budget batch is a 400 request refusal and leaves the product untouched', async () => {
+      const product = makeProduct();
+      const graph: SkuWriteGraph = {
+        resolveProduct: () => Promise.resolve(product),
+        skuService: {
+          createSkus: () => {
+            throw new RequestBudgetExhaustedError(
+              'Creating SKUs would enumerate 1296 combinations, which exceeds the configured ceiling.',
+              { context: { combinations: 1296, maximumCombinations: 1000 } },
+            );
+          },
+        },
+      };
+      const { runner, decisions } = makeWriteRunner(graph);
+      const handler = createSkuHandler(
+        makeSkuSurface({}),
+        () => Promise.resolve(null),
+        ADMIT_EVERY_REQUEST,
+        runner,
+      );
+
+      const response = await handler.createSkus(createSkusEvent());
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body)).toStrictEqual({
+        message: 'The request asks for more work than one operation may perform',
+      });
+      expect(product.skus).toHaveLength(0);
+      expect(product.defaultSku).toBeUndefined();
+      expect(decisions).toStrictEqual([]);
     });
 
     it('NET-NEW — a SKU-only finding rolls back, which product.hasErrors() alone cannot detect', async () => {
@@ -5534,13 +5597,13 @@ describe("The SKU surface's final wiring, and the transactional write runner", (
       expect(calls).toEqual([[SKU_ID, PRODUCT_ID]]);
     });
 
-    it('NET-NEW — the unsaved sentinel is reported as ABSENT rather than forwarded as a scope', async () => {
+    it('NET-NEW — unsaved sentinels collapse to an absent scope and are refused with a precise 400', async () => {
       /*
        * [model/entity/Sku.cfc:L52] and [model/entity/Product.cfc:L52] both declare `unsavedvalue=""`, so an
        * empty identifier can never address a persisted row. Forwarding it would scope the probe to a row
        * that cannot exist and answer `false` — and a `false` from this flag permits a DELETE
        * ([model/validation/Product.json:L12], [model/validation/Sku.json]). It therefore collapses to
-       * absent, and the unscoped call refuses instead.
+       * absent, and the handler refuses the request before the service can answer a dangerous `false`.
        */
       const { handler, calls } = makeHandler();
 
@@ -5549,11 +5612,14 @@ describe("The SKU surface's final wiring, and the transactional write runner", (
         headers: {},
       });
 
-      expect(calls).toEqual([[undefined, undefined]]);
-      expect(response.statusCode).not.toBe(200);
+      expect(calls).toEqual([]);
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body)).toStrictEqual({
+        message: 'At least one of "skuID" or "productID" query parameters is required',
+      });
     });
 
-    it('NET-NEW — IR-9 — an UNSCOPED request surfaces the legacy refusal and fabricates nothing', async () => {
+    it('NET-NEW — an UNSCOPED request is a precise client refusal and invokes no service', async () => {
       const { handler, calls } = makeHandler();
 
       const response = await handler.getTransactionExistsFlag({
@@ -5561,34 +5627,19 @@ describe("The SKU surface's final wiring, and the transactional write runner", (
         headers: {},
       });
 
-      /*
-       * The service is called, with both slots absent — which is exactly what `[:L286]`'s
-       * `argumentCollection=arguments` forwards when `arguments` is empty.
-       */
-      expect(calls).toEqual([[undefined, undefined]]);
+      expect(calls).toEqual([]);
+      expect(response.statusCode).toBe(400);
 
       /*
-       * IR-9: no guard is added here and no value is fabricated. `false` would be the dangerous
-       * substitute, and `true` would block a delete the legacy never blocked.
-       */
-      expect(response.statusCode).not.toBe(200);
-      expect(JSON.parse(response.body)).not.toBe(false);
-
-      /*
-       * And it is not presented as 501 either. A revision remapped this catch to a fixed
-       * not-implemented status on the ground that the route could never succeed. It can now succeed — the
-       * four cases above do — so a permanent classification would be false. The failure travels as the
-       * service failure it is.
-       */
-      expect(response.statusCode).not.toBe(501);
-
-      /*
-       * `src/errors/DomainError.ts` states the rule ("Assert on the code … never on these strings"), so
-       * this asserts the shape and the absence of disclosure rather than the neutral text.
+       * The boundary names only its two public query parameters. No repository member, internal
+       * diagnostic or fallback boolean is disclosed.
        */
       const body = JSON.parse(response.body) as Record<string, unknown>;
 
       expect(Object.keys(body)).toStrictEqual(['message']);
+      expect(body).toStrictEqual({
+        message: 'At least one of "skuID" or "productID" query parameters is required',
+      });
       expect(JSON.stringify(body)).not.toContain('SKU identifier');
       expect(JSON.stringify(body)).not.toContain('SkuDAO');
       expect(JSON.stringify(body)).not.toContain('getTransactionExistsFlag');
@@ -5633,6 +5684,53 @@ describe("The SKU surface's final wiring, and the transactional write runner", (
        */
       expect(response.statusCode).toBe(401);
       expect(calls).toEqual([]);
+    });
+  });
+
+  describe('SkuHandler.getSkuSmartList — only the requested window crosses the HTTP boundary', () => {
+    it('NET-NEW — omits the unpaged records collection while preserving count and page metadata', async () => {
+      const first = makeManagedSku();
+      first.skuID = 'cccccccc000000000000000000000011';
+      const second = makeManagedSku();
+      second.skuID = 'cccccccc000000000000000000000012';
+
+      const handler = createSkuHandler(
+        makeSkuSurface({
+          getSkuSmartList: () =>
+            Promise.resolve({
+              records: [first, second],
+              pageRecords: [second],
+              recordsCount: 2,
+              pageRecordsStart: 2,
+              pageRecordsEnd: 2,
+              currentPage: 2,
+              totalPages: 2,
+            }),
+        }),
+        () => Promise.resolve(null),
+        ADMIT_EVERY_REQUEST,
+        makeWriteRunner({
+          resolveProduct: () => Promise.resolve(null),
+          skuService: { createSkus: () => Promise.resolve(true) },
+        }).runner,
+      );
+
+      const response = await handler.getSkuSmartList({
+        queryStringParameters: { 'P:Show': '1', 'P:Current': '2' },
+        headers: {},
+      });
+      const body = JSON.parse(response.body) as Record<string, unknown>;
+
+      expect(response.statusCode).toBe(200);
+      expect(body).not.toHaveProperty('records');
+      expect(body).toMatchObject({
+        pageRecords: [expect.objectContaining({ skuID: second.skuID })],
+        recordsCount: 2,
+        pageRecordsStart: 2,
+        pageRecordsEnd: 2,
+        currentPage: 2,
+        totalPages: 2,
+      });
     });
   });
 
@@ -6575,6 +6673,1152 @@ describe("The SKU surface's final wiring, and the transactional write runner", (
       });
       /* Refused at the boundary, so no lookup was attempted for a code nobody supplied. */
       expect(reached).toEqual([]);
+    });
+  });
+
+  /*
+   * The five remaining routed READ members, and the glue each one owns.
+   *
+   * Why these cases exist. A qa run measured that five of `src/handlers/skuHandler.ts`'s nine route
+   * bodies were never entered by any test — `getProductSkus`, `getSortedProductSkus`,
+   * `searchSkusByProductType`, `getSkuStocksDeletableFlag` and `getSkuSmartList` — while the service
+   * members beneath them were covered at 91 %. That is the shape of gap that hides in plain sight: the
+   * business rules were asserted and the glue that reaches them was not, so a wrong parameter name, a
+   * wrong response projection or a missing authorisation gate on any of the five would have passed
+   * silently. `productHandler`, `optionHandler`, `brandHandler` and `googleFeedHandler` each have no
+   * never-entered route body, so the standard being met here is the project's own.
+   *
+   * Each route gets its parsing, its refusal path and its projection asserted, and the seven
+   * `SKU_ACCESS_MATRIX` rows that were unasserted are pinned on the exported table directly — so the
+   * classification cannot be loosened without a named failure even if every route case were deleted.
+   */
+
+  /** The entity name every SKU authorisation question in `skuHandler.ts` names. */
+  const SKU_COMPONENT_NAME = 'Sku';
+
+  /** A second 32-character SKU identifier, so a projection carrying the wrong row is visible (IR-6). */
+  const SECOND_SKU_ID = 'cccccccc000000000000000000000002';
+
+  /** A third SKU identifier, used by the case about a SKU that carries no code at all. */
+  const CODELESS_SKU_ID = 'cccccccc000000000000000000000003';
+
+  /** A product-type identifier the search route narrows by. */
+  const SEARCH_PRODUCT_TYPE_ID = 'dddddddd000000000000000000000001';
+
+  /**
+   * A {@link SkuHandler} whose nine members are present and never called — enough for
+   * {@link createSkuRoutes}, which only maps names onto members.
+   */
+  function makeSkuHandlerFacade(): SkuHandler {
+    const refuse = (member: string) => (): never => {
+      throw new Error(`SkuHandler.${member} was not expected to be dispatched by this case`);
+    };
+
+    return Object.freeze({
+      createSkus: refuse('createSkus'),
+      processImageUpload: refuse('processImageUpload'),
+      getProductSkus: refuse('getProductSkus'),
+      getSortedProductSkus: refuse('getSortedProductSkus'),
+      searchSkusByProductType: refuse('searchSkusByProductType'),
+      getSkuStocksDeletableFlag: refuse('getSkuStocksDeletableFlag'),
+      getTransactionExistsFlag: refuse('getTransactionExistsFlag'),
+      getSkuBySkuCode: refuse('getSkuBySkuCode'),
+      getSkuSmartList: refuse('getSkuSmartList'),
+    });
+  }
+
+  /** A resolver reporting no principal at all, so step 1 of the gate refuses with 401. */
+  const ADMIT_NOBODY: RequestAuthorizationResolver<{ headers: unknown }> = () => ({
+    accountContext: { getCurrentAccount: () => undefined },
+    entityAuthorization: {
+      authenticateEntity: (): never => {
+        throw new Error('the entity question must not be asked once the principal is absent');
+      },
+    },
+    populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
+  });
+
+  /** A resolver reporting a logged-in principal whose permission groups grant nothing. */
+  const GRANT_NOTHING: RequestAuthorizationResolver<{ headers: unknown }> = () => ({
+    accountContext: {
+      getCurrentAccount: () => ({
+        accountID: 'aaaaaaaa000000000000000000000003',
+        newFlag: false,
+        adminAccountFlag: false,
+      }),
+    },
+    entityAuthorization: { authenticateEntity: (): boolean => false },
+    populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
+  });
+
+  /**
+   * Builds a read route over a refusing surface, a product resolver and an authorisation resolver.
+   *
+   * The write runner is wired to raise, because none of the five members below is a write: a route
+   * that reached it would be entering a transaction it has no business entering, and that shows up
+   * here as a failure rather than as a passing test with a surprising commit in it.
+   */
+  function readHandlerWith(
+    overrides: Partial<SkuSurface>,
+    resolveProduct: (productID: string) => Promise<Product | null>,
+    resolver: RequestAuthorizationResolver<{ headers: unknown }> = ADMIT_EVERY_REQUEST,
+  ): ReturnType<typeof createSkuHandler> {
+    return createSkuHandler(makeSkuSurface(overrides), resolveProduct, resolver, {
+      runWrite: (): never => {
+        throw new Error('a read route must not enter a write transaction');
+      },
+    });
+  }
+
+  /** A SKU carrying values distinct enough that a crossed projection field is visible. */
+  function makeProjectableSku(skuID: string, skuCode: string): Sku {
+    const sku = new Sku();
+    sku.skuID = skuID;
+    sku.skuCode = skuCode;
+    sku.price = exactDecimal('19.99');
+    sku.listPrice = exactDecimal('24.50');
+    sku.renewalPrice = exactDecimal('0');
+    sku.activeFlag = true;
+    sku.userDefinedPriceFlag = false;
+    sku.imageFile = `${skuCode}.jpg`;
+    return sku;
+  }
+
+  /** The projection {@link makeProjectableSku} must serialise to, field for field. */
+  function projectionOf(skuID: string, skuCode: string): Record<string, unknown> {
+    return {
+      skuID,
+      skuCode,
+      price: '19.99',
+      listPrice: '24.50',
+      renewalPrice: '0',
+      activeFlag: true,
+      userDefinedPriceFlag: false,
+      imageFile: `${skuCode}.jpg`,
+    };
+  }
+
+  describe('SkuHandler.getProductSkus — the required `sorted` flag and the two call shapes (API-02)', () => {
+    /**
+     * Records every argument list `getProductSkus` was reached with, so ARITY is observable and not
+     * merely the values: the route must call the two-argument form when `fetchOptions` is absent and
+     * the three-argument form when it is present, which is what keeps the service's own
+     * `fetchOptions = false` default at [model/service/SkuService.cfc:L220] the single place that
+     * default lives.
+     */
+    function probe(product: Product | null = makeProduct()): {
+      readonly handler: ReturnType<typeof createSkuHandler>;
+      readonly calls: readonly unknown[][];
+      readonly resolved: readonly string[];
+    } {
+      const calls: unknown[][] = [];
+      const resolved: string[] = [];
+
+      const handler = readHandlerWith(
+        {
+          getProductSkus: (
+            forProduct: Product,
+            sorted: boolean,
+            fetchOptions?: boolean,
+          ): Promise<Sku[]> => {
+            /* `arguments.length` is not available on an arrow, so the shape is rebuilt explicitly. */
+            calls.push(
+              fetchOptions === undefined
+                ? [forProduct.productID, sorted]
+                : [forProduct.productID, sorted, fetchOptions],
+            );
+            return Promise.resolve([makeProjectableSku(SKU_ID, 'PROD-1')]);
+          },
+        },
+        (productID: string): Promise<Product | null> => {
+          resolved.push(productID);
+          return Promise.resolve(product);
+        },
+      );
+
+      return { handler, calls, resolved };
+    }
+
+    it('NET-NEW — `sorted=true` with no `fetchOptions` calls the TWO-argument form and projects the SKUs', async () => {
+      const { handler, calls, resolved } = probe();
+
+      const response = await handler.getProductSkus({
+        pathParameters: { productID: PRODUCT_ID },
+        queryStringParameters: { sorted: 'true' },
+        headers: {},
+      });
+
+      expect(resolved).toEqual([PRODUCT_ID]);
+      /* Two entries, not three: omitting the parameter really omits the argument. */
+      expect(calls).toStrictEqual([[PRODUCT_ID, true]]);
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toStrictEqual([projectionOf(SKU_ID, 'PROD-1')]);
+    });
+
+    it('NET-NEW — `fetchOptions=false` still calls the THREE-argument form, because absent and false differ', async () => {
+      /*
+       * The distinction the reader draws between "absent" and "present and false" is only observable
+       * through arity, and it matters: [model/dao/SkuDAO.cfc:L150] declares `fetchOptions` REQUIRED and
+       * reads it unscoped (D9), so which of the two the service receives is a real difference.
+       */
+      const { handler, calls } = probe();
+
+      await handler.getProductSkus({
+        pathParameters: { productID: PRODUCT_ID },
+        queryStringParameters: { sorted: 'false', fetchOptions: 'false' },
+        headers: {},
+      });
+
+      expect(calls).toStrictEqual([[PRODUCT_ID, false, false]]);
+    });
+
+    it('NET-NEW — every CFML boolean literal both flags accept is read, in either case', async () => {
+      /*
+       * `skuHandler.ts` declares `['true','yes','1']` and `['false','no','0']`, and folds the raw value
+       * before comparing. Each literal is exercised rather than one representative, because the accepted
+       * set is a published contract of the route.
+       */
+      const accepted: readonly (readonly [string, boolean])[] = [
+        ['true', true],
+        ['TRUE', true],
+        ['yes', true],
+        ['YES', true],
+        ['1', true],
+        ['false', false],
+        ['FALSE', false],
+        ['no', false],
+        ['No', false],
+        ['0', false],
+      ];
+
+      for (const [literal, expected] of accepted) {
+        const { handler, calls } = probe();
+
+        const response = await handler.getProductSkus({
+          pathParameters: { productID: PRODUCT_ID },
+          queryStringParameters: { sorted: literal, fetchOptions: literal },
+          headers: {},
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(calls).toStrictEqual([[PRODUCT_ID, expected, expected]]);
+      }
+    });
+
+    it('NET-NEW — Discrepancy 2: an ABSENT `sorted` is a 400, because the legacy declares it required', async () => {
+      /*
+       * [model/service/SkuService.cfc:L220] declares `required boolean sorted`, so the route refuses
+       * rather than defaulting. Defaulting here would invent a value the legacy never supplied.
+       */
+      const { handler, calls } = probe();
+
+      const response = await handler.getProductSkus({
+        pathParameters: { productID: PRODUCT_ID },
+        queryStringParameters: {},
+        headers: {},
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body)).toStrictEqual({
+        message: 'A "sorted" query parameter is required',
+      });
+      expect(calls).toStrictEqual([]);
+    });
+
+    it('NET-NEW — a `sorted` value that is NOT a CFML boolean is a distinct 400 from an absent one', async () => {
+      /*
+       * The reader's three states — absent, unrecognised, recognised — each get their own answer, which
+       * is why it returns `undefined | null | boolean` rather than a bare boolean.
+       */
+      const { handler, calls } = probe();
+
+      const response = await handler.getProductSkus({
+        pathParameters: { productID: PRODUCT_ID },
+        queryStringParameters: { sorted: 'perhaps' },
+        headers: {},
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body)).toStrictEqual({
+        message: 'The "sorted" query parameter must be a boolean',
+      });
+      expect(calls).toStrictEqual([]);
+    });
+
+    it('NET-NEW — an unrecognised `fetchOptions` is refused while an absent one is forwarded as absence', async () => {
+      const { handler, calls } = probe();
+
+      const response = await handler.getProductSkus({
+        pathParameters: { productID: PRODUCT_ID },
+        queryStringParameters: { sorted: 'true', fetchOptions: 'maybe' },
+        headers: {},
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body)).toStrictEqual({
+        message: 'The "fetchOptions" query parameter must be a boolean',
+      });
+      expect(calls).toStrictEqual([]);
+    });
+
+    it('NET-NEW — a missing productID, and the unsaved-identifier sentinel, are both 400 before any resolution', async () => {
+      /*
+       * `''` is the unsaved-identifier sentinel this port carries (IR-6), so an empty path parameter is
+       * "addresses nothing" rather than "addresses the row whose id is the empty string".
+       */
+      for (const pathParameters of [null, {}, { productID: '' }]) {
+        const { handler, calls, resolved } = probe();
+
+        const response = await handler.getProductSkus({
+          pathParameters,
+          queryStringParameters: { sorted: 'true' },
+          headers: {},
+        });
+
+        expect(response.statusCode).toBe(400);
+        expect(JSON.parse(response.body)).toStrictEqual({
+          message: 'A "productID" path parameter is required',
+        });
+        expect(resolved).toEqual([]);
+        expect(calls).toStrictEqual([]);
+      }
+    });
+
+    it('NET-NEW — a product that does not exist is 404, and the service is never asked', async () => {
+      const { handler, calls, resolved } = probe(null);
+
+      const response = await handler.getProductSkus({
+        pathParameters: { productID: PRODUCT_ID },
+        queryStringParameters: { sorted: 'true' },
+        headers: {},
+      });
+
+      expect(resolved).toEqual([PRODUCT_ID]);
+      expect(response.statusCode).toBe(404);
+      expect(JSON.parse(response.body)).toStrictEqual({ message: 'Not found' });
+      expect(calls).toStrictEqual([]);
+    });
+
+    it('NET-NEW — a service failure is forwarded as a shaped failure, disclosing nothing (D13)', async () => {
+      /*
+       * D13 is carried, not repaired: a sorted request whose collection holds an option-less SKU raises
+       * inside the service, and this boundary guards nothing. The assertion is that the raise reaches the
+       * caller as a shaped body rather than being swallowed into an empty 200.
+       */
+      const handler = readHandlerWith(
+        {
+          getProductSkus: (): Promise<Sku[]> =>
+            Promise.reject(new DomainError('D13: the sorted index was zero')),
+        },
+        () => Promise.resolve(makeProduct()),
+      );
+
+      const response = await handler.getProductSkus({
+        pathParameters: { productID: PRODUCT_ID },
+        queryStringParameters: { sorted: 'true' },
+        headers: {},
+      });
+
+      expect(response.statusCode).toBeGreaterThanOrEqual(500);
+      expect(Object.keys(JSON.parse(response.body) as Record<string, unknown>)).toStrictEqual([
+        'message',
+      ]);
+      expect(response.body).not.toContain('sorted index');
+    });
+
+    it('NET-NEW — no principal is 401 and no grant is 403, both before the product is resolved', async () => {
+      for (const [resolver, expected] of [
+        [ADMIT_NOBODY, 401],
+        [GRANT_NOTHING, 403],
+      ] as const) {
+        const resolved: string[] = [];
+        const handler = readHandlerWith(
+          {},
+          (productID: string): Promise<Product | null> => {
+            resolved.push(productID);
+            return Promise.resolve(makeProduct());
+          },
+          resolver,
+        );
+
+        const response = await handler.getProductSkus({
+          pathParameters: { productID: PRODUCT_ID },
+          queryStringParameters: { sorted: 'true' },
+          headers: {},
+        });
+
+        expect(response.statusCode).toBe(expected);
+        /* The gate runs first, so an unauthorised caller cannot even probe for a product's existence. */
+        expect(resolved).toEqual([]);
+      }
+    });
+
+    it('NET-NEW — the row asks exactly `read` on `Sku`, and the addressed product travels with the question', async () => {
+      const questions: { crudType: string; entityName: string; entityID?: string }[] = [];
+      const handler = readHandlerWith(
+        { getProductSkus: (): Promise<Sku[]> => Promise.resolve([]) },
+        () => Promise.resolve(makeProduct()),
+        () => ({
+          accountContext: {
+            getCurrentAccount: () => ({
+              accountID: 'aaaaaaaa000000000000000000000004',
+              newFlag: false,
+              adminAccountFlag: false,
+            }),
+          },
+          entityAuthorization: {
+            authenticateEntity: (question): boolean => {
+              questions.push(question);
+              return true;
+            },
+          },
+          populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
+        }),
+      );
+
+      await handler.getProductSkus({
+        pathParameters: { productID: PRODUCT_ID },
+        queryStringParameters: { sorted: 'true' },
+        headers: {},
+      });
+
+      /*
+       * Exactly one question, and it names the SKU entity rather than the product — the route reads SKUs,
+       * and `SKU_ACCESS_MATRIX` says so. The identifier is the route's `skuID`, which this route does not
+       * address, so none travels.
+       */
+      expect(questions).toStrictEqual([{ crudType: 'read', entityName: SKU_COMPONENT_NAME }]);
+    });
+  });
+
+  describe('SkuHandler.getSortedProductSkus — the single-argument sibling (API-02)', () => {
+    function probe(product: Product | null = makeProduct()): {
+      readonly handler: ReturnType<typeof createSkuHandler>;
+      readonly calls: readonly string[];
+    } {
+      const calls: string[] = [];
+
+      const handler = readHandlerWith(
+        {
+          getSortedProductSkus: (forProduct: Product): Promise<Sku[]> => {
+            calls.push(forProduct.productID);
+            return Promise.resolve([
+              makeProjectableSku(SKU_ID, 'SORT-1'),
+              makeProjectableSku(SECOND_SKU_ID, 'SORT-2'),
+            ]);
+          },
+        },
+        () => Promise.resolve(product),
+      );
+
+      return { handler, calls };
+    }
+
+    it('NET-NEW — forwards the resolved product and projects the SKUs in the order received', async () => {
+      /*
+       * Order is the whole point of the member — [model/service/SkuService.cfc:L246] exists to return
+       * option-group order — so the projection must preserve it rather than sorting or de-duplicating.
+       */
+      const { handler, calls } = probe();
+
+      const response = await handler.getSortedProductSkus({
+        pathParameters: { productID: PRODUCT_ID },
+        headers: {},
+      });
+
+      expect(calls).toEqual([PRODUCT_ID]);
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toStrictEqual([
+        projectionOf(SKU_ID, 'SORT-1'),
+        projectionOf(SECOND_SKU_ID, 'SORT-2'),
+      ]);
+    });
+
+    it('NET-NEW — reads NO query parameters at all, because the member declares none', async () => {
+      /*
+       * The sorted sibling takes `sorted` implicitly, so supplying the flag here must change nothing:
+       * a route that read it would be advertising a parameter its service member does not have.
+       */
+      const { handler, calls } = probe();
+
+      const response = await handler.getSortedProductSkus({
+        pathParameters: { productID: PRODUCT_ID },
+        headers: {},
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(calls).toEqual([PRODUCT_ID]);
+    });
+
+    it('NET-NEW — a missing productID is 400 and a missing product is 404', async () => {
+      const missing = await probe().handler.getSortedProductSkus({
+        pathParameters: {},
+        headers: {},
+      });
+
+      expect(missing.statusCode).toBe(400);
+      expect(JSON.parse(missing.body)).toStrictEqual({
+        message: 'A "productID" path parameter is required',
+      });
+
+      const absent = await probe(null).handler.getSortedProductSkus({
+        pathParameters: { productID: PRODUCT_ID },
+        headers: {},
+      });
+
+      expect(absent.statusCode).toBe(404);
+      expect(JSON.parse(absent.body)).toStrictEqual({ message: 'Not found' });
+    });
+
+    it('NET-NEW — an unauthorised caller is refused before the product is resolved', async () => {
+      const resolved: string[] = [];
+      const handler = readHandlerWith(
+        {},
+        (productID: string): Promise<Product | null> => {
+          resolved.push(productID);
+          return Promise.resolve(makeProduct());
+        },
+        ADMIT_NOBODY,
+      );
+
+      const response = await handler.getSortedProductSkus({
+        pathParameters: { productID: PRODUCT_ID },
+        headers: {},
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(resolved).toEqual([]);
+    });
+  });
+
+  describe('SkuHandler.searchSkusByProductType — BOTH arguments stay optional (API-02)', () => {
+    /*
+     * AAP §0.4.2.2 Discrepancy 3: [model/service/SkuService.cfc:L271] declares
+     * `searchSkusByProductType(string term, string productTypeID)` with NEITHER argument required, so the
+     * route forwards whatever came — including nothing — and authors no `400` of its own.
+     */
+    function probe(): {
+      readonly handler: ReturnType<typeof createSkuHandler>;
+      readonly calls: (readonly [string | undefined, string | undefined])[];
+    } {
+      const calls: (readonly [string | undefined, string | undefined])[] = [];
+
+      const handler = readHandlerWith(
+        {
+          searchSkusByProductType: (
+            term?: string,
+            productTypeID?: string,
+          ): Promise<{ readonly id: string; readonly value: string }[]> => {
+            calls.push([term, productTypeID]);
+            return Promise.resolve([{ id: SKU_ID, value: 'Test Product (SEARCH-1)' }]);
+          },
+        },
+        () => {
+          throw new Error('the search route resolves no product');
+        },
+      );
+
+      return { handler, calls };
+    }
+
+    it('NET-NEW — both parameters absent are forwarded as `undefined`, and the answer is still 200', async () => {
+      const { handler, calls } = probe();
+
+      const response = await handler.searchSkusByProductType({
+        queryStringParameters: null,
+        headers: {},
+      });
+
+      expect(calls).toEqual([[undefined, undefined]]);
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toStrictEqual([
+        { id: SKU_ID, value: 'Test Product (SEARCH-1)' },
+      ]);
+    });
+
+    it('NET-NEW — Judgment (f): `term` FIRST, singular `productTypeID` SECOND', async () => {
+      /*
+       * Both are strings, so a forward written in the wrong order type-checks perfectly and silently
+       * searches for the wrong thing. Only an order assertion catches it. The name is singular here and
+       * PLURAL on the product side ([model/dao/ProductDAO.cfc:L419], Discrepancy 6) — the divergence is
+       * carried, so this route must not "correct" it.
+       */
+      const { handler, calls } = probe();
+
+      await handler.searchSkusByProductType({
+        queryStringParameters: { term: 'shirt', productTypeID: SEARCH_PRODUCT_TYPE_ID },
+        headers: {},
+      });
+
+      expect(calls).toEqual([['shirt', SEARCH_PRODUCT_TYPE_ID]]);
+    });
+
+    it('NET-NEW — the term is forwarded RAW: not trimmed, not folded, not wildcard-wrapped', async () => {
+      /*
+       * The repository owns the term's treatment, so any normalisation here would apply it twice and
+       * change which rows match.
+       */
+      const { handler, calls } = probe();
+
+      await handler.searchSkusByProductType({
+        queryStringParameters: { term: '  Red Shirt%  ' },
+        headers: {},
+      });
+
+      expect(calls).toEqual([['  Red Shirt%  ', undefined]]);
+    });
+
+    it('NET-NEW — an EMPTY term is a value and is forwarded as one, not collapsed to absence', async () => {
+      const { handler, calls } = probe();
+
+      await handler.searchSkusByProductType({
+        queryStringParameters: { term: '', productTypeID: '' },
+        headers: {},
+      });
+
+      expect(calls).toEqual([['', '']]);
+    });
+
+    it('NET-NEW — an unauthorised caller is refused and the search never runs', async () => {
+      for (const [resolver, expected] of [
+        [ADMIT_NOBODY, 401],
+        [GRANT_NOTHING, 403],
+      ] as const) {
+        const calls: unknown[] = [];
+        const handler = readHandlerWith(
+          {
+            searchSkusByProductType: (): Promise<never[]> => {
+              calls.push('reached');
+              return Promise.resolve([]);
+            },
+          },
+          () => {
+            throw new Error('the search route resolves no product');
+          },
+          resolver,
+        );
+
+        const response = await handler.searchSkusByProductType({
+          queryStringParameters: { term: 'shirt' },
+          headers: {},
+        });
+
+        expect(response.statusCode).toBe(expected);
+        expect(calls).toStrictEqual([]);
+      }
+    });
+  });
+
+  describe('SkuHandler.getSkuStocksDeletableFlag — D4, the route that can never succeed (API-02)', () => {
+    /*
+     * TODO(parity) D4 is carried, not repaired. [model/service/SkuService.cfc:L282] forwards to
+     * `getSkuDAO().getSkuStocksDeletableFlag(...)`, and that DAO member is declared NOWHERE in the legacy
+     * repository, so the only legacy path that reaches it — `Sku.getStocksDeletableFlag()`
+     * [model/entity/Sku.cfc:L567-L572] — has never been able to resolve. The service therefore returns a
+     * rejected promise carrying a not-implemented failure, and this route must forward that intact rather
+     * than substituting a plausible boolean for it.
+     */
+    function probe(): {
+      readonly handler: ReturnType<typeof createSkuHandler>;
+      readonly calls: readonly string[];
+    } {
+      const calls: string[] = [];
+
+      const handler = readHandlerWith(
+        {
+          getSkuStocksDeletableFlag: (skuID: string): Promise<boolean> => {
+            calls.push(skuID);
+            return Promise.reject(
+              new NotImplementedError(
+                'SkuService.getSkuStocksDeletableFlag',
+                'model/dao/SkuDAO.cfc declares no getSkuStocksDeletableFlag member (D4)',
+              ),
+            );
+          },
+        },
+        () => {
+          throw new Error('the stocks-deletable route resolves no product');
+        },
+      );
+
+      return { handler, calls };
+    }
+
+    it('NET-NEW — the addressed skuID IS forwarded, and the not-implemented failure answers', async () => {
+      const { handler, calls } = probe();
+
+      const response = await handler.getSkuStocksDeletableFlag({
+        pathParameters: { skuID: SKU_ID },
+        headers: {},
+      });
+
+      /*
+       * The forwarded identifier is the assertion. A route that short-circuited on D4 with a fixed 501
+       * would never call the service at all, and the defect would stop being reproducible through the
+       * published surface.
+       */
+      expect(calls).toEqual([SKU_ID]);
+      expect(response.statusCode).not.toBe(200);
+      expect(Object.keys(JSON.parse(response.body) as Record<string, unknown>)).toStrictEqual([
+        'message',
+      ]);
+      /* The locator travels to the log, never to the body. */
+      expect(response.body).not.toContain('SkuDAO');
+    });
+
+    it('NET-NEW — a missing skuID, and the unsaved sentinel, are 400 before the service is reached', async () => {
+      for (const pathParameters of [null, {}, { skuID: '' }]) {
+        const { handler, calls } = probe();
+
+        const response = await handler.getSkuStocksDeletableFlag({ pathParameters, headers: {} });
+
+        expect(response.statusCode).toBe(400);
+        expect(JSON.parse(response.body)).toStrictEqual({
+          message: 'A "skuID" path parameter is required',
+        });
+        expect(calls).toEqual([]);
+      }
+    });
+
+    it('NET-NEW — the gate runs BEFORE D4, so an unauthorised caller gets 401 rather than the failure', async () => {
+      const calls: string[] = [];
+      const handler = readHandlerWith(
+        {
+          getSkuStocksDeletableFlag: (skuID: string): Promise<boolean> => {
+            calls.push(skuID);
+            return Promise.resolve(true);
+          },
+        },
+        () => {
+          throw new Error('the stocks-deletable route resolves no product');
+        },
+        ADMIT_NOBODY,
+      );
+
+      const response = await handler.getSkuStocksDeletableFlag({
+        pathParameters: { skuID: SKU_ID },
+        headers: {},
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(calls).toEqual([]);
+    });
+
+    it('NET-NEW — the read question is UNSCOPED, and `createSkus` is the only row that scopes one', async () => {
+      /*
+       * Measured against the source rather than assumed: `skuHandler.ts` calls `refuseUnauthorized` with a
+       * third `entityID` argument at exactly one of its nine sites — `createSkus`, which scopes its
+       * `Product` update question to the product being written. Every read route, this one included, asks
+       * the plain `read`-on-`Sku` question with no identifier attached, so a `read` grant is entity-wide.
+       *
+       * Recorded as the contract rather than corrected: narrowing a read to the addressed row would change
+       * which callers a deployment's existing grants admit, and no qa finding asks for it. Pinning it here
+       * means a later change to that scoping is a named failure and a deliberate decision.
+       */
+      const questions: { crudType: string; entityName: string; entityID?: string }[] = [];
+      const handler = readHandlerWith(
+        {
+          getSkuStocksDeletableFlag: (): Promise<boolean> => Promise.resolve(true),
+        },
+        () => {
+          throw new Error('the stocks-deletable route resolves no product');
+        },
+        () => ({
+          accountContext: {
+            getCurrentAccount: () => ({
+              accountID: 'aaaaaaaa000000000000000000000005',
+              newFlag: false,
+              adminAccountFlag: false,
+            }),
+          },
+          entityAuthorization: {
+            authenticateEntity: (question): boolean => {
+              questions.push(question);
+              return true;
+            },
+          },
+          populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
+        }),
+      );
+
+      await handler.getSkuStocksDeletableFlag({
+        pathParameters: { skuID: SKU_ID },
+        headers: {},
+      });
+
+      /* Exactly one question, naming the entity and the operation, and carrying no identifier. */
+      expect(questions).toStrictEqual([{ crudType: 'read', entityName: SKU_COMPONENT_NAME }]);
+    });
+  });
+
+  describe('SkuHandler.getSkuSmartList — the recognised query subset and the paged projection (API-02)', () => {
+    /** A page whose five paging numbers are all distinct, so a crossed field is visible. */
+    function page(records: readonly Sku[], pageRecords: readonly Sku[]): SmartListResult<Sku> {
+      return {
+        records,
+        pageRecords,
+        recordsCount: 37,
+        pageRecordsStart: 11,
+        pageRecordsEnd: 20,
+        currentPage: 2,
+        totalPages: 4,
+      };
+    }
+
+    function probe(result: SmartListResult<Sku>): {
+      readonly handler: ReturnType<typeof createSkuHandler>;
+      readonly inputs: Record<string, unknown>[];
+      readonly arity: number[];
+    } {
+      const inputs: Record<string, unknown>[] = [];
+      const arity: number[] = [];
+
+      const handler = readHandlerWith(
+        {
+          getSkuSmartList: (...args: unknown[]): Promise<SmartListResult<Sku>> => {
+            arity.push(args.length);
+            inputs.push((args[0] ?? {}) as Record<string, unknown>);
+            return Promise.resolve(result);
+          },
+        },
+        () => {
+          throw new Error('the smart-list route resolves no product');
+        },
+      );
+
+      return { handler, inputs, arity };
+    }
+
+    it('NET-NEW — an absent query string is the legal `data={}` case, and `currentURL` is never supplied', async () => {
+      /*
+       * [model/service/SkuService.cfc:L309] declares `getSkuSmartList(struct data={}, currentURL="")`.
+       * `data={}` is legal, and `currentURL` is deliberately omitted rather than passed as `''`: it
+       * belongs to the FW/1 request context this port has no equivalent of, so the route supplies one
+       * argument and lets the service's own default stand.
+       */
+      const sku = makeProjectableSku(SKU_ID, 'LIST-1');
+      const { handler, inputs, arity } = probe(page([sku], [sku]));
+
+      const response = await handler.getSkuSmartList({ queryStringParameters: null, headers: {} });
+
+      expect(inputs).toStrictEqual([{}]);
+      expect(arity).toStrictEqual([1]);
+      expect(response.statusCode).toBe(200);
+    });
+
+    it('NET-NEW — only the recognised smart-list keys are forwarded; anything else is dropped silently', async () => {
+      /*
+       * The recognised set is the seven named keys plus the seven prefixes `httpResponse.ts` declares.
+       * An unrecognised key is dropped rather than refused, because the legacy smart list simply never
+       * acted on one — and `slatAction`, which every invocation carries, must not leak into `data`.
+       */
+      const sku = makeProjectableSku(SKU_ID, 'LIST-1');
+      const { handler, inputs } = probe(page([sku], [sku]));
+
+      await handler.getSkuSmartList({
+        queryStringParameters: {
+          'F:activeFlag': '1',
+          'FR:activeFlag': 'true',
+          'FI:skuID': SKU_ID,
+          'FIR:skuID': 'yes',
+          'FK:skuCode': 'LIST',
+          'FKR:skuCode': '1',
+          'R:price': '1^100',
+          OrderBy: 'skuCode|ASC',
+          'P:Show': '10',
+          'P:Start': '11',
+          'P:Current': '2',
+          keyword: 'shirt',
+          keywords: 'shirt,red',
+          savedStateID: 'abc',
+          slatAction: 'sku.getSkuSmartList',
+          somethingInvented: 'nope',
+        },
+        headers: {},
+      });
+
+      expect(inputs).toStrictEqual([
+        {
+          'F:activeFlag': '1',
+          'FR:activeFlag': 'true',
+          'FI:skuID': SKU_ID,
+          'FIR:skuID': 'yes',
+          'FK:skuCode': 'LIST',
+          'FKR:skuCode': '1',
+          'R:price': '1^100',
+          OrderBy: 'skuCode|ASC',
+          'P:Show': '10',
+          'P:Start': '11',
+          'P:Current': '2',
+          keyword: 'shirt',
+          keywords: 'shirt,red',
+          savedStateID: 'abc',
+        },
+      ]);
+    });
+
+    it('NET-NEW — the five paging numbers cross untouched and only the requested page is projected', async () => {
+      /*
+       * The service contract still carries both collections; the HTTP projection deliberately does not.
+       * `toSkuSmartListResponse` emits `pageRecords`, the counts and the paging metadata only, so a
+       * response stays bounded by `P:Show` rather than growing with the whole selection. The five paging
+       * numbers are what let a caller walk the rest, and they cross unchanged.
+       */
+      const first = makeProjectableSku(SKU_ID, 'LIST-1');
+      const second = makeProjectableSku(SECOND_SKU_ID, 'LIST-2');
+      const { handler } = probe(page([first, second], [second]));
+
+      const response = await handler.getSkuSmartList({
+        queryStringParameters: { 'P:Current': '2' },
+        headers: {},
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toStrictEqual({
+        pageRecords: [projectionOf(SECOND_SKU_ID, 'LIST-2')],
+        recordsCount: 37,
+        pageRecordsStart: 11,
+        pageRecordsEnd: 20,
+        currentPage: 2,
+        totalPages: 4,
+      });
+    });
+
+    it('NET-NEW — the SAME Sku object appearing twice in the page projects consistently', async () => {
+      /*
+       * `pageRecords` is a window over the selection — `../../src/adapters/mysql/SmartListQueryBuilder`
+       * derives both from one selection — so the same `Sku` instance genuinely reaches the projection
+       * more than once, and `toSkuSmartListResponse` carries a per-call memo so it is projected once and
+       * the remembered projection is reused. This case drives the memo's WRITE and its READ, which is
+       * what makes the reuse branch reachable at all.
+       *
+       * What is deliberately NOT asserted here: object identity between the two positions. The memo is
+       * a property of the in-memory response, and `JSON.stringify` erases identity — the serialised body
+       * is byte-identical whether one projection is shared or two equal ones are built. Asserting it
+       * would need the private projector exported purely to be tested, which is invented API surface
+       * (AAP §0.7.3). The observable contract is that every position carries the same, complete
+       * projection, and that is what is pinned.
+       */
+      const shared = makeProjectableSku(SKU_ID, 'LIST-1');
+      const { handler } = probe(page([shared, shared], [shared, shared]));
+
+      const response = await handler.getSkuSmartList({ queryStringParameters: {}, headers: {} });
+      const body = JSON.parse(response.body) as {
+        readonly pageRecords: readonly unknown[];
+      };
+
+      const expected = projectionOf(SKU_ID, 'LIST-1');
+
+      /* Cardinality is preserved — the memo reuses a projection, it never collapses a row. */
+      expect(body.pageRecords).toStrictEqual([expected, expected]);
+    });
+
+    it('NET-NEW — an EMPTY page still answers 200 with the page collection present and empty', async () => {
+      const { handler } = probe({
+        records: [],
+        pageRecords: [],
+        recordsCount: 0,
+        pageRecordsStart: 0,
+        pageRecordsEnd: 0,
+        currentPage: 1,
+        totalPages: 0,
+      });
+
+      const response = await handler.getSkuSmartList({ queryStringParameters: {}, headers: {} });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toStrictEqual({
+        pageRecords: [],
+        recordsCount: 0,
+        pageRecordsStart: 0,
+        pageRecordsEnd: 0,
+        currentPage: 1,
+        totalPages: 0,
+      });
+    });
+
+    it('NET-NEW — a SKU with no code omits the key entirely rather than emitting null', async () => {
+      /*
+       * `exactOptionalPropertyTypes` makes "absent" and "present and undefined" different things, and the
+       * projection spreads conditionally so an unset code produces no key at all.
+       */
+      const sku = new Sku();
+      sku.skuID = CODELESS_SKU_ID;
+      const { handler } = probe(page([sku], [sku]));
+
+      const response = await handler.getSkuSmartList({ queryStringParameters: {}, headers: {} });
+      const body = JSON.parse(response.body) as { readonly pageRecords: readonly object[] };
+
+      expect(Object.keys(body.pageRecords[0] ?? {})).toStrictEqual([
+        'skuID',
+        'price',
+        'listPrice',
+        'renewalPrice',
+        'activeFlag',
+        'userDefinedPriceFlag',
+      ]);
+    });
+
+    it('NET-NEW — an unauthorised caller is refused and the smart list never runs', async () => {
+      for (const [resolver, expected] of [
+        [ADMIT_NOBODY, 401],
+        [GRANT_NOTHING, 403],
+      ] as const) {
+        const reached: string[] = [];
+        const handler = readHandlerWith(
+          {
+            getSkuSmartList: (): Promise<SmartListResult<Sku>> => {
+              reached.push('reached');
+              return Promise.reject(new Error('unreachable'));
+            },
+          },
+          () => {
+            throw new Error('the smart-list route resolves no product');
+          },
+          resolver,
+        );
+
+        const response = await handler.getSkuSmartList({
+          queryStringParameters: {},
+          headers: {},
+        });
+
+        expect(response.statusCode).toBe(expected);
+        expect(reached).toStrictEqual([]);
+      }
+    });
+  });
+
+  describe('SKU_ACCESS_MATRIX — every one of the nine rows is pinned (API-02)', () => {
+    /*
+     * A qa run measured that only two of the nine rows were asserted. The seven reads are pinned here so
+     * that loosening any of them — dropping `secure`, widening the entity, or turning a `read` into a
+     * grant the reader already holds — fails by name rather than being noticed by a later audit.
+     */
+    const READ_ROW = Object.freeze({
+      classification: 'secure',
+      entityName: SKU_COMPONENT_NAME,
+      crudType: 'read',
+    });
+
+    it.each([
+      'getProductSkus',
+      'getSortedProductSkus',
+      'searchSkusByProductType',
+      'getSkuStocksDeletableFlag',
+      'getTransactionExistsFlag',
+      'getSkuBySkuCode',
+      'getSkuSmartList',
+    ] as const)(
+      'NET-NEW — %s is SECURE and asks exactly `read` on `Sku`, with no subordinate question',
+      (member) => {
+        expect(SKU_ACCESS_MATRIX[member]).toStrictEqual(READ_ROW);
+        /*
+         * No `subordinate`: only the creation row asks a second question, and a read that acquired one
+         * would be asking for a grant it has no reason to need.
+         */
+        expect(SKU_ACCESS_MATRIX[member]).not.toHaveProperty('subordinate');
+      },
+    );
+
+    it('NET-NEW — the table has exactly nine rows, and every one is `secure`', () => {
+      /*
+       * Two-sided on purpose: a route added without a row would be unroutable, and a row added without a
+       * route would be a grant nothing enforces. `keyof SkuHandler` types the table, so the count here is
+       * the published surface's own count.
+       */
+      expect(Object.keys(SKU_ACCESS_MATRIX).sort()).toStrictEqual([
+        'createSkus',
+        'getProductSkus',
+        'getSkuBySkuCode',
+        'getSkuSmartList',
+        'getSkuStocksDeletableFlag',
+        'getSortedProductSkus',
+        'getTransactionExistsFlag',
+        'processImageUpload',
+        'searchSkusByProductType',
+      ]);
+      expect(Object.values(SKU_ACCESS_MATRIX).every((row) => row.classification === 'secure')).toBe(
+        true,
+      );
+      /* And the table is frozen, so a row cannot be rewritten at run time. */
+      expect(Object.isFrozen(SKU_ACCESS_MATRIX)).toBe(true);
+    });
+
+    it('NET-NEW — the nine served action names are the literal `sku.` strings a caller sends', () => {
+      /*
+       * The route table composes each key from the prefix and the member name, so the action strings a
+       * deployment actually answers appear nowhere in the source as literals. Written out here once, so
+       * that renaming a member silently renames a published action and fails by name — and so that the
+       * action vocabulary is auditable by reading rather than by re-deriving the concatenation.
+       */
+      expect(Object.keys(createSkuRoutes(makeSkuHandlerFacade())).sort()).toStrictEqual([
+        'sku.createSkus',
+        'sku.getProductSkus',
+        'sku.getSkuBySkuCode',
+        'sku.getSkuSmartList',
+        'sku.getSkuStocksDeletableFlag',
+        'sku.getSortedProductSkus',
+        'sku.getTransactionExistsFlag',
+        'sku.processImageUpload',
+        'sku.searchSkusByProductType',
+      ]);
+    });
+
+    it('NET-NEW — the container-wired factory hands the route a product resolver that reaches `productService.getProduct`', async () => {
+      /*
+       * `createSkuHandlerFromContainer` adapts the container's aggregate product read into the
+       * `ProductResolver` this file's routes take, and that one-line adapter is the only place the two
+       * shapes meet. It is constructed by `router.ts` on every cold start and was never INVOKED by a
+       * test, because the routes the router cases drive resolve no product — so a resolver wired to the
+       * wrong member, or given the wrong argument, would have compiled and then missed on every request.
+       * `getSortedProductSkus` is the cheapest route that resolves one.
+       */
+      const harness = buildHarness();
+      const requested: string[] = [];
+      const stored = makeProduct();
+
+      const handler = createSkuHandlerFromContainer(
+        {
+          skuService: harness.service,
+          skuWriteRunner: {
+            runWrite: (): never => {
+              throw new Error('a read route must not enter a write transaction');
+            },
+          },
+          productService: {
+            getProduct: (productID: string): Promise<Product | null> => {
+              requested.push(productID);
+              return Promise.resolve(stored);
+            },
+          },
+        },
+        ADMIT_EVERY_REQUEST,
+      );
+
+      const response = await handler.getSortedProductSkus({
+        pathParameters: { productID: PRODUCT_ID },
+        headers: {},
+      });
+
+      /* The adapter forwarded the addressed identifier, unchanged, to the aggregate read. */
+      expect(requested).toEqual([PRODUCT_ID]);
+      /* And the real service answered over the harness repository, so the whole chain is live. */
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toStrictEqual([]);
+    });
+
+    it('NET-NEW — the two WRITE rows are the only rows that are not a plain `Sku` read', () => {
+      /*
+       * Stated as a partition rather than row by row, so a ninth write introduced by widening a read row
+       * fails here even if that row's own case were changed to match.
+       */
+      const notPlainReads = Object.entries(SKU_ACCESS_MATRIX)
+        .filter(([, row]) => row.crudType !== 'read' || row.entityName !== SKU_COMPONENT_NAME)
+        .map(([member]) => member)
+        .sort();
+
+      expect(notPlainReads).toStrictEqual(['createSkus', 'processImageUpload']);
     });
   });
 });

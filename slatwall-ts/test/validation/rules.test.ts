@@ -2960,6 +2960,22 @@ describe('NET-NEW — the eleven-row evaluator and null-semantics matrix', () =>
     await expect(passes(url, '')).resolves.toBe(false);
   });
 
+  it('NET-NEW — a dataType assembled outside the type system fails loudly instead of being treated as a pass', async () => {
+    /*
+     * The TypeScript union admits only `numeric` and `url`; legacy JSON was not type checked. The cast
+     * is therefore the test input itself: it recreates the only runtime path to the whitelist refusal
+     * at HibachiValidationService.cfc:L263 without weakening the production type.
+     */
+    const unsupported = {
+      constraintType: 'dataType',
+      constraintValue: 'email',
+    } as unknown as Constraint<MatrixSubject>;
+
+    await expect(passes(unsupported, 'person@example.test')).rejects.toThrow(
+      "declares a dataType constraint of 'email'",
+    );
+  });
+
   it('NET-NEW — matrix row 3 of 11 — `minValue`: null PASSES; a non-null nonnumeric value fails; the boundary passes', async () => {
     // `validate_minValue` at `:L269-L275` passes a null and then requires the value to be both
     // numeric and at or above the floor. A nonnumeric value therefore fails the floor constraint in

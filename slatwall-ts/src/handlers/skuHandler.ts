@@ -139,6 +139,10 @@ const SORTED_NOT_BOOLEAN_MESSAGE = `The "${SORTED_QUERY_PARAMETER}" query parame
 
 const FETCH_OPTIONS_NOT_BOOLEAN_MESSAGE = `The "${FETCH_OPTIONS_QUERY_PARAMETER}" query parameter must be a boolean`;
 
+const TRANSACTION_SCOPE_REQUIRED_MESSAGE =
+  `At least one of "${SKU_ID_QUERY_PARAMETER}" or "${PRODUCT_ID_QUERY_PARAMETER}" ` +
+  'query parameters is required';
+
 /* The injection seams. */
 
 /**
@@ -373,9 +377,14 @@ export interface SkuResponse {
   readonly imageFile?: string;
 }
 
-/** The paginated SKU representation {@link SkuHandler.getSkuSmartList} returns. */
+/**
+ * The current SKU page plus count and paging metadata.
+ *
+ * The service retains the unpaged `records` collection for in-process parity. Serialising it beside
+ * `pageRecords` made a bounded page response grow with every matching SKU, so the HTTP boundary exposes
+ * only the requested window.
+ */
 export interface SkuSmartListResponse {
-  readonly records: readonly SkuResponse[];
   readonly pageRecords: readonly SkuResponse[];
   readonly recordsCount: number;
   readonly pageRecordsStart: number;
@@ -597,32 +606,15 @@ function toSkuResponses(skus: readonly Sku[]): readonly SkuResponse[] {
 }
 
 /**
- * Projects a smart list page, carrying its five paging numbers across untouched.
+ * Projects only the requested smart-list page, carrying its five paging numbers across untouched.
+ *
+ * `org/Hibachi/HibachiSmartList.cfc:L751-L755` serves in-process consumers and does not define a wire
+ * payload that duplicates its full `records` collection beside `pageRecords`. The service contract stays
+ * unchanged; this handler-layer projection keeps the response bounded by the requested page.
  */
 function toSkuSmartListResponse(result: SmartListResult<Sku>): SkuSmartListResponse {
-  /*
-   * Each SKU is projected once, not once per collection it appears in. `pageRecords` is a
-   * window over `records` — `../adapters/mysql/SmartListQueryBuilder` derives both from one selection —
-   * so projecting the two collections independently built a second, identical `SkuResponse` for every
-   * SKU inside the current page and threw one of the two away. The memo below is filled on first
-   * encounter and read on every later one.
-   */
-  const projectionBySku = new Map<Sku, SkuResponse>();
-  const project = (sku: Sku): SkuResponse => {
-    const remembered = projectionBySku.get(sku);
-
-    if (remembered !== undefined) {
-      return remembered;
-    }
-
-    const projection = toSkuResponse(sku);
-    projectionBySku.set(sku, projection);
-    return projection;
-  };
-
   return {
-    records: result.records.map(project),
-    pageRecords: result.pageRecords.map(project),
+    pageRecords: toSkuResponses(result.pageRecords),
     recordsCount: result.recordsCount,
     pageRecordsStart: result.pageRecordsStart,
     pageRecordsEnd: result.pageRecordsEnd,
@@ -1069,15 +1061,21 @@ export function createSkuHandler(
       return refusal;
     }
 
-    /*
-     * Both optional, both forwarded as received — including as nothing. Judgment (h): an argument the
-     * legacy declares without `required` is forwarded absent rather than refused here.
-     */
+    /* Both optional and both forwarded when supplied; the repository still owns precedence. */
     const skuID: string | undefined = readTransactionScopeIdentifier(event, SKU_ID_QUERY_PARAMETER);
     const productID: string | undefined = readTransactionScopeIdentifier(
       event,
       PRODUCT_ID_QUERY_PARAMETER,
     );
+
+    /*
+     * An empty scope is a request-shape refusal, not a service fault. The direct service contract keeps
+     * its DomainError for non-HTTP callers, while this AWS translation boundary follows the same precise
+     * 400 convention as its other missing-parameter checks and never invokes the service without a scope.
+     */
+    if (skuID === undefined && productID === undefined) {
+      return messageResponse(HTTP_STATUS.BAD_REQUEST, TRANSACTION_SCOPE_REQUIRED_MESSAGE);
+    }
 
     try {
       /*
@@ -1086,11 +1084,7 @@ export function createSkuHandler(
        */
       return okResponse(await skuService.getTransactionExistsFlag(skuID, productID));
     } catch (error) {
-      /*
-       * An unscoped probe lands here, carrying the repository's own refusal. It is shaped like any other
-       * service failure — deliberately not reclassified into a fixed status, because the failure belongs
-       * to the legacy [model/dao/SkuDAO.cfc:L90] rather than to this boundary.
-       */
+      /* Scoped service failures retain their own classification and disclose no diagnostic detail. */
       return errorResponse(error);
     }
   };

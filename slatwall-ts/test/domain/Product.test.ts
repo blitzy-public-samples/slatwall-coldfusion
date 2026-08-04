@@ -1269,20 +1269,40 @@ describe('Product URL and title members', () => {
     );
   });
 
-  it('NET-NEW — a resolved empty value substitutes, which is not the same as an unresolved token', () => {
+  it('NET-NEW — declared empty or absent values substitute, while an undeclared token remains verbatim', () => {
     /*
-     * The distinction the legacy loop draws is between "the resolver returned nothing" and "the resolver
-     * returned the empty string". The first leaves the token in place; the second removes it. Collapsing
-     * the two would either blank tokens that should survive or leave delimiters in rendered titles.
+     * The metadata check in `HibachiUtilityService.cfc:L83-L88` establishes that each declared path is
+     * resolvable before the instance is read. `HibachiTransient.cfc:L466-L481` then answers `''` when
+     * either the relationship or its declared value is absent. Only the genuinely undeclared
+     * `${absentKey}` skips substitution and keeps its delimiters.
      */
     const settings = createSettingResolverDouble({
       settings: [
-        { settingName: 'productTitleString', value: '[${productDescription}][${absentKey}]' },
+        {
+          settingName: 'productTitleString',
+          value:
+            '[${productDescription}][${brand.brandName}]' +
+            '[${productType.productTypeName}][${absentKey}]',
+        },
       ],
     });
-    const product = buildProduct({ productID: PRODUCT_ID, productDescription: '' });
+    const productWithoutRelationships = buildProduct({
+      productID: PRODUCT_ID,
+      productDescription: '',
+    });
 
-    expect(product.getTitle(settings.resolver)).toBe('[][${absentKey}]');
+    expect(productWithoutRelationships.getTitle(settings.resolver)).toBe('[][][][${absentKey}]');
+
+    const productWithEmptyRelationshipValues = buildProduct({
+      productID: SECOND_PRODUCT_ID,
+      productDescription: '',
+      brand: buildBrand({ brandID: SECOND_PRODUCT_ID }),
+      productType: buildProductType({ productTypeID: CHILD_PRODUCT_TYPE_ID }),
+    });
+
+    expect(productWithEmptyRelationshipValues.getTitle(settings.resolver)).toBe(
+      '[][][][${absentKey}]',
+    );
   });
 
   it('NET-NEW — model/entity/Product.cfc:L541 — the title memoizes per instance', () => {
@@ -2315,6 +2335,8 @@ describe('Product.getUnusedProductSubscriptionTerms — both branches of the opt
  * AAP §0.4.1.12 declares exactly seventeen executable suites, so this subject is covered
  * inside an approved suite rather than in one of its own.
  */
+
+/* FOLDED IN FROM domain/process/processObjects */
 
 /** Process-object population descriptors — net-new. */
 describe('The three transient process objects, every one of which takes a product', () => {

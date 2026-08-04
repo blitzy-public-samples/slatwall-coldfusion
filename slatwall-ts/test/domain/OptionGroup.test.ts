@@ -16,6 +16,13 @@
  * vendored either (`meta/tests/readme.txt:L5`). Every legacy claim below rests on the cited source.
  */
 
+import { populate, populateWithSubProperties } from '../../src/domain/base/populate';
+import type {
+  OneToManyPropertyDescriptor,
+  RelatedEntityLoader,
+  SubPropertyPopulator,
+} from '../../src/domain/base/populate';
+import type { PopulationAuthorizationPort } from '../../src/ports/AccountContextPort';
 import { Option } from '../../src/domain/option/Option';
 import {
   OPTION_GROUP_CLASS_NAME,
@@ -24,6 +31,7 @@ import {
   OPTION_GROUP_PRIMARY_ID_PROPERTY_NAME,
   OPTION_GROUP_PROPERTY_DESCRIPTORS,
   OptionGroup,
+  createOptionGroupPropertyDescriptors,
   type OptionGroupPropertyName,
 } from '../../src/domain/option/OptionGroup';
 import { ValidationError } from '../../src/errors/ValidationError';
@@ -36,6 +44,7 @@ import {
 import {
   buildOption,
   buildOptionGroup,
+  createPopulationAuthorizationDouble,
   createValidatorHarness,
 } from '../support/inMemoryRepositories';
 
@@ -60,6 +69,12 @@ const OTHER_PERSISTED_OPTION_GROUP_ID = 'b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2';
  * `fieldtype="id" generator="uuid" length="32"` shape for its own key.
  */
 const PERSISTED_OPTION_ID = 'c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3';
+
+/**
+ * A second persisted option identifier, so the population branch's payload ORDER is observable rather
+ * than merely its cardinality.
+ */
+const OTHER_PERSISTED_OPTION_ID = 'd4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4';
 
 /**
  * The seven persistent properties of `model/entity/OptionGroup.cfc:L52-L58`, in declaration order.
@@ -1134,5 +1149,423 @@ describe('OptionGroup — NET-NEW — declarative validation fidelity, model/val
     // A key nobody reported against still reads back as an empty array rather than raising.
     expect(errors.getError('optionGroupDescription')).toEqual([]);
     expect(errors.hasError('optionGroupDescription')).toBe(false);
+  });
+});
+
+/*
+ * NET-NEW — the one-to-many population branch, driven through this entity's REAL descriptor set.
+ *
+ * Why these cases exist, and why here. A qa run measured `src/domain/base/populate.ts` at 55.07 %
+ * statements / 45.33 % branches with nine named functions never executed, because the only population
+ * path any test drove was the many-to-one nested struct (via the legacy `issue_1097` regression). The
+ * collection branches — branch 4 for a one-to-many or many-to-many ARRAY payload
+ * [org/Hibachi/HibachiTransient.cfc:L272-L308] and branch 5 for a many-to-many DELIMITED LIST
+ * [:L309-L359] — do string splitting and per-item identifier resolution, which is exactly where a
+ * silent divergence hides. The same run measured `createOptionGroupPropertyDescriptors` as exported,
+ * never executed and with no caller in `src/`.
+ *
+ * Both findings share one flow, so they are closed together: this factory is the slice's only
+ * one-to-many descriptor source over an entity small enough to assert exhaustively, so driving
+ * `populate()` through it exercises the engine branch AND the factory at once — a real contract rather
+ * than a descriptor set assembled in the test to suit the assertion.
+ */
+
+describe('OptionGroup — NET-NEW — createOptionGroupPropertyDescriptors, the complete population contract', () => {
+  /** A loader that answers from a fixed catalog and records every identifier it is asked for. */
+  function optionCatalog(options: readonly Option[]): {
+    readonly loader: RelatedEntityLoader<Option>;
+    readonly loadExistingIds: string[];
+    readonly loadOrCreateIds: string[];
+    readonly created: Option[];
+  } {
+    const loadExistingIds: string[] = [];
+    const loadOrCreateIds: string[] = [];
+    const created: Option[] = [];
+    const known = [...options];
+
+    return {
+      loadExistingIds,
+      loadOrCreateIds,
+      created,
+      loader: {
+        loadExisting: (relatedId: string): Option | undefined => {
+          loadExistingIds.push(relatedId);
+          return known.find((candidate) => candidate.optionID === relatedId);
+        },
+        loadOrCreate: (relatedId: string): Option => {
+          loadOrCreateIds.push(relatedId);
+          const existing = known.find((candidate) => candidate.optionID === relatedId);
+
+          if (existing !== undefined) {
+            return existing;
+          }
+
+          /* `loadOrCreate` is [:L239]'s `{1=id, 2=true}` — the createNew flag — so a miss mints one. */
+          const minted = buildOption({ optionID: relatedId });
+          known.push(minted);
+          created.push(minted);
+          return minted;
+        },
+      },
+    };
+  }
+
+  /** Records every recursive sub-population the descriptor performed, in order. */
+  function subPopulations(): {
+    readonly populate: SubPropertyPopulator<Option>;
+    readonly calls: { readonly optionID: string; readonly data: Record<string, unknown> }[];
+  } {
+    const calls: { readonly optionID: string; readonly data: Record<string, unknown> }[] = [];
+
+    return {
+      calls,
+      populate: (option: Option, data: Record<string, unknown>): void => {
+        calls.push({ optionID: option.optionID, data });
+      },
+    };
+  }
+
+  /** Population permitted, so a written property is observable rather than silently denied. */
+  const permitPopulation = (): PopulationAuthorizationPort =>
+    createPopulationAuthorizationDouble().populationAuthorization;
+
+  it('NET-NEW — model/entity/OptionGroup.cfc:L70 — the set is the seven columns, the four audit descriptors and the one relationship', () => {
+    const catalog = optionCatalog([]);
+    const sub = subPopulations();
+    const descriptors = createOptionGroupPropertyDescriptors(catalog.loader, sub.populate);
+
+    /* Twelve, and the relationship is LAST — declaration order is preserved from the source. */
+    expect(descriptors.properties).toHaveLength(
+      OPTION_GROUP_PROPERTY_DESCRIPTORS.properties.length + 1,
+    );
+    expect(descriptors.properties.map((descriptor) => descriptor.name)).toStrictEqual([
+      ...OPTION_GROUP_PROPERTY_DESCRIPTORS.properties.map((descriptor) => descriptor.name),
+      'options',
+    ]);
+
+    /* The class name and the persistent flag travel from the component declaration, unchanged. */
+    expect(descriptors.entityName).toBe(OPTION_GROUP_PROPERTY_DESCRIPTORS.entityName);
+    expect(descriptors.entityName).toBe(OPTION_GROUP_CLASS_NAME);
+    expect(descriptors.persistent).toBe(true);
+    expect(Object.isFrozen(descriptors)).toBe(true);
+    expect(Object.isFrozen(descriptors.properties)).toBe(true);
+  });
+
+  it('NET-NEW — org/Hibachi/HibachiTransient.cfc:L273-L279 — the relationship descriptor carries the legacy field type, singular name and related key', () => {
+    const catalog = optionCatalog([]);
+    const sub = subPopulations();
+    const descriptors = createOptionGroupPropertyDescriptors(catalog.loader, sub.populate);
+    const options = descriptors.properties.find((descriptor) => descriptor.name === 'options');
+
+    expect(options).toBeDefined();
+    /*
+     * `singularName` is what the legacy composed its dynamic `add#singularName#` call from at [:L294],
+     * so it is part of the contract rather than a label.
+     */
+    expect(options).toMatchObject({
+      kind: 'one-to-many',
+      name: 'options',
+      relatedPrimaryIdPropertyName: 'optionID',
+      singularName: 'option',
+    });
+  });
+
+  it('NET-NEW — IR-1 — addRelated DELEGATES to the entity own addOption, wiring both sides', () => {
+    /*
+     * The descriptor must not re-implement the collection semantics. `addOption` delegates on to
+     * `Option.setOptionGroup` [model/entity/OptionGroup.cfc:L92-L94], so a descriptor that pushed into
+     * the array itself would leave the option's own back-reference unset.
+     */
+    const group = buildOptionGroup({ optionGroupID: PERSISTED_OPTION_GROUP_ID });
+    const option = buildOption({ optionID: PERSISTED_OPTION_ID });
+    const catalog = optionCatalog([option]);
+    const sub = subPopulations();
+    const descriptors = createOptionGroupPropertyDescriptors(catalog.loader, sub.populate);
+    const options = descriptors.properties.find((descriptor) => descriptor.name === 'options');
+
+    /*
+     * Narrowed through the descriptor union rather than asserted with a cast: a descriptor that had
+     * become a column, or populate-disabled, fails this guard instead of failing an unrelated
+     * expectation later.
+     */
+    if (options === undefined || !('kind' in options) || options.kind !== 'one-to-many') {
+      throw new Error('the options descriptor must be present and one-to-many');
+    }
+
+    /*
+     * The descriptor set's element type widens the related entity to `object`, because one set holds
+     * descriptors for several relationships. `addRelated` is therefore called through the widened type,
+     * which is exactly what the engine does.
+     */
+    const oneToMany: OneToManyPropertyDescriptor<OptionGroup, OptionGroupPropertyName, object> =
+      options;
+
+    oneToMany.addRelated(group, option);
+
+    expect(group.getOptions()).toStrictEqual([option]);
+    expect(option.optionGroup).toBe(group);
+  });
+
+  it('NET-NEW — org/Hibachi/HibachiTransient.cfc:L282-L294 — an ARRAY payload adds every gated element, in payload order', () => {
+    /*
+     * Branch 4's forward loop. Each element must carry the related primary-ID key [:L285]; the entity is
+     * then added UNCONDITIONALLY at [:L294], before the key-count test at [:L297]. That ordering looks
+     * like an oversight and is preserved deliberately: moving the add inside the key-count test would
+     * change which relationships exist after a pass.
+     */
+    const first = buildOption({ optionID: PERSISTED_OPTION_ID });
+    const second = buildOption({ optionID: OTHER_PERSISTED_OPTION_ID });
+    const catalog = optionCatalog([first, second]);
+    const sub = subPopulations();
+    const group = buildOptionGroup({ optionGroupID: PERSISTED_OPTION_GROUP_ID });
+
+    populate(
+      group,
+      {
+        options: [{ optionID: OTHER_PERSISTED_OPTION_ID }, { optionID: PERSISTED_OPTION_ID }],
+      },
+      createOptionGroupPropertyDescriptors(catalog.loader, sub.populate),
+      permitPopulation(),
+    );
+
+    /* Payload order, not catalog order — the loop is forward and appends as it goes. */
+    expect(group.getOptions()).toStrictEqual([second, first]);
+    /* `loadOrCreate`, never `loadExisting`: branch 4 passes the createNew flag at [:L288]. */
+    expect(catalog.loadOrCreateIds).toEqual([OTHER_PERSISTED_OPTION_ID, PERSISTED_OPTION_ID]);
+    expect(catalog.loadExistingIds).toEqual([]);
+    /* One key each, so no recursive population and nothing recorded. */
+    expect(sub.calls).toEqual([]);
+  });
+
+  it('NET-NEW — org/Hibachi/HibachiTransient.cfc:L288 — an element whose identifier misses is CREATED, not skipped', () => {
+    const catalog = optionCatalog([]);
+    const sub = subPopulations();
+    const group = buildOptionGroup({ optionGroupID: PERSISTED_OPTION_GROUP_ID });
+
+    populate(
+      group,
+      { options: [{ optionID: PERSISTED_OPTION_ID }] },
+      createOptionGroupPropertyDescriptors(catalog.loader, sub.populate),
+      permitPopulation(),
+    );
+
+    expect(catalog.created.map((option) => option.optionID)).toEqual([PERSISTED_OPTION_ID]);
+    expect(group.getOptions()).toHaveLength(1);
+  });
+
+  it('NET-NEW — org/Hibachi/HibachiTransient.cfc:L297-L306 — an element with MORE than one key is recursively populated and RECORDED', () => {
+    const option = buildOption({ optionID: PERSISTED_OPTION_ID });
+    const catalog = optionCatalog([option]);
+    const sub = subPopulations();
+    const group = buildOptionGroup({ optionGroupID: PERSISTED_OPTION_GROUP_ID });
+
+    const result = populateWithSubProperties(
+      group,
+      {
+        options: [
+          { optionID: PERSISTED_OPTION_ID, optionName: 'Large' },
+          { optionID: OTHER_PERSISTED_OPTION_ID },
+        ],
+      },
+      createOptionGroupPropertyDescriptors(catalog.loader, sub.populate),
+      permitPopulation(),
+    );
+
+    /* Only the multi-key element is populated recursively, and it carries the WHOLE element struct. */
+    expect(sub.calls).toEqual([
+      {
+        optionID: PERSISTED_OPTION_ID,
+        data: { optionID: PERSISTED_OPTION_ID, optionName: 'Large' },
+      },
+    ]);
+
+    /*
+     * And the record is an ARRAY under the property name — the legacy accumulated one at [:L302-L305].
+     * Both elements were ADDED; only the multi-key one is recorded.
+     */
+    expect(result.populatedSubProperties.options).toHaveLength(1);
+    expect(group.getOptions()).toHaveLength(2);
+  });
+
+  it('NET-NEW — org/Hibachi/HibachiTransient.cfc:L285 — an element with no related-ID key is SKIPPED entirely', () => {
+    const catalog = optionCatalog([]);
+    const sub = subPopulations();
+    const group = buildOptionGroup({ optionGroupID: PERSISTED_OPTION_GROUP_ID });
+
+    const result = populateWithSubProperties(
+      group,
+      { options: [{ optionName: 'No identifier at all' }] },
+      createOptionGroupPropertyDescriptors(catalog.loader, sub.populate),
+      permitPopulation(),
+    );
+
+    expect(catalog.loadOrCreateIds).toEqual([]);
+    expect(group.getOptions()).toEqual([]);
+    expect(result.populatedSubProperties.options).toBeUndefined();
+  });
+
+  it('NET-NEW — a NON-STRUCT element, and a non-scalar identifier, are both skipped rather than raising', () => {
+    /*
+     * A strict-typing consequence recorded rather than hidden: CFML's `structKeyExists` at [:L285] would
+     * have failed outright on a non-struct element, and this module raises nothing, so such an element
+     * matches no path and the branch does nothing to it.
+     */
+    const catalog = optionCatalog([]);
+    const sub = subPopulations();
+    const group = buildOptionGroup({ optionGroupID: PERSISTED_OPTION_GROUP_ID });
+
+    populate(
+      group,
+      { options: ['not a struct', 42, null, { optionID: { nested: true } }] },
+      createOptionGroupPropertyDescriptors(catalog.loader, sub.populate),
+      permitPopulation(),
+    );
+
+    expect(catalog.loadOrCreateIds).toEqual([]);
+    expect(group.getOptions()).toEqual([]);
+  });
+
+  it('NET-NEW — org/Hibachi/HibachiTransient.cfc:L285 — `populateSubProperties` is a payload-level KILL SWITCH for the whole branch', () => {
+    /*
+     * The second half of the [:L285] gate, and it is read out of the incoming payload rather than passed
+     * as an argument — so a caller switches the collection branch off through the data itself. Every
+     * falsy CFML spelling is exercised, because the flag arrives as whatever a request carried.
+     */
+    for (const flag of [false, 0, '0', 'false', 'FALSE', 'no', 'No', ' false ']) {
+      const catalog = optionCatalog([]);
+      const sub = subPopulations();
+      const group = buildOptionGroup({ optionGroupID: PERSISTED_OPTION_GROUP_ID });
+
+      populate(
+        group,
+        {
+          options: [{ optionID: PERSISTED_OPTION_ID, optionName: 'Large' }],
+          populateSubProperties: flag,
+        },
+        createOptionGroupPropertyDescriptors(catalog.loader, sub.populate),
+        permitPopulation(),
+      );
+
+      expect(group.getOptions()).toEqual([]);
+      expect(catalog.loadOrCreateIds).toEqual([]);
+    }
+  });
+
+  it('NET-NEW — a TRUTHY `populateSubProperties`, in any CFML spelling, leaves the branch running', () => {
+    for (const flag of [true, 1, '1', 'true', 'TRUE', 'yes', 'anything else at all']) {
+      const catalog = optionCatalog([]);
+      const sub = subPopulations();
+      const group = buildOptionGroup({ optionGroupID: PERSISTED_OPTION_GROUP_ID });
+
+      populate(
+        group,
+        { options: [{ optionID: PERSISTED_OPTION_ID }], populateSubProperties: flag },
+        createOptionGroupPropertyDescriptors(catalog.loader, sub.populate),
+        permitPopulation(),
+      );
+
+      expect(group.getOptions()).toHaveLength(1);
+    }
+  });
+
+  it('NET-NEW — an absent `populateSubProperties` key defaults to ON, matching structKeyExists', () => {
+    /*
+     * The gate is `(!structKeyExists(data,"populateSubProperties") || data.populateSubProperties)`, so
+     * absence is permission. Asserted separately from the truthy spellings because it takes the other
+     * arm of the `||`.
+     */
+    const catalog = optionCatalog([]);
+    const sub = subPopulations();
+    const group = buildOptionGroup({ optionGroupID: PERSISTED_OPTION_GROUP_ID });
+
+    populate(
+      group,
+      { options: [{ optionID: PERSISTED_OPTION_ID }] },
+      createOptionGroupPropertyDescriptors(catalog.loader, sub.populate),
+      permitPopulation(),
+    );
+
+    expect(group.getOptions()).toHaveLength(1);
+  });
+
+  it('NET-NEW — an EMPTY array payload runs the branch and records nothing, which is not the same as no key', () => {
+    const catalog = optionCatalog([]);
+    const sub = subPopulations();
+    const group = buildOptionGroup({ optionGroupID: PERSISTED_OPTION_GROUP_ID });
+
+    const result = populateWithSubProperties(
+      group,
+      { options: [] },
+      createOptionGroupPropertyDescriptors(catalog.loader, sub.populate),
+      permitPopulation(),
+    );
+
+    expect(group.getOptions()).toEqual([]);
+    expect(result.populatedSubProperties.options).toBeUndefined();
+    expect(catalog.loadOrCreateIds).toEqual([]);
+  });
+
+  it('NET-NEW — a one-to-many key carrying a SIMPLE value matches no branch at all, and is left alone', () => {
+    /*
+     * Branch 5's delimited-list form is many-to-many ONLY [:L310], so a delimited list against a
+     * one-to-many property is not a diff instruction — it matches nothing and the collection is
+     * untouched. This is the discrimination that makes branch 5's `isManyToManyDescriptor` gate
+     * load-bearing rather than decorative.
+     */
+    const option = buildOption({ optionID: PERSISTED_OPTION_ID });
+    const catalog = optionCatalog([option]);
+    const sub = subPopulations();
+    const group = buildOptionGroup({ optionGroupID: PERSISTED_OPTION_GROUP_ID });
+
+    populate(
+      group,
+      { options: PERSISTED_OPTION_ID },
+      createOptionGroupPropertyDescriptors(catalog.loader, sub.populate),
+      permitPopulation(),
+    );
+
+    expect(group.getOptions()).toEqual([]);
+    expect(catalog.loadOrCreateIds).toEqual([]);
+    expect(catalog.loadExistingIds).toEqual([]);
+  });
+
+  it('NET-NEW — org/Hibachi/HibachiTransient.cfc:L200-L206 — an INTEGER column coerces numeric text, and refuses what CFML would refuse', () => {
+    /*
+     * `sortOrder` is the slice's integer column, and the coercion is a distinct branch from the string
+     * and boolean ones: a numeric STRING is accepted and rendered as a number, a boolean is refused
+     * because CFML would not have cast one into a numeric column, and a value beyond the exact-integer
+     * range is refused rather than silently rounded to a different number than the caller sent.
+     */
+    const descriptors = createOptionGroupPropertyDescriptors(
+      optionCatalog([]).loader,
+      subPopulations().populate,
+    );
+
+    const accepted = buildOptionGroup({ optionGroupID: PERSISTED_OPTION_GROUP_ID });
+    populate(accepted, { sortOrder: ' 7 ' }, descriptors, permitPopulation());
+    expect(accepted.sortOrder).toBe(7);
+
+    const negative = buildOptionGroup({ optionGroupID: PERSISTED_OPTION_GROUP_ID });
+    populate(negative, { sortOrder: '-3' }, descriptors, permitPopulation());
+    expect(negative.sortOrder).toBe(-3);
+
+    const numeric = buildOptionGroup({ optionGroupID: PERSISTED_OPTION_GROUP_ID });
+    populate(numeric, { sortOrder: 12 }, descriptors, permitPopulation());
+    expect(numeric.sortOrder).toBe(12);
+
+    /* A blank clears the key outright — [:L195] runs before any conversion. */
+    const cleared = buildOptionGroup({ optionGroupID: PERSISTED_OPTION_GROUP_ID });
+    cleared.sortOrder = 5;
+    populate(cleared, { sortOrder: '   ' }, descriptors, permitPopulation());
+    expect(cleared.sortOrder).toBeUndefined();
+
+    for (const refused of ['1.5', 'seven', true, false, '9007199254740993']) {
+      const subject = buildOptionGroup({ optionGroupID: PERSISTED_OPTION_GROUP_ID });
+
+      expect(() => {
+        populate(subject, { sortOrder: refused }, descriptors, permitPopulation());
+      }).toThrow();
+      expect(subject.sortOrder).toBeUndefined();
+    }
   });
 });

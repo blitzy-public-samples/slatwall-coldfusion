@@ -1530,6 +1530,8 @@ describe('NET-NEW: MySqlProductTypeRepository.removeProductType — refusal and 
  * of its own.
  */
 
+/* FOLDED IN FROM adapters/schemaScopeRegistry */
+
 /** The ratified database surface (CWE-284, CWE-250). */
 describe('The ratified database surface every adapter in this layer resolves its identifiers through', () => {
   /*
@@ -1854,7 +1856,13 @@ describe('The ratified database surface every adapter in this layer resolves its
         ['SwStockAdjustmentItem', 'toStockID'],
         ['SwStockHold', 'stockID'],
         ['SwStockReceiverItem', 'stockID'],
-        ['SwVendorOrderItem', 'skuID'],
+        /*
+         * `:L84` reaches this table through stock, exactly as the eight rows above it do —
+         * `model/entity/VendorOrderItem.cfc:L60` declares `fkcolumn="stockID"` and declares no `sku`
+         * property at all. This case previously asserted `skuID` here, which is why the registry could
+         * withhold the one column the emitted chain names without any suite objecting.
+         */
+        ['SwVendorOrderItem', 'stockID'],
         /* the non-fetching join of `:L159` */
         ['SwSubscriptionTerm', 'subscriptionTermID'],
         /* the attribute-set selection of `model/dao/ProductDAO.cfc:L52-L62` */
@@ -1882,7 +1890,7 @@ describe('The ratified database surface every adapter in this layer resolves its
     it('[NET-NEW] it refuses a real column paired with the wrong table', () => {
       /*
        * The risk the column gate actually addresses. Spelling was never the hazard: `skuID` is declared on
-       * nine of the twenty-eight registered tables and `stockID` on seven, so a mis-paired name is still a
+       * eight of the twenty-eight registered tables and `stockID` on eight, so a mis-paired name is still a
        * real column and still composes SQL that parses — it simply answers the wrong question.
        */
       const error = refusalOf(() => assertRegisteredColumnName('SwOrderItem', 'stockID'));
@@ -1896,6 +1904,7 @@ describe('The ratified database surface every adapter in this layer resolves its
 
       /* And the converse pairing, to show the refusal is not one-directional. */
       refusalOf(() => assertRegisteredColumnName('SwInventory', 'skuID'));
+      refusalOf(() => assertRegisteredColumnName('SwVendorOrderItem', 'skuID'));
       refusalOf(() => assertRegisteredColumnName('SwAttributeValue', 'globalFlag'));
     });
 

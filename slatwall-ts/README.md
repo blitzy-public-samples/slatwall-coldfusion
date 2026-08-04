@@ -689,11 +689,17 @@ Two consequences were measured in this checkout rather than assumed:
 
 - **A stale or legacy artifact cannot survive a build.** Because the unit of replacement is the tree, an
   artifact the build script has never heard of disappears without the script having to know its name.
-  Seeded `dist/metafile.json`, `dist/handlers/oldEntryHandler.js` and a matching stale map, then ran
-  `npm run build`: all three were gone and `dist/` held exactly the six bundles, the production manifest and
-  the staged dependency closure.
-- **Consecutive builds are byte-identical.** Two runs, `sha256sum` over all twelve output files: no
-  difference. The build reads no environment variable, opens no connection and needs no credential.
+  Seeded `dist/metafile.json`, `dist/handlers/oldEntryHandler.js` and a matching stale map **beside it in
+  `dist/`**, then ran `npm run build`: all three were gone and `dist/` held exactly the six bundles, the
+  production manifest and the staged dependency closure. The location matters to the reproduction, which is
+  why it is stated: `dist/` is replaced as a tree, so anything inside it goes whatever its name, whereas
+  under `build-meta/sourcemaps/` only the six **owned** maps are enumerated for removal — an unowned file
+  left there survives, harmlessly, because no source map is ever part of the published package.
+- **Consecutive builds are byte-identical.** Two runs, `sha256sum` over all **thirteen** emitted output
+  files — the six bundles, the production manifest and the six source maps — report no difference. Thirteen
+  is the whole emitted set and the arithmetic is `6 + 1 + 6`; the staged `dist/node_modules` closure is
+  excluded from the figure because it is a **copied** third-party tree rather than something this build
+  emits. The build reads no environment variable, opens no connection and needs no credential.
 
 - **The package resolves its own external, and the build proves it before promoting.** `mysql2` stays
   external — the artifacts `require("mysql2/promise")` rather than inlining the driver — so the build now
@@ -753,11 +759,11 @@ configuration sections and the anonymous materialisation guard.
 
 - **Size, stated as measurement only, and to one decimal place because it moves.** Measured in this checkout
   immediately after `npm run build`: the six artifacts run from `googleFeedHandler.js` at the low end to
-  `router.js` at the high end, all within a few percent of one another, and total about **5.1 MB**. The whole
+  `router.js` at the high end, all within a few percent of one another, and total about **5.0 MB**. The whole
   published package is about **6.5 MB** (`du -sb dist`), which is those six plus the staged `mysql2` closure
   under `dist/node_modules` (1,480,323 bytes — a fixed figure, since it is the driver's own tree) and the
   generated `dist/package.json`. The six source maps live **outside** `dist/`, under
-  `build-meta/sourcemaps/`, and total about **12.7 MB** — a ratio of about **2.5×** the code they describe,
+  `build-meta/sourcemaps/`, and total about **12.6 MB** — a ratio of about **2.5×** the code they describe,
   which is why they are not shipped. **Re-measure after any change**: `minify` and `legalComments` are
   deliberately unexercised, so an artifact carries the comments its sources carry and the bundle figures move
   when those do.
@@ -826,14 +832,14 @@ silently winning. Nothing is guessed, retried or prefix-matched. Dropping the ca
 regression, since the legacy resolution is case-insensitive, so `test/regression/issues.test.ts` pins all of it
 — canonical, lower, upper and mixed spellings, the unchanged reachable set, and the prototype-member cases.
 
-**Two things have to be right for that snippet to run**, and both are easy to get wrong, so they are spelled
-out.
+**Three things have to be right for that snippet to run**, and every one of them is easy to get wrong, so
+they are spelled out.
 
-**First, the environment.** `dist/handlers/router.js` resolves the service graph when the module loads, so
-`require` itself throws if a required variable is missing — that is the deliberate fail-fast described
-below, not a defect. Export the six required names first (§8 is the full contract; `DB_TLS_MODE` is
-optional and is shown here only because a loopback host is the one case that may lower the transport
-mode):
+**First, the environment that lets the module load.** `dist/handlers/router.js` resolves the service graph
+when the module loads, so `require` itself throws if a required variable is missing — that is the deliberate
+fail-fast described below, not a defect. Export the six required names first (§8 is the full contract;
+`DB_TLS_MODE` is optional and is shown here only because a loopback host is the one case that may lower the
+transport mode):
 
 ```sh
 export DB_HOST=127.0.0.1 DB_PORT=3306 DB_NAME=<YOUR_DB_NAME>
@@ -855,7 +861,29 @@ secret, credential or token is required to `build`, `test`, `lint` or `typecheck
 `npx prettier --check .` and `npx jest … --coverage` commands of §3: every one of them runs with an empty
 environment, which is why the verification in §3 needs none.
 
-**Second, the `await`.** The artifact is CommonJS — `package.json` declares `"type": "commonjs"` and the
+**Second, the resource bounds that let a route actually serve.** The six names above get the module
+_loaded_; they do not get a request _answered_. Every route applies at least one of §8.1's resource bounds,
+none of which has a default of any kind, and a route whose bound is unstated **refuses fail-closed** — so a
+walkthrough that exports only the six required names reaches the feed and receives
+`500 {"message":"The service is not correctly configured"}` rather than either outcome described below. The
+feed address in the snippet applies **four** figures, and it checks them before it composes a query or
+resolves an image path:
+
+```sh
+export CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY=500     # every route — all reads go through the smart list
+export CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY=100  # every route — statement complexity
+export CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD=10     # google:feed.product
+export CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES=10485760  # google:feed.product
+```
+
+**The figures above are this walkthrough's own, chosen to make the example run, and they are not
+recommendations.** Nothing in this subtree authors a bound, and §8.1 explains why an operator has to choose
+its own. The remaining two — `CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST` and
+`CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION` — are not applied by the feed and so are not needed here, but
+the write routes do apply them; `.env.example` carries the full route-to-variable map, and it is the file to
+read before a deployment rather than after a `500`.
+
+**Third, the `await`.** The artifact is CommonJS — `package.json` declares `"type": "commonjs"` and the
 bundle is emitted as CJS — and **CommonJS has no top-level `await`**, so a `.js` file that mixes `require`
 with a bare top-level `await` is a syntax error on Node 20 rather than a working example. Wrap the calls in
 an async function:
@@ -887,6 +915,18 @@ main().catch((error) => {
 Save it beside `dist/` and run it with `node`. `node --input-type=module` or a `.mjs` file would permit the
 top-level form, but then `require` is unavailable and the import specifier has to carry its `.js`
 extension — so one idiom or the other, never half of each.
+
+**The process will not exit on its own once a route has reached the database, and that is deliberate rather
+than a leak.** Both `console.log` lines print in about a second and then `node` keeps running, because
+`src/config/database.ts` creates the connection pool at **module scope**, outside the handler, so a warm
+Lambda container reuses it across invocations instead of paying for a new pool each time — §5.1 names it as
+that module's job, and §5.4's second invariant excepts exactly the pool and the service graph from the
+otherwise request-scoped rule. Lambda freezes a container rather than letting it exit, so
+nothing in the service's own design wants the pool closed at the end of one invocation. A standalone script
+is the one context where that shows: end the example with `process.exit(0)` after the last `console.log`, or
+interrupt it. Measured both ways in this checkout — as written it runs until interrupted; with
+`process.exit(0)` it exits `0` in about a second. A run that exits on its own **without** that line simply
+means no route opened a socket, which is what a refusal before the query does.
 
 The feed answers RSS 2.0 with the `xmlns:g="http://base.google.com/ns/1.0"` namespace and
 `Content-Type: application/xml`; every other route answers JSON.
@@ -1016,7 +1056,7 @@ the only route that needs no resolver at all.
 
 ---
 
-### 7.3 Two response classifications worth stating explicitly
+### 7.3 Four response classifications worth stating explicitly
 
 **A failed product write answers `400` with the keyed findings, never a bare `500`.** Ten product write routes
 go through one transaction runner, and its accumulated-errors rollback would otherwise raise a generic error
@@ -1030,6 +1070,20 @@ _callable_ process objects — a condition a JSON body can never meet, so succes
 They return a classified `NotImplementedError` after the authorisation and request-shape checks, **without
 opening a transaction that cannot commit**. The members stay routable, so the interface surface is unchanged;
 what the classification buys is that an impossible request says so instead of producing a generic fault.
+
+**Smart-list routes publish only the requested page, never the full matching set beside it.** The service-level
+`SmartListResult` retains both `records` and `pageRecords` for in-process parity, but the product and SKU HTTP
+projections expose `pageRecords` and the five count/paging values only. The legacy smart list was
+consumed inside FW/1; it did not define a wire payload that duplicated the unpaged collection. Keeping
+`records` behind the handler boundary preserves TR-1 while making a five-row response proportional to that
+page rather than to every matching catalog row.
+
+**Two client-authored SKU refusals answer `400`, not `500`.** `sku.getTransactionExistsFlag` requires at least
+one of its public `skuID` or `productID` query parameters and refuses an empty scope before calling the
+service. An SKU-combination request above the deployment's declared ceiling raises
+`RequestBudgetExhaustedError`, whose public presentation is the neutral
+`CATALOG_REQUEST_REJECTED` classification. The internal identifier path, combination count and configured
+ceiling stay in diagnostics; neither response leaks them to the caller.
 
 ---
 
@@ -1097,12 +1151,21 @@ ceiling required rather than optional.
 
 All six bounds are applied, and the budget collaborator is a **required** constructor argument on the query
 builder, on both services and on the feed builder. An unset bound makes the routes that apply it **refuse**,
-naming the variable.
+and the `ConfigurationError` raised at that point names the variable in its message.
 
 **The cost, named rather than buried: a deployment that states none of the six refuses every request.** That is
-the fail-closed direction and it is diagnosable, since the refusal names the exact variable. `.env.example`
-states it as a deployment requirement, and carries the route-to-variable map, so nobody has to discover it from
-a `500`.
+the fail-closed direction, and it is diagnosable from `.env.example` — which states the bounds as a deployment
+requirement and carries the route-to-variable map — rather than from the refusal a caller sees.
+
+**Where the variable's name does and does not appear is worth stating exactly, because the two are easy to
+conflate.** The name is in the `ConfigurationError`'s own message, which is a server-side value. It is **not**
+in anything observable from outside: §7.1's redaction policy governs here as everywhere, so the response body
+is the fixed `500 {"message":"The service is not correctly configured"}` — classified as a configuration
+failure rather than a generic fault, but naming nothing — and the log record is the same four neutralised
+fields as every other suppressed failure, `situation`, `failureClass`, `code` and `correlationID`, with no
+message text. That is the deliberate trade: no configuration value or member name reaches a client or a log,
+and the price is that the missing figure has to be identified from `.env.example`'s map rather than read off
+the refusal. Recovering the message means reproducing the failure with the correlation ID in hand.
 
 #### Why the cardinality objection does not reach these bounds
 
@@ -1436,7 +1499,7 @@ compose a statement against an excluded family's table even by accident; it fail
 the classification, before a connection is involved and before an over-granted deployment could let it
 through. `assertRegisteredColumnName` does the same for columns, and it validates each name against the
 **table that declares it** rather than merely checking the spelling — which is the actual risk, since `skuID`
-is declared on nine of the twenty-eight tables and `stockID` on seven, so a mis-paired name would still be a
+is declared on eight of the twenty-eight tables and `stockID` on eight, so a mis-paired name would still be a
 real column composing SQL that parses and would simply answer the wrong question. `EXTENDED_TABLE_COLUMNS` is
 annotated as a **total** `Record` over the registered names outside the column map, so adding a table to the
 registry without declaring the columns it needs **fails the build**.
@@ -1994,13 +2057,13 @@ unreachable code would add behaviour the legacy system does not have.
 slice amounts to **two entity test files, eight issue regressions and one fixture helper. Everything else is
 net-new.** Every suite in `test/` labels itself, so the ratio is visible per file rather than only in
 aggregate: of the **17** suites, **3 carry TRACEABLE cases and 14 are wholly NET-NEW** — and inside those three
-the imbalance is sharper still, **20 traceable case declarations against 2,131 net-new ones**. The three are
+the imbalance is sharper still, **20 traceable case declarations against 2,231 net-new ones**. The three are
 `test/regression/issues.test.ts` (10), `test/domain/Product.test.ts` (6) and `test/domain/Brand.test.ts` (4).
 
 **Declarations and executed tests are two different counts, and this paragraph states declarations.** The
 figures above come from walking the TypeScript AST of all seventeen suites and counting `it` / `test`
-declarations: **2,151 in total, 20 TRACEABLE and 2,131 NET-NEW, with 0 unlabelled.** The runner reports a
-larger number — **2,410 at this checkpoint** — because an `it.each(table)` declaration expands into one
+declarations: **2,251 in total, 20 TRACEABLE and 2,231 NET-NEW, with 0 unlabelled.** The runner reports a
+larger number — **2,516 at this checkpoint** — because an `it.each(table)` declaration expands into one
 executed test per table row. Neither figure is frozen by anything: both grow when a case or a row is added, so
 re-measure rather than trusting a number in a document. `test/regression/issues.test.ts` asserts the
 declaration figures against a fresh walk of the suites on every run, so a drift between this paragraph and the
@@ -2080,10 +2143,9 @@ because all three arrived there by the folds above.**
 sits inside one `describe` under a banner naming its origin, so it can be read as the file it would otherwise
 be, and every host already owns the subject. The rows below sum to **twenty-two**.
 
-**`grep -rh 'FOLDED IN FROM' test/ | wc -l` reports 20, not 22, and the gap is a banner-wording difference
-rather than a missing body.** Two of the twenty-two — `adapters/catalogAggregates` and
-`adapters/MySqlProductPersistence` — carry a `cases merged from …` banner instead, both inside
-`test/adapters/MySqlProductRepository.test.ts`. Count the rows below, or grep for both banner forms.
+The audit is executable: `grep -rh 'FOLDED IN FROM' test/ | wc -l` reports **22**, one uniform banner
+for every row below. Each banner includes the folded subject exactly as the table names it, so the count and
+the host/subject mapping are both asserted by `test/regression/issues.test.ts` rather than left as prose.
 
 | Folded suite(s)                                                                                                                                                     | Host                                          |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
