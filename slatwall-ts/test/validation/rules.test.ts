@@ -2,86 +2,18 @@
  * The seven ported Catalog validation documents and the validation-engine semantics that govern
  * them — the executable specification for `src/validation/**`.
  *
- * AAP authority: AAP §0.4.1.12 lists `slatwall-ts/test/validation/rules.test.ts` | CREATE |
+ * AAP authority: AAP §0.4.1.12 lists `slatwall-ts/test/validation/rules.test.ts` | create |
  * "**NET-NEW** — asserts each ported rule, including both method-based SKU rules", and the AAP §0.4.4
- * wildcard row authorises `slatwall-ts/test/**` | CREATE. The corpus under test is fixed by AAP
- * §0.2.1.5, which lists the seven documents as an IMPLICIT scope addition and records the reason:
- * per IR-4 they are behaviour, not configuration — they decide which saves and deletes succeed.
+ * wildcard row authorises `slatwall-ts/test/**` | create. The corpus under test is fixed by AAP
+ * §0.2.1.5, which lists the seven documents as an implicit scope addition and records the reason:
+ * Per IR-4 they are behaviour, not configuration — they decide which saves and deletes succeed.
  *
- * =================================================================================================
- * EVERY CASE IN THIS FILE IS NET-NEW COVERAGE. NOTHING HERE IS A PARITY TEST
- * =================================================================================================
- * AAP §0.6.5.2 verified that the legacy suite contains NO test for any validation document, NO
+ * Every case in this file is net-new coverage. Nothing here is a parity test
+ * AAP §0.6.5.2 verified that the legacy suite contains no test for any validation document, no
  * `SkuDAOTest`, and no service test for any of the four in-scope services. AAP §0.6.5.3 states the
  * asymmetry without softening it: the extendable legacy signal for this whole slice is a small set of
  * entity tests, issue regressions and one fixture helper — and **not one of those sources exercises a
- * validation rule**, which is the only part of that inventory this file has any claim on. The size of the
- * issue-regression set is `test/regression/issues.test.ts`'s business, not this header's, so no count of
- * it is repeated here. Every `describe` and every case title below carries the label `NET-NEW` in its own
- * text — per case rather than only on the parent — so the ratio AAP §0.8.3.7 asks for is visible line by
- * line and no parity with a legacy assertion is implied anywhere.
- *
- * =================================================================================================
- * TRACEABILITY IS DOCUMENTARY, NOT EMPIRICAL — AND NO RUNTIME COMPARISON WAS PERFORMED
- * =================================================================================================
- * Every legacy locator cited below was established by READING legacy source, never by running it.
- * Three independent facts make that the only available method, and all three are disclosed rather
- * than glossed:
- *   * MXUnit is NOT VENDORED anywhere in this repository, and neither is CFSelenium.
- *     `meta/tests/readme.txt:L1-L7` states that the suite needs MXUnit installed with a mapping
- *     inside CFIDE, plus CFSelenium likewise mapped for the functional folder. Neither mapping
- *     exists here (AAP §0.5.4).
- *   * The Docker/Compose local-development setup the brief cites at `meta/docker/slatwall-local-dev/`
- *     DOES NOT EXIST in this repository. `meta/` contains only `meta/tests/` and `meta/eclipse/`,
- *     there is no Dockerfile and no Compose file anywhere in the tree, and there is no CFML engine on
- *     this host (AAP §0.8.4.1).
- *   * Consequently THE LEGACY SUITE CANNOT BE EXECUTED IN THIS CHECKOUT, so NO RUNTIME BEHAVIOURAL
- *     COMPARISON AGAINST THE LEGACY SUITE WAS PERFORMED and no output of this file was ever diffed
- *     against observed legacy behaviour (AAP §0.6.5.3, §0.8.4.2).
- * What that costs is stated plainly: these assertions pin the PORT against the legacy SOURCE. A
- * reader who wants a behavioural diff against a running Slatwall must obtain a CFML runtime first.
- *
- * =================================================================================================
- * HOW THIS FILE IS ORGANISED
- * =================================================================================================
- *   A  — the rule corpus: seven documents, seven property containers, thirteen constraint and
- *        selection keys counted against the source documents, the seven `unique` locators, and the
- *        one shared code-format regular expression.
- *   B  — per-document declarations, the four `physicalCounts` guards, and the context-only Product
- *        gates.
- *   C  — context selection, rule flattening, condition evaluation, error accumulation and M7
- *        request scope.
- *   D  — the conditional process document and CFML loose equality.
- *   E  — the eleven-row evaluator and null-semantics matrix.
- *   F  — both SKU method rules, D19, and M6 same-transaction visibility.
- *   G  — uniqueness SQL and port behaviour.
- *   H  — raw message keys, the error bag, and validate-gate-persist.
- *
- * =================================================================================================
- * EVERY CASE BUILDS ITS OWN COLLABORATORS. THERE IS NO MODULE-SCOPE MUTABLE STATE
- * =================================================================================================
- * No repository, uniqueness seed, entity, error bag, map or counter is declared at module scope.
- * Each case calls a factory and gets a fresh graph. The only module-level bindings are immutable
- * literals and pure functions.
- *
- * That discipline answers what the legacy harness did NOT do. Both of its lifecycle hooks are
- * commented out in the source — `//variables.slatwallFW1Application.reloadApplication();` at
- * `meta/tests/unit/SlatwallUnitTestBase.cfc:L53` and
- * `//variables.slatwallFW1Application.endSlatwallLifecycle();` at `:L70` — so application and request
- * scope persisted across an entire run and one case could observe what another left behind. AAP
- * §0.6.6 M7 makes the same hazard a production concern: nothing survives a Lambda invocation except
- * module-scope state, and a memo on a warm container is shared across invocations. Section C4 exists
- * to prove this engine carries nothing across.
- *
- * =================================================================================================
- * DEPENDENCIES ARE EXPLICIT AND TYPED. NOTHING IS MOCKED AT THE MODULE LEVEL
- * =================================================================================================
- * `Validator` is the REAL class, constructed with its one real collaborator through its constructor
- * (AAP §0.7.3, explicit dependency injection). `ValidationError` is the REAL error bag. The seven
- * rule modules are the REAL frozen declarations. There is no `jest.mock`, no module replacement, no
- * string-keyed service resolution and no global registry anywhere in this file. Substitution happens
- * only where a genuine boundary exists, through the doubles exported by
- * `test/support/inMemoryRepositories.ts`.
+ * validation rule**. every case below is therefore labelled net-new, without exception.
  */
 
 import { MySqlSkuRepository } from '../../src/adapters/mysql/MySqlSkuRepository';
@@ -185,23 +117,9 @@ import type {
   ValidationSubject,
 } from '../../src/validation/Validator';
 
-/* ================================================================================================
- * LOCAL TEST VOCABULARY
- *
- * Everything below is a pure function or an immutable literal, declared in this file because the
- * brief forbids a helper module and because none of it belongs in production source. Nothing here
- * reimplements the error bag, a repository, a unit of work, a SQL executor, the pricing port or the
- * uniqueness port: those all come from the real implementations or from
- * `test/support/inMemoryRepositories.ts`.
- * ============================================================================================== */
+/* Local test vocabulary. */
 
-/**
- * Reads the first element of a readonly array without a non-null assertion.
- *
- * `tsconfig.json` sets `noUncheckedIndexedAccess`, so `array[0]` is `T | undefined`, and the brief
- * forbids `!`. Raising on an empty input is deliberate: a rule module that lost its first rule
- * should fail loudly here rather than silently assert against `undefined`.
- */
+/** Reads the first element of a readonly array without a non-null assertion. */
 function first<T>(items: readonly T[]): T {
   const [head] = items;
   if (head === undefined) {
@@ -210,15 +128,7 @@ function first<T>(items: readonly T[]): T {
   return head;
 }
 
-/**
- * The narrow structural view of a rule set used for census and declaration assertions.
- *
- * Deliberately NOT a second production schema (the brief forbids one). It is a READ-ONLY projection
- * that every `ValidationRuleSet<TSubject>` already satisfies structurally, which is what lets seven
- * rule sets over seven different subject types be traversed by one loop. The value readers and
- * unique-target resolvers each rule set carries are simply not named here, because a census does not
- * read values.
- */
+/** The narrow structural view of a rule set used for census and declaration assertions. */
 interface CensusConstraint {
   readonly constraintType: string;
   readonly constraintValue: unknown;
@@ -263,9 +173,6 @@ type NormalisedProperty = readonly [propertyIdentifier: string, rules: readonly 
 /**
  * Projects a rule set into a plain, comparable literal so a whole document can be asserted in one
  * expression, in the source document's own property and key order.
- *
- * Order is preserved on purpose rather than sorted — see section C2, where the target's deterministic
- * source-order evaluation is pinned as an intentional decision.
  */
 function normaliseRuleSet(ruleSet: CensusRuleSet): readonly NormalisedProperty[] {
   return ruleSet.properties.map((property): NormalisedProperty => [
@@ -298,16 +205,7 @@ function uniqueEntityAccessors(
   };
 }
 
-/**
- * A minimal typed validation subject for exercising generic engine semantics.
- *
- * Permitted by the brief precisely because the eleven-row matrix and the flattening, condition and
- * scope cases are ENGINE behaviour rather than document behaviour, and because the realized
- * `Validator` exports NO per-constraint evaluator — `Validator.validate()` is the only public
- * evaluator seam, so a single-constraint rule set over a single-property subject is the narrowest way
- * to reach one evaluator at a time. It uses only public `Validator` types, declares no `any`, carries
- * no compiler suppression and lives in this file rather than in a helper module.
- */
+/** A minimal typed validation subject for exercising generic engine semantics. */
 type MatrixSubject = ValidationSubject &
   UniquePropertyEntity & {
     readonly value?: unknown;
@@ -368,12 +266,7 @@ function matrixRuleSet(constraint: Constraint<MatrixSubject>): ValidationRuleSet
   };
 }
 
-/**
- * Runs one constraint against one value and answers whether the engine recorded a failure.
- *
- * Every row of the eleven-row matrix funnels through here, so each row asserts the SAME public seam
- * and a row cannot accidentally test a different code path from its neighbour.
- */
+/** Runs one constraint against one value and answers whether the engine recorded a failure. */
 async function evaluate(
   constraint: Constraint<MatrixSubject>,
   options: MatrixSubjectOptions,
@@ -392,13 +285,7 @@ function passes(constraint: Constraint<MatrixSubject>, value: unknown): Promise<
   return evaluate(constraint, { value });
 }
 
-/**
- * Builds the Sku rule set, which — alone among the seven — has NO static export.
- *
- * `createSkuValidationRules` is a factory because two of its constraints need collaborators the
- * document cannot supply: the uniqueness target resolver and the selected-options lookup that the
- * `hasUniqueOptions` method rule reads through (AAP §0.6.2, M6).
- */
+/** Builds the Sku rule set, which — alone among the seven — has no static export. */
 function skuRuleSetFor<TSubject extends SkuValidationSubject & UniquePropertyEntity = Sku>(
   lookupProductId: string,
 ): {
@@ -431,16 +318,7 @@ function allRuleSets(): readonly (readonly [className: string, ruleSet: CensusRu
   ];
 }
 
-/**
- * Tallies every constraint key and every selection key across the whole corpus.
- *
- * The counting rule matters and is stated here so the numbers in section A can be checked against the
- * JSON by hand: ONE `contexts` per rule object that declares one; ONE `conditions` per rule object
- * that declares a selector PLUS one for a document's condition-definition block; one entry per
- * constraint inside a rule object; and one entry per constraint inside a condition definition. That
- * is why `eq` counts five — three delete guards plus the two condition predicates of the process
- * document — and why post-flattening duplicates are never counted.
- */
+/** Tallies every constraint key and every selection key across the whole corpus. */
 function censusOf(
   ruleSets: readonly (readonly [string, CensusRuleSet])[],
 ): ReadonlyMap<string, number> {
@@ -496,26 +374,14 @@ function uniqueConstraintSites(
   return sites;
 }
 
-/**
- * The legacy resource-bundle classification token, reproduced here for comparison ONLY.
- *
- * `org/Hibachi/HibachiValidationService.cfc:L212-L218` selects `rbKey('entity.<class>')` for a
- * persistent object and `rbKey('processObject.<class>')` for anything else, and puts the result into
- * the SUBSTITUTION STRUCT — never into the message key. DECISION D-1 skips the substitution pass
- * entirely, so the realized `src/validation/Validator.ts` never emits this token; there is no
- * production API that produces it and inventing one would be capability beyond the migration. The
- * function exists so section H can assert both halves of the separation: the token a legacy resource
- * lookup would have used, and the fact that no emitted message contains it.
- */
+/** The legacy resource-bundle classification token, reproduced here for comparison only. */
 function legacyClassificationToken(className: string, persistent: boolean): string {
   return persistent ? `entity.${className}` : `processObject.${className}`;
 }
 
-/* ================================================================================================
- * SECTION A — THE DECLARATIVE RULE CORPUS
- * ============================================================================================== */
+/* The declarative rule corpus. */
 
-describe('NET-NEW — A. the declarative rule corpus: seven documents and thirteen keys', () => {
+describe('NET-NEW — the declarative rule corpus: seven documents and thirteen keys', () => {
   it('NET-NEW — AAP §0.2.1.5 — represents EXACTLY seven rule modules, one per validation document', () => {
     const ruleSets = allRuleSets();
 
@@ -540,13 +406,10 @@ describe('NET-NEW — A. the declarative rule corpus: seven documents and thirte
 
   it('NET-NEW — AAP §0.2.1.5 — declares NO eighth document and NO barrel or shared-helper module', () => {
     // AAP §0.2.1.5 records the subtlety that is easiest to mistake for an omission: the two
-    // add-option process contexts have NO validation document of their own. Their rules are declared
-    // as CONTEXT-SCOPED rules inside `model/validation/Product.json` — `:L4` for the base-type gate
-    // and `:L13`/`:L14` for the two minimum-collection gates — which is why section B3 exercises them
+    // add-option process contexts have no validation document of their own. Their rules are declared
+    // as context-scoped rules inside `model/validation/Product.json` — `:L4` for the base-type gate
+    // and `:L13`/`:L14` for the two minimum-collection gates — which is why they are exercised
     // through the Product rule set and why the corpus stops at seven.
-    //
-    // AAP §0.2.2.4 additionally excludes five sibling catalog documents that live in the same legacy
-    // directory, so `model/validation/` holding more than seven files is expected and is not a gap.
     expect(allRuleSets()).toHaveLength(7);
 
     // Nothing in the corpus is a re-export of another member: seven distinct object identities.
@@ -573,7 +436,7 @@ describe('NET-NEW — A. the declarative rule corpus: seven documents and thirte
   it('NET-NEW — the thirteen verified constraint and selection keys carry their exact source-document counts', () => {
     const census = censusOf(allRuleSets());
 
-    // Counted against the SOURCE DOCUMENTS, one entry per original declaration, never per
+    // Counted against the source documents, one entry per original declaration, never per
     // post-flattening duplicate. Each locator list below was read from the JSON, not recalled.
     expect(Object.fromEntries([...census.entries()].sort())).toStrictEqual({
       // One per rule object that declares a context selector. Twelve in Product.json, nine in
@@ -624,8 +487,8 @@ describe('NET-NEW — A. the declarative rule corpus: seven documents and thirte
       'inList',
       'maxLength',
     ]);
-    // Eleven constraint kinds plus the two SELECTION keys `contexts` and `conditions` make the
-    // thirteen of the previous case. S9 forbids adding a twelfth constraint kind, so the corpus is
+    // Eleven constraint kinds plus the two selection keys `contexts` and `conditions` make the
+    // thirteen of the previous case. AAP §0.7.3 forbids adding a twelfth constraint kind, so the corpus is
     // asserted to contain nothing outside this closed set.
     const observed = new Set(
       [...censusOf(allRuleSets()).keys()].filter(
@@ -638,19 +501,11 @@ describe('NET-NEW — A. the declarative rule corpus: seven documents and thirte
   });
 });
 
-describe('NET-NEW — A2. the seven application-side `unique` constraints and the IR-5 reconciliation', () => {
+describe('NET-NEW — the seven application-side `unique` constraints and the IR-5 reconciliation', () => {
   it('NET-NEW — all SEVEN validation-document `unique` locators are declared, and Product_UpdateSkus contributes zero', () => {
-    // G6 — WHY SEVEN, AND WHY THE COUNT IS WORTH ASSERTING ON ITS OWN. The corpus is easy to undercount
+    // why seven, and why the count is worth asserting on its own. The corpus is easy to undercount
     // as six by overlooking Product `urlTitle`, so all seven sites are enumerated below with the locator
     // each was read from, and the count is asserted rather than described.
-    //
-    // IR-5 RECONCILED. AAP IR-5 says "five of the eight unique columns declared in the whole system
-    // belong to this slice". That sentence counts ORM COLUMN METADATA — the `unique="true"` attribute
-    // on an entity property, enforced by the database. The seven below are APPLICATION-SIDE `unique`
-    // constraints declared in the validation documents and enforced by an HQL existence query at
-    // `org/Hibachi/HibachiDAO.cfc:L140` during validation. They are two INDEPENDENT enforcement
-    // mechanisms with different counts, and both statements are correct about different things.
-    // Seven governs here, because this file tests the validation documents.
     expect(uniqueConstraintSites(allRuleSets())).toStrictEqual([
       // `model/validation/Product.json:10`
       'Product.productCode',
@@ -722,13 +577,12 @@ describe('NET-NEW — A2. the seven application-side `unique` constraints and th
   ])(
     'NET-NEW — %s delegates through the injected UniquePropertyPort, and `false` is the failure',
     async (_label, className, propertyName, entityName, primaryIDPropertyName) => {
-      // POLARITY, PINNED. `org/Hibachi/HibachiDAO.cfc:L142-L144` returns FALSE when the existence
-      // query finds rows and `:L146` returns TRUE when it finds none, and `validate_unique` at
-      // `org/Hibachi/HibachiValidationService.cfc:L467-L470` returns that verdict UNMODIFIED. So
-      // `true` means unique and therefore SAFE TO SAVE. Inverting it is silent — every uniqueness
+      // polarity, pinned. `org/Hibachi/HibachiDAO.cfc:L142-L144` returns false when the existence
+      // query finds rows and `:L146` returns true when it finds none, and `validate_unique` at
+      // `org/Hibachi/HibachiValidationService.cfc:L467-L470` returns that verdict unmodified. So
+      // `true` means unique and therefore safe to save. Inverting it is silent — every uniqueness
       // rule in the slice would pass when it should fail — which is why this case exercises the
-      // COLLIDING path: a test that only covered the non-colliding path would pass under either
-      // polarity.
+      // colliding path: a test that only covered the non-colliding path would pass under either.
       const taken = 'already-taken-value';
       const collidingSubject: ValidationSubject & UniquePropertyEntity = {
         ...uniqueEntityAccessors(entityName, primaryIDPropertyName, 'mine', {
@@ -752,7 +606,7 @@ describe('NET-NEW — A2. the seven application-side `unique` constraints and th
         ],
       };
 
-      // Seeded against a DIFFERENT primary identifier, which is what makes it a genuine collision
+      // Seeded against a different primary identifier, which is what makes it a genuine collision
       // rather than the row validating itself.
       const colliding = createValidatorHarness([
         { entityName, propertyName, value: taken, entityID: 'someone-else' },
@@ -782,7 +636,7 @@ describe('NET-NEW — A2. the seven application-side `unique` constraints and th
   );
 });
 
-describe('NET-NEW — A3. the one shared code-format regular expression', () => {
+describe('NET-NEW — the one shared code-format regular expression', () => {
   it('NET-NEW — the shared source is byte-exact `^[a-zA-Z0-9-_.|:~^]+$`', () => {
     // Read from `model/validation/Product.json:10`, `model/validation/Option.json:3` and
     // `model/validation/OptionGroup.json:4` — the same seventeen characters in all three.
@@ -805,25 +659,7 @@ describe('NET-NEW — A3. the one shared code-format regular expression', () => 
   });
 
   it('NET-NEW — the pattern is carried as a string and the engine compiles it with NO flags', async () => {
-    // G6 — THE NO-FLAG END-ANCHOR BEHAVIOUR IS THE DELIBERATE TARGET CHOICE.
-    //
-    // `validate_regex` at `org/Hibachi/HibachiValidationService.cfc:L481-L487` delegates to CFML's
-    // `isValid("regex", value, pattern)`, whose anchors bind to the whole subject. The port compiles
-    // the same pattern with `new RegExp(pattern)` and NO flags, so in JavaScript `$` matches only at
-    // the very end of the input — NOT before a trailing newline and NOT at every line end. Adding
-    // `m` would let a multi-line payload smuggle an invalid second line past a `$` anchor, and the two
-    // newline cases below are what would break if it were added.
-    //
-    // The Unicode flags are a different matter and are worth stating precisely rather than lumping in
-    // with `m`: `u` leaves this pattern's observable result UNCHANGED on every input, because the class
-    // contains no surrogate pair, no `\p{…}` escape and no case-folding dependency — so adding it would
-    // be inert rather than wrong. `v` is not inert, and it does not merely change which characters the
-    // class lists — it makes the class ILLEGAL: the bare `-` sitting immediately after the `0-9` range is
-    // rejected, so `new RegExp(pattern, 'v')` THROWS `SyntaxError: Invalid character class`, and escaping
-    // only the `-` then throws `Invalid character in character class` because `v` reserves `|` inside a
-    // class too. Compiling under `v` would require `^[a-zA-Z0-9\-_.\|:~^]+$` — a rewritten pattern.
-    // Neither flag is added: `u` because it buys nothing, `v` because the pattern is carried verbatim from
-    // `model/validation/Product.json:L10` and re-escaping it to satisfy a flag would edit the ported value.
+    // the no-flag end-anchor behaviour is the deliberate target choice.
     expect(typeof CODE_FORMAT_REGEX).toBe('string');
     expect(new RegExp(CODE_FORMAT_REGEX).flags).toBe('');
     expect(new RegExp(CODE_FORMAT_REGEX).source).toBe('^[a-zA-Z0-9-_.|:~^]+$');
@@ -839,25 +675,18 @@ describe('NET-NEW — A3. the one shared code-format regular expression', () => 
     // The two cases that pin the absence of the `m` flag.
     expect(await passes(regex, 'ok\nBAD!')).toBe(false);
     expect(await passes(regex, 'a\nb')).toBe(false);
-    // `+` means the empty string cannot match, which is why a blank code fails BOTH `required` and
-    // `regex` — the accumulation case in section C2 depends on exactly that.
+    // `+` means the empty string cannot match, which is why a blank code fails both `required` and
+    // `regex` — the accumulation case below depends on exactly that.
     expect(await passes(regex, '')).toBe(false);
   });
 });
 
-/* ================================================================================================
- * SECTION B — EXACT PER-DOCUMENT DECLARATIONS
- *
- * Each document gets one whole-shape assertion, in the source document's own property order and key
- * order, followed by targeted cases for the declarations that are easiest to get wrong. The
- * whole-shape assertion is what makes an accidental EXTRA rule fail as loudly as a missing one, which
- * a rule-by-rule check alone cannot do.
- * ============================================================================================== */
+/* Exact per-document declarations. */
 
-describe('NET-NEW — B1. `model/validation/Product.json` — eleven properties, twelve rules', () => {
+describe('NET-NEW — `model/validation/Product.json` — eleven properties, twelve rules', () => {
   it('NET-NEW — Product.json in full: the whole document, in source property and key order', () => {
     expect(normaliseRuleSet(productValidationRuleSet)).toStrictEqual([
-      // `:L3-L6` — TWO INDEPENDENT rule objects against one property, each with its own context list.
+      // `:L3-L6` — two independent rule objects against one property, each with its own context list.
       [
         'baseProductType',
         [
@@ -871,7 +700,7 @@ describe('NET-NEW — B1. `model/validation/Product.json` — eleven properties,
       ],
       // `:L7`
       ['physicalCounts', [['delete', undefined, [['maxCollection', 0]]]]],
-      // `:L8` — required AND numeric, and carrying NO numeric floor. See X10a.
+      // `:L8` — required and numeric, and carrying no numeric floor. See the product `price` cases.
       [
         'price',
         [
@@ -930,7 +759,7 @@ describe('NET-NEW — B1. `model/validation/Product.json` — eleven properties,
     ]);
   });
 
-  it('NET-NEW — `model/validation/Product.json:L8` declares NO `minValue` for `price` (S9, invent nothing)', () => {
+  it('NET-NEW — `model/validation/Product.json:L8` declares NO `minValue` for `price` (AAP §0.7.3, invent nothing)', () => {
     const price = productValidationRuleSet.properties.find(
       (property) => property.propertyIdentifier === 'price',
     );
@@ -938,7 +767,7 @@ describe('NET-NEW — B1. `model/validation/Product.json` — eleven properties,
     const declared = (price?.rules ?? []).flatMap((rule) =>
       rule.constraints.map((constraint) => constraint.constraintType),
     );
-    // Sku price DOES carry `minValue: 0` (`model/validation/Sku.json:L9`). Product price does not,
+    // Sku price does carry `minValue: 0` (`model/validation/Sku.json:L9`). Product price does not,
     // and the asymmetry is the source document's, not an omission here. Adding a floor would reject
     // saves the legacy system permits.
     expect(declared).toStrictEqual(['required', 'dataType']);
@@ -952,21 +781,21 @@ describe('NET-NEW — B1. `model/validation/Product.json` — eleven properties,
       ),
     );
     expect(baseProductType.rules).toHaveLength(2);
-    // Two rule objects means two INDEPENDENT context selectors: the merchandise gate never applies in
-    // the subscription context and vice versa, which section B3 exercises behaviourally.
+    // Two rule objects means two independent context selectors: the merchandise gate never applies in
+    // the subscription context and vice versa, which the context-selection cases exercise behaviourally.
     expect(first(baseProductType.rules).contexts).toBe('addOptionGroup,addOption');
     expect(baseProductType.rules[1]?.contexts).toBe('addSubscriptionTerm');
   });
 });
 
-describe('NET-NEW — B2. `model/validation/Sku.json` — eight properties, nine rules', () => {
+describe('NET-NEW — `model/validation/Sku.json` — eight properties, nine rules', () => {
   it('NET-NEW — Sku.json in full: the whole document, in source property and key order', () => {
     const { ruleSet } = skuRuleSetFor('sku-document-product');
 
     expect(normaliseRuleSet(ruleSet)).toStrictEqual([
       // `:L3`
       ['defaultFlag', [['delete', undefined, [['eq', false]]]]],
-      // `:L4` — optional but constrained: numeric with a floor, and NO `required`.
+      // `:L4` — optional but constrained: numeric with a floor, and no `required`.
       [
         'listPrice',
         [
@@ -980,7 +809,7 @@ describe('NET-NEW — B2. `model/validation/Sku.json` — eight properties, nine
           ],
         ],
       ],
-      // `:L5-L8` — TWO method rules against one property, each its own rule object.
+      // `:L5-L8` — two method rules against one property, each its own rule object.
       [
         'options',
         [
@@ -1042,8 +871,8 @@ describe('NET-NEW — B2. `model/validation/Sku.json` — eight properties, nine
     const lookupRepository = createInMemorySkuRepository({});
     const lookup = createSkusBySelectedOptionsLookup(lookupRepository.repository, 'bind-product');
 
-    // The constraint VALUE is the legacy method name, which is what the message key embeds
-    // (`org/Hibachi/HibachiValidationService.cfc:L222`). The INVOCATION is a typed closure over the
+    // The constraint value is the legacy method name, which is what the message key embeds
+    // (`org/Hibachi/HibachiValidationService.cfc:L222`). The invocation is a typed closure over the
     // domain method — IR-1 and rule R2: no `getService("…")`, no `invokeMethod(name)`, nothing
     // resolved from a string at run time.
     expect(createHasUniqueOptionsConstraint(lookup).constraintValue).toBe('hasUniqueOptions');
@@ -1058,7 +887,7 @@ describe('NET-NEW — B2. `model/validation/Sku.json` — eight properties, nine
     ['listPrice — model/validation/Sku.json:L4', 'listPrice'],
     ['renewalPrice — model/validation/Sku.json:L10', 'renewalPrice'],
   ])(
-    'NET-NEW — X10b — %s is optional-but-constrained: no `required`, and null passes both records',
+    'NET-NEW — %s is optional-but-constrained: no `required`, and null passes both records',
     async (_label, propertyName) => {
       const { ruleSet, repository } = skuRuleSetFor('x10b-product');
       const product = buildProduct({ productID: 'x10b-product' });
@@ -1067,20 +896,20 @@ describe('NET-NEW — B2. `model/validation/Sku.json` — eight properties, nine
       const declared = first(
         ruleSet.properties.filter((property) => property.propertyIdentifier === propertyName),
       );
-      // Two constraints, and NEITHER is `required`. Absence of the presence rule is the whole point:
+      // Two constraints, and neither is `required`. Absence of the presence rule is the whole point:
       // an unpriced renewal is legal.
       expect(
         declared.rules.flatMap((rule) => rule.constraints.map((c) => c.constraintType)),
       ).toStrictEqual(['dataType', 'minValue']);
 
-      // ABSENT value: `validate_dataType` at `org/Hibachi/HibachiValidationService.cfc:L257` and
+      // Absent value: `validate_dataType` at `org/Hibachi/HibachiValidationService.cfc:L257` and
       // `validate_minValue` at `:L271` both return true for a null, so an unset optional passes both.
       const absent = buildSku({ skuID: 'x10b-absent', skuCode: 'X10B', price: 1, product });
       const absentErrors = await harness.validateDryRun(absent, ruleSet, 'save');
       expect(absentErrors.getError(propertyName)).toStrictEqual([]);
 
-      // NON-NULL NONNUMERIC value: `minValue` fails because `:L273` requires the value to be numeric
-      // BEFORE comparing, and `dataType` fails independently. Both records are appended.
+      // Non-NULL nonnumeric value: `minValue` fails because `:L273` requires the value to be numeric
+      // before comparing, and `dataType` fails independently. Both records are appended.
       const nonnumeric = buildSku({
         skuID: 'x10b-bad',
         skuCode: 'X10BBAD',
@@ -1094,7 +923,7 @@ describe('NET-NEW — B2. `model/validation/Sku.json` — eight properties, nine
         `validate.save.Sku.${propertyName}.minValue`,
       ]);
 
-      // NEGATIVE numeric: numeric, so `dataType` passes; below the floor, so `minValue` alone fails.
+      // Negative numeric: numeric, so `dataType` passes; below the floor, so `minValue` alone fails.
       const negative = buildSku({
         skuID: 'x10b-negative',
         skuCode: 'X10BNEG',
@@ -1112,14 +941,14 @@ describe('NET-NEW — B2. `model/validation/Sku.json` — eight properties, nine
   );
 });
 
-describe('NET-NEW — B3. `model/validation/Brand.json` — X10c, all five declarations', () => {
+describe('NET-NEW — `model/validation/Brand.json` — all five declarations', () => {
   it('NET-NEW — Brand.json in full: the whole document, in source property and key order', () => {
     expect(normaliseRuleSet(brandValidationRules)).toStrictEqual([
       // `:L3`
       ['brandName', [['save', undefined, [['required', true]]]]],
       // `:L4` — a URL data type, the only `dataType: url` in the whole corpus.
       ['brandWebsite', [['save', undefined, [['dataType', 'url']]]]],
-      // `:L5` — required AND unique. AAP §0.4.1.5 abbreviates this to "`urlTitle` unique"; the
+      // `:L5` — required and unique. AAP §0.4.1.5 abbreviates this to "`urlTitle` unique"; the
       // document declares both constraints, and both are asserted.
       [
         'urlTitle',
@@ -1136,12 +965,12 @@ describe('NET-NEW — B3. `model/validation/Brand.json` — X10c, all five decla
       ],
       // `:L6` — the live delete guard.
       ['products', [['delete', undefined, [['maxCollection', 0]]]]],
-      // `:L7` — the inert delete guard; see B6.
+      // `:L7` — the inert delete guard, asserted below.
       ['physicalCounts', [['delete', undefined, [['maxCollection', 0]]]]],
     ]);
   });
 
-  it('NET-NEW — X10c — `brandName` required, `brandWebsite` typed url, `urlTitle` required AND unique', async () => {
+  it('NET-NEW — `brandName` required, `brandWebsite` typed url, `urlTitle` required AND unique', async () => {
     const harness = createValidatorHarness([
       { entityName: 'SlatwallBrand', propertyName: 'urlTitle', value: 'taken', entityID: 'other' },
     ]);
@@ -1179,7 +1008,7 @@ describe('NET-NEW — B3. `model/validation/Brand.json` — X10c, all five decla
     expect(collision.getError('urlTitle')).toStrictEqual(['validate.save.Brand.urlTitle.unique']);
   });
 
-  it('NET-NEW — X10c — both Brand delete guards are maxCollection 0, and `products` is the live one', async () => {
+  it('NET-NEW — both Brand delete guards are maxCollection 0, and `products` is the live one', async () => {
     const harness = createValidatorHarness();
 
     const empty = buildBrand({ brandID: 'empty-brand' });
@@ -1196,7 +1025,7 @@ describe('NET-NEW — B3. `model/validation/Brand.json` — X10c, all five decla
   });
 });
 
-describe('NET-NEW — B4. `model/validation/Option.json` and `model/validation/OptionGroup.json`', () => {
+describe('NET-NEW — `model/validation/Option.json` and `model/validation/OptionGroup.json`', () => {
   it('NET-NEW — Option: the whole document, in source property and key order', () => {
     expect(normaliseRuleSet(optionValidationRuleSet)).toStrictEqual([
       // `:L3`
@@ -1275,9 +1104,9 @@ describe('NET-NEW — B4. `model/validation/Option.json` and `model/validation/O
       ['options', [['delete', undefined, [['maxCollection', 0]]]]],
     ]);
 
-    // S9, invent nothing. `model/entity/OptionGroup.cfc` declares `sortOrder` as ORM metadata, and
+    // AAP §0.7.3, invent nothing. `model/entity/OptionGroup.cfc` declares `sortOrder` as ORM metadata, and
     // `model/dao/SkuDAO.cfc:L172-L204` orders by it, but `model/validation/OptionGroup.json` declares
-    // NO rule for it. A presence rule inferred from ORM metadata would reject saves the legacy system
+    // no rule for it. A presence rule inferred from ORM metadata would reject saves the legacy system
     // permits.
     expect(
       optionGroupValidationRuleSet.properties.map((property) => property.propertyIdentifier),
@@ -1316,8 +1145,8 @@ describe('NET-NEW — B4. `model/validation/Option.json` and `model/validation/O
   });
 });
 
-describe('NET-NEW — B5. `model/validation/ProductType.json` — X10d, four delete guards and two save rules', () => {
-  it('NET-NEW — X10d — the whole document: `childProductTypes` (never `productTypes`) and a length-zero system-code guard', () => {
+describe('NET-NEW — `model/validation/ProductType.json` — four delete guards and two save rules', () => {
+  it('NET-NEW — the whole document: `childProductTypes` (never `productTypes`) and a length-zero system-code guard', () => {
     expect(normaliseRuleSet(productTypeValidationRuleSet)).toStrictEqual([
       // `:L3`
       ['productTypeName', [['save', undefined, [['required', true]]]]],
@@ -1340,7 +1169,7 @@ describe('NET-NEW — B5. `model/validation/ProductType.json` — X10d, four del
       // `:L6` — the key is `childProductTypes`. The self-referencing child collection is declared at
       // `model/entity/ProductType.cfc:L65`, and a rule keyed `productTypes` would silently never fire.
       ['childProductTypes', [['delete', undefined, [['maxCollection', 0]]]]],
-      // `:L7` — `maxLength: 0`, a LENGTH guard on any nonempty string. It is NOT an in-list
+      // `:L7` — `maxLength: 0`, a length guard on any nonempty string. It is not an in-list
       // membership test against the three seeded discriminators, and reading it as one would let a
       // seeded product type be deleted.
       ['systemCode', [['delete', undefined, [['maxLength', 0]]]]],
@@ -1357,7 +1186,7 @@ describe('NET-NEW — B5. `model/validation/ProductType.json` — X10d, four del
     ).not.toContain('productTypes');
   });
 
-  it('NET-NEW — X10d — exactly FOUR delete guards and exactly TWO save rules', () => {
+  it('NET-NEW — exactly FOUR delete guards and exactly TWO save rules', () => {
     const byContext = new Map<string, string[]>();
     for (const property of productTypeValidationRuleSet.properties) {
       for (const rule of property.rules) {
@@ -1376,7 +1205,7 @@ describe('NET-NEW — B5. `model/validation/ProductType.json` — X10d, four del
     expect(byContext.size).toBe(2);
   });
 
-  it('NET-NEW — X10d — the system-code guard rejects a seeded discriminator and permits an empty one', async () => {
+  it('NET-NEW — the system-code guard rejects a seeded discriminator and permits an empty one', async () => {
     const harness = createValidatorHarness();
     const subject = (systemCode: string | undefined): ProductTypeValidationSubject => ({
       ...uniqueEntityAccessors('SlatwallProductType', 'productTypeID', 'pt-under-test', {}),
@@ -1413,11 +1242,11 @@ describe('NET-NEW — B5. `model/validation/ProductType.json` — X10d, four del
   });
 });
 
-describe('NET-NEW — B6. `model/validation/Product_UpdateSkus.json` — two properties, two named conditions', () => {
+describe('NET-NEW — `model/validation/Product_UpdateSkus.json` — two properties, two named conditions', () => {
   it('NET-NEW — the whole document: two properties, each numeric-and-required behind its own condition, with NO contexts', () => {
     expect(normaliseRuleSet(productUpdateSkusValidationRuleSet)).toStrictEqual([
-      // `:L11` — `contexts` is UNDEFINED, which is what makes the rule context-independent (section
-      // C1), and the constraint order is the document's own: `dataType` then `required`.
+      // `:L11` — `contexts` is undefined, which is what makes the rule context-independent
+      // (see the context-selection cases), and the constraint order is the document's own: `dataType` then `required`.
       [
         'price',
         [
@@ -1447,7 +1276,7 @@ describe('NET-NEW — B6. `model/validation/Product_UpdateSkus.json` — two pro
       ],
     ]);
 
-    // S9 — and NO `minValue`, unlike the Sku prices. A negative update price is legal here.
+    // AAP §0.7.3 — and no `minValue`, unlike the Sku prices. A negative update price is legal here.
     const declared = normaliseRuleSet(productUpdateSkusValidationRuleSet)
       .flatMap(([, rules]) => rules)
       .flatMap(([, , constraints]) => constraints.map(([type]) => type));
@@ -1476,12 +1305,12 @@ describe('NET-NEW — B6. `model/validation/Product_UpdateSkus.json` — two pro
 
   it('NET-NEW — both `hb_rbKey` constants are ANNOTATIONS carried from the process object, not generated messages', () => {
     // `model/process/Product_UpdateSkus.cfc` annotates its two data properties with
-    // `hb_rbKey="entity.sku.price"` and `hb_rbKey="entity.sku.listPrice"` — a resource-bundle LABEL
+    // `hb_rbKey="entity.sku.price"` and `hb_rbKey="entity.sku.listPrice"` — a resource-bundle label
     // for a form field, borrowed from the Sku entity because the process object edits Sku values.
     expect(PRODUCT_UPDATE_SKUS_PRICE_RB_KEY).toBe('entity.sku.price');
     expect(PRODUCT_UPDATE_SKUS_LIST_PRICE_RB_KEY).toBe('entity.sku.listPrice');
 
-    // They are NOT validation messages, and nothing generates them. The four keys this document can
+    // They are not validation messages, and nothing generates them. The four keys this document can
     // actually emit are built by the message templates instead, and none of them mentions `sku`.
     for (const generated of [
       PRICE_REQUIRED_MESSAGE_KEY,
@@ -1496,22 +1325,9 @@ describe('NET-NEW — B6. `model/validation/Product_UpdateSkus.json` — two pro
   });
 });
 
-describe('NET-NEW — B7. X10a — Product `price` is in scope, and its value never crosses the pricing port', () => {
+describe('NET-NEW — Product `price` is in scope, and its value never crosses the pricing port', () => {
   it('NET-NEW — `model/validation/Product.json:L8` — required and numeric on save, isolated from every other rule', async () => {
-    // TR-5 / G6 — WHY THIS RULE IS IN SCOPE THOUGH ITS VALUE IS CALCULATED.
-    //
-    // `price` is a NON-PERSISTENT property (`model/entity/Product.cfc:L118`) and its getter at
-    // `:L561-L568` returns its own value or delegates to the default SKU, which reads the PERSISTENT
-    // `Sku.price` column (`model/entity/Sku.cfc:L56`). So the value is calculated but it is resolved
-    // ENTIRELY INSIDE the slice — it crosses no boundary — and the realized
-    // `src/ports/PricingPort.ts` deliberately declares NO member for it, exposing only the sale-price
-    // details the excluded promotion engine owns. AAP §0.2.2.6 excludes those calculated members
-    // outright and this file touches none of them.
-    //
-    // The assertion that carries the point is the last one: a `PricingPort` double is wired in and its
-    // request log stays EMPTY, which is executable evidence that validating Product `price` reaches no
-    // out-of-scope collaborator. Had the rule been implemented by reaching through the port, the log
-    // would be non-empty.
+    // TR-5 — why this rule is in scope though its value is calculated.
     const pricing = createPricingDouble();
     const harness = createValidatorHarness();
     const productType = buildProductType({
@@ -1533,7 +1349,7 @@ describe('NET-NEW — B7. X10a — Product `price` is in scope, and its value ne
     expect(unpriced.getPrice()).toBeUndefined();
 
     const missing = await harness.validateDryRun(unpricedSubject, productValidationRuleSet, 'save');
-    // ISOLATION: `price` is the ONLY property carrying an error, so nothing below is inherited from a
+    // Isolation: `price` is the only property carrying an error, so nothing below is inherited from a
     // neighbouring rule.
     expect(Object.keys(missing.getErrors())).toStrictEqual(['price']);
     expect(missing.getError('price')).toStrictEqual(['validate.save.Product.price.required']);
@@ -1559,7 +1375,7 @@ describe('NET-NEW — B7. X10a — Product `price` is in scope, and its value ne
     const satisfied = await harness.validateDryRun(pricedSubject, productValidationRuleSet, 'save');
     expect(satisfied.hasErrors()).toBe(false);
 
-    // THE BOUNDARY EVIDENCE: no product identifier was ever handed to the pricing port.
+    // The boundary evidence: no product identifier was ever handed to the pricing port.
     expect(pricing.requestedProductIds).toStrictEqual([]);
   });
 
@@ -1569,13 +1385,13 @@ describe('NET-NEW — B7. X10a — Product `price` is in scope, and its value ne
       'not-a-number',
       ['validate.save.Product.price.dataType.numeric'],
     ],
-    // NEGATIVE is legal, because `model/validation/Product.json:L8` declares no `minValue` (S9).
+    // negative is legal, because `model/validation/Product.json:L8` declares no `minValue` (AAP §0.7.3).
     ['a negative price is accepted, because the document declares no floor', -5, []],
-    // ZERO satisfies presence: `validate_required` at
+    // zero satisfies presence: `validate_required` at
     // `org/Hibachi/HibachiValidationService.cfc:L240-L246` measures `len(trim())` on a simple value
-    // rather than testing truthiness, so `0` is PRESENT.
+    // rather than testing truthiness, so `0` is present.
     ['a zero price satisfies presence and type', 0, []],
-  ])('NET-NEW — X10a — %s', async (_label, seededPrice, expected) => {
+  ])('NET-NEW — %s', async (_label, seededPrice, expected) => {
     const pricing = createPricingDouble();
     const harness = createValidatorHarness();
     const product = buildProduct({
@@ -1600,46 +1416,15 @@ describe('NET-NEW — B7. X10a — Product `price` is in scope, and its value ne
   });
 });
 
-/* ================================================================================================
- * SECTION B8 — THE FOUR `physicalCounts` DELETE GUARDS, WITHOUT CROSSING THE PHYSICAL BOUNDARY
- *
- * S7 / G6 — THE INERTNESS FINDING, STATED ONCE AND ASSERTED IN BOTH DIRECTIONS.
- *
- * Four documents declare a delete guard keyed `physicalCounts`:
- * `model/validation/Product.json:L7`, `model/validation/Sku.json:L13`,
- * `model/validation/Brand.json:L7` and `model/validation/ProductType.json:L8`.
- *
- * NO IN-SCOPE ENTITY DECLARES A PROPERTY BY THAT NAME. What the four entities declare is
- * `physicals` — `model/entity/Product.cfc:L90`, `model/entity/Sku.cfc:L87`,
- * `model/entity/Brand.cfc:L71` and `model/entity/ProductType.cfc:L77`. Because
- * `org/Hibachi/HibachiValidationService.cfc:L171` guards every property with
- * `if(arguments.object.hasProperty(propertyIdentifier))`, all four guards are SILENTLY SKIPPED against
- * a production-shaped subject. They never fire in the legacy system and they must never fire here.
- *
- * The rule is therefore PRESERVED AND ANNOTATED, not repaired and not deleted:
- *   * it is NOT retargeted to `physicals`, because that would make four inert guards live and start
- *     rejecting deletes the legacy system permits;
- *   * it is NOT dropped, because the document declares it and the corpus census counts it;
- *   * `physicalCounts` is NOT added to any domain class, and no real PhysicalService is reached — the
- *     whole `Physical*` family is excluded by AAP §0.2.2.1.
- *
- * Both halves are asserted below: the constraint's own polarity against a subject that deliberately
- * exposes the name, and the silence against every real domain-shaped subject.
- * ============================================================================================== */
+/* The four `physicalCounts` delete guards, without crossing the physical boundary. */
 
-/** A deliberately non-production validation object that DOES expose `physicalCounts`. */
+/** A deliberately non-production validation object that does expose `physicalCounts`. */
 interface PhysicalCountsSubject extends ValidationSubject {
   readonly physicalCounts?: unknown;
 }
 
 /**
- * Re-points a document's OWN frozen `physicalCounts` rule at a reader that can see the property.
- *
- * The rules array is the module's, not a copy: the same frozen rule objects and the same frozen
- * `maxCollection: 0` constraint the corpus census counted. Only the value reader differs, and it has
- * to, because the realized Brand reader is hard-coded to `undefined` (a stronger statement of the same
- * inertness) and the other three read a member no real entity has. Substituting the reader is what
- * makes the declared constraint OBSERVABLE without changing what is declared.
+ * Re-points a document's own frozen `physicalCounts` rule at a reader that can see the property.
  */
 function exposedPhysicalCountsProperty(
   declared: CensusProperty,
@@ -1657,7 +1442,7 @@ function exposedPhysicalCountsProperty(
   };
 }
 
-describe('NET-NEW — B8. the four `physicalCounts` delete guards and their legacy inertness', () => {
+describe('NET-NEW — the four `physicalCounts` delete guards and their legacy inertness', () => {
   it.each([
     ['Product — model/validation/Product.json:L7', 'Product', productPhysicalCountsValidation],
     ['Sku — model/validation/Sku.json:L13', 'Sku', skuPhysicalCountsValidation],
@@ -1711,8 +1496,8 @@ describe('NET-NEW — B8. the four `physicalCounts` delete guards and their lega
   ])(
     'NET-NEW — %s, so `hasProperty("physicalCounts")` answers false and the guard is skipped in silence',
     (_label, className) => {
-      // S7 / G6 — the inertness evidence, one entity at a time.
-      // `org/Hibachi/HibachiValidationService.cfc:L171` decides at RUN TIME whether a property is
+      // AAP §0.7.3 — the inertness evidence, one entity at a time.
+      // `org/Hibachi/HibachiValidationService.cfc:L171` decides at run time whether a property is
       // validated, and for every faithful in-scope subject the answer for this name is false. The
       // legacy engine skips the rule, so the port skips it too — no throw, no failure, no error entry.
       const subjects: Readonly<Record<string, ValidationSubject>> = {
@@ -1742,7 +1527,7 @@ describe('NET-NEW — B8. the four `physicalCounts` delete guards and their lega
     expect(product.hasProperty('transactionExistsFlag')).toBe(true);
 
     const errors = await harness.validateDryRun(subject, productValidationRuleSet, 'delete');
-    // The transaction guard speaks (an unset flag fails `eq`; see section E row 8) and the count guard
+    // The transaction guard speaks (an unset flag fails `eq`; see the evaluator matrix, row 8) and the count guard
     // does not exist as far as the subject is concerned.
     expect(Object.keys(errors.getErrors())).toStrictEqual(['transactionExistsFlag']);
     expect(errors.getError('physicalCounts')).toStrictEqual([]);
@@ -1787,7 +1572,7 @@ describe('NET-NEW — B8. the four `physicalCounts` delete guards and their lega
     const subject: ProductTypeValidationSubject = {
       ...uniqueEntityAccessors('SlatwallProductType', 'productTypeID', 'deletable-pt', {}),
       getClassName: () => 'ProductType',
-      // The production-shaped answer: everything the entity declares, and NOT the count collection.
+      // The production-shaped answer: everything the entity declares, and not the count collection.
       hasProperty: (identifier: string) => identifier !== 'physicalCounts',
       products: [],
       childProductTypes: [],
@@ -1799,11 +1584,9 @@ describe('NET-NEW — B8. the four `physicalCounts` delete guards and their lega
   });
 });
 
-/* ================================================================================================
- * SECTION B9 — THE CONTEXT-ONLY PRODUCT GATES
- * ============================================================================================== */
+/* The context-only product gates. */
 
-describe('NET-NEW — B9. Product context gates: selection only, no process round-trip', () => {
+describe('NET-NEW — Product context gates: selection only, no process round-trip', () => {
   it('NET-NEW — `model/validation/Product.json:L5` and `:L15` are selected ONLY in the subscription-term context', () => {
     // Selection-level assertion by design. Constructing or round-tripping an add-subscription process
     // object would reach the excluded `Subscription*` family (AAP §0.2.2.1) and the excluded
@@ -1873,22 +1656,11 @@ describe('NET-NEW — B9. Product context gates: selection only, no process roun
   ])(
     'NET-NEW — `model/validation/Product.json:L4` context list `addOptionGroup,addOption` — %s',
     async (_label, context, shouldSelect) => {
-      // G6 — the list is SPLIT ON COMMAS and each element is compared WHOLE and
-      // CASE-INSENSITIVELY, because `org/Hibachi/HibachiValidationService.cfc:L71` selects with
+      // the list is split on commas and each element is compared whole and
+      // case-insensitively, because `org/Hibachi/HibachiValidationService.cfc:L71` selects with
       // `listFindNoCase(rule.contexts, arguments.context)`. `listFindNoCase` is an element search, not
       // a substring search, so a prefix or infix of an element never matches — and casing never
       // matters.
-      //
-      // THE CASE-INSENSITIVE ROWS ARE LOAD-BEARING TWICE OVER. They pin `listFindNoCase` here, and
-      // they also pin that the engine's runtime context guard is itself case-insensitive: a
-      // case-SENSITIVE guard would refuse `ADDOPTIONGROUP` outright and this case would raise instead
-      // of selecting, which is precisely the behavioural change AAP §0.8.2 g2 forbids.
-      //
-      // THE ELEMENT-NOT-SUBSTRING HALF MOVED to the two cases below, which prove it with contexts that
-      // are real members of the union — `addOption` is a proper prefix of `addOptionGroup`, so the
-      // property is fully expressible without a context the engine refuses. Two rows that used
-      // fabricated near-misses (`addOptionGrou`, `ption`) were replaced by that pair plus an explicit
-      // refusal assertion, so nothing the original rows proved has been given up.
       const harness = createValidatorHarness();
       const subject: ProductValidationSubject = {
         ...uniqueEntityAccessors('SlatwallProduct', 'productID', 'ctx-product', {}),
@@ -1905,7 +1677,7 @@ describe('NET-NEW — B9. Product context gates: selection only, no process roun
       );
       expect(errors.hasError('baseProductType')).toBe(shouldSelect);
       if (shouldSelect) {
-        // The RAW context the caller supplied is what the message embeds, uppercase and all: the
+        // The raw context the caller supplied is what the message embeds, uppercase and all: the
         // engine matches case-insensitively but does not normalise the key.
         expect(errors.getError('baseProductType')).toStrictEqual([
           `validate.${context}.Product.baseProductType.inList`,
@@ -1915,7 +1687,7 @@ describe('NET-NEW — B9. Product context gates: selection only, no process roun
   );
 
   it.each<readonly [string, ValidationContext]>([
-    // `addOption` is a proper PREFIX of `addOptionGroup`, and the rule on
+    // `addOption` is a proper prefix of `addOptionGroup`, and the rule on
     // `unusedProductOptionGroups` declares the single-element list `addOptionGroup`. A naive
     // `contexts.includes(context)` port selects it; `listFindNoCase` does not.
     ['addOption is a prefix of addOptionGroup, not an element of `addOptionGroup`', 'addOption'],
@@ -1924,7 +1696,7 @@ describe('NET-NEW — B9. Product context gates: selection only, no process roun
   ])(
     'NET-NEW — element search, not substring search, proven with real union members — %s',
     async (_label, context) => {
-      // `org/Hibachi/HibachiValidationService.cfc:L71` uses `listFindNoCase`, an ELEMENT search. The
+      // `org/Hibachi/HibachiValidationService.cfc:L71` uses `listFindNoCase`, an element search. The
       // two single-context rules in `model/validation/Product.json` make the property observable with
       // no fabricated context at all: `unusedProductOptionGroups` is gated on `addOptionGroup` alone
       // and `unusedProductOptions` on `addOption` alone, and each context must reach exactly one of
@@ -1933,7 +1705,7 @@ describe('NET-NEW — B9. Product context gates: selection only, no process roun
       const subject: ProductValidationSubject = {
         ...uniqueEntityAccessors('SlatwallProduct', 'productID', 'substring-product', {}),
         getClassName: () => 'Product',
-        // Both collection properties are present and both are EMPTY, so whichever rule is selected
+        // Both collection properties are present and both are empty, so whichever rule is selected
         // records a failure and the selection is observable per property.
         hasProperty: (identifier: string) =>
           identifier === 'unusedProductOptionGroups' || identifier === 'unusedProductOptions',
@@ -1954,15 +1726,10 @@ describe('NET-NEW — B9. Product context gates: selection only, no process roun
     ['ption — an infix of an element', 'ption'],
     ['addOptionGroups — a superstring of an element', 'addOptionGroups'],
   ])('NET-NEW — %s selects no context-scoped rule at all', async (_label, nearMiss) => {
-    // `listFindNoCase` is an ELEMENT search rather than a substring search, so a prefix, an infix and
+    // `listFindNoCase` is an element search rather than a substring search, so a prefix, an infix and
     // a superstring of `addOptionGroup` each match nothing at
     // `org/Hibachi/HibachiValidationService.cfc:L71`. The engine runs, selects only the rules that
     // declare no `contexts` key, and records nothing for a context-scoped property.
-    //
-    // ⛔ AND IT IS NOT REFUSED. A revision asserted a `TypeError` here, produced by a runtime
-    // membership guard that has since been withdrawn — refusing a context the legacy engine merely
-    // fails to match is a behaviour change, and AAP §0.6.7.7 licenses exactly one (D18). The widening
-    // cast is retained because the value is deliberately outside the closed union.
     const harness = createValidatorHarness();
     const subject: ProductValidationSubject = {
       ...uniqueEntityAccessors('SlatwallProduct', 'productID', 'near-miss-product', {}),
@@ -1981,23 +1748,9 @@ describe('NET-NEW — B9. Product context gates: selection only, no process roun
   });
 });
 
-/* ================================================================================================
- * SECTION C — CONTEXT SELECTION, FLATTENING, CONDITIONS, ACCUMULATION AND CACHE SCOPE
- * ============================================================================================== */
+/* Context selection, flattening, conditions, accumulation and cache scope. */
 
-/**
- * Every member of the closed `ValidationContext` union, so "every context" can be asserted.
- *
- * Restated here rather than imported, because the engine exports no runtime inventory to import: the
- * union is a compile-time declaration only, and the membership guard that once backed it with a
- * runtime list has been withdrawn (see THE RUNTIME CONTEXT-MEMBERSHIP GUARD IS WITHDRAWN in
- * `src/validation/Validator.ts`). The list cannot drift silently all the same — the annotation is the
- * union itself, so a tenth member added to the union without being added here leaves the `satisfies`
- * check below unsatisfied and a member removed from the union makes this list uncompilable.
- *
- * The order is the union's own declaration order, with the empty string first because it is the
- * engine's default at `org/Hibachi/HibachiValidationService.cfc:L153`.
- */
+/** Every member of the closed `ValidationContext` union, so "every context" can be asserted. */
 const EVERY_CONTEXT = [
   '',
   'save',
@@ -2010,13 +1763,7 @@ const EVERY_CONTEXT = [
   'updateSkus',
 ] as const satisfies readonly ValidationContext[];
 
-/**
- * Proves at COMPILE TIME that {@link EVERY_CONTEXT} covers every member of `ValidationContext`.
- *
- * `Exclude` is `never` only when the union is fully covered, and `never` is the only type the
- * parameter accepts, so an uncovered member is a compile error rather than a silently short list. The
- * alias is never used as a value.
- */
+/** Proves at compile time that {@link EVERY_CONTEXT} covers every member of `ValidationContext`. */
 type EveryContextCoverage<
   TUncovered extends never = Exclude<ValidationContext, (typeof EVERY_CONTEXT)[number]>,
 > = TUncovered;
@@ -2027,9 +1774,6 @@ type _AssertEveryContextCovered = EveryContextCoverage;
 /**
  * The five values that cast to CFML boolean false, and therefore the five that
  * `org/Hibachi/HibachiValidationService.cfc:L162` would treat as "switch validation off".
- *
- * None is a member of `ValidationContext`, so reaching the engine with one requires a deliberate
- * widening — which is exactly what the refusal cases below perform.
  */
 const DISABLING_CONTEXT_TOKENS: readonly (readonly [string, unknown])[] = [
   ['the boolean false', false],
@@ -2039,18 +1783,14 @@ const DISABLING_CONTEXT_TOKENS: readonly (readonly [string, unknown])[] = [
   ['the number 0', 0],
 ];
 
-describe('NET-NEW — C1. context selection semantics', () => {
+describe('NET-NEW — context selection semantics', () => {
   it.each(EVERY_CONTEXT.map((context) => [context === '' ? '(empty string)' : context, context]))(
     'NET-NEW — a rule with NO `contexts` key applies in the %s context',
     async (_label, context) => {
       // `org/Hibachi/HibachiValidationService.cfc:L71` selects a rule when
-      // `!structKeyExists(rule, "contexts")` OR the list matches, so an absent selector means
-      // UNCONDITIONAL selection. `model/validation/Product_UpdateSkus.json` is the decisive real
-      // example: neither of its two rule objects declares `contexts`, and section B6 asserts that.
-      //
-      // Conditions may still suppress EXECUTION — the flag is off in this subject, so no error is
-      // recorded — but that is a different mechanism. What is proved here is that SELECTION never
-      // filters these rules out, which is why the next case can make them fire in every context too.
+      // `!structKeyExists(rule, "contexts")` or the list matches, so an absent selector means
+      // unconditional selection. `model/validation/Product_UpdateSkus.json` is the decisive real
+      // example: neither of its two rule objects declares `contexts`, and the `Product_UpdateSkus` cases assert that.
       const harness = createValidatorHarness();
       const flagOff: ProductUpdateSkusValidationSubject = {
         getClassName: () => 'Product_UpdateSkus',
@@ -2065,7 +1805,7 @@ describe('NET-NEW — C1. context selection semantics', () => {
       );
       expect(suppressed.hasErrors()).toBe(false);
 
-      // Same rule, same context, flag ON: it fires. Selection was never the thing stopping it.
+      // Same rule, same context, flag on: it fires. Selection was never the thing stopping it.
       const flagOn: ProductUpdateSkusValidationSubject = {
         getClassName: () => 'Product_UpdateSkus',
         hasProperty: () => true,
@@ -2087,23 +1827,10 @@ describe('NET-NEW — C1. context selection semantics', () => {
     'NET-NEW TODO(parity) — %s as the context DISABLES validation entirely, and the bypass is carried',
     async (_label, disablingContext) => {
       // `org/Hibachi/HibachiValidationService.cfc:L162` wraps the whole legacy pass in
-      // `if(!isBoolean(arguments.context) || arguments.context)`, so a context that CASTS to boolean
+      // `if(!isBoolean(arguments.context) || arguments.context)`, so a context that casts to boolean
       // false disables validation altogether — no rule selected, no collaborator consulted, an empty
       // bag returned and a caller reading `hasErrors()` as false. CFML's boolean casting accepts
       // "false", "no" and 0 as well as the boolean, so all five rows are the same bypass.
-      //
-      // ⛔ THIS IS ASSERTED AS IT BEHAVES, NOT AS IT SHOULD BEHAVE. A revision of this suite asserted a
-      // `TypeError` here instead, produced by a runtime membership guard in `Validator.validate`. Both
-      // the guard and that expectation are withdrawn: refusing a value `:L162` accepts is a behaviour
-      // change, and AAP §0.6.7.7 declares exactly ONE departure in this port (D18, the importer's
-      // parameterised SQL) while AAP §0.8.2 guideline 4 forbids the rest outright. The defect is
-      // therefore CARRIED and flagged — see THE RUNTIME CONTEXT-MEMBERSHIP GUARD IS WITHDRAWN in
-      // `src/validation/Validator.ts`.
-      //
-      // The widening cast is what makes the case reachable at all: `ValidationContext` is a closed
-      // nine-member union, so no compiler-checked caller in this subtree can write a disabling token
-      // down. The cast reproduces the three crossings on which one arrives anyway — a parsed request
-      // body, an `as ValidationContext` assertion, and a JavaScript consumer of the emitted bundle.
       const uniqueProperty = createUniquePropertyDouble([
         {
           entityName: 'SlatwallProduct',
@@ -2201,10 +1928,10 @@ describe('NET-NEW — C1. context selection semantics', () => {
   });
 
   it('NET-NEW — a property absent from the subject is skipped in silence: no throw and no failure', async () => {
-    // S7 — PRESERVED, NOT REPAIRED. `org/Hibachi/HibachiValidationService.cfc:L171` guards every
+    // AAP §0.7.3 — preserved, not repaired. `org/Hibachi/HibachiValidationService.cfc:L171` guards every
     // property with `if(arguments.object.hasProperty(propertyIdentifier))`. A subject that does not
     // carry the property is not a validation failure and is not an error either; the rule simply does
-    // not run. Section B8 is the whole family of real cases this behaviour produces.
+    // not run. The `physicalCounts` guards are the whole family of real cases this behaviour produces.
     const required: Constraint<MatrixSubject> = {
       constraintType: 'required',
       constraintValue: true,
@@ -2231,9 +1958,9 @@ describe('NET-NEW — C1. context selection semantics', () => {
   });
 });
 
-describe('NET-NEW — C2. flattening into independent constraint records, and deterministic order', () => {
+describe('NET-NEW — flattening into independent constraint records, and deterministic order', () => {
   it('NET-NEW — `model/validation/Product.json:L10` becomes THREE independent constraint records', () => {
-    // `org/Hibachi/HibachiValidationService.cfc:L77-L88` walks a rule object's keys, SKIPS `contexts`
+    // `org/Hibachi/HibachiValidationService.cfc:L77-L88` walks a rule object's keys, skips `contexts`
     // and `conditions` as selectors, and appends one `{constraintType, constraintValue}` record per
     // remaining key. One rule object with three constraint keys therefore yields three records, each
     // able to append its own error.
@@ -2249,7 +1976,7 @@ describe('NET-NEW — C2. flattening into independent constraint records, and de
       'unique',
       'regex',
     ]);
-    // The selectors are carried as SELECTORS, not as constraints: `contexts` survives on the rule and
+    // The selectors are carried as selectors, not as constraints: `contexts` survives on the rule and
     // never appears among the constraint records.
     expect(rule.contexts).toBe('save');
     expect(rule.constraints.map((constraint) => constraint.constraintType)).not.toContain(
@@ -2261,9 +1988,9 @@ describe('NET-NEW — C2. flattening into independent constraint records, and de
   });
 
   it('NET-NEW — all three `productCode` constraints fail together and accumulate under ONE property key', async () => {
-    // The engine must NOT short-circuit. `org/Hibachi/HibachiValidationService.cfc:L177-L232` runs
+    // The engine must not short-circuit. `org/Hibachi/HibachiValidationService.cfc:L177-L232` runs
     // every constraint of every selected rule and calls `addError(propertyIdentifier, message)` at
-    // `:L224`/`:L228`/`:L232` for each failure, keyed by the FULL PROPERTY IDENTIFIER — never by the
+    // `:L224`/`:L228`/`:L232` for each failure, keyed by the full property identifier — never by the
     // constraint type. A blank code fails presence, fails the regular expression (because `+` cannot
     // match an empty string) and — with a collision seeded against a different row — fails uniqueness.
     const harness = createValidatorHarness([
@@ -2278,21 +2005,18 @@ describe('NET-NEW — C2. flattening into independent constraint records, and de
 
     const errors = await harness.validateDryRun(subject, productValidationRuleSet, 'save');
 
-    // G6 — DETERMINISTIC SOURCE ORDER IS AN INTENTIONAL TARGET DECISION, NOT A CLAIM ABOUT LEGACY
-    // ORDER. The legacy engine iterates CFML STRUCT KEYS at
+    // Deterministic source order is an intentional target decision, not a claim about legacy
+    // ORDER. The legacy engine iterates CFML struct keys at
     // `org/Hibachi/HibachiValidationService.cfc:L78`, and CFML never specified struct-key iteration
-    // order, so the legacy sequence of these three messages was UNSPECIFIED and could differ between
-    // engines and even between requests. The port replaces the struct with an ORDERED ARRAY declared in
-    // the source document's own key order, which makes the sequence reproducible. That reproducibility
-    // is a deliberate improvement in determinism only; it changes WHICH ORDER the same three messages
-    // appear in, never WHETHER all three appear. The set is the behaviour; the order is the decision,
-    // and it is pinned here so a future reordering of a rule module is caught rather than absorbed.
+    // order, so the legacy sequence of these three messages was unspecified and could differ between
+    // engines and even between requests. The port replaces the struct with an ordered array declared in
+    // the source document's own key order, which makes the sequence reproducible. That reproducibility.
     expect(errors.getError('productCode')).toStrictEqual([
       'validate.save.Product.productCode.required',
       'validate.save.Product.productCode.unique',
       'validate.save.Product.productCode.regex',
     ]);
-    // Three messages, ONE key. The bag is keyed by property, which is why its values are arrays.
+    // Three messages, one key. The bag is keyed by property, which is why its values are arrays.
     expect(Object.keys(errors.getErrors())).toStrictEqual(['productCode']);
     expect(errors.getError('productCode')).toHaveLength(3);
     // Evaluation reached the uniqueness constraint even though the presence constraint before it had
@@ -2308,7 +2032,7 @@ describe('NET-NEW — C2. flattening into independent constraint records, and de
     // The order of the keys follows `productValidationRuleSet.properties`, which follows
     // `model/validation/Product.json` from `:L8` down to `:L16`. `baseProductType` and the three
     // `unused*` gates are absent because their contexts do not include `save`; `physicalCounts` is
-    // absent for the reason section B8 documents.
+    // absent for the reason the `physicalCounts` cases document.
     expect(Object.keys(errors.getErrors())).toStrictEqual([
       'price',
       'productName',
@@ -2322,10 +2046,10 @@ describe('NET-NEW — C2. flattening into independent constraint records, and de
   });
 });
 
-/* ------------------------------------------------------------------------------------------------
- * Local condition fixtures for section C3. Typed against the public `Validator` surface, declared
+/*
+ * Local condition fixtures for the condition-evaluation cases. Typed against the public `validator` surface, declared
  * here rather than in a helper module, and never mutated.
- * ---------------------------------------------------------------------------------------------- */
+ */
 
 interface ConditionSubject extends ValidationSubject {
   readonly value?: unknown;
@@ -2357,7 +2081,7 @@ const CONDITION_A: ValidationCondition<ConditionSubject> = {
   ],
 };
 
-/** `flagB eq 1` — the second alternative for the OR case. */
+/** `flagB eq 1` — the second alternative for the or case. */
 const CONDITION_B: ValidationCondition<ConditionSubject> = {
   name: 'onFlagB',
   constraints: [
@@ -2369,7 +2093,7 @@ const CONDITION_B: ValidationCondition<ConditionSubject> = {
   ],
 };
 
-/** `flagA eq 1` AND `flagB eq 1` — two predicates inside ONE condition. */
+/** `flagA eq 1` and `flagB eq 1` — two predicates inside one condition. */
 const CONDITION_BOTH: ValidationCondition<ConditionSubject> = {
   name: 'onBothFlags',
   constraints: [...CONDITION_A.constraints, ...CONDITION_B.constraints],
@@ -2396,7 +2120,7 @@ function conditionRuleSet(
   };
 }
 
-describe('NET-NEW — C3. condition evaluation: OR across names, AND within one, and unsupported kinds', () => {
+describe('NET-NEW — condition evaluation: OR across names, AND within one, and unsupported kinds', () => {
   it.each([
     ['the first alternative is met', { flagA: 1 }, true],
     ['the second alternative is met', { flagB: 1 }, true],
@@ -2407,7 +2131,7 @@ describe('NET-NEW — C3. condition evaluation: OR across names, AND within one,
     'NET-NEW — OR across a comma-delimited condition list: %s',
     async (_label, flags, gateOpen) => {
       // `getConditionsMeetFlag` at `org/Hibachi/HibachiValidationService.cfc:L97-L131` loops the
-      // comma-delimited list and RETURNS TRUE on the first condition whose predicates all hold
+      // comma-delimited list and returns true on the first condition whose predicates all hold
       // (`:L124-L126`), falling through to false only when none did (`:L130`). That is a disjunction
       // across names.
       const harness = createValidatorHarness();
@@ -2429,7 +2153,7 @@ describe('NET-NEW — C3. condition evaluation: OR across names, AND within one,
     'NET-NEW — AND across the predicates inside one condition: %s',
     async (_label, flags, gateOpen) => {
       // Inside a single condition the loop at `:L114-L122` clears an all-met flag on any failure and
-      // deliberately does NOT break (`:L118`), so every predicate is evaluated and every one must hold.
+      // deliberately does not break (`:L118`), so every predicate is evaluated and every one must hold.
       const harness = createValidatorHarness();
       const errors = await harness.validateDryRun(
         conditionSubject({ value: null, ...flags }),
@@ -2480,15 +2204,12 @@ describe('NET-NEW — C3. condition evaluation: OR across names, AND within one,
   });
 
   it('NET-NEW — an unsupported constraint INSIDE a condition block is silently ignored, and the gate stays open', async () => {
-    // S7 — PRESERVED, NOT HARMONISED. `:L117` reads
-    // `if(structKeyExists(variables, "validate_#constraint#") && !invokeMethod(...))`. The EXISTENCE
-    // TEST COMES FIRST, so an unrecognised constraint kind short-circuits the conjunction before any
+    // AAP §0.7.3 — preserved, not harmonised. `:L117` reads
+    // `if(structKeyExists(variables, "validate_#constraint#") && !invokeMethod(...))`. The existence
+    // test comes first, so an unrecognised constraint kind short-circuits the conjunction before any
     // evaluator runs and never clears the all-met flag. The result is that an unknown kind inside a
     // condition block contributes nothing and the condition is judged on its remaining predicates —
-    // here, on none at all, so it is judged MET.
-    //
-    // The cast is the only way to hand the engine a token the closed `Constraint` union forbids; it
-    // uses `unknown` as the bridge rather than `any` and carries no compiler suppression.
+    // here, on none at all, so it is judged met.
     const harness = createValidatorHarness();
     const unsupportedOnly: ValidationCondition<ConditionSubject> = {
       name: 'unsupportedOnly',
@@ -2515,7 +2236,7 @@ describe('NET-NEW — C3. condition evaluation: OR across names, AND within one,
   });
 
   it('NET-NEW — an unsupported constraint alongside a real one does NOT rescue a failing condition', async () => {
-    // The other half of `:L117`: what is skipped is the UNKNOWN kind, not the conjunction. A real
+    // The other half of `:L117`: what is skipped is the unknown kind, not the conjunction. A real
     // predicate that fails still shuts the gate, so the silent skip cannot be mistaken for
     // "conditions containing an unknown kind always pass".
     const harness = createValidatorHarness();
@@ -2554,10 +2275,6 @@ describe('NET-NEW — C3. condition evaluation: OR across names, AND within one,
     // existence test is absent and the dispatch has nowhere to go. That asymmetry against `:L117` is
     // carried across UNHARMONISED: it is the legacy behaviour, and making both paths agree would be a
     // repair rather than a port.
-    //
-    // The legacy message text is deliberately NOT asserted. Only the raise is behaviour a caller can
-    // observe; the wording is not, and reproducing a legacy `throw()` string here would pin a detail
-    // the port does not owe.
     const harness = createValidatorHarness();
     const unsupported = {
       constraintType: 'notAConstraintKind',
@@ -2575,13 +2292,13 @@ describe('NET-NEW — C3. condition evaluation: OR across names, AND within one,
 
   it('NET-NEW — conditions are copied onto EVERY flattened constraint, so each is gated independently', async () => {
     // `:L83-L85` copies `rule.conditions` onto each flattened record, and `:L177-L180` re-evaluates
-    // the gate PER CONSTRAINT. `model/validation/Product_UpdateSkus.json:L11` is the real proof: its
+    // the gate per constraint. `model/validation/Product_UpdateSkus.json:L11` is the real proof: its
     // one rule object carries two constraints behind one condition, and both must be independently
     // capable of firing.
     const harness = createValidatorHarness();
 
     // Flag on, value missing: the presence record fires and the type record passes (null passes
-    // `dataType`). Only ONE of the two gated records spoke.
+    // `dataType`). Only one of the two gated records spoke.
     const missing = await harness.validateDryRun(
       {
         getClassName: () => 'Product_UpdateSkus',
@@ -2594,7 +2311,7 @@ describe('NET-NEW — C3. condition evaluation: OR across names, AND within one,
     expect(missing.getError('price')).toStrictEqual([PRICE_REQUIRED_MESSAGE_KEY]);
 
     // Flag on, value present but nonnumeric: the type record fires and the presence record passes.
-    // The OTHER of the two gated records spoke, which is what "independently capable" means.
+    // The other of the two gated records spoke, which is what "independently capable" means.
     const nonnumeric = await harness.validateDryRun(
       {
         getClassName: () => 'Product_UpdateSkus',
@@ -2609,18 +2326,14 @@ describe('NET-NEW — C3. condition evaluation: OR across names, AND within one,
   });
 });
 
-describe('NET-NEW — C4. M7 — memoisation must be request-scoped, never module-scoped', () => {
+describe('NET-NEW — M7 — memoisation must be request-scoped, never module-scoped', () => {
   it('NET-NEW — M7 — two invocations sharing a class-and-context key do not inherit each other rules', async () => {
-    // M7 — THE DECISION, RECORDED. `org/Hibachi/HibachiValidationService.cfc:L92` memoises the
+    // M7 — the decision, recorded. `org/Hibachi/HibachiValidationService.cfc:L92` memoises the
     // selected-and-flattened rule collection under the key `"#className#-#context#"`. In a persistent
     // ColdFusion application that cache lived for the life of the application. In a Lambda, nothing
-    // survives an invocation EXCEPT module-scope state, and a warm container is shared across
+    // survives an invocation except module-scope state, and a warm container is shared across
     // invocations and therefore potentially across tenants (AAP §0.6.6 M7). The decision this file
-    // pins is that any such memoisation MUST BE REQUEST-SCOPED, and that the simplest compliant
-    // implementation is NO CACHE AT ALL — which is what the realized engine does.
-    //
-    // The two invocations below share the class name AND the context, so a module-scope cache keyed the
-    // legacy way would serve invocation one's rules to invocation two.
+    // pins is that any such memoisation must be request-scoped, and that the simplest compliant.
     const sharedClassName = 'SharedKey';
     const sharedContext: ValidationContext = 'save';
     const subject = (value: unknown): ConditionSubject => ({
@@ -2663,7 +2376,7 @@ describe('NET-NEW — C4. M7 — memoisation must be request-scoped, never modul
     const firstErrors = await harness.validateDryRun(subject(null), presenceOnly, sharedContext);
     expect(firstErrors.getError('value')).toStrictEqual(['validate.save.SharedKey.value.required']);
 
-    // Invocation 2 — SAME key, DIFFERENT rule set. If invocation 1's flattened rules had been cached,
+    // Invocation 2 — same key, different rule set. If invocation 1's flattened rules had been cached,
     // this would report a presence failure instead of a floor failure.
     const secondErrors = await harness.validateDryRun(subject(5), floorOnly, sharedContext);
     expect(secondErrors.getError('value')).toStrictEqual([
@@ -2695,7 +2408,7 @@ describe('NET-NEW — C4. M7 — memoisation must be request-scoped, never modul
 
   it('NET-NEW — M7 — the exported rule modules are frozen, and no case in this file mutates one', () => {
     // The other half of the M7 argument. Module-scope declarative data is safe on a warm container
-    // ONLY while it is immutable and request-independent: it holds no connection, no request context,
+    // only while it is immutable and request-independent: it holds no connection, no request context,
     // no resolved value and no accumulated error. Freezing is what makes that structural rather than
     // conventional, so it is asserted rather than assumed.
     expect(Object.isFrozen(productValidationRuleSet)).toBe(true);
@@ -2716,29 +2429,7 @@ describe('NET-NEW — C4. M7 — memoisation must be request-scoped, never modul
   });
 });
 
-/* ================================================================================================
- * SECTION D — `Product_UpdateSkus` CONDITIONS AND LOOSE CFML EQUALITY
- * ==============================================================================================
- *
- * G6 — CONTEXTS AND CONDITIONS ARE ORTHOGONAL SELECTION MECHANISMS, AND BOTH MUST BE MODELLED.
- * `contexts` selects WHICH rules take part in a pass, comparing the caller's context against a
- * comma-delimited list at `org/Hibachi/HibachiValidationService.cfc:L71`. `conditions` decides
- * WHETHER an already-selected constraint executes, evaluating predicates against the subject at
- * `:L97-L131` and re-checking them per constraint at `:L177-L180`. They are independent axes:
- * `model/validation/Product_UpdateSkus.json` uses conditions with NO contexts (section C1 proves the
- * rules therefore apply in every context), while `model/validation/Product.json` uses contexts with
- * no conditions. A port that collapsed the two into one gate would be wrong in both directions —
- * it would either run the update-SKU rules unconditionally or suppress them everywhere.
- *
- * G6 — LOOSE EQUALITY IS REQUIRED, AND THE REASON IS THE PROCESS OBJECT'S OWN TYPING. The flags this
- * section gates on originate in `model/process/Product_UpdateSkus.cfc`, whose properties are declared
- * without a CFML type, and they arrive from an HTTP form post where EVERY value is a string. A form
- * checkbox therefore delivers `"1"`, a programmatic caller delivers the number `1`, and a CFML
- * caller could deliver the boolean `true` — all three meaning the same thing. `validate_eq` at
- * `:L385-L395` compares with CFML `==`, which coerces before comparing, so all three satisfy
- * `eq 1`. Tightening this to `===` would silently disable the price rules for every form post, which
- * is the ONLY way this slice is actually driven. The loose comparison is behaviour, not laxity.
- * ---------------------------------------------------------------------------------------------- */
+/* `Product_UpdateSkus` conditions and loose CFML equality. */
 
 /** A `Product_UpdateSkus` process-object-shaped validation subject, built per case. */
 function updateSkusSubject(
@@ -2751,7 +2442,7 @@ function updateSkusSubject(
   };
 }
 
-describe('NET-NEW — D1. `Product_UpdateSkus` — each flag gates only its own property', () => {
+describe('NET-NEW — `Product_UpdateSkus` — each flag gates only its own property', () => {
   it('NET-NEW — `updatePriceFlag` on and `updateListPriceFlag` off validates ONLY price', async () => {
     // `model/validation/Product_UpdateSkus.json:L11` gates `price` behind `showPrice`, whose sole
     // predicate is `updatePriceFlag eq 1` (`:L3-L5`). `:L12` gates `listPrice` behind
@@ -2819,8 +2510,8 @@ describe('NET-NEW — D1. `Product_UpdateSkus` — each flag gates only its own 
     'NET-NEW — with its flag OFF, the price value is ENTIRELY unvalidated even when it is %s',
     async (_label, price) => {
       // The point of the conditional design: a caller that is not updating the price must be free to
-      // leave whatever is in the field alone. There is deliberately NO unconditional safety-net rule,
-      // and adding one would reject saves the legacy system accepts (S9 — invent nothing).
+      // leave whatever is in the field alone. There is deliberately no unconditional safety-net rule,
+      // and adding one would reject saves the legacy system accepts (AAP §0.7.3 — invent nothing).
       const harness = createValidatorHarness();
       const errors = await harness.validateDryRun(
         updateSkusSubject({ updatePriceFlag: 0, price, listPrice: price }),
@@ -2832,12 +2523,12 @@ describe('NET-NEW — D1. `Product_UpdateSkus` — each flag gates only its own 
   );
 });
 
-describe('NET-NEW — D2. `Product_UpdateSkus` — what the gated constraints actually enforce', () => {
+describe('NET-NEW — `Product_UpdateSkus` — what the gated constraints actually enforce', () => {
   it.each([
-    // Absent: `dataType` PASSES a null (`:L258-L260`), so only presence speaks.
+    // Absent: `dataType` passes a null (`:L258-L260`), so only presence speaks.
     ['absent from the subject entirely', undefined, [PRICE_REQUIRED_MESSAGE_KEY]],
-    // Blank: NOT null, so `dataType` evaluates it — and `isNumeric('')` is FALSE in CFML — while
-    // presence also rejects it. BOTH constraints fire, which is why the bag's values are arrays.
+    // Blank: not null, so `dataType` evaluates it — and `isNumeric('')` is false in CFML — while
+    // presence also rejects it. Both constraints fire, which is why the bag's values are arrays.
     ['an empty string', '', [PRICE_DATA_TYPE_MESSAGE_KEY, PRICE_REQUIRED_MESSAGE_KEY]],
     ['a whitespace-only string', '   ', [PRICE_DATA_TYPE_MESSAGE_KEY, PRICE_REQUIRED_MESSAGE_KEY]],
     ['a tab-and-newline string', '\t\n', [PRICE_DATA_TYPE_MESSAGE_KEY, PRICE_REQUIRED_MESSAGE_KEY]],
@@ -2848,19 +2539,10 @@ describe('NET-NEW — D2. `Product_UpdateSkus` — what the gated constraints ac
   ])('NET-NEW — with the flag ON, a price of %s fails', async (_label, price, expected) => {
     // `validate_required` at `:L240-L246` treats null and a blank simple value as absent.
     // `validate_dataType` at `:L256-L267` returns true for a null but otherwise evaluates the value,
-    // and `isNumeric('')` is FALSE in CFML — so a BLANK string fails BOTH constraints while an ABSENT
+    // and `isNumeric('')` is false in CFML — so a blank string fails both constraints while an absent
     // one fails only presence. A port that short-circuited on the presence failure, or that treated
     // blank as null inside the type check, would emit one message where the legacy engine emits two.
-    // Section E rows 1 and 2 pin both evaluators in isolation.
-    //
-    // The realized `ProductUpdateSkusValidationSubject` derives its four members from
-    // `ProductUpdateSkus` via `Pick`, and the process object types `price` as `string | number` — so an
-    // explicit `null` is not expressible on this subject and the ABSENT case is what a real caller
-    // produces. Section E row 1 covers the explicit-null presence failure through the generic seam.
-    //
-    // The two-message order is `dataType` then `required`, following the source key order of
-    // `model/validation/Product_UpdateSkus.json:L11` (`conditions`, `dataType`, `required`) with the
-    // selector skipped — the same deterministic-order decision section C2 documents.
+    // The evaluator matrix pins both evaluators in isolation.
     const harness = createValidatorHarness();
     const errors = await harness.validateDryRun(
       updateSkusSubject({ updatePriceFlag: 1, ...(price === undefined ? {} : { price }) }),
@@ -2896,9 +2578,9 @@ describe('NET-NEW — D2. `Product_UpdateSkus` — what the gated constraints ac
   ])(
     'NET-NEW — with the flag ON, a price of %s is ACCEPTED because there is NO minValue constraint',
     async (_label, price) => {
-      // S9 — INVENT NOTHING. `model/validation/Product_UpdateSkus.json:L11` declares exactly
-      // `conditions`, `dataType` and `required`. `model/validation/Sku.json:L9` DOES declare
-      // `minValue: 0` for the persistent SKU price, and section B2 asserts it — but this process
+      // AAP §0.7.3 — invent nothing. `model/validation/Product_UpdateSkus.json:L11` declares exactly
+      // `conditions`, `dataType` and `required`. `model/validation/Sku.json:L9` does declare
+      // `minValue: 0` for the persistent SKU price, and the `Sku.json` cases assert it — but this process
       // object does not, so the bulk-update path accepts a negative price that a direct SKU save would
       // reject. That asymmetry is the source document's, and it is carried, not smoothed over.
       const harness = createValidatorHarness();
@@ -2914,7 +2596,7 @@ describe('NET-NEW — D2. `Product_UpdateSkus` — what the gated constraints ac
   it('NET-NEW — the two gated constraints of one property are independently capable of firing', async () => {
     const harness = createValidatorHarness();
 
-    // Presence fails ALONE — the absent value is exactly the input that satisfies `dataType`.
+    // Presence fails alone — the absent value is exactly the input that satisfies `dataType`.
     const absent = await harness.validateDryRun(
       updateSkusSubject({ updateListPriceFlag: 1 }),
       productUpdateSkusValidationRuleSet,
@@ -2922,7 +2604,7 @@ describe('NET-NEW — D2. `Product_UpdateSkus` — what the gated constraints ac
     );
     expect(absent.getError('listPrice')).toStrictEqual([LIST_PRICE_REQUIRED_MESSAGE_KEY]);
 
-    // Type fails ALONE — a nonblank nonnumeric value satisfies presence.
+    // Type fails alone — a nonblank nonnumeric value satisfies presence.
     const nonnumeric = await harness.validateDryRun(
       updateSkusSubject({ updateListPriceFlag: 1, listPrice: 'nope' }),
       productUpdateSkusValidationRuleSet,
@@ -2930,7 +2612,7 @@ describe('NET-NEW — D2. `Product_UpdateSkus` — what the gated constraints ac
     );
     expect(nonnumeric.getError('listPrice')).toStrictEqual([LIST_PRICE_DATA_TYPE_MESSAGE_KEY]);
 
-    // BOTH fail together for a blank string, and both messages accumulate under the one key.
+    // Both fail together for a blank string, and both messages accumulate under the one key.
     const blank = await harness.validateDryRun(
       updateSkusSubject({ updateListPriceFlag: 1, listPrice: '' }),
       productUpdateSkusValidationRuleSet,
@@ -2941,7 +2623,7 @@ describe('NET-NEW — D2. `Product_UpdateSkus` — what the gated constraints ac
       LIST_PRICE_REQUIRED_MESSAGE_KEY,
     ]);
 
-    // NEITHER fails for a well-formed value.
+    // Neither fails for a well-formed value.
     const valid = await harness.validateDryRun(
       updateSkusSubject({ updateListPriceFlag: 1, listPrice: '24.95' }),
       productUpdateSkusValidationRuleSet,
@@ -2951,7 +2633,7 @@ describe('NET-NEW — D2. `Product_UpdateSkus` — what the gated constraints ac
   });
 });
 
-describe('NET-NEW — D3. the loose `eq 1` truth table that opens a condition gate', () => {
+describe('NET-NEW — the loose `eq 1` truth table that opens a condition gate', () => {
   it.each([
     ['the number 1', 1, true],
     ['the string "1"', '1', true],
@@ -2973,7 +2655,7 @@ describe('NET-NEW — D3. the loose `eq 1` truth table that opens a condition ga
       // `validate_eq` at `:L385-L395` compares with CFML `==`. `"1"` equals `1` numerically;
       // `"yes"` and `"true"` are boolean-castable and compare true against a boolean-castable `1`;
       // `"one"` is neither numeric nor boolean-castable and falls through to a string comparison
-      // against `"1"`, which fails. `null` fails outright — see section E row 8.
+      // against `"1"`, which fails. `null` fails outright — see the evaluator matrix, row 8.
       const harness = createValidatorHarness();
       const errors = await harness.validateDryRun(
         updateSkusSubject({ updatePriceFlag: flagValue as string | number }),
@@ -2998,19 +2680,12 @@ describe('NET-NEW — D3. the loose `eq 1` truth table that opens a condition ga
   });
 });
 
-describe('NET-NEW — D4. the loose `eq false` truth table that guards a delete', () => {
+describe('NET-NEW — the loose `eq false` truth table that guards a delete', () => {
   /**
    * Three real sites declare this constraint: `model/validation/Sku.json:L3` (`defaultFlag`),
    * `model/validation/Sku.json:L12` (`transactionExistsFlag`) and
    * `model/validation/Product.json:L12` (`transactionExistsFlag`). All three mean "refuse the delete
    * unless this flag reads false".
-   *
-   * The loose truth table is exercised against the SKU rules because the realized
-   * `SkuValidationSubject` types every constrained member as `unknown` — it is the honest shape for a
-   * legacy flag that arrives untyped — so every row of the table is expressible without widening or
-   * casting anything. The Product site is then asserted separately to prove the evaluator, not the
-   * property, owns the semantics; its subject types `transactionExistsFlag?: boolean`, which is a
-   * deliberate sibling narrowing this file adapts to rather than edits.
    */
   function skuDeleteSubject(
     property: 'defaultFlag' | 'transactionExistsFlag',
@@ -3043,7 +2718,7 @@ describe('NET-NEW — D4. the loose `eq false` truth table that guards a delete'
     'NET-NEW — a SKU `transactionExistsFlag` of %s satisfies `eq false`: %s',
     async (_label, flagValue, satisfied) => {
       // Both operands are boolean-castable, so `validate_eq` at
-      // `org/Hibachi/HibachiValidationService.cfc:L385-L395` compares them AS BOOLEANS. `0`, `"0"`,
+      // `org/Hibachi/HibachiValidationService.cfc:L385-L395` compares them as booleans. `0`, `"0"`,
       // `"no"` and `"false"` all cast to false and therefore all permit the delete; `1`, `"1"`, `"yes"`
       // and `"true"` all cast to true and therefore all block it. A `=== false` port would block every
       // delete driven by a form post, because the flag arrives there as the string `"0"`.
@@ -3077,12 +2752,12 @@ describe('NET-NEW — D4. the loose `eq false` truth table that guards a delete'
   ])(
     'NET-NEW — a SKU `transactionExistsFlag` of %s FAILS `eq false` and blocks the delete',
     async (_label, flagValue) => {
-      // `:L386-L388` returns FALSE for a null before any comparison — `eq` is the one evaluator in the
-      // engine that treats absence as a FAILURE rather than a pass (contrast `dataType`, `minValue`,
-      // `maxLength`, `regex` and the collection constraints, all of which pass a null; section E pins
+      // `:L386-L388` returns false for a null before any comparison — `eq` is the one evaluator in the
+      // engine that treats absence as a failure rather than a pass (contrast `dataType`, `minValue`,
+      // `maxLength`, `regex` and the collection constraints, all of which pass a null; the evaluator matrix pins
       // each of them individually). A non-castable, non-numeric value falls through to the string
       // comparison against `"false"` and loses. The safe direction is the one chosen: an unresolvable
-      // flag BLOCKS the delete rather than permitting it.
+      // flag blocks the delete rather than permitting it.
       const { ruleSet } = skuRuleSetFor<SkuValidationSubject & UniquePropertyEntity>(
         'guard-product',
       );
@@ -3101,8 +2776,8 @@ describe('NET-NEW — D4. the loose `eq false` truth table that guards a delete'
   it('NET-NEW — no operand is pre-coerced: the raw subject value reaches the evaluator untouched', async () => {
     // A port that normalised with `Boolean(value)`, `Number(value)` or a bare truthiness test before
     // calling the evaluator would agree with the table above on most rows and diverge exactly on the
-    // ones that matter. `Boolean('false')` is TRUE in JavaScript, so a `Boolean`-normalising port would
-    // BLOCK a delete the legacy engine PERMITS. `Number('no')` is `NaN`, so a numeric-normalising port
+    // ones that matter. `Boolean('false')` is true in JavaScript, so a `Boolean`-normalising port would
+    // block a delete the legacy engine permits. `Number('no')` is `NaN`, so a numeric-normalising port
     // would diverge there too. Both divergences are pinned as single decisive rows, each stating what
     // the naive port would have concluded alongside what the engine actually concludes.
     const { ruleSet } = skuRuleSetFor<SkuValidationSubject & UniquePropertyEntity>('guard-product');
@@ -3124,8 +2799,8 @@ describe('NET-NEW — D4. the loose `eq false` truth table that guards a delete'
     expect(Number.isNaN(Number('no'))).toBe(true); // what a numeric-normalising port would have seen
     expect(stringNo.hasError('transactionExistsFlag')).toBe(false); // what the engine concludes
 
-    // And the converse: a truthiness test would PERMIT a delete on `0`, which it should — but it would
-    // also permit one on the empty string, which the engine BLOCKS because `''` is not castable.
+    // And the converse: a truthiness test would permit a delete on `0`, which it should — but it would
+    // also permit one on the empty string, which the engine blocks because `''` is not castable.
     const emptyString = await harness.validateDryRun(
       skuDeleteSubject('transactionExistsFlag', ''),
       ruleSet,
@@ -3195,55 +2870,38 @@ describe('NET-NEW — D4. the loose `eq false` truth table that guards a delete'
   );
 });
 
-/* ================================================================================================
- * SECTION E — THE ELEVEN-ROW EVALUATOR AND NULL-SEMANTICS MATRIX
- * ==============================================================================================
- *
- * One case per constraint kind the engine supports, each reaching exactly one evaluator through the
- * only public evaluator seam the realized `Validator` exposes: `validate()` over a one-constraint
- * rule set. Eleven kinds, eleven cases, no snapshot.
- *
- * The single most consequential fact in this section is that the eleven evaluators DISAGREE about
- * absence, and the disagreement is deliberate legacy behaviour rather than an oversight. Nine of them
- * PASS a null — `dataType`, `minValue`, `maxLength`, `minCollection`, `maxCollection` and `regex`
- * explicitly return true before doing anything else — while `required`, `eq` and `inList` FAIL one.
- * A port that normalised absence to a single policy would silently change five documents' behaviour:
- * `model/validation/Sku.json:L4` and `:L10` rely on the passing direction so an unset `listPrice` or
- * `renewalPrice` is legal (section B2/X10b), and `model/validation/Sku.json:L3`/`:L12` and
- * `model/validation/Product.json:L12` rely on the failing direction so an unresolvable delete guard
- * blocks rather than permits (section D4).
- * ---------------------------------------------------------------------------------------------- */
+/* The eleven-row evaluator and null-semantics matrix. */
 
-describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', () => {
+describe('NET-NEW — the eleven-row evaluator and null-semantics matrix', () => {
   it('NET-NEW — matrix row 1 of 11 — `required`: null and blank and empty collections fail; zero passes', async () => {
-    // G6 — `validate_required` at `org/Hibachi/HibachiValidationService.cfc:L240-L246` is a four-way
-    // predicate, not a truthiness test. It passes when the value is non-null AND
-    // (isObject OR arrayLen>0 OR structCount>0 OR (isSimpleValue AND len(trim())>0)). Every clause is
+    // `validate_required` at `org/Hibachi/HibachiValidationService.cfc:L240-L246` is a four-way
+    // predicate, not a truthiness test. It passes when the value is non-null and
+    // (isObject or arrayLen>0 or structCount>0 or (isSimpleValue and len(trim())>0)). Every clause is
     // load-bearing, and each is asserted below.
     const required: Constraint<MatrixSubject> = {
       constraintType: 'required',
       constraintValue: true,
     };
 
-    // Null and undefined FAIL. `required` is one of only three evaluators that reject absence.
+    // Null and undefined fail. `required` is one of only three evaluators that reject absence.
     await expect(passes(required, null)).resolves.toBe(false);
     await expect(passes(required, undefined)).resolves.toBe(false);
 
-    // An EMPTY ARRAY fails — `arrayLen > 0` is required, so a present-but-empty collection is absent
+    // An empty array fails — `arrayLen > 0` is required, so a present-but-empty collection is absent
     // for validation purposes.
     await expect(passes(required, [])).resolves.toBe(false);
 
-    // A WHITESPACE-ONLY string fails, because the simple-value clause trims before measuring.
+    // A whitespace-only string fails, because the simple-value clause trims before measuring.
     await expect(passes(required, '')).resolves.toBe(false);
     await expect(passes(required, '   ')).resolves.toBe(false);
     await expect(passes(required, '\t')).resolves.toBe(false);
     await expect(passes(required, '\n')).resolves.toBe(false);
     await expect(passes(required, ' \t\n ')).resolves.toBe(false);
 
-    // An EMPTY STRUCT fails — `structCount > 0`.
+    // An empty struct fails — `structCount > 0`.
     await expect(passes(required, {})).resolves.toBe(false);
 
-    // ZERO PASSES, in both its numeric and its string form. This is the guard against truthiness
+    // Zero passes, in both its numeric and its string form. This is the guard against truthiness
     // drift: `Boolean(0)` and `Boolean('0')` are false in JavaScript, so a port that tested
     // truthiness would reject a free product and make it unsavable.
     await expect(passes(required, 0)).resolves.toBe(true);
@@ -3262,7 +2920,7 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
   });
 
   it('NET-NEW — matrix row 2 of 11 — `dataType`: null PASSES; a non-null invalid value fails the requested type', async () => {
-    // G6 — `validate_dataType` at `:L256-L267` returns TRUE for a null at `:L258-L260` and only then
+    // `validate_dataType` at `:L256-L267` returns true for a null at `:L258-L260` and only then
     // switches on the requested type. That early pass is what makes `model/validation/Sku.json:L4`
     // and `:L10` "optional but constrained": an unset `listPrice` is legal, a set one must be numeric.
     const numeric: Constraint<MatrixSubject> = {
@@ -3271,14 +2929,14 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
     };
     const url: Constraint<MatrixSubject> = { constraintType: 'dataType', constraintValue: 'url' };
 
-    // NULL PASSES — for both requested types.
+    // NULL passes — for both requested types.
     await expect(passes(numeric, null)).resolves.toBe(true);
     await expect(passes(numeric, undefined)).resolves.toBe(true);
     await expect(passes(url, null)).resolves.toBe(true);
     await expect(passes(url, undefined)).resolves.toBe(true);
 
-    // A non-null invalid value FAILS the requested type. Blank is NOT null, so it is judged — and
-    // `isNumeric('')` is false in CFML, which is the nuance section D2 pins at a real document site.
+    // A non-null invalid value fails the requested type. Blank is not null, so it is judged — and
+    // `isNumeric('')` is false in CFML, which is the nuance the gated-constraint cases pin at a real document site.
     await expect(passes(numeric, '')).resolves.toBe(false);
     await expect(passes(numeric, '  ')).resolves.toBe(false);
     await expect(passes(numeric, 'abc')).resolves.toBe(false);
@@ -3287,7 +2945,7 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
     await expect(passes(numeric, [])).resolves.toBe(false);
     await expect(passes(numeric, {})).resolves.toBe(false);
 
-    // Valid numeric forms pass, including negatives and zero — `dataType` judges FORM, never RANGE.
+    // Valid numeric forms pass, including negatives and zero — `dataType` judges form, never range.
     await expect(passes(numeric, 0)).resolves.toBe(true);
     await expect(passes(numeric, '0')).resolves.toBe(true);
     await expect(passes(numeric, -12.5)).resolves.toBe(true);
@@ -3303,24 +2961,24 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
   });
 
   it('NET-NEW — matrix row 3 of 11 — `minValue`: null PASSES; a non-null nonnumeric value fails; the boundary passes', async () => {
-    // G6 — `validate_minValue` at `:L269-L275` passes a null and then requires the value to be BOTH
-    // numeric AND at or above the floor. A nonnumeric value therefore fails the FLOOR constraint in
+    // `validate_minValue` at `:L269-L275` passes a null and then requires the value to be both
+    // numeric and at or above the floor. A nonnumeric value therefore fails the floor constraint in
     // its own right, independently of any `dataType` constraint that may sit beside it — which is why
-    // `model/validation/Sku.json:L4` can emit two messages for one bad value (section B2/X10b).
+    // `model/validation/Sku.json:L4` can emit two messages for one bad value (the `Sku.json` cases).
     const floorZero: Constraint<MatrixSubject> = { constraintType: 'minValue', constraintValue: 0 };
     const floorTen: Constraint<MatrixSubject> = { constraintType: 'minValue', constraintValue: 10 };
 
-    // NULL PASSES.
+    // NULL passes.
     await expect(passes(floorZero, null)).resolves.toBe(true);
     await expect(passes(floorZero, undefined)).resolves.toBe(true);
 
-    // A non-null NONNUMERIC value FAILS the floor.
+    // A non-null nonnumeric value fails the floor.
     await expect(passes(floorZero, 'abc')).resolves.toBe(false);
     await expect(passes(floorZero, '')).resolves.toBe(false);
     await expect(passes(floorZero, [])).resolves.toBe(false);
     await expect(passes(floorZero, {})).resolves.toBe(false);
 
-    // THE BOUNDARY PASSES — the comparison is `>=`, not `>`. A floor of zero must admit a free SKU.
+    // The boundary passes — the comparison is `>=`, not `>`. A floor of zero must admit a free SKU.
     await expect(passes(floorZero, 0)).resolves.toBe(true);
     await expect(passes(floorZero, '0')).resolves.toBe(true);
     await expect(passes(floorZero, '0.00')).resolves.toBe(true);
@@ -3336,10 +2994,10 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
   });
 
   it('NET-NEW — matrix row 4 of 11 — `maxLength`: null PASSES; for a ceiling of 0, blank passes and nonblank fails', async () => {
-    // G6 — `validate_maxLength` at `:L293-L299` passes a null and otherwise measures `len(value)`.
-    // The corpus declares this constraint EXACTLY ONCE, at `model/validation/ProductType.json:L7`,
-    // with a ceiling of ZERO — which turns a length constraint into a "must be empty" delete guard on
-    // `systemCode`. Section B5/X10d asserts that real site. A ceiling of zero is emphatically NOT a
+    // `validate_maxLength` at `:L293-L299` passes a null and otherwise measures `len(value)`.
+    // The corpus declares this constraint exactly once, at `model/validation/ProductType.json:L7`,
+    // with a ceiling of zero — which turns a length constraint into a "must be empty" delete guard on
+    // `systemCode`. The `productType.json` cases assert that real site. A ceiling of zero is emphatically not a
     // membership test against the seeded system codes, and reading it as one would let a seeded
     // product type be deleted.
     const ceilingZero: Constraint<MatrixSubject> = {
@@ -3351,20 +3009,20 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
       constraintValue: 5,
     };
 
-    // NULL PASSES — an unseeded product type carries no system code, so the guard must not fire.
+    // NULL passes — an unseeded product type carries no system code, so the guard must not fire.
     await expect(passes(ceilingZero, null)).resolves.toBe(true);
     await expect(passes(ceilingZero, undefined)).resolves.toBe(true);
 
-    // For a ceiling of 0, an EMPTY string passes.
+    // For a ceiling of 0, an empty string passes.
     await expect(passes(ceilingZero, '')).resolves.toBe(true);
 
-    // WHITESPACE-ONLY also passes: the engine trims before measuring, so a blank-but-present system
+    // Whitespace-only also passes: the engine trims before measuring, so a blank-but-present system
     // code is treated as empty. This is the behaviour, and it is asserted rather than assumed.
     await expect(passes(ceilingZero, ' ')).resolves.toBe(true);
     await expect(passes(ceilingZero, '   ')).resolves.toBe(true);
     await expect(passes(ceilingZero, '\t\n')).resolves.toBe(true);
 
-    // Any NONBLANK value FAILS a ceiling of zero — which is exactly how the seeded discriminators of
+    // Any nonblank value fails a ceiling of zero — which is exactly how the seeded discriminators of
     // `config/dbdata/SlatwallProductType.xml.cfm:L13-L15` become undeletable.
     await expect(passes(ceilingZero, 'merchandise')).resolves.toBe(false);
     await expect(passes(ceilingZero, 'a')).resolves.toBe(false);
@@ -3376,7 +3034,7 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
   });
 
   it('NET-NEW — matrix row 5 of 11 — `minCollection`: null PASSES but an empty array FAILS for a floor of 1', async () => {
-    // G6 — `validate_minCollection` at `:L301-L307` passes a null and otherwise requires
+    // `validate_minCollection` at `:L301-L307` passes a null and otherwise requires
     // `arrayLen(value) >= floor`. The asymmetry between null and `[]` is the whole point: it is what
     // makes the three `unused*` gates of `model/validation/Product.json:L13-L15` fire when a product
     // has genuinely run out of options to add (an empty array) while staying silent when the gate is
@@ -3390,14 +3048,14 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
       constraintValue: 2,
     };
 
-    // NULL PASSES.
+    // NULL passes.
     await expect(passes(floorOne, null)).resolves.toBe(true);
     await expect(passes(floorOne, undefined)).resolves.toBe(true);
 
-    // AN EMPTY ARRAY FAILS a floor of one.
+    // an empty array fails a floor of one.
     await expect(passes(floorOne, [])).resolves.toBe(false);
 
-    // A ONE-ITEM array passes the floor of one, and fails a floor of two.
+    // A one-item array passes the floor of one, and fails a floor of two.
     await expect(passes(floorOne, ['only'])).resolves.toBe(true);
     await expect(passes(floorTwo, ['only'])).resolves.toBe(false);
     await expect(passes(floorTwo, ['one', 'two'])).resolves.toBe(true);
@@ -3408,12 +3066,12 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
   });
 
   it('NET-NEW — matrix row 6 of 11 — `maxCollection`: null PASSES; empty passes a ceiling of 0; a simple value fails', async () => {
-    // G6 — `validate_maxCollection` at `:L309-L315` passes a null and otherwise requires
-    // `arrayLen(value) <= ceiling`. This is the most-declared constraint in the corpus with NINE
-    // sites, every one of them a delete guard with a ceiling of ZERO: `Product.json:L7`,
+    // `validate_maxCollection` at `:L309-L315` passes a null and otherwise requires
+    // `arrayLen(value) <= ceiling`. This is the most-declared constraint in the corpus with nine
+    // sites, every one of them a delete guard with a ceiling of zero: `Product.json:L7`,
     // `Sku.json:L13`, `Brand.json:L6` and `:L7`, `Option.json:L6`, `OptionGroup.json:L5`, and
     // `ProductType.json:L5`, `:L6` and `:L8`. Null passing is what makes the four `physicalCounts`
-    // guards inert against a production-shaped subject (section B8).
+    // guards inert against a production-shaped subject.
     const ceilingZero: Constraint<MatrixSubject> = {
       constraintType: 'maxCollection',
       constraintValue: 0,
@@ -3423,18 +3081,18 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
       constraintValue: 2,
     };
 
-    // NULL PASSES.
+    // NULL passes.
     await expect(passes(ceilingZero, null)).resolves.toBe(true);
     await expect(passes(ceilingZero, undefined)).resolves.toBe(true);
 
-    // AN EMPTY ARRAY PASSES a ceiling of zero — nothing depends on the row, so the delete proceeds.
+    // an empty array passes a ceiling of zero — nothing depends on the row, so the delete proceeds.
     await expect(passes(ceilingZero, [])).resolves.toBe(true);
 
-    // A ONE-ITEM collection FAILS a ceiling of zero — a single dependent row blocks the delete.
+    // A one-item collection fails a ceiling of zero — a single dependent row blocks the delete.
     await expect(passes(ceilingZero, ['one'])).resolves.toBe(false);
     await expect(passes(ceilingZero, ['one', 'two'])).resolves.toBe(false);
 
-    // A NON-NULL SIMPLE VALUE FAILS: it is present but has no measurable collection length, so the
+    // A non-null simple value fails: it is present but has no measurable collection length, so the
     // engine cannot conclude the collection is empty and refuses the delete. The conservative
     // direction again.
     await expect(passes(ceilingZero, 'not a collection')).resolves.toBe(false);
@@ -3448,9 +3106,9 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
   });
 
   it('NET-NEW — matrix row 7 of 11 — `regex`: null PASSES; a nonmatching non-null string fails', async () => {
-    // G6 — `validate_regex` at `:L481-L487` passes a null and otherwise tests the pattern. Section A3
-    // pins the one shared pattern the corpus declares three times; this row pins the EVALUATOR, and
-    // in particular that the pattern is compiled with NO FLAGS, so `^` and `$` anchor the whole
+    // `validate_regex` at `:L481-L487` passes a null and otherwise tests the pattern. The shared-regex cases
+    // pins the one shared pattern the corpus declares three times; this row pins the evaluator, and
+    // in particular that the pattern is compiled with no flags, so `^` and `$` anchor the whole
     // string rather than each line. An `m` flag would let a multi-line payload smuggle an illegal
     // character past a code-format guard.
     const pattern: Constraint<MatrixSubject> = {
@@ -3458,11 +3116,11 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
       constraintValue: CODE_FORMAT_REGEX,
     };
 
-    // NULL PASSES — presence is `required`'s job, never the pattern's.
+    // NULL passes — presence is `required`'s job, never the pattern's.
     await expect(passes(pattern, null)).resolves.toBe(true);
     await expect(passes(pattern, undefined)).resolves.toBe(true);
 
-    // A NONMATCHING non-null string FAILS.
+    // A NONMATCHING non-null string fails.
     await expect(passes(pattern, 'has space')).resolves.toBe(false);
     await expect(passes(pattern, 'bad/slash')).resolves.toBe(false);
     await expect(passes(pattern, 'bad\\backslash')).resolves.toBe(false);
@@ -3475,28 +3133,28 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
     await expect(passes(pattern, 'a-b_c.d|e:f~g^h')).resolves.toBe(true);
 
     // The no-flag end-anchor decision, asserted rather than described: an embedded newline followed by
-    // an otherwise-valid line does NOT match, because `$` anchors the string and not the line.
+    // an otherwise-valid line does not match, because `$` anchors the string and not the line.
     await expect(passes(pattern, 'GOOD\nbad space')).resolves.toBe(false);
     await expect(passes(pattern, 'bad space\nGOOD')).resolves.toBe(false);
   });
 
   it('NET-NEW — matrix row 8 of 11 — `eq`: null FAILS, and the comparison follows the loose CFML truth table', async () => {
-    // G6 — `validate_eq` at `:L385-L395` returns FALSE for a null at `:L386-L388` and otherwise
+    // `validate_eq` at `:L385-L395` returns false for a null at `:L386-L388` and otherwise
     // compares with CFML `==`, which coerces. It is one of only three evaluators that reject absence,
     // and the rejection is what makes the delete guards of `Sku.json:L3`/`:L12` and `Product.json:L12`
-    // fail safe. Section D3 and D4 exercise the same truth table at the real document sites; this row
+    // fail safe. The two `Product_UpdateSkus` truth-table sections exercise the same table at the real document sites; this row
     // pins the evaluator itself.
     const eqFalse: Constraint<MatrixSubject> = { constraintType: 'eq', constraintValue: false };
     const eqOne: Constraint<MatrixSubject> = { constraintType: 'eq', constraintValue: 1 };
     const eqText: Constraint<MatrixSubject> = { constraintType: 'eq', constraintValue: 'active' };
 
-    // NULL FAILS.
+    // NULL fails.
     await expect(passes(eqFalse, null)).resolves.toBe(false);
     await expect(passes(eqFalse, undefined)).resolves.toBe(false);
     await expect(passes(eqOne, null)).resolves.toBe(false);
     await expect(passes(eqText, null)).resolves.toBe(false);
 
-    // Boolean-castable pairs compare AS BOOLEANS.
+    // Boolean-castable pairs compare as booleans.
     await expect(passes(eqFalse, false)).resolves.toBe(true);
     await expect(passes(eqFalse, 'false')).resolves.toBe(true);
     await expect(passes(eqFalse, 'FALSE')).resolves.toBe(true);
@@ -3507,26 +3165,26 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
     await expect(passes(eqFalse, 'yes')).resolves.toBe(false);
     await expect(passes(eqFalse, 1)).resolves.toBe(false);
 
-    // Numeric pairs compare NUMERICALLY, so representation does not matter.
+    // Numeric pairs compare numerically, so representation does not matter.
     await expect(passes(eqOne, 1)).resolves.toBe(true);
     await expect(passes(eqOne, '1')).resolves.toBe(true);
     await expect(passes(eqOne, '1.0')).resolves.toBe(true);
     await expect(passes(eqOne, 2)).resolves.toBe(false);
 
-    // Everything else falls through to a CASE-INSENSITIVE string comparison.
+    // Everything else falls through to a case-insensitive string comparison.
     await expect(passes(eqText, 'active')).resolves.toBe(true);
     await expect(passes(eqText, 'ACTIVE')).resolves.toBe(true);
     await expect(passes(eqText, 'AcTiVe')).resolves.toBe(true);
     await expect(passes(eqText, 'inactive')).resolves.toBe(false);
-    // Trailing space is NOT trimmed by the comparison — only `required` and `maxLength` trim.
+    // Trailing space is not trimmed by the comparison — only `required` and `maxLength` trim.
     await expect(passes(eqText, 'active ')).resolves.toBe(false);
   });
 
   it('NET-NEW — matrix row 9 of 11 — `inList`: null FAILS; matching is case-insensitive and whole-element', async () => {
-    // G6 — `validate_inList` at `:L459-L465` returns FALSE for a null and otherwise uses
-    // `listFindNoCase`, which splits on commas and compares WHOLE ELEMENTS case-insensitively. It is
-    // NOT a substring test. The corpus declares this constraint twice, both at
-    // `model/validation/Product.json:L4` and `:L5`, and section B9 exercises those real sites.
+    // `validate_inList` at `:L459-L465` returns false for a null and otherwise uses
+    // `listFindNoCase`, which splits on commas and compares whole elements case-insensitively. It is
+    // not a substring test. The corpus declares this constraint twice, both at
+    // `model/validation/Product.json:L4` and `:L5`, and the product context-gate cases exercise those real sites.
     const inList: Constraint<MatrixSubject> = {
       constraintType: 'inList',
       constraintValue: 'merchandise',
@@ -3536,37 +3194,37 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
       constraintValue: 'merchandise,subscription,contentAccess',
     };
 
-    // NULL FAILS — a product with no resolvable base product type cannot satisfy the gate.
+    // NULL fails — a product with no resolvable base product type cannot satisfy the gate.
     await expect(passes(inList, null)).resolves.toBe(false);
     await expect(passes(inList, undefined)).resolves.toBe(false);
 
-    // CASE-INSENSITIVE whole-element matching.
+    // Case-insensitive whole-element matching.
     await expect(passes(inList, 'merchandise')).resolves.toBe(true);
     await expect(passes(inList, 'MERCHANDISE')).resolves.toBe(true);
     await expect(passes(inList, 'Merchandise')).resolves.toBe(true);
     await expect(passes(multi, 'contentaccess')).resolves.toBe(true);
     await expect(passes(multi, 'subscription')).resolves.toBe(true);
 
-    // NOT A SUBSTRING TEST, in either direction. A value that merely contains a member fails, and a
-    // value that is merely contained BY a member fails too.
+    // Not a substring test, in either direction. A value that merely contains a member fails, and a
+    // value that is merely contained by a member fails too.
     await expect(passes(inList, 'merchandises')).resolves.toBe(false);
     await expect(passes(inList, 'premerchandise')).resolves.toBe(false);
     await expect(passes(inList, 'merch')).resolves.toBe(false);
     await expect(passes(inList, '')).resolves.toBe(false);
 
-    // A comma-bearing VALUE is not a way to satisfy a single-element list: the comparison is against
+    // A comma-bearing value is not a way to satisfy a single-element list: the comparison is against
     // the whole value, so it matches no single element.
     await expect(passes(inList, 'x,merchandise')).resolves.toBe(false);
     await expect(passes(multi, 'merchandise,subscription')).resolves.toBe(false);
   });
 
   it('NET-NEW — matrix row 10 of 11 — `method`: the bound method is called with ZERO arguments and its result is coerced', async () => {
-    // G6 — `validate_method` at `:L333-L335` is `invokeMethod(constraintValue)` with NO argument
-    // collection, so the bound method receives NOTHING and must derive everything it needs from the
-    // subject it lives on. The port replaces the legacy STRING-KEYED DISPATCH — a method name looked up
+    // `validate_method` at `:L333-L335` is `invokeMethod(constraintValue)` with no argument
+    // collection, so the bound method receives nothing and must derive everything it needs from the
+    // subject it lives on. The port replaces the legacy string-keyed dispatch — a method name looked up
     // by name at runtime — with a typed `invoke` callback on the constraint itself, so the binding is
     // compile-checked; what is preserved is the zero-argument call and the boolean coercion of the
-    // result. Section F exercises the two real method rules of `model/validation/Sku.json:L6-L7`.
+    // result. The method-rule section exercises the two real method rules of `model/validation/Sku.json:L6-L7`.
     /** Reaches the subject's own method, so the arguments it receives can be observed. */
     const boundToSubject: Constraint<MatrixSubject> = {
       constraintType: 'method',
@@ -3580,7 +3238,7 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
       invoke: () => result,
     });
 
-    // ZERO ARGUMENTS. The recorded call log holds exactly one entry, and that entry is EMPTY.
+    // Zero arguments. The recorded call log holds exactly one entry, and that entry is empty.
     const calls: unknown[][] = [];
     await evaluate(boundToSubject, {
       value: 'irrelevant',
@@ -3591,7 +3249,7 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
     expect(calls).toHaveLength(1);
     expect(first(calls)).toStrictEqual([]);
 
-    // The method's verdict, NOT the property value, decides the outcome — the property value is never
+    // The method's verdict, not the property value, decides the outcome — the property value is never
     // read on this path, which is why row 10 has no null-semantics row of its own.
     const failingCalls: unknown[][] = [];
     await expect(
@@ -3603,7 +3261,7 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
     ).resolves.toBe(false);
     expect(failingCalls).toStrictEqual([[]]);
 
-    // The RESULT IS COERCED to a boolean with CFML rules, so a method may legally answer with a
+    // The result is coerced to a boolean with CFML rules, so a method may legally answer with a
     // boolean, a number or a boolean-castable string and all behave alike.
     for (const truthy of [true, 1, '1', 'yes', 'true', 'YES', 'TRUE', ' 1 ', 2, -1]) {
       await expect(evaluate(resolvingTo(truthy), { value: 'v' })).resolves.toBe(true);
@@ -3612,8 +3270,8 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
       await expect(evaluate(resolvingTo(falsy), { value: 'v' })).resolves.toBe(false);
     }
 
-    // A result that is NOT boolean-castable is a programming error, not a validation failure, and the
-    // engine RAISES rather than guessing a direction. Guessing would either block every save or
+    // A result that is not boolean-castable is a programming error, not a validation failure, and the
+    // engine raises rather than guessing a direction. Guessing would either block every save or
     // silently disable the rule, and both failure modes would be invisible.
     for (const uncoercible of [null, undefined, {}, [], 'maybe', '', Number.NaN, Infinity]) {
       await expect(evaluate(resolvingTo(uncoercible), { value: 'v' })).rejects.toBeInstanceOf(
@@ -3622,7 +3280,7 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
     }
 
     // A method rule may be asynchronous: the engine awaits the result before coercing it, which is
-    // what lets `model/validation/Sku.json:L6`'s `hasUniqueOptions` perform a real lookup (section F).
+    // what lets `model/validation/Sku.json:L6`'s `hasUniqueOptions` perform a real lookup (see the method-rule section).
     await expect(evaluate(resolvingTo(Promise.resolve(true)), { value: 'v' })).resolves.toBe(true);
     await expect(evaluate(resolvingTo(Promise.resolve(false)), { value: 'v' })).resolves.toBe(
       false,
@@ -3630,19 +3288,19 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
   });
 
   it('NET-NEW — matrix row 11 of 11 — `unique`: delegates to the injected port, and `true` means SAFE', async () => {
-    // G6 — `validate_unique` at `:L467-L470` returns the DAO verdict UNMODIFIED, and the DAO in
-    // question is `isUniqueProperty` at `org/Hibachi/HibachiDAO.cfc:L130-L147`, which answers FALSE
-    // when a conflicting row exists (`:L142-L144`) and TRUE when none does (`:L146`). The polarity is
+    // `validate_unique` at `:L467-L470` returns the DAO verdict unmodified, and the DAO in
+    // question is `isUniqueProperty` at `org/Hibachi/HibachiDAO.cfc:L130-L147`, which answers false
+    // when a conflicting row exists (`:L142-L144`) and true when none does (`:L146`). The polarity is
     // therefore `true = unique = safe to save`, and inverting it would let every colliding save
-    // through while rejecting every clean one. Section A2 asserts all seven real sites delegate this
-    // way; section G asserts the SQL the adapter emits.
+    // through while rejecting every clean one. The application-side `unique` cases assert all seven real sites delegate this
+    // way; the uniqueness-SQL section asserts the SQL the adapter emits.
     const uniqueConstraint: Constraint<MatrixSubject> = {
       constraintType: 'unique',
       constraintValue: true,
       uniqueTarget: (subject) => subject,
     };
 
-    // NO conflicting row seeded: the port answers true and the constraint PASSES.
+    // no conflicting row seeded: the port answers true and the constraint passes.
     const clean = createValidatorHarness();
     const cleanErrors = await clean.validateDryRun(
       matrixSubject({ value: 'free-value' }),
@@ -3650,7 +3308,7 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
       'save',
     );
     expect(cleanErrors.hasError(MATRIX_PROPERTY)).toBe(false);
-    // Delegation is real, not short-circuited: the port WAS consulted, with the full five-field call.
+    // Delegation is real, not short-circuited: the port was consulted, with the full five-field call.
     expect(clean.uniqueProperty.calls).toStrictEqual([
       {
         propertyName: MATRIX_PROPERTY,
@@ -3661,7 +3319,7 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
       },
     ]);
 
-    // A conflicting row on a DIFFERENT primary key: the port answers false and the constraint FAILS.
+    // A conflicting row on a different primary key: the port answers false and the constraint fails.
     const colliding = createValidatorHarness([
       {
         entityName: MATRIX_ENTITY_NAME,
@@ -3679,7 +3337,7 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
       'validate.save.MatrixSubject.value.unique',
     ]);
 
-    // The SAME primary key holding the same value is SELF, not a conflict — the self-exclusion clause
+    // The same primary key holding the same value is self, not a conflict — the self-exclusion clause
     // of `:L140` at work, which is what lets an unchanged row be re-saved.
     const self = createValidatorHarness([
       {
@@ -3700,7 +3358,7 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
   it('NET-NEW — the matrix is complete: exactly eleven constraint kinds, and absence splits nine-to-two-plus-one', async () => {
     // A guard against the matrix silently falling out of step with the engine. If a twelfth kind were
     // ever added to the `Constraint` union, this roll-call would still pass — so it is paired with the
-    // corpus census of section A, which asserts the DOCUMENTS declare no fourteenth key. Together the
+    // corpus census above, which asserts the documents declare no fourteenth key. Together the
     // two bracket the supported surface from both directions.
     const nullPasses: readonly Constraint<MatrixSubject>[] = [
       { constraintType: 'dataType', constraintValue: 'numeric' },
@@ -3752,21 +3410,7 @@ describe('NET-NEW — E. the eleven-row evaluator and null-semantics matrix', ()
   });
 });
 
-/* ================================================================================================
- * SECTION F — THE TWO SKU METHOD RULES, D19, AND M6 TRANSACTION VISIBILITY
- * ==============================================================================================
- *
- * `model/validation/Sku.json:L5-L8` registers the ONLY two method-based rules in the whole corpus,
- * and they are the reason IR-4 insists declarative validation is behaviour rather than configuration:
- * one of them executes a DATABASE QUERY from inside a validation pass.
- *
- *   [:6]  options  save  method  hasUniqueOptions            -> asynchronous, performs a real lookup
- *   [:7]  options  save  method  hasOneOptionPerOptionGroup  -> pure, in-memory, synchronous
- *
- * Both are exercised through the `Validator` at their real document site, and the domain methods are
- * additionally called directly where a claim is about the method's own algorithm rather than about
- * the engine's dispatch. Nothing is resolved by string, and no module is mocked.
- * ---------------------------------------------------------------------------------------------- */
+/* The two SKU method rules, D19, and M6 transaction visibility. */
 
 /** Records the raw comma-delimited string the domain method hands the lookup, then delegates. */
 interface RecordingLookup {
@@ -3790,13 +3434,7 @@ function recordingLookup(delegate: SkusBySelectedOptionsLookup): RecordingLookup
   };
 }
 
-/**
- * A product plus a SKU repository scoped to it, with a recording lookup in front.
- *
- * `createSkusBySelectedOptionsLookup(repository, productId)` CLOSES OVER the product identifier,
- * which is the structural evidence for the claim below that the domain method supplies no product
- * argument of its own.
- */
+/** A product plus a SKU repository scoped to it, with a recording lookup in front. */
 function optionResolutionFixture(productID: string): {
   readonly product: Product;
   readonly repository: ReturnType<typeof createInMemorySkuRepository>;
@@ -3810,14 +3448,8 @@ function optionResolutionFixture(productID: string): {
   return { product, repository, lookup };
 }
 
-describe('NET-NEW — F1. `hasUniqueOptions` — the selected-options string it builds', () => {
-  // @hint this method validates that this skus has a unique option combination that no other sku has
-  //
-  // ^ The line above is the source annotation from `model/entity/Sku.cfc:L755`, reproduced BYTE FOR
-  // BYTE including its grammatical errors ("this skus has"). It is preserved rather than corrected
-  // because the copy of it at `:L771` is what identifies the second method rule's hint as a
-  // copy-paste artifact (section F4), and silently repairing the grammar here would erase the only
-  // evidence that the two hints are the same text.
+describe('NET-NEW — `hasUniqueOptions` — the selected-options string it builds', () => {
+  // @hint this method validates that this skus has a unique option combination that no other sku has.
 
   it('NET-NEW — option identifiers are appended IN EXISTING OPTION ORDER into one comma-delimited string', async () => {
     // `model/entity/Sku.cfc:L757-L761` opens `var optionsList = ""`, iterates `getOptions()` and
@@ -3833,7 +3465,7 @@ describe('NET-NEW — F1. `hasUniqueOptions` — the selected-options string it 
       skuID: 'order-sku',
       skuCode: 'ORDER',
       product,
-      // Deliberately NOT in alphabetical order, so a hidden sort would be visible.
+      // Deliberately not in alphabetical order, so a hidden sort would be visible.
       options: [
         buildOption({ optionID: 'zeta', optionGroup: groupThree }),
         buildOption({ optionID: 'alpha', optionGroup: groupOne }),
@@ -3847,9 +3479,9 @@ describe('NET-NEW — F1. `hasUniqueOptions` — the selected-options string it 
   });
 
   it('NET-NEW — a SKU with ZERO options produces EXACTLY the empty string, never a null and never a placeholder', async () => {
-    // T5 (AAP §0.6.1.3) — an empty selection is a LEGAL, MEANINGFUL input. `listLen("")` is zero in
+    // T5 (AAP §0.6.1.3) — an empty selection is a legal, meaningful input. `listLen("")` is zero in
     // CFML, so no `EXISTS` clause is appended and the query legitimately degenerates to "every
-    // option-bearing SKU of this product". Section F2 is the consequence.
+    // option-bearing SKU of this product". Section is the consequence.
     const { product, lookup } = optionResolutionFixture('empty-product');
     const sku = buildSku({ skuID: 'empty-sku', skuCode: 'EMPTY', product, options: [] });
 
@@ -3880,14 +3512,9 @@ describe('NET-NEW — F1. `hasUniqueOptions` — the selected-options string it 
     // AAP §0.6.1.1 — the legacy chain is
     // `Sku.hasUniqueOptions()` -> `Product.getSkusBySelectedOptions(selectedOptions=optionsList)` at
     // `model/entity/Sku.cfc:L763` -> `ProductService.getProductSkusBySelectedOptions(...)` ->
-    // `SkuDAO.getSkusBySelectedOptions(...)`. The SKU passes ONLY the options list; the product
-    // identifier is contributed by the PRODUCT it is walking through, at
+    // `SkuDAO.getSkusBySelectedOptions(...)`. The SKU passes only the options list; the product
+    // identifier is contributed by the product it is walking through, at
     // `model/entity/Product.cfc:L367`, where `this.getProductID()` is supplied positionally.
-    //
-    // The port keeps that division of knowledge: `SkusBySelectedOptionsLookup` declares a
-    // ONE-PARAMETER member, and `createSkusBySelectedOptionsLookup(repository, productId)` closes over
-    // the identifier at wiring time. Two independent facts prove it — the recorded ARITY of every call,
-    // and the fact that the repository nonetheless receives the correct product scope.
     const { product, repository, lookup } = optionResolutionFixture('scope-product');
     const sku = buildSku({
       skuID: 'scope-sku',
@@ -3901,11 +3528,11 @@ describe('NET-NEW — F1. `hasUniqueOptions` — the selected-options string it 
 
     await sku.hasUniqueOptions(lookup);
 
-    // ONE argument reached the lookup, and it was the options list.
+    // One argument reached the lookup, and it was the options list.
     expect(lookup.argumentCounts).toStrictEqual([1]);
     expect(lookup.selectedOptionsArguments).toStrictEqual(['opt-a,opt-b']);
 
-    // T2 (AAP §0.6.1.3) — the product scope IS applied, and it came from the closure rather than from
+    // T2 (AAP §0.6.1.3) — the product scope is applied, and it came from the closure rather than from
     // the method call. The recorded repository call carries both the split option list and the product.
     expect(repository.calls).toStrictEqual([
       {
@@ -3917,8 +3544,10 @@ describe('NET-NEW — F1. `hasUniqueOptions` — the selected-options string it 
   });
 });
 
-describe('NET-NEW — F2. `hasUniqueOptions` — candidate polarity and APPLICATION-SIDE self-exclusion', () => {
-  /** Builds a SKU on the fixture product with the given options, and registers it in the repository. */
+describe('NET-NEW — `hasUniqueOptions` — candidate polarity and APPLICATION-SIDE self-exclusion', () => {
+  /**
+   * Builds a SKU on the fixture product with the given options, and registers it in the repository.
+   */
   function registeredSku(
     fixture: ReturnType<typeof optionResolutionFixture>,
     skuID: string,
@@ -3983,7 +3612,7 @@ describe('NET-NEW — F2. `hasUniqueOptions` — candidate polarity and APPLICAT
   it('NET-NEW — TWO candidates FAIL even when one of them is THIS sku: the self-exclusion is arity-one only', async () => {
     // `:L764` guards self-exclusion behind `arrayLen(skus) == 1`. With two rows returned, the
     // conjunction is false regardless of which row is self, so the method fails. A port that filtered
-    // self out of the result BEFORE counting would pass here and diverge.
+    // self out of the result before counting would pass here and diverge.
     const fixture = optionResolutionFixture('pair-product');
     const mine = registeredSku(fixture, 'mine-sku', ['shared']);
     registeredSku(fixture, 'theirs-sku', ['shared']);
@@ -3993,13 +3622,10 @@ describe('NET-NEW — F2. `hasUniqueOptions` — candidate polarity and APPLICAT
 
   it('NET-NEW — self-exclusion is APPLICATION code, not SQL: the query returns self and the method decides', async () => {
     // AAP §0.6.1.4 and §0.3.3.1 — the translated statement carries the conjunctive `EXISTS` clauses,
-    // the option-bearing guard and the product predicate, and NOTHING ELSE. There is no
+    // the option-bearing guard and the product predicate, and nothing else. There is no
     // `AND s.skuID != ?` in it. That is deliberate: the legacy HQL at
     // `model/dao/SkuDAO.cfc:L107-L128` has no such clause either, and the current-SKU decision is made
     // in the entity at `model/entity/Sku.cfc:L764`.
-    //
-    // This is asserted from BOTH sides. The repository DID return the current SKU as a candidate, and
-    // the method nonetheless answered true — so the exclusion demonstrably happened above the query.
     const fixture = optionResolutionFixture('layer-product');
     const sku = registeredSku(fixture, 'layer-sku', ['opt-y']);
 
@@ -4009,7 +3635,7 @@ describe('NET-NEW — F2. `hasUniqueOptions` — candidate polarity and APPLICAT
     await expect(sku.hasUniqueOptions(fixture.lookup)).resolves.toBe(true);
 
     // The recorded repository calls carry no exclusion parameter of any kind — only the option list
-    // and the product. Section G asserts the emitted SQL text itself.
+    // and the product. The uniqueness-SQL section asserts the emitted SQL text itself.
     for (const call of fixture.repository.calls) {
       if (call.member === 'findSkusBySelectedOptions') {
         expect(Object.keys(call).sort()).toStrictEqual(['member', 'optionIds', 'productId']);
@@ -4019,9 +3645,9 @@ describe('NET-NEW — F2. `hasUniqueOptions` — candidate polarity and APPLICAT
 
   it('NET-NEW — at INSERT time the skuID is unset, so no candidate can be self-excluded', async () => {
     // An unsaved SKU reports `SKU_UNSAVED_ID_VALUE`. With no candidates it still passes, but a single
-    // candidate CANNOT be self — a saved row's identifier can never equal the unsaved sentinel — so the
+    // candidate cannot be self — a saved row's identifier can never equal the unsaved sentinel — so the
     // combination is correctly rejected. This is the same observation the port records for
-    // `UniquePropertyChecker`: the self-exclusion clause is a NO-OP on insert (section G).
+    // `uniquePropertyChecker`: the self-exclusion clause is a no-op on insert (see the uniqueness-SQL section).
     const cleanFixture = optionResolutionFixture('insert-clean-product');
     const unsavedClean = buildSku({
       skuCode: 'UNSAVED',
@@ -4046,17 +3672,10 @@ describe('NET-NEW — F2. `hasUniqueOptions` — candidate polarity and APPLICAT
   });
 
   it('NET-NEW — the identifier comparison is CASE-SENSITIVE in the target, and the divergence is carried not repaired', async () => {
-    // G6 — A DELIBERATE, DOCUMENTED DIVERGENCE. The legacy comparison at
-    // `model/entity/Sku.cfc:L764` is CFML `==` on two strings, which is CASE-INSENSITIVE, so a legacy
+    // a deliberate, documented divergence. The legacy comparison at
+    // `model/entity/Sku.cfc:L764` is CFML `==` on two strings, which is case-insensitive, so a legacy
     // engine would have self-excluded a row whose identifier differed from this SKU's only by letter
     // case. The port compares with TypeScript `===`, which is case-sensitive.
-    //
-    // The divergence is unreachable for every value that can actually occur: primary keys in this
-    // schema are 32-character lowercase hexadecimal UUIDs generated by
-    // `model/dao/HibachiDAO.cfc`'s `createSlatwallUUID()` (AAP IR-6), so two identifiers can never
-    // differ by case alone. Every other test in this file therefore uses canonical lowercase
-    // identifiers; this one case deliberately does not, purely to pin the divergence so it is a
-    // recorded decision rather than an accident waiting to be "tidied up".
     const fixture = optionResolutionFixture('case-product');
     const incumbent = registeredSku(fixture, 'abcdef', ['opt-c']);
     expect(incumbent.skuID).toBe('abcdef');
@@ -4070,8 +3689,8 @@ describe('NET-NEW — F2. `hasUniqueOptions` — candidate polarity and APPLICAT
       ],
     });
 
-    // Legacy `==` would have judged these the same row and PASSED. The port judges them distinct and
-    // FAILS. Both halves are asserted so the divergence cannot be mistaken for a coincidence.
+    // Legacy `==` would have judged these the same row and passed. The port judges them distinct and
+    // fails. Both halves are asserted so the divergence cannot be mistaken for a coincidence.
     const incumbentID: string = incumbent.skuID;
     const challengerID: string = differingByCaseOnly.skuID;
     expect(challengerID.toLowerCase() === incumbentID.toLowerCase()).toBe(true);
@@ -4081,7 +3700,7 @@ describe('NET-NEW — F2. `hasUniqueOptions` — candidate polarity and APPLICAT
 
   it('NET-NEW — the rule reaches the same verdict through the Validator at its real document site `Sku.json:L6`', async () => {
     // Everything above calls the domain method directly, because the claims are about the method's own
-    // algorithm. This case closes the loop: the rule is REGISTERED, the engine dispatches to it, and a
+    // algorithm. This case closes the loop: the rule is registered, the engine dispatches to it, and a
     // failure lands in the bag under the `options` key with the method message template.
     const fixture = optionResolutionFixture('registered-product');
     const incumbent = buildSku({
@@ -4114,26 +3733,9 @@ describe('NET-NEW — F2. `hasUniqueOptions` — candidate polarity and APPLICAT
   });
 });
 
-describe('NET-NEW — F3. D19 — an option-less SKU fails uniqueness beside option-bearing siblings', () => {
+describe('NET-NEW — D19 — an option-less SKU fails uniqueness beside option-bearing siblings', () => {
   it('NET-NEW — TODO(parity) D19 — an option-less SKU FAILS when its product already has option-bearing SKUs', async () => {
-    // TODO(parity) D19
-    //
-    // AAP §0.6.2 and §0.6.7.4 record this as defect D19, and it is CARRIED, NOT REPAIRED.
-    //
-    // The mechanism, end to end. An option-less SKU builds `optionsList = ''` at
-    // `model/entity/Sku.cfc:L757-L761` (section F1 asserts exactly that). By T5 the selected-options
-    // query then appends ZERO `EXISTS` clauses, so it degenerates to "every option-bearing SKU of this
-    // product" — the option-bearing guard of T3 being the only surviving predicate besides the product
-    // scope. The guard at `:L764` can then only pass when that degenerate result is empty or is
-    // exactly this SKU, and an option-less SKU can never BE one of the option-bearing rows. So an
-    // option-less default SKU on a product that already carries option-bearing SKUs FAILS its own
-    // uniqueness rule and cannot be saved.
-    //
-    // Three repairs suggest themselves and all three are FORBIDDEN here: an early return when the
-    // options collection is empty, an exception for the product's default SKU, and filtering the
-    // degenerate result down to option-less rows. Each would make the port accept a save the legacy
-    // system rejects, which is precisely the kind of silent behavioural drift behaviour preservation
-    // exists to prevent (AAP Guideline 4).
+    // TODO(parity) D19.
     const fixture = optionResolutionFixture('d19-product');
     const optionBearingSibling = buildSku({
       skuID: 'd19-sibling',
@@ -4155,7 +3757,7 @@ describe('NET-NEW — F3. D19 — an option-less SKU fails uniqueness beside opt
       options: [],
     });
 
-    // The degenerate query really does return the option-bearing sibling for an EMPTY selection.
+    // The degenerate query really does return the option-bearing sibling for an empty selection.
     const degenerate = await fixture.lookup.getSkusBySelectedOptions('');
     expect(degenerate.map((candidate) => candidate.skuID)).toStrictEqual(['d19-sibling']);
 
@@ -4165,7 +3767,7 @@ describe('NET-NEW — F3. D19 — an option-less SKU fails uniqueness beside opt
 
   it('NET-NEW — D19 — the SAME option-less SKU PASSES when the product has NO option-bearing SKUs', async () => {
     // The other side of the defect, which is what makes it a defect rather than a rule: the verdict on
-    // an option-less SKU depends entirely on whether OTHER, unrelated SKUs exist. The T3 option-bearing
+    // an option-less SKU depends entirely on whether other, unrelated SKUs exist. The T3 option-bearing
     // guard is what makes the degenerate result empty here.
     const fixture = optionResolutionFixture('d19-clean-product');
     const anotherOptionLess = buildSku({
@@ -4192,24 +3794,10 @@ describe('NET-NEW — F3. D19 — an option-less SKU fails uniqueness beside opt
   });
 });
 
-describe('NET-NEW — F4. M6 — an in-flight sibling insert must be visible to the next validation', () => {
+describe('NET-NEW — M6 — an in-flight sibling insert must be visible to the next validation', () => {
   it('NET-NEW — M6 — a SKU inserted inside the transaction IS observed by the following uniqueness read', async () => {
-    // M6 — THE DECISION, RECORDED. AAP §0.6.2 names this the highest-risk item in the slice, because a
-    // faithful-LOOKING port produces different results with no error and no compile failure.
-    //
-    // Under CFML and Hibernate, `hasUniqueOptions` observed sibling SKUs already visible to the ORM
-    // SESSION, so `SkuService.createSkus` generating a combination batch had each new SKU validated
-    // against the ones the same operation had just created. Under TypeScript with `mysql2` there is NO
-    // session and NO automatic flush. A port that inserted every combination and then validated, or
-    // that validated everything up front against a prefetched snapshot, would silently disagree with
-    // the legacy system.
-    //
-    // The decision: `UnitOfWork` must make each insert visible to the next read WITHIN THE SAME
-    // TRANSACTION. What is asserted here is the visibility property itself. The full combination-batch
-    // test — the one that fails under either naive ordering — is jointly owned by
-    // `test/services/SkuService.test.ts`, which owns the enumeration order that decides which sibling
-    // is written when; this file neither imports nor edits that sibling test and does not attempt to
-    // solve the whole service-ordering concern here.
+    // M6 — the decision, recorded. AAP §0.6.2 names this the highest-risk item in the slice, because a
+    // faithful-looking port produces different results with no error and no compile failure.
     const unitOfWork = createUnitOfWorkDouble();
     const fixture = optionResolutionFixture('m6-product');
     const combination = ['opt-m6'];
@@ -4232,13 +3820,13 @@ describe('NET-NEW — F4. M6 — an in-flight sibling insert must be visible to 
 
     await unitOfWork.unitOfWork.run(
       async () => {
-        // The FIRST SKU validates against an empty product and passes.
+        // The first SKU validates against an empty product and passes.
         observed.push(await firstSku.hasUniqueOptions(fixture.lookup));
 
-        // It is then inserted INSIDE the same transaction.
+        // It is then inserted inside the same transaction.
         fixture.repository.add(firstSku);
 
-        // The SECOND SKU, carrying the same combination, must now SEE the first one and fail. If the
+        // The second SKU, carrying the same combination, must now see the first one and fail. If the
         // insert were invisible until commit, this would wrongly pass and the batch would produce two
         // identical combinations.
         observed.push(await secondSku.hasUniqueOptions(fixture.lookup));
@@ -4258,7 +3846,7 @@ describe('NET-NEW — F4. M6 — an in-flight sibling insert must be visible to 
 
   it('NET-NEW — M6 — there is NO snapshot and NO cache: reads before and after the insert differ', async () => {
     // The negative half of the same decision. Two lookups with identical arguments must return
-    // DIFFERENT results across an intervening insert. A memoised or prefetched result would make them
+    // different results across an intervening insert. A memoised or prefetched result would make them
     // agree, and every SKU in a combination batch would then be validated against stale state.
     const fixture = optionResolutionFixture('m6-nocache-product');
     const sibling = buildSku({
@@ -4290,7 +3878,7 @@ describe('NET-NEW — F4. M6 — an in-flight sibling insert must be visible to 
 
   it('NET-NEW — M6 — a rolled-back transaction is still exercised through the real UnitOfWork contract', async () => {
     // The commit gate is the legacy `getORMHasErrors()` test (AAP §0.6.6 M5) made explicit: work that
-    // reports errors must ROLL BACK rather than commit. Asserting both directions keeps the visibility
+    // reports errors must roll back rather than commit. Asserting both directions keeps the visibility
     // claim above from resting on a transaction shape that only ever commits.
     const unitOfWork = createUnitOfWorkDouble();
     const fixture = optionResolutionFixture('m6-rollback-product');
@@ -4306,7 +3894,7 @@ describe('NET-NEW — F4. M6 — an in-flight sibling insert must be visible to 
       ],
     });
 
-    // The verdict is computed inside the boundary and captured, because the boundary itself RAISES on
+    // The verdict is computed inside the boundary and captured, because the boundary itself raises on
     // rollback rather than returning — the work must not appear to have succeeded when nothing was kept.
     let verdict: boolean | undefined;
     await expect(
@@ -4326,41 +3914,8 @@ describe('NET-NEW — F4. M6 — an in-flight sibling insert must be visible to 
   });
 });
 
-describe('NET-NEW — F5. `hasOneOptionPerOptionGroup` — the pure in-memory duplicate-group rule', () => {
-  // @hint this method validates that this skus has a unique option combination that no other sku has
-  //
-  // ^ S7 — PRESERVED, NOT REPAIRED, AND DELIBERATELY UNNUMBERED. The line above is the annotation
-  // above `hasOneOptionPerOptionGroup` at `model/entity/Sku.cfc:L771`, and it is BYTE-IDENTICAL to the
-  // one above `hasUniqueOptions` at `:L755` (reproduced in section F1). It is a COPY-PASTE ERROR: this
-  // method has nothing to do with other SKUs and performs no lookup at all — it checks that this one
-  // SKU carries at most one option per option group. The hint is carried across verbatim, wrong text
-  // and wrong grammar included, and it is recorded as an unnumbered annotation rather than assigned a
-  // D-number.
-  //
-  // THE REASON IS LOCAL, AND IS DELIBERATELY NOT A CLAIM ABOUT ANY REGISTER'S BOUND: nothing in this
-  // file mints a defect or mismatch identifier, so this hint receives no number here. Both ranges are
-  // stated canonically, and only once, in the header of `src/ports/repositories/SkuRepository.ts` —
-  // AAP §0.6.7's **D1-D21** and AAP §0.6.6's **M1-M8**, both FROZEN, over which that same header defines
-  // exactly five CORRECTION ALIASES: D22-D25 and M9. Nothing in this port mints a sixth; a further source
-  // observation is recorded by its `path:Lnnn` locator instead.
-  //
-  // ⛔ THIS COMMENT HAS BEEN WRONG TWICE, AND BOTH ERRORS ARE WORTH NAMING. It first read "AAP §0.6.7
-  // fixes the register at D1-D21 and inventing a <port-minted number> would corrupt it" — wrong, because
-  // that number HAD been minted at the time, in the header named above. A later revision withdrew every
-  // port-minted number in favour of source locators, which is the right form (AAP §0.8.2 guideline 6) —
-  // but it substituted each numeral with a PROSE DESCRIPTION mechanically, including inside this
-  // sentence's range and list positions, leaving a paragraph that ran two half-sentences together and
-  // read "plus the source extension the logical-versus-physical naming divergence [...] and the three
-  // contract BOTH FROZEN AT THE AAP's OWN BOUNDS". Review finding F11 reported that residue, and review
-  // finding CR-2 then reported the other half of it: withdrawing the numerals outright removed the audit
-  // trail three rounds of correspondence had already been written against. They are restored as ALIASES
-  // over the frozen ranges, defined once in that header. The claim above is now the only one this comment
-  // makes, and it is local and true.
-  //
-  // ⚠️ THE SUBSTANTIVE POINT SURVIVES ALL THREE REVISIONS: the FROZEN range AAP §0.6.7 fixes is not a
-  // ceiling on what may be OBSERVED, only on what the PLAN numbers — which is why an observation outside
-  // it is carried by locator, why the five aliases are declared as corrections rather than register
-  // entries, and why no file but that header may state a bound or an alias at all.
+describe('NET-NEW — `hasOneOptionPerOptionGroup` — the pure in-memory duplicate-group rule', () => {
+  // @hint this method validates that this skus has a unique option combination that no other sku has.
 
   /** A SKU whose options are described as `[optionID, optionGroupID]` pairs. */
   function skuWithGroups(pairs: readonly (readonly [string, string])[]): Sku {
@@ -4375,7 +3930,7 @@ describe('NET-NEW — F5. `hasOneOptionPerOptionGroup` — the pure in-memory du
 
   it('NET-NEW — ZERO options returns TRUE', () => {
     // `model/entity/Sku.cfc:L772-L784` — the loop never runs and `:L783` returns true. Note this is the
-    // exact input for which `hasUniqueOptions` may FAIL (section F3, D19): the two registered rules
+    // exact input for which `hasUniqueOptions` may fail (section, D19): the two registered rules
     // disagree about an option-less SKU, and both verdicts are carried.
     expect(skuWithGroups([]).hasOneOptionPerOptionGroup()).toBe(true);
   });
@@ -4432,8 +3987,8 @@ describe('NET-NEW — F5. `hasOneOptionPerOptionGroup` — the pure in-memory du
   });
 
   it('NET-NEW — the method returns on the FIRST repeat and examines no further option', () => {
-    // `:L776-L777` returns false the moment a group is seen twice, BEFORE the loop advances. The proof
-    // is a third option with NO option group at all: reaching it would dereference an undefined group
+    // `:L776-L777` returns false the moment a group is seen twice, before the loop advances. The proof
+    // is a third option with no option group at all: reaching it would dereference an undefined group
     // and raise — the legacy code dereferences it without a guard at `:L776` and the port raises at the
     // same point. Because the repeat at index 1 short-circuits, the raise never happens.
     const earlyReturn = buildSku({
@@ -4449,7 +4004,7 @@ describe('NET-NEW — F5. `hasOneOptionPerOptionGroup` — the pure in-memory du
 
     expect(earlyReturn.hasOneOptionPerOptionGroup()).toBe(false);
 
-    // And the landmine is real: without the preceding repeat, the same groupless option DOES raise.
+    // And the landmine is real: without the preceding repeat, the same groupless option does raise.
     const noEarlyReturn = buildSku({
       skuID: 'no-early-return-sku',
       skuCode: 'NOEARLY',
@@ -4462,18 +4017,7 @@ describe('NET-NEW — F5. `hasOneOptionPerOptionGroup` — the pure in-memory du
   });
 
   it('NET-NEW — the group comparison is CASE-SENSITIVE, unlike the context and inList comparisons', () => {
-    // G6 — TWO COMPARISON POLICIES COEXIST IN THE LEGACY ENGINE AND ARE NOT HARMONISED.
-    //
-    // `model/entity/Sku.cfc:L776` uses `listFind`, the CASE-SENSITIVE list search, so two option
-    // groups differing only by letter case count as DISTINCT and the SKU passes. Meanwhile
-    // `org/Hibachi/HibachiValidationService.cfc:L71` selects contexts with `listFindNoCase` and
-    // `:L459-L465` matches `inList` with `listFindNoCase` — both CASE-INSENSITIVE, as sections B9 and
-    // E row 9 assert.
-    //
-    // The two policies are carried across exactly as found. Harmonising them would be a repair, and it
-    // would change behaviour in whichever direction it was applied. As with the identifier comparison
-    // in section F2, the divergence is unreachable for real data: option-group identifiers are
-    // 32-character lowercase hexadecimal UUIDs (AAP IR-6).
+    // two comparison policies coexist in the legacy engine and are not harmonised.
     expect(
       skuWithGroups([
         ['opt-a', 'group-a'],
@@ -4481,13 +4025,13 @@ describe('NET-NEW — F5. `hasOneOptionPerOptionGroup` — the pure in-memory du
       ]).hasOneOptionPerOptionGroup(),
     ).toBe(true);
 
-    // The case-INSENSITIVE reading, stated explicitly so the contrast is visible rather than implied.
+    // The case-insensitive reading, stated explicitly so the contrast is visible rather than implied.
     expect('GROUP-A'.toLowerCase()).toBe('group-a');
   });
 
   it('NET-NEW — BOTH method failures are stored under the ONE property key `options`, each with its own message', async () => {
-    // `model/validation/Sku.json:L5-L8` declares both method rules on the SAME property, and
-    // `org/Hibachi/HibachiValidationService.cfc:L224` keys every error by the PROPERTY IDENTIFIER. Two
+    // `model/validation/Sku.json:L5-L8` declares both method rules on the same property, and
+    // `org/Hibachi/HibachiValidationService.cfc:L224` keys every error by the property identifier. Two
     // failures therefore accumulate in one bucket, in source key order — `:L6` before `:L7`.
     const { ruleSet } = skuRuleSetFor<SkuValidationSubject & UniquePropertyEntity>('both-product');
     const harness = createValidatorHarness();
@@ -4526,31 +4070,11 @@ describe('NET-NEW — F5. `hasOneOptionPerOptionGroup` — the pure in-memory du
   });
 });
 
-/* ================================================================================================
- * SECTION G — UNIQUENESS SQL, IDENTIFIER WHITELISTING, AND S2 PARAMETER BINDING
- * ==============================================================================================
- *
- * IR-5 — application-side uniqueness checking exists IN ADDITION to any database constraint.
- * `org/Hibachi/HibachiDAO.cfc:L130-L147` runs an existence query during validation and answers the
- * `unique` constraint with its verdict, entirely independently of the `unique="true"` column metadata
- * the ORM emits. The port keeps both mechanisms: `UniquePropertyChecker` is the ported query.
- *
- * S2 — every statement asserted below binds VALUES through `?` placeholders and composes IDENTIFIERS
- * only from a validated whitelist. `?` binds values and cannot substitute an identifier (AAP §0.3.2),
- * which is precisely why the two are separated rather than interpolated together. Nothing in this
- * section opens a `mysql2` connection, reaches a real database, reads `process.env`, or names a
- * credential, host, endpoint, ARN or account: the executor is the support double and every call it
- * receives is recorded verbatim for inspection.
- *
- * A boundary note, because the two are easy to confuse. `UniquePropertyPort` is the VALIDATION-time
- * uniqueness check of `org/Hibachi/HibachiDAO.cfc:L130-L147`. It is NOT the URL-title utility's
- * availability callback — `model/service/DataService.cfc:L53-L71` probes with
- * `getDataDAO().verifyUniqueTableValue(...)`, a different query with a different polarity convention
- * and a different set of tables. That utility is out of this file's scope and is neither imported nor
- * exercised here; only the validation-time port is.
- * ---------------------------------------------------------------------------------------------- */
+/* Uniqueness SQL, identifier whitelisting, and AAP §0.7.3 parameter binding. */
 
-/** The twelve physical tables the extracted Catalog schema declares, as the adapter resolves them. */
+/**
+ * The twelve physical tables the extracted catalog schema declares, as the adapter resolves them.
+ */
 const APPROVED_CATALOG_TABLES: readonly string[] = [
   'SwProduct',
   'SwSku',
@@ -4566,7 +4090,7 @@ const APPROVED_CATALOG_TABLES: readonly string[] = [
   'SwAlternateSkuCode',
 ];
 
-describe('NET-NEW — G1. identifiers come only from the validated whitelist', () => {
+describe('NET-NEW — identifiers come only from the validated whitelist', () => {
   it.each(APPROVED_CATALOG_TABLES.map((table) => [table]))(
     'NET-NEW — the approved physical table %s resolves',
     (table) => {
@@ -4575,8 +4099,8 @@ describe('NET-NEW — G1. identifiers come only from the validated whitelist', (
   );
 
   it('NET-NEW — the LOGICAL entity names the validation subjects report resolve to their physical tables', () => {
-    // `org/Hibachi/HibachiDAO.cfc` composes its HQL against the LOGICAL entity name — the application
-    // key prefixed onto the bare name — while SQL must name the PHYSICAL table. The resolver bridges
+    // `org/Hibachi/HibachiDAO.cfc` composes its HQL against the logical entity name — the application
+    // key prefixed onto the bare name — while SQL must name the physical table. The resolver bridges
     // the two, which is why `UniquePropertyEntity.getEntityName()` may keep returning the legacy form.
     expect(assertTableName('SlatwallProduct')).toBe('SwProduct');
     expect(assertTableName('SlatwallSku')).toBe('SwSku');
@@ -4584,7 +4108,7 @@ describe('NET-NEW — G1. identifiers come only from the validated whitelist', (
     expect(assertTableName('SlatwallOption')).toBe('SwOption');
     expect(assertTableName('SlatwallOptionGroup')).toBe('SwOptionGroup');
     expect(assertTableName('SlatwallProductType')).toBe('SwProductType');
-    // The bare name resolves too, and resolution is case-insensitive — but the RESULT is always the
+    // The bare name resolves too, and resolution is case-insensitive — but the result is always the
     // canonical physical spelling, so the emitted statement text never varies with caller casing.
     expect(assertTableName('Product')).toBe('SwProduct');
     expect(assertTableName('swproduct')).toBe('SwProduct');
@@ -4602,7 +4126,7 @@ describe('NET-NEW — G1. identifiers come only from the validated whitelist', (
     ['a union attempt', 'SwProduct UNION SELECT 1'],
   ])('NET-NEW — %s is REFUSED before any statement text is assembled', (_label, candidate) => {
     // The refusal happens in the identifier resolver, so it cannot reach the executor at all. The
-    // legacy throw text is deliberately NOT asserted: only the refusal is behaviour a caller can
+    // legacy throw text is deliberately not asserted: only the refusal is behaviour a caller can
     // observe, and pinning the wording would pin a detail the port does not owe.
     expect(() => assertTableName(candidate)).toThrow();
   });
@@ -4620,7 +4144,7 @@ describe('NET-NEW — G1. identifiers come only from the validated whitelist', (
   });
 
   it('NET-NEW — the seven real uniqueness columns all resolve on their own tables', () => {
-    // The same seven sites section A2 enumerates, checked at the SQL layer this time: every column a
+    // The same seven sites the `unique` cases enumerate, checked at the SQL layer this time: every column a
     // uniqueness probe will ever name is in the whitelist, so no real rule can be refused.
     expect(assertColumnName(assertTableName('SlatwallProduct'), 'productCode')).toBe('productCode');
     expect(assertColumnName(assertTableName('SlatwallProduct'), 'urlTitle')).toBe('urlTitle');
@@ -4634,11 +4158,11 @@ describe('NET-NEW — G1. identifiers come only from the validated whitelist', (
   });
 });
 
-describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query', () => {
+describe('NET-NEW — `UniquePropertyChecker` — the ported existence query', () => {
   it('NET-NEW — values are bound as `?` parameters and NEVER interpolated into the statement text', async () => {
-    // S2 and TR-4. `org/Hibachi/HibachiDAO.cfc:L140` binds two NAMED parameters, `:propertyValue` and
+    // AAP §0.7.3 and TR-4. `org/Hibachi/HibachiDAO.cfc:L140` binds two named parameters, `:propertyValue` and
     // `:entityID`, in that order. `mysql2` has no named parameters, so the port binds them
-    // POSITIONALLY in the same order — value first, entity identifier second — which is the direct
+    // positionally in the same order — value first, entity identifier second — which is the direct
     // analogue of the legacy call and the reason the ordering is asserted rather than assumed.
     const sql = createSqlExecutorDouble();
     const checker = new UniquePropertyChecker(sql.executor);
@@ -4672,8 +4196,8 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
   ])(
     'NET-NEW — %s travels as a BOUND PARAMETER and leaves the statement text byte-identical',
     async (_label, hostileValue) => {
-      // The structural argument for S2: because the statement text is assembled from whitelisted
-      // identifiers alone and every value is bound, NO value can alter the statement — which is what
+      // The structural argument for AAP §0.7.3: because the statement text is assembled from whitelisted
+      // identifiers alone and every value is bound, no value can alter the statement — which is what
       // eliminates the entire class of flaw catalogued as defect D18 for the importer's interpolated
       // statements (AAP §0.6.7.7).
       const sql = createSqlExecutorDouble();
@@ -4693,9 +4217,9 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
   );
 
   it('NET-NEW — the polarity matches the DAO exactly: a matching row means NOT unique', async () => {
-    // `org/Hibachi/HibachiDAO.cfc:L142-L144` returns FALSE when the existence query finds anything, and
-    // `:L146` returns TRUE when it does not. `validate_unique` at
-    // `org/Hibachi/HibachiValidationService.cfc:L467-L470` passes that verdict through UNMODIFIED, so
+    // `org/Hibachi/HibachiDAO.cfc:L142-L144` returns false when the existence query finds anything, and
+    // `:L146` returns true when it does not. `validate_unique` at
+    // `org/Hibachi/HibachiValidationService.cfc:L467-L470` passes that verdict through unmodified, so
     // `true = unique = safe to save`. Inverting it would admit every collision and reject every clean
     // value — a failure mode that no compiler and no type would catch.
     const entity = uniqueEntityAccessors('SlatwallSku', 'skuID', 'sku-1', { skuCode: 'TAKEN' });
@@ -4717,20 +4241,16 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
     // `org/Hibachi/HibachiDAO.cfc:L140` always appends `and e.#entityIDproperty# != :entityID`. There
     // is no branch on whether the entity has been saved, so on an INSERT the clause compares against an
     // empty identifier and excludes nothing — it is inert rather than absent.
-    //
-    // This is parity evidence and must NOT be "optimised" away. Dropping the clause when the identifier
-    // is empty would change the emitted statement text for every insert, and adding a branch that
-    // skipped the comparison would change it again. The legacy statement has one shape; so does this one.
     const sql = createSqlExecutorDouble();
     const checker = new UniquePropertyChecker(sql.executor);
 
-    // A SAVED row: the clause excludes self, which is what lets an unchanged row be re-saved.
+    // A saved row: the clause excludes self, which is what lets an unchanged row be re-saved.
     const saved = uniqueEntityAccessors('SlatwallOption', 'optionID', 'option-1', {
       optionCode: 'RED',
     });
     await checker.isUniqueProperty('optionCode', saved);
 
-    // An UNSAVED row: the identical clause is emitted, bound to the empty identifier.
+    // An unsaved row: the identical clause is emitted, bound to the empty identifier.
     const unsaved = uniqueEntityAccessors('SlatwallOption', 'optionID', '', { optionCode: 'RED' });
     await checker.isUniqueProperty('optionCode', unsaved);
 
@@ -4738,7 +4258,7 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
     const savedCall = first(sql.calls);
     const unsavedCall = first(sql.calls.slice(1));
 
-    // BYTE-IDENTICAL statement text in both cases.
+    // Byte-identical statement text in both cases.
     expect(savedCall.sql).toBe(unsavedCall.sql);
     expect(savedCall.sql).toContain('AND e.optionID != ?');
     // Only the bound identifier differs, and on insert it is the empty string.
@@ -4749,7 +4269,7 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
   it('NET-NEW — the property NAME is resolved through the entity metadata, as the legacy DAO does', async () => {
     // `:L134` reads `getPropertyMetaData(propertyName).name` rather than trusting the caller's spelling,
     // so an alias resolves to the real column. The port preserves that indirection, then passes the
-    // RESOLVED name through the column whitelist — two independent gates before the identifier is used.
+    // resolved name through the column whitelist — two independent gates before the identifier is used.
     const sql = createSqlExecutorDouble();
     const checker = new UniquePropertyChecker(sql.executor);
     const aliasing: UniquePropertyEntity = {
@@ -4786,8 +4306,8 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
   });
 
   it('NET-NEW — `withExecutor` rebinds the transaction-scoped executor without mutating the original', async () => {
-    // The mechanism that lets a uniqueness probe run INSIDE the caller's transaction — which is what
-    // M6 depends on (section F4). Rebinding returns a NEW checker, so the module-scope instance holds
+    // The mechanism that lets a uniqueness probe run inside the caller's transaction — which is what
+    // M6 depends on (section ). Rebinding returns a new checker, so the module-scope instance holds
     // no per-request state and a warm container cannot leak one invocation's connection into another.
     const outer = createSqlExecutorDouble();
     const inner = createSqlExecutorDouble();
@@ -4808,55 +4328,11 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
     expect(inner.calls).toHaveLength(1);
   });
 
-  /* ==============================================================================================
-   * ⭐⭐ NET-NEW SEC-RACE-01 — THE TRANSACTION-SCOPED PROBE LOCKS; THE POOL-BOUND ONE DOES NOT
-   * ==============================================================================================
-   * ⛔ THIS BLOCK HAS ASSERTED BOTH POSITIONS, AND THE HISTORY IS KEPT BECAUSE THE MIDDLE ONE WAS THE
-   * FINDING. It was titled "F6 WITHDRAWAL. NEITHER PROBE LOCKS, AND THE CWE-367 RACE IS CARRIED", it
-   * required the boundary-scoped statement to be byte-identical to the pool-bound one, and it argued:
-   * "AAP §0.6.7.7 authorises exactly ONE departure from behavioural preservation in this port — D18, the
-   * importer's parameterised SQL — and it does so precisely so that a reviewer diffing behaviour has
-   * exactly one entry to check. Statement text is observable, a lock-wait is observable under concurrency,
-   * and AAP §0.8.2 Guideline 4 admits no proportionality test."
-   *
-   * ⭐ REVIEW FINDING SEC-RACE-01 REVERSES THAT, AND THE CITATION WAS MISREAD. §0.6.7 is the DEFECT AND
-   * TODO CARRY-OVER REGISTER: twenty-one LEGACY BUSINESS-LOGIC defects — a misnamed struct, an inverted
-   * cache guard, an unreachable private method — of which D18 is the one member the port repairs. The
-   * extracted service's data integrity under concurrency is not an entry in it, so §0.6.7.7 never spoke to
-   * this. Reading D18's exception as the sole licence to take a lock anywhere would make §0.6.7.7 say that
-   * a faithful migration must reproduce a TOCTOU race.
-   *
-   * Guideline 4 forbids enhancing BUSINESS LOGIC, and the lock enhances none: `FOR UPDATE` selects exactly
-   * the rows the same predicate selects without it, so both probes return the same verdict for the same
-   * data — which the verdict case below asserts on BOTH paths precisely so that claim is not merely made.
-   * What changes is when a SECOND CONCURRENT transaction may ask, and a second concurrent transaction is
-   * not an observable of the legacy's single-threaded behaviour. §0.7.3 S8 is then discharged by naming what
-   * remains unprotected, which the paragraph after next does.
-   *
-   * ⭐ WHY IT IS GATED ON SCOPE RATHER THAN APPLIED ALWAYS — the split these cases exist to pin. A lock
-   * protects a check-then-write only when the check and the write share a transaction, which is the
-   * finding's own requirement ("Keep checks and writes on the same transaction/connection"). On a
-   * POOL-BOUND autocommit connection InnoDB releases the lock at statement end, so the value could be taken
-   * before the caller's write reaches a different connection — no protection, while still taking gap locks
-   * on every validation read the service performs. `withExecutor` is the only seam through which a
-   * boundary's executor arrives, so it is the only place the scope is known, and it is where the lock is
-   * turned on.
-   *
-   * ⚠️ WHAT THE LOCK STILL DOES NOT CLOSE (CWE-367). It serialises writers that BOTH take it; it cannot
-   * bind one that never asks — a legacy CFML request against the same schema, or an administrative INSERT.
-   * Five of the seven ported uniqueness rules have a `unique="true"` column behind them, so the database
-   * convicts the second write there whoever makes it; `optionCode` (`model/validation/Option.json:L3`) and
-   * `optionGroupCode` (`model/validation/OptionGroup.json:L3`) do NOT, so on those two the lock is the only
-   * protection and it is a partial one. The DDL a future migration must add is named in
-   * `src/adapters/mysql/UniquePropertyChecker.ts`; AAP §0.2.2.5 places schema migration outside this
-   * refactoring, so it is stated for the operator to ratify and never authored here.
-   *
-   * ⭐ `withExecutor` STILL CARRIES M6 VISIBILITY TOO, and the two must not be confused. Adopting a
-   * boundary's executor is what lets a uniqueness probe observe rows the same transaction has already
-   * written, which `SkuService.createSkus` depends on (§0.6.2) — it would be required with no lock at all.
-   * The lock rides on the same seam because the seam is exactly the signal for "this read and the write
-   * after it share a connection".
-   * ============================================================================================ */
+  /*
+   * Net-new — the transaction-scoped probe locks; the pool-bound one does not. Requiring the
+   * boundary-scoped statement to be byte-identical to the pool-bound one would carry the CWE-367
+   * race on every path, so the two are asserted separately below.
+   */
 
   /** Both probe forms, so each assertion below runs against the same instance twice over. */
   async function probeBothForms(checker: UniquePropertyChecker): Promise<void> {
@@ -4869,10 +4345,10 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
 
   it('NET-NEW — the POOL-BOUND instance emits the ported statement, with no clause after the limit', async () => {
     /*
-     * The parity half, and it is UNCHANGED by SEC-RACE-01. A checker a composition root builds is
+     * The parity half, and it is unchanged by. A checker a composition root builds is
      * pool-bound, so both statements are byte-identical to the translations of
      * `org/Hibachi/HibachiDAO.cfc:L140` and `model/dao/DataDAO.cfc:L122-L124` — no suffix, nothing after
-     * the row limit. This is what makes the lock a property of the BOUNDARY rather than of the port.
+     * the row limit. This is what makes the lock a property of the boundary rather than of the port.
      */
     const sql = createSqlExecutorDouble();
 
@@ -4886,16 +4362,10 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
 
   it('[NET-NEW] the BOUNDARY-SCOPED instance appends FOR UPDATE to BOTH probes', async () => {
     /*
-     * ⭐ THE CORE SEC-RACE-01 ASSERTION, AND IT IS THE EXACT INVERSE OF WHAT THIS CASE USED TO REQUIRE.
-     * It was titled "WITHDRAWAL REGRESSION: the BOUNDARY-SCOPED instance emits the SAME text" and reasoned:
-     * "This is the one instance for which a locking read would have been meaningful, and it is
-     * byte-identical to the pool-bound instance — `withExecutor` changes the connection and nothing else.
-     * A re-added suffix fails here first." The first sentence identified the vulnerability precisely; the
-     * conclusion drawn from it was the wrong way round.
-     *
-     * ⛔ THE SUFFIX POSITION IS PART OF THE ASSERTION. `FOR UPDATE` must come AFTER `LIMIT 1`, which is
-     * the only position MySQL accepts — anywhere else is a syntax error the double would happily record.
-     * So the full statement text is asserted rather than merely `toContain('FOR UPDATE')`.
+     * The core assertion. The boundary-scoped instance is the one for which a locking read is
+     * meaningful, so it is the one that appends the suffix; `withExecutor` otherwise changes the
+     * connection and nothing else. An instance that emitted the pool-bound text here would carry
+     * the race inside the boundary.
      */
     const sql = createSqlExecutorDouble();
 
@@ -4933,11 +4403,11 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
 
   it('[NET-NEW] an EXCLUSIVE lock, not a shared one, and no other lock spelling appears', async () => {
     /*
-     * ⛔ WHY THE SPELLING IS ASSERTED RATHER THAN LEFT TO THE IMPLEMENTATION. `LOCK IN SHARE MODE` and
-     * `FOR SHARE` let two transactions BOTH hold the lock, both conclude the value is free, and then both
+     * Why the spelling is asserted rather than left to the implementation. `lock in SHARE MODE` and
+     * `FOR SHARE` let two transactions both hold the lock, both conclude the value is free, and then both
      * deadlock on the write or both proceed once the other releases — which converts a silent duplicate
      * into an intermittent failure without preventing anything. Only an exclusive lock makes the second
-     * asker WAIT for the first to finish writing, so the distinction is the whole mechanism and a
+     * asker wait for the first to finish writing, so the distinction is the whole mechanism and a
      * well-meaning substitution would silently undo it.
      */
     const boundary = createSqlExecutorDouble();
@@ -4955,14 +4425,8 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
 
   it('[NET-NEW] every POOL-BOUND probe statement ends at the row limit, with no lock of any spelling', async () => {
     /*
-     * The pool-bound half of the split, asserted POSITIONALLY so it catches a lock appended under any
-     * spelling — `FOR UPDATE`, `FOR SHARE`, `LOCK IN SHARE MODE` — rather than only the one this port uses.
-     *
-     * ⛔ THIS CASE USED TO COVER BOTH PATHS, AND NARROWING IT TO ONE IS SEC-RACE-01. Requiring the
-     * boundary-scoped statement to end at the row limit is requiring the vulnerability; the sibling case
-     * above now requires the lock there. What survives unchanged is the claim that a lock never appears
-     * where it would protect nothing, which is what stops a later revision from "simplifying" the gate away
-     * by locking unconditionally and taking gap locks on every validation read in autocommit.
+     * The pool-bound half of the split, asserted positionally so it catches a lock appended under any
+     * spelling — `for update`, `for share`, `lock in SHARE MODE` — rather than only the one this port uses.
      */
     const pool = createSqlExecutorDouble();
 
@@ -4978,18 +4442,19 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
 
   it('NET-NEW — the verdict is the same on both paths, for either answer', async () => {
     /*
-     * Re-binding must not disturb the boolean, for the collision case AND the free case, because a test
-     * that only exercised one would pass under a polarity inversion. This is the assertion that survived
-     * the withdrawal intact: it was the D18 argument's evidence, and it is now simply the parity
-     * evidence that adopting an executor changes nothing observable but the connection.
+     * Re-binding must not disturb the boolean, for the collision case and the free case, because a
+     * test that only exercised one would pass under a polarity inversion. It is the evidence that
+     * adopting an executor changes nothing observable but the connection.
      */
     const collision = [{ 1: 1 }];
     const entity = uniqueEntityAccessors('SlatwallOption', 'optionID', 'option-1', {
       optionCode: 'RED',
     });
 
-    /* Both construction routes onto the SAME recording executor: straight through the constructor, and
-     * adopted from a boundary by `withExecutor` over an unrelated pool. */
+    /*
+     * Both construction routes onto the same recording executor: straight through the constructor, and
+     * adopted from a boundary by `withExecutor` over an unrelated pool.
+     */
     const routes: readonly ((executor: SqlExecutorDouble['executor']) => UniquePropertyChecker)[] =
       [
         (executor) => new UniquePropertyChecker(executor),
@@ -5014,9 +4479,10 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
   });
 
   it('NET-NEW — bound values, placeholder counts and the identifier gate on the re-bound path', async () => {
-    // The rest of the statement's contract, asserted on the boundary-scoped instance because that is the
-    // path the withdrawn hardening touched: two placeholders and the legacy bind order for the
-    // self-excluding probe, one for the availability probe, and neither value ever interpolated (S2, TR-4).
+    // The rest of the statement's contract, asserted on the boundary-scoped instance because that
+    // is the path the locking suffix touches: two placeholders and the legacy bind order for the
+    // self-excluding probe, one for the availability probe, and neither value ever interpolated
+    // (AAP §0.7.3, TR-4).
     const sql = createSqlExecutorDouble();
 
     await probeBothForms(
@@ -5055,12 +4521,6 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
     /*
      * M7. `withExecutor` does not mutate, so a module-scope checker held across warm invocations cannot
      * have another invocation's boundary connection substituted into it.
-     *
-     * ⭐ AND SEC-RACE-01 GIVES THIS CASE A SECOND, SHARPER EDGE. The transaction scope is per-instance too:
-     * the pool-bound original still emits the UNLOCKED statement after the re-bound copy has been used, so
-     * `transactionScoped` cannot have been set by mutation. An implementation that flipped a flag on `this`
-     * instead of constructing a new object would leave every later pool-bound probe taking pointless gap
-     * locks — and would do so only on a warm container, which is the hardest place to notice it.
      */
     const pool = createSqlExecutorDouble();
     const boundary = createSqlExecutorDouble();
@@ -5080,21 +4540,9 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
 
   it('[NET-NEW] the interleaving is ASKED TO SERIALIZE inside a boundary, and is not outside one (CWE-367)', async () => {
     /*
-     * ⛔ THIS CASE USED TO BE THE VULNERABILITY, DEMONSTRATED. It was titled "the UNSERIALIZED interleaving
-     * is carried on EVERY path" and reasoned: "The boundary-scoped instance behaves identically, which is
-     * the whole point of the withdrawal: the port asks the database to serialize nothing, exactly as the
-     * legacy does not." SEC-RACE-01 requires the opposite of its conclusion while leaving its OBSERVATION
-     * intact, and both halves are now asserted separately.
-     *
-     * ⚠️ WHAT A TEST DOUBLE CAN AND CANNOT SHOW HERE, STATED SO THE ASSERTION IS NOT OVERSOLD. No in-process
-     * double can serialise anything: the executor answers immediately, so both concurrent probes still see
-     * `true` on both paths and the LOST RACE ITSELF is not preventable in a unit test. What IS assertable —
-     * and is the whole mechanism — is whether the port ASKED the database to serialise them. Inside a
-     * boundary it does, on every probe; outside one it does not, on any. A real server honours the request;
-     * a double cannot, and pretending otherwise would be a fiction.
-     *
-     * So the verdicts are asserted as the double's artefact they are, and the ASK is asserted as the
-     * contract it is.
+     * The interleaving itself, on both paths. A port that asked the database to serialize nothing
+     * would carry the legacy's race everywhere; the boundary-scoped instance asks for serialization
+     * and the pool-bound one does not, and both halves are asserted here.
      */
     const store = createSqlExecutorDouble();
     const boundary = createSqlExecutorDouble();
@@ -5109,7 +4557,9 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
         probe.isUniqueProperty('optionCode', entity),
       ]);
 
-      /* Both `true` on both paths — the double resolves without serialising, as explained above. */
+      /*
+       * Both `true` on both paths — the double resolves without serialising, as explained above.
+       */
       expect(firstSaver).toBe(true);
       expect(secondSaver).toBe(true);
     }
@@ -5126,7 +4576,7 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
   });
 });
 
-describe('NET-NEW — G3. the selected-options statement binds values and whitelists identifiers', () => {
+describe('NET-NEW — the selected-options statement binds values and whitelists identifiers', () => {
   /** The real adapter over a recording executor; no connection, no pool, no environment. */
   function skuRepositoryOverDouble(): {
     readonly repository: MySqlSkuRepository;
@@ -5143,13 +4593,12 @@ describe('NET-NEW — G3. the selected-options statement binds values and whitel
   }
 
   it('NET-NEW — one `EXISTS` clause per selected option, plus the T3 guard, plus the T2 product scope', async () => {
-    // AAP §0.3.3.1 and §0.6.1.3. T1 — the conjunction is expressed as N SEPARATE correlated `EXISTS`
+    // AAP §0.3.3.1 and §0.6.1.3. T1 — the conjunction is expressed as N separate correlated `EXISTS`
     // clauses ANDed together, never as an `IN` list (which would become a disjunction) and never as a
     // `GROUP BY ... HAVING COUNT` rewrite (which would diverge on a duplicated option). T3 — the
     // option-bearing guard is retained, so option-less SKUs stay excluded exactly as the legacy
     // vestigial `inner join sku.options` causes them to be. T4 — `SELECT DISTINCT` guards against the
-    // join fan-out. T2 — the product predicate is emitted LAST, so the bound parameter array is in
-    // exactly the legacy order of `model/dao/SkuDAO.cfc:L107-L128`.
+    // join fan-out. T2 — the product predicate is emitted last, so the bound parameter array is in.
     const { repository, sql } = skuRepositoryOverDouble();
 
     await repository.findSkusBySelectedOptions(['opt-a', 'opt-b'], 'product-1');
@@ -5178,10 +4627,10 @@ describe('NET-NEW — G3. the selected-options statement binds values and whitel
   ])(
     'NET-NEW — the clause count tracks the option list exactly when there is %s',
     async (_label, optionIds, expectedClauses) => {
-      // T1's duplicate rule made executable: a repeated element produces a REPEATED clause rather than
+      // T1's duplicate rule made executable: a repeated element produces a repeated clause rather than
       // being collapsed, because the legacy loop at `model/dao/SkuDAO.cfc:L113` iterates list positions
-      // and never de-duplicates. T5 — an EMPTY list is legal and produces zero option clauses, leaving
-      // the guard and the product scope, which is the degenerate form D19 depends on (section F3).
+      // and never de-duplicates. T5 — an empty list is legal and produces zero option clauses, leaving
+      // the guard and the product scope, which is the degenerate form D19 depends on (section ).
       const { repository, sql } = skuRepositoryOverDouble();
 
       await repository.findSkusBySelectedOptions([...optionIds], 'product-1');
@@ -5198,7 +4647,7 @@ describe('NET-NEW — G3. the selected-options statement binds values and whitel
   );
 
   it('NET-NEW — there is NO self-exclusion predicate in the selected-options statement', async () => {
-    // The SQL-side half of the section F2 claim. `model/dao/SkuDAO.cfc:L107-L128` has no current-SKU
+    // The SQL-side half of the section claim. `model/dao/SkuDAO.cfc:L107-L128` has no current-SKU
     // exclusion, and neither does this statement: the decision belongs to
     // `model/entity/Sku.cfc:L764`. A port that pushed the exclusion into SQL would make
     // `hasUniqueOptions` return true for a SKU that legacy code rejects, because the arity-one guard
@@ -5248,7 +4697,7 @@ describe('NET-NEW — G3. the selected-options statement binds values and whitel
   });
 
   it('NET-NEW — every identifier in the statement is a whitelisted table or column, and none is caller-supplied', async () => {
-    // The positive form of S2: the only identifiers appearing in the emitted text are ones the schema
+    // The positive form of AAP §0.7.3: the only identifiers appearing in the emitted text are ones the schema
     // whitelist can resolve, so caller data can never reach the identifier position at all.
     const { repository, sql } = skuRepositoryOverDouble();
 
@@ -5273,38 +4722,23 @@ describe('NET-NEW — G3. the selected-options statement binds values and whitel
   });
 });
 
-/* ================================================================================================
- * SECTION H — RAW MESSAGE KEYS, THE ERROR BAG, AND VALIDATE-GATE-PERSIST
- * ============================================================================================== */
+/* Raw message keys, the error bag, and validate-gate-persist. */
 
-describe('NET-NEW — H1. the three raw message-key templates', () => {
+describe('NET-NEW — the three raw message-key templates', () => {
   /*
-   * G6 / DECISION D-1 — RESOURCE-BUNDLE SUBSTITUTION IS DELIBERATELY SKIPPED, AND THE RAW KEY IS THE
-   * OBSERVABLE OUTPUT. Three independent reasons, each verified rather than assumed:
+   * Resource-bundle substitution is deliberately skipped, and the raw key is the
+   * observable output. Three independent reasons, each verified rather than assumed:
    *
-   *   1. NO RESOURCE BUNDLE EXISTS IN THE TARGET. The legacy engine composes a key and hands it to
-   *      `rbKey(...)` for lookup. The extracted subtree carries no bundle, no locale file and no
-   *      translation table, so there is nothing to look a key up in. Emitting a raw key is the honest
-   *      output; inventing English sentences would be fabricating message text the source never had
-   *      (S9 — invent nothing).
-   *
-   *   2. THE PLACEHOLDER SUBSTITUTION COULD NEVER HAVE FIRED ON THESE KEYS ANYWAY. The legacy
-   *      interpolator at `org/Hibachi/HibachiUtilityService.cfc:L71` collects `${...}` tokens, and NONE
-   *      of the three templates below emits such a token — they are dot-delimited identifiers, start to
-   *      finish. So even with a bundle present, substitution would have been a no-op on this corpus.
-   *
-   *   3. RAW KEYS STAY STABLE AND COMPARABLE, WHEREAS UNRESOLVED LEGACY LOOKUPS DID NOT. When the
-   *      legacy bundle had no entry for a key, the lookup appended `_missing` to it — evidence visible
-   *      in the `issue_1335` expectations in `meta/tests/unit/IssuesTest.cfc`. A raw key carries no such
-   *      suffix and no locale dependency, so a target message is comparable against a legacy key
-   *      directly. The final case in this block asserts the absence of that suffix.
-   *
-   * No formatting utility is imported here and no legacy `throw()` string is reproduced.
+   * 1. no resource bundle exists in the target. The legacy engine composes a key and hands it to
+   * `rbKey(...)` for lookup. The extracted subtree carries no bundle, no locale file and no
+   * translation table, so there is nothing to look a key up in. Emitting a raw key is the honest
+   * output; inventing English sentences would be fabricating message text the source never had
+   * (AAP §0.7.3 — invent nothing).
    */
 
   it('NET-NEW — the METHOD template is `validate.{context}.{className}.{propertyName}.{constraintValue}`', async () => {
     // `org/Hibachi/HibachiValidationService.cfc:L222` — the method template is the only one of the
-    // three that inlines the CONSTRAINT VALUE rather than the constraint type, because the value is the
+    // three that inlines the constraint value rather than the constraint type, because the value is the
     // method name and is what distinguishes the two rules on one property.
     const { ruleSet } = skuRuleSetFor<SkuValidationSubject & UniquePropertyEntity>('h1-product');
     const harness = createValidatorHarness();
@@ -5343,7 +4777,7 @@ describe('NET-NEW — H1. the three raw message-key templates', () => {
 
   it('NET-NEW — the DATATYPE template inserts `dataType` AND the requested type', async () => {
     // `:L226` — `validate.{context}.{className}.{propertyName}.dataType.{constraintValue}`. This is the
-    // one template with TWO trailing segments, so a port that reused the generic template would emit
+    // one template with two trailing segments, so a port that reused the generic template would emit
     // `...price.dataType` and lose which type was demanded.
     const harness = createValidatorHarness();
 
@@ -5447,8 +4881,8 @@ describe('NET-NEW — H1. the three raw message-key templates', () => {
 
   it('NET-NEW — the class stem comes from the SUBJECT `getClassName()`, once per class in the corpus', async () => {
     // `org/Hibachi/HibachiValidationService.cfc:L222`, `:L226` and `:L230` all interpolate the subject's
-    // OWN class name — never the rule module's file name and never a constant baked into the engine.
-    // Every one of the seven classes in the corpus is exercised here with a TYPED subject literal, so a
+    // own class name — never the rule module's file name and never a constant baked into the engine.
+    // Every one of the seven classes in the corpus is exercised here with a typed subject literal, so a
     // regression that hard-coded a stem, or that derived it from the rule set instead of the subject,
     // fails on six of the seven rows rather than passing silently on all of them.
     const harness = createValidatorHarness();
@@ -5495,7 +4929,7 @@ describe('NET-NEW — H1. the three raw message-key templates', () => {
     ]);
 
     // Product, Sku, Brand and Product_UpdateSkus are covered by the surrounding cases in this block;
-    // the four stems are restated here so all seven appear together and none can drift unnoticed.
+    // The four stems are restated here so all seven appear together and none can drift unnoticed.
     expect(
       buildValidationMessage<ProductValidationSubject>('save', 'Product', 'productName', {
         constraintType: 'required',
@@ -5525,8 +4959,8 @@ describe('NET-NEW — H1. the three raw message-key templates', () => {
   });
 
   it('NET-NEW — a dotted property identifier contributes only its LAST segment to the key', () => {
-    // `:L208` — `listLast(propertyIdentifier, '._')`. The bag is keyed by the FULL identifier while the
-    // MESSAGE names only the leaf, and the two must not be conflated.
+    // `:L208` — `listLast(propertyIdentifier, '._')`. The bag is keyed by the full identifier while the
+    // message names only the leaf, and the two must not be conflated.
     expect(
       buildValidationMessage<ProductValidationSubject>('save', 'Product', 'brand.brandName', {
         constraintType: 'required',
@@ -5573,22 +5007,18 @@ describe('NET-NEW — H1. the three raw message-key templates', () => {
     expect(LIST_PRICE_DATA_TYPE_MESSAGE_KEY).toBe(
       'validate.updateSkus.Product_UpdateSkus.listPrice.dataType.numeric',
     );
-    // The class stem in the key is the BARE underscored name — never the `processObject.` classification
+    // The class stem in the key is the bare underscored name — never the `processObject.` classification
     // token, which is a separate concern asserted next.
     expect(PRICE_REQUIRED_MESSAGE_KEY).toContain('.Product_UpdateSkus.');
     expect(PRICE_REQUIRED_MESSAGE_KEY).not.toContain('processObject.');
   });
 
   it('NET-NEW — the classification token is a SEPARATE concern and is never emitted into a validation key', async () => {
-    // `org/Hibachi/HibachiValidationService.cfc:L212-L218` resolves a SECOND, independent token for the
+    // `org/Hibachi/HibachiValidationService.cfc:L212-L218` resolves a second, independent token for the
     // subject's own name: `rbKey('entity.#class#')` for a persistent entity and
     // `rbKey('processObject.#class#')` for a transient process object. In the legacy engine that token
-    // was substituted INTO the human message; with substitution skipped per D-1, it has no emission
+    // was substituted into the human message; with substitution skipped, it has no emission
     // point at all, and the realized `Validator` provides no API that produces one.
-    //
-    // So the classification is derived HERE, locally, purely to assert what the two forms WOULD have
-    // been and to prove that neither leaks into the raw keys. Deriving it locally rather than expecting
-    // it from the engine is the honest encoding of a member that does not exist.
     expect(legacyClassificationToken('Product', true)).toBe('entity.Product');
     expect(legacyClassificationToken('Sku', true)).toBe('entity.Sku');
     expect(legacyClassificationToken('Brand', true)).toBe('entity.Brand');
@@ -5624,7 +5054,7 @@ describe('NET-NEW — H1. the three raw message-key templates', () => {
   });
 
   it('NET-NEW — no emitted message ends in `_missing`, and none is a translated sentence', async () => {
-    // D-1 reason 3, asserted. The `_missing` suffix is the legacy signal that a bundle lookup FAILED;
+    // The third reason, asserted. The `_missing` suffix is the legacy signal that a bundle lookup failed;
     // a raw key must never carry it, because the key is the intended output rather than a failed
     // lookup. A sentence-cased or space-bearing message would mean substitution had been reintroduced.
     const harness = createValidatorHarness([
@@ -5670,17 +5100,13 @@ describe('NET-NEW — H1. the three raw message-key templates', () => {
   });
 });
 
-describe('NET-NEW — H2. the error bag contract', () => {
+describe('NET-NEW — the error bag contract', () => {
   it('NET-NEW — `addError` takes exactly TWO arguments and stores every value as an array', () => {
-    // `org/Hibachi/HibachiTransient.cfc:L29-L68` is the BINDING contract for the error bag — the one the
+    // `org/Hibachi/HibachiTransient.cfc:L29-L68` is the binding contract for the error bag — the one the
     // validation service actually calls through at `:L224`, `:L228` and `:L232`, always with two
     // arguments. The three-argument override at `org/Hibachi/HibachiEntity.cfc:L151`, which adds a
-    // `persistableError` flag, is NEVER reached from a validation path, and the last case in this block
+    // `persistableError` flag, is never reached from a validation path, and the last case in this block
     // proves the port never supplies a third argument either.
-    //
-    // The buggy direct accessor at `org/Hibachi/HibachiErrors.cfc:L45-L51` is deliberately NOT modelled:
-    // it raises where the transient contract returns an empty array, and the transient contract is what
-    // the engine binds to.
     const errors = new ValidationError();
 
     expect(errors.addError).toHaveLength(2);
@@ -5697,8 +5123,8 @@ describe('NET-NEW — H2. the error bag contract', () => {
 
   it('NET-NEW — a repeated property key APPENDS rather than replacing', () => {
     // `:L43` — `arrayAppend(variables.errors[propertyName], message)`. This is what lets one property
-    // accumulate three findings (section C2) and one property accumulate two method failures
-    // (section F5).
+    // accumulate three findings (the flattening cases) and one property accumulate two method failures
+    // (section ).
     const errors = new ValidationError();
     errors.addError('productCode', 'validate.save.Product.productCode.required');
     errors.addError('productCode', 'validate.save.Product.productCode.unique');
@@ -5753,9 +5179,9 @@ describe('NET-NEW — H2. the error bag contract', () => {
   });
 
   it('NET-NEW — the bag is a real `Error`, so a raising caller can propagate it unchanged', () => {
-    // The port's one structural addition, and it is a CAPABILITY rather than a control-flow decision:
-    // `BaseService.save` does NOT raise the bag — it attaches the findings to the entity and returns it
-    // (section H3, `model/service/HibachiService.cfc:L103`). But a caller that must convert entity-carried
+    // The port's one structural addition, and it is a capability rather than a control-flow decision:
+    // `BaseService.save` does not raise the bag — it attaches the findings to the entity and returns it
+    // (the validate-gate-persist cases, `model/service/HibachiService.cfc:L103`). But a caller that must convert entity-carried
     // findings back into a raise or a serialisable payload can carry the same object across the boundary
     // unchanged, which is exactly what `src/handlers/brandHandler.ts` does when a save comes back with
     // findings. One shape serves as the accumulator, the transport and, at a caller's choosing, the throw.
@@ -5795,17 +5221,17 @@ describe('NET-NEW — H2. the error bag contract', () => {
       recording,
     );
 
-    // Several calls were made, and EVERY one of them passed exactly two arguments.
+    // Several calls were made, and every one of them passed exactly two arguments.
     expect(recorded.length).toBeGreaterThan(0);
     expect(new Set(recorded)).toStrictEqual(new Set([2]));
     expect(recording.getError('productCode')).toHaveLength(3);
   });
 
   it('NET-NEW — a caller-supplied bag ACCUMULATES across successive validations of different subjects', async () => {
-    // The legacy engine appends into the OBJECT'S OWN bag rather than returning a fresh one, which is
+    // The legacy engine appends into the object'S own bag rather than returning a fresh one, which is
     // what lets a service validate a whole graph and report every finding at once. The port keeps that
     // capability as an explicit caller-supplied bag, so accumulation is a choice at the call site
-    // instead of an ambient side effect — and section C4 asserts the default is a fresh, independent bag.
+    // instead of an ambient side effect — and the memoisation cases assert the default is a fresh, independent bag.
     const shared = new ValidationError();
     shared.addError('preexisting', 'from an earlier pass');
 
@@ -5817,7 +5243,7 @@ describe('NET-NEW — H2. the error bag contract', () => {
       'validate.save.Option.optionCode.required',
     ]);
 
-    // Second subject, SAME bag: an OptionGroup, whose `optionGroupCode` findings land beside them and
+    // Second subject, same bag: an OptionGroup, whose `optionGroupCode` findings land beside them and
     // whose `optionGroupName` opens a new bucket.
     await harness.validateInto(buildOptionGroup({}), optionGroupValidationRuleSet, 'save', shared);
     expect(shared.getError('optionGroupName')).toStrictEqual([
@@ -5835,7 +5261,7 @@ describe('NET-NEW — H2. the error bag contract', () => {
       'optionGroupCode',
     ]);
 
-    // Re-validating the FIRST subject into the same bag APPENDS rather than replacing, because the bag
+    // Re-validating the first subject into the same bag appends rather than replacing, because the bag
     // is a log — the same property-level append behaviour asserted above, now at engine level.
     await harness.validateInto(buildOption({}), optionValidationRuleSet, 'save', shared);
     expect(shared.getError('optionCode')).toStrictEqual([
@@ -5845,20 +5271,8 @@ describe('NET-NEW — H2. the error bag contract', () => {
   });
 });
 
-describe('NET-NEW — H3. validate, gate, then persist', () => {
-  /**
-   * A `BaseService` over a MANAGED brand, wired entirely from constructor arguments.
-   *
-   * ⚠️ THE SUBJECT IS `ManagedBrand` AND NOT A BARE `Brand`, WHICH IS A CONTRACT FACT RATHER THAN A TEST
-   * CONVENIENCE. `BaseServiceEntity` intersects `EntityErrorSurface`, because
-   * `model/service/HibachiService.cfc:L103` returns the entity on every path and the caller then asks it
-   * `hasErrors()` — a save with a single exit cannot report a failure unless the entity can carry one.
-   * `../../src/domain/product/Brand` is forbidden to declare those six members, so the surface is composed
-   * onto the instance, exactly as `../../src/adapters/mysql/rowMappers` and
-   * `../../src/ports/repositories/BrandRepository`'s factory do in production. `createManagedBrand` is the
-   * whitelisted composition available to this file and it MUTATES AND RETURNS THE SAME OBJECT, so every
-   * identity assertion below still compares the reference the caller supplied.
-   */
+describe('NET-NEW — validate, gate, then persist', () => {
+  /** A `baseService` over a managed brand, wired entirely from constructor arguments. */
   function brandServiceFixture(uniqueSeeds: readonly UniquePropertyValueSeed[] = []): {
     readonly service: BaseService<ManagedBrand, BrandPropertyName>;
     readonly persistence: ReturnType<typeof createBaseServicePersistenceDouble<ManagedBrand>>;
@@ -5890,7 +5304,7 @@ describe('NET-NEW — H3. validate, gate, then persist', () => {
   it('NET-NEW — the Validator ALONE never persists anything', async () => {
     // The separation of concerns, asserted directly: validation is a pure read that produces findings,
     // and the decision to write belongs to the caller. An explicit persistence recorder proves it —
-    // validating a subject that WOULD be perfectly savable still causes zero writes.
+    // validating a subject that would be perfectly savable still causes zero writes.
     const persistence = createBaseServicePersistenceDouble<ManagedBrand>();
     const harness = createValidatorHarness();
 
@@ -5907,24 +5321,18 @@ describe('NET-NEW — H3. validate, gate, then persist', () => {
 
   it('NET-NEW — an INVALID entity is validated, found wanting, and NOT persisted', async () => {
     // `meta/tests/unit/IssuesTest.cfc:L192-L201` (`issue_1690`) is the documentary precedent for this
-    // sequence: construct, `validate(context="save")`, then save ONLY `if(!product.hasErrors())`. That
-    // test was read from source and is cited as precedent — it was NOT executed here, because MXUnit is
+    // sequence: construct, `validate(context="save")`, then save only `if(!product.hasErrors())`. That
+    // test was read from source and is cited as precedent — it was not executed here, because MXUnit is
     // not vendered in this checkout and no CFML runtime exists (see the file header).
     const { service, persistence } = brandServiceFixture();
     const invalid = createManagedBrand({ brandID: 'h3-invalid' }).brand;
 
-    // ⭐ THE MEMBER RESOLVES, IT DOES NOT REJECT, AND IT HANDS BACK THE SAME ENTITY.
+    // The member resolves, it does not reject, and it hands back the same entity.
     // `model/service/HibachiService.cfc:L103` is the single exit of the local override and it returns
     // `arguments.entity` whether validation passed or failed, because
     // `org/Hibachi/HibachiTransient.cfc:L408-L459` wrote the findings into the entity's own bag and never
-    // cleared them. So the findings are read OFF THE RETURNED BRAND, which is the same question
+    // cleared them. So the findings are read off the returned brand, which is the same question
     // `issue_1690`'s `if(!product.hasErrors())` asks.
-    //
-    // ⚠️ AN EARLIER REVISION OF THIS CASE ASSERTED A REJECTION AND CALLED IT "ADAPTED TO THE REALIZED
-    // CONTRACT". The realized contract was the thing that was wrong: `BaseService.save` raised, which
-    // inverted the polarity of the only failure signal the legacy offered and changed the published
-    // contract of `BrandService.saveBrand`. Certifying the divergence in a test is what let it survive, so
-    // this case now pins the legacy shape instead.
     const saved = await service.save(invalid);
 
     expect(saved).toBe(invalid);
@@ -5932,7 +5340,7 @@ describe('NET-NEW — H3. validate, gate, then persist', () => {
     expect(saved.getError('brandName')).toStrictEqual(['validate.save.Brand.brandName.required']);
     expect(saved.getError('urlTitle')).toStrictEqual(['validate.save.Brand.urlTitle.required']);
 
-    // NOTHING was persisted. This is the gate.
+    // Nothing was persisted. This is the gate.
     expect(persistence.persisted).toStrictEqual([]);
   });
 
@@ -5978,7 +5386,7 @@ describe('NET-NEW — H3. validate, gate, then persist', () => {
       'validate.save.Brand.brandName.required',
     ]);
 
-    // Under an override the `save`-context rules are NOT selected, so a brand that would fail on save
+    // Under an override the `save`-context rules are not selected, so a brand that would fail on save
     // passes — and is persisted, because the bag is genuinely clean under that context.
     const overridden = brandServiceFixture();
     const bare = createManagedBrand({ brandID: 'h3-override' }).brand;
@@ -5989,8 +5397,8 @@ describe('NET-NEW — H3. validate, gate, then persist', () => {
   });
 
   it('NET-NEW — `delete` validates under the HARD-CODED `delete` context and returns a boolean', async () => {
-    // The realized `delete(entity)` takes NO context parameter — the context is fixed, which is the
-    // right shape because a delete can only ever be a delete. It also NEVER raises: it answers `false`
+    // The realized `delete(entity)` takes no context parameter — the context is fixed, which is the
+    // right shape because a delete can only ever be a delete. It also never raises: it answers `false`
     // and leaves the row alone, which is a second deliberate divergence from `save` and is asserted
     // rather than assumed.
     const clean = brandServiceFixture();
@@ -6017,7 +5425,7 @@ describe('NET-NEW — H3. validate, gate, then persist', () => {
   });
 
   it('NET-NEW — the delete gate consults the `delete` rules and NOT the `save` rules', async () => {
-    // A brand missing every required save field is still DELETABLE, because `Brand.json` scopes those
+    // A brand missing every required save field is still deletable, because `Brand.json` scopes those
     // presence rules to `save`. If `delete` reused the save context, no incomplete row could ever be
     // removed — a real operational trap that the hard-coded context avoids.
     const { service, persistence } = brandServiceFixture();

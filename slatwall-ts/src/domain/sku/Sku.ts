@@ -9,106 +9,17 @@
  * [:L772-L784], the image members behind `ImagePathPort`, and defects D1, D2, D3 and D16 carried as
  * flagged annotations.
  *
- * THREE MISTAKES ARE NEAR-INEVITABLE UNLESS CONSCIOUSLY AVOIDED, and each is refused explicitly at
+ * Three mistakes are near-inevitable unless consciously avoided, and each is refused explicitly at
  * the member that would suffer it:
  *
- *   1. MAKING `hasUniqueOptions()` A SYNCHRONOUS PURE PREDICATE. It executes a DATABASE QUERY: the
- *      chain is [:L762] -> `Product.getSkusBySelectedOptions` [model/entity/Product.cfc:L366-L368] ->
- *      `ProductService.getProductSkusBySelectedOptions` [model/service/ProductService.cfc:L104-L106],
- *      a pure delegation to `SkuDAO.getSkusBySelectedOptions` and its hand-assembled query. See
- *      {@link Sku.hasUniqueOptions}, which is `async` and takes an injected lookup.
- *   2. "FIXING" D1, D2 OR D3. Refactor Discipline Guideline 4 forbids it and AAP §0.7.3 S7 is
- *      preserve-and-annotate. See the register below and the three members themselves.
- *   3. NARROWING `getBaseProductType()` TO THE THREE-MEMBER UNION. That would let the compiler prove
- *      the fallthrough arm of `SkuService.createSkus` unreachable and so ELIMINATE a legacy throw. See
- *      {@link Sku.getBaseProductType}.
+ * 1. making `hasUniqueOptions` a synchronous pure predicate. It executes a database query: the
+ * chain is [:L762] -> `product.getSkusBySelectedOptions` [model/entity/Product.cfc:L366-L368] ->
+ * `productService.getProductSkusBySelectedOptions` [model/service/ProductService.cfc:L104-L106],
+ * a pure delegation to `SkuDAO.getSkusBySelectedOptions` and its hand-assembled query. See
+ * {@link Sku.hasUniqueOptions}, which is `async` and takes an injected lookup.
+ * 2. "fixing" D1, D2 or D3. Refactor Discipline Guideline 4 forbids it and AAP §0.7.3 is
+ * preserve-and-annotate. See the register below and the three members themselves.
  *
- * THE CALCULATED-PROPERTY BOUNDARY (AAP §0.2.2.6 / IR-3). [:L99-L121] declares exactly 23
- * non-persistent properties; 13 fall outside the boundary and 10 are carried, each implemented below.
- * Of the 13, NINE are omitted outright because their getters reach `priceGroupService`,
- * `currencyService`, `stockService`, `inventoryService`, `promotionService`, `locationService`,
- * `fulfillmentService` or `attributeService`, every one of which AAP §0.2.2.1 excludes — `adminIcon`
- * [:L99], `assignedOrderItemAttributeSetSmartList` [:L100], `currentAccountPrice` [:L102],
- * `currencyDetails` [:L104], `eligibleFulfillmentMethods` [:L106], `livePrice` [:L108],
- * `nextEstimatedAvailableDate` [:L109], `qats` [:L113] and `salePriceDiscountAmount` [:L117], the last
- * of which has no getter in the legacy source at all.
- *
- * The remaining FOUR — `salePriceDetails` [:L114], `salePrice` [:L115], `salePriceDiscountType`
- * [:L116] and `salePriceExpirationDateTime` [:L118] — are RETAINED as port-parameterised methods with
- * the gap flagged, rather than deleted. They are the canonical TR-5 case ("the member is never quietly
- * dropped from the interface") and the reason a pricing port exists at all: the Google product feed's
- * conditional `g:sale_price` and `g:sale_price_effective_date` fields read two of them (AAP §0.6.4.2).
- *
- * Two of the carried ten are non-negotiable: `defaultFlag` [:L105] and `transactionExistsFlag`
- * [:L121] are DELETE-context validation guards at [model/validation/Sku.json:L3] and [:12], so dropping
- * either would silently permit deletes the legacy system blocks.
- *
- * DEFECT AND CARRY-OVER REGISTER (AAP §0.6.7 — preserve and annotate, do not repair). Every entry is
- * reproduced as observable behaviour and annotated at its member with a `TODO(parity)` marker and its
- * locator:
- *
- *   D1  [:L500-L510]  `getOptionsByOptionGroupCodeStruct` initialises the WRONG variable and then
- *                     reads one that is never created ⇒ FAILS on first call.
- *   D2  [:L512-L522]  `getOptionsByOptionGroupIDStruct` writes into a THIRD, differently-named struct
- *                     ⇒ ALWAYS RETURNS EMPTY.
- *   D3  [:L247-L251]  `getOptionByOptionGroupCode` tests the Code struct and indexes the ID struct
- *                     with a Code key ⇒ ALWAYS MISSES.
- *   D4  [:L567-L572]  `getStocksDeletableFlag` delegates through
- *                     `SkuService.getSkuStocksDeletableFlag` [model/service/SkuService.cfc:L281-L283]
- *                     to a DAO member that exists NOWHERE in the repository ⇒ cannot resolve.
- *   D16 [:L894], [:L899], [:L908]  three in-source deprecation hints, carried with their text; a
- *                     fourth, on `displayOptions` [:L885], is carried the same way although §0.6.7.2
- *                     does not name it.
- *   D19 AAP §0.6.2    an option-less SKU FAILS `hasUniqueOptions` on any product that already has
- *                     option-bearing SKUs.
- *
- * Also carried without a new identifier, because it changes an observable value on a CARRIED member:
- * [:L588] in `getSkuDefinition` is a bare `trim()` call with no assignment, and CFML `trim` is not
- * in-place, so the leading space survives into the returned value. It is not applied here either.
- *
- * FOUR BOUNDARY MISMATCHES, FLAGGED RATHER THAN ASSUMED AWAY (S8):
- *
- *   M-i   NO `Product.hasSku` EXISTS. [:L606] calls `arguments.product.hasSku( this )`, which the ORM
- *         synthesizes from `singularname="sku"`; no such body exists in [model/entity/Product.cfc] and
- *         `src/domain/product/Product.ts` declares none. {@link Sku.setProduct} evaluates the identical
- *         containment predicate INLINE against the live collection, which keeps the fix in this file
- *         rather than widening another module.
- *   M-ii  `Sku` IS DELIBERATELY NOT ASSIGNABLE TO `ProductDefaultSkuDelegate`. That interface, declared
- *         in `src/domain/product/Product.ts` for the default-SKU delegating guards at
- *         [model/entity/Product.cfc:L556] and following, requires nine zero-argument SYNCHRONOUS
- *         members including `getImageDirectory(): string`. `Sku.cfc` declares no `getImageDirectory`
- *         counterpart and S9 forbids inventing one; the image members here are asynchronous because
- *         `ImagePathPort` is; and S3 requires their collaborators to arrive as parameters. A thin
- *         binding adapter in the composition root closes over the ports and satisfies the delegate.
- *   M-iii NO PORT OWNS THE IMAGE-MARKUP RENDERER. [:L189] delegates to an out-of-scope image service's
- *         `getResizedImage`, which returns rendered markup rather than a path, while `ImagePathPort`
- *         declares paths and existence only. It is declared here as a separate narrow renderer
- *         interface and flagged; `ImagePathPort` is its rightful owner.
- *   M-iv  THE FAR SIDE OF `subscriptionTerm` HAS NO IN-SCOPE SURFACE. [:L625] appends to
- *         `subscriptionTerm.getSkus()` and [:L632-L635] splices it, but `SubscriptionTerm` is out of
- *         scope and `SubscriptionTermPort` exposes an identifier-bearing reference only, so
- *         {@link Sku.setSubscriptionTerm} maintains the local side only.
- *
- * MEMOIZATION IS PER-INSTANCE, NEVER MODULE-SCOPE (M7). The legacy entity caches every derived value
- * in its own `variables` scope and declares `cacheuse="transactional"`. Under Lambda nothing survives
- * between invocations except module scope, so a module-scope cache would leak one tenant's catalog into
- * another's response on a warm container. Every cache here is a `#`-private instance field, and the
- * frozen module constants below hold no per-entity data.
- *
- * FRAMEWORK MEMBERS THIS FILE DOES NOT DECLARE. Validation, population, attribute access, dynamic
- * dispatch and every `*SmartList` getter belong to other layers: validation to `src/validation/**`,
- * population to {@link SKU_PROPERTY_DESCRIPTORS} consumed by `../base/populate`, and dynamic dispatch
- * to nothing at all, since IR-1 replaces it with declarations. The one sanctioned exception is
- * {@link Sku.getSimpleRepresentationPropertyName} [:L809]. Two legacy overrides are called out because
- * their absence is deliberate: [:L843] overrode `getPropertyMetaData` and [:L858] overrode
- * `onMissingMethod`, both to resolve options dynamically by sniffing for a 32-character
- * `optionGroupID` — and [:L846] writes that length as the STRING `"32"` where
- * [model/entity/HibachiEntity.cfc:L153] writes the NUMBER `32`, a coercion CFML performs silently and
- * TypeScript would not, which is precisely why neither override is ported.
- *
- * @see model/entity/Sku.cfc — the sole origin
- * @see model/validation/Sku.json — the contract this entity's two method rules serve
- * @see model/service/SkuService.cfc:L58-L211 — the construction contract this entity must satisfy
  */
 
 import type {
@@ -141,115 +52,31 @@ import type { OptionGroup } from '../option/OptionGroup';
 import type { Product } from '../product/Product';
 import { DomainError, NotImplementedError } from '../../errors/DomainError';
 import { EXACT_DECIMAL_ZERO, exactDecimalFromNumber } from '../../util/formatting';
-/* TYPE-ONLY, and the only `src/ports/**` reference in this file. The two names are branded with a
+/*
+ * Type-only, and the only `src/ports/**` reference in this file. The two names are branded with a
  * `unique symbol` the port never exports, so neither can be re-declared locally; the reasoning, and why
  * leaving these members on `string` would have left the traversal at [model/entity/Sku.cfc:L222]
- * compiling, is on {@link SkuImagePathResolver}. No runtime value is imported. */
+ * compiling, is on {@link SkuImagePathResolver}. No runtime value is imported.
+ */
 import type { AccessContentReference } from '../../ports/AccessContentPort';
 import type { ImageWebPath } from '../../ports/ImagePathPort';
 import type { ExactDecimal } from '../../util/formatting';
 import type { SubscriptionBenefitReference } from '../../ports/SubscriptionTermPort';
 
-/* ================================================================================================
- * THE BOUNDARY CONTRACTS (R-C)
- *
- * Every interface in this block names ONLY the members this entity actually calls, and each is
- * declared LOCALLY rather than imported. The reason is a scope rule, not a convenience: the
- * dependency whitelist for this file is the seven modules imported above, and `src/ports/**` is not
- * among them. Declaring the shapes here keeps every import legal while leaving `src/ports/**` to the
- * agent that owns it (AAP §0.3.1), and AAP §0.4.5 explains why a transient absence would not be an
- * error anyway: ports and their consumers land in the same phase.
- *
- * EACH SHAPE IS DELIBERATELY A NARROWED SUBSET OF ITS REAL PORT, so that a real port instance
- * satisfies it by structural typing with no adapter, no cast and no widening at the composition
- * root. The correspondences, verified against the port files as they exist:
- *
- *   {@link SkuSettingResolver}            <- SettingResolverPort.setting
- *   {@link SkuImagePathResolver}          <- ImagePathPort.getImagePath / getResizedImagePath /
- *                                            getImageExistsFlag  (saveImageFile omitted: unused here)
- *   {@link SkuResizedImageRenderer}       <- NO PORT OWNS THIS. S8 mismatch M-iii.
- *   {@link SkuSalePricingLookup}          <- PricingPort.getSalePriceDetailsForProductSkus
- *   {@link SubscriptionTermRef}           <- SubscriptionTermPort's term reference, widened by one
- *                                            optional member. See the note on that interface.
- *   {@link SkuTransactionExistenceChecker} <- the service contract as TR-1 tightens it. AAP §0.4.2.2
- *                                            Discrepancy 4 read literally produced a zero-argument
- *                                            member that discarded this identifier; review finding F1
- *                                            restored `(skuID?, productID?)` on `SkuService`, which
- *                                            satisfies this interface directly
- *   {@link SkuProductTypeRootResolver}    <- the root-product-type resolver
- *                                            `src/domain/product/ProductType.ts` declares
- *
- * ⚠️ THE ONE SHAPE THAT NEEDS AN ADAPTER, AND EARLIER TEXT HERE RECORDED IT WRONGLY TWICE. This list once
- * mapped {@link SkuTransactionExistenceChecker} onto "the zero-argument service contract, AAP §0.4.2.2
- * Discrepancy 4". That was an incompatibility dressed as a narrowing: a zero-parameter member cannot carry
- * the identifier this entity supplies, and it merely happened to be assignable because a lower-arity
- * function satisfies a higher-arity method. Review finding F1 restored the service member to
- * `(skuID?, productID?)`, so it now matches this contract's shape AND its order.
- *
- * ⛔ WHICH DOES NOT MAKE THE ADAPTER OPTIONAL. The BACKING member is
- * `SkuRepository.transactionExists(productID?, skuID?)` (AAP §0.4.2.6), whose argument order is the
- * REVERSE of this contract's, so a crossing is still required and still happens in exactly one place:
- * `createTransactionExistenceChecker` in `src/adapters/mysql/MySqlSkuRepository.ts`. A domain module may
- * not import a service in any case, which is why this entity takes a checker rather than either of them.
- * See that contract's own block for the compile-time guard over the mis-binding.
- *
- * Nothing in this block performs work. Each is a shape the composition root fills.
- * ============================================================================================== */
+/* The boundary contracts (r-c) */
 
 /**
- * A base product type as this entity is permitted to observe it: the closed union WIDENED so that no
+ * A base product type as this entity is permitted to observe it: the closed union widened so that no
  * arm can ever be statically eliminated.
- *
- * THE WIDENING IS THE WHOLE POINT AND MUST NOT BE REMOVED. `getBaseProductType()` at
- * [model/entity/ProductType.cfc:L110-L115] is declared `public any function`, not a three-member
- * enumeration, and its body was read verbatim:
- *
- *     public any function getBaseProductType() {
- *         if(isNull(getSystemCode()) || getSystemCode() == ""){
- *             return getService("ProductService").getProductType(listFirst(getProductTypeIDPath())).getSystemCode();
- *         }
- *         return getSystemCode();
- *     }
- *
- * Both arms return whatever `systemCode` a row happens to hold. Narrowing that to
- * `'merchandise' | 'subscription' | 'contentAccess'` would let the compiler PROVE the fallthrough
- * arm of `SkuService.createSkus` unreachable and delete the throw at
- * [model/service/SkuService.cfc:L204] — destroying observable behaviour with a change that looks
- * like a type improvement. AAP §0.6.7 and Guideline 4 both forbid that.
- *
- * The `string & {}` arm keeps the three literals available to editor completion while admitting any
- * other string, which is the same idiom `src/domain/product/ProductType.ts` uses for its own
- * equivalent alias — declared there, verbatim, as `BaseProductType | (string & {})`, and left
- * un-suppressed because the empty-object-type rule does not fire inside an intersection. Comparison
- * sites route the value through `resolveBaseProductType` from `../BaseProductType`, which answers with
- * the CANONICAL seeded code after a CFML-equivalent case-insensitive match, so no cast is ever needed
- * to narrow one of these values and this file contains no lint suppression of any kind.
  */
 export type SkuBaseProductTypeCode = BaseProductType | (string & {});
 
-/**
- * The one member of a product type this entity reads while resolving a base product type.
- *
- * The fallback arm at [model/entity/ProductType.cfc:L112] reads `getSystemCode()` off a product type
- * fetched by identifier. `systemCode` is optional because [model/entity/ProductType.cfc:L59] declares
- * it without a default and the very branch that performs the fetch exists precisely BECAUSE the value
- * can be null or empty.
- */
+/** The one member of a product type this entity reads while resolving a base product type. */
 export interface SkuProductTypeSystemCodeSource {
   readonly systemCode?: string;
 }
 
-/**
- * Resolves the ROOT product type of a hierarchy by identifier.
- *
- * The typed replacement for the string-keyed locator call at
- * [model/entity/ProductType.cfc:L112] — `getService("ProductService").getProductType(...)` — per TR-3
- * and S3. It is asynchronous because that call reaches the database, which is the reason
- * {@link Sku.getBaseProductType} and {@link Sku.getSkuDefinition} are asynchronous too.
- *
- * Structurally identical to the resolver `src/domain/product/ProductType.ts` declares, so the same
- * instance serves both.
- */
+/** Resolves the root product type of a hierarchy by identifier. */
 export interface SkuProductTypeRootResolver {
   getProductType(productTypeID: string): Promise<SkuProductTypeSystemCodeSource | undefined>;
 }
@@ -257,54 +84,13 @@ export interface SkuProductTypeRootResolver {
 /**
  * The subscription term as this entity is permitted to see it — [model/entity/Sku.cfc:L66],
  * `cfc="SubscriptionTerm" fieldtype="many-to-one" fkcolumn="subscriptionTermID"`.
- *
- * `SubscriptionTerm` is explicitly out of scope (AAP §0.2.2.1, `model/**\/Subscription*.cfc`, 11
- * files), so the relationship is retained through this narrow reference rather than by porting the
- * entity. TODO(boundary) [model/entity/Sku.cfc:L66] — the full entity belongs behind
- * `SubscriptionTermPort`, and the far side of the association is S8 mismatch M-iv.
- *
- * TWO DELIBERATE DECISIONS ABOUT THE SHAPE:
- *
- *   `subscriptionTermID` IS REQUIRED, not optional, for two independent reasons. It matches the real
- *   port's term reference, which declares that one member and nothing else, so a real reference is
- *   assignable here. And an all-optional target would trip TypeScript's weak-type detection, which
- *   rejects an object literal sharing no property with the target — turning every composition-root
- *   assignment into a compile error for no benefit.
- *
- *   `subscriptionTermName` IS PRESENT BUT OPTIONAL, because [model/entity/Sku.cfc:L585] reads it
- *   while composing a SKU definition, and the real port does not carry it. That is the one member by
- *   which this shape exceeds the port, and it is the reason the subscription arm of
- *   {@link Sku.getSkuDefinition} is flagged rather than silently degraded.
  */
 export interface SubscriptionTermRef {
   readonly subscriptionTermID: string;
   readonly subscriptionTermName?: string;
 }
 
-/**
- * Every setting key the PORTED code of this entity reads, and no other.
- *
- * Derived by reading the calls, not by copying a port union. The seven keys and where each is read:
- *
- *   `productImageOptionCodeDelimiter`  [model/entity/Sku.cfc:L135]  via the PRODUCT delegate
- *   `productImageDefaultExtension`     [model/entity/Sku.cfc:L138]  via the PRODUCT delegate
- *   `productImage<size>Width`          [model/entity/Sku.cfc:L179], [:L212]  via the PRODUCT delegate
- *   `productImage<size>Height`         [model/entity/Sku.cfc:L180], [:L213]  via the PRODUCT delegate
- *   `imageAltString`                   [model/entity/Sku.cfc:L157]  via THIS entity
- *   `imageMissingImagePath`            [model/entity/Sku.cfc:L163]  via THIS entity
- *   `skuCurrency`                      [model/entity/Sku.cfc:L362]  via THIS entity
- *
- * WHY `globalDateFormat` IS ABSENT even though AAP §0.4.1.6 lists it among the keys the slice reads:
- * its only three call sites in this entity — [:L462], [:L470] and [:L472] — are inside
- * `getNextEstimatedAvailableDate`, one of the THIRTEEN EXCLUDED members. Declaring a key no ported
- * line reads would widen this contract for nothing, and S9 forbids inventing surface. The key is
- * genuinely in the slice; it is read by other modules, and `src/util/formatting.ts` owns the
- * formatting that consumes it.
- *
- * The two interpolated forms are template-literal types rather than plain strings, which makes the
- * legacy `"productImage#thisSize#Width"` composition at [:L179] a COMPILE-CHECKED construction
- * instead of a string concatenation that could drift. They match the real port's equivalents exactly.
- */
+/** Every setting key the ported code of this entity reads, and no other. */
 export type SkuSettingName =
   | 'productImageOptionCodeDelimiter'
   | 'productImageDefaultExtension'
@@ -315,39 +101,19 @@ export type SkuSettingName =
   | `productImage${string}Height`;
 
 /**
- * Which entity a setting is resolved AGAINST, and its identifier.
- *
- * `setting()` at [model/entity/HibachiEntity.cfc:L129] is declared
- * `public any function setting(required string settingName, array filterEntities=[], formatValue=false)`
- * and passes `object=this` to the setting service, so resolution is entity-context aware: the
- * effective value of a key can differ per entity instance.
- *
- * THAT DISTINCTION IS LOAD-BEARING IN THIS FILE, not incidental. Some keys are read through the
- * PRODUCT — `getProduct().setting(...)` at [:L135], [:L138], [:L179], [:L180], [:L212], [:L213] —
- * and others through THIS SKU — `setting(...)` at [:L157], [:L163], [:L362]. Carrying the receiver
- * rather than dropping it is what keeps the two resolutions distinguishable, and the shape matches
- * the real port's context so the same resolver serves every entity of the slice.
+ * Which entity a setting is resolved against, and its identifier.
  *
  * TODO(boundary) [model/entity/HibachiEntity.cfc:L129] — the `filterEntities` and `formatValue`
- * arms of the legacy signature are deliberately NOT carried. No call site in this entity supplies
+ * arms of the legacy signature are deliberately not carried. No call site in this entity supplies
  * either; every one passes a settingName alone. Reproducing unused parameters would be inventing
- * surface (S9).
+ * surface (AAP §0.7.3).
  */
 export interface SkuSettingResolutionContext {
   readonly entityName: 'Product' | 'Sku' | 'Option';
   readonly entityId: string;
 }
 
-/**
- * Resolves an effective setting value.
- *
- * SYNCHRONOUS, matching the real port. The legacy accessor is synchronous too, and making it
- * asynchronous here would force {@link Sku.generateImageFileName} — a pure string composition — to
- * return a promise for no reason.
- *
- * S3: this arrives as an explicit parameter on each member that needs it. This entity never holds a
- * resolver, never resolves one and declares no `setting()` member of its own.
- */
+/** Resolves an effective setting value. */
 export interface SkuSettingResolver {
   setting(settingName: SkuSettingName, context?: SkuSettingResolutionContext): string;
 }
@@ -355,14 +121,6 @@ export interface SkuSettingResolver {
 /**
  * The request shape a resized-image path is computed from — the typed replacement for the argument
  * struct the legacy passed by `argumentcollection` at [model/entity/Sku.cfc:L218].
- *
- * Field-for-field identical to the real port's request, so one can be handed straight through.
- * `imagePath` and `missingImagePath` are required because [:L217] and [:L216] always set both before
- * delegating; the rest are optional because the legacy only sets each on the branch that computed it.
- *
- * ⭐ `imagePath` IS THE PORT'S BRANDED URL TYPE, NOT A `string` — see the nominal-label note on
- * {@link SkuImagePathResolver}. It is the only name imported from `src/ports/**` by this file, and it is
- * imported `import type`.
  */
 export interface SkuResizedImagePathRequest {
   readonly imagePath: ImageWebPath;
@@ -373,73 +131,20 @@ export interface SkuResizedImagePathRequest {
   readonly resizeMethod?: string;
 }
 
-/**
- * Path-level image operations.
- *
- * ASYNCHRONOUS THROUGHOUT, mirroring the real port, and that is why every image member of this
- * entity returns a promise where the legacy returned a value directly. Two of the three genuinely
- * perform I/O: the existence flag at [model/entity/Sku.cfc:L221] is a filesystem probe
- * (`fileExists(expandPath(...))`), and path resolution reads a base URL out of framework request
- * scope at [:L147].
- *
- * The real port's fourth member, the image-file save, is deliberately omitted: no ported line of this
- * entity calls it. `processImageUpload` at [model/service/SkuService.cfc:L210] does, and it belongs to
- * `src/services/SkuService.ts`, not here. ⭐ THAT OMISSION IS NOW LOAD-BEARING SECURITY, not just
- * tidiness: this entity is structurally incapable of asking for a file to be WRITTEN, so the whole
- * write path is reachable only from the service layer.
- *
- * ⭐ WHY ONE BRANDED PORT TYPE IS IMPORTED HERE, breaking this file's otherwise unbroken habit of
- * re-declaring every boundary shape locally. The R-C rule above prefers a local structural subset, and
- * the file's own dependency contract admits `src/ports/**` ONLY as `import type` — which is exactly what
- * is used, so the rule is honoured rather than bent. A local re-declaration is IMPOSSIBLE:
- * {@link ImageWebPath} is branded with a `unique symbol` that `src/ports/ImagePathPort.ts` never
- * exports, so no structural copy of it can be written anywhere.
- *
- * ⚠️ THE BRAND IS A NOMINAL LABEL, NOT A RESTRICTION. ⛔ DO NOT USE IT AS ONE — for instance by adding an
- * `ImageFileNameCandidate` type so the existence probe can no longer be handed a composed path, which would
- * make [model/entity/Sku.cfc:L222]'s own call shape uncompilable. [:L222] probes whatever the composed path
- * resolves to and answers a boolean about THAT file, so refusing to probe would replace a defined legacy
- * outcome with a different one. This entity forwards the composed path to the probe, exactly as [:L222]
- * does. `src/ports/ImagePathPort.ts` DECISION I-1 control (3) carries the adjudication and the flagged
- * residual exposure.
- *
- * ⭐ AND THE WRITE HALF IS NOW GATED, WHICH AGAIN NEEDS NO CHANGE HERE. Under review finding SEC-FILE-01 a
- * name gate over the stored `imageFile` stands at the one member that writes, `processImageUpload` in
- * `src/services/SkuService.ts` — which the paragraph three above already establishes is unreachable from
- * this entity, so the gate is invisible to it. The three READ members declared below were never gated and
- * still are not, and stay byte-compatible with [:L147], [:L195] and [:L222]. That asymmetry is deliberate:
- * the read members have defined legacy outcomes to preserve and the write member has none.
- *
- * ⛔ NO RUNTIME VALUE IS IMPORTED AND NONE IS NEEDED. This entity never mints a brand: it FORWARDS the
- * {@link ImageWebPath} it received from {@link SkuImagePathResolver.getImagePath}. The tag function
- * stays where its caller is — the feed builder.
- */
+/** Path-level image operations. */
 export interface SkuImagePathResolver {
   getImagePath(imageFile: string): Promise<ImageWebPath>;
   getResizedImagePath(request: SkuResizedImagePathRequest): Promise<ImageWebPath>;
   getImageExistsFlag(imagePath: ImageWebPath): Promise<boolean>;
 }
 
-/**
- * The request shape rendered image markup is produced from — [model/entity/Sku.cfc:L189].
- *
- * Identical to {@link SkuResizedImagePathRequest} plus the alternate text the legacy derives at
- * [:L157-L159].
- */
+/** The request shape rendered image markup is produced from — [model/entity/Sku.cfc:L189]. */
 export interface SkuResizedImageRequest extends SkuResizedImagePathRequest {
   readonly alt?: string;
 }
 
 /**
- * Renders image MARKUP rather than resolving a path — [model/entity/Sku.cfc:L189].
- *
- * S8 MISMATCH M-iii, FLAGGED RATHER THAN ASSUMED AWAY. This is the one image capability of the
- * entity that no declared port owns: the real `ImagePathPort` exposes path resolution, resized-path
- * resolution, an existence probe and a file save, and nothing that returns markup. The legacy
- * delegates to an out-of-scope image service resolved through a dynamic string lookup —
- * `getService("imageService")` — which AAP §0.6.3.2 singles out as the "hidden genuine" dependency
- * that "any dependency analysis based on component metadata misses entirely", because it is never
- * declared as a component property.
+ * Renders image markup rather than resolving a path — [model/entity/Sku.cfc:L189].
  *
  * TODO(boundary) [model/entity/Sku.cfc:L189] — `ImagePathPort` is the rightful owner of this member.
  * It is declared separately here so the capability is visible and typed instead of dropped (TR-5),
@@ -449,26 +154,10 @@ export interface SkuResizedImageRenderer {
   getResizedImage(request: SkuResizedImageRequest): Promise<string>;
 }
 
-/**
- * Expands a template containing bracketed property identifiers against a subject.
- *
- * The narrow replacement for the legacy `stringReplace(setting('imageAltString'))` call at
- * [model/entity/Sku.cfc:L158], whose inherited implementation substitutes property identifiers
- * appearing in a template. `src/util/formatting.ts` owns the real algorithm; it is not imported
- * because it is not on this file's dependency whitelist, so the capability arrives as a function
- * parameter instead (S3). A caller wires it to that utility bound to this SKU.
- */
+/** Expands a template containing bracketed property identifiers against a subject. */
 export type SkuStringTemplateExpander = (template: string) => string;
 
-/**
- * The collaborators the two markup-producing image members need, gathered into one object.
- *
- * WHY AN OBJECT RATHER THAN FOUR POSITIONAL PARAMETERS. [model/entity/Sku.cfc:L153-L190] reads two
- * settings, resolves a path, expands a template and then renders — four distinct collaborators for
- * one member. Four positional parameters ahead of the caller's own options would be easy to
- * transpose silently, and every one of them is supplied by the same composition root at the same
- * moment. Grouping them keeps each call site readable and each collaborator individually typed.
- */
+/** The collaborators the two markup-producing image members need, gathered into one object. */
 export interface SkuResizedImageCollaborators {
   readonly renderer: SkuResizedImageRenderer;
   readonly imagePaths: SkuImagePathResolver;
@@ -479,10 +168,6 @@ export interface SkuResizedImageCollaborators {
 /**
  * The caller-supplied half of a resized-image request — the arguments the legacy accepted through
  * `argumentcollection` at [model/entity/Sku.cfc:L153] and [:L192].
- *
- * Every member is optional because the legacy branches on the PRESENCE of each: `structKeyExists`
- * decides whether the deprecated size mapping runs at all, and the missing-image path and alternate
- * text are defaulted from settings only when absent.
  */
 export interface SkuResizedImageOptions {
   readonly size?: string;
@@ -492,22 +177,7 @@ export interface SkuResizedImageOptions {
   readonly alt?: string;
 }
 
-/**
- * One SKU's sale-price detail, exactly as the real pricing port shapes it.
- *
- * Every member is optional because the legacy reads each defensively:
- * [model/entity/Sku.cfc:L547-L551] falls back to the ordinary price when no sale price is present,
- * and [:L554-L558] and [:L561-L565] each return the empty string when their key is absent.
- *
- * ⚠️ F07 — `salePrice` IS THE ONE MONETARY MEMBER IN THIS FILE STILL TYPED `number`, AND IT MIRRORS
- * `src/ports/PricingPort.ts` DELIBERATELY. This shape exists to match the real pricing port exactly, so
- * re-typing it here while the port itself declares a double would assert a contract this slice cannot
- * honour: the promotion subsystem that produces the value is excluded (AAP §0.2.2.1), the port has no
- * in-scope implementation, and its shape is fixed by AAP §0.2.2.7. The value is INBOUND and is never bound
- * to a column — {@link Sku.getSalePrice} converts it once, at the single documented boundary, and records
- * the conversion there. Contrast `src/ports/AccessContentPort.ts`'s `price`, which is OUTBOUND and
- * persisted, and which F07 therefore DID re-type.
- */
+/** One SKU's sale-price detail, exactly as the real pricing port shapes it. */
 export interface SkuSalePriceDetails {
   readonly salePrice?: number;
   readonly salePriceDiscountType?: string;
@@ -516,13 +186,6 @@ export interface SkuSalePriceDetails {
 
 /**
  * Resolves sale-price detail for every SKU of one product, keyed by SKU identifier.
- *
- * PRODUCT-KEYED, NOT SKU-KEYED, and deliberately so. The legacy path is
- * `getProduct().getSkuSalePriceDetails(getSkuID())` at [model/entity/Sku.cfc:L541], which resolves
- * the whole product's promotion picture once and then indexes it — that is why the corresponding
- * real port exposes a per-product lookup returning a map. Mirroring the port keeps one round trip per
- * product rather than one per SKU, matches the legacy shape, and lets a real port instance satisfy
- * this interface unchanged.
  *
  * TODO(boundary) [model/entity/Sku.cfc:L539-L565] — promotion evaluation is out of scope
  * (AAP §0.2.2.1, `model/**\/Promotion*.cfc`, 9 files). Retained behind this port rather than dropped,
@@ -534,185 +197,56 @@ export interface SkuSalePricingLookup {
   ): Promise<Readonly<Record<string, SkuSalePriceDetails>>>;
 }
 
-/**
- * Answers whether any transaction references this SKU.
- *
- * ⚠️ D23 — THE IDENTIFIER IS PASSED, AND EARLIER PROSE HERE CLAIMED THE OPPOSITE ON A FALSE READING
- * OF CFML. [model/entity/Sku.cfc:L594] calls `getTransactionExistsFlag( skuID=this.getSkuID() )` with
- * a NAMED argument, and the service member it reaches —
- * `public boolean function getTransactionExistsFlag()` at [model/service/SkuService.cfc:L285] —
- * does declare no formal parameters. The mistaken inference was that CFML therefore DISCARDS the
- * surplus named argument. IT DOES NOT. CFML places every passed argument into the `arguments` scope
- * whether or not the signature declares it, and [:L286] forwards that whole scope onward with
- * `getSkuDAO().getTransactionExistsFlag( argumentCollection=arguments )`. So `skuID` reaches the DAO,
- * whose declaration at [model/dao/SkuDAO.cfc:L53-L55] accepts exactly `productID` and `skuID`, and
- * whose body branches on `structKeyExists(arguments, "skuID")` at [`:L58`].
- *
- * ⚠️ WHICH MAKES THE SCOPE OF THE ANSWER THE POINT. With `skuID` supplied the query is
- * `ss.skuID = :skuID` [`:L59`]; with it discarded the port would fall to the `<cfelse>` branch
- * [`:L61`] and answer a DIFFERENT, PRODUCT-WIDE question — and since this flag gates a DELETE
- * (the `transactionExistsFlag` delete guard in `model/validation/Sku.json`), a wrongly-scoped `true`
- * BLOCKS a legitimate delete and a wrongly-scoped `false` PERMITS a destructive one. Passing the
- * identifier is therefore behaviour preservation, not a correction of legacy behaviour.
- *
- * THE SHAPE IS CALLER-ORDERED — `(skuID?, productID?)`, both optional, SKU first — because that is the
- * order the two legacy call sites read in: `Sku.cfc:L594` supplies the first slot and
- * `Product.cfc:L626` the second. Structurally identical to the checker
- * `src/domain/product/Product.ts` declares for the same guard on [model/validation/Product.json], so
- * ONE instance serves both entities.
- *
- * ⛔ `SkuService.getTransactionExistsFlag` MUST NEVER BE BOUND HERE, EVEN THOUGH THE TWO NOW SHARE A
- * SHAPE. The structural reason comes first: a domain module may not import a service at all. The
- * historical reason is why the brand below exists. A revision narrowed that member to ZERO arguments on a
- * literal reading of AAP §0.4.2.2's Discrepancy 4, and TypeScript accepts a function of lower arity
- * wherever a higher-arity one is expected — so binding the service here COMPILED and then DISCARDED both
- * identifiers, leaving the DAO's else-branch to answer a wider question than the caller asked. That is the
- * destructive direction described above: a wrongly-scoped `true` blocks a legitimate delete, a
- * wrongly-scoped `false` permits a destructive one, and nothing reports either. Review finding F1 restored
- * `(skuID?, productID?)` on the service under TR-1, so that particular substitution would no longer lose
- * an identifier — but a lower-arity function is still structurally assignable here, so the guard is still
- * required.
- *
- * ⭐ WHICH IS WHY THE CONTRACT CARRIES {@link SkuTransactionExistenceChecker.argumentOrder}. It is a
- * required member no service declares, so binding anything but the intended adapter stops being a silent
- * runtime substitution and becomes a type error at the wiring site. The single correct implementation is
- * `createTransactionExistenceChecker` in `src/adapters/mysql/MySqlSkuRepository.ts`, which crosses
- * this caller order onto the repository order `transactionExists(productID?, skuID?)` that AAP §0.4.2.6
- * pins.
- *
- * ⚠️ THE GUARD CANNOT CATCH A CROSSING WRITTEN BACKWARDS, and that limit is stated rather than
- * papered over: both identifiers are 32-character strings (IR-6), so a swapped adapter type-checks and
- * would silently query the wrong column. Nothing in the type system can distinguish them. The crossing
- * therefore lives in EXACTLY ONE place, immediately beside the `transactionExists` implementation whose
- * order it inverts, and behavioural order assertions — not types — are what hold it.
- */
+/** Answers whether any transaction references this SKU. */
 export interface SkuTransactionExistenceChecker {
-  /**
-   * Declares which slot means what, and exists to make a mis-binding fail to compile.
-   *
-   * ⛔ NOT A RUNTIME SWITCH. Nothing reads this value to decide anything; an implementation writes the
-   * one permitted literal and the compiler does the rest. Its whole job is to be a member that
-   * `SkuService` does not have: that service declares a `getTransactionExistsFlag` structurally
-   * assignable to this method, so without the brand it would bind here silently even though the entity
-   * collaborator this contract asks for is the repository-side adapter, not the route-level service.
-   */
+  /** declares which slot means what, and exists to make a mis-binding fail to compile. */
   readonly argumentOrder: 'skuID-first-productID-second';
 
   /**
    * @param skuID - The SKU to scope the question to; the legacy `Sku.cfc:L594` argument.
    * @param productID - Accepted so one implementation serves the product-side checker too. The DAO
-   *   lets `skuID` WIN when both are present [model/dao/SkuDAO.cfc:L58-L64]; this entity never
-   *   supplies it.
+   * lets `skuID` win when both are present [model/dao/SkuDAO.cfc:L58-L64]; this entity never
+   * supplies it.
    */
   getTransactionExistsFlag(skuID?: string, productID?: string): Promise<boolean>;
 }
 
-/**
- * Finds the SKUs of this SKU's product that carry a given option combination.
- *
- * THE DATABASE READ THAT MAKES A VALIDATION RULE ASYNCHRONOUS. Its sole consumer is
- * {@link Sku.hasUniqueOptions}, and the chain behind it was traced through source rather than assumed:
- *
- *   [model/entity/Sku.cfc:L762]
- *     -> `Product.getSkusBySelectedOptions(selectedOptions)` [model/entity/Product.cfc:L366-L368]
- *     -> `ProductService.getProductSkusBySelectedOptions(selectedOptions, productID)`
- *        [model/service/ProductService.cfc:L104-L106] — a pure one-line delegation
- *     -> `SkuDAO.getSkusBySelectedOptions` — the hand-assembled conjunctive query over the SKU table
- *        and its option link table (AAP §0.6.1)
- *
- * WHY IT IS A PARAMETER RATHER THAN A REACH THROUGH `this.product`. Two reasons, both structural.
- * The product identifier plumbing belongs to `src/domain/product/Product.ts`, which already exposes
- * an equivalent asynchronous finder; duplicating it here would fork that contract. And an entity that
- * reached a repository through a relationship would be resolving its own dependency, which S3 forbids
- * — this file imports nothing from `adapters/` or `services/` and never will.
- *
- * `selectedOptions` is a COMMA-DELIMITED STRING, not an array, because that is what the legacy passes
- * and what the query builder consumes. See {@link Sku.hasUniqueOptions} for why the shape is
- * preserved rather than improved.
- */
+/** Finds the SKUs of this SKU's product that carry a given option combination. */
 export interface SkusBySelectedOptionsLookup {
   getSkusBySelectedOptions(selectedOptions: string): Promise<readonly Sku[]>;
 }
 
-/**
- * Reads the identifier of a product's default SKU.
- *
- * The legacy chain at [model/entity/Sku.cfc:L443] is
- * `getProduct().getDefaultSku().getSkuID()` — three hops, two of them unguarded. The middle hop is
- * typed in `src/domain/product/Product.ts` as a nine-member delegate that deliberately does NOT
- * expose an identifier accessor (S8 mismatch M-ii explains why this entity cannot be that delegate),
- * so the identifier read arrives as an explicit function instead. This follows the injected-reader
- * precedent that module already sets for the mirror-image direction.
- */
+/** Reads the identifier of a product's default SKU. */
 export type DefaultSkuIdReader = (defaultSku: object) => string;
 
-/* ================================================================================================
- * F04 — THE THREE OWNING MANY-TO-MANY FAMILIES WHOSE RELATED TYPE IS OUT OF SCOPE
- * ================================================================================================
+/*
+ * — the three owning many-to-many families whose related type is out of scope
  * [model/entity/Sku.cfc:L77-L79] declares three persistent owning many-to-many relationships whose
- * related components are excluded by AAP 0.2.2.1 — `Content` (five `Content*` files) and
+ * related components are excluded by AAP §0.2.2.1 — `content` (five `content*` files) and
  * `SubscriptionBenefit` (eleven `Subscription*` files):
  *
- *   [:L77] accessContents              `cfc="Content"`               link `SwSkuAccessContent`
- *   [:L78] subscriptionBenefits        `cfc="SubscriptionBenefit"`   link `SwSkuSubsBenefit`
- *   [:L79] renewalSubscriptionBenefits `cfc="SubscriptionBenefit"`   link `SwSkuRenewalSubsBenefit`
- *
- * ⭐ WHY THE ASSOCIATIONS ARE REPRESENTED AS STRUCTURALLY-TYPED OPAQUE OBJECTS RATHER THAN AS BARE
- * IDENTIFIER STRINGS. Identifiers alone would be simpler, and they would be WRONG, because two of
- * the three legacy mutators are TWO-SIDED: [:L708-:L709] and [:L728-:L729] both read the related
- * object's own state and append THIS SKU to the related object's collection. A string cannot answer
- * `isNew()`, cannot answer `hasSku(this)`, and has no collection to append to — so an
- * identifier-only representation would silently drop the inverse-side write and, with it, the guard
- * asymmetry documented on {@link Sku.addAccessContent}. Structural typing keeps the legacy semantics
- * intact while importing nothing from an excluded module, which is the ports discipline of AAP
- * 0.2.2.7 and TR-5 applied at entity granularity rather than a new exception to it.
- *
- * ⚠️ EVERY MEMBER THESE TWO INTERFACES REQUIRE IS EVIDENCE-BACKED, NOT INVENTED (S9). `isNew`,
- * `hasSku` and `getSkus` are each read by a legacy line cited on the interface below; nothing is
- * required because it seemed useful.
- * ============================================================================================== */
+ * [:L77] accessContents `cfc="content"` link `SwSkuAccessContent`
+ * [:L78] subscriptionBenefits `cfc="subscriptionBenefit"` link `SwSkuSubsBenefit`
+ * [:L79] renewalSubscriptionBenefits `cfc="subscriptionBenefit"` link `SwSkuRenewalSubsBenefit`
+ */
 
 /**
- * The minimum an out-of-scope related entity must expose for THIS SKU to hold it and for the
+ * The minimum an out-of-scope related entity must expose for this SKU to hold it and for the
  * adapter to persist the link row.
- *
- * ⚠️ `getPrimaryIDValue()` IS REQUIRED FOR PERSISTENCE, NOT FOR CONVENIENCE. Each of the three link
- * tables is a two-column join — `SwSkuAccessContent(skuID, contentID)`,
- * `SwSkuSubsBenefit(skuID, subscriptionBenefitID)` and
- * `SwSkuRenewalSubsBenefit(skuID, subscriptionBenefitID)` per [model/entity/Sku.cfc:L77-L79] — so a
- * link row cannot be written without the related row's identifier. The member is not invented for
- * this purpose either: it is the framework-inherited accessor at
- * [org/Hibachi/HibachiEntity.cfc:L244-L246] that EVERY Hibachi entity carries, and the one the six
- * in-scope entities now declare explicitly under IR-1.
- *
- * `isNew()` is read by the legacy guards at [:L705] and [:L725] and is the same inherited predicate
- * from [org/Hibachi/HibachiEntity.cfc:L707].
  */
 export interface SkuRelatedEntityRef {
   /** [org/Hibachi/HibachiEntity.cfc:L707] — `true` before the row is persisted. */
   isNew(): boolean;
 
-  /** [org/Hibachi/HibachiEntity.cfc:L244-L246] — the identifier the link row needs, `''` while new. */
+  /**
+   * [org/Hibachi/HibachiEntity.cfc:L244-L246] — the identifier the link row needs, `''` while new.
+   */
   getPrimaryIDValue(): string;
 }
 
 /**
- * A related entity that ALSO owns an inverse SKU collection, which the two hand-written two-sided
+ * A related entity that also owns an inverse SKU collection, which the two hand-written two-sided
  * mutators on this class require.
- *
- * ⭐ WHY THIS IS A SEPARATE, WIDER INTERFACE RATHER THAN ONE INTERFACE FOR ALL THREE FAMILIES.
- * [model/entity/Sku.cfc] hand-writes two-sided bodies for `accessContents` [:L704-L721] and
- * `subscriptionBenefits` [:L724-L741] and NO body at all for `renewalSubscriptionBenefits` — a
- * repository-wide search finds no `addRenewalSubscriptionBenefit` definition anywhere, only the call
- * site at [model/service/SkuService.cfc:L164]. That third family is therefore ORM-synthesized (IR-1)
- * and reaches only the owning side, so requiring `hasSku` and `getSkus` of it would demand
- * collaborator members no legacy line ever reads. Because this interface EXTENDS
- * {@link SkuRelatedEntityRef}, a single resolved `SubscriptionBenefit` still satisfies both
- * {@link Sku.addSubscriptionBenefit} and {@link Sku.addRenewalSubscriptionBenefit} — the split
- * narrows what is DEMANDED without splitting what can be SUPPLIED.
- *
- * `getSkus()` returns the LIVE array, because [:L709], [:L719], [:L729] and [:L739] all append to or
- * delete from the value it returns. A copy would make all four writes vanish.
  */
 export interface SkuInverseSkuCollectionOwner extends SkuRelatedEntityRef {
   /** Read by [:L708] and [:L728]; ORM-synthesized on the inverse side from `singularname="sku"`. */
@@ -722,38 +256,17 @@ export interface SkuInverseSkuCollectionOwner extends SkuRelatedEntityRef {
   getSkus(): Sku[];
 }
 
-/* ================================================================================================
- * MODULE CONSTANTS AND CFML-SEMANTICS HELPERS
- *
- * Every value here is a literal transcribed from the legacy source with its locator. None is
- * invented (S9), and none holds per-entity data, so nothing in this block can bleed across warm
- * Lambda invocations (M7).
- * ============================================================================================== */
+/* Module constants and CFML-semantics helpers. */
 
 /**
  * `skuID` — the declared primary identifier, [model/entity/Sku.cfc:L52],
  * `fieldtype="id" generator="uuid" ormtype="string" length="32" unsavedvalue="" default=""`.
- *
- * WHY THIS IS A CONSTANT RATHER THAN AN ENTRY IN {@link SKU_PROPERTY_DESCRIPTORS}. The AAP row
- * for this file asks that the descriptor set "mark `skuID` as the primary ID (so the inherited
- * `has_primary_id_property_name` assertion is satisfiable)". `../base/populate` cannot express that:
- * its property-kind union admits `column`, `many-to-one`, `one-to-many` and `many-to-many` and has
- * NO `id` arm, which is exactly why `src/domain/product/Brand.ts` and `src/domain/option/Option.ts`
- * both omit their own primary identifier from their descriptor sets. Exporting the name alongside
- * the set satisfies the assertion — a non-empty identifier name is available from this module — while
- * honouring the population contract instead of bending it. `test/domain/Brand.test.ts` already
- * asserts the same reconciliation for Brand.
  */
 export const SKU_PRIMARY_ID_PROPERTY_NAME = 'skuID';
 
 /**
  * The value a `skuID` holds before the row is persisted — [model/entity/Sku.cfc:L52],
  * `unsavedvalue="" default=""`.
- *
- * {@link Sku.isNew} is defined against it. `isNew()` is declared at
- * [org/Hibachi/HibachiEntity.cfc:L707] and its inherited test compares the primary identifier value
- * against the empty string, so a freshly constructed SKU is new by construction rather than by a
- * flag anyone has to remember to set.
  */
 export const SKU_UNSAVED_ID_VALUE = '';
 
@@ -766,9 +279,6 @@ export const SKU_SIMPLE_REPRESENTATION_PROPERTY_NAME = 'skuCode';
 /**
  * The resize method both deprecated-size branches request — [model/entity/Sku.cfc:L186] and [:L214],
  * `arguments.resizeMethod = "scaleBest"`.
- *
- * The same literal is exported by the real image port; the two must agree, and this declaration
- * records the legacy origin so a reader can verify the agreement rather than take it on trust.
  */
 export const SKU_RESIZE_METHOD_SCALE_BEST = 'scaleBest';
 
@@ -777,37 +287,26 @@ export const SKU_RESIZE_METHOD_SCALE_BEST = 'scaleBest';
  * [model/entity/Sku.cfc:L585], `#rbKey('entity.subscriptionTerm')#`.
  *
  * TODO(boundary) [model/entity/Sku.cfc:L585] — `rbKey` is framework localisation and is out of
- * scope. The RAW KEY is carried as the default label so the value is honest about what it is: a key
- * awaiting resolution, not a translation this file invented (S9). A caller that has a resource
+ * scope. The raw key is carried as the default label so the value is honest about what it is: a key
+ * awaiting resolution, not a translation this file invented (AAP §0.7.3). A caller that has a resource
  * bundle passes the resolved label to {@link Sku.getSkuDefinition} instead.
  */
 export const SUBSCRIPTION_TERM_RESOURCE_BUNDLE_KEY = 'entity.subscriptionTerm';
 
 /**
  * The default delimiter for a joined option display — [model/entity/Sku.cfc:L233] and [:L885], both
- * `delimiter=" "`. A SINGLE SPACE, not a comma.
+ * `delimiter=" "`. A single space, not a comma.
  */
 export const SKU_OPTIONS_DISPLAY_DEFAULT_DELIMITER = ' ';
 
 /**
  * The delimiter a SKU definition joins its option segments with — [model/entity/Sku.cfc:L581], the
  * third argument `","`.
- *
- * Deliberately distinct from {@link SKU_OPTIONS_DISPLAY_DEFAULT_DELIMITER}: a bare comma with NO
- * trailing space, because each segment already carries a LEADING space of its own. See
- * {@link Sku.getSkuDefinition}, where that interaction is the whole subtlety.
  */
 export const SKU_DEFINITION_SEGMENT_DELIMITER = ',';
 
 /**
  * The deprecated one-letter image-size aliases — [model/entity/Sku.cfc:L177-L183] and [:L205-L211].
- *
- * Both legacy branches lower-case the requested size and then map `l`, `m` and `s` onto the
- * capitalised names that get interpolated into a setting key. The mapping is preserved because those
- * capitalised names are what compose `productImageLargeWidth` and its siblings; changing the case
- * would silently resolve a different setting.
- *
- * Frozen, and read-only at the type level, so no caller can mutate shared module state (M7).
  */
 export const DEPRECATED_IMAGE_SIZE_ALIASES: Readonly<Record<string, string>> = Object.freeze({
   l: 'Large',
@@ -816,34 +315,14 @@ export const DEPRECATED_IMAGE_SIZE_ALIASES: Readonly<Record<string, string>> = O
 });
 
 /**
- * The fallback the resized-PATH branch applies to an unrecognised size —
- * [model/entity/Sku.cfc:L209-L211], the UNCONDITIONAL `else { arguments.size = "Small" }`.
- *
- * IT HAS NO COUNTERPART IN THE MARKUP BRANCH, and the asymmetry is real behaviour rather than an
- * oversight to harmonise. [:L177-L183] is a plain `if / else if / else if` chain with NO final
- * `else`, so an unrecognised size passes through UNCHANGED there and gets interpolated verbatim into
- * the setting key. The two members are documented separately and neither is aligned to the other.
+ * The fallback the resized-path branch applies to an unrecognised size —
+ * [model/entity/Sku.cfc:L209-L211], the unconditional `else { arguments.size = "Small" }`.
  */
 export const DEPRECATED_IMAGE_SIZE_FALLBACK = 'Small';
 
 /**
  * Appends one value to a comma-or-other-delimited string with CFML `listAppend` semantics.
  *
- * THE ONE RULE THAT MATTERS, STATED ONCE HERE AND THEN RELIED ON EVERYWHERE. CFML `listAppend`
- * does NOT prepend a delimiter when the accumulator is empty. So zero values yield `''`, one value
- * yields the bare value with no leading delimiter, and two yield `'a,b'` — never `',a'` and never
- * `',a,b'`. A naive `values.join(delimiter)` produces the same answer, but only because the legacy
- * accumulator always starts empty; writing the primitive explicitly keeps each call site a faithful
- * transliteration of its loop and makes the empty case obviously correct.
- *
- * Five members depend on it: {@link Sku.getOptionsDisplay} [:L236],
- * {@link Sku.getOptionsIDList} [:L528], {@link Sku.getSkuDefinition} [:L581],
- * {@link Sku.displayOptions} [:L888] and {@link Sku.hasUniqueOptions} [:L760].
- *
- * @param list the accumulator so far, empty on the first call
- * @param value the value to append, appended verbatim with no trimming and no escaping
- * @param delimiter the separator, defaulting to CFML's own default of a comma
- * @returns the extended list
  */
 function appendToDelimitedList(list: string, value: string, delimiter = ','): string {
   return list === '' ? value : `${list}${delimiter}${value}`;
@@ -852,27 +331,6 @@ function appendToDelimitedList(list: string, value: string, delimiter = ','): st
 /**
  * Strips every character a Slatwall image file name may not contain.
  *
- * The transliteration of `reReplaceNoCase(value, "[^a-z0-9\-\_]", "", "all")`, which appears TWICE in
- * [model/entity/Sku.cfc:L135] and [:L138].
- *
- * TWO DETAILS THAT DECIDE WHETHER THIS IS CORRECT:
- *   - `all` makes the replacement GLOBAL, hence the `g` flag.
- *   - `reReplaceNoCase` makes it CASE-INSENSITIVE, hence the `i` flag — WITHOUT WHICH every
- *     upper-case letter of a product code would be stripped, because the legacy character class
- *     lists only the lower-case range. A product code of `TESTPRODUCTXXX` — the literal the legacy
- *     fixture at [meta/tests/unit/Helper.cfc:L58] uses — would collapse to the empty string. The `i`
- *     flag is load-bearing, not decorative.
- *
- * The legacy escapes the hyphen and the underscore inside the class; the hyphen must stay escaped or
- * trailing-positioned in a JavaScript class, and the underscore never needed escaping in either
- * dialect.
- *
- * The pattern is a function-local literal rather than a module constant on purpose: a global regular
- * expression carries a mutable `lastIndex`, and module-scope mutable state is exactly what M7 rules
- * out. Allocating one per call is trivially cheap and unconditionally safe.
- *
- * @param value the raw segment
- * @returns the segment with every disallowed character removed
  */
 function stripDisallowedImageFileNameCharacters(value: string): string {
   return value.replace(/[^a-z0-9\-_]/gi, '');
@@ -881,152 +339,29 @@ function stripDisallowedImageFileNameCharacters(value: string): string {
 /**
  * `SlatwallSku`, table `SwSku` — a Catalog stock-keeping unit.
  *
- * Extends nothing, by design (AAP §0.3.3, composition over inheritance): the audit lifecycle arrives
- * from `../base/AuditableEntity` as free functions, population arrives from `../base/populate`
- * driven by {@link SKU_PROPERTY_DESCRIPTORS}, and every out-of-scope collaborator arrives as an
- * explicit parameter. The legacy `extends="HibachiEntity"` at [model/entity/Sku.cfc:L49] is
- * deliberately not reproduced as inheritance — AAP §0.4.3.3 replaces template-method reuse with
- * composition so that framework members the slice never uses are never inherited into the port.
- *
- * ---------------------------------------------------------------------------------------------
- * THE CONSTRUCTION CONTRACT — `new Sku()` MUST WORK WITH NO ARGUMENTS
- * ---------------------------------------------------------------------------------------------
- * `SkuService.createSkus` [model/service/SkuService.cfc:L58-L211] builds SKUs through the IR-1
- * synthesized factory `this.newSku()`, which takes nothing and returns a bare transient. In
- * TypeScript that is `new Sku()`, so NO CONSTRUCTOR PARAMETER MAY BE REQUIRED. Every field either
- * carries its declared legacy default or is optional, which is also what makes the entity cheaply
- * constructible in a test with no framework bootstrap and no mocking library — the legacy suite has
- * neither (S6, AAP §0.4.3.6) — and what satisfies the inherited `defaults_are_correct` assertion at
- * [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L49-L69].
- *
- * The merchandise-with-options branch calls, in exactly this order:
- *
- *   1. `newSku()`                                            -> `new Sku()`
- *   2. `setPrice(data.price)`                                 -> `sku.price = …`
- *   3. `setListPrice(data.listPrice)` conditionally           -> `sku.listPrice = …`
- *   4. `setSkuCode(productCode & "-" & arrayLen(product.getSkus()) + 1)`
- *   5. `product.addSku(newSku)`                               -> {@link Sku.setProduct}
- *   6. `product.setDefaultSku(newSku)` when none is set
- *   7. `newSku.addOption(…)` per option group [:L107]         -> {@link Sku.addOption}
- *
- * STEP 4 READS THE COLLECTION LENGTH **BEFORE** STEP 5 APPENDS TO IT. That ordering is the entire
- * reason the generated codes come out `-1`, `-2`, `-3` rather than all colliding on `-1`, and it holds
- * only because of two facts verified in `src/domain/product/Product.ts`: `getSkus()` returns the LIVE
- * array with no copy, and `addSku(sku)` is a pure delegation to `sku.setProduct(this)`. The append
- * therefore happens HERE. {@link Sku.setProduct} documents the coupling at the line that maintains it.
- *
- * All four legacy creation paths must work against this entity, and they differ: the no-options
- * merchandise path calls `setProduct` directly and hard-codes `-1`; the bundled content-access path
- * calls `setSkuCode` BEFORE `setProduct`; the unbundled path numbers from a loop counter. Nothing
- * here assumes a particular order beyond what the fields themselves require, which is why all four
- * are satisfied.
- *
- * ---------------------------------------------------------------------------------------------
- * THE TWO STRUCTURAL CONTRACTS THIS CLASS SATISFIES WITHOUT DECLARING THEM
- * ---------------------------------------------------------------------------------------------
- * `src/domain/option/Option.ts` declares an owner shape requiring `addOption(option: Option): void`
- * and `removeOption(option: Option): void`, and `src/domain/product/Product.ts` declares a member
- * shape requiring `setProduct(product: Product): void` and `removeProduct(product?: Product): void`.
- * Both are satisfied structurally by the members below. Neither is named in an `implements` clause,
- * because importing them would add two modules to this file's dependency set for no type-checking
- * benefit — structural satisfaction is already verified at every call site in those modules.
- *
- * @see model/entity/Sku.cfc — the sole origin
+ * @see model/entity/Sku.cfc — the sole origin.
  */
 export class Sku implements AuditableEntity, ManagedEntity {
-  /* ---------------------------------------------------------------------------------------------
-   * PERSISTENT PROPERTIES — [model/entity/Sku.cfc:L52-L96], in legacy declaration order
-   *
-   * Declared as plain public fields rather than accessor pairs, which is the convention every
-   * sibling entity of this subtree follows: the legacy `accessors=true` at [:L49] synthesized a
-   * `get`/`set` pair per property, and reproducing 62 trivial methods would add noise without adding
-   * a single guarantee. Only the members that carry BEHAVIOUR are methods, and the two bidirectional
-   * setters that maintain both sides of a relationship are the only setters that survive.
-   *
-   * Every OPTIONAL field uses `declare`. That is required rather than stylistic: `tsconfig.json`
-   * resolves `useDefineForClassFields` to true under an ES2022 target, so a plain optional field
-   * declaration would emit a definition initialising the key to `undefined` — which under
-   * `exactOptionalPropertyTypes` is a DIFFERENT state from the key being absent, and would break
-   * both the population contract and the `delete` in each `remove*` member.
-   * ------------------------------------------------------------------------------------------- */
+  /* persistent properties — [model/entity/Sku.cfc:L52-L96], in legacy declaration order. */
 
-  /**
-   * `skuID` — [model/entity/Sku.cfc:L52].
-   *
-   * A 32-character hexadecimal string WITH NO DASHES (IR-6): 107 of 113 legacy entities declare
-   * `fieldtype="id" generator="uuid" ormtype="string" length="32"`, and the generator is
-   * `createSlatwallUUID()`. Generation belongs to `src/util/uuid.ts`; this entity never generates one
-   * and never validates the shape, because the legacy entity does neither.
-   *
-   * THE MINTING SITE IS `SkuService.validateNewSku`, and it runs BEFORE the rules do. The uniqueness
-   * rule at [:L756-L769] compares `skus[1].getSkuID() == getSkuID()`, so the subject must already hold
-   * its own key for that clause to mean anything, and `MySqlSkuRepository.persistSku` refuses a SKU
-   * still carrying {@link SKU_UNSAVED_ID_VALUE} rather than inventing one at the boundary. Recorded
-   * here because a reader looking for the assignment will look at this field first.
-   *
-   * Defaults to {@link SKU_UNSAVED_ID_VALUE} so {@link Sku.isNew} is true on a fresh instance.
-   */
+  /** `skuID` — [model/entity/Sku.cfc:L52]. */
   skuID: string = SKU_UNSAVED_ID_VALUE;
 
   /** `activeFlag` — [model/entity/Sku.cfc:L53], `ormtype="boolean" default="1"`. */
   activeFlag: boolean = true;
 
-  /**
-   * `skuCode` — [model/entity/Sku.cfc:L54], `ormtype="string" unique="true" length="50"`.
-   *
-   * `unique="true"` is ONE OF ONLY FIVE UNIQUE COLUMNS IN THE ENTIRE SLICE, and the constraint is
-   * enforced TWICE in the legacy system: once by the column and once in application code, because
-   * `isUniqueProperty()` at [org/Hibachi/HibachiDAO.cfc:L130-L146] runs an existence query during
-   * validation independently of the column metadata (IR-5). [model/validation/Sku.json:L11] declares
-   * the save-context rule that triggers it.
-   *
-   * NOTHING IS CHECKED HERE. The pre-save existence check belongs to
-   * `src/adapters/mysql/UniquePropertyChecker.ts` behind its port, and rule evaluation belongs to
-   * `src/validation/rules/sku.rules.ts`. Recording the constraint at the field keeps the obligation
-   * visible without importing either (S2, S4).
-   *
-   * Optional because [:L54] declares no default, so a new SKU has no code until one is assigned —
-   * exactly the state the required-field rule exists to catch.
-   */
+  /** `skuCode` — [model/entity/Sku.cfc:L54], `ormtype="string" unique="true" length="50"`. */
   declare skuCode?: string;
 
   /**
    * `listPrice` — [model/entity/Sku.cfc:L55], `ormtype="big_decimal" hb_formatType="currency"
    * default="0"`.
-   *
-   * ⭐ F07 — `big_decimal` MAPS TO {@link ExactDecimal}, NOT TO `number`, AND THE DECISION IS MADE ONCE
-   * HERE FOR ALL THREE MONEY FIELDS. Hibernate mapped these columns to a Java `BigDecimal`: exact,
-   * arbitrary precision. A JavaScript `number` is an IEEE-754 double, which is neither — so an earlier
-   * revision of this file typed them `number` and defended it as *"a deliberate precision trade"*,
-   * reasoning that no decimal library is available (true — S5 pins the manifest to one runtime package
-   * and S9 forbids inventing a dependency), that this entity performs no arithmetic on the values, and
-   * that [model/validation/Sku.json:L4], [:9] and [:10] constrain them with `dataType: numeric` and
-   * `minValue: 0`, which a double satisfies.
-   *
-   * Every one of those clauses was accurate, and the conclusion still did not follow. A double does not
-   * merely risk drift under arithmetic; it silently REWRITES a legacy-valid stored value on the way
-   * past. `9007199254740993.01` binds as `9007199254740994`. The trade was not precision for
-   * simplicity — it was correctness for a type annotation.
-   *
-   * {@link ExactDecimal} closes it WITHOUT a new dependency, because it is a branded `string`: the
-   * digits, at the stored scale, carried from the driver through this field to the bind site and back
-   * with no floating-point step anywhere. It satisfies the two validation rules just as directly — the
-   * `numeric` constraint tests the text, and `minValue` compares digit-wise through
-   * `compareExactDecimal` — and it stores, returns and compares exactly, which is all this entity ever
-   * does with the value.
-   *
-   * `hb_formatType="currency"` is still a DISPLAY concern and is still not carried: formatting belongs
-   * to `src/util/formatting.ts`, which is also where the value type itself lives.
    */
   listPrice: ExactDecimal = EXACT_DECIMAL_ZERO;
 
   /**
    * `price` — [model/entity/Sku.cfc:L56], `ormtype="big_decimal" hb_formatType="currency"
    * default="0"`. See {@link Sku.listPrice} for the precision note.
-   *
-   * The only one of the three money fields that [model/validation/Sku.json:L9] declares
-   * `required: true`, which is what makes the inherited "a new instance fails save validation"
-   * assertion hold: a fresh SKU has the default `0`, but no `skuCode`, and [:11] requires one.
    */
   price: ExactDecimal = EXACT_DECIMAL_ZERO;
 
@@ -1037,194 +372,78 @@ export class Sku implements AuditableEntity, ManagedEntity {
    */
   renewalPrice: ExactDecimal = EXACT_DECIMAL_ZERO;
 
-  /**
-   * `imageFile` — [model/entity/Sku.cfc:L58], `ormtype="string" length="50"`.
-   *
-   * Optional, because [:L58] declares NO default and {@link Sku.generateImageFileName} exists
-   * precisely to compute one. Read by {@link Sku.getImageExtension} and by the image-path members.
-   *
-   * ⭐ SEC-HARDENING (D18-CLASS) — WHERE THIS VALUE IS CHECKED, AND WHERE IT IS STILL NOT (finding F2).
-   * This column is a populatable simple property — it appears in {@link SkuPropertyName}, in
-   * `SKU_ENTITY_METADATA.properties`, in `SKU_DECLARED_PROPERTIES` and in `SKU_SIMPLE_PROPERTY_DESCRIPTORS`
-   * — and `model/validation/Sku.json` gives it NO rule at all, not even the length its `length="50"`
-   * declaration would suggest (`src/validation/rules/sku.rules.ts` records that omission at its own
-   * locator). So an arbitrary caller-supplied string, `../../../../tmp/payload.jpg` included, can still
-   * reach this field through a populate-and-save path, and NOTHING here refuses it. That is [:L58]'s
-   * behaviour and AAP §0.8.2 guideline 4 keeps it.
-   *
-   * ⭐ IT *IS* CHECKED AT THE ONE PLACE THE DELIVERABLE TURNS THIS VALUE INTO A WRITE DESTINATION.
-   * `SkuService.processImageUpload` gates the stored name before any member of `ImagePathPort` is reached
-   * (review finding SEC-FILE-01), so a traversal cannot become a write destination. It is NOT gated on the
-   * read paths, where the legacy has a defined outcome for every input; that exposure stays carried and
-   * FLAGGED on `ImagePathPort.getImageExistsFlag` (AAP §0.7.3 S8).
-   *
-   * ⚠️ AND THE CHECK IS NOT HERE, WHICH IS THE POINT OF THIS PARAGRAPH. Neither {@link Sku.getImagePath} nor
-   * {@link Sku.getImageExistsFlag} nor {@link Sku.getImageExtension} inspects the field, and none of them
-   * should start: an entity is not where a storage policy belongs, and the three of them are reached by
-   * display surfaces — the Google feed and admin — that must render whatever is stored. The gate belongs at
-   * the write, and it is at the write.
-   */
+  /** `imageFile` — [model/entity/Sku.cfc:L58], `ormtype="string" length="50"`. */
   declare imageFile?: string;
 
   /** `userDefinedPriceFlag` — [model/entity/Sku.cfc:L59], `ormtype="boolean" default="0"`. */
   userDefinedPriceFlag: boolean = false;
 
-  /**
-   * `calculatedQATS` — [model/entity/Sku.cfc:L62], `ormtype="integer"`.
-   *
-   * A PERSISTED COLUMN, GENUINELY DISTINCT FROM THE NON-PERSISTENT `qats` AT [:L113]. The legacy
-   * file declares both, under its own `// Calculated Properties` heading, and they are easy to
-   * conflate: `qats` is one of the THIRTEEN EXCLUDED members and its getter at [:L536] delegates to
-   * an out-of-scope inventory service, whereas THIS field is a stored integer that the platform
-   * maintains and that the Google product feed's availability gate reads —
-   * `addRange('product.calculatedQATS','1^')` at
-   * [integrationServices/google/controllers/feed.cfc] (AAP §0.6.4.1). Carrying the column while
-   * excluding the calculated member is therefore correct, not inconsistent.
-   *
-   * Optional because [:L62] declares no default.
-   */
+  /** `calculatedQATS` — [model/entity/Sku.cfc:L62], `ormtype="integer"`. */
   declare calculatedQATS?: number;
 
   /**
    * `product` — [model/entity/Sku.cfc:L65], `fieldtype="many-to-one" fkcolumn="productID"
    * cfc="Product" hb_cascadeCalculate="true"`.
-   *
-   * Optional because the SKU is assembled in memory BEFORE the association is made — see
-   * {@link Sku.setProduct}, which is the only member that assigns it.
-   *
-   * `hb_cascadeCalculate="true"` instructed the framework to recalculate this SKU's derived columns
-   * when the product's changed. It is not carried: recalculation is a persistence-layer concern owned
-   * by `src/adapters/mysql/**`, and reproducing it here would put a write path in a domain entity.
    */
   declare product?: Product;
 
   /**
    * `subscriptionTerm` — [model/entity/Sku.cfc:L66], `cfc="SubscriptionTerm"
    * fieldtype="many-to-one" fkcolumn="subscriptionTermID"`.
-   *
-   * Typed as {@link SubscriptionTermRef} rather than a ported entity, because `SubscriptionTerm` is
-   * out of scope. See that interface for why its identifier member is required and its name member is
-   * not, and S8 mismatch M-iv for the far side of the association.
    */
   declare subscriptionTerm?: SubscriptionTermRef;
 
   /**
    * `options` — [model/entity/Sku.cfc:L76], `singularname="option" cfc="Option"
    * fieldtype="many-to-many" linktable="SwSkuOption" fkcolumn="skuID" inversejoincolumn="optionID"`.
-   *
-   * THE SINGLE MOST IMPORTANT RELATIONSHIP IN THE FILE, and the one this entity OWNS.
-   *
-   * OWNERSHIP IS PROVEN FROM BOTH SIDES, not assumed: [model/entity/Option.cfc:L66] declares the
-   * mirror of this association WITH `inverse="true"`, and [:L76] declares this side WITHOUT it. In
-   * Hibernate the non-inverse side is the owner, so this entity is definitively the owner of the
-   * `SwSkuOption` link table, whose columns are `skuID` and `optionID`. That matters beyond
-   * bookkeeping: `src/adapters/mysql/MySqlSkuRepository.ts` is to query that exact table for the
-   * conjunctive option-resolution statement of AAP §0.6.1, so the mapping has to be recorded
-   * precisely — and, per S2, recorded ONLY as prose. No table name and no column name appears
-   * anywhere in this file in an executable position.
-   *
-   * PRACTICAL CONSEQUENCE FOR THIS CLASS: {@link Sku.addOption} and {@link Sku.removeOption} mutate
-   * THIS array and nothing else. `Option.addSku` and `Option.removeSku`
-   * [model/entity/Option.cfc:L109-L114] are pure delegations INTO those two members, so touching the
-   * inverse side from here would recurse without termination.
-   *
-   * COSMETIC LEGACY DETAIL: alone among the four owning many-to-many declarations, [:L76] omits
-   * `type="array"`, which [:L77], [:L78] and [:L79] all carry. It has no effect in CFML.
-   *
-   * Defaults to an empty array so a fresh SKU can accept options immediately, which the odometer at
-   * [model/service/SkuService.cfc:L107] requires.
    */
   options: Option[] = [];
 
-  /* ---------------------------------------------------------------------------------------------
-   * THE OTHER THREE OWNING MANY-TO-MANY COLLECTIONS — [model/entity/Sku.cfc:L77-L79]
-   * ---------------------------------------------------------------------------------------------
-   * ⭐ THESE ARE CARRIED AS LIVE COLLECTIONS EVEN THOUGH THEIR ELEMENT ENTITIES ARE OUT OF SCOPE, and
+  /*
+   * The other three owning many-to-many collections — [model/entity/Sku.cfc:L77-L79]
+   * these are carried as live collections even though their element entities are out of scope, and
    * that is TR-5 applied rather than bent. `Content` and `SubscriptionBenefit` are excluded by §0.2.2.1,
-   * so no element MODULE is written — but the ASSOCIATION is in scope, because this entity owns all three
-   * link tables and `model/service/SkuService.cfc` populates all three inside `createSkus`:
-   *
-   *   [:L161] `thisSku.addSubscriptionBenefit( … )`         per benefit, per subscription SKU
-   *   [:L164] `thisSku.addRenewalSubscriptionBenefit( … )`  per renewal benefit, per subscription SKU
-   *   [:L187] `newSku.addAccessContent( … )`                per content, bundled branch
-   *   [:L196] `newSku.addAccessContent( … )`                per content, unbundled branch
-   *
-   * ⛔ WHY OMITTING THEM WAS A DATA-LOSS DEFECT, NOT A CLEAN BOUNDARY. Without these collections the
-   * service could resolve a benefit or a content reference and then have nowhere to put it, so the
-   * resolved link was discarded — and a link row that never reaches the entity can never be written by
-   * any future persistence adapter, because the information no longer exists by the time the SKU is
-   * saved. The boundary that TR-5 licenses is a boundary on the ELEMENT's behaviour, not permission to
-   * drop the owner's own link data.
-   *
-   * The element types are the minimal opaque references the two ports already declare, so nothing about
-   * the out-of-scope entities is invented here. Those two reference types are deliberately mutually
-   * unassignable (`src/ports/SubscriptionTermPort.ts` records why), which is what stops a benefit being
-   * appended to the content collection or vice versa — a mistake all three helpers below would otherwise
-   * accept, since all three are arrays of opaque references.
-   *
-   * Per S2 no link-table or column name appears in an executable position; the mapping is prose only:
-   *   `accessContents`              [:L77] link `SwSkuAccessContent`,     columns `skuID` / `contentID`
-   *   `subscriptionBenefits`        [:L78] link `SwSkuSubsBenefit`,       `skuID` / `subscriptionBenefitID`
-   *   `renewalSubscriptionBenefits` [:L79] link `SwSkuRenewalSubsBenefit`, `skuID` / `subscriptionBenefitID`
-   *
-   * ⚠️ THE LAST TWO SHARE BOTH THEIR ELEMENT COMPONENT AND THEIR INVERSE JOIN COLUMN AND DIFFER ONLY BY
-   * LINK TABLE, so they are genuinely two distinct associations that a reader can easily conflate. The
-   * service adds to them from two different data keys at [:L161] and [:L164]; crossing them would be
-   * silent, since the element type is identical.
-   *
-   * All three declare `type="array"` at source and default to an empty array, so a fresh SKU can accept
-   * associations immediately — which the loops at [:L160-L166] and [:L186-L197] require.
-   * ------------------------------------------------------------------------------------------- */
+   * so no element module is written — but the association is in scope, because this entity owns all three
+   * link tables and `model/service/SkuService.cfc` populates all three inside `createSkus`.
+   */
 
   /** `accessContents` — [model/entity/Sku.cfc:L77], owner side, singular `accessContent`. */
   accessContents: AccessContentReference[] = [];
 
-  /** `subscriptionBenefits` — [model/entity/Sku.cfc:L78], owner side, singular `subscriptionBenefit`. */
+  /**
+   * `subscriptionBenefits` — [model/entity/Sku.cfc:L78], owner side, singular `subscriptionBenefit`.
+   */
   subscriptionBenefits: SubscriptionBenefitReference[] = [];
 
   /**
    * `renewalSubscriptionBenefits` — [model/entity/Sku.cfc:L79], owner side, singular
    * `renewalSubscriptionBenefit`. Same element component as {@link Sku.subscriptionBenefits}; a
-   * DIFFERENT link table.
+   * different link table.
    */
   renewalSubscriptionBenefits: SubscriptionBenefitReference[] = [];
 
   /** `remoteID` — [model/entity/Sku.cfc:L90], `ormtype="string"`, no default, so optional. */
   declare remoteID?: string;
 
-  /* ---------------------------------------------------------------------------------------------
-   * AUDIT PROPERTIES — [model/entity/Sku.cfc:L93-L96], all four `hb_populateEnabled="false"`
-   *
-   * Declared here to satisfy the {@link AuditableEntity} contract structurally; the LIFECYCLE that
-   * fills them lives in `../base/AuditableEntity` as free functions, so no ORM event hook is
-   * reproduced. `createdByAccount` and `modifiedByAccount` are many-to-one relationships to
-   * `Account`, which is out of scope (AAP §0.2.2.1, 21 files) — the base module represents each as an
-   * account identifier rather than an entity reference, and that decision is honoured here rather
-   * than an `Account` type being invented (S9).
-   * ------------------------------------------------------------------------------------------- */
+  /* Audit properties — [model/entity/Sku.cfc:L93-L96], all four `hb_populateEnabled="false"` */
 
   /** `createdDateTime` — [model/entity/Sku.cfc:L93], `ormtype="timestamp"`. */
   declare createdDateTime?: Date;
 
-  /** `createdByAccount` — [model/entity/Sku.cfc:L94], `cfc="Account" fkcolumn="createdByAccountID"`. */
+  /**
+   * `createdByAccount` — [model/entity/Sku.cfc:L94], `cfc="account" fkcolumn="createdByAccountID"`.
+   */
   declare createdByAccount?: string;
 
   /** `modifiedDateTime` — [model/entity/Sku.cfc:L95], `ormtype="timestamp"`. */
   declare modifiedDateTime?: Date;
 
-  /** `modifiedByAccount` — [model/entity/Sku.cfc:L96], `cfc="Account" fkcolumn="modifiedByAccountID"`. */
+  /**
+   * `modifiedByAccount` — [model/entity/Sku.cfc:L96], `cfc="account" fkcolumn="modifiedByAccountID"`.
+   */
   declare modifiedByAccount?: string;
 
-  /* ---------------------------------------------------------------------------------------------
-   * PER-INSTANCE MEMOIZATION (M7 / S8)
-   *
-   * The legacy caches each derived value in its own `variables` scope behind a
-   * `!structKeyExists(variables, …)` guard, and [:L49] declares `cacheuse="transactional"`. Under
-   * Lambda nothing survives an invocation except MODULE-scope state, so every cache here is a
-   * `#`-private INSTANCE field. A module-scope cache would serve one tenant's catalog data from
-   * another tenant's request on a warm container — a correctness and isolation failure, not a
-   * performance detail.
-   * ------------------------------------------------------------------------------------------- */
+  /* Per-instance memoization (M7 / AAP §0.7.3) */
 
   /** Caches {@link Sku.getCurrencyCode} — the legacy guard is at [model/entity/Sku.cfc:L361]. */
   #currencyCode?: string;
@@ -1232,85 +451,37 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /** Caches {@link Sku.getOptionsIDList} — the legacy guard is at [model/entity/Sku.cfc:L525]. */
   #optionsIdList?: string;
 
-  /**
-   * Caches {@link Sku.getSkuDefinition} — the legacy guard is at [model/entity/Sku.cfc:L575].
-   *
-   * The empty string IS a cached value, not a cache miss. Two of the three legacy arms can leave the
-   * result empty — the content-access arm by design and the merchandise arm when there are no options
-   * — and the legacy guard tests key EXISTENCE rather than truthiness, so it never recomputes. The
-   * `=== undefined` test below reproduces that exactly, where a falsy test would not.
-   */
+  /** Caches {@link Sku.getSkuDefinition} — the legacy guard is at [model/entity/Sku.cfc:L575]. */
   #skuDefinition?: string;
 
   /** Caches {@link Sku.getImageName} — the legacy guard is at [model/entity/Sku.cfc:L795]. */
   #imageName?: string;
 
-  /**
-   * Caches the always-empty D2 map — the legacy guard is at [model/entity/Sku.cfc:L513].
-   *
-   * ALSO WRITTEN BY D1, AND THAT CROSS-TALK IS THE DEFECT. [:L502] initialises THIS cache while
-   * claiming to initialise the code-keyed one, so the two accessors interfere and CALL ORDER BECOMES
-   * OBSERVABLE. See {@link Sku.getOptionsByOptionGroupCodeStruct} for the full consequence.
-   */
+  /** Caches the always-empty D2 map — the legacy guard is at [model/entity/Sku.cfc:L513]. */
   #optionsByOptionGroupIdStruct?: Record<string, Option>;
 
   /**
-   * The THIRD, differently-named struct of defect D2 — [model/entity/Sku.cfc:L517].
-   *
-   * WRITTEN BUT NEVER READ, DELIBERATELY. The legacy loop populates
-   * `variables.OptionsByGroupIDStruct` while the accessor returns
-   * `variables.optionsByOptionGroupIDStruct`, so every option lands somewhere nothing consults. It is
-   * kept as a real field rather than dropped so the defect is INSPECTABLE: a test can observe that
-   * the options were computed and then discarded, which is a far stronger demonstration of D2 than an
-   * accessor that merely returns an empty object for no visible reason.
+   * The third, differently-named struct of defect D2 — [model/entity/Sku.cfc:L517].
    *
    * TODO(parity) [model/entity/Sku.cfc:L512-L522] — D2. Not repaired.
    */
   #discardedOptionsByGroupIdStruct: Record<string, Option> = {};
 
-  /** Caches {@link Sku.getSalePriceDetails} — the legacy guard is at [model/entity/Sku.cfc:L540]. */
+  /**
+   * Caches {@link Sku.getSalePriceDetails} — the legacy guard is at [model/entity/Sku.cfc:L540].
+   */
   #salePriceDetails?: SkuSalePriceDetails;
 
-  /** Caches {@link Sku.getTransactionExistsFlag} — the legacy guard is at [model/entity/Sku.cfc:L593]. */
+  /**
+   * Caches {@link Sku.getTransactionExistsFlag} — the legacy guard is at [model/entity/Sku.cfc:L593].
+   */
   #transactionExistsFlag?: boolean;
 
-  /* ---------------------------------------------------------------------------------------------
-   * THE UNGUARDED-DEREFERENCE POLICY, STATED ONCE
-   *
-   * The legacy file dereferences a possibly-absent relationship without a guard in eleven places,
-   * most of them the chain `option.getOptionGroup().getOptionGroupX()`. `optionGroup` is genuinely
-   * optional: [model/entity/Option.cfc:L59] declares a plain many-to-one with no `required`
-   * attribute, and `src/domain/option/Option.ts` types it optional accordingly. In CFML each of
-   * those chains raises on a null reference; in TypeScript under `strict` each is a compile error
-   * until narrowed, and S1 forbids resolving that with a non-null assertion.
-   *
-   * THE POLICY: where the legacy would have raised, this port raises too — a {@link DomainError}
-   * naming the member and its locator. That is the FAITHFUL outcome, made diagnosable instead of
-   * arriving as an opaque runtime failure, and it keeps a validation rule's verdict honest: silently
-   * skipping an option with no group would let a SKU pass a uniqueness check the legacy system fails
-   * it on.
-   *
-   * THE POLICY IS NOW WITHOUT EXCEPTION FOR THE MEMBERS THIS PORT DECLARES ON THE ENTITY ITSELF.
-   * {@link Sku.getDefaultFlag} used to be a declared exception, returning `false` rather than raising;
-   * that exception is WITHDRAWN and the reasoning is recorded at the member. It mattered more than an
-   * ordinary divergence because `model/validation/Sku.json:L3` uses `defaultFlag` as a DELETE GUARD, so
-   * answering `false` permitted deletes the legacy system aborted.
-   *
-   * ONE MEMBER STILL DIVERGES, AND IT IS NOT GOVERNED BY THIS POLICY: {@link Sku.getSalePriceDetails}.
-   * It is one of the four EXCLUDED calculated members (AAP §0.2.2.6) retained only because TR-5 forbids
-   * dropping a member from the interface, and its absence semantics belong to the operator's
-   * `PricingPort` implementation rather than to this entity. Its divergence is flagged at the member on
-   * its own footing.
-   * ------------------------------------------------------------------------------------------- */
+  /* The unguarded-dereference policy, stated once. */
 
   /**
    * Reads an option's option group, raising where the legacy would have raised.
    *
-   * @param option the option whose group is required
-   * @param locator the `model/entity/Sku.cfc:L###` site whose behaviour is being reproduced
-   * @returns the option group
-   * @throws {DomainError} when the option carries no option group, reproducing the legacy null
-   *   dereference at the cited locator
    */
   #requireOptionGroup(option: Option, locator: string): OptionGroup {
     const optionGroup = option.optionGroup;
@@ -1329,14 +500,6 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * Reads this SKU's product, raising where the legacy would have raised.
    *
-   * `product` is genuinely optional — three of the four creation paths at
-   * [model/service/SkuService.cfc:L58-L211] assemble the SKU before associating it — yet several
-   * legacy members call `getProduct()` and immediately dereference the result. Those members raise on
-   * an unassociated SKU in CFML, and they raise here too.
-   *
-   * @param locator the `model/entity/Sku.cfc:L###` site whose behaviour is being reproduced
-   * @returns the product
-   * @throws {DomainError} when this SKU has no product
    */
   #requireProduct(locator: string): Product {
     const product = this.product;
@@ -1351,24 +514,12 @@ export class Sku implements AuditableEntity, ManagedEntity {
     return product;
   }
 
-  /* ---------------------------------------------------------------------------------------------
-   * IDENTITY
-   * ------------------------------------------------------------------------------------------- */
+  /* identity. */
 
   /**
    * Whether this SKU has never been persisted.
    *
-   * `isNew()` is declared at [org/Hibachi/HibachiEntity.cfc:L707] and its inherited test compares the
-   * primary identifier value against the empty string, which for this entity is `skuID` per
-   * [model/entity/Sku.cfc:L52] `unsavedvalue="" default=""`. A freshly constructed SKU is therefore
-   * new by construction.
-   *
-   * IT IS NOT MERELY INFORMATIONAL. {@link Sku.setProduct} branches on it, and because CFML `or`
-   * short-circuits, a new SKU takes the append path UNCONDITIONALLY there. And it is one of the four
-   * inherited entity assertions: `defaults_are_correct` asserts `isNew()` and an empty primary
-   * identifier value.
-   *
-   * @returns `true` while `skuID` is still {@link SKU_UNSAVED_ID_VALUE}
+   * @returns `true` while `skuID` is still {@link SKU_UNSAVED_ID_VALUE}.
    */
   isNew(): boolean {
     return this.skuID === SKU_UNSAVED_ID_VALUE;
@@ -1377,49 +528,18 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * The property whose value represents this SKU in a human-facing list.
    *
-   * [model/entity/Sku.cfc:L809], whose body is `return "skuCode";`.
-   *
-   * THE ONE SANCTIONED EXCEPTION to this file's forbidden-member list. `getSimpleRepresentation`
-   * itself is NOT declared — composing a representation is the framework's job and the port leaves it
-   * to the layer that renders — but the property NAME is this entity's own declaration, and it is what
-   * makes the inherited `simple_representation_exists_and_is_simple` assertion at
-   * [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L49-L69] satisfiable: `skuCode` is a string,
-   * which is a simple value.
-   *
    * @returns the literal `'skuCode'`
    */
   getSimpleRepresentationPropertyName(): string {
     return SKU_SIMPLE_REPRESENTATION_PROPERTY_NAME;
   }
 
-  /* ---------------------------------------------------------------------------------------------
-   * OPTION MEMBERSHIP — IR-1: three members with NO legacy body anywhere
-   *
-   * `addOption`, `removeOption` and `hasOption` have NO DEFINITION anywhere
-   * in [model/entity/Sku.cfc]. All three exist purely through ORM synthesis from
-   * `singularname="option"` at [:L76] — precisely the `onMissingMethod`-class metaprogramming that
-   * IR-1 requires be replaced by explicit declarations, since TypeScript under `strict` has no
-   * equivalent facility.
-   *
-   * FOUR IN-SCOPE CALL SITES DEPEND ON THEM, every one verified:
-   *   [model/entity/Option.cfc:L111]        `arguments.sku.addOption( this );`
-   *   [model/entity/Option.cfc:L114]        `arguments.sku.removeOption( this );`
-   *   [model/service/SkuService.cfc:L107]   inside the odometer combination engine
-   *   [model/service/ProductService.cfc:L119] `skus[i].addOption(options[1]);` — the D14 site
-   *
-   * Without these declarations, `src/domain/option/Option.ts`, `src/services/SkuService.ts` and
-   * `src/services/ProductService.ts` cannot compile.
-   * ------------------------------------------------------------------------------------------- */
+  /* Option membership — IR-1: three members with no legacy body anywhere. */
 
   /**
    * This SKU's options — the live array, not a copy.
    *
-   * The explicit replacement for the accessor `accessors=true` synthesized from [:L76]. Returning the
-   * live array is faithful and load-bearing: every legacy caller iterates it in place, and
-   * `src/domain/product/Product.ts` makes the identical choice for its own collection for the reason
-   * documented on {@link Sku.setProduct}.
-   *
-   * @returns the option collection, mutable and shared
+   * @returns the option collection, mutable and shared.
    */
   getOptions(): Option[] {
     return this.options;
@@ -1428,17 +548,6 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * Whether this SKU already holds the given option.
    *
-   * IR-1: synthesized in legacy, declared explicitly here. It is declared even though no legacy line
-   * calls it on a SKU, because {@link Sku.addOption} needs exactly this predicate and because the
-   * sibling entities declare their own equivalents — `OptionGroup.hasOption` and `Brand.hasProduct` —
-   * so a reader finds the member where the convention says it should be.
-   *
-   * Identity comparison, not identifier comparison, matching the ORM-synthesized `array contains`
-   * semantics and the legacy hand-written membership tests at [:L705] and [:L725], which compare
-   * object references.
-   *
-   * @param option the option to look for
-   * @returns `true` when this exact option instance is already held
    */
   hasOption(option: Option): boolean {
     return this.options.includes(option);
@@ -1447,17 +556,7 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * Adds an option to this SKU.
    *
-   * ADD-IF-ABSENT, and the choice is evidence-based rather than arbitrary. No legacy body exists to
-   * transliterate, so the semantics are taken from the two places the legacy DOES hand-write a
-   * two-sided add on this entity — [:L704-L712] and [:L724-L732] — both of which guard with a
-   * membership test before appending. The AAP row for this file prescribes the same shape.
-   *
-   * MUTATES THE OWNING SIDE ONLY. This entity owns the link table (see {@link Sku.options}), and
-   * `Option.addSku` at [model/entity/Option.cfc:L111] is a pure delegation INTO this member. Updating
-   * the inverse side from here would therefore recurse without termination. The correct way to
-   * associate from the option's side is `option.addSku(sku)`, which lands back here exactly once.
-   *
-   * @param option the option to associate
+   * @param option the option to associate.
    */
   addOption(option: Option): void {
     if (!this.hasOption(option)) {
@@ -1468,15 +567,7 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * Removes an option from this SKU.
    *
-   * THE SENTINEL TRANSLATION MATTERS. CFML `arrayFind` returns 0 when not found, so every legacy
-   * guard reads `if(index > 0)`; TypeScript `indexOf` returns −1, so the guard MUST read
-   * `!== -1`. Transliterating `> 0` would silently delete element 0 of the array whenever the search
-   * missed. The legacy file has six such guards — [:L615], [:L633], [:L714], [:L718], [:L734] and
-   * [:L738] — and every translation in this file uses `!== -1`.
-   *
-   * Owning side only, for the same non-recursion reason as {@link Sku.addOption}.
-   *
-   * @param option the option to disassociate; a no-op when it is not held
+   * @param option the option to disassociate; a no-op when it is not held.
    */
   removeOption(option: Option): void {
     const index = this.options.indexOf(option);
@@ -1485,33 +576,20 @@ export class Sku implements AuditableEntity, ManagedEntity {
     }
   }
 
-  /* ---------------------------------------------------------------------------------------------
-   * RELATIONSHIP HELPERS FOR THE OTHER THREE OWNING COLLECTIONS — [model/entity/Sku.cfc:L77-L79]
-   * ---------------------------------------------------------------------------------------------
-   * ⭐ SAME SHAPE AND SAME EVIDENCE AS {@link Sku.addOption}: add-if-absent guarded by an identity
+  /*
+   * Relationship helpers for the other three owning collections — [model/entity/Sku.cfc:L77-L79]
+   * same shape and same evidence as {@link Sku.addOption}: add-if-absent guarded by an identity
    * membership test, remove by `indexOf` with the `!== -1` sentinel translation. No legacy body exists
    * for any of the six — they are ORM-synthesized, and IR-1 requires each to be declared explicitly
    * because `model/service/SkuService.cfc` calls four of them by name at [:L161], [:L164], [:L187] and
    * [:L196]. The two `remove*` members have no in-scope call site; they are declared because the ORM
-   * synthesizes `add`/`remove` as a PAIR and removing an association is otherwise impossible from the
+   * synthesizes `add`/`remove` as a pair and removing an association is otherwise impossible from the
    * owning side, which is the side that owns the link row.
-   *
-   * ⚠️ OWNING SIDE ONLY, and here that is unconditionally safe rather than a recursion hazard: the
-   * inverse entities are out of scope, so no delegating member exists to call back into these. Nothing
-   * is "missing" from these bodies — see {@link Sku.addOption} for the case where the inverse side does
-   * exist and delegation would recurse.
-   *
-   * ⚠️ IDENTITY COMPARISON, NOT IDENTIFIER COMPARISON, matching {@link Sku.hasOption} and the legacy
-   * hand-written membership tests at [:L705] and [:L725]. Two distinct reference objects describing the
-   * same underlying row are therefore both appended — which is exactly what the legacy `array contains`
-   * check does, and is why the service must not resolve the same identifier twice.
-   * ------------------------------------------------------------------------------------------- */
+   */
 
   /**
    * Whether this SKU already holds that access content.
    *
-   * @param accessContent the content reference to look for
-   * @returns `true` when this exact reference instance is already held
    */
   hasAccessContent(accessContent: AccessContentReference): boolean {
     return this.accessContents.includes(accessContent);
@@ -1520,7 +598,7 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * Adds access content to this SKU — the member `model/service/SkuService.cfc:L187` and [`:L196`] call.
    *
-   * @param accessContent the content reference to associate
+   * @param accessContent the content reference to associate.
    */
   addAccessContent(accessContent: AccessContentReference): void {
     if (!this.hasAccessContent(accessContent)) {
@@ -1531,7 +609,7 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * Removes access content from this SKU.
    *
-   * @param accessContent the content reference to disassociate; a no-op when it is not held
+   * @param accessContent the content reference to disassociate; a no-op when it is not held.
    */
   removeAccessContent(accessContent: AccessContentReference): void {
     const index = this.accessContents.indexOf(accessContent);
@@ -1543,8 +621,6 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * Whether this SKU already holds that subscription benefit.
    *
-   * @param subscriptionBenefit the benefit reference to look for
-   * @returns `true` when this exact reference instance is already held
    */
   hasSubscriptionBenefit(subscriptionBenefit: SubscriptionBenefitReference): boolean {
     return this.subscriptionBenefits.includes(subscriptionBenefit);
@@ -1553,11 +629,7 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * Adds a subscription benefit to this SKU — the member `model/service/SkuService.cfc:L161` calls.
    *
-   * ⚠️ TARGETS {@link Sku.subscriptionBenefits}, NOT {@link Sku.renewalSubscriptionBenefits}. The two
-   * collections hold the SAME element type and differ only by link table, so a crossed body here would
-   * type-check and write the wrong link row.
-   *
-   * @param subscriptionBenefit the benefit reference to associate
+   * @param subscriptionBenefit the benefit reference to associate.
    */
   addSubscriptionBenefit(subscriptionBenefit: SubscriptionBenefitReference): void {
     if (!this.hasSubscriptionBenefit(subscriptionBenefit)) {
@@ -1568,7 +640,7 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * Removes a subscription benefit from this SKU.
    *
-   * @param subscriptionBenefit the benefit reference to disassociate; a no-op when it is not held
+   * @param subscriptionBenefit the benefit reference to disassociate; a no-op when it is not held.
    */
   removeSubscriptionBenefit(subscriptionBenefit: SubscriptionBenefitReference): void {
     const index = this.subscriptionBenefits.indexOf(subscriptionBenefit);
@@ -1580,8 +652,6 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * Whether this SKU already holds that renewal subscription benefit.
    *
-   * @param renewalSubscriptionBenefit the benefit reference to look for
-   * @returns `true` when this exact reference instance is already held
    */
   hasRenewalSubscriptionBenefit(renewalSubscriptionBenefit: SubscriptionBenefitReference): boolean {
     return this.renewalSubscriptionBenefits.includes(renewalSubscriptionBenefit);
@@ -1590,10 +660,7 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * Adds a renewal subscription benefit — the member `model/service/SkuService.cfc:L164` calls.
    *
-   * ⚠️ TARGETS {@link Sku.renewalSubscriptionBenefits}. See {@link Sku.addSubscriptionBenefit} for why
-   * the distinction cannot be checked by the compiler.
-   *
-   * @param renewalSubscriptionBenefit the benefit reference to associate
+   * @param renewalSubscriptionBenefit the benefit reference to associate.
    */
   addRenewalSubscriptionBenefit(renewalSubscriptionBenefit: SubscriptionBenefitReference): void {
     if (!this.hasRenewalSubscriptionBenefit(renewalSubscriptionBenefit)) {
@@ -1604,7 +671,7 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * Removes a renewal subscription benefit from this SKU.
    *
-   * @param renewalSubscriptionBenefit the reference to disassociate; a no-op when it is not held
+   * @param renewalSubscriptionBenefit the reference to disassociate; a no-op when it is not held.
    */
   removeRenewalSubscriptionBenefit(renewalSubscriptionBenefit: SubscriptionBenefitReference): void {
     const index = this.renewalSubscriptionBenefits.indexOf(renewalSubscriptionBenefit);
@@ -1613,30 +680,20 @@ export class Sku implements AuditableEntity, ManagedEntity {
     }
   }
 
-  /* ---------------------------------------------------------------------------------------------
-   * OPTION STRUCTURE — the seven members of the AAP row, three of them defective
-   * ------------------------------------------------------------------------------------------- */
+  /* Option structure — the seven members of the AAP row, three of them defective. */
 
   /**
    * The option names of this SKU joined by a delimiter — [model/entity/Sku.cfc:L233-L239].
    *
-   * The legacy default delimiter is a SINGLE SPACE, not a comma: `getOptionsDisplay(delimiter=" ")`.
-   * The join uses CFML `listAppend` semantics, so an option-less SKU yields the empty string and a
-   * single option yields its bare name with no delimiter on either side — see
-   * {@link appendToDelimitedList}.
-   *
-   * @param delimiter the separator, defaulting to {@link SKU_OPTIONS_DISPLAY_DEFAULT_DELIMITER}
-   * @returns the joined option names, empty when this SKU has no options
-   * @throws {DomainError} never — this member reads `optionName` only and touches no option group
    */
   getOptionsDisplay(delimiter: string = SKU_OPTIONS_DISPLAY_DEFAULT_DELIMITER): string {
     let displayedOptions = '';
     for (const option of this.options) {
       /*
-       * [:L236] appends `getOptions()[i].getOptionName()` with no null guard. `optionName` is
+       * [:L236] appends `getOptions[i].getOptionName()` with no null guard. `optionName` is
        * optional on the ported Option because [model/entity/Option.cfc:L54] declares no default, so
        * an absent name is represented as the empty string here rather than raising: unlike the
-       * option-group chains this is a SCALAR read, and CFML `listAppend` accepts an empty value and
+       * option-group chains this is a scalar read, and CFML `listAppend` accepts an empty value and
        * appends an empty element for it. Raising would invent a failure the legacy does not have.
        */
       displayedOptions = appendToDelimitedList(
@@ -1652,15 +709,6 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * The option belonging to a given option group, by group identifier —
    * [model/entity/Sku.cfc:L241-L245].
    *
-   * CORRECT IN ITSELF, YET IT CAN NEVER FIND ANYTHING. Unlike its sibling at [:L247] it tests and
-   * indexes THE SAME map — so there is no defect to carry in this member — but the map it consults is
-   * {@link Sku.getOptionsByOptionGroupIDStruct}, which defect D2 makes permanently empty. The lookup
-   * therefore always misses, through no fault of its own. Recorded so that a reader who verifies this
-   * member against [:L241] and finds it faithful does not then conclude the port is broken elsewhere.
-   *
-   * The legacy has NO `else` arm, so control falls off the end and CFML returns null. That maps to
-   * `undefined`, which is why the return type admits it rather than raising on a miss.
-   *
    * @param optionGroupID the option group's identifier
    * @returns the matching option, or `undefined`
    */
@@ -1669,7 +717,7 @@ export class Sku implements AuditableEntity, ManagedEntity {
     /*
      * The two-step read is the transliteration of `structKeyExists(...)` followed by an index, and
      * under `noUncheckedIndexedAccess` the index yields `Option | undefined` regardless — so the
-     * narrowing is what the compiler requires AND what the legacy shape describes.
+     * narrowing is what the compiler requires and what the legacy shape describes.
      */
     if (Object.hasOwn(optionsByOptionGroupId, optionGroupID)) {
       return optionsByOptionGroupId[optionGroupID];
@@ -1678,103 +726,35 @@ export class Sku implements AuditableEntity, ManagedEntity {
   }
 
   /**
-   * The option belonging to a given option group, by group CODE — [model/entity/Sku.cfc:L247-L251].
+   * The option belonging to a given option group, by group code — [model/entity/Sku.cfc:L247-L251].
    *
-   * TODO(parity) [model/entity/Sku.cfc:L247-L251] — DEFECT D3, CARRIED NOT REPAIRED.
+   * TODO(parity) [model/entity/Sku.cfc:L247-L251] — defect D3, carried not repaired.
    *
-   * The legacy body, verbatim:
-   *
-   *     if(structKeyExists(getOptionsByOptionGroupCodeStruct(), arguments.optionGroupCode)) {
-   *         return getOptionsByOptionGroupIDStruct()[ arguments.optionGroupCode ];
-   *     }
-   *
-   * It TESTS the code-keyed map and then INDEXES THE IDENTIFIER-KEYED MAP with a CODE key, so it can
-   * never hit. The one-character difference between the two accessor names is the entire defect, and
-   * it is the reason this port gives each accessor a distinct, typed return value rather than
-   * maintaining parallel string-keyed maps — AAP §0.6.7.2 draws exactly that lesson from the D1/D2/D3
-   * cluster.
-   *
-   * IN PRACTICE THIS MEMBER CANNOT SUCCEED AT ALL, and for a compounding reason: the guard calls
-   * {@link Sku.getOptionsByOptionGroupCodeStruct}, which defect D1 makes RAISE on first call, so the
-   * mismatched index at the second line is never even reached. The wrong-map read is preserved anyway
-   * — it is what the source says, and a future repair of D1 would expose it.
-   *
-   * Guideline 4 forbids the obvious fix. Repairing it would activate a lookup the legacy system never
-   * performs, changing which options a SKU reports for a group code, and the change would read as a
-   * bug fix while silently altering behaviour.
-   *
-   * @param optionGroupCode the option group's code
-   * @returns the matching option, or `undefined`; unreachable in practice, see above
-   * @throws {DomainError} propagated from D1's guard call, which raises before this member can return
    */
   getOptionByOptionGroupCode(optionGroupCode: string): Option | undefined {
     /*
-     * [:L248] — the guard consults the CODE-keyed map. This call is what raises D1, and it is placed
+     * [:L248] — the guard consults the code-keyed map. This call is what raises D1, and it is placed
      * first because that is where the legacy places it.
      */
     const optionsByOptionGroupCode = this.getOptionsByOptionGroupCodeStruct();
     if (Object.hasOwn(optionsByOptionGroupCode, optionGroupCode)) {
-      /* [:L249] — and the return indexes the IDENTIFIER-keyed map. The mismatch IS defect D3. */
+      /* [:L249] — and the return indexes the identifier-keyed map. The mismatch is defect D3. */
       return this.getOptionsByOptionGroupIDStruct()[optionGroupCode];
     }
     return undefined;
   }
 
   /**
-   * This SKU's options keyed by option group CODE — [model/entity/Sku.cfc:L500-L510].
+   * This SKU's options keyed by option group code — [model/entity/Sku.cfc:L500-L510].
    *
-   * TODO(parity) [model/entity/Sku.cfc:L500-L510] — DEFECT D1, CARRIED NOT REPAIRED.
-   * THIS MEMBER FAILS ON EVERY CALL, BY DESIGN OF THE PORT AND BY BEHAVIOUR OF THE LEGACY.
+   * TODO(parity) [model/entity/Sku.cfc:L500-L510] — defect D1, carried not repaired.
+   * This member fails on every call, by design of the port and by behaviour of the legacy.
    *
-   * The legacy body, verbatim:
-   *
-   *     if(!structKeyExists(variables, "optionsByOptionGroupCodeStruct")) {
-   *         variables.optionsByOptionGroupIDStruct = {};          // <-- the WRONG variable
-   *         for(var option in getOptions()) {
-   *             if( !structKeyExists(variables.optionsByOptionGroupCodeStruct, option.getOptionGroup().getOptionGroupCode())){
-   *                 variables.optionsByOptionGroupCodeStruct[ option.getOptionGroup().getOptionGroupCode() ] = option;
-   *             }
-   *         }
-   *     }
-   *     return variables.optionsByOptionGroupCodeStruct;
-   *
-   * WHY IT FAILS ON **BOTH** PATHS, which is stronger than the register's summary and was established
-   * by reading the control flow rather than assumed:
-   *   - WITH OPTIONS: the first loop iteration reads `variables.optionsByOptionGroupCodeStruct`
-   *     inside `structKeyExists`, and that variable was never created, so CFML raises an
-   *     undefined-variable error at [:L504].
-   *   - WITH NO OPTIONS: the loop body never runs, control reaches [:L509], and the `return` reads
-   *     the same never-created variable. It raises there instead.
-   * There is consequently NO input for which this member returns a value.
-   *
-   * THE MEMOIZATION GUARD AT [:L501] IS DEAD for the same reason: its subject is never created, so
-   * the guard is always true and the wrong-variable initialisation below runs on EVERY call. That is
-   * the same class of dead memoization as the observed item at [:L460].
-   *
-   * THE SIDE EFFECT IS THE INTERESTING PART, AND IT IS REPRODUCED FAITHFULLY. [:L502] initialises
-   * {@link Sku.getOptionsByOptionGroupIDStruct}'s cache — D2's cache — before raising. So CALL ORDER
-   * BETWEEN THE TWO ACCESSORS IS OBSERVABLE: call this member first and D2 afterwards finds its cache
-   * already present, skips its loop entirely, and returns empty WITHOUT ever dereferencing an option
-   * group; call D2 first and its loop does run and can raise on an option with no group. Two orders,
-   * two behaviours, one shared mutable cache. Preserved exactly.
-   *
-   * THE RETURN TYPE IS THE MAP SHAPE, NOT `never`. The legacy declares `returntype="any"` and the
-   * shape it intends is a code-keyed map of options; typing it as the intended shape is what keeps
-   * {@link Sku.getOptionByOptionGroupCode}'s existence test type-legal, and it is what a future
-   * repair would satisfy without changing this signature.
-   *
-   * FIRST-WINS SEMANTICS, RECORDED THOUGH UNREACHABLE: the `if(!structKeyExists(...))` guard at
-   * [:L504] means the FIRST option seen for a group code would be kept and later ones ignored.
-   * Contrast {@link Sku.getOptionsValueStruct} at [:L899], which has no such guard and lets the last
-   * option win. Both are preserved as written.
-   *
-   * @returns nominally a map of option group code to option; never actually returns
-   * @throws {DomainError} always, reproducing the legacy undefined-variable failure
    */
   getOptionsByOptionGroupCodeStruct(): Record<string, Option> {
     /*
-     * [:L502] — the wrong-variable initialisation, reproduced INCLUDING its clobber of D2's cache,
-     * and reproduced BEFORE the failure because that is the legacy order of execution. It is
+     * [:L502] — the wrong-variable initialisation, reproduced including its clobber of D2's cache,
+     * and reproduced before the failure because that is the legacy order of execution. It is
      * unconditional because the legacy guard at [:L501] is dead.
      */
     this.#optionsByOptionGroupIdStruct = {};
@@ -1782,7 +762,7 @@ export class Sku implements AuditableEntity, ManagedEntity {
       'Sku.getOptionsByOptionGroupCodeStruct is unusable: model/entity/Sku.cfc:L502 initialises ' +
         'the identifier-keyed struct while model/entity/Sku.cfc:L504 and :L509 read a ' +
         'code-keyed struct that is never created, so the legacy member raises an ' +
-        'undefined-variable error on every call. Carried unrepaired as defect D1 per AAP 0.6.7.2 ' +
+        'undefined-variable error on every call. Carried unrepaired as defect D1 per AAP §0.6.7.2 ' +
         'and Refactor Discipline Guideline 4. It has already reset the identifier-keyed cache, ' +
         'exactly as the legacy does.',
       {
@@ -1797,43 +777,11 @@ export class Sku implements AuditableEntity, ManagedEntity {
   }
 
   /**
-   * This SKU's options keyed by option group IDENTIFIER — [model/entity/Sku.cfc:L512-L522].
+   * This SKU's options keyed by option group identifier — [model/entity/Sku.cfc:L512-L522].
    *
-   * TODO(parity) [model/entity/Sku.cfc:L512-L522] — DEFECT D2, CARRIED NOT REPAIRED.
-   * THIS MEMBER ALWAYS RETURNS AN EMPTY MAP, however many options are attached.
+   * TODO(parity) [model/entity/Sku.cfc:L512-L522] — defect D2, carried not repaired.
+   * This member always returns an empty map, however many options are attached.
    *
-   * The legacy body, verbatim:
-   *
-   *     if(!structKeyExists(variables, "optionsByOptionGroupIDStruct")) {
-   *         variables.optionsByOptionGroupIDStruct = {};
-   *         for(var option in getOptions()) {
-   *             if( !structKeyExists(variables.optionsByOptionGroupIDStruct, option.getOptionGroup().getOptionGroupID())){
-   *                 variables.OptionsByGroupIDStruct[ option.getOptionGroup().getOptionGroupID() ] = option;
-   *             }
-   *         }
-   *     }
-   *     return variables.optionsByOptionGroupIDStruct;
-   *
-   * The guard tests the right map, the map is created, the loop runs, the existence check consults the
-   * right map — and then the ASSIGNMENT AT [:L517] writes into `variables.OptionsByGroupIDStruct`, a
-   * THIRD struct with a third distinct name. The map that is returned is therefore the one that was
-   * created and never written to. Every option is computed and then discarded.
-   *
-   * THE WORK IS STILL PERFORMED, AND THAT IS WHY IT IS PORTED AS A REAL LOOP RATHER THAN AS
-   * `return {}`. Two consequences are observable and would be lost by the shortcut: the discarded map
-   * accumulates the correct entries, which {@link Sku.getOptionsByOptionGroupCodeStruct} explains is
-   * inspectable evidence of the defect; and the loop DEREFERENCES EACH OPTION'S GROUP, so a SKU
-   * holding an option with no group raises here. Returning an empty object immediately would silently
-   * make that failure disappear.
-   *
-   * AND THE FAILURE IS ORDER-DEPENDENT, which is the D1 cross-talk seen from this side: if D1 ran
-   * first it already set this cache, so the guard below is false, the loop is SKIPPED, and no group is
-   * dereferenced — the same SKU that raises here on a fresh instance returns quietly after a D1 call.
-   * Both behaviours are the legacy's; neither is smoothed over.
-   *
-   * @returns an empty map, always
-   * @throws {DomainError} when the loop runs and an option carries no option group, per the
-   *   unguarded-dereference policy
    */
   getOptionsByOptionGroupIDStruct(): Record<string, Option> {
     if (this.#optionsByOptionGroupIdStruct === undefined) {
@@ -1844,9 +792,9 @@ export class Sku implements AuditableEntity, ManagedEntity {
         /* [:L516] and [:L517] both dereference the option group; the legacy guards neither. */
         const optionGroup = this.#requireOptionGroup(option, 'model/entity/Sku.cfc:L516');
         const optionGroupId = optionGroup.optionGroupID;
-        /* [:L516] — the existence check consults the map that IS returned. */
+        /* [:L516] — the existence check consults the map that is returned. */
         if (!Object.hasOwn(returnedStruct, optionGroupId)) {
-          /* [:L517] — and the write goes to the THIRD struct. This one line is defect D2. */
+          /* [:L517] — and the write goes to the third struct. This one line is defect D2. */
           this.#discardedOptionsByGroupIdStruct[optionGroupId] = option;
         }
       }
@@ -1858,17 +806,6 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * This SKU's option identifiers as a comma-delimited string — [model/entity/Sku.cfc:L524-L533].
    *
-   * THE STRING RETURN TYPE IS PRESERVED DELIBERATELY AND MUST NOT BE "IMPROVED" TO AN ARRAY. The
-   * legacy declares `public string function` and builds the value with `listAppend` using the DEFAULT
-   * delimiter, which is a comma. That shape is the one the option-resolution repository consumes and
-   * the one {@link Sku.hasUniqueOptions} builds independently at [:L758-L761]; changing it here would
-   * fork the two.
-   *
-   * Memoized per instance, reproducing the guard at [:L525]. Unlike the two struct accessors this one
-   * is entirely correct: it reads `optionID` off each option and touches no option group, so it can
-   * neither raise nor return the wrong thing.
-   *
-   * @returns the option identifiers joined by commas; the empty string when there are no options
    */
   getOptionsIDList(): string {
     if (this.#optionsIdList === undefined) {
@@ -1881,163 +818,18 @@ export class Sku implements AuditableEntity, ManagedEntity {
     return this.#optionsIdList;
   }
 
-  /* ---------------------------------------------------------------------------------------------
-   * THE TWO METHOD-BASED VALIDATION RULES (IR-4 — BEHAVIOUR, NOT HELPERS)
-   *
-   * [model/validation/Sku.json:L5-L8] registers BOTH on the `options` property in the SAVE context,
-   * verbatim:
-   *
-   *     "options": [
-   *         {"contexts":"save","method":"hasUniqueOptions"},
-   *         {"contexts":"save","method":"hasOneOptionPerOptionGroup"}
-   *     ]
-   *
-   * AAP §0.4.1.5 requires them "wired to the domain methods rather than to strings", and
-   * `src/validation/Validator.ts` implements exactly that: its method-constraint shape carries an
-   * `invoke` member typed as a function of the subject returning the unknown top type, and it AWAITS
-   * that result unconditionally. So ONE signature accommodates both a synchronous and an asynchronous
-   * rule, and the SPLIT BELOW IS A CROSS-FILE CONTRACT that `src/validation/rules/sku.rules.ts`
-   * binds against. That module's own documentation states the same conclusion independently:
-   * `hasUniqueOptions` performs a database read and is asynchronous; `hasOneOptionPerOptionGroup` is
-   * pure, in-memory and synchronous.
-   *
-   * Both are declared `returntype="any"` in legacy rather than `boolean`, yet both only ever return
-   * `true` or `false`. Tightening to `boolean` and `Promise<boolean>` is therefore the correct target
-   * type under TR-1, and the tightening is recorded here rather than made silently.
-   *
-   * THE FULL `Sku.json` CONTRACT, for context — 8 property keys and 9 rules. Rule EVALUATION belongs
-   * to `src/validation/rules/sku.rules.ts` and never to this class; only the two METHOD rules are
-   * this entity's, per IR-4:
-   *   [:3]  defaultFlag            delete  eq false
-   *   [:4]  listPrice              save    dataType numeric, minValue 0   (NOT required)
-   *   [:6]  options                save    method hasUniqueOptions
-   *   [:7]  options                save    method hasOneOptionPerOptionGroup
-   *   [:9]  price                  save    required, dataType numeric, minValue 0
-   *   [:10] renewalPrice           save    dataType numeric, minValue 0   (NOT required)
-   *   [:11] skuCode                save    required, UNIQUE
-   *   [:12] transactionExistsFlag  delete  eq false
-   *   [:13] physicalCounts         delete  maxCollection 0
-   *
-   * S9 — `physicalCounts` AT [:13] IS NOT A PROPERTY OF THIS ENTITY. [model/entity/Sku.cfc:L87]
-   * declares `physicals`. The presence gate at [org/Hibachi/HibachiValidationService.cfc:L171]
-   * SILENTLY SKIPS a rule whose property the subject does not carry, so THE GUARD NEVER FIRES IN THE
-   * LEGACY SYSTEM EITHER. NO MEMBER IS ADDED HERE TO MAKE IT FIRE: renaming it to `physicals` would
-   * activate a delete guard the legacy never runs and block deletes the legacy permits, which
-   * Guideline 4 forbids and which would read as a bug fix. The same phantom appears in four of the
-   * seven documents — against [model/entity/Product.cfc:L90], [model/entity/Sku.cfc:L87],
-   * [model/entity/Brand.cfc:L71] and [model/entity/ProductType.cfc:L77] — and
-   * `src/validation/rules/brand.rules.ts` already documents the pattern and makes the inertness a
-   * compile-checked invariant by excluding the identifier from the entity's property-name union.
-   * {@link SkuPropertyName} and {@link SkuNonPersistentPropertyName} both omit it, so that invariant
-   * holds for this entity too.
-   * ------------------------------------------------------------------------------------------- */
+  /* The two method-based validation rules (ir-4 — behaviour, not helpers) */
 
   /**
-   * Whether no OTHER SKU of this product carries this SKU's exact option combination —
+   * Whether no other SKU of this product carries this SKU's exact option combination —
    * [model/entity/Sku.cfc:L756-L769].
    *
-   * Legacy `@hint` at [:L755], preserved: "this method validates that this skus has a unique option
-   * combination that no other sku has".
-   *
-   * THIS IS A VALIDATION RULE THAT PERFORMS A DATABASE ROUND TRIP, WHICH IS WHY IT IS `async`.
-   * The chain was traced through source, not assumed:
-   *   [:L763]  `getProduct().getSkusBySelectedOptions(selectedOptions=optionsList)`
-   *     -> [model/entity/Product.cfc:L366-L368]
-   *        `getService("productService").getProductSkusBySelectedOptions(arguments.selectedOptions, this.getProductID())`
-   *     -> [model/service/ProductService.cfc:L104-L106] — a pure one-line delegation
-   *     -> `SkuDAO.getSkusBySelectedOptions` — the hand-assembled conjunctive query of AAP §0.6.1
-   * A reader who assumed this were a pure predicate would make it synchronous and then discover, at
-   * the composition root rather than here, that it cannot be.
-   *
-   * ---------------------------------------------------------------------------------------------
-   * AAP §0.6.2 — THE VALIDATION READ-BACK LOOP
-   * ---------------------------------------------------------------------------------------------
-   * AAP §0.6.2 calls this "the single most dangerous thing in the slice", because "a faithful-looking
-   * port can produce different results with no error and no compile failure". The cycle:
-   *
-   *     SkuService.createSkus  [model/service/SkuService.cfc:L58-L211]
-   *       -> save Sku
-   *         -> validation, save context  [model/validation/Sku.json:L6]
-   *           -> Sku.hasUniqueOptions()  [model/entity/Sku.cfc:L763]
-   *             -> Product.getSkusBySelectedOptions()
-   *               -> the option-resolution query over the SKU table and its option link table
-   *                 -> BACK INTO THE SAVE
-   *
-   * A rule READS BACK the rows the very same operation is WRITING. Under CFML and Hibernate it
-   * observes only the sibling SKUs already visible to the ORM session, so correctness depends on
-   * flush-before-query behaviour and on the ORDER in which the combination batch is persisted. Under
-   * `mysql2` there is NO ORM session and NO automatic flush, so — in the AAP's words — "a naive port
-   * that inserts every combination and then validates, or that validates before any insert, produces
-   * different results — silently".
-   *
-   * WHERE THE RESOLUTION LIVES, AND WHY IT IS NOT HERE. `src/adapters/mysql/UnitOfWork.ts` must make
-   * each SKU's insert visible to the NEXT SKU's uniqueness read WITHIN THE SAME TRANSACTION, and the
-   * proof is a combination-batch test in `test/services/SkuService.test.ts` that FAILS under either
-   * naive ordering. This entity has no persistence access and must not acquire any (S2), so it cannot
-   * and does not attempt to solve transaction visibility. What it CAN do is name the hazard at the
-   * exact line that creates it, which is what Guideline 6 requires and what this block is.
-   *
-   * The enumeration order of the odometer at [model/service/SkuService.cfc:L58-L211] is part of the
-   * same story: it determines the order in which uniqueness validation observes its siblings, which
-   * is why AAP §0.6.7.8 requires that engine be ported verbatim.
-   *
-   * ---------------------------------------------------------------------------------------------
-   * TODO(parity) AAP §0.6.2 / §0.6.1.3 T5 — DEFECT D19, CARRIED NOT REPAIRED
-   * ---------------------------------------------------------------------------------------------
-   * FOR A SKU WITH ZERO OPTIONS, `optionsList` is the empty string. AAP §0.6.1.3 T5 establishes that
-   * an empty selection is a LEGAL, MEANINGFUL input which makes the query degenerate to "all
+   * TODO(parity) AAP §0.6.2 / §0.6.1.3 T5 — defect D19, carried not repaired
+   * for a SKU with zero options, `optionsList` is the empty string. AAP §0.6.1.3 T5 establishes that
+   * an empty selection is a legal, meaningful input which makes the query degenerate to "all
    * option-bearing SKUs of this product". The guard at [:L764] can then only pass when the product has
-   * NO option-bearing SKUs at all.
+   * no option-bearing SKUs at all.
    *
-   * ⇒ AN OPTION-LESS DEFAULT SKU ON A PRODUCT THAT ALREADY HAS OPTION-BEARING SKUS FAILS THIS RULE.
-   *
-   * NO ZERO-OPTION EARLY RETURN IS ADDED. That would be a silent repair, and it would also break the
-   * degenerate form two other callers depend on — `Product.getSkuBySelectedOptions` and this very
-   * method — since T5 states both rely on it.
-   *
-   * ---------------------------------------------------------------------------------------------
-   * THE THREE SHAPE DECISIONS, EACH OF WHICH WOULD SILENTLY CHANGE RESULTS IF MADE DIFFERENTLY
-   * ---------------------------------------------------------------------------------------------
-   *   1. `optionsList` IS A COMMA-DELIMITED STRING, built in `getOptions()` iteration order, NOT
-   *      SORTED and NOT DE-DUPLICATED. Sorting would change nothing for a set-membership query but
-   *      would diverge from the legacy string; de-duplicating WOULD change results, because AAP
-   *      §0.6.1.3 T1 requires "one existence clause per list element, duplicates included" — a
-   *      `GROUP BY … HAVING COUNT` rewrite diverges exactly when the list contains duplicates.
-   *   2. THE GUARD IS REPRODUCED LITERALLY as "no results, OR exactly one result which is this SKU".
-   *      Under `noUncheckedIndexedAccess` the first element is `Sku | undefined`, so it is narrowed
-   *      explicitly rather than asserted — S1 forbids the assertion, and the narrowing is free here
-   *      because the length has already been tested.
-   *   3. THE LOOKUP IS A PARAMETER, NOT A REACH THROUGH `this.product`. See
-   *      {@link SkusBySelectedOptionsLookup} for the two structural reasons. In particular this entity
-   *      never imports from `adapters/` or `services/` (S3, S4).
-   *
-   * ---------------------------------------------------------------------------------------------
-   * THE ONE GENUINE CASE-SENSITIVITY DIVERGENCE IN THIS REGION, RECORDED RATHER THAN HIDDEN
-   * ---------------------------------------------------------------------------------------------
-   * THE SELF-EXCLUSION COMPARISON AT [:L764] IS `skus[1].getSkuID() == getSkuID()`, AND CFML `==`
-   * ON TWO STRINGS IS CASE-INSENSITIVE. The `===` below is case-sensitive, so the two are not
-   * equivalent in general, and the direction of the difference matters: a sibling row whose
-   * identifier differed from this SKU's only in letter case would satisfy the legacy self-exclusion
-   * and yield `true`, whereas this port would not recognise it as this SKU and would yield `false`.
-   * The divergence can only ever turn a legacy pass into a failure, never the reverse.
-   *
-   * IT IS UNREACHABLE FOR EVERY VALUE THAT CAN ACTUALLY OCCUR. Primary keys here are 32-character
-   * lower-case hexadecimal strings produced by `createSlatwallUUID()` (IR-6), so no two identifiers
-   * can differ by case alone. That makes the divergence unreachable, not absent — which is why it
-   * is named here rather than dismissed. `src/validation/Validator.ts` records the same divergence
-   * from the engine's side, as the first of the two it enumerates, and reaches the same conclusion.
-   *
-   * NO CASE NORMALISATION IS ADDED. Lower-casing either side would invent a transformation the
-   * legacy identifiers never need (S9), and it would additionally mask a corrupt identifier that
-   * the strict comparison surfaces.
-   *
-   * DO NOT CONFUSE THIS WITH THE SIBLING RULE. {@link Sku.hasOneOptionPerOptionGroup} has NO such
-   * divergence, because [:L776] reaches for `listFind`, which IS case-sensitive and therefore
-   * agrees exactly with the set membership that ports it. The two comparisons differ — `==` here,
-   * `listFind` there — and only this one diverges.
-   *
-   * @param lookup resolves the SKUs of this SKU's product carrying a given option combination
-   * @returns `true` when the combination is unique to this SKU, subject to D19
    */
   async hasUniqueOptions(lookup: SkusBySelectedOptionsLookup): Promise<boolean> {
     /*
@@ -2076,51 +868,6 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * Whether this SKU holds at most one option per option group — [model/entity/Sku.cfc:L772-L784].
    *
-   * PURE, IN-MEMORY AND SYNCHRONOUS. It walks the options and returns on the first repeated option
-   * group identifier; it touches no repository, no port and no collaborator, which is why it takes no
-   * parameter. Contrast {@link Sku.hasUniqueOptions}, its registered sibling, which is asynchronous —
-   * the two rules sit on the same property in the same context and differ in exactly this respect.
-   *
-   * ITS `@hint` AT [:L771] IS A COPY-PASTE DUPLICATE of the one above `hasUniqueOptions` and
-   * WRONGLY DESCRIBES UNIQUE OPTIONS rather than one-per-group. Preserved verbatim as legacy wrote it,
-   * because the comment is part of what the source says, and flagged here so a reader does not trust
-   * it: legacy hint, [:L771], "this method validates that this skus has a unique option combination
-   * that no other sku has". It is wrong. The method name and the body are authoritative.
-   *
-   * IDIOM CHANGE, PERMITTED AND TAKEN. The legacy accumulates a delimited string and tests membership
-   * with `listFind`; this uses a set with an early return. The Minimal Change Clause (AAP §0.8.1)
-   * expressly licenses idiomatic TypeScript — "it does not mean preserving CFML idioms in TypeScript"
-   * — and the observable outcome is identical, including the EARLY EXIT ON THE FIRST REPEAT, which is
-   * preserved because it determines which option group a caller would find in a partially built SKU.
-   *
-   * NO BEHAVIOURAL DIFFERENCE ACCOMPANIES THAT IDIOM CHANGE, BECAUSE CFML `listFind` IS
-   * CASE-SENSITIVE. `listFindNoCase` is the insensitive variant and [:L776] uses the unsuffixed
-   * form, while a `Set<string>` also compares case-sensitively — so the two agree on every input
-   * and there is nothing to reconcile. The pair exists deliberately in the language and this
-   * codebase discriminates between them: across `org/Hibachi/**` the split is 84 `listFindNoCase`
-   * to 7 `listFind`, and `src/domain/base/populate.ts` records the same evidence at length under
-   * its F23 marker. Nothing here normalises case, and nothing should — lower-casing either side
-   * would invent a transformation the legacy identifiers never need (S9).
-   *
-   * THE CASE SENSITIVITY IS NEVERTHELESS LOAD-BEARING, AND IS DELIBERATELY NOT HARMONISED WITH THE
-   * ENGINE THAT INVOKES THIS RULE. [org/Hibachi/HibachiValidationService.cfc:L71] selects contexts
-   * with `listFindNoCase`, and [org/Hibachi/HibachiValidationService.cfc:L461] matches `inList` the
-   * same way — both case-INSENSITIVELY. Two comparison policies coexist in the legacy system and
-   * are left unreconciled; `src/validation/Validator.ts` records that same split from the engine's
-   * side. The consequence is concrete: TWO OPTION GROUPS DIFFERING ONLY IN LETTER CASE ARE TWO
-   * DIFFERENT GROUPS, so a SKU carrying one option from each PASSES. IR-6 identifiers are
-   * 32-character lower-case hexadecimal produced by `createSlatwallUUID()`, so generated data
-   * cannot reach that state — which is precisely why `test/domain/Sku.test.ts` and
-   * `test/validation/rules.test.ts` pin the verdict explicitly, so a later "harmonise the list
-   * searches" change cannot flip it unnoticed.
-   *
-   * THE ONE GENUINE CASE-SENSITIVITY DIVERGENCE IN THIS REGION IS NOT THIS METHOD'S. It belongs to
-   * {@link Sku.hasUniqueOptions}, whose self-exclusion comparison at [:L764] uses CFML `==`, which
-   * IS case-insensitive unlike `listFind`. That method's own doc block carries it.
-   *
-   * @returns `true` when every option belongs to a distinct option group, or when there are none
-   * @throws {DomainError} when an option carries no option group, per the unguarded-dereference
-   *   policy — [:L776] and [:L779] both dereference it without a guard
    */
   hasOneOptionPerOptionGroup(): boolean {
     const seenOptionGroupIds = new Set<string>();
@@ -2129,7 +876,7 @@ export class Sku implements AuditableEntity, ManagedEntity {
         option,
         'model/entity/Sku.cfc:L776',
       ).optionGroupID;
-      /* [:L776-L777] — `false` on the FIRST repeat, before any further option is examined. */
+      /* [:L776-L777] — `false` on the first repeat, before any further option is examined. */
       if (seenOptionGroupIds.has(optionGroupId)) {
         return false;
       }
@@ -2140,56 +887,13 @@ export class Sku implements AuditableEntity, ManagedEntity {
     return true;
   }
 
-  /* ---------------------------------------------------------------------------------------------
-   * BASE PRODUCT TYPE AND SKU DEFINITION
-   * ------------------------------------------------------------------------------------------- */
+  /* Base product type and SKU definition. */
 
   /**
    * This SKU's base product type, delegated to its product — [model/entity/Sku.cfc:L356-L358], whose
-   * body is `return getProduct().getBaseProductType();`.
+   * body is `return getProduct().getBaseProductType;`.
    *
-   * THE RETURN TYPE MUST NOT BE NARROWED TO THE THREE-MEMBER UNION. See
-   * {@link SkuBaseProductTypeCode} for the full argument; in one sentence, narrowing would let the
-   * compiler prove the fallthrough arm of `SkuService.createSkus` unreachable and delete the legacy
-   * throw at [model/service/SkuService.cfc:L204].
    *
-   * IT IS ASYNCHRONOUS BECAUSE THE DELEGATION CAN REACH THE DATABASE.
-   * [model/entity/ProductType.cfc:L110-L115] returns the stored system code when one is present and
-   * otherwise fetches the ROOT product type of the hierarchy through a service call. `Product.ts`
-   * exposes the same member asynchronously for exactly this reason, and this member mirrors it —
-   * which in turn makes {@link Sku.getSkuDefinition} asynchronous, since it branches on this value.
-   *
-   * ⭐ AN UNASSOCIATED SKU RAISES, BECAUSE [`:L357`] IS A BARE `return getProduct().getBaseProductType();`
-   * WITH NO GUARD. This member is governed by the unguarded-dereference policy stated above like every
-   * other member declared on this entity, and it resolves its product through the same
-   * {@link Sku.#requireProduct} helper.
-   *
-   * ⛔ AN EARLIER REVISION RETURNED `undefined` FOR AN ABSENT PRODUCT, AND IT IS WITHDRAWN. Its two
-   * grounds are answered:
-   *   (a) "THE PRODUCT MAY LEGITIMATELY BE ABSENT, SINCE THREE OF THE FOUR CREATION PATHS AT
-   *       [model/service/SkuService.cfc:L58-L211] ASSEMBLE THE SKU BEFORE ASSOCIATING IT." True, and it
-   *       is precisely why {@link Sku.#requireProduct} exists and why two other members already call it.
-   *       That a state is REACHABLE says nothing about what the legacy DOES in it, and what the legacy
-   *       does at `:L357` is fail.
-   *   (b) "A CALLER BRANCHING ON THE VALUE SHOULD GET A VALUE RATHER THAN AN EXCEPTION." That is an
-   *       argument for changing the contract, not for describing the changed contract as the legacy's.
-   *       Its concrete claim — that the empty definition {@link Sku.getSkuDefinition} then produces
-   *       "behaves exactly as the legacy's does when the code matches none of the three" — conflates two
-   *       different legacy outcomes: an unrecognised CODE does yield an empty definition, whereas an
-   *       absent PRODUCT yields no definition at all because the call never returns.
-   *
-   * ⚠️ `undefined` REMAINS IN THE RETURN TYPE FOR A DIFFERENT AND GENUINE REASON: the resolved product
-   * type's root may carry no system code, and `model/entity/ProductType.cfc:L112` returns CFML null
-   * there. That is the one absence the whole chain still answers with a value — see
-   * `ProductType.getBaseProductType`, which raises for an unresolvable root and returns `undefined` only
-   * for a codeless one.
-   *
-   * @param rootProductTypeResolver resolves a product type by identifier, for the fallback arm
-   * @returns the base product type code, unnarrowed, or `undefined` when the resolved root carries no
-   *   system code
-   * @throws {DomainError} when this SKU has no product, reproducing the legacy null dereference at
-   *   [`model/entity/Sku.cfc:L357`]; and, propagated, when the product has no product type or its root
-   *   lookup finds nothing
    */
   async getBaseProductType(
     rootProductTypeResolver: SkuProductTypeRootResolver,
@@ -2201,65 +905,7 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * A human-readable definition of what distinguishes this SKU — [model/entity/Sku.cfc:L574-L590].
    *
-   * The legacy body, verbatim, because four of its details are easy to lose:
    *
-   *     if(!structKeyExists(variables, "skuDefinition")) {
-   *         variables.skuDefinition = "";
-   *         if(getBaseProductType() eq "contentAccess") {
-   *
-   *         } else if (getBaseProductType() eq "merchandise") {
-   *             for(var option in getOptions()) {
-   *                 variables.skuDefinition = listAppend(variables.skuDefinition, " #option.getOptionGroup().getOptionGroupName()#: #option.getOptionName()#", ",");
-   *             }
-   *             trim(variables.skuDefinition);
-   *         } else if (getBaseProductType() eq "subscription") {
-   *             variables.skuDefinition = "#rbKey('entity.subscriptionTerm')#: #getSubscriptionTerm().getSubscriptionTermName()#";
-   *         }
-   *     }
-   *     return variables.skuDefinition;
-   *
-   * DETAIL 1 — THE `contentAccess` ARM HAS A DELIBERATELY EMPTY BODY, and it is preserved as an
-   * explicit empty branch rather than collapsed away. Collapsing it would hide a real legacy decision:
-   * a content-access SKU is defined by its content, not by options or a term, so its definition is
-   * intentionally the empty string. `src/domain/product/ProductType.ts` records the same finding from
-   * its side, noting that this member "has no fallthrough arm at all and leaves its result as the
-   * empty string" — in contrast to `createSkus`, which throws. The two legacy consumers of a base
-   * product type treat the unrecognised case DIFFERENTLY and must not be aligned.
-   *
-   * DETAIL 2 — EACH MERCHANDISE SEGMENT CARRIES A LEADING SPACE, and the join delimiter is a BARE
-   * COMMA. [:L581] appends the literal `" #group#: #name#"` with `","`. Two options therefore yield
-   * `" A: red, B: large"` — a leading space at the very start of the string, and exactly one space
-   * after each comma, arising from the segment rather than the delimiter. Reproduced character for
-   * character.
-   *
-   * DETAIL 3 — TODO(parity) [model/entity/Sku.cfc:L583] — THE `trim()` IS A DISCARDED COMPUTATION
-   * AND IS **NOT** APPLIED HERE. `trim(variables.skuDefinition);` is a bare expression with NO
-   * ASSIGNMENT, and CFML `trim` is not in-place, so THE TRIM NEVER TAKES EFFECT and the leading space
-   * survives into the returned value. Applying it would change the observable string — which is
-   * precisely the kind of silent, well-intentioned repair Guideline 4 forbids.
-   *
-   * DETAIL 4 — THE LEGACY CALLS `getBaseProductType()` UP TO THREE TIMES, at [:L577], [:L579] and
-   * [:L584], each of which can reach the database through the fallback arm. This resolves it ONCE.
-   * That is an idiom change the Minimal Change Clause permits, and it cannot change the outcome: the
-   * value is a stored system code that nothing in this method mutates, so all three legacy calls
-   * necessarily agree.
-   *
-   * COMPARISON USES THE RUNTIME GUARD from `../BaseProductType` rather than bare string equality, so
-   * the three discriminator names are checked against the single authoritative declaration instead of
-   * being retyped here (S9, IR-7). The literal system codes are seeded at
-   * [config/dbdata/SlatwallProductType.xml.cfm:L13-L15] and belong to that module. An unrecognised
-   * code falls through all three arms and leaves the result empty, exactly as the legacy does.
-   *
-   * Memoized per instance, reproducing [:L575] — and the EMPTY STRING IS A CACHED VALUE, since the
-   * legacy guard tests key existence rather than truthiness.
-   *
-   * @param rootProductTypeResolver forwarded to {@link Sku.getBaseProductType}
-   * @param subscriptionTermLabel the resolved label for the subscription arm, defaulting to the raw
-   *   resource-bundle key {@link SUBSCRIPTION_TERM_RESOURCE_BUNDLE_KEY} — see that constant for why a
-   *   key rather than an invented translation
-   * @returns the definition, possibly the empty string
-   * @throws {DomainError} when a merchandise SKU holds an option with no option group, per the
-   *   unguarded-dereference policy — [:L581] dereferences it without a guard
    */
   async getSkuDefinition(
     rootProductTypeResolver: SkuProductTypeRootResolver,
@@ -2269,43 +915,23 @@ export class Sku implements AuditableEntity, ManagedEntity {
       return this.#skuDefinition;
     }
 
-    /*
-     * [:L576] — the result starts empty, and for a content-access SKU it stays that way.
-     *
-     * ⭐ THE MEMO IS SEEDED HERE, ON THE INSTANCE, BEFORE ANY WORK THAT CAN RAISE — AND THE ORDER IS
-     * BEHAVIOUR, NOT STYLE. The legacy writes `variables.skuDefinition = ""` at `:L576` and only then
-     * evaluates `getBaseProductType()` at `:L577`, so when that evaluation fails the memo has ALREADY
-     * been written: the first call raises and every later call takes the `:L575` cache branch and
-     * returns `""` silently. Building only into a local and assigning once at the end would have made
-     * every call raise instead — a divergence created by the raise this port now correctly performs at
-     * {@link Sku.getBaseProductType} and at `:L581`, and therefore one this method has to absorb rather
-     * than introduce. The local below still carries the value being built, so the success path is
-     * unchanged.
-     */
+    /* [:L576] — the result starts empty, and for a content-access SKU it stays that way. */
     this.#skuDefinition = '';
     let skuDefinition = '';
     const baseProductType = await this.getBaseProductType(rootProductTypeResolver);
 
     /*
-     * The runtime recognition gate. An UNRECOGNISED code matches none of the three legacy arms and
+     * The runtime recognition gate. An unrecognised code matches none of the three legacy arms and
      * leaves the definition empty — the `if` reproduces that outcome directly, and the exhaustive
      * switch inside it is what lets the compiler check the three arms without narrowing the value's
      * own type (see {@link SkuBaseProductTypeCode}). Recognition is the reason no cast is needed.
-     *
-     * ⭐ RECOGNITION IS CASE-INSENSITIVE AND SWITCHES ON THE CANONICAL CODE, BECAUSE [:L577], [:L579]
-     * AND [:L584] ARE CFML `==`. A row holding `Merchandise` produced a merchandise definition in the
-     * legacy system. An earlier form of this gate used a `value is BaseProductType` predicate, which
-     * narrowed the OBSERVED text and then let every `case` arm below fail to match it — turning a real
-     * definition into the empty string with no error anywhere. `resolveBaseProductType` returns a NEW
-     * canonical value instead, which is what makes the fold effective; the observed value is not
-     * modified and nothing here writes it back.
      */
     const recognisedBaseProductType = resolveBaseProductType(baseProductType);
     if (recognisedBaseProductType !== undefined) {
       switch (recognisedBaseProductType) {
         case 'contentAccess':
           /*
-           * [:L577-L578] — DELIBERATELY EMPTY, preserved as an explicit no-op arm. The definition of
+           * [:L577-L578] — deliberately empty, preserved as an explicit no-op arm. The definition of
            * a content-access SKU is the empty string. Do not collapse this branch: it is behaviour,
            * and removing it would erase the distinction between "no arm matched" and "the
            * content-access arm matched and chose to say nothing".
@@ -2326,7 +952,7 @@ export class Sku implements AuditableEntity, ManagedEntity {
           }
           /*
            * [:L583] is `trim(variables.skuDefinition);` — a bare expression whose result is thrown
-           * away. NOT REPRODUCED AS A TRIM, deliberately. TODO(parity) [model/entity/Sku.cfc:L583] —
+           * away. Not reproduced as a trim, deliberately. TODO(parity) [model/entity/Sku.cfc:L583] —
            * detail 3 above. The leading space of the first segment is part of the returned value.
            */
           break;
@@ -2352,57 +978,19 @@ export class Sku implements AuditableEntity, ManagedEntity {
     return skuDefinition;
   }
 
-  /* ---------------------------------------------------------------------------------------------
-   * IMAGE MEMBERS — every one of them behind the image port
+  /*
+   * Image members — every one of them behind the image port
    *
-   * Legacy origins [model/entity/Sku.cfc:L131-L227]. Four of the eight are REQUIRED by declared
+   * Legacy origins [model/entity/Sku.cfc:L131-L227]. Four of the eight are required by declared
    * consumers rather than optional: `src/domain/product/Product.ts` exposes nine default-SKU
    * delegating guards — the ported form of [model/entity/Product.cfc:L556] and following — and four of
    * them call through to `getImagePath`, `getImage`, `getResizedImagePath` and `getImageExistsFlag`.
    * `processImageUpload` at [model/service/SkuService.cfc:L211] calls `getImagePath` as well.
-   *
-   * RECORDED ASYMMETRY (S9): `Product.ts` ports a `getImageDirectory` member and THIS ENTITY HAS
-   * NO SUCH COUNTERPART. [model/entity/Sku.cfc] declares `getImagePath` at [:L145] and
-   * `generateImageFileName` at [:L131] and nothing that resolves a directory. None is invented here;
-   * S8 mismatch M-ii records what that costs.
-   * ------------------------------------------------------------------------------------------- */
+   */
 
   /**
    * The file name this SKU's default image should carry — [model/entity/Sku.cfc:L131-L139].
    *
-   * The legacy body, verbatim:
-   *
-   *     var optionString = "";
-   *     for(var option in getOptions()){
-   *         if(option.getOptionGroup().getImageGroupFlag()){
-   *             optionString &= getProduct().setting('productImageOptionCodeDelimiter') & reReplaceNoCase(option.getOptionCode(), "[^a-z0-9\-\_]","","all");
-   *         }
-   *     }
-   *     return reReplaceNoCase(getProduct().getProductCode(), "[^a-z0-9\-\_]","","all") & optionString & ".#getProduct().setting('productImageDefaultExtension')#";
-   *
-   * FOUR DETAILS THAT DECIDE CORRECTNESS:
-   *   1. ONLY OPTIONS WHOSE GROUP IS FLAGGED AS AN IMAGE GROUP CONTRIBUTE — the `getImageGroupFlag()`
-   *      test at [:L134]. `src/domain/option/OptionGroup.ts` carries that flag as a boolean defaulting
-   *      to false, matching [model/entity/OptionGroup.cfc:L57], so an unflagged group contributes
-   *      nothing.
-   *   2. THE DELIMITER PRECEDES EACH CONTRIBUTING OPTION CODE — `delimiter & code`, not
-   *      `code & delimiter` — so a product code of `SHIRT` with two contributing options yields
-   *      `SHIRT-RED-LARGE` for a hyphen delimiter, with no trailing delimiter before the extension.
-   *      This is string concatenation, NOT CFML `listAppend`, so {@link appendToDelimitedList} is
-   *      deliberately not used here.
-   *   3. BOTH SETTINGS ARE READ THROUGH THE PRODUCT, `getProduct().setting(...)` at [:L135] and
-   *      [:L138], NOT through this SKU. The resolution context passed below records that, because a
-   *      setting's effective value can differ per entity.
-   *   4. THE EXTENSION IS PREFIXED BY A LITERAL DOT at [:L138], separate from the setting value.
-   *
-   * See {@link stripDisallowedImageFileNameCharacters} for why the case-insensitive flag on the
-   * sanitising expression is load-bearing.
-   *
-   * @param settings resolves the two product-scoped image settings
-   * @returns the composed file name
-   * @throws {DomainError} when this SKU has no product, since [:L135] and [:L138] dereference it
-   *   without a guard, or when a contributing option carries no option group — per the
-   *   unguarded-dereference policy
    */
   generateImageFileName(settings: SkuSettingResolver): string {
     const product = this.#requireProduct('model/entity/Sku.cfc:L135');
@@ -2432,20 +1020,6 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * The extension of this SKU's image file — [model/entity/Sku.cfc:L141-L143], whose body is
    * `return listLast(getImageFile(), ".");`.
    *
-   * CFML LIST SEMANTICS, REPRODUCED RATHER THAN APPROXIMATED. A CFML list IGNORES EMPTY ELEMENTS,
-   * so `listLast("photo.", ".")` is `"photo"` and NOT the empty string, and `listLast("photo", ".")`
-   * is `"photo"` — a name with no dot yields the whole name as its "extension". A naive
-   * `split('.').pop()` gets the first of those two cases wrong. The filter below is what makes it
-   * faithful.
-   *
-   * An absent `imageFile` yields the empty string rather than raising: this is a SCALAR read of an
-   * optional column, which the unguarded-dereference policy treats differently from a relationship
-   * dereference.
-   *
-   * COSMETIC LEGACY DETAIL, mentioned once: [:L141] is indented with spaces where the surrounding
-   * members use tabs. It has no meaning.
-   *
-   * @returns the extension, or the whole file name when it contains no dot, or the empty string
    */
   getImageExtension(): string {
     const elements = (this.imageFile ?? '').split('.').filter((element) => element !== '');
@@ -2456,37 +1030,6 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * The URL path of this SKU's default image — [model/entity/Sku.cfc:L145-L147], whose body is
    * `return "#getHibachiScope().getBaseImageURL()#/product/default/#getImageFile()#";`.
    *
-   * THE BASE URL IS A FRAMEWORK REQUEST-SCOPE READ, which is why the whole member sits behind the
-   * image port rather than being computed here: `getHibachiScope()` is precisely the kind of
-   * framework facility AAP §0.6.3.1 classifies as an artefact to exclude, and the port's own path
-   * segment constant carries the `/product/default/` literal. This entity contributes the file name
-   * and nothing else.
-   *
-   * ASYNCHRONOUS because the port is. An absent `imageFile` is passed as the empty string, a scalar
-   * read per the policy note on {@link Sku.getImageExtension} — which also keeps
-   * {@link Sku.getImageExistsFlag} answerable, since a path with no file name does not exist and
-   * `false` is the answer every caller is written to handle.
-   *
-   * ⚠️ THE COMPOSITION IS DELIBERATELY UNVALIDATED, AND THE WRITE PATH IS NOT (finding F2).
-   * `#getHibachiScope().getBaseImageURL()#/product/default/#getImageFile()#` is string interpolation with
-   * no grammar anywhere, so a stored `../../../../tmp/payload.jpg` composes into a traversing URL exactly
-   * as [:L146] composes one. This member keeps that, because refusing here would change the outcome of a
-   * DISPLAY read that the legacy answered — which AAP §0.8.2 guideline 4 forbids and the D18 precedent
-   * (§0.6.7.7) does not license, D18 being a licence only for divergences that change no outcome for any
-   * value the legacy was designed to accept.
-   *
-   * ⛔ AND NO GATE STANDS AT THE WRITE EITHER, AS OF REVIEW FINDING F4. One briefly did, at
-   * `SkuService.processImageUpload`; it refused input the legacy ACCEPTS, which only AAP §0.6.7.7's single
-   * declared exception could license. So the value this member composes may be hostile and the write may
-   * receive it; `ImagePathPort.saveImageFile` carries the flagged exposure and the notice that an adapter is
-   * the layer that may confine the destination. Read paths compose; the write path chooses, and neither
-   * refuses. The CFML runtime is not reproducible in
-   * this environment (AAP §0.8.4.1), and engines differ on whether interpolating a null return value
-   * raises or yields the empty string; the permissive reading is chosen and disclosed here rather
-   * than a failure being invented.
-   *
-   * @param imagePaths resolves a stored file name to a path
-   * @returns the image path
    */
   async getImagePath(imagePaths: SkuImagePathResolver): Promise<ImageWebPath> {
     return imagePaths.getImagePath(this.imageFile ?? '');
@@ -2496,13 +1039,6 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * Rendered markup for this SKU's image — [model/entity/Sku.cfc:L149-L151], whose body is
    * `return getResizedImage(argumentcollection=arguments);`.
    *
-   * A PURE DELEGATION, preserved as one. It is declared rather than collapsed into its target because
-   * two real consumers call it by this name: `getAdminIcon` at [:L324] — itself an excluded member —
-   * and one of `Product.ts`'s nine default-SKU delegating guards.
-   *
-   * @param collaborators the four collaborators {@link Sku.getResizedImage} needs
-   * @param options the caller's size, dimension, missing-image and alternate-text choices
-   * @returns the rendered markup
    */
   async getImage(
     collaborators: SkuResizedImageCollaborators,
@@ -2514,43 +1050,8 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * Rendered markup for this SKU's image at a requested size — [model/entity/Sku.cfc:L153-L190].
    *
-   * FOUR STEPS, IN THE LEGACY ORDER, because each depends on the last:
-   *   [:L156] resolve the image path;
-   *   [:L159-L161] default the alternate text from a setting, ONLY when the caller supplied none AND
-   *                the setting is non-empty, expanding it as a template;
-   *   [:L164-L166] default the missing-image path from a setting, only when the caller supplied none;
-   *   [:L169-L187] apply the deprecated size mapping, then delegate at [:L189].
    *
-   * THE DEPRECATED SIZE GATE HAS FOUR CONJUNCTS AND ALL FOUR MATTER: a size must have been
-   * requested, THE PRODUCT MUST BE PRESENT — `!isNull(getProduct())` — and NEITHER an explicit width
-   * NOR an explicit height may have been supplied. Explicit dimensions therefore win outright, and a
-   * SKU with no product silently skips the mapping. In that case `size` REMAINS IN THE DELEGATED
-   * REQUEST, because the `structDelete` at [:L172] only runs inside the branch — a detail that is easy
-   * to lose and that the request assembly below preserves.
    *
-   * AN UNRECOGNISED SIZE PASSES THROUGH UNCHANGED HERE. [:L177-L183] is an `if / else if / else if`
-   * chain with NO FINAL `else`, so a size of `xl` is lower-cased and then interpolated verbatim into
-   * the setting key. Its sibling {@link Sku.getResizedImagePath} behaves DIFFERENTLY at [:L209-L211],
-   * forcing an unrecognised size to `Small`. The two are not aligned; see
-   * {@link DEPRECATED_IMAGE_SIZE_FALLBACK}.
-   *
-   * THE POSITIONAL ARM OF THE GATE IS UNREPRESENTABLE AND COLLAPSES INTO THE NAMED ONE. [:L169]
-   * also accepts a size passed as the FIRST POSITIONAL ARGUMENT, `structKeyExists(arguments, 1)`,
-   * reading it at [:L174]. CFML exposes the argument collection as a struct keyed by both name and
-   * position; TypeScript has no equivalent, and the two arms compute an identical `thisSize`. Both
-   * therefore map onto the single named `size` option, which loses nothing observable.
-   *
-   * THE DIMENSION SETTINGS ARRIVE AS STRINGS AND ARE CONVERTED. [:L184-L185] assign the raw setting
-   * values, which CFML coerces numerically downstream; the port's request declares numbers, so they
-   * are converted here. A non-numeric setting therefore reaches the port as `NaN` where CFML would
-   * have failed inside the out-of-scope image service. The divergence is in that consumer's failure
-   * mode, not in this entity's behaviour, and these keys are pixel dimensions by definition.
-   *
-   * @param collaborators the renderer, the path resolver, the setting resolver and the template
-   *   expander
-   * @param options the caller's choices; every member is optional because the legacy branches on the
-   *   presence of each
-   * @returns the rendered markup
    */
   async getResizedImage(
     collaborators: SkuResizedImageCollaborators,
@@ -2560,7 +1061,7 @@ export class Sku implements AuditableEntity, ManagedEntity {
     const imagePath = await this.getImagePath(collaborators.imagePaths);
     const skuContext: SkuSettingResolutionContext = { entityName: 'Sku', entityId: this.skuID };
 
-    /* [:L159-L161] — only when absent AND the setting has content. */
+    /* [:L159-L161] — only when absent and the setting has content. */
     let alt = options.alt;
     if (alt === undefined) {
       const imageAltString = collaborators.settings.setting('imageAltString', skuContext);
@@ -2601,34 +1102,13 @@ export class Sku implements AuditableEntity, ManagedEntity {
       request.alt = alt;
     }
 
-    /* [:L189] — S8 mismatch M-iii: no declared port owns this capability. */
+    /* [:L189] — AAP §0.7.3 mismatch M-iii: no declared port owns this capability. */
     return collaborators.renderer.getResizedImage(request);
   }
 
   /**
    * The path of this SKU's image at a requested size — [model/entity/Sku.cfc:L192-L219].
    *
-   * The path-returning sibling of {@link Sku.getResizedImage}, and DELIBERATELY NOT UNIFIED WITH IT.
-   * The two differ in three observable ways, every one of them verified against the source:
-   *
-   *   |                        | getResizedImage [:L153]        | getResizedImagePath [:L192]     |
-   *   | size gate              | named OR positional [:L169]    | named only [:L203]              |
-   *   | unrecognised size      | passes through UNCHANGED       | forced to `Small` [:L209-L211]  |
-   *   | alternate text         | defaulted from a setting       | not handled at all              |
-   *
-   * Aligning them would be exactly the kind of tidy-looking change that alters behaviour, so each is
-   * ported on its own terms. Everything else is shared: both default the missing-image path from the
-   * same setting, both read the two product-scoped dimension settings, and both request the same
-   * resize method.
-   *
-   * Consumed by the Google product feed's `g:image_link` field through
-   * `src/integrations/google/ProductFeedBuilder.ts`, and by one of `Product.ts`'s nine default-SKU
-   * delegating guards.
-   *
-   * @param imagePaths resolves the base path and the resized path
-   * @param settings resolves the missing-image and dimension settings
-   * @param options the caller's size and dimension choices
-   * @returns the resized image path
    */
   async getResizedImagePath(
     imagePaths: SkuImagePathResolver,
@@ -2671,24 +1151,10 @@ export class Sku implements AuditableEntity, ManagedEntity {
   }
 
   /**
-   * The DEPRECATED SIZE LOGIC shared by the two resized-image members — [model/entity/Sku.cfc:L168-L187]
+   * The deprecated size logic shared by the two resized-image members — [model/entity/Sku.cfc:L168-L187]
    * and [:L202-L216].
    *
-   * The legacy source marks both blocks `// DEPRECATED SIZE LOGIC`. The one-letter size aliases and
-   * the setting-derived dimensions they imply are the deprecated part; the members that use them are
-   * not, and both are carried because they are behaviour.
    *
-   * Extracted because the two blocks are identical apart from the single documented divergence, and
-   * the divergence is expressed as one parameter rather than by duplicating twenty lines — which keeps
-   * the difference VISIBLE at the one place it exists instead of buried in two near-copies.
-   *
-   * @param settings resolves the two product-scoped dimension settings
-   * @param options the caller's size and explicit dimensions
-   * @param forceRecognisedSize `true` for the path member, whose [:L209-L211] `else` forces an
-   *   unrecognised size to {@link DEPRECATED_IMAGE_SIZE_FALLBACK}; `false` for the markup member,
-   *   whose [:L177-L183] chain has no `else` and lets it through unchanged
-   * @returns the size, width, height and resize method to place in the delegated request; `size` is
-   *   returned only when the mapping did NOT run, reproducing the `structDelete` at [:L172] and [:L215]
    */
   #applyDeprecatedImageSizeLogic(
     settings: SkuSettingResolver,
@@ -2743,45 +1209,14 @@ export class Sku implements AuditableEntity, ManagedEntity {
 
   /**
    * Whether this SKU's image file actually exists — [model/entity/Sku.cfc:L221-L227], whose body is
-   * `if( fileExists(expandPath(getImagePath())) ) { return true; } else { return false; }`.
+   * `if( fileExists(expandPath(getImagePath)) ) { return true; } else { return false; }`.
    *
-   * A FILESYSTEM PROBE, hence the port and hence the promise.
-   *
-   * ⚠️ THIS MEMBER COMPOSES THE PATH AND THEN PROBES IT, WHICH IS [:L222] EXACTLY. An earlier revision
-   * did NOT: it passed the stored NAME to a port member narrowed to refuse a composed path, so that a
-   * stored `../../../../tmp/payload.jpg` resolved `false` where the legacy reported on the traversed
-   * file. `imageFile` is a persistent column ([:L58]) with NO rule in `model/validation/Sku.json`, so the
-   * traversal reach is genuine — but it is the legacy's behaviour, and refusing it here changes an outcome,
-   * which AAP §0.8.2 guideline 4 forbids. `src/ports/ImagePathPort.ts` DECISION I-1 control (3) carries the
-   * adjudication and FLAGS the residual CWE-22 exposure at this locator for the operator to close in
-   * whichever adapter implements the port (S8).
-   *
-   * ⚠️ AND THE REASON MATTERS, BECAUSE AN EARLIER FORM OF THIS NOTE GAVE A FALSE ONE. It added "and the
-   * D18 precedent (§0.6.7.7) does not license" a refusal, on the reading that D18 changes no outcome. D18
-   * changes outcomes — parameterised SQL returns a row for `O'Brien` where interpolated SQL raised. What
-   * D18 actually licenses is a divergence that falls ONLY where the legacy's own behaviour was the flaw,
-   * and that test is genuinely not met HERE: [:L222] answers a boolean about whatever the composed path
-   * resolves to, which is a well-defined, intended result even for a traversed file, on an operation that
-   * writes nothing and discloses one bit. The conclusion stands; the ground behind it does not. A revision
-   * used the corrected test to reinstate a gate on the WRITE — which this member is not — review finding F4
-   * withdrew even that on the precedence ground that §0.6.7.7 declares ONE exception rather than a class of
-   * them, and review finding SEC-FILE-01 reinstated it on a ground that needs no exception: the write path
-   * has NO defined legacy outcome, because its collaborator member does not exist in the legacy at all. That
-   * ground does not reach this member, and this member stays ungated — which is why the two now differ.
-   *
-   * ⚠️ THE ANSWERS ARE STILL ONLY `true` ([:L223]) AND `false` ([:L225]) — the legacy member yields no
-   * third state and raises nothing, and neither does this one. An absent `imageFile` reads as the empty
-   * string, which is the same scalar-read policy {@link Sku.getImageExtension} and
-   * {@link Sku.getImagePath} apply, and composes the same trailing-segment-less path the legacy composes.
-   *
-   * Consumed by one of `Product.ts`'s nine default-SKU delegating guards.
-   *
-   * @param imagePaths composes the path and probes for it
-   * @returns `true` when the file exists
    */
   async getImageExistsFlag(imagePaths: SkuImagePathResolver): Promise<boolean> {
-    /* [:L222] — `fileExists(expandPath(getImagePath()))`, in the legacy's own order: compose first,
-     * probe second. The composition is the port's, as it is at [:L146]. */
+    /*
+     * [:L222] — `fileExists(expandPath(getImagePath))`, in the legacy's own order: compose first,
+     * probe second. The composition is the port's, as it is at [:L146].
+     */
     const imagePath = await imagePaths.getImagePath(this.imageFile ?? '');
 
     return imagePaths.getImageExistsFlag(imagePath);
@@ -2790,13 +1225,6 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * This SKU's memoized image file name — [model/entity/Sku.cfc:L794-L799].
    *
-   * The legacy declares it under `// START: Overridden Implicit Getters`, because it shadows the
-   * accessor the ORM would have synthesized for a property that does not exist, and its body simply
-   * memoizes {@link Sku.generateImageFileName}. Per-instance cache only (M7).
-   *
-   * @param settings forwarded to {@link Sku.generateImageFileName}
-   * @returns the composed file name
-   * @throws {DomainError} propagated from {@link Sku.generateImageFileName}
    */
   getImageName(settings: SkuSettingResolver): string {
     if (this.#imageName === undefined) {
@@ -2805,56 +1233,16 @@ export class Sku implements AuditableEntity, ManagedEntity {
     return this.#imageName;
   }
 
-  /* ---------------------------------------------------------------------------------------------
-   * THE TWO DELETE-GUARD FLAGS — both MUST be exposed
-   *
-   * [model/validation/Sku.json:L3] and [:12] declare delete-context rules requiring each to equal
-   * `false`. Dropping either member would not fail a compile; it would silently permit deletes the
-   * legacy system blocks, which is precisely the class of change AAP §0.6.7's preserve-and-annotate
-   * rule exists to prevent.
-   * ------------------------------------------------------------------------------------------- */
+  /* The two delete-guard flags — both must be exposed. */
 
   /**
    * Whether this SKU is its product's default — [model/entity/Sku.cfc:L442-L447], whose body is
    * `if(getProduct().getDefaultSku().getSkuID() == getSkuID()) { return true; } return false;`.
    *
-   * GOVERNED BY THE UNGUARDED-DEREFERENCE POLICY LIKE EVERY OTHER MEMBER IN THIS FILE. [:L443]
-   * performs TWO unguarded dereferences in a single chain — `getProduct()` and then `getDefaultSku()` —
-   * and CFML raises on either, so this member raises on either.
-   *
-   * ⛔ IT WAS THE FILE'S ONE DECLARED EXCEPTION, RETURNING `false`, AND THAT IS WITHDRAWN. AAP §0.6.7
-   * permits exactly one licensed divergence from legacy behaviour (D18, the importer's SQL
-   * parameterisation) and this was not it. Both of the old arguments are answered:
-   *
-   *   (a) "A GUARD THAT RAISES CANNOT BE EVALUATED." True, and that is precisely the legacy outcome. In
-   *       CFML the validation service dereferences this member while evaluating the delete rule, so an
-   *       unassociated SKU aborted the whole delete validation — it did not produce a permissive
-   *       verdict. `src/validation/Validator.ts` reads `defaultFlag` off a subject the CALLER resolves
-   *       ahead of validation, so the raise surfaces at that caller and the delete aborts there. Same
-   *       destination, one layer earlier.
-   *
-   *   (b) "`false` IS THE TRUTH OF THE MATTER." It is a defensible answer to a question the legacy never
-   *       answers, and answering it changed a DESTRUCTIVE outcome: `model/validation/Sku.json:L3` gates
-   *       deletion on `defaultFlag eq false`, so `false` PASSED the guard and permitted a delete the
-   *       legacy system refused. That is a hardening encoded as parity, in the one direction where being
-   *       wrong destroys data. Note the rule set's own analysis agrees on the safe direction — an
-   *       ABSENT `defaultFlag` fails the `eq` constraint and refuses the delete; see
-   *       `src/validation/rules/sku.rules.ts`.
-   *
-   * IDENTIFIER COMPARISON SURVIVES THE CHANGE, and so does synchrony; only the two absence paths move.
-   *
-   * IDENTIFIER COMPARISON, NOT IDENTITY. [:L443] compares `getSkuID()` values, so a re-hydrated
-   * instance representing the same row still reports `true`. Preserved: switching to reference
-   * equality would change the answer for exactly the case the legacy handles correctly.
-   *
-   * SYNCHRONOUS, because [:L443] performs no query — it walks two in-memory relationships. The
-   * identifier read arrives as a function because `Product.ts`'s default-SKU delegate deliberately
-   * exposes no identifier accessor; see {@link DefaultSkuIdReader} and S8 mismatch M-ii.
-   *
    * @param readDefaultSkuId reads the identifier of the product's default SKU
    * @returns `true` when this SKU is its product's default
    * @throws {DomainError} when this SKU has no product, or its product has no default SKU —
-   *   reproducing the two unguarded dereferences at [model/entity/Sku.cfc:L443]
+   * reproducing the two unguarded dereferences at [model/entity/Sku.cfc:L443]
    */
   getDefaultFlag(readDefaultSkuId: DefaultSkuIdReader): boolean {
     const product = this.#requireProduct('model/entity/Sku.cfc:L443');
@@ -2880,32 +1268,12 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * Whether any transaction references this SKU — [model/entity/Sku.cfc:L592-L597].
    *
-   * The legacy body memoizes
-   * `getService("skuService").getTransactionExistsFlag( skuID=this.getSkuID() )`.
-   *
-   * ⚠️ D23 — `skuID` IS FORWARDED, because CFML forwards it. [:L594] passes it as a NAMED ARGUMENT to
-   * a service member that [model/service/SkuService.cfc:L285] declares with no formal parameters, and
-   * [`:L286`] then forwards the entire `arguments` scope to the DAO with `argumentCollection=arguments`.
-   * An undeclared named argument still lands in that scope, so the identifier arrives at
-   * [model/dao/SkuDAO.cfc:L58] and selects the SKU-scoped branch. Dropping it would silently widen the
-   * question to product scope and mis-gate a delete — see {@link SkuTransactionExistenceChecker} for
-   * why that direction of error is destructive rather than merely inaccurate.
-   *
-   * ⚠️ AN UNSAVED SKU FORWARDS THE EMPTY SENTINEL, WHICH IS THE FAITHFUL VALUE. {@link Sku.skuID}
-   * defaults to {@link SKU_UNSAVED_ID_VALUE} (`''`), exactly what the legacy generated getter returns
-   * for an unpersisted entity, so the query matches no row and the flag is `false`. No guard is added
-   * here: short-circuiting on the sentinel would be new behaviour the legacy does not have.
-   *
-   * ASYNCHRONOUS because the underlying DAO member is the ten-way existence chain at
-   * [model/dao/SkuDAO.cfc:L53-L98], which is a real query. Per-instance memoization reproduces the
-   * guard at [:L593].
-   *
    * @param checker answers the existence question
-   * @returns `true` when a transaction references this SKU
+   * @returns `true` when a transaction references this SKU.
    */
   async getTransactionExistsFlag(checker: SkuTransactionExistenceChecker): Promise<boolean> {
     if (this.#transactionExistsFlag === undefined) {
-      // skuID occupies the FIRST parameter — model/service/SkuService.cfc:L285-L287 forwards whatever the
+      // skuID occupies the first parameter — model/service/SkuService.cfc:L285-L287 forwards whatever the
       // caller names, and [model/entity/Sku.cfc:L594] names this one, reaching the SKU-scoped branch at
       // SkuDAO.cfc:L58-L59.
       this.#transactionExistsFlag = await checker.getTransactionExistsFlag(this.skuID);
@@ -2913,42 +1281,23 @@ export class Sku implements AuditableEntity, ManagedEntity {
     return this.#transactionExistsFlag;
   }
 
-  /* ---------------------------------------------------------------------------------------------
-   * BIDIRECTIONAL HELPERS — [model/entity/Sku.cfc:L604-L637]
-   * ------------------------------------------------------------------------------------------- */
+  /* Bidirectional helpers — [model/entity/Sku.cfc:L604-L637] */
 
   /**
-   * Associates this SKU with a product, maintaining BOTH sides — [model/entity/Sku.cfc:L604-L609]:
+   * Associates this SKU with a product, maintaining both sides — [model/entity/Sku.cfc:L604-L609]:
    *
-   *     variables.product = arguments.product;
-   *     if(isNew() or !arguments.product.hasSku( this )) {
-   *         arrayAppend(arguments.product.getSkus(), this);
-   *     }
+   * Variables.product = arguments.product;
+   * if(isNew or !arguments.product.hasSku( this )) {
+   * arrayAppend(arguments.product.getSkus, this);
+   * }
    *
-   * THE ORDERING COUPLING THE ENTIRE SKU-CODE SEQUENCE DEPENDS ON — DO NOT BREAK IT.
-   * `SkuService.createSkus` composes each generated code as
-   * `productCode & "-" & arrayLen(product.getSkus()) + 1` BEFORE calling `product.addSku(newSku)`, so
-   * the first iteration sees zero SKUs and produces `-1`, the second sees one and produces `-2`. That
-   * works only because of three facts: `Product.getSkus()` returns the LIVE array with no defensive
-   * copy, exactly as [model/entity/Product.cfc:L157] returns `variables.skus`; `Product.addSku(sku)`
-   * is a pure delegation to `sku.setProduct(this)`, so the append happens HERE and nowhere else; and
-   * the append below targets that same live array. Break any one of them — append to a copy, or return
-   * a defensive copy from `getSkus()` — and every generated SKU collides on `-1`, surfacing far away as
-   * the `unique: true` `skuCode` rule at [model/validation/Sku.json:L11] rejecting the second SKU of
-   * every multi-option product.
-   *
-   * TODO(parity) [model/entity/Sku.cfc:L606] — THE SHORT-CIRCUIT DOUBLE-APPEND IS CARRIED. CFML `or`
+   * TODO(parity) [model/entity/Sku.cfc:L606] — the short-circuit double-append is carried. CFML `or`
    * short-circuits, so for a NEW SKU the membership test is never evaluated and the append is
    * unconditional: calling `product.addSku(sku)` twice on the same new SKU appends it twice, inflating
-   * the collection length so the next generated code SKIPS A NUMBER. No idempotency guard is added and
+   * the collection length so the next generated code skips a number. No idempotency guard is added and
    * the `||` below preserves the short-circuit exactly. The membership predicate is evaluated inline
-   * because of mismatch M-i in the file header.
+   * inline, for the reason the file header records.
    *
-   * Unlike the rest of this file this member takes a REQUIRED argument and reads a foreign collection.
-   * That is faithful: it is one of only two legacy members on this entity that maintain both sides of a
-   * relationship, which is why the synthesized setter was overridden at all.
-   *
-   * @param product the product to associate
    */
   setProduct(product: Product): void {
     this.product = product;
@@ -2958,35 +1307,12 @@ export class Sku implements AuditableEntity, ManagedEntity {
      * evaluated, which is the double-append behaviour recorded above.
      */
     if (this.isNew() || !productSkus.includes(this)) {
-      /* [:L607] — appends to the LIVE array. See the ordering coupling above. */
+      /* [:L607] — appends to the live array. See the ordering coupling above. */
       productSkus.push(this);
     }
   }
 
-  /**
-   * Disassociates this SKU from a product — [model/entity/Sku.cfc:L610-L619], whose body is:
-   *
-   *     if(!structKeyExists(arguments, "product")) {
-   *         arguments.product = variables.product;
-   *     }
-   *     var index = arrayFind(arguments.product.getSkus(), this);
-   *     if(index > 0) {
-   *         arrayDeleteAt(arguments.product.getSkus(), index);
-   *     }
-   *     structDelete(variables, "product");
-   *
-   * THREE DETAILS PRESERVED:
-   *   - THE ARGUMENT DEFAULTS FROM THE CURRENT ASSOCIATION at [:L612], so `removeProduct()` with no
-   *     argument detaches from whatever this SKU is currently attached to.
-   *   - THE SENTINEL AT [:L615] IS CFML's, so `index > 0` becomes `!== -1`. Transliterating the
-   *     comparison literally would delete the FIRST SKU of the product whenever the search missed.
-   *   - THE FIELD IS CLEARED UNCONDITIONALLY at [:L618], OUTSIDE the removal guard. So a SKU that was
-   *     not in the collection is still detached. `delete` is used rather than an assignment to
-   *     `undefined`, because under `exactOptionalPropertyTypes` an absent key and a key holding
-   *     `undefined` are different states and only the former matches `structDelete`.
-   *
-   * @param product the product to detach from, defaulting to the current association
-   */
+  /** Disassociates this SKU from a product — [model/entity/Sku.cfc:L610-L619]. */
   removeProduct(product?: Product): void {
     const removeFrom = product ?? this.product;
     if (removeFrom !== undefined) {
@@ -3004,19 +1330,10 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * Associates this SKU with a subscription term — [model/entity/Sku.cfc:L622-L627].
    *
-   * S8 MISMATCH M-iv — THE FAR SIDE IS NOT MAINTAINED, AND THAT IS FLAGGED RATHER THAN HIDDEN.
-   * The legacy body mirrors {@link Sku.setProduct} exactly, including a second synthesized `hasSku`
-   * — this time on `SubscriptionTerm` — and an append to `arguments.subscriptionTerm.getSkus()` at
-   * [:L625]. `SubscriptionTerm` is out of scope (AAP §0.2.2.1, `model/**\/Subscription*.cfc`, 11
-   * files) and {@link SubscriptionTermRef} exposes no collection to append to, so ONLY THE LOCAL SIDE
-   * IS MAINTAINED here. Inventing a collection on the reference would be inventing surface (S9), and
-   * silently dropping the member would violate TR-5.
-   *
    * TODO(boundary) [model/entity/Sku.cfc:L624-L626] — the far-side append belongs to a ported
    * `SubscriptionTerm`, and the short-circuit double-append of [:L624] is the same defect as
    * [:L606] applied to that relationship.
    *
-   * @param subscriptionTerm the term to associate
    */
   setSubscriptionTerm(subscriptionTerm: SubscriptionTermRef): void {
     this.subscriptionTerm = subscriptionTerm;
@@ -3025,43 +1342,20 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * Disassociates this SKU from a subscription term — [model/entity/Sku.cfc:L628-L637].
    *
-   * The structural twin of {@link Sku.removeProduct}: the argument defaults from the current
-   * association at [:L630], the removal guard at [:L633] uses CFML's zero sentinel — translated to
-   * `!== -1` wherever it applies — and the field is cleared UNCONDITIONALLY at [:L636].
-   *
-   * The far-side splice at [:L632-L635] is not performed, for the reason given on
-   * {@link Sku.setSubscriptionTerm}. TODO(boundary) [model/entity/Sku.cfc:L632-L635]. The parameter is
-   * retained even though this implementation does not read it, because the legacy signature accepts
-   * one and a caller written against the legacy contract must keep compiling; it is named with a
-   * leading underscore so the unused-argument rule recognises the omission as deliberate.
-   *
-   * @param _subscriptionTerm the term to detach from; unread, see above
+   * @param _subscriptionTerm the term to detach from; unread, see above.
    */
   removeSubscriptionTerm(_subscriptionTerm?: SubscriptionTermRef): void {
     /* [:L636] — unconditional, outside the guard the far side would have needed. */
     delete this.subscriptionTerm;
   }
 
-  /* ---------------------------------------------------------------------------------------------
-   * PRICE AND CURRENCY
-   *
-   * Four members are REQUIRED by `Product.ts`'s nine default-SKU delegating guards — `getPrice`,
-   * `getListPrice`, `getRenewalPrice` and `getCurrencyCode`. Four are retained behind a pricing port
-   * per TR-5 because the Google product feed reads two of them. Six are boundary-stubbed, because
-   * every one of them reads `getCurrencyDetails()` — an EXCLUDED member — or delegates straight to an
-   * out-of-scope service.
-   * ------------------------------------------------------------------------------------------- */
+  /* Price and currency. */
 
   /**
    * This SKU's price — the explicit form of the accessor synthesized from
    * [model/entity/Sku.cfc:L56].
    *
-   * Declared as a method rather than left to direct field access because `Product.ts`'s default-SKU
-   * delegate requires it by name, and because the legacy is full of `getPrice()` call sites — among
-   * them [model/service/ProductService.cfc:L133] and the sale-price fallback at
-   * [model/entity/Sku.cfc:L550].
-   *
-   * @returns the price, {@link EXACT_DECIMAL_ZERO} on a fresh SKU
+   * @returns the price, {@link EXACT_DECIMAL_ZERO} on a fresh SKU.
    */
   getPrice(): ExactDecimal {
     return this.price;
@@ -3071,7 +1365,6 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * This SKU's list price — the explicit form of the accessor synthesized from
    * [model/entity/Sku.cfc:L55]. Required by `Product.ts`'s default-SKU delegate.
    *
-   * @returns the list price, {@link EXACT_DECIMAL_ZERO} on a fresh SKU
    */
   getListPrice(): ExactDecimal {
     return this.listPrice;
@@ -3082,7 +1375,6 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * [model/entity/Sku.cfc:L57]. Required by `Product.ts`'s default-SKU delegate, and set by the
    * subscription creation branch at [model/service/SkuService.cfc:L157].
    *
-   * @returns the renewal price, {@link EXACT_DECIMAL_ZERO} on a fresh SKU
    */
   getRenewalPrice(): ExactDecimal {
     return this.renewalPrice;
@@ -3092,16 +1384,6 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * The currency this SKU is priced in — [model/entity/Sku.cfc:L360-L365], whose body memoizes
    * `this.setting('skuCurrency')`.
    *
-   * READ THROUGH THIS SKU, not through the product: [:L362] writes `this.setting(...)`, and the
-   * resolution context below records that. Contrast {@link Sku.generateImageFileName}, whose two
-   * setting reads go through the product — the distinction is real, because a setting's effective value
-   * is resolved against the entity it is asked of.
-   *
-   * SYNCHRONOUS, matching both the legacy accessor and the real setting port. Per-instance
-   * memoization reproduces the guard at [:L361].
-   *
-   * @param settings resolves the currency setting
-   * @returns the currency code
    */
   getCurrencyCode(settings: SkuSettingResolver): string {
     if (this.#currencyCode === undefined) {
@@ -3117,32 +1399,10 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * This SKU's sale-price detail — [model/entity/Sku.cfc:L539-L544], whose body memoizes
    * `getProduct().getSkuSalePriceDetails( getSkuID() )`.
    *
-   * ONE OF THE FOUR EXCLUDED MEMBERS RETAINED BEHIND A PORT RATHER THAN DROPPED, and the reason TR-5
-   * exists: "the member is never quietly dropped from the interface". The Google product feed's
-   * conditional `g:sale_price` and `g:sale_price_effective_date` fields read two of the values this
-   * one feeds (AAP §0.6.4.2), so deleting it would break `ProductFeedBuilder.ts`.
-   *
    * TODO(boundary) [model/entity/Sku.cfc:L541] — promotion evaluation is out of scope
-   * (AAP §0.2.2.1). See {@link SkuSalePricingLookup} for why the lookup is keyed by PRODUCT rather
+   * (AAP §0.2.2.1). See {@link SkuSalePricingLookup} for why the lookup is keyed by product rather
    * than by SKU: that is the legacy shape and the real port's shape both.
    *
-   * AN UNASSOCIATED SKU YIELDS EMPTY DETAIL rather than raising, unlike the members governed by the
-   * unguarded-dereference policy — [:L541] dereferences `getProduct()` without a guard, so the legacy
-   * raised. THE DIVERGENCE IS FLAGGED HERE AND IT STANDS ON ITS OWN FOOTING, which is NOT the argument
-   * {@link Sku.getDefaultFlag} used to make: that member's exception has been withdrawn, and this one
-   * does not inherit it. What justifies it here is that `salePriceDetails` is one of the four EXCLUDED
-   * calculated members (AAP §0.2.2.6) retained solely because TR-5 forbids dropping a member from the
-   * interface. The real implementation is the operator's `PricingPort`, and the absence semantics of a
-   * boundary retention belong to that implementation rather than being decided by this entity; every
-   * consumer in the subtree already branches on the ABSENCE of each detail member — the three readers
-   * below all carry an explicit fallback — so empty detail flows correctly through all of them.
-   *
-   * ⚠️ S8 — IF AN OPERATOR BINDS A REAL `PricingPort`, THE FAITHFUL CHOICE FOR THAT ADAPTER IS TO RAISE
-   * for an unassociated SKU, matching [:L541]. That decision is recorded as belonging to the adapter, not
-   * silently made here.
-   *
-   * @param pricing resolves sale-price detail for every SKU of a product
-   * @returns this SKU's detail, possibly empty
    */
   async getSalePriceDetails(pricing: SkuSalePricingLookup): Promise<SkuSalePriceDetails> {
     if (this.#salePriceDetails === undefined) {
@@ -3160,30 +1420,8 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * This SKU's sale price, falling back to its ordinary price —
    * [model/entity/Sku.cfc:L546-L551], whose body returns the detail entry when present and
-   * `getPrice()` otherwise.
+   * `getPrice` otherwise.
    *
-   * THE FALLBACK IS TO THE PRICE, NOT TO ZERO AND NOT TO `undefined`. That is what makes the Google
-   * feed's conditional correct: `ProductFeedBuilder.ts` emits `g:sale_price` only when the SKU's price
-   * EXCEEDS its sale price, and with this fallback a SKU on no promotion compares equal to itself and
-   * the field is correctly omitted. Returning zero would emit a sale price of nothing for every
-   * unpromoted SKU.
-   *
-   * ⚠️ F07 — THIS IS THE ONE PLACE A MONETARY VALUE ENTERS THIS PORT AS A DOUBLE, AND THE LOSS HAPPENS
-   * BEFORE IT GETS HERE. `SkuSalePriceDetails.salePrice` is declared `number` by
-   * `src/ports/PricingPort.ts`, an out-of-scope boundary port whose shape AAP §0.2.2.7 forbids this
-   * slice to redefine. So the promoted value has already been rounded to the nearest double by whoever
-   * produced it, and `exactDecimalFromNumber` records exactly what that double denotes rather than
-   * inventing digits it never had.
-   *
-   * The FALLBACK path is unaffected and fully exact: {@link Sku.getPrice} returns stored digits. So a
-   * SKU on no promotion — the overwhelmingly common case, and the only one this slice can actually
-   * resolve, since `PricingPort` has no in-scope implementation — compares and renders exactly.
-   *
-   * TODO(parity): should the pricing boundary ever come into scope, `PricingPort.salePrice` should be
-   * re-declared as an {@link ExactDecimal} and this conversion deleted. It is the last one left.
-   *
-   * @param pricing forwarded to {@link Sku.getSalePriceDetails}
-   * @returns the sale price, or this SKU's price when no promotion applies
    */
   async getSalePrice(pricing: SkuSalePricingLookup): Promise<ExactDecimal> {
     const details = await this.getSalePriceDetails(pricing);
@@ -3193,13 +1431,8 @@ export class Sku implements AuditableEntity, ManagedEntity {
 
   /**
    * The kind of discount producing this SKU's sale price — [model/entity/Sku.cfc:L553-L558], which
-   * returns the detail entry when present and THE EMPTY STRING otherwise.
+   * returns the detail entry when present and the empty string otherwise.
    *
-   * The empty-string fallback is the legacy's own, at [:L557], and is preserved rather than replaced
-   * with `undefined`: it is a display value, and a caller interpolating it expects a string.
-   *
-   * @param pricing forwarded to {@link Sku.getSalePriceDetails}
-   * @returns the discount type, or the empty string
    */
   async getSalePriceDiscountType(pricing: SkuSalePricingLookup): Promise<string> {
     const details = await this.getSalePriceDetails(pricing);
@@ -3208,33 +1441,15 @@ export class Sku implements AuditableEntity, ManagedEntity {
 
   /**
    * When this SKU's sale price stops applying — [model/entity/Sku.cfc:L560-L565], which returns the
-   * detail entry when present and THE EMPTY STRING otherwise.
+   * detail entry when present and the empty string otherwise.
    *
-   * THE RETURN TYPE ADMITS THE EMPTY STRING ALONGSIDE A DATE, because [:L564] genuinely returns a
-   * string from a member whose declared property type at [:L118] is `date`. That union is faithful and
-   * it is the same idiom `../base/AuditableEntity` uses for its own date accessors, so a consumer
-   * meeting it here has met it before. Substituting `undefined` would be tidier and would diverge:
-   * the Google feed's `g:sale_price_effective_date` interpolates this value, and an empty string
-   * interpolates to nothing where `undefined` would interpolate the text of the word.
-   *
-   * @param pricing forwarded to {@link Sku.getSalePriceDetails}
-   * @returns the expiration timestamp, or the empty string
    */
   async getSalePriceExpirationDateTime(pricing: SkuSalePricingLookup): Promise<Date | ''> {
     const details = await this.getSalePriceDetails(pricing);
     return details.salePriceExpirationDateTime ?? '';
   }
 
-  /* ---------------------------------------------------------------------------------------------
-   * BOUNDARY-STUBBED MEMBERS — declared, typed, and honest about not being implementable here
-   *
-   * Each reaches a service AAP §0.2.2.1 excludes outright, through a dependency this port has no
-   * declared surface for. They are DECLARED rather than omitted because each has a real legacy caller
-   * and TR-5 forbids quietly dropping a member; they RAISE rather than returning a plausible value
-   * because a fabricated price or quantity is far more dangerous than an explicit refusal. The
-   * established pattern in this subtree is the same: `Product.getProductOptionsByGroup` raises a
-   * not-implemented error for its own carried defect.
-   * ------------------------------------------------------------------------------------------- */
+  /* Boundary-stubbed members — declared, typed, and honest about not being implementable here. */
 
   /**
    * This SKU's price under a promotion — [model/entity/Sku.cfc:L257-L259], which delegates to
@@ -3242,17 +1457,14 @@ export class Sku implements AuditableEntity, ManagedEntity {
    *
    * TODO(boundary) [model/entity/Sku.cfc:L257-L259] — `promotionService` is out of scope
    * (AAP §0.2.2.1, `model/**\/Promotion*.cfc`, 9 files). No port in the plan exposes promotion price
-   * CALCULATION; the pricing port exposes resolved sale-price DETAIL, which is a different question,
+   * CALCULATION; the pricing port exposes resolved sale-price detail, which is a different question,
    * so this cannot be satisfied by {@link SkuSalePricingLookup}.
    *
-   * @param _promotion the promotion to price against; unread
-   * @returns never
-   * @throws {NotImplementedError} always
    */
   getPriceByPromotion(_promotion: object): never {
     throw new NotImplementedError(
       'Sku.getPriceByPromotion',
-      'model/entity/Sku.cfc:L257-L259 delegates to promotionService, which AAP 0.2.2.1 excludes, ' +
+      'model/entity/Sku.cfc:L257-L259 delegates to promotionService, which AAP §0.2.2.1 excludes, ' +
         'and no port in the plan exposes promotion price calculation',
       { context: { skuID: this.skuID, locator: 'model/entity/Sku.cfc:L257-L259' } },
     );
@@ -3265,14 +1477,11 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * TODO(boundary) [model/entity/Sku.cfc:L261-L263] — `priceGroupService` is out of scope
    * (AAP §0.2.2.1, `model/**\/PriceGroup*.cfc`, 4 files).
    *
-   * @param _priceGroup the price group to price against; unread
-   * @returns never
-   * @throws {NotImplementedError} always
    */
   getPriceByPriceGroup(_priceGroup: object): never {
     throw new NotImplementedError(
       'Sku.getPriceByPriceGroup',
-      'model/entity/Sku.cfc:L261-L263 delegates to priceGroupService, which AAP 0.2.2.1 excludes',
+      'model/entity/Sku.cfc:L261-L263 delegates to priceGroupService, which AAP §0.2.2.1 excludes',
       { context: { skuID: this.skuID, locator: 'model/entity/Sku.cfc:L261-L263' } },
     );
   }
@@ -3284,14 +1493,11 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * TODO(boundary) [model/entity/Sku.cfc:L265-L267] — `priceGroupService` is out of scope, and the
    * rate entity itself is the excluded `priceGroupRates` relationship at [model/entity/Sku.cfc:L86].
    *
-   * @param _priceGroup the price group whose rate is wanted; unread
-   * @returns never
-   * @throws {NotImplementedError} always
    */
   getAppliedPriceGroupRateByPriceGroup(_priceGroup: object): never {
     throw new NotImplementedError(
       'Sku.getAppliedPriceGroupRateByPriceGroup',
-      'model/entity/Sku.cfc:L265-L267 delegates to priceGroupService, which AAP 0.2.2.1 excludes',
+      'model/entity/Sku.cfc:L265-L267 delegates to priceGroupService, which AAP §0.2.2.1 excludes',
       { context: { skuID: this.skuID, locator: 'model/entity/Sku.cfc:L265-L267' } },
     );
   }
@@ -3300,15 +1506,12 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * This SKU's price in a given currency — [model/entity/Sku.cfc:L269-L273].
    *
    * TODO(boundary) [model/entity/Sku.cfc:L269-L273] — it reads `getCurrencyDetails()`, one of the
-   * THIRTEEN EXCLUDED non-persistent members ([:L104], getter at [:L367]), which builds its map from
+   * thirteen excluded non-persistent members ([:L104], getter at [:L367]), which builds its map from
    * `currencyService` and the excluded `skuCurrencies` relationship at [:L72]. Both are out of scope
-   * (AAP §0.2.2.1). The legacy has NO `else` arm here, so it returns null on a miss — which is why the
+   * (AAP §0.2.2.1). The legacy has no `else` arm here, so it returns null on a miss — which is why the
    * member cannot simply be replaced by reading {@link Sku.getPrice}: an unknown currency is a
    * distinct answer from the base price.
    *
-   * @param _currencyCode the currency wanted; unread
-   * @returns never
-   * @throws {NotImplementedError} always
    */
   getPriceByCurrencyCode(_currencyCode: string): never {
     throw new NotImplementedError(
@@ -3323,13 +1526,10 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * This SKU's list price in a given currency — [model/entity/Sku.cfc:L275-L279].
    *
    * TODO(boundary) [model/entity/Sku.cfc:L275-L279] — same excluded dependency as
-   * {@link Sku.getPriceByCurrencyCode}. Note the legacy guard here is a TWO-PART test, checking both
+   * {@link Sku.getPriceByCurrencyCode}. Note the legacy guard here is a two-part test, checking both
    * that the currency is present and that its entry carries a list price, so an entry without one
    * returns null rather than falling back.
    *
-   * @param _currencyCode the currency wanted; unread
-   * @returns never
-   * @throws {NotImplementedError} always
    */
   getListPriceByCurrencyCode(_currencyCode: string): never {
     throw new NotImplementedError(
@@ -3345,9 +1545,6 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * TODO(boundary) [model/entity/Sku.cfc:L281-L285] — same excluded dependency and the same two-part
    * guard as {@link Sku.getListPriceByCurrencyCode}.
    *
-   * @param _currencyCode the currency wanted; unread
-   * @returns never
-   * @throws {NotImplementedError} always
    */
   getRenewalPriceByCurrencyCode(_currencyCode: string): never {
     throw new NotImplementedError(
@@ -3362,31 +1559,17 @@ export class Sku implements AuditableEntity, ManagedEntity {
    *
    * TODO(boundary) [model/entity/Sku.cfc:L291-L316] — the largest boundary member of the entity. Its
    * four branches reach `locationService` [:L295], `stockService` [:L296] and [:L300],
-   * `Product.getQuantity` [:L308] and `inventoryService` through a DYNAMIC METHOD-NAME COMPOSITION at
+   * `Product.getQuantity` [:L308] and `inventoryService` through a dynamic method-name composition at
    * [:L310] — `invokeMethod("get#arguments.quantityType#", …)`, which is the same metaprogramming
    * IR-1 exists to eliminate. Every one of those services is excluded (AAP §0.2.2.1:
    * `model/**\/Location*.cfc` 4 files, `model/**\/Stock*.cfc` 11, `model/**\/Inventory*.cfc` 3).
    *
-   * It also memoizes into its own `variables` scope KEYED BY QUANTITY TYPE at [:L305] and [:L310], a
-   * per-instance cache that would need the same M7 treatment as the rest of this file were the member
-   * ever implemented.
-   *
-   * THE INVALID-QUANTITY-TYPE MESSAGE AT [:L312] IS **NOT** AUTHORED HERE. It is a throw-string
-   * literal, and every such literal in this port belongs to `src/errors/DomainError.ts` so that each
-   * can be held to exactly one occurrence across the target tree. Neither the message nor its list of
-   * valid types appears anywhere in this file, in code or in comment.
-   *
-   * @param _quantityType the quantity type wanted; unread
-   * @param _locationID optional location scope; unread
-   * @param _stockID optional stock scope; unread
-   * @returns never
-   * @throws {NotImplementedError} always
    */
   getQuantity(_quantityType: string, _locationID?: string, _stockID?: string): never {
     throw new NotImplementedError(
       'Sku.getQuantity',
       'model/entity/Sku.cfc:L291-L316 reaches locationService, stockService and inventoryService, ' +
-        'all excluded by AAP 0.2.2.1, and composes an inventory method name dynamically at :L310',
+        'all excluded by AAP §0.2.2.1, and composes an inventory method name dynamically at :L310',
       { context: { skuID: this.skuID, locator: 'model/entity/Sku.cfc:L291-L316' } },
     );
   }
@@ -3394,23 +1577,9 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * Whether this SKU's stock records may be deleted — [model/entity/Sku.cfc:L567-L572].
    *
-   * TODO(parity) [model/entity/Sku.cfc:L567-L572] — DEFECT D4, CARRIED NOT REPAIRED.
-   * THIS MEMBER CANNOT RESOLVE IN THE LEGACY SYSTEM EITHER.
+   * TODO(parity) [model/entity/Sku.cfc:L567-L572] — defect D4, carried not repaired.
+   * This member cannot resolve in the legacy system either.
    *
-   * The legacy body memoizes
-   * `getService("skuService").getSkuStocksDeletableFlag( skuID=this.getSkuID() )` — the call site is
-   * precisely [:L569]. That service member exists, at
-   * [model/service/SkuService.cfc:L281-L283], and it delegates to
-   * `getSkuDAO().getSkuStocksDeletableFlag()` — WHICH EXISTS NOWHERE IN THE REPOSITORY. AAP §0.6.7.3
-   * records the same finding. The chain is therefore broken in the source, and this member has never
-   * been able to return a value.
-   *
-   * NO IMPLEMENTATION IS INVENTED. Writing one would be the most damaging possible form of the repair
-   * Guideline 4 forbids: it would answer a question the legacy system cannot answer, and the answer
-   * would gate deletions. An explicit refusal that names the defect is the honest port.
-   *
-   * @returns never
-   * @throws {NotImplementedError} always, naming defect D4
    */
   getStocksDeletableFlag(): never {
     throw new NotImplementedError(
@@ -3429,39 +1598,13 @@ export class Sku implements AuditableEntity, ManagedEntity {
     );
   }
 
-  /* ---------------------------------------------------------------------------------------------
-   * DEPRECATED MEMBERS — [model/entity/Sku.cfc:L882-L912], carried WITH their hints (D16)
-   *
-   * AAP §0.6.7.2's D16 entry names THREE of these, at [:L894], [:L899] and [:L908]. A full read of the
-   * legacy block finds a FOURTH deprecation hint at [:L885], which the register does not name; it is
-   * carried too, and recorded as an OBSERVED EXTRA rather than given a defect identifier of its own,
-   * because the register is AAP §0.6.7's and inventing an identifier would imply an authority this
-   * file does not have (S9).
-   *
-   * All four are retained rather than dropped: they are public members of the legacy surface, and
-   * Guideline 2 requires existing behaviour be preserved. The `@deprecated` tags carry the legacy hint
-   * text verbatim so a consumer sees the original guidance rather than a paraphrase. The lint
-   * configuration uses the type-checked recommended preset rather than the strict one, so these
-   * annotations do not turn every internal call into an error — which matters, because [:L895] and
-   * [:L909] are legacy calls from one member to another.
-   * ------------------------------------------------------------------------------------------- */
+  /* Deprecated members — [model/entity/Sku.cfc:L882-L912], carried with their hints (D16) */
 
   /**
    * The option names of this SKU joined by a delimiter — [model/entity/Sku.cfc:L885-L891].
    *
-   * @deprecated USE skuDefinition() — the legacy hint at [model/entity/Sku.cfc:L884], verbatim.
+   * @deprecated use skuDefinition — the legacy hint at [model/entity/Sku.cfc:L884], verbatim.
    *
-   * ITS BODY IS BYTE-FOR-BYTE IDENTICAL TO {@link Sku.getOptionsDisplay} at [:L233-L239], down to
-   * the local variable name and the default delimiter of a single space. It delegates below rather
-   * than duplicating the loop, which is an idiom change the Minimal Change Clause permits and which
-   * cannot alter the result, since the two legacy bodies are the same text.
-   *
-   * OBSERVED EXTRA, not a registered defect: AAP §0.6.7.2's D16 entry names the three members at
-   * [:L894], [:L899] and [:L908] and does not name this one, although [:L884] carries the same kind of
-   * hint. Recorded so the discrepancy reads as a finding rather than an oversight.
-   *
-   * @param delimiter the separator, defaulting to {@link SKU_OPTIONS_DISPLAY_DEFAULT_DELIMITER}
-   * @returns the joined option names
    */
   displayOptions(delimiter: string = SKU_OPTIONS_DISPLAY_DEFAULT_DELIMITER): string {
     return this.getOptionsDisplay(delimiter);
@@ -3470,39 +1613,20 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * This SKU's options keyed by option group identifier — [model/entity/Sku.cfc:L894-L896].
    *
-   * @deprecated USE getOptionsByOptionGroupIDStruct() — the legacy hint at
-   *   [model/entity/Sku.cfc:L893], verbatim. Registered as part of defect D16.
+   * @deprecated use getOptionsByOptionGroupIDStruct — the legacy hint at
+   * [model/entity/Sku.cfc:L893], verbatim. Registered as part of defect D16.
    *
-   * A pure delegation, exactly as [:L895] is. It therefore inherits defect D2 in full and ALWAYS
-   * RETURNS AN EMPTY MAP; see {@link Sku.getOptionsByOptionGroupIDStruct}.
-   *
-   * @returns an empty map, always
-   * @throws {DomainError} propagated from D2 when its loop runs and an option carries no option group
    */
   getOptionsByGroupIDStruct(): Record<string, Option> {
     return this.getOptionsByOptionGroupIDStruct();
   }
 
   /**
-   * This SKU's option identifiers keyed by option group NAME — [model/entity/Sku.cfc:L899-L905].
+   * This SKU's option identifiers keyed by option group name — [model/entity/Sku.cfc:L899-L905].
    *
-   * @deprecated NEVER USE — the legacy hint at [model/entity/Sku.cfc:L898], verbatim and unsoftened.
-   *   Registered as part of defect D16.
+   * @deprecated never use — the legacy hint at [model/entity/Sku.cfc:L898], verbatim and unsoftened.
+   * Registered as part of defect D16.
    *
-   * LAST-WINS, UNLIKE ITS SIBLINGS. [:L902] assigns unconditionally, with NO
-   * `if(!structKeyExists(...))` guard, so when two options share an option group NAME the LATER one
-   * overwrites the earlier. Contrast {@link Sku.getOptionsByOptionGroupCodeStruct} at [:L504], whose
-   * guard keeps the FIRST. Both are preserved as written; that inconsistency is very likely why the
-   * legacy author wrote the hint above.
-   *
-   * KEYED BY NAME, VALUED BY IDENTIFIER, which is the other reason the hint exists: a display string
-   * is a poor map key, and two option groups may legitimately share one.
-   *
-   * Not memoized — [:L900] builds a fresh map on every call, and the legacy has no guard here.
-   *
-   * @returns a map of option group name to option identifier
-   * @throws {DomainError} when an option carries no option group, per the unguarded-dereference
-   *   policy — [:L902] dereferences it without a guard
    */
   getOptionsValueStruct(): Record<string, string> {
     const optionsByOptionGroupName: Record<string, string> = {};
@@ -3516,53 +1640,25 @@ export class Sku implements AuditableEntity, ManagedEntity {
   }
 
   /**
-   * Whether this SKU is NOT its product's default — [model/entity/Sku.cfc:L908-L910], whose body is
-   * `return !getDefaultFlag();`.
+   * Whether this SKU is not its product's default — [model/entity/Sku.cfc:L908-L910], whose body is
+   * `return !getDefaultFlag;`.
    *
-   * @deprecated USE getDefaultFlag() — the legacy hint at [model/entity/Sku.cfc:L907], verbatim.
-   *   Registered as part of defect D16.
+   * @deprecated use getDefaultFlag — the legacy hint at [model/entity/Sku.cfc:L907], verbatim.
+   * Registered as part of defect D16.
    *
-   * The negation is preserved exactly, including its consequence: [:L909] negates the RESULT of
-   * `getDefaultFlag()`, so when that member raises there is no result to negate and this member raises
-   * too. An unassociated SKU therefore gets no answer here either, which is what [:L443] does.
-   *
-   * ⛔ AN EARLIER REVISION OF THIS PARAGRAPH SAID THIS MEMBER "ANSWERS `true`" FOR AN UNASSOCIATED SKU,
-   * because {@link Sku.getDefaultFlag} answered `false` for one. That premise is withdrawn along with
-   * the exception it rested on; the negation is faithful either way, since it negates whatever the
-   * delegate produces and propagates whatever it raises.
-   *
-   * @param readDefaultSkuId forwarded to {@link Sku.getDefaultFlag}
-   * @returns `true` when this SKU is not its product's default
-   * @throws {DomainError} propagated from {@link Sku.getDefaultFlag}
    */
   isNotDefaultSku(readDefaultSkuId: DefaultSkuIdReader): boolean {
     return !this.getDefaultFlag(readDefaultSkuId);
   }
 
-  /* ============================================================================================
-   * THE MANAGED-ENTITY CONTRACT — [org/Hibachi/**], INHERITED IN CFML, DECLARED HERE (IR-1 / TR-3)
-   * ============================================================================================
+  /*
+   * The managed-entity contract — [org/Hibachi/**], inherited in CFML, declared here (IR-1 / TR-3)
    * Seven members every legacy entity received down the
    * `HibachiObject` -> `HibachiTransient` -> `HibachiEntity` -> `model/entity/HibachiEntity.cfc`
    * inheritance chain, and which `src/validation/Validator.ts` and
-   * `src/ports/UniquePropertyPort.ts` both require BY NAME. Neither contract can be satisfied by a
-   * plain data class, which is why they are declared rather than assumed:
-   * `ValidationSubject` reads `getClassName` and `hasProperty`, and `UniquePropertyEntity` reads
-   * `getEntityName`, `getPrimaryIDValue`, `getPrimaryIDPropertyName`, `getPropertyMetaData` and
-   * `getValueByPropertyIdentifier` in exactly the order [org/Hibachi/HibachiDAO.cfc:L134-L138]
-   * reads them.
-   *
-   * `src/domain/base/AuditableEntity.ts` owns the shared behaviour and every word of the rationale —
-   * including why there is no base class, why the member names are not modernised, and which
-   * inherited members are deliberately NOT ported. Each member below is the thin delegation plus the
-   * constant only this entity can state.
-   *
-   * ⭐ THE SEVENTH MEMBER IS WHY THE VALIDATION RULE SET FOR THIS ENTITY CAN RUN AT ALL. Two rules in
-   * `model/validation/Sku.json` are METHOD-BASED and one of them, `hasUniqueOptions`, reads back rows
-   * the same save is writing (AAP 0.6.2 / M6). `Validator` reaches this entity only through
-   * `getClassName` and `hasProperty`; the uniqueness checker reaches it through the other five. Both
-   * contracts are declared here rather than assumed.
-   * ============================================================================================ */
+   * `src/ports/UniquePropertyPort.ts` both require by name. Neither contract can be satisfied by a
+   * plain data class, which is why they are declared rather than assumed.
+   */
 
   /**
    * `Sku` — [org/Hibachi/HibachiObject.cfc:L135-L137], the last dot-delimited segment of the
@@ -3579,7 +1675,7 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * `SlatwallSku` — [org/Hibachi/HibachiEntity.cfc:L287-L289]. Live metadata reflection is replaced by the
    * declared constant, per TR-3.
    *
-   * @returns The mapped ORM entity name, NOT the physical table name.
+   * @returns The mapped ORM entity name, not the physical table name.
    */
   getEntityName(): string {
     return SKU_ENTITY_NAME;
@@ -3588,7 +1684,7 @@ export class Sku implements AuditableEntity, ManagedEntity {
   /**
    * `skuID` — [org/Hibachi/HibachiEntity.cfc:L249-L251]. The legacy resolved this through
    * `getService("hibachiService")`; the string-keyed service locator is replaced by the declared
-   * constant, per TR-3 and AAP 0.7.3 S3.
+   * constant, per TR-3 and AAP §0.7.3.
    *
    * @returns The name of the primary identifier property.
    */
@@ -3597,15 +1693,8 @@ export class Sku implements AuditableEntity, ManagedEntity {
   }
 
   /**
-   * The primary identifier's VALUE — [org/Hibachi/HibachiEntity.cfc:L244-L246], which forwards to
+   * The primary identifier's value — [org/Hibachi/HibachiEntity.cfc:L244-L246], which forwards to
    * the generated getter for whichever property `getPrimaryIDPropertyName` names.
-   *
-   * ⚠️ RETURNS `''` FOR AN UNSAVED INSTANCE, because [model/entity/Sku.cfc:L52] declares
-   * `unsavedvalue=""` and this class initialises the field to `''`. That is what makes the
-   * self-exclusion term of the uniqueness query a NO-OP on insert — an observation AAP 0.4.1.7
-   * requires be reproduced rather than tidied away, and which `src/ports/UniquePropertyPort.ts`
-   * carries as a `TODO(parity)`. It is also the value
-   * [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L64-L67] asserts on a fresh instance.
    *
    * @returns The identifier, or `''` while unsaved.
    */
@@ -3614,12 +1703,8 @@ export class Sku implements AuditableEntity, ManagedEntity {
   }
 
   /**
-   * Whether this entity DECLARES the named property —
+   * Whether this entity declares the named property —
    * [org/Hibachi/HibachiTransient.cfc:L763-L765].
-   *
-   * ⚠️ A FALSE ANSWER SILENTLY SKIPS A VALIDATION RULE rather than failing it
-   * [org/Hibachi/HibachiValidationService.cfc:L171]. See SKU_DECLARED_PROPERTIES, whose
-   * exhaustiveness is compile-checked precisely because of that.
    *
    * @param propertyIdentifier - The name to test, in its declared casing.
    * @returns `true` when the property is declared.
@@ -3629,22 +1714,22 @@ export class Sku implements AuditableEntity, ManagedEntity {
   }
 
   /**
-   * Resolves a declared property's metadata, RAISING for an undeclared name —
+   * Resolves a declared property's metadata, raising for an undeclared name —
    * [org/Hibachi/HibachiTransient.cfc:L738-L747], whose present-key branch is at [:L741-L743] and
    * whose throw is at [:L746]. The non-optional return type is faithful to that declaration.
    *
    * @param propertyName - The name to resolve.
    * @returns The metadata for that property.
    * @throws DomainError - When no property of that name is declared. Withheld from every response
-   *   by the deny-by-default presentation, because it signals a fault in the port rather than
-   *   anything a caller can provoke.
+   * by the deny-by-default presentation, because it signals a fault in the port rather than
+   * anything a caller can provoke.
    */
   getPropertyMetaData(propertyName: string): EntityPropertyMetaData {
     return requireDeclaredPropertyMetaData(SKU_DECLARED_PROPERTIES, propertyName, SKU_CLASS_NAME);
   }
 
   /**
-   * Reads a value by property identifier, walking a path delimited by EITHER `.` OR `_` —
+   * Reads a value by property identifier, walking a path delimited by either `.` or `_` —
    * [org/Hibachi/HibachiTransient.cfc:L466-L481]. An unresolvable path yields `''`, never an absent
    * value; `readValueByPropertyIdentifier` documents all four traversal rules and why each is
    * behaviour rather than convenience.
@@ -3657,34 +1742,16 @@ export class Sku implements AuditableEntity, ManagedEntity {
   }
 }
 
-/* ================================================================================================
- * THE POPULATION CONTRACT
- *
- * `populate()` at [model/entity/HibachiEntity.cfc:L56] walked property METADATA at runtime and
- * assigned by composing accessor names from it. TR-3 replaces that with the declarations below, which
- * `../base/populate` consumes. Nothing here reflects, composes a method name, or reads metadata.
- * ============================================================================================== */
+/* The population contract. */
 
 /**
- * Every PERSISTENT property name [model/entity/Sku.cfc] declares — all thirty-one, in declaration
+ * Every persistent property name [model/entity/Sku.cfc] declares — all thirty-one, in declaration
  * order: the eight scalars [`:L52-:L59`], the calculated column [`:L62`], the two many-to-one
  * relationships [`:L65-:L66`], the five one-to-many collections [`:L69-:L73`], the four owning
  * many-to-many relationships [`:L76-:L79`], the six inverse many-to-many relationships [`:L82-:L87`],
  * `remoteID` [`:L90`] and the four audit properties [`:L93-:L96`], the last of these reused from
  * {@link AuditPropertyName} rather than re-spelled so this union cannot drift from
  * `../base/AuditableEntity`.
- *
- * IT IS THE COMPLETE PERSISTENT SURFACE EVEN THOUGH THE DESCRIPTOR SET BELOW IS NARROWER, and the
- * difference is deliberate — the same distinction `src/domain/product/Brand.ts` and
- * `src/domain/product/ProductType.ts` both draw. This union is the KEY SPACE that
- * `PopulationTarget<TPropertyName>` is parameterised by, so an indexed write during population can
- * only ever target a name declared here and a typo is a compile error rather than a silently created
- * property. The descriptor set is the narrower statement of what population may ACT on.
- *
- * THE NON-PERSISTENT BLOCK IS DELIBERATELY EXCLUDED, following the `ProductType` precedent, which
- * omits its own single non-persistent property. Admitting `salePrice` or `qats` to this union would
- * let population target a calculated member, which is neither what the legacy did nor what any
- * descriptor below permits. {@link SkuNonPersistentPropertyName} carries those names separately.
  */
 export type SkuPropertyName =
   | 'skuID'
@@ -3719,40 +1786,6 @@ export type SkuPropertyName =
 /**
  * Sku's frozen metadata declaration — what `manageEntity` reads to compose the seven framework
  * introspection members onto an instance.
- *
- * ⚠️ THIS CLASS ALSO DECLARES ALL SEVEN ITSELF, AND THIS BLOCK USED TO SAY THE OPPOSITE. It read "the
- * runtime answer to the seven framework introspection members this class deliberately does not
- * declare … composed onto an instance by `../base/manageEntity` rather than hand-written here", and
- * both halves were wrong. The seven are hand-written further down this module over its own frozen
- * constants, alongside an `implements ManagedEntity` clause that obliges them; and `../base/manageEntity`
- * is not a module — `manageEntity` is a FUNCTION exported by `../base/populate`, whose `Object.assign`
- * shadows those prototype methods with equivalent own-property closures over this declaration.
- * `../base/AuditableEntity` records once which classes declare the seven and which rely on composition.
- *
- * See {@link EntityMetadataDeclaration} for what each member ports. This constant is the ONLY place in
- * this module where the class name and the ORM entity name appear as VALUES rather than as prose, and
- * {@link SKU_PROPERTY_DESCRIPTORS} reads its `className` from here so the literal is written once.
- *
- * THIRTY-ONE FIELD KEYS — every persistent property [model/entity/Sku.cfc] declares: the eight
- * scalars at [`:L52-L59`], the persisted calculated column at [`:L62`], the two many-to-ones at
- * [`:L65-L66`], the five collections at [`:L69-L73`], the ten many-to-manys at [`:L76-L87`], the
- * remote identifier at [`:L90`] and the four audit properties at [`:L93-L96`].
- *
- * ⭐ AND ALL TWENTY-THREE NON-PERSISTENT NAMES, WHICH IS WHERE THE REAL BEHAVIOUR IS. Two of them
- * are VALIDATED PROPERTIES: `model/validation/Sku.json:3` guards deletion on `defaultFlag`
- * [`:L105`] and `:12` on `transactionExistsFlag` [`:L121`]. `src/validation/Validator.ts` SKIPS a
- * rule silently when `hasProperty` answers false, so omitting those two names would turn both
- * delete guards inert with no error anywhere — which is precisely the divergence class this
- * declaration exists to prevent. The remaining twenty-one are listed for the same reason the legacy
- * predicate answers true for them: the entity DECLARES them, whether or not this port carries a
- * member. Exhaustiveness against {@link SkuNonPersistentPropertyName} is compile-checked, so the
- * list cannot drift from the union that documents the calculated-property boundary.
- *
- * ⚠️ `physicalCounts` IS IN NEITHER RECORD, AND THAT ABSENCE IS LOAD-BEARING.
- * `model/validation/Sku.json:13` names it and [model/entity/Sku.cfc] declares `physicals` at
- * [`:L87`] instead, so the legacy engine skips that rule. Adding the name here would activate a rule
- * the legacy system never ran. See {@link SkuNonPersistentPropertyName}, which records the same
- * invariant from the type side.
  */
 export const SKU_ENTITY_METADATA: EntityMetadataDeclaration<SkuPropertyName> = Object.freeze({
   className: 'Sku',
@@ -3819,27 +1852,8 @@ export const SKU_ENTITY_METADATA: EntityMetadataDeclaration<SkuPropertyName> = O
 } satisfies EntityMetadataDeclaration<SkuPropertyName>);
 
 /**
- * Every NON-PERSISTENT property name [model/entity/Sku.cfc:L99-L121] declares — all twenty-three, in
+ * Every non-persistent property name [model/entity/Sku.cfc:L99-L121] declares — all twenty-three, in
  * declaration order.
- *
- * Declared because two of them are VALIDATED PROPERTIES: [model/validation/Sku.json:L3] and [:12] name
- * `defaultFlag` and `transactionExistsFlag` in the delete context, and
- * `src/validation/rules/sku.rules.ts` needs a compile-checked way to refer to them.
- * {@link SkuValidatedPropertyName} composes exactly that from this union and
- * {@link SkuPropertyName}.
- *
- * It is also the documentary record of the calculated-property boundary: thirteen of these names are
- * excluded and ten are carried; the module header names the excluded thirteen individually, and each
- * carried member is documented at its own declaration. Declaring the complete set here means a reader
- * can see what the entity declares without inferring it from which methods happen to exist.
- *
- * `physicalCounts` IS ABSENT FROM BOTH THIS UNION AND {@link SkuPropertyName}, AND THAT ABSENCE IS
- * LOAD-BEARING. [model/validation/Sku.json:L13] names it, the entity declares `physicals` at
- * [model/entity/Sku.cfc:L87], and the presence gate at
- * [org/Hibachi/HibachiValidationService.cfc:L171] therefore skips the rule silently in the legacy
- * system. `src/validation/rules/brand.rules.ts` makes that inertness a COMPILE-CHECKED INVARIANT by
- * excluding the identifier from the entity's property-name union; keeping it out of both unions here
- * is what lets the same construction work for this entity.
  */
 export type SkuNonPersistentPropertyName =
   | 'adminIcon'
@@ -3868,95 +1882,36 @@ export type SkuNonPersistentPropertyName =
 
 /**
  * The seven property identifiers [model/validation/Sku.json] names that this entity actually declares.
- *
- * A CROSS-FILE CONTRACT. `src/validation/rules/sku.rules.ts` pins each identifier with the
- * compile-checked idiom `src/validation/rules/brand.rules.ts` established —
- * `Extract<…PropertyName, 'name'>` for an identifier that must exist and
- * `Exclude<'physicalCounts', …PropertyName>` for the one that must not. Composing the seven here from
- * BOTH unions means that module resolves each of them without having to know which of the two carries
- * it, and it means a rename on either side of the boundary breaks the build instead of silently
- * disabling a rule.
- *
- * FIVE COME FROM THE PERSISTENT SURFACE and two from the non-persistent block, which is itself worth
- * recording: `defaultFlag` and `transactionExistsFlag` are CALCULATED delete guards, so the validation
- * engine reads them through accessors rather than off columns.
  */
 export type SkuValidatedPropertyName =
   | Extract<SkuPropertyName, 'listPrice' | 'options' | 'price' | 'renewalPrice' | 'skuCode'>
   | Extract<SkuNonPersistentPropertyName, 'defaultFlag' | 'transactionExistsFlag'>;
 
-/* ================================================================================================
- * THE MANAGED-ENTITY CONSTANTS — WHAT ONLY THIS ENTITY CAN STATE
- * ================================================================================================
+/*
+ * The managed-entity constants — what only this entity can state
  * `src/domain/base/AuditableEntity.ts` holds the shared managed-entity contract and every word of
  * its rationale. Three facts cannot be shared because they differ per entity, and the legacy
  * resolved all three at runtime — two by reflecting over live component metadata and one through the
- * DI/1 service locator. TR-3 and AAP 0.7.3 S3 replace all three with declarations.
- *
- * ONLY TWO OF THE THREE APPEAR BELOW. The third, {@link SKU_PRIMARY_ID_PROPERTY_NAME}, was already
- * declared at its own site earlier in this module, where it is documented alongside
- * {@link SKU_UNSAVED_ID_VALUE} and the reason the identifier is a constant rather than a descriptor
- * entry. Re-declaring it here would be a second source of truth for one fact.
- * ================================================================================================ */
+ * DI/1 service locator. TR-3 and AAP §0.7.3 replace all three with declarations.
+ */
 
 /**
  * The bare class name — the value [org/Hibachi/HibachiObject.cfc:L135-L137] derives by taking the
  * last dot-delimited segment of the component's fully qualified name.
- *
- * ⚠️ NOT the same as {@link SKU_ENTITY_NAME}: this one carries no `Slatwall` prefix. It is
- * interpolated into every validation message
- * [org/Hibachi/HibachiValidationService.cfc:L202, :L213, :L216] and into the property-metadata
- * failure [org/Hibachi/HibachiTransient.cfc:L746], so a prefixed value here would change observable
- * message text.
  */
 export const SKU_CLASS_NAME = 'Sku';
 
 /**
  * The mapped ORM entity name, declared by the `entityname` attribute on
  * [model/entity/Sku.cfc:L49] and read at runtime by [org/Hibachi/HibachiEntity.cfc:L287-L289].
- *
- * ⚠️ THIS IS THE LOGICAL ENTITY NAME, NOT THE PHYSICAL `Sw*` TABLE NAME. The legacy uniqueness
- * statement [org/Hibachi/HibachiDAO.cfc:L140] is expressed over the mapped object graph, so the
- * prefixed form is correct there and is not a defect to correct; translating it to a table is the
- * adapter's responsibility.
  */
 export const SKU_ENTITY_NAME = 'SlatwallSku';
 
 /**
- * Every property this entity DECLARES, as a keyed set — the port of `getPropertiesStruct()`, the
+ * Every property this entity declares, as a keyed set — the port of `getPropertiesStruct()`, the
  * structure [org/Hibachi/HibachiTransient.cfc:L739] resolves and which both `hasProperty` [:L764]
  * and `getPropertyMetaData` [:L741] key into. A CFML struct keyed by property name is what the
  * legacy held; a keyed object is what this holds, and membership is an own-key test in both.
- *
- * ⚠️ THE `DeclaredPropertyNameSet<SkuPropertyName | SkuNonPersistentPropertyName>` ANNOTATION IS THE POINT, NOT DECORATION. It checks this
- * set against the entity's property-name union in BOTH directions: a MISSING name fails to compile
- * ("Property 'x' is missing in type"), and an INVENTED one fails to compile too (the object is not
- * assignable). Both directions matter. A missing name would make `hasProperty` answer false, and
- * [org/Hibachi/HibachiValidationService.cfc:L171] SILENTLY SKIPS a rule whose property is absent —
- * so a validation rule would stop running with no error anywhere in the port. An invented name
- * would START running a rule the legacy never ran.
- *
- * ⚠️⚠️ `physicalCounts` IS ABSENT, AND ITS ABSENCE IS THE FAITHFUL ANSWER RATHER THAN AN OVERSIGHT.
- * `model/validation/Sku.json:L13` declares a delete guard against `physicalCounts`, but
- * [model/entity/Sku.cfc:L87] declares that collection as `physicals` and NO property named
- * `physicalCounts` exists on the entity. Legacy `hasProperty('physicalCounts')` therefore answers
- * FALSE and [org/Hibachi/HibachiValidationService.cfc:L171] SKIPS the rule — it has never run in the
- * legacy system. `src/validation/rules/sku.rules.ts` already makes that inertness a COMPILE-CHECKED
- * invariant with `Exclude<'physicalCounts', …>`, and this set is the other half of the same
- * construction. The identical trap sits on `Product`, `Brand` and `ProductType`. TODO(parity):
- * carried as observed and intentionally NOT repaired, per AAP 0.8.2 Guidelines 2 and 4.
- *
- * ⭐ THE SEVEN IDENTIFIERS OF {@link SkuValidatedPropertyName} ARE ALL PRESENT and their rules
- * therefore RUN — five off {@link SkuPropertyName} and two off
- * {@link SkuNonPersistentPropertyName}, which is why this set is composed from both unions rather
- * than from the persistent one alone.
- *
- * ⚠️ THIS IS A STATEMENT ABOUT WHAT THE LEGACY ENTITY DECLARES, NOT ABOUT WHAT THIS PORT
- * IMPLEMENTS, and the two differ deliberately. AAP 0.2.2.6 excludes the pricing, promotion,
- * inventory and currency-derived calculated members from the port because they reach exclusively
- * into out-of-scope services — yet the legacy still DECLARES them, so `hasProperty` must still
- * answer true for them exactly as the legacy does. Trimming this set to the implemented surface
- * would be the "missing name" failure above dressed up as tidiness.
  */
 export const SKU_DECLARED_PROPERTIES: DeclaredPropertyNameSet<
   SkuPropertyName | SkuNonPersistentPropertyName
@@ -4020,15 +1975,6 @@ export const SKU_DECLARED_PROPERTIES: DeclaredPropertyNameSet<
 /**
  * The eight populate-enabled simple properties, in legacy declaration order —
  * [model/entity/Sku.cfc:L53-:L59] plus the calculated column at [`:L62`].
- *
- * NONE carries `populateEnabled: false`, because [model/entity/Sku.cfc] declares
- * `hb_populateEnabled="false"` on EXACTLY FOUR properties and all four are the audit properties at
- * [`:L93-:L96`]. That makes this entity ordinary in the slice and `Brand` the outlier, which declares
- * nine.
- *
- * `calculatedQATS` IS INCLUDED, and the inclusion is faithful rather than convenient: [`:L62`] carries
- * no populate flag, so the legacy population pass could write it. See {@link Sku.calculatedQATS} for
- * why the persisted column and the excluded calculated member of the same name are different things.
  */
 const SKU_SIMPLE_PROPERTY_DESCRIPTORS: readonly ColumnPropertyDescriptor<SkuPropertyName>[] = [
   { name: 'activeFlag', valueType: 'boolean' },
@@ -4043,7 +1989,7 @@ const SKU_SIMPLE_PROPERTY_DESCRIPTORS: readonly ColumnPropertyDescriptor<SkuProp
 
 /**
  * `remoteID` — [model/entity/Sku.cfc:L90]. A populate-enabled simple property, declared apart from the
- * eight above because it sits AFTER the relationship block in the legacy source and declaration order
+ * eight above because it sits after the relationship block in the legacy source and declaration order
  * is preserved.
  */
 const SKU_REMOTE_ID_DESCRIPTOR: ColumnPropertyDescriptor<SkuPropertyName> = {
@@ -4052,13 +1998,9 @@ const SKU_REMOTE_ID_DESCRIPTOR: ColumnPropertyDescriptor<SkuPropertyName> = {
 };
 
 /**
- * The four audit properties as populate-disabled descriptors, GENERATED from
+ * The four audit properties as populate-disabled descriptors, generated from
  * {@link AUDIT_PROPERTY_NAMES} so that each name is written exactly once in this file and cannot drift
  * from `../base/AuditableEntity`.
- *
- * `populateEnabled: false` is the transliteration of `hb_populateEnabled="false"` at
- * [model/entity/Sku.cfc:L93-:L96]. These are the ONLY four populate-disabled properties this entity
- * declares.
  */
 const SKU_AUDIT_PROPERTY_DESCRIPTORS: readonly PopulatePropertyDescriptor<
   Sku,
@@ -4067,25 +2009,18 @@ const SKU_AUDIT_PROPERTY_DESCRIPTORS: readonly PopulatePropertyDescriptor<
   (auditPropertyName) => ({ name: auditPropertyName, populateEnabled: false }),
 );
 
-/**
- * The collaborators the two in-scope relationships need before population can act on them.
- *
- * WHY THEY ARE PARAMETERS AND NOT IMPORTS (S3). The legacy population pass resolved each related
- * entity through `getService("hibachiService").getServiceByEntityName(...)` and then invoked a
- * dynamically composed getter — a string-keyed service locator feeding runtime method-name
- * composition, which is exactly what TR-3 and IR-1 replace. Supplying the loaders from
- * `src/config/container.ts` keeps this module free of any service or adapter import.
- *
- * Both relationships are OPTIONAL as a group: {@link SKU_PROPERTY_DESCRIPTORS} is the dependency-free
- * form, for the many callers that populate scalars only.
- */
+/** The collaborators the two in-scope relationships need before population can act on them. */
 export interface SkuPopulationCollaborators {
-  /** Loads or creates a `Product` by identifier, for the many-to-one at [model/entity/Sku.cfc:L65]. */
+  /**
+   * Loads or creates a `product` by identifier, for the many-to-one at [model/entity/Sku.cfc:L65].
+   */
   readonly productLoader: RelatedEntityLoader<Product>;
 
   readonly populateProduct: SubPropertyPopulator<Product>;
 
-  /** Loads or creates an `Option` by identifier, for the many-to-many at [model/entity/Sku.cfc:L76]. */
+  /**
+   * Loads or creates an `option` by identifier, for the many-to-many at [model/entity/Sku.cfc:L76].
+   */
   readonly optionLoader: RelatedEntityLoader<Option>;
 
   readonly populateOption: SubPropertyPopulator<Option>;
@@ -4095,63 +2030,12 @@ export interface SkuPopulationCollaborators {
  * Builds this entity's population contract, wiring the two in-scope relationships when their
  * collaborators are supplied.
  *
- * ---------------------------------------------------------------------------------------------
- * WHAT IS LISTED AND WHAT IS OMITTED, IN LEGACY DECLARATION ORDER WITH EVERY GAP ACCOUNTED FOR
- * ---------------------------------------------------------------------------------------------
- *   [:L52] skuID                        OMITTED — no populate branch admits an identifier field; see
- *                                                 {@link SKU_PRIMARY_ID_PROPERTY_NAME}
- *   [:L53-:L59] the eight scalars        listed
- *   [:L62] calculatedQATS                listed (grouped with the scalars above)
- *   [:L65] product                       listed when its collaborators are supplied
- *   [:L66] subscriptionTerm              OMITTED — boundary: `SubscriptionTerm` is out of scope, so
- *                                                 there is no entity for a loader to load
- *   [:L69-:L73] the five one-to-many     OMITTED — boundary: `AlternateSkuCode`, `AttributeValue`,
- *                                                 `OrderItem`, `SkuCurrency` and `Stock` are all out
- *                                                 of scope. AAP §0.4.1.4's folder requirements forbid
- *                                                 creating `SkuCurrency.ts` and `AlternateSkuCode.ts`
- *                                                 by name
- *   [:L76] options                       listed when its collaborators are supplied
- *   [:L77-:L79] accessContents,          LISTED. Their ELEMENT entities are out of scope, but this
- *              subscriptionBenefits,               entity OWNS all three link tables and
- *              renewalSubscriptionBenefits         `model/service/SkuService.cfc` writes all three at
- *                                                  [:L161], [:L164], [:L187] and [:L196], so dropping
- *                                                  them lost owner-side link data outright. Typed as
- *                                                  the ports' opaque references
- *   [:L82-:L87] the six inverse m2m      OMITTED — boundary: `Promotion*`, `PriceGroup*` and
- *                                                 `Physical*` are all out of scope, and each is the
- *                                                 INVERSE side, so this entity would not own the write
- *                                                 in any case
- *   [:L90] remoteID                      listed
- *   [:L93-:L96] the four audit props     listed, populate-disabled
  *
- * NONE OF THE OMITTED RELATIONSHIPS IS POPULATE-DISABLED IN THE LEGACY. Not one of them carries
- * `hb_populateEnabled="false"`, so the legacy population pass WOULD have written them. They are
- * omitted because the RELATED TYPE is out of scope, not because the legacy forbade population — a
- * genuinely different reason, and the honest one to record. No placeholder type is invented to keep
- * them (S9). This is the same treatment `src/domain/product/Brand.ts` applies to its own unflagged
- * out-of-scope relationship.
- *
- * @param collaborators the loaders and sub-populators for `product` and `options`; omit to build the
- *   dependency-free form
- * @returns the population contract for this entity
  */
 export function createSkuPropertyDescriptors(
   collaborators?: SkuPopulationCollaborators,
 ): PropertyDescriptorSet<Sku, SkuPropertyName> {
-  /*
-   * `product` — [model/entity/Sku.cfc:L65], `fieldtype="many-to-one" fkcolumn="productID"`.
-   *
-   * `relatedPrimaryIdPropertyName: 'productID'` is Product's declared identifier
-   * [model/entity/Product.cfc:L52]. The legacy resolved that name at runtime through
-   * `getPrimaryIDPropertyNameByEntityName(...)` over an interpolated entity name; TR-3 replaces the
-   * lookup with this declaration.
-   *
-   * NOTE WHAT IS **NOT** HERE: no `addRelated`, because the many-to-one shape declares none. That
-   * matters, because {@link Sku.setProduct} maintains BOTH sides and the ordering coupling documented
-   * on it depends on being the single place the append happens. Population assigns the field through
-   * `../base/populate`'s own indexed write; a caller that needs the collection maintained calls
-   * `product.addSku(sku)`, which reaches {@link Sku.setProduct}.
-   */
+  /* `product` — [model/entity/Sku.cfc:L65], `fieldtype="many-to-one" fkcolumn="productID"`. */
   const productDescriptors: readonly ManyToOnePropertyDescriptor<'product', Product>[] =
     collaborators === undefined
       ? []
@@ -4168,21 +2052,8 @@ export function createSkuPropertyDescriptors(
         ];
 
   /*
-   * `options` — [model/entity/Sku.cfc:L76], the many-to-many this entity OWNS. See
+   * `options` — [model/entity/Sku.cfc:L76], the many-to-many this entity owns. See
    * {@link Sku.options} for the ownership proof from both sides.
-   *
-   * `singularName: 'option'` is the legacy `singularname="option"` attribute, and the capital N is the
-   * spelling `../base/populate` pins. NOTHING CONCATENATES IT INTO A MEMBER NAME (TR-3, S3): it is
-   * declared provenance, and `addRelated` and `removeRelated` below are the explicit replacements for
-   * the dispatch that once composed `addOption` and `removeOption` from it. Those two members are the
-   * IR-1 declarations whose absence would otherwise break three other modules.
-   *
-   * `addRelated` and `removeRelated` delegate to {@link Sku.addOption} and {@link Sku.removeOption}
-   * rather than touching the array, so the add-if-absent semantics and the owning-side-only rule hold
-   * for population exactly as they do for a direct call.
-   *
-   * `readRelated` returns the LIVE collection through {@link Sku.getOptions}, matching what the legacy
-   * accessor returned.
    */
   const optionsDescriptors: readonly ManyToManyPropertyDescriptor<Sku, 'options', Option>[] =
     collaborators === undefined
@@ -4214,8 +2085,8 @@ export function createSkuPropertyDescriptors(
 
   return {
     /*
-     * The legacy `getClassName()` value [org/Hibachi/HibachiObject.cfc:L135-L137] for
-     * [model/entity/Sku.cfc:L49] — the bare component name, which is the ARM 3 operand of the
+     * The legacy `getClassName` value [org/Hibachi/HibachiObject.cfc:L135-L137] for
+     * [model/entity/Sku.cfc:L49] — the bare component name, which is the arm 3 operand of the
      * population gate [org/Hibachi/HibachiTransient.cfc:L190] and the key the out-of-scope permission
      * records are stored under [org/Hibachi/HibachiAuthenticationService.cfc:L131-L141].
      */
@@ -4226,7 +2097,7 @@ export function createSkuPropertyDescriptors(
      * load-bearing rather than informational: `../base/populate` uses it as the first arm of the
      * legacy authorisation test, where a transient process object populates freely and a persistent
      * entity such as this one has per-property access control consulted. All three arms are live in
-     * that module, with ARMS 2 and 3 resolved through `PopulationAuthorizationPort` from
+     * that module, with arms 2 and 3 resolved through `PopulationAuthorizationPort` from
      * `../../ports/AccountContextPort`.
      */
     persistent: true,
@@ -4241,242 +2112,8 @@ export function createSkuPropertyDescriptors(
   };
 }
 
-/**
- * This entity's dependency-free population contract.
- *
- * The form most callers need: thirteen descriptors covering the nine populate-enabled scalars and the
- * four populate-disabled audit properties, with no loader required. Pass collaborators to
- * {@link createSkuPropertyDescriptors} wherever `product` or `options` sub-population is genuinely
- * needed — which the odometer at [model/service/SkuService.cfc:L58-L211] does not, since it attaches
- * options through {@link Sku.addOption} directly rather than through population.
- *
- * THIS EXPORT IS WHAT REPLACES `populate()`. The AAP row for this file requires it by name, and it
- * is the reason no `populate` member appears on the class: assignment is data-driven by these
- * declarations rather than by runtime metadata reflection.
- *
- * Evaluated once at module load and structurally immutable — every descriptor member is `readonly` or
- * a method, the audit list it derives from is frozen, and nothing here is mutable module-scope state
- * that could bleed across warm Lambda invocations (M7 / S8).
- */
+/** This entity's dependency-free population contract. */
 export const SKU_PROPERTY_DESCRIPTORS: PropertyDescriptorSet<Sku, SkuPropertyName> =
   createSkuPropertyDescriptors();
 
-/* ================================================================================================
- * THE DOCUMENT-AND-OMIT REGISTER
- *
- * Every member [model/entity/Sku.cfc] declares that this port does NOT declare, with its locator and
- * the reason. It is written out in full rather than summarised because an omission that is not
- * recorded is indistinguishable from an oversight, and because AAP Guideline 6 requires the judgment
- * call to be visible at the place it was made. A reader auditing this port against its 916-line origin
- * should be able to account for every member from the two lists — the members declared above, and the
- * members named here.
- *
- * The counts, stated with an explicit convention so a reader can reproduce them rather than take them
- * on trust: the class above declares SIXTY-NINE methods and TWENTY fields. Counting convention — a
- * method is a line matching `^  [modifiers] name(` inside the class body, a field is a line matching
- * `^  [declare] name[?](: | = )`. This register accounts for the further legacy members plus three
- * empty comment-delimited sections. Nothing in [model/entity/Sku.cfc] is unaccounted for.
- *
- * ⚠️ THESE COUNTS MOVED WHEN F04 AND IR-1 WERE ADDRESSED, and the movement is recorded rather than
- * quietly absorbed. Nineteen methods and three fields were added: the twelve F04 association members
- * with their three collections, and the seven managed-entity members. An earlier revision of this
- * register stated a single absolute total under an unstated convention; it is replaced above by two
- * figures and the rule that produces them, because an unreproducible count is the same class of
- * documentation defect this port is elsewhere required to avoid.
- *
- * ------------------------------------------------------------------------------------------------
- * 1. THE ELEVEN OUT-OF-SCOPE COLLECTIONS AND THEIR ACCESSORS
- * ------------------------------------------------------------------------------------------------
- * Every one is declared in the property block and every one targets an entity AAP §0.2.2.1 or §0.2.2.4
- * excludes by name. No field, accessor or placeholder type is created for any of them, because S9
- * forbids inventing a type for an entity this slice does not port and AAP §0.4.1.4's folder
- * requirements forbid `SkuCurrency.ts` and `AlternateSkuCode.ts` by name.
- *
- * ⚠️ ELEVEN, NOT FOURTEEN, AND THE THREE THAT LEFT THIS LIST ARE THE F04 FIX. `accessContents`
- * [:L77], `subscriptionBenefits` [:L78] and `renewalSubscriptionBenefits` [:L79] were previously
- * registered here as omitted. They are NOT omissible: all three are PERSISTENT OWNING relationships
- * that `createSkus` writes at [model/service/SkuService.cfc:L161], [:L164], [:L187] and [:L196], so
- * omitting them lost persistent data on the subscription and contentAccess branches. They are now
- * carried as structurally-typed opaque associations — see {@link SkuRelatedEntityRef} for why that
- * satisfies the exclusion boundary without inventing a `Content` or `SubscriptionBenefit` class (S9).
- * The distinction that makes both statements true at once: the RELATED ENTITY stays out of scope, the
- * ASSOCIATION does not.
- *
- *   ONE-TO-MANY [:L69-:L73]
- *     alternateSkuCodes            [:L69]  `AlternateSkuCode`      — out of scope; file forbidden
- *     attributeValues              [:L70]  `AttributeValue`        — `Attribute*` family excluded
- *     orderItems                   [:L71]  `OrderItem`             — `Order*` family excluded.
- *                                          Uniquely declares `lazy="extra"`, the only such
- *                                          declaration in this entity — Hibernate's collection-size
- *                                          optimisation, which has no `mysql2` analogue and is
- *                                          therefore an execution-model detail with nothing to port
- *     skuCurrencies                [:L72]  `SkuCurrency`           — out of scope; file forbidden.
- *                                          Its own validation document `model/validation/SkuCurrency.json`
- *                                          is excluded by AAP §0.2.2.4
- *     stocks                       [:L73]  `Stock`                 — `Stock*` family excluded
- *
- *   OWNING MANY-TO-MANY [:L77-:L79] — CARRIED AS LIVE COLLECTIONS. The element components are excluded
- *   (`Content*`, `Subscription*`), so no element module exists and the element type is each port's
- *   minimal opaque reference. The ASSOCIATION is still this entity's own data: it owns every one of the
- *   three link tables, and `createSkus` populates all three. See {@link Sku.accessContents}.
- *     accessContents               [:L77]  link `SwSkuAccessContent`      — written at [:L187], [:L196]
- *     subscriptionBenefits         [:L78]  link `SwSkuSubsBenefit`        — written at [:L161]
- *     renewalSubscriptionBenefits  [:L79]  link `SwSkuRenewalSubsBenefit` — written at [:L164]
- *
- *   INVERSE MANY-TO-MANY [:L82-:L87] — all six are the INVERSE side, so this entity would not own the
- *   write even if the far type were in scope. That is worth stating: these are not merely out of
- *   reach, they are not this entity's data to maintain.
- *     promotionRewards             [:L82]  `Promotion*` excluded
- *     promotionRewardExclusions    [:L83]  `Promotion*` excluded
- *     promotionQualifiers          [:L84]  `Promotion*` excluded
- *     promotionQualifierExclusions [:L85]  `Promotion*` excluded
- *     priceGroupRates              [:L86]  `PriceGroup*` excluded
- *     physicals                    [:L87]  `Physical*` excluded.
- *                                          THIS IS THE PROPERTY [model/validation/Sku.json:L13]
- *                                          MEANT when it wrote `physicalCounts`. See
- *                                          {@link SkuNonPersistentPropertyName} for why the JSON's
- *                                          spelling is preserved and its inertness made a
- *                                          compile-checked invariant rather than repaired
- *
- * ------------------------------------------------------------------------------------------------
- * 2. THE NINE ONE-LINE DELEGATING HELPER PAIRS — [:L640-:L749]
- * ------------------------------------------------------------------------------------------------
- * Eighteen members, each a single line delegating to the far side's own bidirectional helper:
- *
- *     addAlternateSkuCode / removeAlternateSkuCode                     [:L640] / [:L643]
- *     addAttributeValue / removeAttributeValue                         [:L648] / [:L651]
- *     addSkuCurrency / removeSkuCurrency                               [:L656] / [:L659]
- *     addStock / removeStock                                           [:L664] / [:L667]
- *     addPromotionReward / removePromotionReward                       [:L672] / [:L675]
- *     addPromotionRewardExclusion / removePromotionRewardExclusion     [:L680] / [:L683]
- *     addPromotionQualifier / removePromotionQualifier                 [:L688] / [:L691]
- *     addPromotionQualifierExclusion / removePromotionQualifierExclusion [:L696] / [:L699]
- *     addPhysical / removePhysical                                     [:L744] / [:L747]
- *
- * All eighteen target the out-of-scope collections of section 1, so all eighteen are omitted. Keeping
- * them would require inventing eighteen placeholder parameter types for entities this slice does not
- * port, which S9 forbids.
- *
- * ✅ WORTH RECORDING BECAUSE IT IS THE OPPOSITE OF WHAT THE SIBLING FILE FOUND: all four exclusion
- * helpers here — `addPromotionRewardExclusion`, `removePromotionRewardExclusion`,
- * `addPromotionQualifierExclusion`, `removePromotionQualifierExclusion` — delegate to the CORRECT far
- * member. `src/domain/option/Option.ts` records a copy-paste defect in its analogous helpers. There is
- * no such defect here, and confirming a defect's ABSENCE is as much a finding as confirming its
- * presence.
- *
- * ------------------------------------------------------------------------------------------------
- * 3. THE TWO FULL TWO-SIDED PAIRS — ⭐ NOW PORTED (F04), and a legacy inconsistency preserved
- * ------------------------------------------------------------------------------------------------
- * Unlike section 2 these four members carry real bodies that mutate BOTH arrays, exactly as
- * {@link Sku.setProduct} does. THEY ARE PORTED: both collections are persistent and `createSkus`
- * writes them, so omitting the members would lose
- * data. The two entries below remain here because this register is the file's map of the legacy
- * surface, and because the asymmetry between the two pairs is a genuine finding this port surfaced for
- * which AAP §0.6.7 has no identifier.
- *
- *   addAccessContent / removeAccessContent — [:L704-:L722] -> {@link Sku.addAccessContent},
- *   {@link Sku.removeAccessContent}
- *     `addAccessContent` [:L704-:L712] guards the LOCAL append with `isNew()` and the FAR append with
- *     `arguments.accessContent.isNew()`. `removeAccessContent` [:L714-:L722] uses `arrayFind` on both
- *     sides — the sentinel sites at [:L715] and [:L719], two of the six this port translates with
- *     `!== -1`. Both are now translated line for line, with each legacy line quoted beside its
- *     TypeScript equivalent.
- *
- *   addSubscriptionBenefit / removeSubscriptionBenefit — [:L724-:L742]
- *     TODO(parity) — THE GUARDS ARE SWAPPED RELATIVE TO `addAccessContent`.
- *     [:L724-:L732] guards the LOCAL append with `arguments.subscriptionBenefit.isNew()` and the FAR
- *     append with `isNew()` — the exact inverse of the pairing three lines above it. One of the two is
- *     wrong; the legacy source does not say which, and neither does this comment, because deciding
- *     would be a repair. AAP §0.6.7 registers no identifier for it, so none is invented here (S9) and
- *     it is recorded as an observed inconsistency rather than as a numbered defect. The sentinel sites
- *     are [:L735] and [:L739], completing the six. The swap is carried into the ported bodies exactly
- *     as written and annotated at both members, so a reviewer sees the inconsistency in the code
- *     rather than only in this register.
- *
- *   The six `arrayFind` sentinel sites in full — [:L610], [:L628], [:L715], [:L719], [:L735], [:L739].
- *   The first two are translated in {@link Sku.removeProduct} and {@link Sku.removeSubscriptionTerm};
- *   the four here are translated in the two removal members named above. Every translation uses
- *   `!== -1` rather than `> 0`,
- *   because CFML `arrayFind` returns 0 on a miss while `indexOf` returns -1, and reusing the legacy
- *   `> 0` test would silently delete element 0.
- *
- * ------------------------------------------------------------------------------------------------
- * 4. THE THREE MEMBERS CALLED BUT NEVER DECLARED — ⭐ NOW PORTED (F04 / IR-1)
- * ------------------------------------------------------------------------------------------------
- * IR-1's rule is that a synthesized member becomes an explicit declaration WHERE THE SLICE CALLS IT.
- * {@link Sku.addOption}, {@link Sku.removeOption} and {@link Sku.hasOption} met that test. So, on a
- * corrected reading, do these three — and an earlier revision of this register wrongly concluded
- * otherwise by treating "the related ENTITY is out of scope" as equivalent to "the CALL does not
- * happen". The calls happen, in scope, on in-scope code paths:
- *
- *     hasAccessContent            called [:L705]                  -> {@link Sku.hasAccessContent}
- *     hasSubscriptionBenefit      called [:L725]                  -> {@link Sku.hasSubscriptionBenefit}
- *     addRenewalSubscriptionBenefit  called [model/service/SkuService.cfc:L164], synthesized from
- *                                 `singularname="renewalSubscriptionBenefit"` [:L79]
- *                                 -> {@link Sku.addRenewalSubscriptionBenefit}
- *
- * ⚠️ THE `SubscriptionTermPort` ARGUMENT DOES NOT REACH THESE MEMBERS, and that is the crux of the
- * correction. AAP §0.4.1.8 places the SUBSCRIPTION-TERM RESOLUTION of the odometer's non-merchandise
- * branch behind that port — i.e. the lookup that turns an identifier into a term or a benefit. It does
- * not place the SKU's own collections behind it, because those are `SwSku`-side link tables this slice
- * owns and writes. Reading the port boundary as covering the collections too is what produced the F04
- * data loss: the branch would resolve records through the port and then have nowhere to put them.
- *
- * AAP §0.4.2.5's closing row states the governing principle: synthesis is not reproduced wholesale,
- * only where used. All three are used.
- *
- * ------------------------------------------------------------------------------------------------
- * 5. THE FRAMEWORK OVERRIDES — forbidden, and the reason they existed is now obsolete
- * ------------------------------------------------------------------------------------------------
- *     ⚠️ READ THE FIRST ENTRY CAREFULLY: what is forbidden is THIS ENTITY'S OVERRIDE, not the base
- *     accessor it overrode. {@link Sku.getPropertyMetaData} IS declared, because
- *     `src/ports/UniquePropertyPort.ts` requires the BASE behaviour of
- *     [org/Hibachi/HibachiTransient.cfc:L738-L747] — resolve a declared property or raise. The
- *     override's extra behaviour, answering for an option group by UUID-shaped key, is what is not
- *     reproduced. Same member name, different contract; conflating them is easy and would be wrong.
- *
- *     getPropertyMetaData  [:L843-:L856]  Overrode the base accessor to answer for an option group by
- *                                         32-character `optionGroupID`, sniffing UUID-shaped keys the
- *                                         same way [model/entity/HibachiEntity.cfc:L153] does.
- *                                         RECORDED FOR ITS OWN SAKE: [:L843] writes the length
- *                                         threshold as the STRING `"32"` where `HibachiEntity` writes
- *                                         the NUMBER `32`. CFML's weak comparison coerces the two, so
- *                                         both work; TypeScript would not, and a transliteration that
- *                                         carried the string literal into a `===` against a `number`
- *                                         would not compile. The divergence is moot because IR-1
- *                                         replaces the whole mechanism.
- *     onMissingMethod      [:L858-:L874]  The per-entity arm of the same trick, resolving
- *                                         `getOption<uuid>`-shaped calls dynamically.
- *
- * BOTH ARE ON THE FORBIDDEN-MEMBER LIST AND NEITHER IS PORTED. IR-1 replaces them with the explicit,
- * typed accessors above — {@link Sku.getOptionByOptionGroupID} and
- * {@link Sku.getOptionByOptionGroupCode} — which is why a metadata-reflection facility is not merely
- * unwanted here but unnecessary.
- *
- * ------------------------------------------------------------------------------------------------
- * 6. THE TWO SMART-LIST GETTERS
- * ------------------------------------------------------------------------------------------------
- *     getAssignedOrderItemAttributeSetSmartList  [:L327-:L332]  reaches `attributeService`, and its
- *                                                              backing property is one of the thirteen
- *                                                              excluded calculated members
- *     getAssignedAttributeSetSmartList           [:L813-:L822]  same collaborator; sits under the
- *                                                              legacy's own
- *                                                              `Overridden Smart List Getters` heading
- *
- * Both are forbidden members twice over: `*SmartList` getters are on the forbidden list, and
- * `attributeService` is out of scope. AAP §0.2.2.7 places the paginated-query abstraction behind
- * `SmartListQueryPort`, which no member of this entity consumes.
- *
- * ------------------------------------------------------------------------------------------------
- * 7. THE THREE EMPTY COMMENT-DELIMITED SECTIONS
- * ------------------------------------------------------------------------------------------------
- *     `START/END: Custom Formatting Methods`   around [:L802-:L806]
- *     `START/END: ORM Event Hooks`             around [:L878-:L880]
- *     `Deprecated Properties`                  [:L123]
- *
- * All three are GENUINELY EMPTY in the legacy source. Nothing is invented to fill them (S9), and their
- * emptiness is itself informative: this entity registers NO ORM lifecycle hook, so there is no
- * `preInsert` or `preUpdate` behaviour for `../base/AuditableEntity` to have to reproduce beyond the
- * audit block, and it declares no deprecated PROPERTY even though it declares four deprecated METHODS
- * (the D16 family plus the observed fourth at [:L885]).
- * ============================================================================================== */
+/* The document-and-omit register. */

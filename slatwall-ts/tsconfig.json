@@ -1,267 +1,71 @@
 {
-  /* ==============================================================================================
-   * The TypeScript compiler contract for the extracted Slatwall Catalog slice.
-   *
-   * This is the DEVELOPMENT / TYPE-CHECK program. It type-checks src/** and test/**, so the test
-   * tree is held to production strictness rather than to a relaxed test-only configuration. The
-   * sibling tsconfig.build.json extends this file and narrows the program to shippable src/** for
-   * the packaging step, so nothing test-only can reach a Lambda artifact. eslint.config.mjs uses
-   * typescript-eslint with `projectService: true`, so the "include" list below is also the file set
-   * the type-aware lint rules operate on.
-   *
-   * Nothing outside this subtree is ever part of a program defined here: the CFML tree is
-   * reference-only and is not compiled.
-   *
-   * These settings are a contract, not a starting point. When a source file fails to compile, THE
-   * SOURCE FILE IS FIXED; this configuration is never weakened to let code through.
-   * ============================================================================================ */
+  /* The TypeScript compiler contract for the extracted Slatwall Catalog slice. */
   "compilerOptions": {
-    /* --- Language and runtime target ----------------------------------------------------------
+    /*
+     * --- Language and runtime target ----------------------------------------------------------
      * ES2022 is the language level of the Node 20 Lambda runtime this service targets, and the
      * level build/esbuild.mjs emits for (--target=node20). Keeping the two in step means a
      * construct that type-checks is a construct the runtime can execute.
-     *
-     * ⚠️ RUNTIME LIFECYCLE DISCLOSURE — THE NODE 20 TARGET IS KNOWN TO BE OUT OF SUPPORT, AND
-     * THE PIN STANDS ANYWAY. This is a deliberate, cited decision, not an oversight, and it is
-     * recorded here as well as in the plan so that a reader of the configuration finds it without
-     * having to read the plan first.
-     *
-     * TWO INDEPENDENT FACTS THAT HAPPEN TO COINCIDE — read them as two, not as one. They come from
-     * two different authorities and each is verifiable against its own; the shared date is AWS's
-     * deliberate alignment to upstream, not one fact counted twice. Collapsing them into "the
-     * lifecycle date" is what makes the pair impossible to audit, so each is stated with the
-     * authority that owns it:
-     *   - FACT 1, upstream. Node.js 20 reached end-of-life on 2026-04-30. AUTHORITY: the Node.js
-     *     Release working group's schedule (github.com/nodejs/Release, mirrored as schedule.json),
-     *     whose 20.x row reads — codename Iron, released 2023-04-18, Active LTS 2023-10-24,
-     *     Maintenance 2024-10-22, END-OF-LIFE 2026-04-30. The final column is the EOL date.
-     *   - FACT 2, the managed runtime. AWS deprecated the Lambda `nodejs20.x` runtime on
-     *     2026-04-30. AUTHORITY: the AWS Lambda supported-runtimes table (the deprecation column,
-     *     not the block-function columns, which are separate and later — see below). AWS aligns
-     *     managed-runtime deprecation to upstream EOL, which is WHY this date equals Fact 1's; it
-     *     is a consequence of the alignment policy rather than a coincidence, and it is also why a
-     *     future runtime line will not necessarily repeat the pattern. After this date AWS stops
-     *     applying security patches, functions on the runtime lose technical-support eligibility,
-     *     and the runtime is removed from the console's creation list, though it stays selectable
-     *     through the CLI, CloudFormation, SAM and CDK, and already-deployed functions remain
-     *     invocable.
-     *
-     *   📌 A NOTE ON 2026-03-24, WHICH IS THE ONE THING TO CHECK BEFORE "CORRECTING" FACT 1. That
-     *     date does not appear in the 20.x row quoted above in any column, and it has now surfaced
-     *     twice in this file's history: an earlier revision of this comment recorded it as the EOL,
-     *     a later one replaced it with 2026-04-30 but justified the change only by asserting the
-     *     first was "wrong", and the review round after that proposed it again. An unsourced
-     *     correction is why it came back. The primary-source row is
-     *     therefore quoted here in full so the next reader can settle it by reading the schedule
-     *     rather than by trusting either revision of this comment. If the schedule itself is ever
-     *     amended, THAT is the thing to cite; dates there are explicitly subject to change.
-     *   - THE CURRENT CONTROL-PLANE GATES, from the AWS runtimes table as read on 2026-08-03, are
-     *     a single schedule and are recorded here as one:
-     *       block function create  2027-02-01
-     *       block function update  2027-03-03
-     *     Both are still ahead. An `npm run build` NOTICE points here rather than restating them, so
-     *     there is exactly one copy of these dates in the subtree.
-     *   - TWO EARLIER SCHEDULES ARE OBSOLETE, AND ARE RETAINED ONLY AS SUPERSEDED HISTORY. An
-     *     earlier revision of this comment presented three sets as live, unsettled alternatives.
-     *     That framing is wrong, but so was its replacement's reason for saying so: the replacement
-     *     claimed BOTH earlier pairs had "now elapsed without taking effect", and that is true of
-     *     only the first of them. The two are superseded for DIFFERENT reasons, and conflating those
-     *     reasons is the same class of error as merging the two dates above:
-     *       superseded  block create 2026-06-01, block update 2026-07-01 — the earliest AWS
-     *                   bulletin. ELAPSED, and observably without effect: both dates are behind us
-     *                   and neither gate closed. The calendar alone retires this pair.
-     *       superseded  block create 2026-08-31, block update 2026-09-30 — the "30 days / 60 days
-     *                   after deprecation" cadence of the standard runtime-deprecation policy.
-     *                   ⚠️ NOT YET ELAPSED. As of this comment's read date both of these dates are
-     *                   still AHEAD. What retires this pair is not the calendar but AWS's own
-     *                   current table, which states the later 2027 dates instead; it is a
-     *                   superseded FORECAST REVISION, not an expired one. Anyone re-checking must
-     *                   compare it against the table rather than against today's date, and must not
-     *                   read "nothing happened on 2026-08-31" as confirmation of anything, because
-     *                   that date has not arrived.
-     *     THE MECHANISM BEHIND THE REVISIONS IS KNOWN, WHICH IS WHY THE OLD PAIRS ARE MARKED RATHER
-     *     THAN DELETED. AWS states that for some runtimes it is delaying the block-function-create
-     *     and block-function-update dates beyond the usual 30 and 60 days in response to customer
-     *     feedback, that it will not begin blocking before the dates in its own tables, and that
-     *     those forecast dates are subject to change. The revisions therefore move LATER, never
-     *     earlier — which is what makes an out-of-date entry here a conservative error rather than a
-     *     dangerous one. The only authority is the AWS runtimes table AT THE MOMENT OF READING;
-     *     this comment is a dated snapshot of it and nothing more, and the date above is part of the
-     *     claim rather than decoration.
-     *   - INVOCATION IS NEVER BLOCKED, on this schedule or on either superseded one. Every gate
-     *     above is a control-plane gate on creating or updating a function. That is the reason a
-     *     stale date here is a planning defect and not a correctness or availability defect for code
-     *     already deployed — and the reason correcting it changes no compiler option below.
-     *
-     * WHY NOTHING HERE CHANGES. Node 20.x / `nodejs20.x` is the runtime the frozen plan specifies,
-     * and AAP 0.5.5 resolves the conflict explicitly — "The pin stands." — while AAP 0.5.3.2
-     * deliberately REJECTS the newer @types/node major for the same reason. Retargeting the
-     * runtime is a product decision recorded against the plan, not something this configuration
-     * may take unilaterally: aligning the code to the plan is the instruction, and silently
-     * contradicting the frozen runtime target would be the worse failure. The disclosure is the
-     * deliverable here; the migration is not.
-     *
-     * THE BLAST RADIUS IS SMALL BY CONSTRUCTION, AND A LATER MOVE IS MECHANICAL. Infrastructure as
-     * code is out of scope, so no `Runtime: nodejs20.x` string is authored anywhere in this
-     * subtree — verified by grep, not assumed: the only occurrences of `nodejs20` are in prose, in
-     * this file, in .env.example and in package.json's dependency notes. build/esbuild.mjs does NOT
-     * contain the token: it names the esbuild target `node20`, which is a bundler flag rather than a
-     * managed-runtime identifier, and an earlier revision of this sentence wrongly cited it as a
-     * prose occurrence. FIVE couplings exist IN THE REPOSITORY and a runtime bump moves them
-     * together:
-     *   1. `--target=node20` in build/esbuild.mjs (and `NODE_TARGET` there);
-     *   2. the `engines` field of package.json together with .nvmrc;
-     *   3. the @types/node pin, which AAP 0.5.3.2 requires to track the runtime;
-     *   4. this "target"/"lib" pair;
-     *   5. the Toolchain section of slatwall-ts/README.md, which states the pinned versions;
-     *   6. package-lock.json, which pins @types/node 20.19.43 by resolved URL AND integrity hash.
-     *      Item 3 cannot move without it: editing package.json alone leaves the lock disagreeing and
-     *      `npm ci` — which installs FROM the lock, not from the manifest — would keep resolving the
-     *      old definitions, so the bump would appear applied while changing nothing.
-     * Items 1, 2, 3 and 5 are the four AAP 0.5.5 enumerates; items 4 and 6 are additional ones
-     * measured here that the plan does not name, and they are listed because a reader auditing the
-     * couplings before a bump has to find every one of them, not only the documented four.
-     * ⚠️ ITEM 5 WAS PREVIOUSLY RECORDED AS A GAP, AND NOW EXISTS. AAP 0.2.1.7 and 0.4.1.2 declare
-     * slatwall-ts/README.md as a CREATE target, but it had not been generated, so an earlier
-     * revision of this note dropped it from the list rather than leave a reader hunting for a
-     * version statement that was nowhere — the only README in the subtree then being
-     * src/integrations/google/README.md, which states no version. The file has since been authored
-     * with the version statements AAP 0.5.5 requires, so the entry is restored.
-     *
-     * ⚠️ ITEM 6 WAS MISSING FROM THIS LIST ENTIRELY UNTIL REVIEW FINDING SEC-RUNTIME-01 NAMED IT.
-     * The finding's resolution enumerates the lockfile among the artifacts an uplift must move, and
-     * it was absent from every enumeration in the subtree — this one, build/esbuild.mjs's identical
-     * list, and README.md's. It is the one coupling whose omission would have silently DEFEATED the
-     * uplift rather than merely left a stale document behind, which is why it is called out here
-     * rather than quietly appended. The count is therefore six, and build/esbuild.mjs and
-     * README.md carry the same six.
-     *
-     * The hexagonal boundary confines every AWS type to src/handlers/**, so a bump touches those
-     * six and nothing under src/domain/**, src/ports/**, src/services/** or src/adapters/**. None
-     * of the above is a performance, latency, throughput or availability claim; no such figure is
-     * stated anywhere in this port (AAP IR-12).
-     *
-     * ⭐ AND THE GATE ITSELF NOW LIVES AT THE PACKAGING STEP (review finding F12). This comment
-     * explains the decision to a reader who opens this file; it cannot reach an operator running a
-     * build. build/esbuild.mjs therefore ANNOUNCES the lifecycle gate on every `npm run build`,
-     * without failing it — failing the step would make AAP 0.8.3.10's own acceptance criterion
-     * unreachable. That file also records why the two machine-read pins the finding cites,
-     * package.json's `engines` and .nvmrc, are left byte-identical.
-     *
-     * "lib" is pinned to ES2022 alone, so the browser (window / document / fetch-era) typings
-     * TypeScript would otherwise make ambiently available are deliberately absent. This is a
-     * headless service — Lambda handlers returning data, with no rendering layer (AAP 0.3.4). The
-     * one in-scope legacy file carrying a view extension,
-     * integrationServices/google/views/feed/product.cfm, emits RSS 2.0 XML for a merchant feed
-     * processor, so its port ProductFeedBuilder.ts is a serializer and not a component. With the
-     * browser typings withheld, an accidental reference to a browser-only global is a compile
-     * error here instead of a failure inside a Lambda invocation. */
+     */
     "target": "ES2022",
     "lib": ["ES2022"],
 
-    /* --- Module system -----------------------------------------------------------------------
+    /*
+     * --- Module system -----------------------------------------------------------------------
      * NodeNext for both "module" and "moduleResolution". Under NodeNext the nearest package.json
      * "type" field decides each file's module format, and package.json declares "type": "commonjs",
      * so every .ts file resolves and emits as CommonJS — matching the --format=cjs bundle the Node
      * 20 Lambda runtime loads and ts-jest's default. tsc, ts-jest and esbuild therefore agree on
      * module semantics with no runtime resolver shim.
-     *
-     * NO MODULE PATH ALIASES ARE DECLARED — neither `baseUrl` nor `paths`. Every intra-subtree
-     * import is relative. This is a correctness requirement: esbuild does not honour tsconfig alias
-     * maps, so an alias that type-checks can fail to resolve at bundle time and the packaged
-     * handler would throw MODULE_NOT_FOUND on cold start. Identical resolution across both tools
-     * also keeps the hexagonal boundary visible in the import line itself. Consequently
-     * jest.config.ts needs no moduleNameMapper alias block. */
+     */
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
 
-    /* --- Strictness: MANDATED, AND NEVER TO BE WEAKENED ---------------------------------------
-     * AAP 0.7.3 standard 1 ("strict type safety") is declared by exactly these three flags, and
+    /*
+     * --- Strictness: mandated, and never to be weakened ---------------------------------------
+     * AAP §0.7.3's strict-type-safety standard is declared by exactly these three flags, and
      * this file is its enforcement point. No relaxing option may ever be added here — not
      * `noImplicitAny: false`, not `strictNullChecks: false`, not a suppression flag — and a
      * failing compile is always resolved in the offending source file.
-     *
-     * Two of them have consequences a reader should expect rather than be surprised by, because
-     * surfacing these cases is the point of choosing the flags:
-     *
-     *   noUncheckedIndexedAccess types every indexed read as `T | undefined`. That is directly
-     *   load-bearing for carried defect D13: model/service/SkuService.cfc:L223-L269 indexes
-     *   sortedArrayReturn[index] where index = arrayFind(...) can legitimately be 0 because
-     *   getSortedProductSkusID returns only option-bearing SKUs, and the CFML assignment then
-     *   throws. Under this flag the hazard is visible at compile time. Per AAP 0.7.3 standard 7
-     *   ("preserve and annotate, do not repair") the ported behaviour is still CARRIED and marked
-     *   with the plan's parity annotation at the call site — this flag documents the defect, it
-     *   does not license fixing it.
-     *
-     *   exactOptionalPropertyTypes distinguishes "property absent" from "property present and
-     *   undefined". That distinction is what lets the option-to-SKU semantics of AAP 0.6.1.3 be
-     *   expressed in types: T2 (productID is unconditionally supplied on the only real call path,
-     *   so it is typed REQUIRED rather than optional) and T5 (an empty selectedOptions list is a
-     *   legal, meaningful input that degenerates to "all option-bearing SKUs of this product" and
-     *   must not be guarded away). */
+     */
     "strict": true,
     "exactOptionalPropertyTypes": true,
     "noUncheckedIndexedAccess": true,
 
-    /* --- Additional strictness (compatible with, and never contradicting, the mandated three) --
+    /*
+     * --- Additional strictness (compatible with, and never contradicting, the mandated three) --
      * noImplicitOverride matters for this port specifically: the legacy tree reuses behaviour by
-     * template-method inheritance and `super.save()`, whereas the target composes an injected
-     * BaseService (AAP 0.4.3.3). Requiring an explicit `override` keyword keeps any remaining
+     * template-method inheritance and `super.save`, whereas the target composes an injected
+     * BaseService (AAP §0.4.3.3). Requiring an explicit `override` keyword keeps any remaining
      * subclassing honest. noImplicitReturns and noFallthroughCasesInSwitch guard the branch-heavy
      * translations — most notably the three-way baseProductType discriminator in
      * SkuService.createSkus, whose fallthrough must throw rather than silently return.
-     * useUnknownInCatchVariables is implied by "strict" and is stated explicitly because the port
-     * catches and re-wraps errors through DomainError, which requires narrowing from unknown. */
+     */
     "noImplicitOverride": true,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
     "useUnknownInCatchVariables": true,
 
-    /* --- Interop and hygiene ------------------------------------------------------------------
+    /*
+     * --- Interop and hygiene ------------------------------------------------------------------
      * isolatedModules keeps tsc's semantics aligned with the per-file transpilation performed by
      * esbuild and ts-jest, so a construct that needs whole-program information is rejected here
      * rather than misbehaving in the bundle. esModuleInterop lets the CommonJS runtime dependency
      * be imported with standard ESM syntax.
-     *
-     * isolatedModules also makes ts-jest transform each test file individually instead of building
-     * a whole program, so the runner reports runtime failures but not type errors. Type checking of
-     * the test tree therefore belongs to the typecheck command, which is why "test/**" appears in
-     * this file's "include" list.
-     *
-     * skipLibCheck excludes dependency .d.ts files, keeping the signal on this subtree's own
-     * source. It is safe because the type packages are exact-pinned rather than floating, and
-     * @types/node is deliberately held on the 20.x line so it describes the APIs the Node 20
-     * runtime actually has.
-     *
-     * "types" is deliberately NOT declared. Automatic @types inclusion covers node, jest and
-     * aws-lambda together; naming a subset would silently drop the aws-lambda definitions from the
-     * handler layer, the one place AWS coupling is permitted. */
+     */
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true,
     "skipLibCheck": true,
 
-    /* --- Emit --------------------------------------------------------------------------------
+    /*
+     * --- Emit --------------------------------------------------------------------------------
      * This program never emits: it exists to type-check. tsconfig.build.json is the only
      * configuration that flips "noEmit" to false, which is why declaring it true here is what
      * makes that override meaningful and stops a bare `tsc -p tsconfig.json` from scattering
      * JavaScript into dist/. ts-jest is unaffected because it forces noEmit false internally for
      * its own in-memory transform.
-     *
-     * The rootDir / outDir / sourceMap / declaration quartet describes the emit layout that
-     * tsconfig.build.json inherits and narrows (rootDir "src"). Declaration files are not
-     * produced: nothing outside this subtree consumes it as a typed library — the deliverable is
-     * bundled Lambda artifacts. No "composite" or project-references setup is declared either,
-     * since that would change the emit topology for no benefit at this size.
-     *
-     * Two option families are absent on purpose and must stay absent. Decorator metadata options
-     * are not declared, because AAP 0.7.3 standard 3 requires explicit constructor injection with
-     * no service locator, no dynamic method synthesis and no string-keyed runtime resolution —
-     * decorator-driven containers are exactly the runtime metaprogramming this port exists to
-     * retire (org/Hibachi/HibachiService.cfc:L255-L281 fabricated the whole implicit CRUD surface
-     * via onMissingMethod; IR-1 requires those members to be declared instead). And JavaScript
-     * sources are not admitted to the program at all: the subtree's two .mjs files, the lint
-     * configuration and the packaging script, are deliberately outside every TypeScript program. */
+     */
     "noEmit": true,
     "rootDir": ".",
     "outDir": "dist",
@@ -269,10 +73,12 @@
     "declaration": false
   },
 
-  /* Program scope. src/** and test/** are both checked so the test suite is held to production
+  /*
+   * Program scope. src/** and test/** are both checked so the test suite is held to production
    * strictness, and jest.config.ts is listed so the runner's own configuration is type-checked too.
    * build/esbuild.mjs is intentionally absent: it is .mjs and belongs to no TypeScript program.
-   * Every entry is subtree-relative, so the program cannot reach the CFML tree. */
+   * Every entry is subtree-relative, so the program cannot reach the CFML tree.
+   */
   "include": ["src/**/*.ts", "test/**/*.ts", "jest.config.ts"],
   "exclude": ["node_modules", "dist", "coverage"]
 }

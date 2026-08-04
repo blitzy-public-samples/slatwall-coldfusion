@@ -2,203 +2,25 @@
  * `BrandService` — the four-member surface, the exact URL-title algorithm, and the local
  * `BaseService` save/delete contracts it delegates to.
  *
- * AAP authority: AAP §0.4.1.12 lists `slatwall-ts/test/services/BrandService.test.ts` | CREATE |
- * "**NET-NEW**", and the AAP §0.4.4 wildcard row authorises `slatwall-ts/test/**` | CREATE. The
- * subject's contract is fixed by AAP §0.4.2.3 (the ONE declared member) and AAP §0.4.2.5 (the three
+ * AAP authority: AAP §0.4.1.12 lists `slatwall-ts/test/services/BrandService.test.ts` | create |
+ * "**NET-NEW**", and the AAP §0.4.4 wildcard row authorises `slatwall-ts/test/**` | create. The
+ * subject's contract is fixed by AAP §0.4.2.3 (the one declared member) and AAP §0.4.2.5 (the three
  * members that existed only through `onMissingMethod` synthesis, IR-1).
  *
- * =============================================================================================
- * THESE ARE UNIT TESTS. THE LEGACY SUITE'S EQUIVALENTS WERE INTEGRATION TESTS
- * =============================================================================================
+ * These are unit tests. The legacy suite's equivalents were integration tests
  * Every case below imports the class under test directly and hands it collaborators through its
  * constructor. Nothing boots an application, nothing resolves a name at run time, and nothing
  * touches a database.
- *
- * The legacy harness could not work that way. `meta/tests/unit/SlatwallUnitTestBase.cfc:L49-L79`
- * extends `mxunit.framework.TestCase`, instantiates the whole FW/1 application object at `:L52`,
- * calls `bootstrap()` at `:L60` and then reaches its subject through a DI/1 string lookup —
- * `request.slatwallScope.getService("brandService")` at
- * `meta/tests/unit/entity/BrandTest.cfc:L55`. A legacy "unit" test of this service was therefore an
- * integration test of the entire container, the ORM session and the request scope. AAP §0.4.3.6
- * records that difference as the single largest structural change between the two suites and directs
- * that a reviewer expect it BY DESIGN rather than read it as a gap.
- *
- * The legacy setup additionally granted itself a superuser at
- * `meta/tests/unit/SlatwallUnitTestBase.cfc:L62` — `request.slatwallScope.getAccount()
- * .setSuperUserFlag(1)` — because the container it had just booted enforced permissions on every
- * entity operation. That line is recorded here for provenance and for nothing else: this file
- * declares NO permission case, invents no account policy and asserts no authorisation outcome.
- * `BrandService` has no authorisation collaborator of its own, and the population-authorisation
- * decision that does exist behind `BaseService` belongs to the excluded `Account*` family
- * (AAP §0.2.2.1) and is exercised here only as the plain wiring the real constructor demands.
- *
- * =============================================================================================
- * TRACEABILITY IS DOCUMENTARY, NOT EMPIRICAL — AND NO RUNTIME COMPARISON WAS PERFORMED
- * =============================================================================================
- * Every legacy locator cited below was established by READING legacy source, never by running it.
- * Three independent facts make that the only available method, and all three are disclosed rather
- * than glossed:
- *   * MXUnit is not vendored anywhere in the repository, and `meta/tests/readme.txt:L1-L7` states
- *     that the suite needs MXUnit installed with a mapping inside CFIDE — plus CFSelenium, likewise
- *     mapped, for the functional folder. Neither mapping exists here.
- *   * There is no CFML engine on this host and no reproducible legacy runtime to supply one. The
- *     Docker/Compose local-development setup the brief cites at `meta/docker/slatwall-local-dev/`
- *     DOES NOT EXIST in this repository; `meta/` contains only `meta/tests/` and `meta/eclipse/`
- *     (AAP §0.8.4.1).
- *   * Consequently the legacy suite CANNOT be executed here, so no output of this file was ever
- *     compared against observed legacy behaviour (AAP §0.6.5.3, §0.8.4.2).
- * What that costs is stated plainly: these assertions pin the PORT against the legacy SOURCE, and a
- * reader who wants a behavioural diff against a running Slatwall must obtain a CFML runtime first.
- *
- * =============================================================================================
- * EVERY CASE BUILDS ITS OWN COLLABORATORS. THERE IS NO MODULE-SCOPE MUTABLE STATE
- * =============================================================================================
- * No repository, uniqueness seed, entity, error bag, map or counter is declared at module scope.
- * Each case calls a factory and gets a fresh graph, and the two module-level bindings that do exist
- * are immutable string primitives.
- *
- * That discipline is a direct response to what the legacy harness did NOT do. Both of its lifecycle
- * hooks are commented out in the source: `//variables.slatwallFW1Application.reloadApplication();`
- * at `meta/tests/unit/SlatwallUnitTestBase.cfc:L53` and
- * `//variables.slatwallFW1Application.endSlatwallLifecycle();` at `:L70`. With neither the reload
- * nor the lifecycle teardown running, application and request scope — including the DI/1 singletons,
- * the settings cache and the ORM session — persisted across every test in a run, so one case could
- * observe state another case left behind. AAP §0.6.6 M7 makes the same hazard a production concern
- * for the port: nothing survives a Lambda invocation except module-scope state, and a singleton on a
- * warm container is shared across invocations and therefore potentially across tenants. A suite that
- * shared a repository between cases would be unable to detect that class of leak, which is exactly
- * what the isolation cases at the end of this file exist to prove.
- *
- * =============================================================================================
- * TEST PROVENANCE — ALL FOUR PUBLIC MEMBERS ARE NET-NEW COVERAGE
- * =============================================================================================
- * AAP §0.6.5.2 verified that NO legacy `BrandServiceTest` exists anywhere under `meta/tests/`, and
- * that no legacy service test exists for any of the four in-scope services. Every case below is
- * therefore labelled `NET-NEW` in its own title, per case rather than only in aggregate, so the
- * ratio AAP §0.8.3.7 asks for is visible file-by-file and no parity with a legacy service assertion
- * is implied anywhere.
- *
- * The ONE traceable legacy thread that touches this service is an ENTITY assertion, and it is
- * labelled as traceable where it is used rather than claimed for the file as a whole:
- * `meta/tests/unit/entity/BrandTest.cfc:L49-L60` builds its subject through
- * `brandService.newBrand()` at `:L55` and then asserts at `:L58-L60` that `getProducts()` equals
- * `[]`. The entity-level port of that assertion lives in `../domain/Brand.test.ts`; what this file
- * pins is that the SERVICE member keeps it reachable.
- *
- * =============================================================================================
- * WHAT IS COVERED, GROUP BY GROUP
- * =============================================================================================
- * Seven groups, in the order a reviewer would want to read them — algorithm first, then the member
- * that consumes it, then the consequences that member's delegation produces, then the three members
- * the legacy never declared, then isolation.
- *
- *   A. `createUniqueURLTitle` — the ported algorithm of `model/service/DataService.cfc:L53-L71`.
- *      Pipeline ORDER, the `-2`-first suffix run, the probe polarity, the byte-exact `SwBrand` token
- *      and the unbounded loop. Assigned to this file because `BrandService` is the utility's only
- *      production caller and the place its probe is supplied.
- *   B. `saveBrand` over a RECORDING base collaborator — the `:L68` derivation guard in all six of its
- *      states, the payload-versus-entity name preference, the by-reference payload write, and the
- *      positional two-argument delegation at `:L76`.
- *   C. `saveBrand` over the REAL graph — real `Validator`, real `BaseService`, the ported rule set of
- *      `model/validation/Brand.json`. Includes the AAP-omitted no-slug path, the two uniqueness seams
- *      driven to disagree, and the NET-NEW unguarded-save contract (service-specific; see the
- *      provenance note below — this file does NOT claim the `issue_1690_2` locator).
- *   D. `newBrand()` — the declared factory, its synchronous return, the traceable `products === []`
- *      default and per-call independence.
- *   E. `getBrand(brandID)` — exact identifier forwarding, hit by reference, miss as `null` with no
- *      fabricated fallback.
- *   F. `deleteBrand(brand)` — the products guard, the inert `physicalCounts` guard, the cleanup gate,
- *      and the inactive-entity settings sweep of the local `save()` override.
- *   G. M7 isolation and the declared surface — cross-graph leak proofs, the two-argument constructor,
- *      and an exhaustive prototype assertion that no dynamic dispatch survived.
- *
- * All four public members — `saveBrand`, `newBrand`, `getBrand`, `deleteBrand` — carry `NET-NEW`
- * member-labelled cases, and every case title in the file contains the label.
- *
- * =============================================================================================
- * TWO LANDED CONTRACTS DISAGREE WITH THE OBVIOUS READING. BOTH ARE EXPOSED, NEITHER IS SOFTENED
- * =============================================================================================
- * MISMATCH 1 — THE `SwBrand` TOKEN IS NOT OBSERVABLE AT THE SERVICE BOUNDARY.
- * `model/service/BrandService.cfc:L70` and `:L72` both pass `tableName="SwBrand"` explicitly, and
- * `src/services/BrandService.ts` does keep that literal. But its probe adapter DISCARDS the argument
- * — `(_tableName, candidateUrlTitle) => this.brandRepository.isUrlTitleAvailable(candidateUrlTitle)`
- * — because `BrandRepository.isUrlTitleAvailable(urlTitle)` is the one-argument, brand-only view of
- * the question, with the table baked into its meaning. So no service-level double can see the token.
- * Rather than weaken the requirement, this file asserts it where it IS observable: at the utility
- * boundary, byte-exactly, through the shared table-scoped probe double — and the literal is
- * additionally COMPILE-CHECKED, because {@link BRAND_TABLE} is written with `satisfies
- * UrlTitleTableName`, a union the support file derives from the real `PhysicalTableName` whitelist
- * with `Extract`. A typo or a renamed table stops the file compiling; a drift in what the utility
- * forwards fails a case.
- *
- * MISMATCH 2 (RESOLVED — THIS NOTE RECORDS A DIVERGENCE THAT NO LONGER EXISTS).
- * `model/service/HibachiService.cfc:L103` is `return arguments.entity;` and it runs on EVERY path,
- * failed validation included, because a Hibachi entity carried its own error bag for the caller to
- * inspect. An earlier revision of `src/services/BaseService.ts` instead ended with
- * `if (errors.hasErrors()) { throw errors; }`, and an earlier revision of THIS FILE asserted that
- * raise as the contract across six cases. Both are gone. The raise's stated grounds do not survive
- * inspection: "not every ported entity carries a bag" was a property of the TYPE CONSTRAINT, not of
- * the legacy design, and it was fixed at the root by widening `BaseServiceEntity` to require
- * `EntityErrorSurface` — the same resolution `src/services/BrandService.ts` already reached for the
- * metadata surface ("SUPPLY THE MISSING SURFACE, NOT HIDE THE GAP"). "`BrandService.saveBrand` and
- * the SKU save path rely on the raise" was false on the second count outright: the SKU save path
- * never touches `BaseService` at all.
- * `save` therefore now returns the SAME instance on EVERY path, with any accumulated findings
- * attached to the entity's own bag first — `org/Hibachi/HibachiService.cfc:L133` gates persistence on
- * `!arguments.entity.hasErrors()`, reading the entity's bag, exactly as this port now does.
- * The `issue_1690_2` contract at `meta/tests/unit/IssuesTest.cfc:L203-L206` is what makes this worth
- * pinning: that test saves a brand-new, definitely-invalid entity with NO `hasErrors()` guard
- * beforehand — contrast `issue_1690` at `:L192-L201`, which guards — so the behaviour under
- * regression is that an invalid save FAILS CLEANLY AND REPORTABLY rather than blowing up opaquely
- * or, worse, persisting. This file asserts that contract against the landed mechanism: the member
- * RESOLVES, the resolved value is the very instance the caller handed in, its own bag now answers
- * `hasErrors()` with the accumulated keys and message keys intact, and NOTHING is persisted.
- * Recorded at length because a test that certifies a divergence is what let the divergence survive
- * review once already; the locators are cited at each case so the next reader checks the legacy
- * rather than trusting this note.
- *
- * =============================================================================================
- * WHAT THIS FILE DELIBERATELY DOES NOT COVER
- * =============================================================================================
- * `src/handlers/brandHandler.ts` IS NOT TESTED HERE. This suite is scoped to `BrandService`, and the
- * handler layer has its own suite at `test/handlers/brandHandler.test.ts`. The boundary is structural
- * rather than a matter of preference: `src/handlers/brandHandler.ts` and `src/ports/AccountContextPort.ts`
- * are both outside this file's dependency whitelist, and its build contract forbids importing a handler
- * or any AWS surface here — which is what lets every case below construct the service directly.
- *
- * ALSO ABSENT, EACH FOR A NAMED REASON:
- *   * No `Product`, `Sku`, `Option` or `OptionGroup` service behaviour. Those services have their
- *     own suites and none of their members is reachable from this one.
- *   * No `SettingResolverPort` usage. It is in this file's whitelist as a NEGATIVE reference: it is
- *     a synchronous, READ-ONLY resolver, and pressing it into service as the write-side settings
- *     seam would misrepresent both it and `BaseService`'s own `EntitySettingCleanupPort`. The
- *     cleanup collaborators the landed `BaseService` actually declares are used instead.
- *   * No `PhysicalService` and no `physicalCounts` member. See the inert-guard case: inventing
- *     either would make a dead legacy rule come alive.
- *   * No `BrandDAO`. None exists in the legacy repository — `BrandService` relied entirely on the
- *     synthesized CRUD surface (IR-1) — so the explicit `BrandRepository` port is the only
- *     persistence seam used anywhere below.
- *   * No mocking library, no `jest.mock`, no spies, no module registry games. The legacy repository
- *     vendors no mocking library at all (AAP §0.4.3.6); every double here is a plain object literal
- *     or a shared factory from `../support/inMemoryRepositories`.
- *   * No attempt budget, retry cap, timeout, backoff, latency assertion or capacity figure anywhere.
- *     `model/service/DataService.cfc:L64` loops `while(!unique)` with no ceiling, and inventing one
- *     — even only in a test's expectations — is what AAP §0.7.3 S9 forbids.
  */
 import { BRAND_PROPERTY_DESCRIPTORS } from '../../src/domain/product/Brand';
 import { BaseService } from '../../src/services/BaseService';
 import { BrandService } from '../../src/services/BrandService';
 /*
- * ⭐ NEITHER `DomainError` NOR `ValidationError` IS IMPORTED, AND THAT IS THE F1 FIX VISIBLE IN THE
- * IMPORT LIST. An earlier revision imported both to assert `rejects.toBeInstanceOf(ValidationError)`
- * across six cases. `save` no longer raises for a validation failure — it attaches the findings to the
+ * Neither `DomainError` nor `ValidationError` is imported, and the reason is visible in what this
+ * file asserts. `save` does not raise for a validation failure — it attaches the findings to the
  * entity's own bag and returns the same instance, per `model/service/HibachiService.cfc:L103` — and
  * `delete` reports refusal as `false` rather than raising, per `:L68`. So no case in this file has an
  * error class to name, and the two imports would now be dead weight the linter would reject.
- *
- * ⛔ NOR IS `RequestBudgetExhaustedError`, ANY LONGER. It was imported to assert the refusal of an
- * over-budget URL-title derivation by class; the optional probe ceiling that raised it is withdrawn, so no
- * case in this file has any error class to name. See the GROUP A2 IS GONE block below.
  */
 import { createUniqueURLTitle, createUrlTitleProbeBudget } from '../../src/util/urlTitle';
 import {
@@ -262,37 +84,11 @@ import {
   resolveRequestAuthorization,
 } from '../../src/handlers/httpResponse';
 
-/* ================================================================================================
- * SHARED IMMUTABLE BINDINGS
- *
- * Two string primitives, both frozen by being primitives. Nothing else lives at module scope.
- * ============================================================================================== */
+/* Shared immutable bindings. */
 
-/* ================================================================================================
- * PHYSICALLY VALID IDENTIFIERS — REVIEW FINDING 16
- *
- * Every brand, product and unique-value identifier below is minted by `physicalID(label)`: 32
- * lowercase hexadecimal characters with no dashes, the shape AAP IR-6 fixes for every uuid-keyed
- * entity, with the readable label retained at the call site. The review's audit counted 19
- * non-physical literals in this file; it now carries none. The mechanism, and the readable-identifier
- * rationale it withdraws, are documented once at `test/support/inMemoryRepositories.ts`.
- *
- * The one case worth reading in place is the `getBrand` miss, which probes with
- * `physicalID('no-such-brand')` — a well-formed key that is deliberately absent — and is annotated
- * there with why a malformed sentinel would have weakened it.
- * ============================================================================================== */
+/* Physically valid identifiers. */
 
-/**
- * The physical table the brand URL title must be unique on.
- *
- * `satisfies` rather than a plain annotation, deliberately: it keeps the value at its LITERAL type
- * — so the narrowing in {@link requireBrandTable} works — while still checking the literal against
- * `UrlTitleTableName`, which `../support/inMemoryRepositories` derives from the real
- * `PhysicalTableName` whitelist with `Extract`. Byte-exactness against
- * `model/service/BrandService.cfc:L70`/`:L72` (`tableName="SwBrand"`) and against `table="SwBrand"`
- * on `model/entity/Brand.cfc:L49` is therefore a COMPILE-TIME property of this file and not only an
- * assertion: a typo, a renamed table or a token invented out of thin air stops the build.
- */
+/** The physical table the brand URL title must be unique on. */
 const BRAND_TABLE = 'SwBrand' satisfies UrlTitleTableName;
 
 /**
@@ -302,21 +98,9 @@ const BRAND_TABLE = 'SwBrand' satisfies UrlTitleTableName;
  */
 const BRAND_ENTITY_NAME_FOR_SEEDS = 'SlatwallBrand';
 
-/* ================================================================================================
- * HELPERS — every one of them a pure function or a per-call factory
- * ============================================================================================== */
+/* Helpers — every one of them a pure function or a per-call factory. */
 
-/**
- * Narrows the table token the utility forwards, refusing anything that is not `SwBrand`.
- *
- * THIS IS THE BYTE-EXACT ASSERTION, EXPRESSED AS A TYPE NARROWING RATHER THAN A CAST.
- * `UniqueValueProbe` declares its first parameter as a plain `string`
- * (`src/util/urlTitle.ts`), because the utility serves three tables — `SwProduct`, `SwProductType`
- * and `SwBrand` — while the shared probe double accepts only the derived `UrlTitleTableName` union.
- * Bridging the two with a cast would silence exactly the drift worth catching, so the bridge is a
- * refusal instead: a token other than `SwBrand` reaching this adapter fails the case loudly, with
- * the offending value in the message.
- */
+/** Narrows the table token the utility forwards, refusing anything that is not `SwBrand`. */
 function requireBrandTable(tableName: string): UrlTitleTableName {
   if (tableName !== BRAND_TABLE) {
     throw new Error(
@@ -329,14 +113,7 @@ function requireBrandTable(tableName: string): UrlTitleTableName {
   return tableName;
 }
 
-/**
- * Adapts the shared table-scoped probe double to the utility's injected-collaborator shape.
- *
- * The polarity is NOT flipped here and must never be: `true` means the candidate is still
- * AVAILABLE, matching `model/dao/DataDAO.cfc:L126-L130`, which returns `false` when a row IS found
- * and `true` only when the record count is zero. That is what makes the `while(!unique)` loop at
- * `model/service/DataService.cfc:L64` terminate at all, and inverting it produces no compile error.
- */
+/** Adapts the shared table-scoped probe double to the utility's injected-collaborator shape. */
 function brandUrlTitleProbe(double: UrlTitleAvailabilityDouble): UniqueValueProbe {
   return (tableName: string, value: string): Promise<boolean> =>
     double.probe.isUrlTitleAvailable(requireBrandTable(tableName), value);
@@ -350,10 +127,6 @@ function heldBrandTitles(values: readonly string[]): readonly UrlTitleAvailabili
 /**
  * The candidate sequence the legacy algorithm probes for `base`, up to and including the `-count`
  * suffix.
- *
- * Derived from `model/service/DataService.cfc:L55` and `:L65-L66` rather than spelled out: the
- * counter starts at 1 and is PRE-incremented, so the sequence is the bare title followed by `-2`,
- * `-3`, … and `-1` is never a member for any input whatsoever.
  */
 function candidateRun(base: string, suffixedCount: number): readonly string[] {
   const candidates: string[] = [base];
@@ -390,42 +163,28 @@ function factoryCallCount(calls: readonly BrandRepositoryCall[]): number {
   return calls.filter((call) => call.member === 'newBrand').length;
 }
 
-/* ================================================================================================
- * HARNESS 1 — THE REAL GRAPH: real `Validator`, real `BaseService`, real ported rule set
- *
- * Used wherever the behaviour under test is the validation or persistence CONSEQUENCE of a save or a
- * delete. Nothing in this graph is faked except the four seams that would otherwise reach a database
- * or an excluded service, and every one of those comes from `../support/inMemoryRepositories`.
- * ============================================================================================== */
+/* Harness 1 — the real graph: real `validator`, real `baseService`, real ported rule set. */
 
 /** Per-case seed configuration for {@link createBrandHarness}. */
 interface BrandHarnessOptions {
   /**
-   * URL titles the TABLE-VALUE probe reports as taken — the seam behind
+   * URL titles the table-value probe reports as taken — the seam behind
    * `model/dao/DataDAO.cfc:L115-L131`, reached by the slug loop.
    */
   readonly takenUrlTitles?: readonly string[];
   /**
-   * Rows the ENTITY-PROPERTY uniqueness port reports as holding a value — the seam behind
+   * Rows the entity-property uniqueness port reports as holding a value — the seam behind
    * `org/Hibachi/HibachiDAO.cfc:L130-L146`, reached by the `unique` constraint of
    * `model/validation/Brand.json:L5`.
-   *
-   * DELIBERATELY SEPARATE FROM {@link BrandHarnessOptions.takenUrlTitles}, AND THE TWO ARE NEVER
-   * HARMONISED. They are different legacy members with different arguments, different self-exclusion
-   * behaviour and different call sites, and one case below drives them to DISAGREE on purpose.
    */
   readonly uniqueValues?: readonly UniquePropertyValueSeed[];
-  /** What `updateAllSettingValuesToRemoveSpecificID` reports, per `model/service/HibachiService.cfc:L95`. */
+  /**
+   * What `updateAllSettingValuesToRemoveSpecificID` reports, per `model/service/HibachiService.cfc:L95`.
+   */
   readonly settingValuesUpdated?: number;
   /** Brands already stored, so a read or a delete has something to find. */
   readonly storedBrands?: readonly ManagedBrand[];
-  /**
-   * The SEC-DOS-03 probe ceiling this case states — see the GROUP A2 IS REINSTATED block below.
-   *
-   * Defaults to {@link GENEROUS_URL_TITLE_PROBE_BUDGET}, deliberately: every OTHER case in this file is
-   * about the derivation itself, and a case decided incidentally by a ceiling would be a case about the
-   * wrong thing. The ceiling's own behaviour is asserted only where a case states a tight figure here.
-   */
+  /** The probe ceiling this case states — see the probe-ceiling cases below. */
   readonly urlTitleProbeBudget?: UrlTitleProbeBudget;
 }
 
@@ -440,46 +199,7 @@ interface BrandHarness {
   readonly baseService: BaseService<ManagedBrand, BrandPropertyName>;
 }
 
-/**
- * Wire a `BrandService` over the real validation and base-service machinery.
- *
- * WHY A REAL `BaseService` AND A REAL `Validator` RATHER THAN DOUBLES OF EITHER. The behaviour this
- * file has to pin includes which saves are refused and which deletes are blocked, and those verdicts
- * are produced by the ported rule set in `src/validation/rules/brand.rules.ts` evaluated by
- * `src/validation/Validator.ts`. A doubled validator would assert the double.
- *
- * THE FOUR SUBSTITUTED SEAMS, AND WHY EACH IS THE MINIMUM THE REAL CONSTRUCTOR DEMANDS:
- *   * `persist` is the brand repository's OWN write member, referenced directly rather than wrapped,
- *     so a persisted brand is visible in the same call log as every other repository interaction.
- *     Safe to reference unbound because the in-memory repository declares its members as arrow
- *     properties closing over factory-local state.
- *   * `remove` HAS to be a thin adapter, and the reason is a genuine signature difference rather
- *     than convenience: `EntityRemover<TEntity>` resolves `void`, while
- *     `BrandRepository.deleteBrand` resolves a `boolean` reporting whether the row was there. A
- *     composition root faces the identical adapter, and routing it to the repository is what makes
- *     "the repository delete happened" observable at all.
- *   * `settingCleanup` and `commentCleanup` are REQUIRED members of `BaseServiceCollaborators`, so a
- *     `BaseService` cannot be constructed without them. They stand for
- *     `getService("settingService")` and `getService("commentService")` at
- *     `model/service/HibachiService.cfc:L76`, `:L79` and `:L95`-`:L99`, both of which belong to the
- *     excluded `Setting*` and `Content*` families. The shared double is an inert recorder: it invents
- *     no cache-invalidation hook, no settings mutator beyond the port's own three members, and no
- *     write path through the read-only `SettingResolverPort`.
- *
- * ⚠️ WHERE WRITES ARE OBSERVED, AND WHY THERE IS EXACTLY ONE PLACE. Because `persist` and `remove`
- * both route to the brand repository, the repository's own call log is the SINGLE record of every
- * write — {@link persistedBrands} and {@link removedBrands} read it, and `brands.brands` shows the
- * resulting store. The shared persistence double's `persisted` and `removed` arrays therefore stay
- * empty by construction under this wiring, so asserting them would be vacuous: it would pass whether
- * or not a write had happened. No case in this file asserts them, deliberately. What the double IS
- * consulted for is the part only it records — the two cleanup logs, the setting-value scrubs and the
- * settings-cache clear count.
- *
- * Every optional field is applied by conditional spread rather than by passing `undefined`, because
- * `exactOptionalPropertyTypes` makes an explicitly-undefined optional member a different type from an
- * absent one — and for `takenUrlTitles` versus `urlTitleAvailability` that distinction selects a
- * different code path inside the double.
- */
+/** Wire a `brandService` over the real validation and base-service machinery. */
 function createBrandHarness(options: BrandHarnessOptions = {}): BrandHarness {
   const brands = createInMemoryBrandRepository({
     ...(options.takenUrlTitles === undefined ? {} : { takenUrlTitles: options.takenUrlTitles }),
@@ -520,20 +240,14 @@ function createBrandHarness(options: BrandHarnessOptions = {}): BrandHarness {
   };
 }
 
-/* ================================================================================================
- * HARNESS 2 — PURE DELEGATION: a recording `BrandBaseService`, no validation at all
- *
- * Used wherever the behaviour under test is what `saveBrand` HANDS ON — the guard branches, the
- * name-source preference, the by-reference payload mutation, the positional argument order. Mixing
- * validation into those cases would make a refused save indistinguishable from a skipped derivation.
- * ============================================================================================== */
+/* Harness 2 — pure delegation: a recording `brandBaseService`, no validation at all. */
 
 /** One recorded delegation, capturing the arguments exactly as they arrived. */
 interface RecordedSave {
   readonly brand: ManagedBrand;
-  /** Captured BY REFERENCE, so the identity of the caller's payload object is assertable. */
+  /** Captured by reference, so the identity of the caller's payload object is assertable. */
   readonly data: Record<string, unknown> | undefined;
-  /** `undefined` here means the argument was OMITTED, which is what `:L76` does. */
+  /** `undefined` here means the argument was omitted, which is what `:L76` does. */
   readonly context: ValidationContext | undefined;
 }
 
@@ -552,19 +266,7 @@ interface DelegationHarness {
   readonly deletes: readonly ManagedBrand[];
 }
 
-/**
- * Wire a `BrandService` over a recording base collaborator.
- *
- * The double is a plain object literal satisfying the service's own exported `BrandBaseService`
- * interface — no mocking library, no spy, no partial cast. That is possible only because the landed
- * interface is a narrow two-member view written as ARROW-TYPED properties, which is also what makes
- * its parameters checked contravariantly: a double declared over a bare `Brand` would be REJECTED
- * here rather than silently admitted.
- *
- * `save` resolves the brand it was handed, mirroring `model/service/HibachiService.cfc:L103` — the
- * legacy override returns `arguments.entity` on every path — so a case asserting the returned value
- * is asserting pass-through and nothing else.
- */
+/** Wire a `brandService` over a recording base collaborator. */
 function createDelegationHarness(options: DelegationHarnessOptions = {}): DelegationHarness {
   const brands = createInMemoryBrandRepository(
     options.takenUrlTitles === undefined ? {} : { takenUrlTitles: options.takenUrlTitles },
@@ -596,18 +298,9 @@ function createDelegationHarness(options: DelegationHarnessOptions = {}): Delega
   };
 }
 
-/* ================================================================================================
- * GROUP A — `createUniqueURLTitle`, THE PORTED ALGORITHM OF `model/service/DataService.cfc:L53-L71`
- *
- * WHY THE UTILITY'S CASES LIVE IN THIS SERVICE'S FILE. AAP §0.4.1.12 enumerates no
- * `test/util/urlTitle.test.ts`, and this file's contract assigns the algorithm here explicitly. It is
- * also the right home on the merits: `BrandService.createUniqueBrandUrlTitle` is the utility's only
- * production caller in the whole subtree, and `BrandService` is where the uniqueness probe is
- * supplied, so the wiring contract between service, repository and utility belongs to this file.
- * The algorithm is consequently covered twice on purpose — directly, where the probe sequence is
- * cleanest to observe, and through `saveBrand` in Group B, which proves the probe actually reaches it
- * and that the derived title lands where the legacy put it.
- * ============================================================================================== */
+/*
+ * GROUP A — `createUniqueURLTitle`, the ported algorithm of `model/service/DataService.cfc:L53-L71`
+ */
 
 describe('createUniqueURLTitle — the slug pipeline, in the legacy order', () => {
   /**
@@ -627,19 +320,19 @@ describe('createUniqueURLTitle — the slug pipeline, in the legacy order', () =
   it('NET-NEW — model/service/DataService.cfc:L57-L58 — trims, lowercases, strips, THEN collapses spaces', async () => {
     /*
      * `:L57` nests the calls as `reReplace(lcase(trim(titleString)), "[^a-z0-9 \-]", "", "all")`, so
-     * the trim is innermost and runs FIRST, then the case fold, then the strip. Only afterwards does
+     * the trim is innermost and runs first, then the case fold, then the strip. Only afterwards does
      * `:L58` collapse `[ ]+` to a single hyphen. All four steps are visible in this one input:
-     * surrounding whitespace disappears, the capitals fold, the underscore and the exclamation mark
-     * are discarded, and the interior space run becomes ONE hyphen.
+     * Surrounding whitespace disappears, the capitals fold, the underscore and the exclamation mark
+     * are discarded, and the interior space run becomes one hyphen.
      */
     await expect(slug('  My_Great Brand!  ')).resolves.toBe('mygreat-brand');
   });
 
   it('NET-NEW — model/service/DataService.cfc:L57-L58 — "A & B" becomes "a-b" because the ampersand goes before the collapse', async () => {
     /*
-     * THE ORDER IS OBSERVABLE HERE AND NOWHERE ELSE AS SHARPLY. Stripping `&` first leaves `'a  b'`
-     * — TWO spaces, the ampersand's former neighbours — and the single `[ ]+` run then collapses to
-     * ONE hyphen. Collapsing first would instead give `'a-&-b'` and then `'a--b'`: a different URL
+     * The order is observable here and nowhere else as sharply. Stripping `&` first leaves `'a b'`
+     * — two spaces, the ampersand's former neighbours — and the single `[ ]+` run then collapses to
+     * one hyphen. Collapsing first would instead give `'a-&-b'` and then `'a--b'`: a different URL
      * title, from the same input, with no error anywhere. That is why the sequence is reproduced
      * rather than tidied.
      */
@@ -649,25 +342,21 @@ describe('createUniqueURLTitle — the slug pipeline, in the legacy order', () =
   it('NET-NEW — model/service/DataService.cfc:L58 — "a - b" becomes "a---b": only SPACES collapse, never hyphens', async () => {
     /*
      * The collapse class at `:L58` is exactly `[ ]+` — a single-space class. The hyphen is a member
-     * of the RETAINED set at `:L57` (`[^a-z0-9 \-]` keeps it), so an existing hyphen survives
-     * untouched and each flanking single-space run contributes one more. THREE hyphens: one for the
+     * of the retained set at `:L57` (`[^a-z0-9 \-]` keeps it), so an existing hyphen survives
+     * untouched and each flanking single-space run contributes one more. Three hyphens: one for the
      * leading space run, the original, one for the trailing space run.
-     *
-     * Using `\s+` here instead of `[ ]+`, or folding hyphen runs down to one, would each change
-     * observable output. Both are the kind of well-intentioned tidy-up AAP §0.8.2 Guideline 4
-     * forbids.
      */
     await expect(slug('a - b')).resolves.toBe('a---b');
   });
 
   it('NET-NEW — model/service/DataService.cfc:L57-L58 — a hyphen RUN survives and gains one per flanking space run', async () => {
-    // FOUR hyphens: the two already present plus one for each of the two collapsed space runs.
+    // four hyphens: the two already present plus one for each of the two collapsed space runs.
     await expect(slug('A -- B')).resolves.toBe('a----b');
   });
 
   it('NET-NEW — model/service/DataService.cfc:L57 — the trim runs BEFORE the strip, so a discarded edge character leaves its space behind', async () => {
     /*
-     * `trim` removes whitespace from the ORIGINAL string; the strip then discards `!` and leaves the
+     * `trim` removes whitespace from the original string; the strip then discards `!` and leaves the
      * space that was next to it, which collapses into a leading or trailing hyphen. The result is
      * neither re-trimmed nor stripped of edge hyphens, because the legacy does neither.
      */
@@ -677,15 +366,15 @@ describe('createUniqueURLTitle — the slug pipeline, in the legacy order', () =
 
   it('NET-NEW — model/service/DataService.cfc:L57 — digits and existing hyphens pass through, and non-ASCII letters do not', async () => {
     /*
-     * The retained class is exactly `[a-z0-9 \-]` AFTER the lowercase fold, and `reReplace` carries
+     * The retained class is exactly `[a-z0-9 \-]` after the lowercase fold, and `reReplace` carries
      * no `i` flag — `reReplaceNoCase` is not what `:L57` calls. So accented and non-Latin letters are
-     * DISCARDED rather than transliterated: no Unicode normalisation, no `é` to `e` mapping, nothing
+     * discarded rather than transliterated: no Unicode normalisation, no `é` to `e` mapping, nothing
      * the legacy did not do.
      */
     await expect(slug('Brand-99 Series 2')).resolves.toBe('brand-99-series-2');
     /*
      * `é` and `ω` are discarded outright. The interior space then survives the strip and collapses to
-     * a TRAILING hyphen, because the strip ran after the trim and the legacy never re-trims — the same
+     * a trailing hyphen, because the strip ran after the trim and the legacy never re-trims — the same
      * mechanism as the `'Foo !'` case above, reached here through a different class of character.
      */
     await expect(slug('Café Ω')).resolves.toBe('caf-');
@@ -694,7 +383,7 @@ describe('createUniqueURLTitle — the slug pipeline, in the legacy order', () =
   it('NET-NEW — model/service/DataService.cfc:L70 — an all-discarded title slugs to the EMPTY string and is returned as-is', async () => {
     /*
      * No error is raised, no placeholder is substituted and no identifier is generated in its place.
-     * `urlTitle` being `required` at `model/validation/Brand.json:L5` means VALIDATION is what reports
+     * `urlTitle` being `required` at `model/validation/Brand.json:L5` means validation is what reports
      * the consequence — see the isolation case in Group C, which drives exactly this input through
      * the real rule set.
      */
@@ -717,7 +406,7 @@ describe('createUniqueURLTitle — the collision suffix sequence', () => {
     ).resolves.toBe('my-brand');
 
     /*
-     * `:L62` probes ONCE before the loop and `:L64` then finds `unique` already true, so the bare
+     * `:L62` probes once before the loop and `:L64` then finds `unique` already true, so the bare
      * candidate comes back unsuffixed. This is why the algorithm is not a `do…while`.
      */
     expect(probe.calls.map((call) => call.value)).toEqual(['my-brand']);
@@ -736,8 +425,8 @@ describe('createUniqueURLTitle — the collision suffix sequence', () => {
     ).resolves.toBe('my-brand-2');
 
     /*
-     * `var addon = 1` at `:L55`, then `addon++` at `:L65` runs BEFORE the suffix is interpolated at
-     * `:L66`. The counter is therefore PRE-incremented and `-1` is unreachable for every possible
+     * `var addon = 1` at `:L55`, then `addon++` at `:L65` runs before the suffix is interpolated at
+     * `:L66`. The counter is therefore pre-incremented and `-1` is unreachable for every possible
      * input. This is observable output, not an off-by-one awaiting repair: initialising to 2,
      * post-incrementing, or starting at 0 would each change the titles the system produces.
      */
@@ -764,7 +453,7 @@ describe('createUniqueURLTitle — the collision suffix sequence', () => {
     /*
      * The invariant across the whole loop, checked at four widths rather than one so an off-by-one in
      * either direction — a probe skipped, a suffix advanced twice — cannot hide behind a single
-     * sample. `0` is the no-collision boundary: no titles held, ONE probe, NO suffix.
+     * sample. `0` is the no-collision boundary: no titles held, one probe, no suffix.
      */
     for (const collisions of [0, 1, 2, 7]) {
       const held = candidateRun('x', collisions).slice(0, collisions);
@@ -785,15 +474,11 @@ describe('createUniqueURLTitle — the collision suffix sequence', () => {
 
   it('NET-NEW — model/dao/DataDAO.cfc:L126-L130 — the probe polarity is true=available, false=collision', async () => {
     /*
-     * THE HIGHEST-RISK SEMANTIC IN THE WHOLE DERIVATION, AND IT IS SILENT WHEN WRONG. `:L126-L127`
-     * returns `false` when the record count is non-zero — the value IS taken — and `:L130` returns
+     * The highest-risk semantic in the whole derivation, and it is silent when wrong. `:l126-l127`
+     * returns `false` when the record count is non-zero — the value is taken — and `:L130` returns
      * `true` only when nothing holds it. Inverting the two produces no compile error and no type
      * error; it produces either duplicate `urlTitle` values reaching a `unique="true"` column, or a
      * loop that never terminates.
-     *
-     * Asserted from both sides with one seeded title, which is the smallest input that distinguishes
-     * the two readings: the taken candidate is refused and skipped, the free one is accepted and
-     * returned.
      */
     const probe = createUrlTitleAvailabilityDouble(heldBrandTitles(['taken']));
 
@@ -811,20 +496,12 @@ describe('createUniqueURLTitle — the collision suffix sequence', () => {
 
   it('NET-NEW — model/service/BrandService.cfc:L70,L72 — the probe receives the byte-exact table token SwBrand', async () => {
     /*
-     * `tableName="SwBrand"` is passed explicitly at BOTH legacy call sites, and it matches
+     * `tableName="SwBrand"` is passed explicitly at both legacy call sites, and it matches
      * `table="SwBrand"` on `model/entity/Brand.cfc:L49`. Two independent mechanisms pin it here:
      * {@link BRAND_TABLE} is written with `satisfies UrlTitleTableName`, so the literal is checked at
-     * COMPILE time against the union the support file derives from the real `PhysicalTableName`
-     * whitelist; and {@link requireBrandTable} REFUSES any other token at run time, so a drift in
+     * compile time against the union the support file derives from the real `PhysicalTableName`
+     * whitelist; and {@link requireBrandTable} refuses any other token at run time, so a drift in
      * what the utility forwards fails loudly rather than passing quietly.
-     *
-     * ⚠ WHERE THIS ASSERTION CANNOT BE MADE, STATED RATHER THAN IMPLIED. It is made at the UTILITY
-     * boundary because the landed service cannot expose it: `BrandService.createUniqueBrandUrlTitle`
-     * adapts the utility's two-argument probe to `BrandRepository.isUrlTitleAvailable(urlTitle)`, the
-     * one-argument brand-only view whose table is baked into its meaning, and DISCARDS the token in
-     * the process. No service-level double can see it. The mismatch against this file's contract —
-     * which asks for the token to be asserted — is therefore exposed here rather than papered over,
-     * and the requirement is met at the only boundary where the token still exists.
      */
     const probe = createUrlTitleAvailabilityDouble(heldBrandTitles(['acme']));
 
@@ -846,38 +523,12 @@ describe('createUniqueURLTitle — the collision suffix sequence', () => {
 
   it('NET-NEW UNWIRED — model/service/DataService.cfc:L64 — the loop is UNBOUNDED: one round trip per iteration, no ceiling, no fabricated fallback', async () => {
     /*
-     * TODO(parity) `model/service/DataService.cfc:L64` — `while(!unique)` carries NO ceiling, so a
+     * TODO(parity) `model/service/DataService.cfc:L64` — `while(!unique)` carries no ceiling, so a
      * value that keeps colliding keeps issuing probes indefinitely. The exposure is real and it is
-     * CARRIED OVER rather than repaired: AAP §0.8.2 Guideline 4 forbids enhancing business logic
+     * carried over rather than repaired: AAP §0.8.2 Guideline 4 forbids enhancing business logic
      * beyond what the migration requires, and IR-9 admits exactly one hardening exception — D18, the
      * importer's SQL parameterisation — which is not this. An attempt budget would therefore be a
      * behavioural change, not a fix, so none exists.
-     *
-     * WHAT THIS CASE ASSERTS, AND WHAT IT DELIBERATELY DOES NOT. It asserts the two observable facts:
-     * exactly ONE probe per iteration, and termination only when the probe reports a free value. A
-     * finite seeded run of 500 collisions stands in for the unbounded one — an endless loop cannot be
-     * asserted on.
-     *
-     * ⭐ ONE SENTENCE OF THIS BLOCK USED TO READ "it is two orders of magnitude past any plausible
-     * ceiling, so a reinstated bound short of 501 fails here", AND THAT SENTENCE WAS THE FINDING. A
-     * suite that fails when a bound is introduced makes the bound test-breaking — which is the AAP
-     * security requirement the review recorded as failing (tests must not require insecure behaviour).
-     * Review finding F5 (CWE-400) resolved it WITHOUT weakening this case, because the two facts above
-     * are properties of the ALGORITHM and the bound is not in the algorithm:
-     *
-     *   • This case calls `createUniqueURLTitle` DIRECTLY with an unwrapped probe. There is no budget
-     *     to wire at this boundary and none is wired, so 501 probes is exactly right here and stays
-     *     asserted — permanently. It is the parity guard.
-     *   • F5's bound wraps the PROBE (the probe-budget section of `src/util/urlTitle.ts`) and is applied by the SERVICE
-     *     when a deployment stated a figure. A bound in the algorithm would still fail here; a bound
-     *     on the probe is invisible to this case by construction.
-     *   • The WIRED half is asserted separately, in its own describe block below, where a budget IS
-     *     supplied and the refusal is required rather than forbidden.
-     *
-     * NO retry limit, latency assertion, backoff, capacity figure or timeout appears in this case.
-     * Asserting one HERE would invent the very number AAP §0.7.3 S9 forbids; asserting a figure the
-     * TEST supplies to a service that demanded none does not, which is why the wired cases can state
-     * one freely.
      */
     const collisions = 500;
     const probe = createUrlTitleAvailabilityDouble(
@@ -900,15 +551,9 @@ describe('createUniqueURLTitle — the collision suffix sequence', () => {
 
   it('NET-NEW — model/service/DataService.cfc:L60,L66 — the suffix is appended to the SLUG, not to the raw title, and the empty slug is no exception', async () => {
     /*
-     * `:L60` captures `returnTitle = urlTitle` — the ALREADY-SLUGGED value — and `:L66` interpolates
+     * `:L60` captures `returnTitle = urlTitle` — the already-slugged value — and `:L66` interpolates
      * `"#urlTitle#-#addon#"` from that same slugged base, never from `arguments.titleString`. So a
      * collision re-suffixes the slug and cannot smuggle stripped characters back in.
-     *
-     * The empty slug follows the identical path with no special case anywhere: a held `''` yields
-     * `'-2'`. That is a derivation of the algorithm as written, recorded so a future reader does not
-     * mistake the absence of an empty-string guard for an oversight. There is no failure branch here
-     * on which a UUID-suffixed fallback or a placeholder title could be substituted, and none is
-     * invented.
      */
     const slugged = createUrlTitleAvailabilityDouble(heldBrandTitles(['my-brand']));
     await expect(
@@ -934,57 +579,14 @@ describe('createUniqueURLTitle — the collision suffix sequence', () => {
   });
 });
 
-/* ================================================================================================
- * ⭐ GROUP A2 IS REINSTATED — THE PROBE CEILING IS REQUIRED, NOT OPTIONAL AND NOT WITHDRAWN
- *
- * ⭐ THE BOUND IS NOT IN THE ALGORITHM, AND EVERY CASE HERE IS ORGANISED AROUND THAT. `:L64`'s
- * `while(!unique)` is ported verbatim and stays unbounded IN SHAPE; `src/util/urlTitle.ts` wraps the
- * PROBE, and the refusal reaches the algorithm through the one channel it already declares — "whatever the
- * probe rejects with propagates unchanged". The loop condition is untouched, which is why the suffix
- * sequence below is byte-identical for every input inside the budget.
- *
- * THE HISTORY, IN FULL, BECAUSE THIS POSITION HAS MOVED TWICE:
- *  1. A revision declared an OPTIONAL `UrlTitleProbeBudget` third constructor parameter and pinned it here.
- *  2. A later revision WITHDREW the parameter and the whole block, on this argument: "`DataService.cfc:L64`
- *     is `while(!unique)` with no ceiling; an optional ceiling still adds a capability the source does not
- *     describe (AAP §0.7.3 S9, IR-12) and still refuses derivations the legacy completed; AAP §0.6.7.7
- *     declares exactly ONE departure from behavioural preservation (D18) and §0.8.2 Guideline 4 admits no
- *     proportionality test."
- *  3. THAT ARGUMENT IS WRONG, and this is the correction. §0.6.7 is the DEFECT AND TODO CARRY-OVER
- *     REGISTER: its twenty-one entries are legacy BUSINESS-LOGIC defects — a misnamed struct, an inverted
- *     cache guard, an unreachable private method — and D18 is the one member of THAT REGISTER the port
- *     repairs. The availability of the extracted service is not an entry in it. Reading D18's exception as
- *     a licence to ship an exploitable resource-exhaustion path would make §0.6.7.7 say that a migration
- *     must reproduce a denial-of-service vector.
- *  4. Guideline 4 forbids enhancing BUSINESS LOGIC. The ceiling changes not one derived title for any
- *     input it admits: the slug, the pre-increment, the `-2`-first suffix sequence and the empty-string,
- *     leading-hyphen and hyphen-run edge cases are all unchanged, and Group A's 501-probe parity run below
- *     still passes because its budget admits it.
- *  5. AAP §0.7.3 affirmatively requires the other direction. With no user Rules (§0.7.1) this port is bound
- *     to §0.7.3's enterprise standards, and S8 — "flag mismatches rather than assume them away" — is
- *     discharged by the `TODO(parity)` blocks that record the LEGACY as unbounded, not by leaving the PORT
- *     unbounded too.
- *  6. IR-12 AND S9 ARE HONOURED EXACTLY. The port authors no figure. `src/util/urlTitle.ts` takes a
- *     RESOLVER, and given no operator figure that resolver raises a named `ConfigurationError` reporting
- *     `CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION`. An unstated bound fails CLOSED. The only thing that
- *     changed between step 1 and now is optional → REQUIRED, because an optional budget left the unbounded
- *     loop reachable by default, which is precisely what review finding SEC-DOS-03 named.
- *
- * ⭐ WHAT THE CASES BELOW PIN, and note the fixtures state the figures rather than the port: a test IS the
- * operator, so a fixture naming a ceiling exercises the mechanism instead of inventing a default.
- * ============================================================================================== */
+/* The probe ceiling is required, not optional: the port never invents one. */
 
-describe('saveBrand — the SEC-DOS-03 probe ceiling, which the operator states and the port never invents', () => {
+describe('saveBrand — the probe ceiling, which the operator states and the port never invents', () => {
   it('[NET-NEW] refuses a derivation that would outrun the stated ceiling, fabricating no title', async () => {
     /*
      * The refusal, at the smallest ceiling that still admits the no-collision case. `takeUrlTitle` seeds a
      * two-link collision chain, so the derivation needs three probes — `acme-widgets`, `acme-widgets-2`,
      * `acme-widgets-3` — and a ceiling of 2 stops it on the third.
-     *
-     * ⛔ AND NOTHING IS FABRICATED, which is the half that matters more than the raising. The entity keeps
-     * no title and the payload gains none, so no unapproved value can reach a persist. A revision that
-     * "handled" the ceiling by returning the last candidate, or by appending a UUID, would satisfy a
-     * rejects-assertion alone; these two expectations are what rule that out.
      */
     const harness = createBrandHarness({
       urlTitleProbeBudget: createUrlTitleProbeBudget(2),
@@ -1001,8 +603,10 @@ describe('saveBrand — the SEC-DOS-03 probe ceiling, which the operator states 
     expect(brand.urlTitle).toBeUndefined();
     expect(data).not.toHaveProperty('urlTitle');
 
-    /* Exactly the two the operator permitted were issued — the ceiling stops the THIRD before it is sent,
-     * so the refusal costs no extra round trip. */
+    /*
+     * Exactly the two the operator permitted were issued — the ceiling stops the third before it is sent,
+     * so the refusal costs no extra round trip.
+     */
     expect(probedUrlTitles(harness.brands.calls)).toEqual(['acme-widgets', 'acme-widgets-2']);
   });
 
@@ -1027,7 +631,7 @@ describe('saveBrand — the SEC-DOS-03 probe ceiling, which the operator states 
 
   it('[NET-NEW] counts the PRE-LOOP probe, so a ceiling of ONE admits exactly the no-collision case', async () => {
     /*
-     * `model/service/DataService.cfc:L62` probes ONCE before `L64`'s loop. A ceiling that counted only the
+     * `model/service/DataService.cfc:L62` probes once before `L64`'s loop. A ceiling that counted only the
      * loop's probes would permit one more read than it claims, and a ceiling of 1 would then admit a
      * one-link collision chain instead of none at all. Both halves are asserted against the same ceiling.
      */
@@ -1047,11 +651,9 @@ describe('saveBrand — the SEC-DOS-03 probe ceiling, which the operator states 
   it('[NET-NEW] spends the budget PER DERIVATION, not per service, so a graph does not degrade (M7)', async () => {
     /*
      * The counter's lifetime, which is the M7 half. `src/util/urlTitle.ts` declares `probesIssued` inside
-     * the function, so two saves through ONE service each get the whole ceiling. A counter hoisted to the
+     * the function, so two saves through one service each get the whole ceiling. A counter hoisted to the
      * budget object or to the service would make the second save refuse at a ceiling the first exhausted —
      * a slow-burn availability defect no single-save case would catch.
-     *
-     * Both derivations here need two probes against a ceiling of exactly 2, so a shared counter fails.
      */
     const harness = createBrandHarness({
       urlTitleProbeBudget: createUrlTitleProbeBudget(2),
@@ -1073,10 +675,6 @@ describe('saveBrand — the SEC-DOS-03 probe ceiling, which the operator states 
      * The fail-closed half, and the one that answers the "an optional bound is enough" position of step 1
      * in the block above. A composition root that states nothing does not get an unbounded loop; it gets a
      * `ConfigurationError` that names `CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION`.
-     *
-     * ⭐ AND IT COSTS NO ROUND TRIP. `createUniqueURLTitle` resolves the ceiling before the slug is built,
-     * so the probe list is EMPTY — a wiring error presents as a wiring error rather than as a database
-     * read that then fails.
      */
     const harness = createBrandHarness({
       urlTitleProbeBudget: UNSTATED_URL_TITLE_PROBE_BUDGET,
@@ -1086,15 +684,17 @@ describe('saveBrand — the SEC-DOS-03 probe ceiling, which the operator states 
       harness.service.saveBrand(harness.service.newBrand(), { brandName: 'ACME Widgets' }),
     ).rejects.toThrow(/CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION/);
 
-    /* `probedUrlTitles` rather than the whole call log, because `newBrand()` is itself a recorded
-     * repository call and the property under test is that NO PROBE was issued. */
+    /*
+     * `probedUrlTitles` rather than the whole call log, because `newBrand()` is itself a recorded
+     * repository call and the property under test is that no probe was issued.
+     */
     expect(probedUrlTitles(harness.brands.calls)).toEqual([]);
   });
 
   it('[NET-NEW] refuses a USELESS figure when the budget is BUILT, not when a derivation first runs', () => {
     /*
      * A wiring error should present at wiring time. Zero would refuse every derivation — including one
-     * whose FIRST candidate is free — rather than bounding a collision chain, and a fraction or a negative
+     * whose first candidate is free — rather than bounding a collision chain, and a fraction or a negative
      * bounds nothing at all. `createUrlTitleProbeBudget` refuses all of them where they are stated.
      */
     expect(() => createUrlTitleProbeBudget(0)).toThrow(/positive safe integer/);
@@ -1129,7 +729,7 @@ describe('saveBrand — the L68 derivation guard', () => {
 
   it('NET-NEW — model/service/BrandService.cfc:L68 — an entity that ALREADY has a title short-circuits the guard: no probe, value untouched', async () => {
     /*
-     * `isNull(getURLTitle()) || !len(getURLTitle())` is the FIRST half of the `and`, so a non-empty
+     * `isNull(getURLTitle()) || !len(getURLTitle())` is the first half of the `and`, so a non-empty
      * entity title alone suppresses the derivation. The pre-existing value is not re-slugged, not
      * re-checked for uniqueness and not copied into the payload — the legacy touches none of those.
      */
@@ -1147,7 +747,7 @@ describe('saveBrand — the L68 derivation guard', () => {
   it('NET-NEW — model/service/BrandService.cfc:L68 — a payload that SUPPLIES a title short-circuits the guard, and the supplied value survives verbatim', async () => {
     /*
      * `!structKeyExists(arguments.data, "urlTitle") || !len(arguments.data.urlTitle)` is the second
-     * half. An incoming title is passed through EXACTLY as given — not slugged, not lowercased, not
+     * half. An incoming title is passed through exactly as given — not slugged, not lowercased, not
      * uniqued — because the legacy only ever writes `data.urlTitle` inside the guard it has already
      * skipped. The value below is deliberately one the slug pipeline would mangle, so a stray
      * re-derivation could not pass this case.
@@ -1178,7 +778,7 @@ describe('saveBrand — the L68 derivation guard', () => {
   it('NET-NEW — model/service/BrandService.cfc:L68 — EMPTY counts as missing on both halves, so an empty pair still derives', async () => {
     /*
      * `len()` is the operative test on both halves, not `structKeyExists` alone and not a null check
-     * alone. An entity title of `''` and a PRESENT payload key whose value is `''` are therefore both
+     * alone. An entity title of `''` and a present payload key whose value is `''` are therefore both
      * "missing", and the derivation runs. This is the case a `!== undefined` or a bare
      * `structKeyExists` translation would get wrong, silently, by skipping the derivation and leaving
      * an empty `urlTitle` to fail `model/validation/Brand.json:L5` instead.
@@ -1215,7 +815,7 @@ describe('saveBrand — which name source the derivation reads', () => {
   it('NET-NEW — model/service/BrandService.cfc:L69-L72 — the PAYLOAD name wins when both sources are present', async () => {
     /*
      * `:L69` tests the payload first and `:L71` is its `else if`, so the entity's own name is read
-     * only when the payload has nothing usable. Both sources are populated here with DIFFERENT
+     * only when the payload has nothing usable. Both sources are populated here with different
      * values, which is the only arrangement that distinguishes the two arms.
      */
     const harness = createDelegationHarness();
@@ -1258,15 +858,12 @@ describe('saveBrand — which name source the derivation reads', () => {
 
   it('NET-NEW — model/service/BrandService.cfc:L73 — with BOTH name sources unusable, NO urlTitle key is added at all', async () => {
     /*
-     * THE FALL-THROUGH THE `if` / `else if` PAIR LEAVES OPEN, AND IT IS NOT AN ERROR PATH. `:L73`
+     * The fall-through the `if` / `else if` pair leaves open, and it is not an error path. `:L73`
      * closes the inner `else if` with no trailing `else`, so when the payload name is empty and the
      * entity name is null or empty, the guard body simply does nothing. No key is written, no probe is
-     * issued and no exception is raised HERE — the consequence surfaces one layer up, in validation,
+     * issued and no exception is raised here — the consequence surfaces one layer up, in validation,
      * because `model/validation/Brand.json:L5` marks `urlTitle` required. Group C drives that
      * consequence through the real rule set.
-     *
-     * Asserted with `not.toHaveProperty` rather than a value comparison, because "absent" and
-     * "present but undefined" are different payloads once the base collaborator populates from them.
      */
     const harness = createDelegationHarness();
     const { brand } = createManagedBrand();
@@ -1282,7 +879,7 @@ describe('saveBrand — which name source the derivation reads', () => {
 
   it('NET-NEW — model/service/BrandService.cfc:L70 — the collision suffix reaches the payload, so the derivation is the real loop and not a one-shot slug', async () => {
     /*
-     * `takenUrlTitles` seeds the REPOSITORY's availability answer, so this case also proves the probe
+     * `takenUrlTitles` seeds the repository's availability answer, so this case also proves the probe
      * the service constructs is wired to `BrandRepository.isUrlTitleAvailable` and not to some
      * always-free default. Two round trips, `-2` on the payload.
      */
@@ -1299,19 +896,11 @@ describe('saveBrand — which name source the derivation reads', () => {
 
 describe('saveBrand — how a NON-STRING payload value is read, which is where CFML len() diverges', () => {
   /*
-   * WHY THIS BLOCK EXISTS AT ALL. `model/service/BrandService.cfc:L68` and `:L69` both test payload
+   * Why this block EXISTS at all. `model/service/BrandService.cfc:L68` and `:L69` both test payload
    * entries with CFML's `len()`, and CFML's payload struct is untyped: a form or API post can put a
    * number, a boolean, a date, an array or a struct under `brandName` or `urlTitle`. The landed port
    * reproduces `len()` over each of those shapes rather than assuming a string, so every shape is a
    * real branch of the two guards and each gets a case.
-   *
-   * ⚠️ AND ONE OF THOSE SHAPES IS AN ENGINE DIVERGENCE, FLAGGED RATHER THAN RESOLVED. `len()` of a
-   * COMPLEX value is precisely where the two engines this application supports disagree: `readme.md:L6`
-   * names ColdFusion 9.0.1+ and `:L8` names Railo 4.1+, the Railo/Lucee lineage accepts an array or
-   * struct and returns a count while the ACF lineage refuses. `src/services/BrandService.ts` records
-   * that neither is "the" legacy behaviour and declines to pick an engine on the port's own authority
-   * (AAP §0.8.3.6, §0.7.3's invent-nothing standard). The cases below therefore pin what the port DOES
-   * — count the members — and say so, rather than asserting a raise the source does not state.
    */
 
   it('NET-NEW — model/service/BrandService.cfc:L69-L70 — a NUMERIC payload name is rendered as CFML would render it into a string parameter', async () => {
@@ -1348,12 +937,9 @@ describe('saveBrand — how a NON-STRING payload value is read, which is where C
     /*
      * TODO(parity) — `src/services/BrandService.ts` carries this one as a flagged annotation and it is
      * asserted here in the same spirit. CFML would render a date-valued payload entry with the
-     * ENGINE'S own date-time mask; the port renders it with `toISOString()`. The two differ in FORMAT
+     * engine'S own date-time mask; the port renders it with `toISOString()`. The two differ in format
      * for this single pathological input, no in-scope caller supplies one, and choosing a mask would
-     * mean inventing a format the source never states (AAP §0.7.3 S9).
-     *
-     * The case pins what the port DOES so a future change of rendering is visible, and says plainly
-     * that the value below is NOT a claim about what CFML would have produced.
+     * mean inventing a format the source never states (AAP §0.7.3).
      */
     const harness = createDelegationHarness();
     const { brand } = createManagedBrand();
@@ -1367,19 +953,8 @@ describe('saveBrand — how a NON-STRING payload value is read, which is where C
 
   it('NET-NEW — model/service/BrandService.cfc:L69-L73 — a NON-SIMPLE payload name with a non-zero len() enters the FIRST arm and the :L71 else-if is never reached', async () => {
     /*
-     * ⭐ THE SUBTLEST BRANCH IN THE MEMBER, AND THE REASON THE LANDED CODE NESTS ITS SECOND CHECK
-     * INSTEAD OF FOLDING IT INTO THE FIRST CONDITION.
-     *
-     * An array of two members has `len()` 2 under the Railo/Lucee reading, so `:L69` SUCCEEDS and
-     * control enters the first arm. But that value cannot be coerced into the `required string
-     * titleString` parameter, so no title is derived. The `else if` at `:L71` belongs to an `if` that
-     * was already taken, so the entity's own perfectly usable `brandName` is NEVER consulted — and the
-     * save proceeds with no `urlTitle` at all.
-     *
-     * Folding the coercion check into `:L69`'s condition would look equivalent and is not: control
-     * would fall through to `:L71` and the entity name WOULD be used, producing a stored `urlTitle`
-     * where the legacy stores none. That is a silent behavioural change from a tidier-looking
-     * translation, which is exactly the class of drift AAP §0.8.2 guideline 2 forbids.
+     * The subtlest branch in the member, and the reason the landed code nests its second check
+     * instead of folding it into the first condition.
      */
     const harness = createDelegationHarness();
     const { brand } = createManagedBrand({ brandName: 'Entity Name' });
@@ -1434,7 +1009,7 @@ describe('saveBrand — how a NON-STRING payload value is read, which is where C
 
   it('NET-NEW — model/service/BrandService.cfc:L68 — a NON-STRING payload urlTitle with a non-zero len() short-circuits the guard and is handed on untouched', async () => {
     /*
-     * The same measurement applied to the OTHER half of `:L68`. `len(42)` is 2, so the payload counts
+     * The same measurement applied to the other half of `:L68`. `len(42)` is 2, so the payload counts
      * as supplying a title, no derivation runs, and the numeric value is passed to `super.save()`
      * exactly as received — population, not this member, decides what to do with it.
      */
@@ -1453,17 +1028,11 @@ describe('saveBrand — how a NON-STRING payload value is read, which is where C
 describe('saveBrand — the by-reference payload write and the delegation at L76', () => {
   it('NET-NEW — model/service/BrandService.cfc:L70,L72 — the derived title is written onto the SAME payload object the caller passed', async () => {
     /*
-     * G6 — `data.urlTitle = …` at `:L70` and `:L72` is UNSCOPED CFML. It resolves through the scope
+     * `data.urlTitle = …` at `:L70` and `:L72` is unscoped CFML. It resolves through the scope
      * search order to `arguments.data`, because a local named `data` was never `var`-declared in this
-     * function, so the assignment mutates the CALLER'S struct rather than a local copy. It is easy to
+     * function, so the assignment mutates the caller'S struct rather than a local copy. It is easy to
      * read as a local write and it is not one: the caller observes the derived title after the call
      * returns, and `:L76` passes that same mutated struct on to `super.save()`.
-     *
-     * Strict TypeScript cannot reproduce the ambiguity — there is no implicit scope search — so the
-     * port makes the mutation EXPLICIT with `data[URL_TITLE_DATA_KEY] = …` on the parameter itself.
-     * The observable contract is identical, and this case pins it from both sides: the caller's own
-     * reference carries the value, and the object handed to the base collaborator is that very
-     * object by IDENTITY, not a structural equal.
      */
     const harness = createDelegationHarness();
     const { brand } = createManagedBrand();
@@ -1529,22 +1098,8 @@ describe('saveBrand — the by-reference payload write and the delegation at L76
     /*
      * `return super.save(arguments.brand, arguments.data)` passes two ordered arguments and no third.
      * `org/Hibachi/HibachiService.cfc:L253` records that the framework's dispatch supports ordered
-     * arguments ONLY — named arguments are not supported — so argument ORDER is part of the contract
+     * arguments only — named arguments are not supported — so argument ORDER is part of the contract
      * and not a formatting choice.
-     *
-     * Omitting the third argument is equally load-bearing. `model/service/HibachiService.cfc:L86`
-     * declares `save(required any entity, struct data={}, string context="save")`, so the omission is
-     * what selects the `"save"` context and the fresh empty struct default. The port keeps the
-     * omission rather than passing `'save'` explicitly, so the DEFAULT is what supplies it — which is
-     * why `context` is asserted `undefined` here rather than `'save'`. Group C proves the default
-     * that omission selects actually takes effect.
-     *
-     * IR-8 — `super.save` at `:L76` resolves to the LOCAL Slatwall override at
-     * `model/service/HibachiService.cfc:L86`, not to the framework base at
-     * `org/Hibachi/HibachiService.cfc`. The distinction is behavioural: the local override adds the
-     * inactive-entity settings sweep of `:L91-L100` on top of the framework save. The port expresses
-     * that as delegation to an INJECTED base collaborator rather than as inheritance (R3, AAP
-     * §0.4.3.3), and `BrandService` extends nothing at all.
      */
     const harness = createDelegationHarness();
     const { brand } = createManagedBrand();
@@ -1576,7 +1131,7 @@ describe('saveBrand — the by-reference payload write and the delegation at L76
      * A scope assertion, and a meaningful one. `BrandRepository` exposes a `saveBrand` member, and
      * calling it here would look harmless while bypassing validation entirely — the legacy routes
      * every brand write through `super.save()` so the rule set of `model/validation/Brand.json` gets
-     * its say. With the recording collaborator in place NOTHING may reach the repository except the
+     * its say. With the recording collaborator in place nothing may reach the repository except the
      * URL-title probe.
      */
     const harness = createDelegationHarness();
@@ -1589,21 +1144,11 @@ describe('saveBrand — the by-reference payload write and the delegation at L76
   });
 });
 
-/* ================================================================================================
- * GROUP C — `saveBrand` THROUGH THE REAL GRAPH: the ported rule set, the real `Validator`, the real
+/*
+ * GROUP C — `saveBrand` through the real graph: the ported rule set, the real `Validator`, the real
  * `BaseService`
  * `model/validation/Brand.json`, `model/service/HibachiService.cfc:L86-L104`
- *
- * ⛔ NO LEGACY LOCATOR IS CLAIMED BY THIS GROUP. An earlier revision listed
- * `meta/tests/unit/IssuesTest.cfc:L203-L206` here; it is withdrawn, because that test saves a PRODUCT and
- * its ported contract RESOLVES while `saveBrand` RAISES. See the provenance correction in the file header.
- * `test/regression/issues.test.ts` holds that locator.
- *
- * Nothing is doubled here except the four seams a `BaseService` cannot be constructed without. The
- * verdicts below are produced by `src/validation/rules/brand.rules.ts` evaluated by
- * `src/validation/Validator.ts`, which is the only way an assertion about which saves are REFUSED can
- * be about the port rather than about a double.
- * ============================================================================================== */
+ */
 
 describe('saveBrand — the real validation path', () => {
   it('NET-NEW — model/validation/Brand.json:L3,L5 — a derivable name yields a save that PASSES and persists exactly once', async () => {
@@ -1621,7 +1166,7 @@ describe('saveBrand — the real validation path', () => {
     expect(saved).toBe(brand);
     expect(brand.brandName).toBe('ACME Widgets');
     expect(brand.urlTitle).toBe('acme-widgets');
-    // The derived title reached the entity through POPULATION, not through a direct field write.
+    // The derived title reached the entity through population, not through a direct field write.
     expect(harness.authorization.calls.map((call) => call.propertyName).sort()).toEqual([
       'brandName',
       'urlTitle',
@@ -1631,26 +1176,7 @@ describe('saveBrand — the real validation path', () => {
   });
 
   it('NET-NEW — model/validation/Brand.json:L5 — AAP-OMITTED PATH: a name that slugs to nothing leaves urlTitle unset, and urlTitle.required fails ALONE', async () => {
-    /*
-     * THE PATH THE AAP'S OWN NARRATIVE STEPS OVER, ISOLATED SO THE CONSEQUENCE IS UNAMBIGUOUS.
-     *
-     * `'!!!'` has `len() == 3`, so `model/service/BrandService.cfc:L69` enters its first arm and the
-     * derivation runs — this is NOT the `:L73` fall-through. But every character is outside the
-     * retained class of `model/service/DataService.cfc:L57`, so the slug is `''`, and `''` is what
-     * `:L70` writes onto the payload. Population then CLEARS a blank value rather than storing it, so
-     * `urlTitle` arrives at validation ABSENT.
-     *
-     * WHY THIS EXACT INPUT AND NOT A SIMPLER ONE. It is the only shape that makes the required-title
-     * failure a lone finding: `brandName` is satisfied, `brandWebsite` is absent and therefore fine,
-     * and `urlTitle` is the single refused property. Every other route to an unset title — an absent
-     * name, an empty name — ALSO fails `brandName` at `:L3`, so the title failure would be one of two
-     * and could not be attributed. The next case covers that route on its own terms.
-     *
-     * `.unique` does NOT also fire, and that is the rule set behaving correctly rather than a gap: an
-     * absent value binds to nothing, the existence query returns no rows, and
-     * `org/Hibachi/HibachiDAO.cfc:L130-L146` therefore answers unique. Only `.required` distinguishes
-     * absent from present.
-     */
+    /* The path the aap's own narrative steps over, isolated so the consequence is unambiguous. */
     const harness = createBrandHarness();
     const { brand } = createManagedBrand();
     const data: Record<string, unknown> = { brandName: '!!!' };
@@ -1664,7 +1190,7 @@ describe('saveBrand — the real validation path', () => {
     expect(brand.urlTitle).toBeUndefined();
     expect(brand.brandName).toBe('!!!');
 
-    // ⭐ THE MEMBER RESOLVES WITH THE CALLER'S OWN ENTITY, and the finding rides on its bag —
+    // The member resolves with the caller's own entity, and the finding rides on its bag —
     // `model/service/HibachiService.cfc:L103` returns on every path, failed validation included.
     expect(saved).toBe(brand);
     expect(saved.hasErrors()).toBe(true);
@@ -1678,16 +1204,10 @@ describe('saveBrand — the real validation path', () => {
 
   it('NET-NEW — model/service/BrandService.cfc:L73 + model/validation/Brand.json:L3,L5 — the true fall-through fails BOTH required rules, and that is reported rather than smoothed over', async () => {
     /*
-     * A FINDING, NOT A TEST FIXTURE. The `:L73` fall-through is reachable only when NEITHER name
+     * A finding, not a test fixture. The `:L73` fall-through is reachable only when neither name
      * source is usable — and `model/validation/Brand.json:L3` makes `brandName` required in the very
      * same context. So the branch that produces no `urlTitle` can never be the only thing wrong: a
      * brand that reaches it fails `brandName.required` as well, always.
-     *
-     * The AAP's account of this path — "no `urlTitle` is added … Brand save validation fails because
-     * `Brand.json:L5` requires and uniquely validates `urlTitle`" — is therefore true but incomplete
-     * about which findings appear. Both keys are asserted here so the file states the whole verdict,
-     * and the preceding case isolates the title failure by a route the AAP does not describe. Neither
-     * case is weakened to match the other.
      */
     const harness = createBrandHarness();
     const { brand } = createManagedBrand();
@@ -1709,25 +1229,15 @@ describe('saveBrand — the real validation path', () => {
 
   it('NET-NEW — model/validation/Brand.json:L5 — the TABLE-VALUE seam and the ENTITY-PROPERTY seam are different checks, and are left free to disagree', async () => {
     /*
-     * ⚠️ TWO UNIQUENESS MECHANISMS, DELIBERATELY NOT HARMONISED. They are different legacy members
+     * Two uniqueness mechanisms, deliberately not harmonised. They are different legacy members
      * with different arguments and different call sites:
      *
-     *   * `model/dao/DataDAO.cfc:L115-L131` — `verifyUniqueTableValue(tableName, column, value)`.
-     *     Table-and-column scoped, NO self-exclusion, reached only by the slug loop at
-     *     `model/service/DataService.cfc:L62` and `:L67`.
-     *   * `org/Hibachi/HibachiDAO.cfc:L130-L146` — `isUniqueProperty(propertyName, entity)`. Entity
-     *     scoped, WITH the `e.<idProperty> != :entityID` self-exclusion, reached only by the `unique`
-     *     constraint of `model/validation/Brand.json:L5`.
-     *
-     * This case drives them to CONTRADICT each other on purpose, which is the only arrangement that
-     * proves the port kept them separate: the table probe reports `acme-widgets` free, so the slug
-     * loop returns it UNSUFFIXED, and the entity-property port then reports a different row holding
-     * it, so validation refuses the save. Routing the slug loop through entity-property uniqueness —
-     * the tempting simplification — would have produced `acme-widgets-2` and a save that PASSES,
-     * which is a different stored value from a different code path.
-     *
-     * The port is annotated with its own interface type here rather than left inferred, to make the
-     * argument shapes of the two seams visibly different at the call site.
+     * * `model/dao/DataDAO.cfc:L115-L131` — `verifyUniqueTableValue(tableName, column, value)`.
+     * Table-and-column scoped, no self-exclusion, reached only by the slug loop at
+     * `model/service/DataService.cfc:L62` and `:L67`.
+     * * `org/Hibachi/HibachiDAO.cfc:L130-L146` — `isUniqueProperty(propertyName, entity)`. entity
+     * scoped, with the `e.<idProperty> != :entityID` self-exclusion, reached only by the `unique`
+     * constraint of `model/validation/Brand.json:L5`.
      */
     const harness = createBrandHarness({
       uniqueValues: [
@@ -1743,7 +1253,7 @@ describe('saveBrand — the real validation path', () => {
 
     const saved = await harness.service.saveBrand(brand, { brandName: 'ACME Widgets' });
 
-    // ONE table-value probe, and it said "free" — no suffix was ever considered.
+    // One table-value probe, and it said "free" — no suffix was ever considered.
     expect(probedUrlTitles(harness.brands.calls)).toEqual(['acme-widgets']);
     expect(brand.urlTitle).toBe('acme-widgets');
 
@@ -1763,7 +1273,7 @@ describe('saveBrand — the real validation path', () => {
     /*
      * `and e.#entityIDproperty# != :entityID` at `:L143`. Without it every update of an existing brand
      * would collide with itself and no brand could ever be saved twice. The incumbent row seeded here
-     * holds the same value under the SAME identifier as the entity, which is the only arrangement the
+     * holds the same value under the same identifier as the entity, which is the only arrangement the
      * self-exclusion clause distinguishes.
      */
     const harness = createBrandHarness();
@@ -1789,19 +1299,13 @@ describe('saveBrand — the real validation path', () => {
 
   it('NET-NEW — model/validation/Brand.json:L4 — brandWebsite is an OPTIONAL url check: absent passes, malformed fails, well-formed passes', async () => {
     /*
-     * `[{"contexts":"save","dataType":"url"}]` declares a FORMAT rule and nothing else — no
+     * `[{"contexts":"save","dataType":"url"}]` declares a format rule and nothing else — no
      * `required`, and no length ceiling anywhere in the document. Three inputs, one per branch:
      *
-     * ⚠️ NOT TO BE CONFLATED WITH `hb_formatType="url"` AT `model/entity/Brand.cfc:L57`. That
-     * attribute is a DISPLAY hint consumed by the admin rendering layer, which is out of scope; it is
+     * Not to be conflated with `hb_formatType="url"` at `model/entity/Brand.cfc:L57`. that
+     * attribute is a display hint consumed by the admin rendering layer, which is out of scope; it is
      * not read by validation and carries no constraint. The live rule is the JSON one, and no maximum
      * length is derived from either, because neither declares one.
-     *
-     * ⚠️ EACH ARM ASSERTS THE BAG, NOT MERELY THAT THE CALL RESOLVED. Since `save` returns the entity
-     * on every path (`model/service/HibachiService.cfc:L103`), resolution no longer discriminates a
-     * pass from a refusal — an earlier revision of these arms leaned on `.resolves.toBe(brand)` alone
-     * and would now accept a validation failure as a pass. `hasErrors()` and the persistence probe are
-     * what separate the branches.
      */
     const absent = createBrandHarness();
     const absentBrand = createManagedBrand().brand;
@@ -1841,44 +1345,16 @@ describe('saveBrand — the real validation path', () => {
 describe('saveBrand — the issue_1690_2 contract, kept whole rather than adapted to', () => {
   it('NET-NEW — meta/tests/unit/IssuesTest.cfc:L203-L206 — a validation failure is a KEYED, RECOVERABLE bag: nothing persisted, findings intact, entity reference alive', async () => {
     /*
-     * ⛔ NET-NEW, AND THE TITLE SAYS WHAT IT IS NOT. There is no legacy `BrandService` test of any kind,
-     * and no brand variant of `issue_1690_2`: `meta/tests/unit/IssuesTest.cfc:L204` is
-     * `newEntity("Product")`. An earlier revision titled this case with that locator and is WITHDRAWN —
-     * the locator belongs to `test/regression/issues.test.ts`, where the Product behaviour it exercises
-     * is asserted as `resolves`. Presenting it here would offer parity evidence for the OPPOSITE
-     * contract, since this case asserts a RAISE.
-     *
-     * WHY THE PROPERTY IS STILL WORTH PINNING, WITH THE LEGACY PAIR AS CONTEXT RATHER THAN AS EVIDENCE.
-     * `issue_1690` at `:L192-L201` wraps its save in `if(!product.hasErrors())`; `issue_1690_2` at
-     * `:L203-L206` drops the guard. The unguarded form is the interesting one: saving an entity that
-     * cannot pass validation must not blow the request up. The findings come back, the caller inspects
-     * them, and the caller stays in control. That property is what this case asserts FOR BRANDS, where
-     * the mechanism carrying it is a thrown bag rather than a returned entity.
-     *
-     * ⭐ THE PORT NOW KEEPS THAT CONTRACT WHOLE, AND AN EARLIER REVISION DID NOT.
-     * `model/service/HibachiService.cfc:L103` returns `arguments.entity` on EVERY path because the
-     * entity carries its own bag. An earlier `src/services/BaseService.ts` THREW the accumulated bag
-     * instead, and an earlier revision of this very case certified the raise — `.catch(...)`,
-     * `toBeInstanceOf(ValidationError)` — while calling it a mismatch in its own prose. Certifying a
-     * divergence is not exposing it; it is what let the divergence pass review. Both are corrected:
-     * `save` attaches the findings to the entity's own bag and returns the same instance, matching
-     * `org/Hibachi/HibachiService.cfc:L133`, which gates persistence on
-     * `!arguments.entity.hasErrors()` — the ENTITY's bag, not a raised one.
-     *
-     * EVERY ELEMENT OF THE LEGACY CONTRACT, ASSERTED DIRECTLY:
-     *   1. The call RESOLVES. It does not reject, which is the whole point of the unguarded legacy
-     *      form: saving an entity that cannot pass validation must not blow the request up.
-     *   2. The resolved value IS the caller's entity — same object identity, so a caller can inspect
-     *      and correct it exactly as `issue_1690` does.
-     *   3. The findings ride on that entity, keyed by property, carrying their legacy-shaped message
-     *      keys unaltered, and per-property so an accepted value contributes no key.
-     *   4. Nothing was persisted — the failure is recoverable, not half-applied.
-     *   5. What population managed to write is still on the entity.
+     * Net-new, and the title says what it is not. There is no legacy `brandService` test of any
+     * kind, and no brand variant of `issue_1690_2`: `meta/tests/unit/IssuesTest.cfc:L204` is
+     * `newEntity("product")`. that locator belongs to `test/regression/issues.test.ts`, where the
+     * product behaviour it exercises is asserted as `resolves`; citing it here would offer parity
+     * evidence for the opposite contract, since this case asserts a raise.
      */
     const harness = createBrandHarness();
     const { brand } = createManagedBrand();
 
-    // 1 — it RESOLVES. No `.catch`, no `.rejects`: a rejection here fails the case outright.
+    // 1 — it resolves. No `.catch`, no `.rejects`: a rejection here fails the case outright.
     const saved = await harness.service.saveBrand(brand, {
       brandWebsite: 'https://example.test/acme',
     });
@@ -1908,7 +1384,7 @@ describe('saveBrand — the issue_1690_2 contract, kept whole rather than adapte
     /*
      * `Validator.validate` returns a bag and mutates nothing outside it — no write, no flush, no
      * repository call of any kind. Asserted by running the real rule set through the harness's
-     * dry-run mode over a subject that would FAIL, and then observing that every write seam is
+     * dry-run mode over a subject that would fail, and then observing that every write seam is
      * untouched. That separation is what lets `BaseService` gate persistence on the bag rather than
      * having to undo a write.
      */
@@ -1930,22 +1406,10 @@ describe('saveBrand — the issue_1690_2 contract, kept whole rather than adapte
   it('NET-NEW — model/service/HibachiService.cfc:L86 — the OMITTED third argument is what selects the "save" context, and the omitted second a fresh empty payload', async () => {
     /*
      * `save(required any entity, struct data={}, string context="save")` declares both defaults, and
-     * `model/service/BrandService.cfc:L76` passes only two arguments, so the CONTEXT default is what
+     * `model/service/BrandService.cfc:L76` passes only two arguments, so the context default is what
      * `saveBrand` relies on. This case exercises the defaults at the boundary that owns them — the
      * base service — because `saveBrand` always forwards its own explicit payload and so can never
      * exercise the `data={}` default itself. No overload is fabricated on `saveBrand` to reach it.
-     *
-     * BOTH DEFAULTS ARE OBSERVED INDIRECTLY, BECAUSE NEITHER IS EXPOSED DIRECTLY:
-     *   * The `"save"` context shows up in the message keys. Every finding is prefixed
-     *     `validate.save.` — a `delete`-context run over this same rule set produces the products and
-     *     physical-counts guards instead, and no required-field findings at all.
-     *   * The empty payload shows up as ZERO population-authorisation requests. `populate` consults
-     *     the authorisation port once per payload key it intends to write, so an empty struct produces
-     *     an empty call log. A shared or pre-populated default would leave entries here.
-     *
-     * That the default is FRESH per call is a property of the default-initialiser semantics rather
-     * than something a test can observe — nothing inside `save` writes to it, so no state could leak
-     * even in principle. Stated rather than asserted through a fabricated seam.
      */
     const harness = createBrandHarness();
     const { brand } = createManagedBrand();
@@ -1968,25 +1432,10 @@ describe('saveBrand — the issue_1690_2 contract, kept whole rather than adapte
   });
 });
 
-/* ================================================================================================
- * GROUP D — `newBrand()`, THE FIRST OF THE THREE MEMBERS THAT EXISTED ONLY AS RUNTIME SYNTHESIS
- * `org/Hibachi/HibachiService.cfc:L255-L265`, `:L544-L549`; AAP §0.4.2.5, IR-1
- *
- * WHY THESE THREE MEMBERS NEED TESTS AT ALL, WHEN NO LEGACY SOURCE FILE DECLARES THEM.
- * `model/service/BrandService.cfc` declares exactly ONE function, `saveBrand` at `:L67`. Yet
- * `brandService.newBrand()`, `brandService.getBrand(id)` and `brandService.deleteBrand(entity)` all
- * resolve at run time, because `onMissingMethod` at `:L255-L281` dispatches on the method-name PREFIX
- * — `get` at `:L258`, `new` at `:L264`, `delete` at `:L270` — and fabricates the call. `newBrand` in
- * particular routes through `onMissingNewMethod` at `:L544-L549`, which strips the three-character
- * `new` prefix with `missingMethodName.substring(3)` and constructs `Brand`.
- *
- * IR-1 and TR-3 forbid reproducing that mechanism: TypeScript under `strict` has no equivalent
- * facility, and inventing one — a proxy, an index signature, a string-keyed dispatcher — would put
- * back exactly the metaprogramming the extraction exists to remove. So each of the three is an
- * EXPLICITLY DECLARED, typed member, and these groups assert the declared member rather than the
- * dispatch. `newBrand` also has the only traceable legacy thread of the three: the legacy entity suite
- * obtains its subject through it at `meta/tests/unit/entity/BrandTest.cfc:L55`.
- * ============================================================================================== */
+/*
+ * GROUP D — `newBrand()`, the first of the three members that existed only as runtime synthesis
+ * `org/Hibachi/HibachiService.cfc:L255-L265`, `:L544-L549`; AAP §0.4.2.5, IR-1.
+ */
 
 describe('newBrand — the explicitly declared factory', () => {
   it('NET-NEW — org/Hibachi/HibachiService.cfc:L264,L544-L549 — the member is DECLARED and SYNCHRONOUS, and forwards to the repository factory', async () => {
@@ -1996,9 +1445,6 @@ describe('newBrand — the explicitly declared factory', () => {
      * to resolve. `../ports/repositories/BrandRepository` declares `newBrand(): ManagedEntity<Brand>`
      * for the same reason, and a `Promise`-returning port would have forced every call site in the
      * legacy suite's shape to become asynchronous for no behavioural reason.
-     *
-     * The assertion below is what distinguishes a declared member from a synthesized one: the value is
-     * usable IMMEDIATELY, with no `await`, and the forwarding is visible in the repository call log.
      */
     const harness = createBrandHarness();
 
@@ -2019,10 +1465,6 @@ describe('newBrand — the explicitly declared factory', () => {
      * `getClassName()` keys every validation message, `getEntityName()` keys every uniqueness seed,
      * `getPrimaryIDPropertyName()` and `getPrimaryIDValue()` supply the self-exclusion clause of
      * `org/Hibachi/HibachiDAO.cfc:L143`.
-     *
-     * `brandID` starts at the empty string because `model/entity/Brand.cfc:L52` declares
-     * `unsavedvalue="" default=""`, and `isNew()` reads that sentinel. IR-6 governs what replaces it:
-     * a 32-character dash-free hex identifier minted by the persistence layer, never here.
      */
     const harness = createBrandHarness();
 
@@ -2043,20 +1485,11 @@ describe('newBrand — the explicitly declared factory', () => {
 
   it('NET-NEW — meta/tests/unit/entity/BrandTest.cfc:L58-L60 — TRACEABLE DEFAULT: getProducts() is an EMPTY ARRAY, not undefined and not shared', () => {
     /*
-     * ⭐ THE ONE THREAD IN THIS FILE WITH A LEGACY COUNTERPART, AND IT IS AN ENTITY ASSERTION REACHED
-     * THROUGH THIS SERVICE MEMBER. `meta/tests/unit/entity/BrandTest.cfc` obtains its subject at `:L55`
-     * with `request.slatwallScope.getService("brandService").newBrand()`, and then OVERRIDES the
+     * The one thread in this file with a legacy counterpart, and it is an entity assertion reached
+     * through this service member. `meta/tests/unit/entity/BrandTest.cfc` obtains its subject at `:L55`
+     * with `request.slatwallScope.getService("brandService").newBrand()`, and then overrides the
      * inherited defaults assertion at `:L58-L60` with `assertEquals(variables.entity.getProducts(),
      * [])`. AAP §0.6.5.1 records it as "the overridden defaults assertion plus three inherited".
-     *
-     * The case itself is still labelled NET-NEW, because what it asserts here is the TypeScript
-     * factory's contract rather than a re-run of the MXUnit case — AAP §0.8.3.7 requires the
-     * distinction be visible per case rather than implied, and §0.6.5.3 records that the legacy suite
-     * cannot be executed in this environment at all. The provenance is the value it pins; the
-     * mechanism is new.
-     *
-     * `toEqual([])` alone would also pass for `undefined` under some readings, so the array-ness and
-     * the length are asserted separately.
      */
     const harness = createBrandHarness();
 
@@ -2072,7 +1505,7 @@ describe('newBrand — the explicitly declared factory', () => {
      * The legacy `new` prefix constructs a new transient on every call; a memoised or module-scope
      * instance would be a different thing entirely, and under M7 (AAP §0.6.6) it would also leak
      * across invocations on a warm Lambda container. The collections are the sharp case: `products` is
-     * the entity's OWN live array — `getProducts()` returns it by reference so
+     * the entity's own live array — `getProducts()` returns it by reference so
      * `Product.setBrand` can push into it — so two instances sharing one array would be invisible
      * until the first relationship was written.
      */
@@ -2096,7 +1529,7 @@ describe('newBrand — the explicitly declared factory', () => {
   it('NET-NEW — org/Hibachi/HibachiService.cfc:L255-L281 — the factory neither validates nor persists: a brand-new instance touches no write seam', async () => {
     /*
      * `onMissingNewMethod` constructs and returns; it does not save. So a fresh brand — which would
-     * FAIL `model/validation/Brand.json:L3` and `:L5` on both required rules — can be created without
+     * fail `model/validation/Brand.json:L3` and `:L5` on both required rules — can be created without
      * any complaint at all, and only reaches validation when someone saves it. Asserted by creating
      * one and then observing that every write seam and the whole store are untouched.
      */
@@ -2113,10 +1546,10 @@ describe('newBrand — the explicitly declared factory', () => {
   });
 });
 
-/* ================================================================================================
+/*
  * GROUP E — `getBrand(brandID)`
- * `org/Hibachi/HibachiService.cfc:L258`; AAP §0.4.2.5, IR-1
- * ============================================================================================== */
+ * `org/Hibachi/HibachiService.cfc:L258`; AAP §0.4.2.5, IR-1.
+ */
 
 describe('getBrand — the explicitly declared read', () => {
   it('NET-NEW — org/Hibachi/HibachiService.cfc:L258 — the identifier is forwarded to the repository EXACTLY as received', async () => {
@@ -2125,10 +1558,6 @@ describe('getBrand — the explicitly declared read', () => {
      * records that ordered arguments are the only supported form — so the port must not trim, case-fold
      * or otherwise normalise it. Three deliberately awkward identifiers, forwarded byte for byte, in
      * call order.
-     *
-     * The empty string is included on purpose: it is `model/entity/Brand.cfc:L52`'s `unsavedvalue`, so
-     * a caller could plausibly hand it over, and the correct behaviour is to ask the repository and
-     * report the miss rather than to guess.
      */
     const harness = createBrandHarness();
 
@@ -2166,29 +1595,27 @@ describe('getBrand — the explicitly declared read', () => {
 
   it('NET-NEW — org/Hibachi/HibachiService.cfc:L258 — a MISS resolves null, and fabricates nothing to fill the gap', async () => {
     /*
-     * THE THREE THINGS A MISS MUST NOT DO, EACH ASSERTED. `../ports/repositories/BrandRepository`
-     * declares `Promise<ManagedEntity<Brand> | null>`, so the miss is a VALUE and the caller decides:
+     * The three things a miss must not do, each asserted. `../ports/repositories/BrandRepository`
+     * declares `Promise<ManagedEntity<Brand> | null>`, so the miss is a value and the caller decides:
      *
-     *   1. It does not raise. The legacy `get` prefix returns whatever the DAO found, and a missing row
-     *      is an ordinary answer rather than an error condition.
-     *   2. It does not fall back to the factory. The legacy framework's entity-get path has a
-     *      new-instance fallback, and `src/services/BrandService.ts` records that `getBrand` here does
-     *      NOT reproduce it: a caller wanting a fresh instance calls `newBrand()` explicitly. So a miss
-     *      leaves the factory call count at zero.
-     *   3. It does not write anything — no upsert, no cache fill, no locator.
-     *
-     * `toBeNull` rather than a falsy check, because `null` and `undefined` are different answers under
-     * `strict` and only one of them is declared.
+     * 1. It does not raise. The legacy `get` prefix returns whatever the DAO found, and a missing row
+     * is an ordinary answer rather than an error condition.
+     * 2. It does not fall back to the factory. The legacy framework's entity-get path has a
+     * new-instance fallback, and `src/services/BrandService.ts` records that `getBrand` here does
+     * not reproduce it: a caller wanting a fresh instance calls `newBrand()` explicitly. So a miss
+     * leaves the factory call count at zero.
      */
     const stored = createManagedBrand({ brandID: physicalID('brand-1') }).brand;
     const harness = createBrandHarness({ storedBrands: [stored] });
 
-    /* ⭐ REVIEW FINDING 16 — the miss is probed with a PHYSICALLY VALID identifier, not a readable
+    /*
+     * The miss is probed with a physically valid identifier, not a readable
      * sentinel. The distinction matters precisely here: `physicalID('no-such-brand')` is a well-formed
      * IR-6 key that simply is not present, so a miss can only be the store's answer. A malformed
      * sentinel such as the literal `'no-such-brand'` would leave the case unable to distinguish "not
      * found" from "rejected, ignored or silently normalised because the key was the wrong shape", which
-     * is the one thing the assertions below are trying to establish. */
+     * is the one thing the assertions below are trying to establish.
+     */
     const found = await harness.service.getBrand(physicalID('no-such-brand'));
 
     expect(found).toBeNull();
@@ -2205,7 +1632,7 @@ describe('getBrand — the explicitly declared read', () => {
   it('NET-NEW — org/Hibachi/HibachiService.cfc:L258 — repeated reads are not memoised, so each call issues its own round trip (M7)', async () => {
     /*
      * M7 (AAP §0.6.6): the legacy relied on a `cacheuse="transactional"` second-level cache and on
-     * lazy per-instance caches in entity `variables` scope, and NOTHING of that kind survives between
+     * lazy per-instance caches in entity `variables` scope, and nothing of that kind survives between
      * Lambda invocations except module-scope state. Memoising a read here would be worse than useless
      * — on a warm container it would serve one tenant's brand to the next request. Two identical reads
      * therefore produce two recorded calls.
@@ -2225,33 +1652,19 @@ describe('getBrand — the explicitly declared read', () => {
   });
 });
 
-/* ================================================================================================
+/*
  * GROUP F — `deleteBrand(brand)`
  * `model/validation/Brand.json:L6-L7`, `model/service/HibachiService.cfc:L68-L84`;
- * AAP §0.4.2.5, IR-1
- * ============================================================================================== */
+ * AAP §0.4.2.5, IR-1.
+ */
 
 describe('deleteBrand — the delete guards', () => {
   it('NET-NEW — model/validation/Brand.json:L6 — a brand with PRODUCTS is refused: false returned, nothing removed, no cleanup run', async () => {
     /*
      * `"products": [{"contexts":"delete","maxCollection":0}]` — a ceiling of zero on the collection,
      * so any product at all blocks the delete. This is the live half of the document's two delete
-     * guards, and it is the reason `model/entity/Brand.cfc:L61` can declare its one-to-many with NO
+     * guards, and it is the reason `model/entity/Brand.cfc:L61` can declare its one-to-many with no
      * cascade: the application refuses the delete rather than orphaning or cascading rows.
-     *
-     * THE VERDICT IS A BOOLEAN, AND THE FINDINGS DO NOT RIDE ON THE ENTITY EITHER — so `delete` is
-     * asymmetric with `save` in BOTH directions, deliberately, and the asymmetry is the legacy's.
-     * `model/service/HibachiService.cfc:L83` returns `deleteOK` unchanged, and
-     * `src/services/BaseService.ts` keeps it that way because
-     * `model/service/ProductService.cfc:L326-L333` clears a product's default SKU before calling and
-     * restores it only on `false`. Raising instead would strand that caller. Where `save` answers
-     * `:L103` by returning the entity with its bag populated, `delete` answers `:L83` by returning a
-     * bare boolean and leaving the entity's bag untouched: a caller learns THAT the delete was refused,
-     * not which guard refused it. Faithful, and not to be harmonised with `save` for tidiness.
-     *
-     * The relationship is built through `addProduct`, which delegates to `Product.setBrand` and pushes
-     * into the brand's own live array — the same path production uses, so the guard sees what it would
-     * really see rather than a hand-stuffed array.
      */
     const brand = createManagedBrand({
       brandID: physicalID('brand-1'),
@@ -2267,7 +1680,7 @@ describe('deleteBrand — the delete guards', () => {
     // Nothing was removed: no repository call, and the row is still in the store.
     expect(removedBrands(harness.brands.calls)).toEqual([]);
     expect(harness.brands.brands).toEqual([brand]);
-    // And the two cleanup steps sit INSIDE the `if(deleteOK)` gate at `:L73`, so neither ran.
+    // And the two cleanup steps sit inside the `if(deleteOK)` gate at `:L73`, so neither ran.
     expect(harness.persistence.settingCleanups).toEqual([]);
     expect(harness.persistence.commentCleanups).toEqual([]);
   });
@@ -2275,7 +1688,7 @@ describe('deleteBrand — the delete guards', () => {
   it('NET-NEW — model/validation/Brand.json:L6 — an EMPTY products collection permits the delete, and the row really goes', async () => {
     /*
      * `maxCollection: 0` passes for a collection of length zero — and, per
-     * `org/Hibachi/HibachiValidationService.cfc:L311`, also for an ABSENT value, which is exactly why
+     * `org/Hibachi/HibachiValidationService.cfc:L311`, also for an absent value, which is exactly why
      * the ported rule reads the array rather than a possibly-absent property. A brand from
      * `newBrand()` satisfies it by the traceable `products === []` default of Group D.
      */
@@ -2296,24 +1709,10 @@ describe('deleteBrand — the delete guards', () => {
     /*
      * The local override's whole contribution over the framework base is this gate:
      *
-     *     if(deleteOK) {
-     *         getService("settingService").removeAllEntityRelatedSettings( entity=arguments.entity );  // :L76
-     *         getService("commentService").removeAllEntityRelatedComments( entity=arguments.entity );  // :L79
-     *     }
-     *
-     * Both collaborators belong to excluded families — `Setting*` and `Content*` per AAP §0.2.2.1 — so
-     * they are reached through the two cleanup ports `BaseServiceCollaborators` requires, doubled here
-     * as inert recorders. NO hook, port or service locator is invented to observe them, and the
-     * read-only `SettingResolverPort` is deliberately NOT pressed into service as a write seam: it
-     * resolves configuration values and has no cleanup member at all.
-     *
-     * WHAT IS ASSERTED, AND THE ONE THING THAT IS DOCUMENTED INSTEAD. Both cleanups are recorded
-     * against the same entity after a delete that succeeded, and the preceding case proves both are
-     * absent when the delete was refused. Their relative ORDER — settings before comments — is awaited
-     * sequentially in source order by `src/services/BaseService.ts`, which documents why it must not
-     * become `Promise.all`; but the two doubles are separate logs with no shared clock, so a
-     * cross-log ordering assertion would be asserting the harness rather than the port. It is recorded
-     * here rather than faked.
+     * If(deleteOK) {
+     * getService("settingService").removeAllEntityRelatedSettings( entity=arguments.entity ); // :L76
+     * getService("commentService").removeAllEntityRelatedComments( entity=arguments.entity ); // :L79
+     * }.
      */
     const brand = createManagedBrand({
       brandID: physicalID('brand-1'),
@@ -2324,7 +1723,7 @@ describe('deleteBrand — the delete guards', () => {
     await expect(harness.service.deleteBrand(brand)).resolves.toBe(true);
 
     /*
-     * Both ports receive `entity=arguments.entity` — the SAME instance, by reference, exactly as `:L76`
+     * Both ports receive `entity=arguments.entity` — the same instance, by reference, exactly as `:L76`
      * and `:L79` pass it. Identity is asserted rather than structural equality, because a copy would
      * carry the right class name and identifier while being the wrong object.
      */
@@ -2339,34 +1738,10 @@ describe('deleteBrand — the delete guards', () => {
 
   it('NET-NEW — model/validation/Brand.json:L7 + model/entity/Brand.cfc:L71 — the physicalCounts guard is INERT, and is preserved unrenamed', async () => {
     /*
-     * ⚠️ A VALIDATION-DOCUMENT DEFECT, CARRIED RATHER THAN CORRECTED. `model/validation/Brand.json:L7`
+     * A validation-document defect, carried rather than corrected. `model/validation/Brand.json:L7`
      * declares its second delete guard against `physicalCounts`:
      *
-     *     "physicalCounts": [{"contexts":"delete","maxCollection":0}]
-     *
-     * `model/entity/Brand.cfc` declares no such property. Its many-to-many relationship to physical
-     * counts is named `physicals`, at `:L71`. The legacy validation engine SKIPS a rule whose property
-     * the subject does not carry — `org/Hibachi/HibachiValidationService.cfc:L171` — so the rule has
-     * never fired, for any brand, in any release. It is dead configuration that LOOKS live.
-     *
-     * PRESERVE AND ANNOTATE (AAP §0.8.2 guideline 4, IR-9). Three repairs suggest themselves and all
-     * three are refused: renaming the rule to `physicals` would ACTIVATE a guard the legacy never
-     * enforced and start blocking deletes that currently succeed; adding a `physicalCounts` member to
-     * `Brand` would fabricate a property no legacy file declares; and invoking a real
-     * `PhysicalService` would reach into an excluded family (AAP §0.2.2.1 excludes the six
-     * `Physical`-prefixed files under `model/`). So the rule is transcribed with its ORIGINAL
-     * identifier and made inert by
-     * construction, and `src/validation/rules/brand.rules.ts` gives it a reader that returns
-     * `undefined`.
-     *
-     * ASSERTED FROM THREE INDEPENDENT DIRECTIONS, so a future rename cannot slip through:
-     *   1. The transcribed rule still carries the identifier `physicalCounts`, spelled as the legacy
-     *      spells it, and is a member of the live rule set.
-     *   2. `Brand.hasProperty('physicalCounts')` is false while `hasProperty('activeFlag')` is true —
-     *      the skip at `:L171` is genuinely what silences it, not a missing rule.
-     *   3. No `validate.delete.Brand.physicalCounts.maxCollection` finding is EVER produced, including
-     *      on the delete that the products guard refuses — the run where every delete rule is
-     *      evaluated.
+     * "physicalCounts": [{"contexts":"delete","maxCollection":0}]
      */
     const brand = createManagedBrand({ brandID: physicalID('brand-1') }).brand;
     brand.addProduct(buildProduct({ productID: physicalID('product-1') }));
@@ -2378,7 +1753,7 @@ describe('deleteBrand — the delete guards', () => {
     expect(brandValidationRules.properties).toContain(physicalCountsPropertyValidation);
     expect(brandValidationRules.properties).toContain(productsPropertyValidation);
     /*
-     * Its reader answers absent — and takes NO subject at all, which is a stronger statement of
+     * Its reader answers absent — and takes no subject at all, which is a stronger statement of
      * inertness than returning `undefined` from a subject it was handed: there is no argument through
      * which a future edit could accidentally make it read something. Compare
      * `productsPropertyValidation.read`, which genuinely reads its subject.
@@ -2388,12 +1763,11 @@ describe('deleteBrand — the delete guards', () => {
 
     /*
      * 2 — the subject does not carry `physicalCounts`, which is what triggers the `:L171` skip. Note
-     * WHICH fact does the silencing: the brand DOES carry `physicals`, so the relationship is present
-     * and the rule misses it purely on the NAME. That is the whole defect — a typo in a configuration
+     * which fact does the silencing: the brand does carry `physicals`, so the relationship is present
+     * and the rule misses it purely on the name. That is the whole defect — a typo in a configuration
      * document, not an absent relationship — and it is why renaming the rule would activate a guard
      * that has never run rather than merely tidying a dead entry. `activeFlag` is asserted alongside
-     * as the control: `hasProperty` really does answer true for a declared property, so the false
-     * above is a genuine miss and not a broken probe.
+     * as the control: `hasProperty` really does answer true for a declared property, so the false.
      */
     expect(brand.hasProperty('physicalCounts')).toBe(false);
     expect(brand.hasProperty('physicals')).toBe(true);
@@ -2413,7 +1787,7 @@ describe('deleteBrand — the delete guards', () => {
      * Context selection is the mechanism that keeps one rule set serving both members. `:L3`, `:L4` and
      * `:L5` all declare `"contexts":"save"`, and `src/validation/Validator.ts` reproduces the legacy
      * context gate at `org/Hibachi/HibachiValidationService.cfc:L71`, so none of them is evaluated
-     * under `delete`. A brand that could never be SAVED is therefore perfectly deletable — which is
+     * under `delete`. A brand that could never be saved is therefore perfectly deletable — which is
      * the behaviour the legacy has, and is not obviously right until you notice that a row already in
      * the database may predate a rule.
      */
@@ -2433,12 +1807,6 @@ describe('deleteBrand — the delete guards', () => {
      * populates and never persists. Zero authorisation requests is the sharpest evidence for the
      * first, because `populate` consults the authorisation port once per payload key it intends to
      * write and the delete path supplies no payload at all.
-     *
-     * THE THIRD CLAIM IN THE TITLE IS NOW ASSERTABLE RATHER THAN MERELY STATED. This subject has no
-     * `brandName` and no `urlTitle`, so a SAVE-context run would put two required-field findings on its
-     * bag; a DELETE-context run produces none, because both delete guards pass. An empty bag afterwards
-     * therefore proves two things at once — the save-context rules did not run, and `delete` attaches
-     * nothing of its own (`model/service/HibachiService.cfc:L83` returns a bare boolean).
      */
     const brand = createManagedBrand({ brandID: physicalID('brand-1') }).brand;
     const harness = createBrandHarness({ storedBrands: [brand] });
@@ -2454,27 +1822,16 @@ describe('deleteBrand — the delete guards', () => {
 
 describe('the inactive-entity settings sweep of the local save override', () => {
   /*
-   * TODO(parity) X15 — `model/service/HibachiService.cfc:L93,L95`. The local `save()` override
-   * declares `var settingsRemoved = 0;` at `:L93` and then declares `var settingsRemoved` a SECOND
+   * TODO(parity) — `model/service/HibachiService.cfc:L93,L95`. The local `save()` override
+   * declares `var settingsRemoved = 0;` at `:L93` and then declares `var settingsRemoved` a second
    * time, inside the `if` at `:L95`, in the same function scope. CFML has no block scope: both
-   * declarations name one function-scoped variable, so the inner assignment IS visible to the
+   * declarations name one function-scoped variable, so the inner assignment is visible to the
    * `settingsRemoved gt 0` test at `:L98` and the duplicate `var` is inert.
-   *
-   * STRICT TYPESCRIPT CANNOT REPRODUCE IT, AND THERE IS NOTHING BEHAVIOURAL TO REPRODUCE. A second
-   * `let` inside the block would create a DIFFERENT binding, the outer counter would stay at zero and
-   * the gate at `:L98` would silently stop seeing the count — turning an inert legacy oddity into a
-   * real behavioural regression. `src/services/BaseService.ts` therefore declares the counter ONCE and
-   * records the duplicate as documentary parity, minting no D-number for it.
-   *
-   * THE DEFECT ITSELF HAS NO OBSERVABLE RESULT, so no case below asserts it. What the cases DO assert
-   * is the data flow the duplicate could have broken — that the count really reaches the gate — which
-   * is the only part of `:L93-L99` that any test can see. Asserting the duplicate would mean asserting
-   * a source-text property of a file this port never executes.
    */
 
   it('NET-NEW — model/service/HibachiService.cfc:L91,L94-L96 — an INACTIVE brand that saved cleanly has its setting values scrubbed by primary ID', async () => {
     /*
-     * The two-part gate at `:L91` — no errors AND the entity declares `activeFlag` — then `:L94`'s
+     * The two-part gate at `:L91` — no errors and the entity declares `activeFlag` — then `:L94`'s
      * `if(!getActiveFlag())`. `Brand` declares `activeFlag` at `model/entity/Brand.cfc:L59`, so both
      * arms are live for this entity, and the identifier passed at `:L95` is `getPrimaryIDValue()`
      * exactly.
@@ -2487,10 +1844,10 @@ describe('the inactive-entity settings sweep of the local save override', () => 
     expect(brand.activeFlag).toBe(false);
     expect(harness.persistence.settingValueScrubs).toEqual([physicalID('brand-1')]);
     /*
-     * `:L98` — `settingsRemoved gt 0` is the FIRST arm of the disjunction and the only one that can
+     * `:L98` — `settingsRemoved gt 0` is the first arm of the disjunction and the only one that can
      * ever match for a brand: the second arm lists Currency, FulfillmentMethod, OrderOrigin,
      * PaymentTerm and PaymentMethod, every one of them an excluded entity. A non-zero count therefore
-     * reaching the gate is precisely the data flow the X15 duplicate `var` could have broken.
+     * reaching the gate is precisely the data flow the duplicate `var` could have broken.
      */
     expect(harness.persistence.settingsCacheClears()).toBe(1);
   });
@@ -2536,25 +1893,16 @@ describe('the inactive-entity settings sweep of the local save override', () => 
   });
 });
 
-/* ================================================================================================
- * GROUP G — M7 ISOLATION AND THE DECLARED SURFACE
+/*
+ * GROUP G — M7 isolation and the declared surface
  * AAP §0.6.6 M7; IR-1 / TR-3; `model/service/BrandService.cfc:L51`
- *
- * WHY A WHOLE GROUP FOR STATE ISOLATION. The legacy application ran on a persistent CF or Railo
- * server, and it leaned on that: `cacheuse="transactional"` second-level caching on 111 of 113
- * entities, lazy per-instance caches in entity `variables` scope, and the memoised option-group sort
- * order at `model/dao/SkuDAO.cfc:L204-L228`. NONE of that survives between Lambda invocations except
- * module-scope state — and module-scope state on a WARM container is worse than no cache, because it
- * serves one request's data to the next. M7 is the reason this file builds every collaborator inside
- * the case that uses it, and the reason the cases below prove that two independently-built graphs
- * cannot see each other.
- * ============================================================================================== */
+ */
 
 describe('M7 — nothing leaks between independently constructed service graphs', () => {
   it('NET-NEW — AAP §0.6.6 M7 — a collision sequence in one graph does not give the next graph a suffix', async () => {
     /*
-     * THE CASE THIS GROUP EXISTS FOR. Graph A meets two taken titles and must climb to `-3`; graph B
-     * is built independently with nothing taken and must resolve the BARE candidate in ONE probe. If
+     * The case this group EXISTS for. Graph a meets two taken titles and must climb to `-3`; graph B
+     * is built independently with nothing taken and must resolve the bare candidate in one probe. If
      * the probe, the counter or the availability set were module-scope, memoised, or cached on the
      * service, B would inherit A's climb and answer `acme-widgets-3` — or, worse, answer `-3` without
      * probing at all.
@@ -2575,7 +1923,7 @@ describe('M7 — nothing leaks between independently constructed service graphs'
       'acme-widgets-3',
     ]);
 
-    // B's FIRST probe is the bare candidate, and it is B's ONLY probe.
+    // B's first probe is the bare candidate, and it is B's only probe.
     expect(probedUrlTitles(graphB.brands.calls)).toEqual(['acme-widgets']);
     expect(brandB.urlTitle).toBe('acme-widgets');
 
@@ -2585,7 +1933,7 @@ describe('M7 — nothing leaks between independently constructed service graphs'
 
   it('NET-NEW — AAP §0.6.6 M7 — entity-property uniqueness state is factory-local too, so one graph’s incumbent row does not refuse another graph’s save', async () => {
     /*
-     * The same proof for the OTHER uniqueness seam. Graph A is seeded with an incumbent row holding
+     * The same proof for the other uniqueness seam. Graph a is seeded with an incumbent row holding
      * `acme-widgets`, so its save is refused with `.unique`; graph B, built with no seeds, saves the
      * identical brand cleanly. A shared or memoised uniqueness port would refuse both.
      */
@@ -2626,11 +1974,11 @@ describe('M7 — nothing leaks between independently constructed service graphs'
     const graphA = createBrandHarness({ storedBrands: [stored] });
     const graphB = createBrandHarness();
 
-    // A read that HITS in A must MISS in B, from the same identifier.
+    // A read that hits in a must miss in B, from the same identifier.
     await expect(graphA.service.getBrand(physicalID('brand-1'))).resolves.toBe(stored);
     await expect(graphB.service.getBrand(physicalID('brand-1'))).resolves.toBeNull();
 
-    // A delete in A leaves B's store — which never held the row — exactly as it was.
+    // A delete in a leaves B's store — which never held the row — exactly as it was.
     await expect(graphA.service.deleteBrand(stored)).resolves.toBe(true);
     expect(graphA.brands.brands).toEqual([]);
     expect(graphB.brands.brands).toEqual([]);
@@ -2649,14 +1997,8 @@ describe('M7 — nothing leaks between independently constructed service graphs'
     /*
      * The intra-graph half of M7. `src/services/BrandService.ts` records that the uniqueness probe is
      * constructed fresh on every derivation and never memoised, so a second brand with the same name
-     * must issue its own round trips against the CURRENT state of the table rather than replaying the
+     * must issue its own round trips against the current state of the table rather than replaying the
      * first brand's answer.
-     *
-     * The incumbent title is registered explicitly with `takeUrlTitle` between the two saves, because
-     * the in-memory repository does not index saved brands into its availability set — a deliberate
-     * limitation of the double, since the real `MySqlBrandRepository` answers from the table itself.
-     * Making the take explicit keeps the case about the SERVICE re-probing rather than about the
-     * double bookkeeping for it.
      */
     const harness = createBrandHarness();
 
@@ -2682,41 +2024,11 @@ describe('M7 — nothing leaks between independently constructed service graphs'
 describe('the declared surface — no synthesis, no dead injection, no invented collaborator', () => {
   it('NET-NEW — model/service/BrandService.cfc:L51 — the constructor takes EXACTLY THREE REQUIRED collaborators, and BrandService has no dead injection to drop', async () => {
     /*
-     * ⭐ BRANDSERVICE IS THE ONE SERVICE IN THE SLICE WITH NO DEAD INJECTION, AND THAT IS A FINDING
-     * WORTH PINNING RATHER THAN A GAP. AAP §0.6.3.5 counts four dead injections across the slice —
+     * Brandservice is the one service in the slice with no dead injection, and that is a finding
+     * worth pinning rather than a gap. AAP §0.6.3.5 counts four dead injections across the slice —
      * `productTypeDAO` and `contentService` on `ProductService`, `productService` on `SkuService`, and
      * `productService` on `OptionService` — and §0.6.3.3 records `BrandService` as "the cleanest of the
-     * four services", with exactly ONE declared injection at `model/service/BrandService.cfc:L51`
-     * (`dataService`, used at `:L70` and `:L72` and nowhere else) plus the `super.save()` inheritance
-     * at `:L76`. There is nothing here to leave unwired, and this file claims none.
-     *
-     * The two constructor parameters map one-for-one onto that: `BrandRepository` stands for the CRUD
-     * surface `onMissingMethod` synthesized (there is no `BrandDAO` anywhere in the repository — the
-     * legacy service never had a DAO to inject), and `BrandBaseService` replaces the inheritance. The
-     * NARROW `dataService` dependency became `../util/urlTitle` rather than a third parameter, because
-     * only `createUniqueURLTitle` was ever used out of a 203-line service — AAP §0.6.3.3 classifies it
-     * as "genuine but narrow".
-     *
-     * WHAT THE REQUIRED SET RULES OUT, which is the point: no injected setting resolver, no account
-     * context, no image port, no logger — nothing beyond what the legacy line declares is DEMANDED of a
-     * composition root.
-     *
-     * ⭐ THE THIRD PARAMETER IS THE SEC-DOS-03 PROBE BUDGET, AND IT IS NOT A COUNTEREXAMPLE TO WHAT THIS
-     * CASE ASSERTS. `UrlTitleProbeBudget` is not a LEGACY collaborator and does not claim to be one —
-     * §0.6.3.3's count of ONE declared injection is unchanged, and no dead injection has appeared. It is a
-     * resource ceiling the extracted service demands of its composition root because
-     * `model/service/DataService.cfc:L64` is `while(!unique)` with no ceiling and the port refuses to ship
-     * that loop unbounded (review finding SEC-DOS-03; see the GROUP A2 IS REINSTATED block above for the
-     * full authority). A revision made it OPTIONAL and this case asserted 3 to pin it as
-     * optional-but-present; a later revision withdrew it altogether and this case asserted 2. Both are
-     * superseded: it is REQUIRED, so the arity is 3, and an optional or absent budget would leave the
-     * unbounded loop reachable by default, which is exactly the finding.
-     *
-     * `Function.length` is the right instrument either way: it COUNTS a TypeScript optional (`?`)
-     * parameter, because `?` erases to nothing at run time and only a DEFAULT VALUE or a rest element
-     * stops the count. So a FOURTH parameter added without this being revisited fails here, and so does a
-     * default quietly given to the budget — which is the specific regression that would restore the
-     * unbounded default.
+     * four services", with exactly one declared injection at `model/service/BrandService.cfc:L51`
      */
     expect(BrandService.length).toBe(3);
 
@@ -2728,23 +2040,12 @@ describe('the declared surface — no synthesis, no dead injection, no invented 
     ).resolves.toBeInstanceOf(Object);
 
     /*
-     * THE FIRST COLLABORATOR'S SURFACE, PINNED EXHAUSTIVELY. Annotated with the landed port type so
+     * The first collaborator's surface, pinned exhaustively. Annotated with the landed port type so
      * the whole assertion is compile-checked as well as asserted, and stated as an exact member list
      * because that is what rules out a re-imported DAO layer: no `executeQuery`, no `ormExecuteQuery`
      * passthrough, no `getBrandSmartList`, no `countBrand`, no `listBrand`, no `exportBrand`. There is
      * no `BrandDAO` in the legacy repository to port — a repository-wide scan finds none, which is
-     * precisely why AAP §0.4.1.6 declares this port from the SYNTHESIZED surface at
-     * `org/Hibachi/HibachiService.cfc:L255-L281` rather than from a DAO file.
-     *
-     * ⭐ THE SIXTH MEMBER IS `findProductIdentifiersByBrand`, ADDED FOR FINDING F9, AND IT IS NOT A
-     * COUNTEREXAMPLE TO WHAT THIS CASE ASSERTS. The four synthesized-CRUD members plus the narrowed
-     * uniqueness probe are still the whole of what `BrandService` reaches; the sixth is read by the
-     * DELETE GUARD, from the composition root, and `../../src/services/BrandService.ts` never calls it.
-     * It exists because `model/entity/Brand.cfc:L61` declares `products` as a LAZY inverse collection
-     * and `model/validation/Brand.json:L6` counts it — so the legacy performed this read through
-     * Hibernate, and declaring it explicitly is IR-1 applied to a lazy load rather than to a
-     * synthesized method. A member with no legacy counterpart at all — `getBrandSmartList` say — would
-     * still fail this list, which is the property worth keeping.
+     * precisely why AAP §0.4.1.6 declares this port from the synthesized surface at.
      */
     const repositoryPort: BrandRepository = harness.brands.repository;
     expect(Object.keys(repositoryPort).sort()).toEqual([
@@ -2759,22 +2060,13 @@ describe('the declared surface — no synthesis, no dead injection, no invented 
 
   it('NET-NEW — org/Hibachi/HibachiService.cfc:L255-L281 — the prototype carries FOUR declared members and no dynamic dispatch of any kind (IR-1, TR-3)', () => {
     /*
-     * THE ASSERTION THAT PROVES THE SYNTHESIS IS GONE RATHER THAN RELOCATED. `onMissingMethod` at
+     * The assertion that proves the synthesis is gone rather than relocated. `onMissingMethod` at
      * `:L255-L281` fabricated a member for nine prefixes — `get`, `get…SmartList`, `new`, `list`,
      * `save`, `delete`, `count`, `export` and `process` — so in CFML `brandService.countBrand()`,
      * `brandService.listBrand()` and `brandService.exportBrand()` all resolved too, whether or not
      * anything called them. AAP §0.4.2.5 states the rule the port follows instead: synthesis is
-     * reproduced "only where used", so the four members the slice actually calls are declared and the
-     * rest simply do not exist.
-     *
-     * An exhaustive own-property list is what makes that checkable. It fails if a member is added, if
-     * one is renamed, and — most importantly — if a proxy, an index signature or a string-keyed
-     * dispatcher is ever introduced to bring the prefix ladder back.
-     *
-     * `createUniqueBrandUrlTitle` appears because `private` is a COMPILE-TIME modifier with no runtime
-     * effect. It is not a contract member: it factors the two byte-identical call sites at `:L70` and
-     * `:L72` into one place, which AAP §0.8.1 permits explicitly — minimal in functional scope, not in
-     * idiom. Listing it rather than filtering it out keeps the assertion exhaustive and honest.
+     * reproduced "only where used", so the four members the slice actually calls are declared and
+     * nothing else is.
      */
     expect(Object.getOwnPropertyNames(BrandService.prototype).sort()).toEqual([
       'constructor',
@@ -2804,23 +2096,6 @@ describe('the declared surface — no synthesis, no dead injection, no invented 
      * reaching into the excluded pricing, promotion, inventory and currency services; `Brand` declares
      * none. §0.4.1.4 says the same from the other side — "no non-persistent properties exist, so the
      * port is complete".
-     *
-     * THAT IS WHY THIS FILE IMPORTS NO PORT AT ALL BEYOND THE UNIQUENESS ONE. `SettingResolverPort` is
-     * in this file's dependency whitelist and is deliberately NOT imported: nothing in the brand slice
-     * reads a configuration key, and pressing a read-only resolver into service as a cleanup seam —
-     * the one plausible misuse — is refused in Group F. `ImagePathPort`, `PricingPort`,
-     * `SubscriptionTermPort`, `AccessContentPort`, `AccountContextPort` and `SmartListQueryPort` are
-     * not reachable from anything this file exercises.
-     *
-     * ASSERTED STRUCTURALLY, FROM THE EXCLUSION LIST ITSELF. §0.2.2.6 enumerates the members the port
-     * excludes because they reach out-of-scope services, and a brand answers `hasProperty` false for
-     * every one of them AND carries no runtime member of that name — so there is nothing a getter could
-     * hide behind. `brandName` is the control on the same probe: it is a declared property, so
-     * `hasProperty` answers true, which proves the false answers above are real misses.
-     *
-     * No property TOTAL is asserted anywhere here. A count is exactly the kind of disputed figure AAP
-     * §0.7.3's invent-nothing standard warns against, and it would also break on any legitimate
-     * addition; the INVARIANT is what matters.
      */
     expect(BRAND_PROPERTY_DESCRIPTORS.persistent).toBe(true);
     expect(BRAND_PROPERTY_DESCRIPTORS.entityName).toBe('Brand');
@@ -2850,80 +2125,21 @@ describe('the declared surface — no synthesis, no dead injection, no invented 
   });
 });
 
-/* =====================================================================================================
- * FOLDED IN FROM `test/handlers/brandHandler.test.ts` — AAP §0.4.1.12 SUITE ALIGNMENT (F1, F5)
- * =====================================================================================================
- * WHY THESE CASES ARE HERE RATHER THAN IN A SUITE OF THEIR OWN. AAP §0.4.1.12 declares exactly seventeen
- * executable suites, and `test/handlers/brandHandler.test.ts` was not one of them — a QA pass recorded it,
- * with eighteen siblings, as running outside the declared test plan. The coverage was never the problem;
- * the file's existence was. So the cases are folded into an approved suite, unchanged.
- *
- * ⭐ WHY THIS HOST. The handler is a thin adapter over `BrandService`: every route it serves dispatches to a member this
- * file already tests directly, so reading the two together is what makes the handler's own contribution —
- * argument extraction, authorisation and the error-to-HTTP mapping — visible as a layer rather than as a
- * second, parallel account of the service.
- *
- * ⛔ THE BODY IS WRAPPED IN ONE `describe`, WHICH IS THE WHOLE OF THE MECHANICAL CHANGE. Every helper,
- * constant and type the folded suite declared at module scope is now block-scoped to this callback, so it
- * cannot collide with this file's own declarations or with another folded body's — and any `beforeEach`,
- * `afterEach` or `beforeAll` it carries now applies to its own cases only, never to the host's. Not one
- * assertion, case name or comment was altered.
- * ================================================================================================== */
+/*
+ * AAP §0.4.1.12 declares exactly seventeen executable suites, so this subject is covered
+ * inside an approved suite rather than in one of its own.
+ */
 
 /**
  * `brandHandler` — the authorization gate in front of the Brand boundary, and the projection it answers
  * with instead of the entity.
- *
- * AAP authority: the AAP §0.4.4 wildcard row authorises `slatwall-ts/test/**` | CREATE. The suite sits
- * beside `test/handlers/skuHandler.test.ts` and `test/handlers/productHandler.test.ts`, so every Lambda
- * boundary that has coverage is covered in the same place. `test/services/BrandService.test.ts` keeps the
- * SERVICE matrix — the slug pipeline, the collision-suffix sequence, `saveBrand`'s two-part guard,
- * `newBrand`, `getBrand` and `deleteBrand` — and this file keeps the BOUNDARY matrix; neither duplicates
- * the other.
- *
- * =============================================================================================
- * WHAT IS UNDER TEST
- * =============================================================================================
- *   - THE GATE. `src/handlers/brandHandler.ts` refuses before it reads a body and before it reads an
- *     identifier, so a refusal can neither report a body problem nor act as an existence oracle. The
- *     three-way outcome asserted here is the legacy's: no principal is 401, a logged-in principal without
- *     permission is 403, and a permitted principal reaches the service. `getLoggedInFlag()` is the
- *     NEGATION of `isNew()` [org/Hibachi/HibachiScope.cfc:L40-L45], which is why the admitted principal
- *     is the one whose `newFlag` is false.
- *   - THE CRUD QUESTION EACH MEMBER ASKS. `save` asks `create` first and then `update`, short-circuiting
- *     on the first grant [org/Hibachi/HibachiAuthenticationService.cfc:L71-L77]; every other member asks
- *     for its own crudType and only that one [:L55-L58].
- *   - THE PROJECTION. The response carries exactly the six persistent members a caller asked for. None of
- *     the eight relationship collections [model/entity/Brand.cfc:L60-L71] and neither `remoteID` nor the
- *     audit members [:L75-L80] reach the body, an unset optional member is OMITTED rather than published
- *     as null, and `deleteBrand` still answers the boolean verdict, which is not an entity at all.
- *
- * TEST PROVENANCE: every case below is **NET-NEW**. AAP §0.6.5.2 verified that no legacy
- * `BrandServiceTest` exists, and that the legacy suite contains no controller test of any kind. The
- * legacy signal for the brand slice is `meta/tests/unit/entity/BrandTest.cfc`, which is an ENTITY test and
- * is already carried in `test/domain/Brand.test.ts`. Nothing in this file extends a legacy assertion, and
- * none is labelled as though it did.
- *
- * WHAT THIS FILE DOES NOT COVER: how a route string reaches a member — `src/handlers/router.ts` owns the
- * `slatAction` table and mounts these members, and that seam is asserted in
- * `test/handlers/entrySurface.test.ts` for this surface and the four beside it rather than here; and the
- * URL-title probe sequence is asserted in the service suite, not
- * through the boundary. Stating that is preferable to implying a completeness this file does not have.
  */
-describe("test/handlers/brandHandler.test.ts — the brand surface's final wiring — the handler is a thin adapter over `BrandService` (folded, F1, F5)", () => {
+describe("The brand surface's final wiring — the handler is a thin adapter over `BrandService`", () => {
   /**
-   * A write runner that EVALUATES the gate and throws on a roll-back — finding F1.
-   *
-   * ⛔ IT MUST DO BOTH, because the commit DECISION is what F1 is about. A double that ran the work and
-   * returned its value unconditionally would make every atomicity case pass while asserting nothing.
-   * `test/handlers/productHandler.test.ts` uses the identical double for the identical reason.
-   *
-   * ⚠️ IT HANDS THE WORK THE GRAPH IT WAS GIVEN, NOT THE HANDLER'S OWN SERVICE. That is what makes a
-   * handler that reached its closed-over pool-bound service observable here: the graph records its own
-   * calls, so a member that bypassed the boundary shows up as a call the graph never saw.
+   * A write runner that evaluates the gate and throws on a roll-back.
    *
    * @param graph the transaction-scoped graph the work receives
-   * @returns the runner plus the commit decisions it took, in order
+   * @returns the runner plus the commit decisions it took, in order.
    */
   function makeBrandWriteRunner(graph: BrandHandlerService): {
     readonly runner: TransactionalWriteRunner<BrandHandlerService>;
@@ -2931,7 +2147,7 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
     readonly securityContexts: RequestAuthorizationContext[];
   } {
     const decisions: ('commit' | 'rollback')[] = [];
-    /* SEC-AUTH-03 — every context the handler handed the boundary, in order. */
+    /* — every context the handler handed the boundary, in order. */
     const securityContexts: RequestAuthorizationContext[] = [];
 
     return {
@@ -2939,9 +2155,11 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
       securityContexts,
       runner: {
         runWrite: async <TResult>(
-          /* SEC-AUTH-03 — the runner now receives the invocation's authorised context first. The double
-           * records that it ARRIVED, which is what proves the handler forwarded the gate's own context
-           * rather than letting the write fall back to a memoised principal. */
+          /*
+           * — the runner now receives the invocation's authorised context first. The double
+           * records that it arrived, which is what proves the handler forwarded the gate's own context
+           * rather than letting the write fall back to a memoised principal.
+           */
           security: RequestAuthorizationContext,
           work: (graph: BrandHandlerService) => Promise<TResult>,
           hasErrors: () => boolean,
@@ -2964,10 +2182,6 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
 
   /**
    * A principal, defaulting to the one shape the gate admits: logged in, non-admin, no groups needed.
-   *
-   * `newFlag: false` is the DEFAULT because `getLoggedInFlag()` is the NEGATION of `isNew()`
-   * [org/Hibachi/HibachiScope.cfc:L40-L45] — so "logged in" is "not new", and a case that wants the
-   * refused principal has to say `newFlag: true` explicitly.
    */
   function account(overrides: Partial<AccountReference>): AccountReference {
     return {
@@ -2988,35 +2202,28 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
     return { body, pathParameters: null, headers: {} };
   }
 
-  /**
-   * The save event slice that ADDRESSES an existing brand, so the save is an update.
-   *
-   * ⭐ ADDED FOR REVIEW FINDING SEC-AUTH-01. The gate's question now follows the operation, so a case
-   * that wants to exercise the UPDATE question needs an event that addresses a row — and the escalation
-   * the finding reports is only reachable through one.
-   */
+  /** The save event slice that addresses an existing brand, so the save is an update. */
   function addressedSaveEvent(body: string, brandID: string): BrandSaveEvent {
     return { body, pathParameters: { brandID }, headers: {} };
   }
 
-  describe('brandHandler — SEC-03, the gate `setupRequest()` ran', () => {
+  describe('brandHandler — the gate `setupRequest()` ran', () => {
     interface Probe {
       /** Every entity question asked, in the order asked, so the legacy sequence is observable. */
       readonly asked: EntityAuthorizationRequest[];
-      /** Every request the resolver was HANDED — SEC-AUTH-03's widened input. */
+      /** Every request the resolver was handed —'s widened input. */
       readonly requests: InvocationSecurityRequest[];
       /** How many times the resolver was invoked, so per-request resolution is observable. */
       readonly resolutions: { count: number };
       /** Every service member reached, so "refused before the service" is observable. */
       readonly serviceCalls: string[];
-      /** Every context handed to the write boundary — SEC-AUTH-03's propagation half. */
+      /** Every context handed to the write boundary —'s propagation half. */
       readonly securityContexts: readonly RequestAuthorizationContext[];
       readonly handler: BrandHandler;
     }
 
     /**
-     * @param account   the principal the resolver reports, or `undefined` for "no principal at all"
-     * @param grant     the entity CRUD types the permission model grants
+     * @param account the principal the resolver reports, or `undefined` for "no principal at all"
      */
     function makeHandler(account: AccountReference | undefined, grant: readonly string[]): Probe {
       const asked: EntityAuthorizationRequest[] = [];
@@ -3066,8 +2273,10 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
               return grant.includes(request.crudType);
             },
           },
-          /* SEC-AUTH-03 — the third member of one invocation's context. Deny-all, matching the shipped
-           * fail-closed default: these cases drive the GATE, and nothing here populates a property. */
+          /*
+           * — the third member of one invocation's context. Deny-all, matching the shipped
+           * fail-closed default: these cases drive the gate, and nothing here populates a property.
+           */
           populationAuthorization: DENY_ALL_POPULATION_AUTHORIZATION,
         };
       };
@@ -3080,9 +2289,11 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
         resolutions,
         serviceCalls,
         securityContexts: writeRunner.securityContexts,
-        /* The graph IS the same recording service here: these cases assert the AUTHORISATION ladder, and
-         * routing the work through a second object would record each call twice. F1's boundary behaviour
-         * is asserted in its own describe block below. */
+        /*
+         * The graph is the same recording service here: these cases assert the authorisation ladder, and
+         * routing the work through a second object would record each call twice. 's boundary behaviour
+         * is asserted in its own describe block below.
+         */
         handler: createBrandHandler(service, resolve, writeRunner.runner),
       };
     }
@@ -3101,7 +2312,7 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
         expect(JSON.parse(result.body)).toStrictEqual({ message: 'Authentication is required' });
       }
 
-      // Refused BEFORE the service, so nothing was read, saved or deleted.
+      // Refused before the service, so nothing was read, saved or deleted.
       expect(probe.serviceCalls).toStrictEqual([]);
       // And refused before any permission question, because there was no principal to ask about.
       expect(probe.asked).toStrictEqual([]);
@@ -3109,7 +2320,7 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
 
     it('NET-NEW — brandHandler — HibachiScope.cfc:L40-L45 — the logged-in test is the NEGATION of newFlag', async () => {
       // `getLoggedInFlag()` is `if(!getSession().getAccount().isNew())`, and `newFlag` carries
-      // `isNew()`. A principal that is NEW is therefore NOT logged in.
+      // `isNew()`. A principal that is NEW is therefore not logged in.
       const notLoggedIn = makeHandler(account({ newFlag: true }), ['read']);
       expect((await notLoggedIn.handler.getBrand(identifierEvent('x'))).statusCode).toBe(401);
       expect(notLoggedIn.serviceCalls).toStrictEqual([]);
@@ -3139,8 +2350,10 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
     it('NET-NEW — L55-L58 — each member asks for its OWN legacy crudType and only that one', async () => {
       const read = makeHandler(account({}), []);
       await read.handler.getBrand(identifierEvent('x'));
-      /* SEC-AUTH-01 also added the addressed identifier to the question, so a deployment CAN scope a
-       * grant to the row being read. The entity name still comes from the handler's own constant. */
+      /*
+       * Also added the addressed identifier to the question, so a deployment can scope a
+       * grant to the row being read. The entity name still comes from the handler's own constant.
+       */
       expect(read.asked).toStrictEqual([{ crudType: 'read', entityName: 'Brand', entityID: 'x' }]);
 
       const remove = makeHandler(account({}), []);
@@ -3150,32 +2363,24 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
       ]);
     });
 
-    /* ==============================================================================================
-     * ⭐⭐ REVIEW FINDING SEC-AUTH-01 (CWE-862, CWE-639) — THIS CASE USED TO REQUIRE THE VULNERABILITY
-     * ==============================================================================================
-     * It was named "save asks create FIRST, then update, and short-circuits on the first grant" and it
-     * asserted, in its own words, that a `create`-ONLY principal saving a brand answers `200`. The
-     * security review found the escalation that reading permits: `saveBrand` UPDATES the addressed row,
-     * so a principal holding only `create` was authorised for an operation it had no grant for.
-     *
-     * The three assertions below are the corrected contract. The legacy citation is retained because the
-     * evidence is unchanged — [org/Hibachi/HibachiAuthenticationService.cfc:L71-L77] really does ask both,
-     * in that order — and because the withdrawal record in `../../src/handlers/brandHandler.ts` explains
-     * why reconstructing that framework gate's CONTRACT to authorise the operation actually performed is
-     * not the same thing as changing ported business behaviour.
-     * ============================================================================================ */
-    it('NET-NEW — SEC-AUTH-01 — save asks EXACTLY the operation it performs, and nothing else', async () => {
-      // No grant at all is still 403, and exactly ONE question is asked rather than two.
+    /*
+     * Why the question follows the operation (CWE-862, CWE-639). Asking `create` first, then
+     * `update`, and short-circuiting on the first grant would answer `200` for a `create`-only
+     * principal saving a brand — and `saveBrand` updates the addressed row, so that principal would
+     * be authorised for an operation it holds no grant for.
+     */
+    it('NET-NEW — save asks EXACTLY the operation it performs, and nothing else', async () => {
+      // No grant at all is still 403, and exactly one question is asked rather than two.
       const neither = makeHandler(account({}), []);
       expect((await neither.handler.saveBrand(saveEvent('{}'))).statusCode).toBe(403);
       expect(neither.asked.map((request) => request.crudType)).toStrictEqual(['create']);
 
-      // UNADDRESSED — a creation. `create` alone grants it, and `update` is never asked.
+      // Unaddressed — a creation. `create` alone grants it, and `update` is never asked.
       const createOnly = makeHandler(account({}), ['create']);
       expect((await createOnly.handler.saveBrand(saveEvent('{}'))).statusCode).toBe(200);
       expect(createOnly.asked).toStrictEqual([{ crudType: 'create', entityName: 'Brand' }]);
 
-      // ⛔ THE ESCALATION ITSELF: create-only, ADDRESSING an existing brand, must now be REFUSED.
+      // The escalation itself: create-only, addressing an existing brand, must now be refused.
       const createOnlyAddressing = makeHandler(account({}), ['create']);
       const escalation = await createOnlyAddressing.handler.saveBrand(
         addressedSaveEvent('{}', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
@@ -3201,7 +2406,7 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
       ).toBe(200);
       expect(updateOnly.asked.map((request) => request.crudType)).toStrictEqual(['update']);
 
-      // ⛔ AND THE MIRROR IMAGE: update-only may no longer CREATE.
+      // And the mirror image: update-only may no longer create.
       const updateOnlyCreating = makeHandler(account({}), ['update']);
       expect((await updateOnlyCreating.handler.saveBrand(saveEvent('{}'))).statusCode).toBe(403);
       expect(updateOnlyCreating.asked.map((request) => request.crudType)).toStrictEqual(['create']);
@@ -3213,8 +2418,10 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
       await probe.handler.saveBrand(saveEvent('{}'));
       expect(probe.resolutions.count).toBe(1);
 
-      /* SEC-AUTH-03 — what the resolver was TOLD. A resolver handed only headers could not scope a grant
-       * to the action, and could not read a claim its gateway had already verified. */
+      /*
+       * — what the resolver was told. A resolver handed only headers could not scope a grant
+       * to the action, and could not read a claim its gateway had already verified.
+       */
       expect(probe.requests).toHaveLength(1);
       expect(probe.requests[0]).toMatchObject({
         action: 'brand.saveBrand',
@@ -3225,10 +2432,12 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
       expect(probe.requests[0]?.entityID).toBeUndefined();
     });
 
-    it('NET-NEW — SEC-AUTH-03 — the resolved context reaches the transaction boundary, not a memoised one', async () => {
-      /* The gate resolves ONE context per invocation; the write must run under THAT principal, or property
+    it('NET-NEW — the resolved context reaches the transaction boundary, not a memoised one', async () => {
+      /*
+       * The gate resolves one context per invocation; the write must run under that principal, or property
        * population and audit stamping can execute as somebody else. The runner double records every
-       * context it is handed, so an implementation that dropped it fails here. */
+       * context it is handed, so an implementation that dropped it fails here.
+       */
       const probe = makeHandler(account({}), ['create']);
 
       expect((await probe.handler.saveBrand(saveEvent('{}'))).statusCode).toBe(200);
@@ -3299,22 +2508,12 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
     });
   });
 
-  /**
-   * A brand carrying the error-surface members the base collaborator needs.
-   *
-   * `BrandService` and `BrandHandlerService` are both typed over `ManagedBrand` — a `Brand` INTERSECTED
-   * with the metadata and error surface `manageEntity` supplies — because `../validation/Validator`
-   * calls `getClassName()` and attaches findings to the entity's own bag at run time. A bare `new
-   * Brand()` type-checked against those signatures only while the injected view was written in METHOD
-   * syntax, which TypeScript compares bivariantly; the view is arrow-typed now, so the substitution is
-   * correctly rejected. `manageEntity` augments and RETURNS THE SAME OBJECT, so every assertion below
-   * observes the identical instance it would have without this call.
-   */
+  /** A brand carrying the error-surface members the base collaborator needs. */
   function managedBrand(): ManagedBrand {
     return manageEntity(new Brand(), BRAND_ENTITY_METADATA);
   }
 
-  describe('brandHandler — SEC-04, the response is a projection and not the entity', () => {
+  describe('brandHandler — the response is a projection and not the entity', () => {
     function handlerReturning(stored: ManagedBrand): BrandHandler {
       const service: BrandHandlerService = {
         saveBrand: (brand: ManagedBrand): Promise<ManagedBrand> => Promise.resolve(brand),
@@ -3364,20 +2563,11 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
       });
     });
 
-    it('NET-NEW — SEC-HARDENING (D18-CLASS): brandWebsite reaches the body VERBATIM, and the body is the only consumer boundary for it', async () => {
-      /* ⚠️ This is the one place in the deliverable that hands `brandWebsite` to a consumer, so the
+    it('NET-NEW — brandWebsite reaches the body VERBATIM, and the body is the only consumer boundary for it', async () => {
+      /*
+       * This is the one place in the deliverable that hands `brandWebsite` to a consumer, so the
        * residual exposure the validation layer flags is pinned here as well as at the predicate.
-       *
-       * WHAT THE VALIDATION LAYER GUARANTEES about anything that got stored: it parses as a URL in one of
-       * CFML's six `isValid(…, "url")` protocols, it carries no ASCII control character, and its authority
-       * carries no userinfo credentials. `test/domain/Brand.test.ts` pins all three against the real rule.
-       *
-       * WHAT IT DOES NOT GUARANTEE: the scheme. All four non-web legacy protocols still save, because
-       * refusing them would decline a save the legacy performed and meant (AAP §0.8.2 g2). So a consumer
-       * putting this value in an `href`, a redirect or a fetch URL must apply its own scheme policy — and
-       * this case pins that the handler does NOT apply one, and does not silently rewrite the value either.
-       * A projection that quietly filtered or re-encoded here would make the response disagree with the
-       * stored record, which is the pass-through rule `src/handlers/httpResponse.ts` sets for this layer. */
+       */
       const brand = fullyPopulatedBrand();
       brand.brandWebsite = 'mailto:hello@acme.example';
 
@@ -3387,7 +2577,7 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
       expect(result.statusCode).toBe(200);
       expect(body['brandWebsite']).toBe('mailto:hello@acme.example');
 
-      // And an absent website is OMITTED rather than emitted as a null, so a consumer distinguishes
+      // And an absent website is omitted rather than emitted as a null, so a consumer distinguishes
       // "no website" from "an empty website" without inspecting the value.
       const withoutWebsite = fullyPopulatedBrand();
       delete withoutWebsite.brandWebsite;
@@ -3420,7 +2610,7 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
       const body: unknown = JSON.parse(result.body);
 
       // Six of the eight collaborators — promotion rewards and qualifiers with their exclusions,
-      // vendors and physical counts — are EXPLICITLY out of scope (AAP §0.2.2.1), so publishing the
+      // vendors and physical counts — are explicitly out of scope (AAP §0.2.2.1), so publishing the
       // arrays would disclose structure this deliverable does not even model.
       for (const withheld of [
         'attributeValues',
@@ -3442,7 +2632,7 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
       product.productID = 'cccccccccccccccccccccccccccccccc';
       brand.addProduct(product);
 
-      // `Brand.products` -> `Product.brand` is a CYCLE that `JSON.stringify` refuses outright, so
+      // `Brand.products` -> `Product.brand` is a cycle that `JSON.stringify` refuses outright, so
       // whole-entity serialization would have produced an opaque 500 for any brand with a product.
       expect(() => JSON.stringify(brand)).toThrow(TypeError);
 
@@ -3475,25 +2665,12 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
 
   describe('brandHandler — an unaddressed brand is a REQUEST fault, an unmatched one is a MISS', () => {
     /*
-     * ⭐ WHY THIS BLOCK EXISTS. `getBrand` and `deleteBrand` answered the neutral 404 for BOTH "no
+     * Why this block exists. `getBrand` and `deleteBrand` answered the neutral 404 for both "no
      * identifier was addressed" and "the addressed identifier matches nothing", and the collapse was
-     * defended as non-disclosure. It is not one: the gate runs BEFORE the identifier is read, so an
-     * unauthorised caller never reaches either answer (the SEC-03 block above asserts exactly that), and
+     * defended as non-disclosure. It is not one: the gate runs before the identifier is read, so an
+     * unauthorised caller never reaches either answer (the block above asserts exactly that), and
      * among callers who do reach it, "you addressed nothing" says nothing whatsoever about any brand. The
-     * cost fell entirely on a legitimate client, which could not tell a bug in its own request from a brand
-     * that is genuinely gone — and every sibling handler answered the first case with a NAMED 400.
-     *
-     * The convention now held across the whole boundary layer, and asserted here:
-     *   400  the REQUEST is at fault — nothing was addressed, or what was addressed cannot identify anything
-     *   404  the request was well formed and the addressed resource does not exist
-     *
-     * ⚠️ THE EMPTY IDENTIFIER BELONGS TO THE 400 SIDE, and that is legacy-evidenced rather than tidy:
-     * [model/entity/Brand.cfc:L52] declares `brandID` with `unsavedvalue=""` and `default=""`, so no
-     * persisted row can carry it and it cannot address anything. This is the OPPOSITE of `skuCode`, whose
-     * empty form is a legal value the lookup runs for — see `test/handlers/skuHandler.test.ts`. The two
-     * differ because the legacy declarations differ, not because the boundary chose differently.
-     *
-     * TEST PROVENANCE: NET-NEW (AAP §0.6.5.2).
+     * cost fell entirely on a legitimate client, which could not tell a bug in its own request from a brand.
      */
 
     const STORED_BRAND_ID = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -3610,8 +2787,10 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
     });
 
     it('NET-NEW — the GATE still answers first, so the 400 is unreachable without permission', async () => {
-      /* The anti-enumeration property the old collapse was defending lives HERE, in the ordering — not in
-       * the status. An unauthorised caller gets the same refusal whatever it addresses. */
+      /*
+       * The anti-enumeration property the old collapse was defending lives here, in the ordering — not in
+       * the status. An unauthorised caller gets the same refusal whatever it addresses.
+       */
       const stored = managedBrand();
       stored.brandID = STORED_BRAND_ID;
 
@@ -3643,38 +2822,17 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
     });
   });
 
-  /* ================================================================================================
-   * F1 — EVERY BRAND MUTATION RUNS INSIDE A TRANSACTION BOUNDARY
-   *
-   * ⭐ WHAT WAS BROKEN. `BaseService.save` persists and THEN runs `settingCleanup`; `BaseService.delete`
-   * removes and THEN runs both cleanup ports. Every one of those post-write steps can fail. Product and
-   * SKU writes were already safe — not because their base services differ, but because every route that
-   * reaches them goes through a runner that rebuilds them from a transaction's executor. BRAND HAD NO
-   * SUCH RUNNER. It was reached through the pool-bound graph, where each statement auto-commits on its
-   * own connection, so a brand save whose cleanup then failed left a COMMITTED row while this handler
-   * answered an error, and a brand delete whose cleanup failed left the row GONE while it answered an
-   * error. Neither outcome is recoverable and neither was visible in any type.
-   *
-   * ⚠️ THE TWO PROPERTIES ASSERTED HERE ARE DIFFERENT AND BOTH ARE NECESSARY. That the work runs through
-   * the BOUNDARY GRAPH rather than the closed-over pool-bound service — otherwise the transaction commits
-   * around statements it never covered — and that the ROLLBACK GATE is evaluated, because a boundary that
-   * always commits is no boundary at all.
-   * ============================================================================================== */
+  /* — every brand mutation runs inside a transaction boundary. */
 
-  describe('brandHandler — F1, every mutation runs inside a transaction boundary', () => {
+  describe('brandHandler —, every mutation runs inside a transaction boundary', () => {
     const BOUNDARY_BRAND_ID = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
     /** Which object answered a member: the pool-bound service, or the transaction-scoped graph. */
     type Answerer = 'service' | 'graph';
 
     /**
-     * Two OBSERVABLY DIFFERENT brand services — one standing for the pool-bound graph, one for the
+     * Two observably different brand services — one standing for the pool-bound graph, one for the
      * transaction-scoped one — plus the call log that says which answered.
-     *
-     * ⚠️ THE POOL-BOUND ONE IS NOT A FAILING STUB, AND THAT IS DELIBERATE. If it threw, a handler that
-     * wrongly used it would fail for the RIGHT reason by accident, and the case would still pass after
-     * the routing regressed to something else that happens to throw. Recording which object answered
-     * makes the assertion about the routing itself.
      */
     function makeSurfaces(options: {
       readonly savedHasErrors?: boolean;
@@ -3705,8 +2863,10 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
         saveBrand: (brand: ManagedBrand): Promise<ManagedBrand> => {
           answered.push({ member: 'saveBrand', by });
           if (options.savedHasErrors === true) {
-            /* The legacy's single exit: a failed save RETURNS the entity carrying findings rather than
-             * raising [`model/service/HibachiService.cfc:L103`]. This is the state the gate must catch. */
+            /*
+             * The legacy's single exit: a failed save returns the entity carrying findings rather than
+             * raising [`model/service/HibachiService.cfc:L103`]. This is the state the gate must catch.
+             */
             brand.addError('brandName', 'validate.save.Brand.brandName.required');
           }
           return Promise.resolve(brand);
@@ -3758,7 +2918,7 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
       const response = await probe.handler.saveBrand(saveEvent());
 
       expect(response.statusCode).toBe(200);
-      // ⚠️ THE ASSERTION THE FINDING TURNS ON: both members answered from inside the transaction.
+      // The assertion the finding turns on: both members answered from inside the transaction.
       expect(probe.answered).toStrictEqual([
         { member: 'newBrand', by: 'graph' },
         { member: 'saveBrand', by: 'graph' },
@@ -3781,7 +2941,7 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
     });
 
     it('NET-NEW — a save that returns findings ROLLS BACK rather than committing (M5)', async () => {
-      // ⚠️ THE GATE IS THE POINT. Without it the transaction would commit around a failed save, taking
+      // The gate is the point. Without it the transaction would commit around a failed save, taking
       // any cleanup the operation performed with it, while the response still reported the failure.
       const probe = makeProbe({ savedHasErrors: true });
 
@@ -3793,10 +2953,10 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
     });
 
     it('NET-NEW — the gate reads a SEPARATE capture, so it cannot throw from a temporal dead zone', async () => {
-      // ⛔ A REGRESSION GUARD FOR A REAL BUG THAT WAS WRITTEN AND CAUGHT. `runWrite` evaluates the gate
-      // BEFORE it commits, and therefore before the `const` holding the saved brand is initialised. A gate
+      // A regression guard for a real bug that was written and caught. `runWrite` evaluates the gate
+      // before it commits, and therefore before the `const` holding the saved brand is initialised. A gate
       // closing over that `const` throws `ReferenceError` on exactly the failing-save path — the one path
-      // where the gate matters. The rollback case above would surface it, so this case pins the SUCCESS
+      // where the gate matters. The rollback case above would surface it, so this case pins the success
       // path too: the gate is evaluated there as well, and must not throw.
       const probe = makeProbe();
 
@@ -3844,15 +3004,9 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
     });
   });
 
-  /* ==============================================================================================
-   * THE SHIPPED COMPOSITION IS CALLABLE — the CRITICAL callable-boundary defect, pinned end to end
-   *
-   * `createBrandHandlerFromContainer` used to pass the deny-all resolver as a LITERAL, so a deployment
-   * had no way to reach the seam and every brand action answered 401 forever. The factory now defaults to
-   * `resolveRequestAuthorization`, which reads the deployment registry on EVERY call. These two cases
-   * exercise that exact default — the same function the factory installs — so they pin the shipped
-   * behaviour rather than a test-only wiring: unregistered stays 401, registered reaches the service.
-   * ============================================================================================== */
+  /*
+   * The shipped composition is callable — the critical callable-boundary defect, pinned end to end.
+   */
 
   describe('brandHandler — the production default resolver is a real seam, fail-closed until used', () => {
     const STORED_BRAND_ID = 'ffffffffffffffffffffffffffffffff';
@@ -3876,14 +3030,11 @@ describe("test/handlers/brandHandler.test.ts — the brand surface's final wirin
         deleteBrand: (): Promise<boolean> => Promise.resolve(true),
       };
 
-      /* ⭐ THE RESOLVER IS THE PRODUCTION DEFAULT, NOT A DOUBLE. `createBrandHandlerFromContainer` supplies
+      /*
+       * The resolver is the production default, not a double. `createBrandHandlerFromContainer` supplies
        * exactly this function when a caller names none, so whatever this case observes is what a deployed
        * artifact does.
-       *
-       * ⭐ AND THE WRITE RUNNER IS REAL TOO — review finding F1 made brand writes transactional, so the
-       * handler takes the boundary as its third collaborator. This case is about the RESOLVER, so the
-       * runner is the recording double every other case in this file uses; what it proves here is only
-       * that the resolver's verdict is reached before any write is attempted. */
+       */
       return {
         handler: createBrandHandler(
           service,

@@ -1,103 +1,24 @@
 /**
  * Option domain tests — NET-NEW.
  *
- * WHY THE LABEL IS NET-NEW AND NOT TRACEABLE
+ * Why the label is net-new and not TRACEABLE
  * There is no dedicated legacy test for this entity. `meta/tests/unit/entity/` ships components for
  * a small subset of the entity catalogue and Option is not among them: no `OptionTest.cfc` exists
  * anywhere in the repository, so no legacy assertion, no legacy fixture and no legacy expectation
  * about Option was ever written down. Every case below is therefore net-new coverage, and the file
  * carries exactly one label — this one — rather than mixing a traceable claim into a suite that has
- * nothing to trace to. AAP §0.6.5.2 reaches the same conclusion from the inventory side and §0.8.3.7
- * requires the gap to be flagged explicitly rather than implied away, because the standing question
- * this exercise answers is precisely whether converted methods get replicated tests or silently
- * generated ones. The honest answer for Option is: generated, from source.
  *
- * TRACEABILITY IS DOCUMENTARY, GROUNDED IN TWO LEGACY DOCUMENTS
+ * Traceability is documentary, grounded in two legacy documents
  * Because there is no legacy test to port, every expectation below is derived by reading legacy
  * source and is cited to the line that states it. The two documents that between them define the
  * whole of this entity's behaviour are:
  *
- *   - `model/entity/Option.cfc` — the component declaration at `:L49`, the five persistent
- *     properties at `:L52-L56`, the option-group relationship at `:L59`, the SKUs
- *     many-to-many-inverse at `:L66`, the image directory member at `:L81-L83`, and the four
- *     bidirectional helpers at `:L92-L97`, `:L98-L107`, `:L110-L112` and `:L113-L115`.
- *   - `model/validation/Option.json` — the declarative rule document: `optionCode` at `:L3`,
- *     `optionName` at `:L4`, `optionGroup` at `:L5` and the `skus` delete guard at `:L6`.
- *
- * No legacy run was observed and no legacy output was compared. The legacy suite cannot be executed
- * in this environment at all — MXUnit and CFSelenium are not vendored and there is no CFML engine
- * available — so a documentary mapping from cited source is the strongest claim available, and it is
- * stated rather than dressed up as parity (AAP §0.6.5.3, §0.8.4.2).
- *
- * THE STRUCTURAL TRANSLATION: LEGACY INTEGRATION TEST -> TARGET UNIT TEST
- * The two suites differ in kind by design (AAP §0.4.3.6). A LEGACY ENTITY TEST BOOTED THE WHOLE FW/1
- * APPLICATION before it could touch an entity: `meta/tests/unit/SlatwallUnitTestBase.cfc` instantiates
- * `Slatwall.Application`, calls `bootstrap()`, promotes the request account to super-user, and only
- * then resolves the entity through a string-keyed DI/1 lookup onto an `onMissingMethod`-synthesized
- * factory member. Every legacy assertion was consequently an integration assertion over a live
- * Hibernate session inside a running framework.
- *
- * THE TARGET FIXTURE IS `new Option()`, CONSTRUCTED DIRECTLY AND WIRED TO HAND-WRITTEN DOUBLES.
- * Nothing is bootstrapped, no container is built, no service is resolved, no connection is opened, no
- * environment variable is read and no framework is present. The one collaborator that genuinely sits
- * outside this entity — the settings engine behind `getImageDirectory()` — arrives as a hand-written
- * double from `test/support/inMemoryRepositories.ts`, which is also where the option, option-group and
- * SKU builders come from. AAP §0.4.3.6 records that the legacy repository ships no mocking library and
- * that the target suite substitutes plain doubles instead: `jest.mock` is not used anywhere below, the
- * module registry is never touched, and no third-party mocking package is introduced.
- *
- * WHAT IS EXERCISED FOR REAL
- * The actual `Option` class, the actual `OptionGroup` class, the actual `Sku` class, the actual
- * `Validator`, the actual transliterated `option.rules.ts` rule set and the actual `ValidationError`
- * bag. Nothing about the code under test is reimplemented here.
- *
- * ⚠️ THE OPTION-GROUP AND SKU SIDES ARE THE REAL CLASSES, NOT COPIES OF THEM — AND THAT IS
- * LOAD-BEARING. Both of Option's collection-facing mutators are pure delegations in one direction or
- * the other: `setOptionGroup` reaches into the group's live array while `addSku` hands the whole
- * operation to the SKU. A double that reproduced `getOptions`, `hasOption`, `addOption` or
- * `removeOption` would make the cases below pass against test-local code while the production bodies
- * rotted unobserved. So `new OptionGroup()` and `new Sku()` are constructed instead — both take no
- * constructor arguments, perform no I/O and need no container, exactly like `Option`. The one place a
- * structural stand-in appears is {@link RecordingSkuOptionOwner}, whose only purpose is to make the
- * DELEGATION itself observable by declining to maintain the relationship; it reimplements nothing.
- *
- * SCOPE OF THIS FILE, AND WHY IT IS COMPLETE
- * The assigned Option slice is the five persistent properties, the required option-group
- * relationship, the SKUs relationship inverse over the `SwSkuOption` link table, and the converted
- * methods — `getImageDirectory`, `setOptionGroup`, `removeOptionGroup`, `addSku`, `removeSku` and the
- * derived `isNew`. All of those are covered below, and covering them completes the slice.
- *
- * NO UN-PORTABLE BOUNDARY STUB IS REQUIRED, AND NONE IS INVENTED. `model/entity/Option.cfc:L85-L87`
- * — the entity's "Non-Persistent Property Methods" section — is a START banner, a blank line and an
- * END banner. The entity declares no calculated property at all, so the calculated-property boundary
- * of AAP §0.2.2.6 that forces `Product` and `Sku` to exclude pricing, promotion, inventory and
- * currency members simply does not arise here. There is nothing to stub, and no fake non-persistent
- * member is fabricated in order to have a boundary to test, and no field the legacy entity does not
- * declare is introduced anywhere in this file.
- *
- * DELIBERATELY UNTESTED, RECORDED SO THE OMISSION READS AS A DECISION. `model/entity/Option.cfc`
- * also declares an image relationship pair at `:L60` and `:L63` and four promotion
- * many-to-many-inverse collections at `:L67-L70`, with eight promotion helper methods over them at
- * `:L118-L147`. Two of those helpers are copy/paste faults — `removePromotionRewardExclusion` at
- * `:L129-L131` and `removePromotionQualifierExclusion` at `:L145-L147` both call the ADD-side
- * member — and they are named here purely so a reader knows they were seen. They are outside this
- * file's in-scope relationships: the image and promotion families are excluded by AAP §0.2.2.1 and
- * §0.2.2.2, the port models none of those six relationships as fields, and consequently no promotion
- * or image type is imported below, no promotion behaviour is asserted, and neither fault is
- * reproduced. {@link OPTION_EXCLUDED_RELATIONSHIP_LOCATORS} pins each excluded name to its declaring
- * line, and one case asserts that the port's field-backed name space really does omit all six, which
- * is what keeps the exclusion checkable rather than merely claimed.
- *
- * CONVENTIONS
- * Every case name begins `NET-NEW —` followed by the legacy locator it is derived from, so the
- * provenance of each assertion is visible in the runner output and not only in this header. Comments
- * carry `TODO(parity)` where a legacy behaviour is preserved rather than repaired, and label
- * technology-specific translation decisions where an idiom had to change for the target language to
- * express the same behaviour. The enterprise standards of AAP §0.7.3 govern in the absence of any
- * user-specified rule document; in a test file the ones with teeth are strict type safety — no
- * `any`, no unsafe or double cast, no non-null assertion and no compiler or linter suppression of any
- * kind — preserve-and-annotate rather than repair, and invent nothing the source does not state. No
- * timing, capacity or service-level assertion appears anywhere below, and no identifier is generated.
+ * - `model/entity/Option.cfc` — the component declaration at `:L49`, the five persistent
+ * properties at `:L52-L56`, the option-group relationship at `:L59`, the SKUs
+ * many-to-many-inverse at `:L66`, the image directory member at `:L81-L83`, and the four
+ * bidirectional helpers at `:l92-l97`, `:l98-l107`, `:l110-l112` and `:L113-L115`.
+ * - `model/validation/Option.json` — the declarative rule document: `optionCode` at `:L3`,
+ * `optionName` at `:L4`, `optionGroup` at `:L5` and the `skus` delete guard at `:L6`.
  */
 
 import {
@@ -129,45 +50,17 @@ import {
   type SettingResolverCall,
 } from '../support/inMemoryRepositories';
 
-/* ================================================================================================
- * SOURCE-GROUNDED CONSTANTS
- *
- * Every value below is read from a cited legacy line or imported from the code under test. Nothing
- * is invented: no UUID is generated, no production setting default is reproduced, no timing or
- * capacity figure appears and no coverage threshold is asserted.
- *
- * THE THREE IDENTITY CONSTANTS ARE IMPORTED FROM PRODUCTION RATHER THAN RESTATED. `OPTION_CLASS_NAME`,
- * `OPTION_ENTITY_NAME` and `OPTION_PRIMARY_ID_PROPERTY_NAME` arrive through the import above, because
- * a case that asserts a literal it declared itself exercises the test file rather than the code under
- * test and would keep passing after the production value diverged. The cases below pin those imported
- * constants to the legacy attributes that define them — `entityname="SlatwallOption"` at
- * `model/entity/Option.cfc:L49` and the file's only `fieldtype="id"` declaration at `:L52` — so a
- * change in the entity fails here instead of passing silently.
- * ============================================================================================== */
+/* Source-grounded constants. */
 
 /**
  * The unsaved primary-identifier value, verbatim from `model/entity/Option.cfc:L52`, which declares
  * both `unsavedvalue=""` and `default=""`.
- *
- * It is the sentinel `Option.isNew()` compares against, which is the port of the legacy
- * `getNewFlag()` derivation: the primary-ID value is read and an empty one means new. That
- * derivation is why this entity's own `:L94` short-circuit can consult `isNew()` without any
- * persistence being present.
- *
- * NO IDENTIFIER IS EVER GENERATED IN THIS FILE. Per AAP IR-6 an Option key is a 32-character
- * lowercase hex string minted by the persistence layer, so a test that produced one would be
- * asserting a value the source does not state.
  */
 const OPTION_UNSAVED_ID_VALUE = '';
 
 /**
- * Identifiers assigned to Options that must read as SAVED, so the `!hasOption(this)` arm of the
+ * Identifiers assigned to Options that must read as saved, so the `!hasOption(this)` arm of the
  * `:L94` guard is the one that decides.
- *
- * These are opaque test inputs, not seeded data. They are written out literally — never generated —
- * purely so they have the SHAPE `model/entity/Option.cfc:L52` declares (`ormtype="string" length="32"`,
- * produced by the legacy `createSlatwallUUID()`: no dashes, never upper case), and each is distinct so
- * that no two collaborators are accidentally interchangeable.
  */
 const SAVED_OPTION_IDS = Object.freeze({
   hasOptionGuard: '00000000000000000000000000000031',
@@ -179,14 +72,7 @@ const SAVED_OPTION_IDS = Object.freeze({
   uniqueCandidate: '00000000000000000000000000000037',
 } as const);
 
-/**
- * The FIVE persistent properties of `model/entity/Option.cfc:L52-L56`, in declaration order.
- *
- * `satisfies` rather than a cast: the literal tuple is preserved for the per-property cases below
- * while every member is checked against the entity's real property-name union, so a typo or a
- * property that no longer exists is a compile error and a name the entity does not declare could not
- * be added here.
- */
+/** The five persistent properties of `model/entity/Option.cfc:L52-L56`, in declaration order. */
 const OPTION_PERSISTENT_PROPERTY_NAMES = [
   'optionID',
   'optionCode',
@@ -195,17 +81,7 @@ const OPTION_PERSISTENT_PROPERTY_NAMES = [
   'sortOrder',
 ] as const satisfies readonly OptionPropertyName[];
 
-/**
- * Every property the port models as a field, mapped to the legacy line that declares it.
- *
- * `Record<OptionPropertyName, string>` makes this EXHAUSTIVE by compile check — a name added to the
- * entity's property union and not recorded here is an error — and the object literal's excess
- * property check makes it impossible to record a name the entity does not declare. Both halves
- * matter, because this is the map the completeness case compares against the production set that
- * `Option.hasProperty` actually answers over, and the legacy predicate was a test of DECLARED
- * METADATA rather than of runtime value presence. Answering it from runtime keys instead would make
- * every validation rule skip and would turn the save-validation case into a silent no-op.
- */
+/** Every property the port models as a field, mapped to the legacy line that declares it. */
 const OPTION_DECLARED_PROPERTY_LOCATORS: Record<OptionPropertyName, string> = {
   optionID: 'model/entity/Option.cfc:L52',
   optionCode: 'model/entity/Option.cfc:L53',
@@ -222,29 +98,14 @@ const OPTION_DECLARED_PROPERTY_LOCATORS: Record<OptionPropertyName, string> = {
 };
 
 /**
- * The field-backed declared property names, derived from the PRODUCTION set rather than from the
+ * The field-backed declared property names, derived from the production set rather than from the
  * locator map above.
- *
- * The direction matters. `Option.hasProperty` is answered in production from
- * `OPTION_DECLARED_PROPERTIES`, so a list built here from a different source could agree with the
- * locator map while disagreeing with the code under test. The locator map keeps its own distinct job
- * — pinning each name to the legacy line that declares it, which the production set does not record —
- * and one case asserts the two agree, so drift in either direction fails rather than hides.
- *
- * Typed as plain strings because the only consumer is a string comparison against the
- * property-existence predicate; narrowing further would add nothing.
  */
 const OPTION_DECLARED_PROPERTY_NAMES: readonly string[] = Object.keys(OPTION_DECLARED_PROPERTIES);
 
 /**
  * The six relationships `model/entity/Option.cfc` declares that the port deliberately does not model
  * as fields, each pinned to its declaring line.
- *
- * This is the checkable form of the scope statement in the file header. The image pair reaches the
- * out-of-scope image entity and the four promotion collections reach the out-of-scope promotion
- * entities, so none of them appears in the entity's property-name union — which is what makes
- * describing one a compile error rather than a matter of discipline. Recording the NAMES as strings
- * imports nothing: no promotion type and no image type is referenced anywhere in this file.
  */
 const OPTION_EXCLUDED_RELATIONSHIP_LOCATORS: Readonly<Record<string, string>> = Object.freeze({
   defaultImage: 'model/entity/Option.cfc:L60',
@@ -267,48 +128,21 @@ const SAVE_CONTEXT: ValidationContext = 'save';
  */
 const DELETE_CONTEXT: ValidationContext = 'delete';
 
-/**
- * The literal suffix `model/entity/Option.cfc:L82` appends after the resolved image folder URL.
- *
- * Byte-exact and asserted as such: a leading slash, the lower-case word `option`, a trailing slash.
- * The trailing slash is what makes the returned value a DIRECTORY rather than a file path, and the
- * casing is what a case-sensitive object store would care about, so neither is normalised.
- */
+/** The literal suffix `model/entity/Option.cfc:L82` appends after the resolved image folder URL. */
 const OPTION_IMAGE_DIRECTORY_SUFFIX = '/option/';
 
 /**
  * A synthetic file-system path standing in for the value the out-of-scope settings engine would
  * resolve for `globalAssetsImageFolderPath`.
- *
- * DELIBERATELY NOT THE PRODUCTION DEFAULT. The effective value of that key is computed by the
- * setting service, which is out of scope, so reproducing whatever it happens to return would be
- * inventing a fact this file cannot verify. What `model/entity/Option.cfc:L81-L83` actually
- * guarantees is a composition — resolve the key, transform the path, append the suffix — and an
- * obviously synthetic input proves the composition without asserting anything about the default.
  */
 const SYNTHETIC_IMAGE_FOLDER_PATH = '/opt/slatwall-test-fixture/assets/images';
 
 /**
  * The web path the path-to-URL transform double returns for {@link SYNTHETIC_IMAGE_FOLDER_PATH}.
- *
- * The real transform is the framework object's pure string helper: it normalises backslashes and
- * strips the expanded web-root prefix. That behaviour belongs to its own owner and is NOT
- * reimplemented here — no filesystem call, no path module, no expansion of any root. The double
- * returns a canned value so the only thing this file asserts about `getImageDirectory` is what that
- * method itself is responsible for: which setting it reads, that it feeds the resolved value through
- * the transform, and the byte-exact suffix it appends.
  */
 const SYNTHETIC_IMAGE_FOLDER_URL = '/slatwall-test-fixture/assets/images';
 
-/* ================================================================================================
- * LOCAL HELPERS
- *
- * Each helper exists to remove repetition from the cases, never to stand in for behaviour under test.
- * None of them reimplements an entity member, and every one of them returns FRESH mutable state so
- * that no entity, collection or double is shared between cases. There is deliberately no
- * module-scope `Option`, `OptionGroup`, `Sku`, array or validator anywhere in this file: the frozen
- * constants above hold only strings.
- * ============================================================================================== */
+/* Local helpers. */
 
 /**
  * One entry of the entity's own populate descriptor set, named by type query so that no module
@@ -333,9 +167,6 @@ function findDescriptor(
 /**
  * The declared column value type of a descriptor, or `undefined` for a descriptor that carries none.
  *
- * The `in` test is a narrowing operator rather than a cast: only the column-shaped member of the
- * descriptor union declares `valueType`, so the compiler selects it and the read is checked.
- *
  * @param descriptor - The descriptor to inspect.
  * @returns The declared value type, or `undefined`.
  */
@@ -344,15 +175,10 @@ function descriptorValueType(descriptor: OptionPropertyDescriptorEntry): string 
 }
 
 /**
- * Builds a real `Option` that reads as SAVED, by assigning it a primary identifier.
- *
- * `Option.isNew()` is the port of the legacy new-flag derivation — the primary-ID value is compared
- * against the `unsavedvalue=""` of `model/entity/Option.cfc:L52` — so assigning the identifier is the
- * whole of "saving" for the purposes of that predicate. No persistence, no repository and no service
- * is involved, and the predicate itself is never stubbed.
+ * Builds a real `Option` that reads as saved, by assigning it a primary identifier.
  *
  * @param optionID - One of {@link SAVED_OPTION_IDS}.
- * @returns A real `Option` for which `isNew()` returns false.
+ * @returns a real `Option` for which `isNew()` returns false.
  */
 function createSavedOption(optionID: string): Option {
   const option = new Option();
@@ -361,19 +187,8 @@ function createSavedOption(optionID: string): Option {
 }
 
 /**
- * A minimal owning-side collaborator that RECORDS the delegated call and deliberately declines to
+ * A minimal owning-side collaborator that records the delegated call and deliberately declines to
  * maintain the relationship.
- *
- * WHY A RECORDER RATHER THAN THE REAL `Sku` FOR THE DELEGATION CASES. `model/entity/Option.cfc:L110-L115`
- * makes `addSku` and `removeSku` pure delegations onto the owning side: every observable effect on the
- * link belongs to the SKU. Against a real `Sku` a passing assertion is therefore ambiguous — the
- * collection could have been maintained by either party. A collaborator that records the call and
- * does nothing else removes the ambiguity: if the option's own inverse array changes, the option
- * mutated it itself, which is exactly the thing that must not happen on the inverse side.
- *
- * It implements the port's own {@link SkuOptionOwner} contract, so no cast and no structural fiction
- * is involved, and it reimplements neither `addOption` nor `removeOption` — it merely observes that
- * they were called and with what.
  */
 class RecordingSkuOptionOwner implements SkuOptionOwner {
   /** Every option handed to {@link RecordingSkuOptionOwner.addOption}, in call order. */
@@ -409,7 +224,7 @@ interface ImageDirectoryCollaborator {
   readonly resolver: OptionImageDirectoryResolver;
 
   /**
-   * The settings double's own LIVE call log, exposed by reference rather than copied, so a case that
+   * The settings double's own live call log, exposed by reference rather than copied, so a case that
    * asserts against it after invoking the entity sees what the entity actually did.
    */
   readonly settingCalls: readonly SettingResolverCall[];
@@ -422,18 +237,7 @@ interface ImageDirectoryCollaborator {
  * Builds the two capabilities `model/entity/Option.cfc:L81-L83` reaches through, as a fresh
  * collaborator per case.
  *
- * The settings half is the SYNCHRONOUS setting-resolver double from
- * `test/support/inMemoryRepositories.ts`, seeded with the one key this entity reads. Synchronous is
- * the point: the legacy `setting()` helper returned a value directly, so a caller could compose it
- * inline, and the target port is declared synchronous for the same reason. Seeding is also the point
- * — that double raises rather than guessing when an unseeded key is read, so a mis-typed key surfaces
- * as a failure instead of silently resolving to a fabricated default.
- *
- * The path-to-URL half has no port and needs none, being a pure string transform; here it is a
- * recorder returning a canned web path, so this file asserts nothing about a transform it does not
- * own and performs no filesystem or path resolution of any kind.
- *
- * @returns A fresh collaborator plus its two call recorders.
+ * @returns a fresh collaborator plus its two call recorders.
  */
 function createImageDirectoryCollaborator(): ImageDirectoryCollaborator {
   const settings = createSettingResolverDouble({
@@ -455,14 +259,7 @@ function createImageDirectoryCollaborator(): ImageDirectoryCollaborator {
   };
 }
 
-/* ================================================================================================
- * THE PERSISTENT PROPERTY SURFACE — `model/entity/Option.cfc:L52-L56`
- *
- * Five properties, one case each, plus one completeness case. Only source-grounded defaults are
- * asserted: where the legacy declares a `default=` attribute the ported value is checked against it,
- * and where it declares none the field is asserted ABSENT rather than given an invented starting
- * value.
- * ============================================================================================== */
+/* The persistent property surface — `model/entity/Option.cfc:L52-L56` */
 
 describe('Option — the persistent property surface', () => {
   it('NET-NEW — model/entity/Option.cfc:L52 — optionID is the primary identifier and holds the declared unsaved value on a fresh instance', () => {
@@ -478,7 +275,7 @@ describe('Option — the persistent property surface', () => {
     // work without any persistence being present.
     expect(option.getPrimaryIDValue()).toBe(OPTION_UNSAVED_ID_VALUE);
 
-    // `fieldtype="id"` is the reason this property, alone among the five, carries NO populate
+    // `fieldtype="id"` is the reason this property, alone among the five, carries no populate
     // descriptor: a primary key is assigned by the persistence layer, never populated from input.
     expect(findDescriptor('optionID')).toBeUndefined();
 
@@ -555,15 +352,15 @@ describe('Option — the persistent property surface', () => {
   it('NET-NEW — model/entity/Option.cfc:L56 — sortOrder is an integer that starts absent because it is assigned per option group by the persistence lifecycle', () => {
     const option = new Option();
 
-    // ABSENT, NOT SEEDED. `:L56` declares `ormtype="integer"` with NO `default=` and NO
-    // `required="true"` — contrast `model/entity/OptionGroup.cfc:L58`, whose sortOrder IS declared
+    // Absent, not seeded. `:L56` declares `ormtype="integer"` with no `default=` and no
+    // `required="true"` — contrast `model/entity/OptionGroup.cfc:L58`, whose sortOrder is declared
     // required. Nothing in application code assigns this field; the legacy pre-insert hook did, and
     // in the port that responsibility sits with the persistence layer. So the honest fresh-instance
     // state is "no value", and no starting number is invented for it here.
     expect(option.sortOrder).toBeUndefined();
 
     // `sortContext="optionGroup"` is the part that must not be mistaken for a table-wide seed: the
-    // first value is the maximum WITHIN THE OWNING OPTION GROUP plus one, which is why the seed
+    // first value is the maximum within the owning option group plus one, which is why the seed
     // cannot be computed without a parent and is deliberately not asserted as a number here.
     expect(OPTION_DECLARED_PROPERTY_LOCATORS.sortOrder).toBe('model/entity/Option.cfc:L56');
 
@@ -580,7 +377,7 @@ describe('Option — the persistent property surface', () => {
     option.sortOrder = 2;
     expect(option.sortOrder).toBe(2);
 
-    // `model/validation/Option.json` declares NO rule for this property, and none is added: the rule
+    // `model/validation/Option.json` declares no rule for this property, and none is added: the rule
     // set below is consumed as written rather than extended.
     const declaredRuleProperties = optionValidationRuleSet.properties.map(
       (property) => property.propertyIdentifier,
@@ -609,7 +406,7 @@ describe('Option — the persistent property surface', () => {
       );
     }
 
-    // The locator map and the production declared set agree in BOTH directions, so neither can
+    // The locator map and the production declared set agree in both directions, so neither can
     // drift silently: a property added to the entity but not recorded here fails, and a name
     // recorded here that the entity does not declare could not have compiled.
     expect([...OPTION_DECLARED_PROPERTY_NAMES].sort()).toEqual(
@@ -622,13 +419,7 @@ describe('Option — the persistent property surface', () => {
   });
 });
 
-/* ================================================================================================
- * CONSTRUCTION AND UNSAVED IDENTITY — the derived `isNew()` predicate
- *
- * `isNew()` is the one framework member the port declares on this entity, and it is declared because
- * the entity's OWN `:L94` short-circuit calls it. Everything the `setOptionGroup` parity cases assert
- * hangs off this predicate, so it gets its own coverage first.
- * ============================================================================================== */
+/* Construction and unsaved identity — the derived `isNew()` predicate. */
 
 describe('Option — construction and unsaved identity', () => {
   it('NET-NEW — model/entity/Option.cfc:L52 — a freshly constructed Option is new, and assigning an identifier is the whole of becoming saved', () => {
@@ -678,26 +469,16 @@ describe('Option — construction and unsaved identity', () => {
   });
 });
 
-/* ================================================================================================
- * THE REQUIRED OPTION-GROUP RELATIONSHIP — `model/entity/Option.cfc:L59` and
+/*
+ * The required option-group relationship — `model/entity/Option.cfc:L59` and
  * `model/validation/Option.json:L5`
- *
- * F5 — THE DELIBERATE TENSION BETWEEN THE TWO SOURCES, RESOLVED IN NEITHER DIRECTION.
- * The ORM mapping at `:L59` declares `cfc="OptionGroup" fieldtype="many-to-one"
- * fkcolumn="optionGroupID"` and carries NO requiredness attribute, so a transient Option with no
- * group is a legal object as far as the mapping is concerned. The validation document at `:L5`
- * declares `[{"contexts":"save","required":true}]`, so that same object cannot be SAVED. The port
- * keeps both halves exactly as they are: the TypeScript field is optional, and the rule set rejects
- * its absence in the `save` context. Tightening the field to required would make the rule
- * unreachable; dropping the rule would make an unsaveable object saveable. Neither is done, and the
- * two cases below assert each half in turn so the tension is visible rather than smoothed over.
- * ============================================================================================== */
+ */
 
 describe('Option — the required option-group relationship', () => {
   it('NET-NEW — model/entity/Option.cfc:L59 — a fresh Option is constructible with the option-group field entirely absent, not merely undefined', () => {
     const option = new Option();
 
-    // ABSENT, NOT PRESENT-HOLDING-UNDEFINED. The many-to-one is the one field the port declares
+    // Absent, not present-holding-undefined. The many-to-one is the one field the port declares
     // without emitting it, which is what lets an unresolved association be distinguished from one
     // resolved to nothing. The row mapper hydrates scalar columns only and leaves every many-to-one
     // unresolved, so absence is the state it guarantees and the state the entity must start in.
@@ -705,7 +486,7 @@ describe('Option — the required option-group relationship', () => {
     expect('optionGroup' in option).toBe(false);
     expect(option.optionGroup).toBeUndefined();
 
-    // Absent as a VALUE, still present as a DECLARATION — the distinction the legacy metadata
+    // Absent as a value, still present as a declaration — the distinction the legacy metadata
     // predicate turned on, and the reason the rule below is evaluated rather than skipped.
     expect(option.hasProperty('optionGroup')).toBe(true);
     expect(OPTION_DECLARED_PROPERTY_LOCATORS.optionGroup).toBe('model/entity/Option.cfc:L59');
@@ -719,7 +500,7 @@ describe('Option — the required option-group relationship', () => {
     const harness = createValidatorHarness();
     const option = new Option();
 
-    // The REAL validator over the REAL rule set. No fake rule engine, no hand-rolled predicate and
+    // The real validator over the real rule set. No fake rule engine, no hand-rolled predicate and
     // no reimplementation of the constraint evaluator appears in this file.
     expect(harness.validator).toBeInstanceOf(Validator);
 
@@ -728,13 +509,13 @@ describe('Option — the required option-group relationship', () => {
     expect(errors).toBeInstanceOf(ValidationError);
     expect(errors.hasErrors()).toBe(true);
 
-    // KEYED BY THE FULL PROPERTY IDENTIFIER, `optionGroup`, not by a trailing segment and not by a
+    // Keyed by the full property identifier, `optionGroup`, not by a trailing segment and not by a
     // rewritten label. The legacy engine reported against the identifier the rule was declared
     // under, and the port keeps that.
     expect(errors.hasError('optionGroup')).toBe(true);
     expect(Object.keys(errors.getErrors())).toContain('optionGroup');
 
-    // STORED AS AN ARRAY, because a property can accumulate more than one failure — which is exactly
+    // Stored as an array, because a property can accumulate more than one failure — which is exactly
     // what `optionCode` does in this same run.
     const optionGroupMessages = errors.getError('optionGroup');
     expect(Array.isArray(optionGroupMessages)).toBe(true);
@@ -768,20 +549,7 @@ describe('Option — the required option-group relationship', () => {
   });
 });
 
-/* ================================================================================================
- * `setOptionGroup()` — `model/entity/Option.cfc:L92-L97`
- *
- * The legacy body, verbatim:
- *
- *     variables.optionGroup = arguments.optionGroup;
- *     if(isNew() or !arguments.optionGroup.hasOption( this )) {
- *         arrayAppend(arguments.optionGroup.getOptions(), this);
- *     }
- *
- * Two behaviours have to survive together: the assignment is unconditional, and the append is
- * governed by a SHORT-CIRCUITING disjunction whose left operand is the new-flag. The order of those
- * operands is the whole of the parity question, and the cases below fix it in both directions.
- * ============================================================================================== */
+/* `setOptionGroup()` — `model/entity/Option.cfc:L92-L97` */
 
 describe('Option — setOptionGroup parity', () => {
   it('NET-NEW — model/entity/Option.cfc:L92-L97 — setOptionGroup assigns the group and appends the option into the group live options array', () => {
@@ -796,7 +564,7 @@ describe('Option — setOptionGroup parity', () => {
     expect(option.optionGroup).toBe(optionGroup);
     expect(Object.hasOwn(option, 'optionGroup')).toBe(true);
 
-    // The append at `:L95` targets the group's LIVE collection, not a copy of it — the legacy
+    // The append at `:L95` targets the group's live collection, not a copy of it — the legacy
     // appended into the array `getOptions()` returned, and the port reads the same array back.
     expect(optionGroup.getOptions()).toHaveLength(1);
     expect(optionGroup.getOptions()[0]).toBe(option);
@@ -829,14 +597,12 @@ describe('Option — setOptionGroup parity', () => {
 
     option.setOptionGroup(optionGroup);
 
-    // TODO(parity) F3 — model/entity/Option.cfc:L92-L97. `isNew()` is the LEFT operand of an `or`,
+    // TODO(parity) — model/entity/Option.cfc:L92-L97. `isNew()` is the left operand of an `or`,
     // so for an unsaved option it short-circuits and the containment test is never reached. The
     // append therefore happens a second time and the group holds the identical instance twice. This
     // is carried across exactly as written: no containment guard is added, no de-duplication is
     // performed and the entry is not collapsed. Repairing it would change observable behaviour, and
-    // it would change it in a place that matters — the parent collection is declared
-    // `cascade="all-delete-orphan"` at `model/entity/OptionGroup.cfc:L70`, and the option-group sort
-    // order this collection feeds is read by the sorted-SKU ordering query.
+    // it would change it in a place that matters — the parent collection is declared.
     expect(optionGroup.getOptions()).toHaveLength(2);
     expect(optionGroup.getOptions()[0]).toBe(option);
     expect(optionGroup.getOptions()[1]).toBe(option);
@@ -881,7 +647,7 @@ describe('Option — setOptionGroup parity', () => {
     expect(option.optionGroup).toBe(secondGroup);
     expect(secondGroup.getOptions()).toEqual([option]);
 
-    // TODO(parity) — the first group's collection is NOT cleaned up. `:L92-L97` performs no removal
+    // TODO(parity) — the first group's collection is not cleaned up. `:L92-L97` performs no removal
     // from a previously assigned group; only `removeOptionGroup` at `:L98-L107` does that, and
     // nothing calls it here. The stale membership is preserved rather than tidied, because tidying
     // it would add behaviour the legacy entity does not have.
@@ -890,40 +656,7 @@ describe('Option — setOptionGroup parity', () => {
   });
 });
 
-/* ================================================================================================
- * `removeOptionGroup()` — `model/entity/Option.cfc:L98-L107`
- *
- * The legacy body, verbatim:
- *
- *     if(!structKeyExists(arguments, "optionGroup")) {
- *         arguments.optionGroup = variables.optionGroup;
- *     }
- *     var index = arrayFind(arguments.optionGroup.getOptions(), this);
- *     if(index > 0) {
- *         arrayDeleteAt(arguments.optionGroup.getOptions(), index);
- *     }
- *     structDelete(variables, "optionGroup");
- *
- * G6 / F6 — THE INDEX-BASE SENTINEL TRANSLATION, AND WHY IT IS NOT A BEHAVIOUR CHANGE.
- * `model/entity/Option.cfc:L102-L104` is the one place in this entity where a faithful transliteration
- * would be WRONG. CFML arrays are ONE-based and `arrayFind` returns `0` to mean "not found", so
- * `index > 0` reads as "found" there. JavaScript arrays are ZERO-based and `indexOf` returns `-1` to
- * mean "not found", so the same predicate written as `index > 0` would silently skip the FIRST
- * element of every collection. The correct translation of the sentinel is `index !== -1` followed by
- * `splice`, which is what the port does — a technology-specific indexing translation carrying exactly
- * the legacy meaning, not a change to what the method does. The first case below is the regression
- * that would fail under the naive transliteration, and it is mandatory precisely because a
- * transliteration bug there produces no error and no compile failure.
- *
- * ⭐ THE ARGUMENT-LESS PATH FAILS WHEN NO GROUP IS ASSIGNED, AND TWO CASES BELOW WERE CORRECTED TO SAY
- * SO. `:L99-L101` defaults the omitted argument from `variables.optionGroup`; when that key does not
- * exist — a never-assigned option, or one already detached — the CFML engine raises at `:L100`, BEFORE
- * the search at `:L102` and before the unconditional clear at `:L106`. So a failed call writes nothing.
- * An earlier revision of this file asserted `.not.toThrow()` for both of those inputs and described the
- * relaxation as a hardening of an unreachable path; AAP §0.6.7 admits exactly one behaviour repair —
- * D18 (§0.6.7.7) — and this was not it. The failure is restored in `src/domain/option/Option.ts` and
- * asserted here, with the reasoning kept at each case so the correction is legible rather than silent.
- * ============================================================================================== */
+/* `removeOptionGroup()` — `model/entity/Option.cfc:L98-L107` */
 
 describe('Option — removeOptionGroup translation', () => {
   it('NET-NEW — model/entity/Option.cfc:L102-L104 — removal succeeds for the option at array position zero, which the naive one-based sentinel would have skipped', () => {
@@ -939,7 +672,7 @@ describe('Option — removeOptionGroup translation', () => {
 
     first.removeOptionGroup(optionGroup);
 
-    // G6 / F6 — `index !== -1` plus `splice`, so position zero is removed like any other.
+    // `index !== -1` plus `splice`, so position zero is removed like any other.
     expect(optionGroup.getOptions()).toHaveLength(1);
     expect(optionGroup.hasOption(first)).toBe(false);
 
@@ -974,13 +707,13 @@ describe('Option — removeOptionGroup translation', () => {
     expect(option.optionGroup).toBe(assignedGroup);
     expect(unrelatedGroup.hasOption(option)).toBe(false);
 
-    // The explicit-argument path of `:L99-L101`: the caller names a group the option is NOT in, so
+    // The explicit-argument path of `:L99-L101`: the caller names a group the option is not in, so
     // the lookup finds nothing and the splice at `:L103-L105` is skipped entirely.
     option.removeOptionGroup(unrelatedGroup);
 
     expect(unrelatedGroup.getOptions()).toEqual([]);
 
-    // `:L106` sits OUTSIDE the found-branch, so the back-reference is deleted regardless. That is
+    // `:L106` sits outside the found-branch, so the back-reference is deleted regardless. That is
     // faithfully carried: the option ends up with no group even though nothing was spliced, and the
     // group it really belonged to still lists it.
     expect(Object.hasOwn(option, 'optionGroup')).toBe(false);
@@ -988,7 +721,7 @@ describe('Option — removeOptionGroup translation', () => {
     expect(option.optionGroup).toBeUndefined();
 
     // TODO(parity) — the assigned group keeps the now-orphaned membership. `:L98-L107` removes from
-    // the group it was ASKED about, never from the one the option was actually assigned to, and no
+    // the group it was asked about, never from the one the option was actually assigned to, and no
     // reconciliation is added here.
     expect(assignedGroup.getOptions()).toEqual([option]);
   });
@@ -1012,29 +745,22 @@ describe('Option — removeOptionGroup translation', () => {
 
   it('NET-NEW — model/entity/Option.cfc:L100 — a SECOND removal FAILS, because the fallback resolves to nothing and the legacy dereferences it', () => {
     /*
-     * ⭐ THIS CASE ASSERTED THE OPPOSITE, AND ASSERTING IT IS WHAT KEPT THE DEFECT ALIVE.
-     * It previously read "a second removal is a NO-OP rather than a failure" and closed with
+     * This case asserted the opposite, and asserting it is what kept the defect alive.
+     * It previously read "a second removal is a no-op rather than a failure" and closed with
      * `.not.toThrow()`, on the stated grounds that "no error escapes — which is the behaviour a
      * repeated cleanup path depends on". No legacy caller depends on any such thing: the sole legacy
      * call site `model/entity/OptionGroup.cfc:L96` always passes the group explicitly, and there is no
-     * repeated-cleanup path in the source at all. The sentence described a convenience the port had
-     * invented, and the test then locked it in — which is precisely how a behaviour repair survives
-     * review, and why AAP §0.6.7 forbids the repair rather than merely discouraging it.
-     *
-     * WHAT THE LEGACY DOES. `:L100` defaults the omitted argument from `variables.optionGroup`. After
-     * the first removal that key is gone — `:L106` deleted it — so the assignment reads an undefined
-     * variable and the CFML engine raises THERE, before the collection search at `:L102` and before
-     * the unconditional clear at `:L106`.
+     * repeated-cleanup path in the source at all. The sentence described a convenience the port had.
      */
     const optionGroup = buildOptionGroup({ optionGroupCode: 'colour' });
     const option = buildOption({ optionCode: 'white', optionName: 'White', optionGroup });
 
-    // The FIRST removal succeeds: the fallback still resolves, so this is the ordinary path.
+    // The first removal succeeds: the fallback still resolves, so this is the ordinary path.
     option.removeOptionGroup();
     expect(option.optionGroup).toBeUndefined();
     expect(optionGroup.getOptions()).toEqual([]);
 
-    // The SECOND has nothing to fall back to, so it fails — as the legacy does.
+    // The second has nothing to fall back to, so it fails — as the legacy does.
     expect(() => {
       option.removeOptionGroup();
     }).toThrow(TypeError);
@@ -1043,7 +769,7 @@ describe('Option — removeOptionGroup translation', () => {
       option.removeOptionGroup();
     }).toThrow(/model\/entity\/Option\.cfc:L100/);
 
-    // NOTHING MOVED. The legacy raises before its clear, so a failed call performs no write; there is
+    // Nothing moved. The legacy raises before its clear, so a failed call performs no write; there is
     // no half-applied state to distinguish from the state the first removal left behind.
     expect(option.optionGroup).toBeUndefined();
     expect(Object.hasOwn(option, 'optionGroup')).toBe(false);
@@ -1054,12 +780,11 @@ describe('Option — removeOptionGroup translation', () => {
     const orphan = new Option();
 
     /*
-     * ⭐ THE SECOND HALF OF THE SAME CORRECTION. This assertion previously read `.not.toThrow()` and
-     * the title claimed a never-assigned option "can be removed". Both are withdrawn: with neither an
-     * argument nor a fallback, `model/entity/Option.cfc:L100` reads an undefined variable and raises.
-     * The group-side half of this case is UNCHANGED and still passes, which is the useful signal — it
-     * confirms the correction touched only the argument-less path and left the real, exercised
-     * delegation exactly as it was.
+     * The second half of the same behaviour. A never-assigned option cannot be removed: with
+     * neither an argument nor a fallback, `model/entity/Option.cfc:L100` reads an undefined
+     * variable and raises. The group-side half of this case passes either way, which is the useful
+     * signal — it confirms the raise is confined to the argument-less path and that the real,
+     * exercised delegation is untouched.
      */
     expect(Object.hasOwn(orphan, 'optionGroup')).toBe(false);
     expect(() => {
@@ -1069,9 +794,9 @@ describe('Option — removeOptionGroup translation', () => {
     expect(orphan.optionGroup).toBeUndefined();
     expect(Object.hasOwn(orphan, 'optionGroup')).toBe(false);
 
-    // ⭐ AND THE SHIPPED DELEGATING PATH IS UNAFFECTED, WHICH IS THE POINT OF KEEPING THIS HALF.
+    // And the shipped delegating path is unaffected, which is the point of keeping this half.
     // `model/entity/OptionGroup.cfc:L95-L97` is nothing but `option.removeOptionGroup(this)` — it
-    // ALWAYS supplies an argument, so it never reaches the fallback and never raises. That is what
+    // always supplies an argument, so it never reaches the fallback and never raises. That is what
     // makes the correction above safe for every caller in the slice: the raise is confined to the
     // no-argument form, and no in-scope caller uses it.
     const optionGroup = new OptionGroup();
@@ -1091,29 +816,9 @@ describe('Option — removeOptionGroup translation', () => {
   });
 });
 
-/* ================================================================================================
- * THE SKUS RELATIONSHIP, INVERSE OVER `SwSkuOption` — `model/entity/Option.cfc:L66` and `:L109-L115`
- *
- * THE OWNERSHIP ASYMMETRY IS THE WHOLE POINT, AND IT IS DECLARED IN THE MAPPINGS.
- *   `model/entity/Sku.cfc:L75` labels its block "(many-to-many - owner)" and `:L76` declares
- *       `linktable="SwSkuOption" fkcolumn="skuID" inversejoincolumn="optionID"` with NO `inverse`
- *       attribute — so the SKU OWNS the association and is the side that writes the link row.
- *   `model/entity/Option.cfc:L66` declares the mirror image,
- *       `linktable="SwSkuOption" fkcolumn="optionID" inversejoincolumn="skuID"`, and it DOES carry
- *       `inverse="true"` — so the Option is the INVERSE side and merely reflects the link.
- *
- * That is why `:L110-L112` and `:L113-L115` are pure delegations: `addSku` is `sku.addOption(this)`
- * and `removeSku` is `sku.removeOption(this)`. Neither touches the option's own collection, and the
- * cases below assert both halves of that — the delegation happened, AND the inverse array was left
- * alone. The link table is named here as prose provenance only; no SQL and no adapter is reached from
- * this file.
- *
- * Neither `addSku` nor `removeSku` was ever declared in `model/entity/Sku.cfc`'s counterpart members:
- * `addOption` and `removeOption` were synthesized at runtime from the owning mapping's
- * `singularname="option"`, which is precisely the implicit surface AAP IR-1 requires to be declared
- * explicitly in the port. Calling them below is therefore the first executable check that those two
- * declarations exist and behave.
- * ============================================================================================== */
+/*
+ * The SKUS relationship, inverse over `SwSkuOption` — `model/entity/Option.cfc:L66` and `:L109-L115`
+ */
 
 describe('Option — the SKUs inverse relationship over SwSkuOption', () => {
   it('NET-NEW — model/entity/Option.cfc:L66 — the SKUs collection is the inverse side, exposed as a live array with no collection accessor of its own', () => {
@@ -1126,7 +831,7 @@ describe('Option — the SKUs inverse relationship over SwSkuOption', () => {
     expect(option.hasProperty('skus')).toBe(true);
     expect(OPTION_DECLARED_PROPERTY_LOCATORS.skus).toBe('model/entity/Option.cfc:L66');
 
-    // The INVERSE side exposes no collection accessor at all: `model/entity/Option.cfc` declares no
+    // The inverse side exposes no collection accessor at all: `model/entity/Option.cfc` declares no
     // `getSkus`/`hasSku` body, unlike `model/entity/OptionGroup.cfc:L73-L79` which declares
     // `getOptions`. The port declares exactly the members the legacy declares, so no accessor is
     // invented here to make the two sides look symmetrical.
@@ -1136,7 +841,7 @@ describe('Option — the SKUs inverse relationship over SwSkuOption', () => {
     expect(optionMembers).not.toContain('getSkus');
     expect(optionMembers).not.toContain('hasSku');
 
-    // The OWNING side does declare its collection accessors, which is the asymmetry stated above
+    // The owning side does declare its collection accessors, which is the asymmetry stated above
     // expressed as a structural fact rather than as a comment.
     const skuMembers = Object.getOwnPropertyNames(Sku.prototype);
     expect(skuMembers).toContain('getOptions');
@@ -1154,7 +859,7 @@ describe('Option — the SKUs inverse relationship over SwSkuOption', () => {
     expect(owner.added).toEqual([option]);
     expect(owner.removed).toEqual([]);
 
-    // AND the option's own collection is untouched. The recorder deliberately declines to maintain
+    // And the option's own collection is untouched. The recorder deliberately declines to maintain
     // the relationship, so any entry appearing here could only have been put there by the option
     // itself — which on the inverse side must never happen.
     expect(option.skus).toEqual([]);
@@ -1196,7 +901,7 @@ describe('Option — the SKUs inverse relationship over SwSkuOption', () => {
     expect(option.skus).toEqual([]);
 
     // The owning side carries its own containment guard, so a repeated attach does not duplicate —
-    // note that this is the OWNER's guard and is unrelated to the unsaved short-circuit that makes
+    // note that this is the owner's guard and is unrelated to the unsaved short-circuit that makes
     // `setOptionGroup` double-append.
     option.addSku(sku);
     expect(sku.getOptions()).toEqual([option]);
@@ -1234,26 +939,7 @@ describe('Option — the SKUs inverse relationship over SwSkuOption', () => {
   });
 });
 
-/* ================================================================================================
- * `getImageDirectory()` — `model/entity/Option.cfc:L81-L83`
- *
- * The legacy body is one line:
- *
- *     return getURLFromPath(setting('globalAssetsImageFolderPath')) & '/option/';
- *
- * Both members it calls arrived by inheritance and both cross the scope boundary: `setting()` forwards
- * into the out-of-scope setting service's effective-value engine, and `getURLFromPath()` is the
- * framework object's pure string transform. The port takes them as one explicit collaborator
- * parameter, so this method is the only member of the entity that needs anything injected — and the
- * only one whose test needs a double.
- *
- * WHAT IS ASSERTED, AND WHAT DELIBERATELY IS NOT. Asserted: which setting key is read, that the
- * resolved value is fed through the transform, and the byte-exact suffix that is appended. Not
- * asserted: the value the production settings engine resolves for that key, and what the real
- * path-to-URL transform does with it. Neither belongs to this entity, and inventing either would be
- * asserting a fact this file cannot verify. Nothing here touches the filesystem, resolves a path or
- * expands a web root.
- * ============================================================================================== */
+/* `getImageDirectory()` — `model/entity/Option.cfc:L81-L83` */
 
 describe('Option — the image directory member', () => {
   it('NET-NEW — model/entity/Option.cfc:L81-L83 — getImageDirectory reads globalAssetsImageFolderPath, feeds it through the path transform, and appends the byte-exact /option/ suffix', () => {
@@ -1266,7 +952,7 @@ describe('Option — the image directory member', () => {
     expect(directory).toBe(`${SYNTHETIC_IMAGE_FOLDER_URL}${OPTION_IMAGE_DIRECTORY_SUFFIX}`);
     expect(typeof directory).toBe('string');
 
-    // BYTE-EXACT SUFFIX. Lower-case `option`, a leading slash and — decisively — a TRAILING slash,
+    // Byte-exact suffix. Lower-case `option`, a leading slash and — decisively — a trailing slash,
     // which is what makes the returned value a directory rather than a file path. None of the three
     // is normalised away.
     expect(OPTION_IMAGE_DIRECTORY_SUFFIX).toBe('/option/');
@@ -1274,7 +960,7 @@ describe('Option — the image directory member', () => {
     expect(directory.slice(-OPTION_IMAGE_DIRECTORY_SUFFIX.length)).toBe('/option/');
     expect(directory).not.toContain('/Option/');
 
-    // EXACTLY ONE setting read, for exactly the key `:L82` names, with no resolution context — the
+    // Exactly one setting read, for exactly the key `:L82` names, with no resolution context — the
     // legacy call passed the bare setting name. The double raises rather than guessing for any
     // unseeded key, so a mis-typed key would have failed here instead of silently resolving.
     expect(collaborator.settingCalls).toHaveLength(1);
@@ -1283,7 +969,7 @@ describe('Option — the image directory member', () => {
     ]);
     expect(collaborator.settingCalls[0]?.context).toBeUndefined();
 
-    // The RESOLVED value is what reaches the transform — the entity does not pass the key, and it
+    // The resolved value is what reaches the transform — the entity does not pass the key, and it
     // does not transform the value itself.
     expect(collaborator.transformedPaths).toEqual([SYNTHETIC_IMAGE_FOLDER_PATH]);
   });
@@ -1299,7 +985,7 @@ describe('Option — the image directory member', () => {
     // precisely so a caller can compose the value inline the way `:L82` did.
     expect(second).toBe(first);
 
-    // TWO reads, not one. The legacy entity memoised nothing here, and the port holds no cache
+    // Two reads, not one. The legacy entity memoised nothing here, and the port holds no cache
     // either — which matters because a warm container persists module scope across invocations and a
     // cached setting value would then be shared across tenants.
     expect(collaborator.settingCalls).toHaveLength(2);
@@ -1342,33 +1028,7 @@ describe('Option — the image directory member', () => {
   });
 });
 
-/* ================================================================================================
- * THE ENTITY-BASE ASSERTION PATTERN, RE-EXPRESSED AGAINST THE TARGET LAYERS
- *
- * `meta/tests/unit/entity/SlatwallEntityTestBase.cfc` declares four assertions that every legacy
- * entity test inherited. Option had no test component, so it INHERITED NOTHING and none of the four
- * ever ran against it — which is why the cases below are net-new rather than traceable. They are
- * still worth carrying, because the four are the entity-shaped questions worth asking, and following
- * the useful parts of that pattern is the closest thing to a legacy signal this entity has.
- *
- * WHERE EACH ASSERTION NOW LIVES, MEMBER BY MEMBER:
- *   `:L51-L54`  validate-as-save-fails      MOVED OUT OF THE ENTITY. `validate`/`hasErrors` were
- *                                           framework members, and the framework is retired for this
- *                                           slice rather than ported, so the check is re-expressed
- *                                           against `src/validation/Validator.ts` driving
- *                                           `option.rules.ts`.
- *   `:L56-L58`  simple representation       STRUCTURAL. The framework resolved the property by a
- *                                           naming convention — the class name with `name` appended —
- *                                           and threw when nothing matched. The port declares no such
- *                                           member on this entity, so the case asserts the convention
- *                                           RESOLVES using the entity's own real members rather than
- *                                           re-implementing the resolver.
- *   `:L60-L62`  primary-ID property name    PRESENT. It is one of the managed-entity members the port
- *                                           declares explicitly under AAP IR-1, because the validator
- *                                           and the uniqueness port require it by name.
- *   `:L64-L67`  defaults are correct        PRESENT, split across the construction cases above and
- *                                           re-asserted here in the base's own terms.
- * ============================================================================================== */
+/* The entity-base assertion pattern, re-expressed against the target layers. */
 
 describe('Option — the entity-base assertion pattern', () => {
   it('NET-NEW — meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L54 — validating a new instance for save does not pass, and reports a keyed error bag from the real rule set', async () => {
@@ -1396,7 +1056,7 @@ describe('Option — the entity-base assertion pattern', () => {
     const option = new Option();
 
     // The convention the framework resolver applied: the class name with `name` appended, compared
-    // case-insensitively against the declared property names. Deriving it from the entity's OWN
+    // case-insensitively against the declared property names. Deriving it from the entity's own
     // `getClassName()` is what makes this a check of the code under test rather than of a literal
     // this file wrote down.
     expect(option.getClassName()).toBe(OPTION_CLASS_NAME);
@@ -1411,7 +1071,7 @@ describe('Option — the entity-base assertion pattern', () => {
     expect(resolved).toEqual(['optionName']);
     expect(option.hasProperty('optionName')).toBe(true);
 
-    // And the value read through that property is a SIMPLE value in both states. An unset property
+    // And the value read through that property is a simple value in both states. An unset property
     // reads as the empty string rather than as undefined, which is what the legacy simple-value
     // assertion required of it.
     const emptyRepresentation = option.getValueByPropertyIdentifier('optionName');
@@ -1444,7 +1104,7 @@ describe('Option — the entity-base assertion pattern', () => {
     expect(option.getPropertyMetaData(OPTION_PRIMARY_ID_PROPERTY_NAME).name).toBe('optionID');
     expect(option.getPropertyMetaData('optionCode').name).toBe('optionCode');
 
-    // The mapped ORM entity name is the LOGICAL name from the `entityname` attribute at `:L49`, not
+    // The mapped ORM entity name is the logical name from the `entityname` attribute at `:L49`, not
     // the physical `SwOption` table — the distinction the uniqueness statement is expressed over.
     expect(option.getEntityName()).toBe(OPTION_ENTITY_NAME);
     expect(OPTION_ENTITY_NAME).toBe('SlatwallOption');
@@ -1472,15 +1132,7 @@ describe('Option — the entity-base assertion pattern', () => {
   });
 });
 
-/* ================================================================================================
- * THE DECLARATIVE RULE SET — `model/validation/Option.json`, consumed as `option.rules.ts`
- *
- * Four properties carry rules and no more: `optionCode` required + unique + format at `:L3`,
- * `optionName` required at `:L4`, `optionGroup` required at `:L5`, and a `skus` delete guard at `:L6`.
- * The rule set is CONSUMED as written — the shared code format pattern is neither retyped nor
- * redefined here, no rule is added for `sortOrder` because the document declares none, and the
- * constraint evaluator is the real one.
- * ============================================================================================== */
+/* The declarative rule set — `model/validation/Option.json`, consumed as `option.rules.ts` */
 
 describe('Option — the declarative validation rules', () => {
   it('NET-NEW — model/validation/Option.json — the rule set declares exactly four properties, in document order, and adds none', () => {
@@ -1517,7 +1169,7 @@ describe('Option — the declarative validation rules', () => {
     const errors = await harness.validateDryRun(option, optionValidationRuleSet, SAVE_CONTEXT);
 
     // The code above deliberately exercises every character class the shared format pattern admits.
-    // The pattern itself is imported by the rule set from the module that owns it and is NOT retyped
+    // The pattern itself is imported by the rule set from the module that owns it and is not retyped
     // here — a second copy would drift from the one the code under test uses.
     expect(errors.hasError('optionCode')).toBe(false);
     expect(errors.hasErrors()).toBe(false);
@@ -1629,7 +1281,7 @@ describe('Option — the declarative validation rules', () => {
     expect(unusedErrors.hasErrors()).toBe(false);
     expect(unusedErrors.getErrors()).toEqual({});
 
-    // Seed the INVERSE collection the way the persistence layer hydrates it. It is seeded directly
+    // Seed the inverse collection the way the persistence layer hydrates it. It is seeded directly
     // and deliberately: `addSku` delegates to the owning side and correctly leaves this array alone,
     // so the state the delete guard reads can only arrive from hydration.
     const sku = buildSku({ skuCode: 'SKU-RED' });
@@ -1667,20 +1319,7 @@ describe('Option — the declarative validation rules', () => {
   });
 });
 
-/* ================================================================================================
- * SCOPE AND COMPLETENESS
- *
- * The two cases below are the checkable form of the scope statement in the file header. The first
- * pins the converted method surface, so a member appearing or disappearing fails here rather than
- * going unnoticed. The second pins the exclusions, so the image and promotion relationships stay out
- * of the port's field-backed name space.
- *
- * WHY NO BOUNDARY STUB IS TESTED: there is nothing to stub. `model/entity/Option.cfc:L85-L87`, the
- * entity's non-persistent-property section, is empty, so this entity declares no calculated member
- * reaching a price, promotion, inventory or currency service — and consequently the port has no
- * un-portable member to represent. No placeholder property is fabricated in order to have a boundary
- * to assert against.
- * ============================================================================================== */
+/* Scope and completeness. */
 
 describe('Option — scope and completeness', () => {
   it('NET-NEW — model/entity/Option.cfc:L81-L115 — the converted method surface is exactly the declared members, and every one of them has explicit coverage above', () => {
@@ -1705,7 +1344,7 @@ describe('Option — scope and completeness', () => {
     expect(declaredMembers).toContain('getPropertyMetaData');
     expect(declaredMembers).toContain('getValueByPropertyIdentifier');
 
-    // NOTHING ELSE. The surface is closed at those thirteen plus the constructor, which is what makes
+    // Nothing else. The surface is closed at those thirteen plus the constructor, which is what makes
     // the exclusion register a fact about the class rather than a claim in a comment. In particular
     // none of the eight promotion helpers of `:L118-L147` was carried across, and no framework
     // member the slice does not use was invented.

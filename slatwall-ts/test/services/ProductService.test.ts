@@ -1,101 +1,14 @@
 /**
- * ==================================================================================================
  * ProductService — unit suite for the extracted TypeScript catalog service
- * ==================================================================================================
  *
- * WHAT THIS FILE IS. Direct-import, constructor-injection UNIT tests for
+ * What this file is. Direct-import, constructor-injection unit tests for
  * `slatwall-ts/src/services/ProductService.ts`, the port of `model/service/ProductService.cfc`. Every
  * test builds its own service graph through {@link buildHarness} and drives the class directly. There
  * is no framework, no container, no service locator and no module mocking anywhere in this file.
  *
- * HOW THAT DIFFERS FROM THE LEGACY SUITE, AND WHY THE DIFFERENCE IS BY DESIGN.
- * `meta/tests/unit/SlatwallUnitTestBase.cfc:L49-L79` is the shape every legacy service test inherited:
- * it extends `mxunit.framework.TestCase`, instantiates the whole `Slatwall.Application` FW/1
- * application in `setUp()` (`:L52`), bootstraps it (`:L60`) and then resolves collaborators out of the
- * DI/1 bean factory by string name. `meta/tests/unit/service/HibachiServiceTest.cfc` — the AAP's
- * designated reference for this file's shape (AAP §0.4.1.12) — follows exactly that pattern. Those are
- * therefore INTEGRATION tests wearing a unit-test base class: booting the application is a precondition
- * of calling a single method. This suite is the opposite: the class under test is imported, its
- * collaborators are typed doubles, and nothing outside `slatwall-ts/` is touched. AAP §0.4.3.6 records
- * that inversion as the single largest structural difference between the two suites, and a reviewer
- * comparing them should expect it rather than read it as a gap.
- *
- * ⚠️ THE LEGACY BASE ALSO RAN AS A SUPERUSER. `SlatwallUnitTestBase.cfc:L62` is
- * `request.slatwallScope.getAccount().setSuperUserFlag(1)`, so every legacy assertion was made with
- * authorization defeated. This suite makes the account context EXPLICIT instead — the harness injects a
- * named account through the landed account-context seam, and the population authorization is a declared
- * collaborator rather than an ambient privilege. Where a test needs the permissive posture the legacy
- * enjoyed, it says so.
- *
- * ⚠️ TRACEABILITY HERE IS DOCUMENTARY ONLY, AND NO LEGACY SUITE WAS EXECUTED. MXUnit and CFSelenium are
- * not vendored in this repository; `meta/tests/readme.txt:L1-L7` requires MXUnit to be installed on the
- * machine with a mapping inside CFIDE, plus CFSelenium and an Eclipse/CFBuilder plugin, none of which
- * exists here. `meta/docker/slatwall-local-dev/` — cited by the prompt as the local Lucee/Railo + MySQL
- * setup — DOES NOT EXIST (`meta/` contains only `tests/` and `eclipse/`). No CFML engine, no MXUnit
- * runner and no runtime comparison against the original behaviour was performed for any assertion
- * below. Every parity claim in this file was established by READING the cited source locator, and each
- * assertion carries that locator so a reviewer can re-derive it (AAP §0.6.5.3, §0.8.4).
- *
- * ⚠️ WHY EVERY TEST BUILDS FRESH STATE. `SlatwallUnitTestBase.cfc:L53` is a COMMENTED-OUT
- * `reloadApplication()` and `:L70` is a COMMENTED-OUT `endSlatwallLifecycle()`. The legacy suite
- * therefore neither reset the application before a test nor ran the request-end lifecycle after one,
- * which means the M5 implicit request-end commit gate never fired under test and leftover state was
- * carried between tests. This file removes that class of doubt structurally: there is NO module-scope
- * mutable state, and {@link buildHarness} constructs a new service, new repositories, new ports, new
- * entities and new process objects for every single test.
- *
- * NET-NEW COVERAGE, STATED PLAINLY AND WITHOUT EXCEPTION. `meta/tests/` contains NO
- * `ProductServiceTest.cfc` — AAP §0.6.5.2 verified its absence — so EVERY assertion in this file is
- * NET-NEW coverage, and every test name says so. Two cases carry a legacy locator anyway, and the
- * distinction matters: `meta/tests/unit/IssuesTest.cfc:L192-L201` (`issue_1690`) and
- * `meta/tests/unit/Helper.cfc:L52-L77` (the merchandise fixture) supply the SCENARIO and the fixture
- * LITERALS this file reuses, but neither contains a single `assert` statement, so there is no legacy
- * assertion for those cases to extend. They are labelled NET-NEW with the legacy locator named, which is
- * the honest form: the locator earns traceability of the scenario, not of a verdict. Nothing here implies
- * parity with a legacy assertion that does not exist (AAP §0.8.3.7).
- *
- * WHAT IS COVERED, IN ORDER. The fifteen declared members of AAP §0.4.2.1 each get their own block:
- * `loadDataFromFile`, `getFormattedOptionGroups`, `getProductSkusBySelectedOptions`,
- * `processProductAddOptionGroup`, `processProductAddOption`, `processProductAddProductReview`,
- * `processProductAddSubscriptionTerm`, `processProductDeleteDefaultImage`,
- * `processProductUpdateDefaultImageFileNames`, `processProductUpdateSkus`,
- * `processProductUploadDefaultImage`, `saveProduct`, `saveProductType`, `deleteProduct` and
- * `getProductSmartList`. Three cross-cutting blocks sit alongside them: the N3 two-pass process
- * orchestration, and the three IR-1 members (`newProduct`, `getProduct`, `getProductType`) that exist in
- * the legacy only through `onMissingMethod` synthesis and had to be declared explicitly here.
- *
- * ⛔ WHAT IS DELIBERATELY NOT COVERED, so the omissions read as decisions.
- *
- *   1. `buildSkuCombinations` — `model/service/ProductService.cfc:L82-L97` is `private`, and the only
- *      call site in the entire repository is its own recursive self-call at `:L93`. It is therefore
- *      UNREACHABLE dead code, catalogued as defect D15 (AAP §0.6.7.3), and AAP §0.4.1.8 states it is
- *      NOT PORTED. Unported code gets no test. This paragraph exists so a reviewer counting members
- *      does not read the absence as a hole in the matrix.
- *
- *   2. The AWS handler surface. This file's mandate is `ProductService`'s own fifteen-member matrix, not
- *      the layer in front of it; `test/handlers/productHandler.test.ts` owns that. No AWS type, event,
- *      context or handler module is imported here — all AWS coupling belongs to `src/handlers/**`
- *      (AAP §0.7.3, hexagonal separation), and keeping it out of this file is what lets every case below
- *      construct the service directly.
- *
- *   3. The sixteen excluded calculated members of AAP §0.2.2.6 — `salePrice`, `livePrice`, `qats`,
- *      `currencyDetails`, `eligibleFulfillmentMethods` and the rest. Nothing below reads them, and no
- *      real Pricing, Physical, Setting, Attribute, Inventory or Promotion service is constructed.
- *
- *   4. Order/Payment session locks, coverage thresholds, retry counts, batch sizes and timing budgets.
- *      None exists in the source; inventing one would violate IR-12 and AAP §0.7.3 standard 9.
- *
- * 📝 A SOURCE ARTEFACT WORTH RECORDING BUT NOT WORTH BEHAVIOUR. `model/service/ProductService.cfc`
- * carries the banner `// ===================== START: DAO Passthrough ===================` TWICE, at
- * `:L102` and again at `:L108`, so the "Logical Methods" section between them is never opened. The same
- * duplication appears at `model/service/OptionService.cfc:L70` and `:L80`. It is a copy-paste artefact
- * in a comment. It has no runtime meaning, and no test below invents one for it.
- *
- * 📝 M8 — SETTING RESOLUTION IS SYNCHRONOUS AND NOTHING HERE AWAITS A BACKGROUND WRITER.
- * `SettingService.updateStockCalculated` launches a named `cfthread` in the legacy platform (AAP
- * §0.6.6, M8). That service is out of scope, and the landed `SettingResolverPort.setting()` is a
- * SYNCHRONOUS call returning a `string`. No test below awaits a setting, polls for one, or asserts on
- * background completion.
+ * That is the deliberate difference from the legacy suite: `meta/tests/unit/SlatwallUnitTestBase.cfc:L49-L79`
+ * boots the whole FW/1 application and resolves services through DI/1 at run time, making every legacy
+ * service test an integration test. These are unit tests, which the ports are what make possible.
  */
 
 import {
@@ -253,7 +166,7 @@ const PRODUCT_TITLE_STRING_SETTING: SettingSeed = {
 
 /**
  * The two settings `Sku.generateImageFileName()` reads. Every member that chains
- * `updateDefaultImageFileNames` needs them, and the resolver double THROWS on an unseeded key, so
+ * `updateDefaultImageFileNames` needs them, and the resolver double throws on an unseeded key, so
  * seeding them is what proves the chain actually ran rather than silently no-oped.
  */
 const IMAGE_FILE_NAME_SETTINGS: readonly SettingSeed[] = [
@@ -273,43 +186,9 @@ const AUTO_APPROVE_REVIEWS_SETTING: SettingSeed = {
   value: '1',
 };
 
-// ==================================================================================================
-// PHYSICALLY VALID IDENTIFIERS — REVIEW FINDING 16
-//
-// Every entity identifier in this file is minted by `physicalID(label)`, so its value is 32 lowercase
-// hexadecimal characters with no dashes — the shape AAP IR-6 fixes for all 107 uuid-keyed entities in
-// this schema — while the readable label stays at the call site. The mechanism and the rationale it
-// withdraws are documented once, at `test/support/inMemoryRepositories.ts`; this file was the largest
-// contributor to the review's audit (78 non-physical literals) and now contributes none.
-//
-// TWO CLASSES OF CASE DESERVE THEIR OWN NOTE, because the review's resolution explicitly anticipated
-// identifiers that "intentionally require readable/case-sensitive values". Both are preserved, and
-// both are STRONGER in the physical form rather than merely converted:
-//
-//   1. ABSENT-IDENTIFIER PROBES — `physicalID('o-nowhere')` and `physicalID('og-does-not-exist')`.
-//      These stand for keys that are deliberately not in the store. A malformed sentinel would leave
-//      the case unable to separate "looked up and not found" from "rejected because the key was the
-//      wrong shape"; a well-formed key that simply is not present can only produce the former.
-//
-//   2. THE CASE-SENSITIVITY PROBE — `physicalID('o-small').toUpperCase()`, the option the tests call
-//      `smallShouted`. It was the literal `'O-SMALL'`. The uppercase HEX form is the same identifier
-//      in a different case, so when `getUnusedProductOptions` declines to list it the only property
-//      the assertion can be responding to is the case difference. The readable pair `o-small`/`O-SMALL`
-//      also differed in nothing but case, so no assertive power is lost — but the physical form
-//      additionally exercises the width and alphabet the port will really receive.
-//
-// No identifier here is hand-typed: every value is derived from its label, so a reader can reproduce
-// any of them without trusting a literal (AAP §0.8.5's artifact-trail requirement, applied to fixtures).
-// ==================================================================================================
+// Physically valid identifiers.
 
-// ==================================================================================================
-// Strict-mode reading helpers
-//
-// `noUncheckedIndexedAccess` makes every indexed read `T | undefined`, and this file may not use a
-// non-null assertion, `any`, or a suppression comment to get around that. These two helpers do the
-// narrowing honestly: they throw a descriptive error when the element a test claims exists does not,
-// which turns a would-be `undefined` dereference into a readable failure.
-// ==================================================================================================
+// Strict-mode reading helpers.
 
 function requireAt<TItem>(items: readonly TItem[], index: number): TItem {
   const item = items[index];
@@ -321,25 +200,12 @@ function requireAt<TItem>(items: readonly TItem[], index: number): TItem {
   return item;
 }
 
-/**
- * The option-group NAMES an answer carries, in the order it carries them.
- *
- * `getFormattedOptionGroups` answers a record KEYED by name — TR-1's tightening of
- * `model/service/ProductService.cfc:L71`'s struct, restored by review finding F3 — so the labels are the
- * record's own keys. Order is asserted through this helper because it is a documented behaviour —
- * first-seen group order — and not an accident of the shape.
- */
+/** The option-group names an answer carries, in the order it carries them. */
 function groupNames(groups: FormattedOptionGroups): readonly string[] {
   return Object.keys(groups);
 }
 
-/**
- * Reads one formatted option group by NAME, failing loudly when no entry carries it.
- *
- * The name is the identity `model/service/ProductService.cfc:L76` keys by, so it is the only way to
- * address an entry; the failure message lists the keys that ARE present so a mismatch reads as a
- * mismatch rather than as an `undefined` dereference.
- */
+/** Reads one formatted option group by name, failing loudly when no entry carries it. */
 function requireGroup(
   groups: FormattedOptionGroups,
   optionGroupName: string,
@@ -375,20 +241,8 @@ function isProductCall<TMember extends ProductRepositoryCall['member']>(
 /**
  * Awaits a call that is expected to reject with a {@link DomainError} and hands the error back so its
  * `context` — the locator the ported member pins its judgement call to — can be asserted directly.
- *
- * Written by hand rather than reached through `rejects.toBeInstanceOf` because that matcher proves the
- * TYPE of the rejection and discards the value, and several members of this service distinguish two
- * different refusals by their context alone (see the D6 pair in Phase 7D). A rejection that never
- * happens fails loudly here rather than passing silently.
  */
-/**
- * Narrows a member of `Product.getSkus()` to the `Sku` ENTITY.
- *
- * `Product` declares its SKU collection as a narrow structural member type, on purpose — the entity may
- * not depend on the whole SKU surface. Tests that read SKU fields therefore have to establish entity
- * identity first, and this does it with a real `instanceof` test rather than a cast, matching how the
- * landed service reads the same collection (`ProductService.ts` `readProductSkusAsSkus`).
- */
+/** Narrows a member of `product.getSkus()` to the `Sku` entity. */
 function requireSku(candidate: unknown, description: string): Sku {
   if (!(candidate instanceof Sku)) {
     throw new Error(`Expected ${description} to be a Sku entity.`);
@@ -416,9 +270,7 @@ async function captureDomainError(call: Promise<unknown>): Promise<DomainError> 
   throw new Error('Expected the call to reject with a DomainError, but it resolved.');
 }
 
-// ==================================================================================================
-// Observable validator seams
-// ==================================================================================================
+// Observable validator seams.
 
 /** One recorded validation request, in the order the service issued it. */
 type ValidationInvocation =
@@ -431,22 +283,8 @@ type ValidationInvocation =
     };
 
 /**
- * The REAL {@link Validator}, subclassed only to record what it was asked, in the order it was asked.
+ * The real {@link Validator}, subclassed only to record what it was asked, in the order it was asked.
  * Every outcome is the base class's: both overrides delegate straight to `super`.
- *
- * A SUBCLASS rather than a wrapper, and the reason is the N3 two-pass order. `Validator.validateProcess`
- * performs its second pass by calling `this.validate`, so an object placed AROUND the validator would
- * see one call where the source performs two. Overriding puts the recorder on the `this` the base class
- * itself dispatches through, which makes both passes visible in true order:
- * `org/Hibachi/HibachiService.cfc:L96` validates the ENTITY with the process context, `:L99` gates on
- * the entity being error-free, and `:L108` only then validates the PROCESS OBJECT with the SAME context.
- *
- * It also keeps the three invocation mechanisms distinguishable rather than collapsing them into one
- * invented global context: `org/Hibachi/HibachiService.cfc:L55` hard-codes `delete`, `:L133` defaults
- * the save context to `save`, and the process context is explicitly supplied by the caller.
- *
- * No mocking library is involved — the recording is one plain array, matching the house style the
- * sibling domain suites already follow.
  */
 class RecordingValidator extends Validator {
   readonly invocations: ValidationInvocation[] = [];
@@ -480,19 +318,8 @@ class RecordingValidator extends Validator {
 }
 
 /**
- * A validator that finds nothing wrong, used ONLY where a landed boundary makes the real rule set
+ * A validator that finds nothing wrong, used only where a landed boundary makes the real rule set
  * unreachable and the prompt still requires the member's body to be exercised.
- *
- * ⚠️ WHY THIS EXISTS AT ALL — it is the honest consequence of TR-5, not a convenience.
- * `processProductAddSubscriptionTerm` validates the entity in the `addSubscriptionTerm` context, and
- * `model/validation/Product.json:L15` puts a `minCollection: 1` guard on
- * `unusedProductSubscriptionTerms` in exactly that context. The landed subject builder calls
- * `product.getUnusedProductSubscriptionTerms()` with NO finder, because the subscription domain is out
- * of scope (AAP §0.2.2.1), and that member answers `[]` unconditionally. A real, correctly ported rule
- * therefore refuses every real, correctly ported invocation, and the member's body — including defect
- * D6 — is unreachable through the real validator. Substituting this seam is how D6's two paths are
- * pinned without weakening the rule set, which stays exactly as `model/validation/Product.json`
- * declares it. The real rule is asserted separately, in its own test.
  */
 function createPermissiveValidator(): ProductProcessValidator {
   return {
@@ -506,9 +333,7 @@ function createPermissiveValidator(): ProductProcessValidator {
   };
 }
 
-// ==================================================================================================
-// The option catalog the smart-list seam answers with
-// ==================================================================================================
+// The option catalog the smart-list seam answers with.
 
 /**
  * What the option queries behind `Product.getOptionGroups()` and `Product.getOptionsByOptionGroup()`
@@ -518,7 +343,7 @@ function createPermissiveValidator(): ProductProcessValidator {
  * same way the queries are.
  */
 interface OptionCatalog {
-  /** The groups the PRODUCT owns — what `Product.getOptionGroups()` resolves to. */
+  /** The groups the product owns — what `Product.getOptionGroups()` resolves to. */
   readonly optionGroups: readonly OptionGroup[];
   /** The product's options per group — what `Product.getOptionsByOptionGroup()` resolves to. */
   readonly optionsByOptionGroupID: Readonly<Record<string, readonly Option[]>>;
@@ -536,7 +361,9 @@ const EMPTY_OPTION_CATALOG: OptionCatalog = Object.freeze({
 /** The filter path `findProductOptionsByOptionGroup` uses to select a single group's options. */
 const OPTION_GROUP_ID_FILTER_PATH = 'optionGroup.optionGroupID';
 
-/** Reads one exact-match filter value out of a query, or `undefined` when the query has no such filter. */
+/**
+ * Reads one exact-match filter value out of a query, or `undefined` when the query has no such filter.
+ */
 function readFilterValue(query: SmartListQuery, propertyIdentifier: string): string | undefined {
   for (const whereGroup of query.whereGroups ?? []) {
     for (const filter of whereGroup.filters ?? []) {
@@ -548,18 +375,7 @@ function readFilterValue(query: SmartListQuery, propertyIdentifier: string): str
   return undefined;
 }
 
-/**
- * Answers every query the catalog slice issues against the smart-list seam.
- *
- * Four distinct query shapes reach this responder, and telling them apart is the whole job.
- * `OptionService.getOptionGroup`/`getOption` issue IDENTIFIER lookups filtered on `optionGroupID` /
- * `optionID`; `findProductOptionGroups` filters on `options.skus.product.productID`; and
- * `findProductOptionsByOptionGroup` filters on `optionGroup.optionGroupID` plus the product. Answering
- * an identifier lookup with the product's whole group list would make `getOptionGroup` resolve to the
- * wrong group, which is exactly the confusion the D14 assertions must not be built on.
- *
- * Anything unrecognised falls through so a test can still enqueue a bespoke outcome.
- */
+/** Answers every query the catalog slice issues against the smart-list seam. */
 function createCatalogResponder(
   catalog: OptionCatalog,
   productRows: readonly Product[],
@@ -628,9 +444,7 @@ function createCatalogResponder(
   };
 }
 
-// ==================================================================================================
-// The harness — one fresh service graph per test, no module-scope mutable state
-// ==================================================================================================
+// The harness — one fresh service graph per test, no module-scope mutable state.
 
 /** One recorded delegation to the product-type base service. */
 interface ProductTypeSaveRecord {
@@ -638,11 +452,13 @@ interface ProductTypeSaveRecord {
   readonly data: Record<string, unknown>;
 }
 
-/** Which account the account-context seam answers with, expressed without importing the port type. */
+/**
+ * Which account the account-context seam answers with, expressed without importing the port type.
+ */
 type AccountPosture = 'admin' | 'nonAdmin' | 'new' | 'absent';
 
 interface HarnessOptions {
-  /** Settings the resolver will answer. It THROWS on an unseeded key, which keeps reads honest. */
+  /** Settings the resolver will answer. It throws on an unseeded key, which keeps reads honest. */
   readonly settings?: readonly SettingSeed[];
   /** A blanket answer for keys a test does not care about. Omitted by default, on purpose. */
   readonly settingFallback?: string;
@@ -650,7 +466,9 @@ interface HarnessOptions {
   readonly repositorySkus?: readonly Sku[];
   /** SKUs seeded into the option repository, which is what the unused-option queries search. */
   readonly optionRepositorySkus?: readonly Sku[];
-  /** Option groups seeded into the option repository, the pool the unused-group query draws from. */
+  /**
+   * Option groups seeded into the option repository, the pool the unused-group query draws from.
+   */
   readonly repositoryOptionGroups?: readonly OptionGroup[];
   /** Products seeded into the product repository. */
   readonly repositoryProducts?: readonly Product[];
@@ -660,19 +478,15 @@ interface HarnessOptions {
   readonly productTypeRows?: readonly ProductType[];
   /** What the option-group and option queries find. */
   readonly optionCatalog?: OptionCatalog;
-  /** Product identifiers that already participate in a transaction (the X12 delete guard). */
+  /** Product identifiers that already participate in a transaction (the transaction-existence delete guard). */
   readonly transactionProductIDs?: readonly string[];
   /** Replaces the repository's import behaviour, so the forwarded arguments can be observed. */
   readonly onImport?: ProductImportHandler;
   /** Replaces the validator. Used only where a landed boundary makes the real rule unreachable. */
   readonly validator?: ProductProcessValidator;
 
-  /**
-   * The URL-title probe ceiling this harness's service should carry — review finding SEC-DOS-03.
-   *
-   * Omitted means the generous fixture, so the cases that assert the slug transformation and the
-   * `-2`-first suffix sequence are unaffected. The block that asserts the ceiling states its own.
-   */
+  /*
+   * The URL-title probe ceiling this harness's service carries. */
   readonly urlTitleProbeBudget?: UrlTitleProbeBudget;
   /** Replaces the product base service, used to force a refused delete. */
   readonly baseService?: ProductBaseService;
@@ -682,13 +496,13 @@ interface HarnessOptions {
     readonly value: string;
   }[];
   /**
-   * Makes the product-type base service REJECT, so a non-validation failure can be observed
+   * Makes the product-type base service reject, so a non-validation failure can be observed
    * propagating. `BaseService.save` itself no longer rejects for a validation failure — see
    * {@link SurfaceOptions.productTypeSaveFindings} for that path.
    */
   readonly productTypeSaveFailure?: Error;
   /**
-   * Makes the product-type base service attach findings to the entity and RESOLVE with it, which is
+   * Makes the product-type base service attach findings to the entity and resolve with it, which is
    * what the landed `BaseService.save` does on a validation failure
    * (`model/service/HibachiService.cfc:L103` returns `arguments.entity` on every path).
    */
@@ -743,11 +557,9 @@ interface Harness {
 }
 
 function buildHarness(options: HarnessOptions = {}): Harness {
-  // --------------------------------------------------------------------------------------------
   // Identifier reader. `ProductDefaultSkuDelegate` exposes no `getSkuID` — deliberately, because the
   // legacy calculated-property boundary of AAP §0.2.2.6 does not let the delegate widen — so the
   // service takes a `DefaultSkuIdReader` instead. The map is harness-local, never module-scope.
-  // --------------------------------------------------------------------------------------------
   const defaultSkuIdsByDelegate = new WeakMap<object, string>();
 
   const catalog = options.optionCatalog ?? EMPTY_OPTION_CATALOG;
@@ -841,14 +653,10 @@ function buildHarness(options: HarnessOptions = {}): Harness {
   );
 
   /**
-   * The REAL base service, wired to the REAL rule set. `deleteProduct` is only meaningful against it:
-   * the `transactionExistsFlag eq false` guard of `model/validation/Product.json:L12` has to be
+   * The real base service, wired to the real rule set. `deleteProduct` is only meaningful against it:
+   * The `transactionExistsFlag eq false` guard of `model/validation/Product.json:L12` has to be
    * evaluated by the real validator, and the setting/comment cleanup collaborators have to be the real
    * ones so their ordering after a successful delete is observable rather than asserted by fiat.
-   *
-   * `resolveDeleteSubject` exists because the guard reads a MEMOIZED value. `Product.getTransactionExistsFlag`
-   * caches into `this.transactionExistsFlag`, and the validation subject reads that field; asking the
-   * checker here is what the legacy ORM's lazy getter did on first access inside validation.
    */
   const productBaseService: ProductBaseService = new BaseService<Product, ProductPropertyName>({
     validator,
@@ -884,11 +692,11 @@ function buildHarness(options: HarnessOptions = {}): Harness {
         return Promise.reject(options.productTypeSaveFailure);
       }
       /*
-       * ⭐ A VALIDATION FAILURE RESOLVES, IT DOES NOT REJECT, and this double has to model that or the
+       * A validation failure resolves, it does not reject, and this double has to model that or the
        * cases built on it would certify a contract the real collaborator no longer has. The landed
        * `BaseService.save` attaches the accumulated findings to the entity's own bag and returns the
        * same instance — `org/Hibachi/HibachiService.cfc:L133` gates persistence on
-       * `!arguments.entity.hasErrors()`, reading that bag. So the findings arrive ON the entity here too.
+       * `!arguments.entity.hasErrors()`, reading that bag. So the findings arrive on the entity here too.
        */
       if (options.productTypeSaveFindings !== undefined) {
         entity.addErrors(options.productTypeSaveFindings);
@@ -909,7 +717,7 @@ function buildHarness(options: HarnessOptions = {}): Harness {
     validator,
     productTypeRoots.resolver,
     (sku: Sku) => createDefaultSkuDelegate(sku),
-    /* SEC-DOS-01 — generous, so no case in this suite depends on the ceiling. */
+    /* — generous, so no case in this suite depends on the ceiling. */
     GENEROUS_COMBINATION_BUDGET,
   );
 
@@ -929,14 +737,16 @@ function buildHarness(options: HarnessOptions = {}): Harness {
     productPropertyDescriptors: PRODUCT_PROPERTY_DESCRIPTORS,
     populationAuthorization: populationAuthorization.populationAuthorization,
     isUrlTitleAvailable,
-    /* SEC-DOS-03 — the probe ceiling both derivations resolve against; generous here, so the cases that
+    /*
+     * — the probe ceiling both derivations resolve against; generous here, so the cases that
      * assert the slug transformation and the suffix sequence are unaffected. The dedicated block that
-     * asserts the ceiling itself states its own figure. */
+     * asserts the ceiling itself states its own figure.
+     */
     urlTitleProbeBudget: options.urlTitleProbeBudget ?? GENEROUS_URL_TITLE_PROBE_BUDGET,
     persistProduct: productPersister.persist,
     defaultSkuIdReader: (delegate: object): string => defaultSkuIdsByDelegate.get(delegate) ?? '',
     /*
-     * F10 — THE REAL HYDRATION READER. Every product type in this suite is hand-built, so the reader
+     * — the real hydration reader. Every product type in this suite is hand-built, so the reader
      * answers `undefined`, `saveProductType` skips the inheritance load and issues no extra statement,
      * and every existing expectation here is untouched. A case that wants the load supplies the parent
      * on the `parentProductType` slot, which still wins ahead of any read.
@@ -944,13 +754,12 @@ function buildHarness(options: HarnessOptions = {}): Harness {
     parentProductTypeIdReader: readHydratedParentProductTypeID,
   };
 
-  // ⛔ NOT WIRED, and each omission is evidenced rather than assumed.
-  //   - `productTypeDAO`  — declared at `model/service/ProductService.cfc:L54`, ZERO call sites.
-  //   - `contentService`  — declared at `model/service/ProductService.cfc:L57`, ZERO call sites.
-  //   - `getHibachiTagService()` — `:L66` framework plumbing, excluded with the rest of `org/Hibachi/**`.
-  //   - `integrationServices/google/controllers/feed.cfc:L51 productService` — a fifth dead injection,
-  //     repo-wide reference only; this file imports nothing from the Google adapter.
-  // AAP §0.6.3.1 records the first two as dead injections and §0.6.3.5 the net result.
+  // Not wired, and each omission is evidenced rather than assumed.
+  // - `productTypeDAO` — declared at `model/service/ProductService.cfc:L54`, zero call sites.
+  // - `contentService` — declared at `model/service/ProductService.cfc:L57`, zero call sites.
+  // - `getHibachiTagService()` — `:L66` framework plumbing, excluded with the rest of `org/Hibachi/**`.
+  // - `integrationServices/google/controllers/feed.cfc:L51 productService` — a fifth dead injection,
+  // repo-wide reference only; this file imports nothing from the Google adapter.
 
   return {
     service: new ProductService(collaborators),
@@ -980,34 +789,10 @@ function buildHarness(options: HarnessOptions = {}): Harness {
   };
 }
 
-// ==================================================================================================
-// Phase 4 — loadDataFromFile
-// ==================================================================================================
+// loadDataFromFile.
 
 describe('loadDataFromFile — the import boundary', () => {
-  /**
-   * ⚠️ M1 — G6 NOTE, RECORDED AT THE POINT OF TEST.
-   *
-   * The byte-exact source call this member replaces is
-   * `getHibachiTagService().cfSetting(requesttimeout="3600")` at
-   * `model/service/ProductService.cfc:L66`, raised immediately before the delegation at `:L67`. That is
-   * a request budget of 3600 SECONDS. AWS Lambda's maximum function timeout is 900 seconds, so the
-   * legacy budget is UNREPRESENTABLE inside one invocation and this suite therefore asserts NO timeout
-   * at all: not 3600, not 900, not any substitute. Substituting the platform ceiling would silently
-   * re-time an import that used to be allowed an hour, and inventing a number the source does not state
-   * is forbidden by IR-12.
-   *
-   * THE REQUIRED ARCHITECTURAL NOTE, stated rather than implemented: this member's operational model
-   * must be OUT-OF-BAND — chunked, queued or step-orchestrated — and that decision belongs to the
-   * handler layer (AAP §0.4.1.9, §0.6.6). Nothing here retries, pages, resumes or budgets.
-   *
-   * ⚠️ M3 IS DOCUMENTARY HERE. `model/dao/ProductDAO.cfc:L176-L177` opens its `transaction{` INSIDE the
-   * per-record loop, so the legacy importer commits ONE TRANSACTION PER ROW and a mid-file failure
-   * leaves a partially imported catalog. The landed import port exposes no commit callback, no batch
-   * size and no row count — `model/dao/ProductDAO.cfc:L73` reports none either — so this suite invents
-   * none of them and asserts only the explicit forwarding boundary. The framework tag service is
-   * excluded with the rest of `org/Hibachi/**` and is not reconstructed.
-   */
+  /** M1 note, recorded at the point of test. */
   it('NET-NEW: defaults textQualifier to the empty string and forwards both arguments in source order', async () => {
     const forwarded: { readonly fileURL: string; readonly textQualifier: string | undefined }[] =
       [];
@@ -1054,31 +839,7 @@ describe('loadDataFromFile — the import boundary', () => {
   });
 
   /*
-   * ==============================================================================================
-   * ⛔ THERE IS NO THIRD ARGUMENT, AND FIVE CASES THAT ASSERTED ONE ARE REPLACED BY ONE THAT ASSERTS
-   *    ITS ABSENCE (review findings F2 and F4)
-   * ==============================================================================================
-   *
-   * This member took a THIRD parameter the legacy does not have: `options?: ProductImportOptions`,
-   * carrying a caller-supplied `AbortSignal` and a `deferBackfills` switch. Five cases certified that it
-   * arrived at the adapter untouched — by reference, same signal instance, `undefined` when omitted, both
-   * boolean values forwarded, and the object reaching the import handler itself. Every one of them was a
-   * well-built test of a control that must not exist:
-   *   • AAP §0.4.2.1 tabulates `loadDataFromFile(fileURL: string, textQualifier?: string): Promise<void>`,
-   *     which is exactly the arity `model/service/ProductService.cfc:L65` declares, and §0.8.3.1 makes that
-   *     surface the artefact a reviewer checks member by member.
-   *   • AAP §0.6.7.7 declares D18 — the importer's SQL parameterisation — the SINGLE place this port
-   *     departs from legacy behaviour, and §0.8.2 Guideline 4 forbids the rest.
-   *   • AAP §0.7.3 S9 and IR-12 forbid inventing runtime controls the source does not state. An optional
-   *     control defaulting to legacy behaviour is still a control the legacy cannot express.
-   *
-   * ⚠️ AND MISMATCH M1 IS STILL OPEN, WHICH IS THE POINT WORTH KEEPING FROM THE OLD SUB-SECTION. The
-   * legacy asks the CFML engine for a 3600-second REQUEST budget at
-   * `model/service/ProductService.cfc:L66`, which no single invocation of the target runtime can
-   * represent. That is FLAGGED (AAP §0.8.3.6), not answered here, and the out-of-band model belongs to the
-   * handler layer (AAP §0.4.1.9).
-   *
-   * NET-NEW: §0.6.5.2 records that no `ProductServiceTest` exists.
+   * There is no third argument, and its absence is asserted once here rather than assumed.
    */
   it('NET-NEW: passes exactly TWO arguments to the port — no options, no signal, no invented budget', async () => {
     const harness = buildHarness();
@@ -1089,7 +850,7 @@ describe('loadDataFromFile — the import boundary', () => {
     expect(importCalls).toHaveLength(1);
 
     /*
-     * ⭐ THE RECORDED CALL'S OWN KEY SET IS THE ASSERTION, because it fails if a third argument is ever
+     * The recorded call's own key set is the assertion, because it fails if a third argument is ever
      * reintroduced — by name, and without needing a case per field. `member` is the double's own
      * discriminator; `fileURL` and `textQualifier` are the legacy's two.
      */
@@ -1121,27 +882,20 @@ describe('loadDataFromFile — the import boundary', () => {
     expect(seen).toEqual([['/import/catalog.txt', '"']]);
   });
 
-  it('NET-NEW: F9 — forwards a hostile location UNCHANGED, holding no policy of its own', async () => {
+  it('NET-NEW: forwards a hostile location UNCHANGED, holding no policy of its own', async () => {
     const harness = buildHarness();
     const hostile = 'file:///etc/passwd.csv?x=%2F+1';
 
     await harness.service.loadDataFromFile(hostile);
 
     /*
-     * ⛔ TODO(parity) — NO GATE OF THIS PORT'S OWN JUDGES THE LOCATION, HERE OR DOWNSTREAM. This port
-     * authors no scheme, host or address rule, because `model/dao/ProductDAO.cfc:L87` retrieves whatever it
-     * is handed and AAP §0.6.7.7 authorises exactly one behavioural departure (D18). The one thing that IS
-     * mandatory is that the injected `ProductImportSourcePolicy` be consulted at the retrieval seam in
-     * `src/adapters/mysql/MySqlProductRepository.ts` before any read member can see the location — so what a
-     * hostile location meets is the OPERATOR's policy, and the residual CWE-918 surface is carried as
-     * MISMATCH M4.
-     *
-     * ⚠️ WHAT THIS MEMBER'S OBLIGATION STILL IS, AND WHY THE SEAM DOES NOT CHANGE IT. It is the
-     * port of `model/service/ProductService.cfc:L65-L68`, whose whole body is a request-budget call and a
-     * positional delegation; it opens no socket and dereferences nothing. So the assertion is deliberately
-     * that NOTHING happens here: the location travels byte-for-byte, query string and percent-encoding
-     * intact, because `model/dao/ProductDAO.cfc:L74` derives the file type from the RAW string and
-     * re-encoding it would change which delimiter the import chooses.
+     * TODO(parity) — no gate of this port's own judges the location, here or downstream. This port
+     * authors no scheme, host or address rule, because `model/dao/ProductDAO.cfc:L87` retrieves
+     * whatever it is handed and AAP §0.6.7.7 authorises exactly one behavioural departure (D18).
+     * The one thing that is mandatory is that the injected `ProductImportSourcePolicy` be consulted
+     * at the retrieval seam in `src/adapters/mysql/MySqlProductRepository.ts` before any read
+     * member can see the location — so what a hostile location meets is the operator's policy, and
+     * the residual CWE-918 surface is carried rather than repaired.
      */
     const importCalls = harness.productCalls.filter(isProductCall('importFromFile'));
     expect(importCalls).toHaveLength(1);
@@ -1151,8 +905,8 @@ describe('loadDataFromFile — the import boundary', () => {
 
   it("NET-NEW: propagates the adapter's failure without translating or absorbing it", async () => {
     /*
-     * ⛔ THE ERROR RAISED HERE IS THE ONE THE SHIPPED READER ACTUALLY RAISES. `unresolvableProductImportSourceReader`
-     * declines EVERY member — `validateSource` included — with a `NotImplementedError`, because the legacy
+     * The error raised here is the one the shipped reader actually raises. `unresolvableProductImportSourceReader`
+     * declines every member — `validateSource` included — with a `NotImplementedError`, because the legacy
      * retrieval at `model/dao/ProductDAO.cfc:L87` resolves a bean declared nowhere and its `new http()`
      * fallback is commented out, so no location is retrievable at all. There is no dedicated rejection
      * error: what a location is judged against is the operator's policy, and this port authors no grounds
@@ -1174,28 +928,16 @@ describe('loadDataFromFile — the import boundary', () => {
     await expect(harness.service.loadDataFromFile('file:///etc/passwd.csv')).rejects.toBe(failure);
   });
 
-  /**
-   * ⛔ TODO(parity) — WITHDRAWAL: NO SCHEME, CREDENTIAL OR ADDRESS-LITERAL REFUSAL EXISTS IN THE SUBTREE.
-   *
-   * Those three refusals were asserted here by reference, at the single retrieval seam in
-   * `src/adapters/mysql/MySqlProductRepository.ts`. All of it is deleted: AAP §0.6.7.7 authorises exactly
-   * one behavioural departure in this port (D18), so a refusal the legacy does not make cannot stand
-   * however narrow it is (AAP §0.8.2 Guideline 4 admits no proportionality test). What remains is an
-   * INJECTED reader whose `sourcePolicy` member is required of any retrieving implementation — a wiring
-   * shape for an operator who owns a network, not a decision this port takes on the operator's behalf.
-   *
-   * THE NEGATIVE OBLIGATION ON THIS MEMBER IS UNCHANGED, AND IT IS THE REASON THESE TWO CASES SURVIVE
-   * INTACT. Whatever an operator's policy is evaluated against, it is evaluated against the string this
-   * member forwards. So the string it forwards must be the caller's own, byte for byte: a trim, a
-   * lower-casing, a re-encode or a "helpful" normalisation here would be applied to a value the policy
-   * never sees, which is the classic shape of a normalise-then-validate bypass.
+  /*
+   * TODO(parity) — no scheme, credential or address-literal refusal exists in the subtree, matching
+   * `:L67`.
    */
   it('NET-NEW: forwards a hostile-looking location BYTE-FOR-BYTE, neither refusing nor rewriting it', async () => {
     const harness = buildHarness();
 
     /*
      * Each of these is refused downstream, and each is a shape a normaliser would be tempted to touch:
-     * mixed case, a trailing dot on the host, surrounding whitespace, embedded credentials, an
+     * Mixed case, a trailing dot on the host, surrounding whitespace, embedded credentials, an
      * IPv4-mapped IPv6 host, and a percent-encoded path segment. The service must hand every one on
      * unchanged.
      */
@@ -1214,8 +956,8 @@ describe('loadDataFromFile — the import boundary', () => {
     }
 
     /*
-     * ⚠️ TWO THINGS AT ONCE, AND BOTH MATTER. The forwarded list being identical to the supplied list
-     * proves no rewriting; the list being COMPLETE proves no refusal — this member does not short-circuit
+     * Two things at once, and both matter. The forwarded list being identical to the supplied list
+     * proves no rewriting; the list being complete proves no refusal — this member does not short-circuit
      * on a location it dislikes, because deciding that is not its job and a second opinion here would be
      * the drifting copy described above.
      */
@@ -1229,17 +971,11 @@ describe('loadDataFromFile — the import boundary', () => {
     await harness.service.loadDataFromFile('https://feeds.example/catalog.csv');
 
     /*
-     * An earlier revision of the port took a `ProductImportSourcePolicy` — allowed schemes, allowed
-     * hosts, byte cap, timeout, redirect count — and this member supplied it. The four configurable ones
-     * stayed withdrawn when the gate was reinstated, precisely because the source states no host and no
-     * figure, so every possible value of each is invented (S9, IR-12). The reinstated controls are fixed
-     * literals instead, and this member therefore passes exactly the two arguments `:L67` passes — no
-     * policy of any kind, and (since review findings F2 and F4) no invocation-scoped controls either.
-     * hosts, byte cap, timeout, redirect count — as an argument to THIS member, and it stayed withdrawn
-     * from here because the source states no host and no figure, so every possible value of each would be
-     * invented (S9, IR-12). The policy now lives where it belongs, as a required member of whatever
-     * reader an operator injects, so this member passes exactly the two arguments `:L67` passes plus the
-     * optional invocation-scoped controls — and no policy of any kind.
+     * A `ProductImportSourcePolicy` on the port — allowed schemes, allowed hosts, byte cap,
+     * timeout, redirect count — would have to be supplied here. Four of those five are configurable
+     * figures the legacy source never states, so every possible value of each is invented (AAP
+     * §0.7.3, IR-12). The controls that do exist are fixed literals, and this member passes exactly
+     * the two arguments `:L67` passes: no policy of any kind and no invocation-scoped controls.
      */
     const importCalls = harness.productCalls.filter(isProductCall('importFromFile'));
     expect(importCalls).toHaveLength(1);
@@ -1249,28 +985,11 @@ describe('loadDataFromFile — the import boundary', () => {
   });
 });
 
-// ==================================================================================================
-// Phase 5 — getFormattedOptionGroups (X16)
-// ==================================================================================================
+// getFormattedOptionGroups.
 
 describe('getFormattedOptionGroups — the option-group projection', () => {
-  /**
-   * 📝 TODO(parity) D10 — model/service/ProductService.cfc:L73,L75.
-   *
-   * `:L71` declares `var AvailableOptions={}` and IS properly `var` scoped. The next two statements are
-   * NOT: `:L73` assigns `productObjectGroups = arguments.product.getOptionGroups()` with no `var`, and
-   * `:L75` opens `for(i=1; i<=arrayLen(productObjectGroups); i++)` with an unscoped `i`. Both therefore
-   * leak into the component's shared `variables` scope, which on a persistent CFML application server
-   * is a genuine cross-request concurrency hazard on a singleton service.
-   *
-   * TRANSLATION DECISION, recorded rather than silently taken: strict TypeScript block scoping removes
-   * that hazard BY CONSTRUCTION — the landed member's `productObjectGroups` and its `for…of` binding
-   * cannot escape the call. The defect is not "fixed"; the idiom simply has no way to express it, which
-   * AAP §0.6.7.5 records as the intended treatment. The SAME class of defect recurs at `:L118` inside
-   * `processProduct_addOptionGroup`, and is noted there too. No shared mutable state is fabricated here
-   * to simulate the leak.
-   */
-  it('NET-NEW: X16 — answers an ARRAY of name-and-options entries per AAP §0.4.2.1 (:L71-:L79)', async () => {
+  /** TODO(parity) D10 — model/service/ProductService.cfc:L73,L75. */
+  it('NET-NEW: answers an ARRAY of name-and-options entries per AAP §0.4.2.1 (:L71-:L79)', async () => {
     const sizeGroup = buildOptionGroup({
       optionGroupID: physicalID('og-size'),
       optionGroupName: 'Size',
@@ -1296,14 +1015,14 @@ describe('getFormattedOptionGroups — the option-group projection', () => {
 
     const formatted = await harness.service.getFormattedOptionGroups(product);
 
-    // ⭐ A KEYED RECORD, NOT AN ARRAY. `model/service/ProductService.cfc:L71` initialises a CFML STRUCT and
-    // `:L76` keys it by `getOptionGroupName()`, so TR-1 tightens the loose `any` return to that shape. A
-    // revision answered `FormattedOptionGroup[]` on the reading that AAP §0.4.2.1's tabulated array
-    // outranks TR-1, and this case asserted `Array.isArray(formatted) === true`; review finding F3
-    // withdrew both. Asserted here so the array cannot come back unnoticed.
+    // A keyed record, not an array. `model/service/ProductService.cfc:L71` initialises a CFML
+    // struct and `:L76` keys it by `getOptionGroupName()`, so TR-1 tightens the loose `any` return
+    // to that shape. Answering `FormattedOptionGroup[]` on the reading that AAP §0.4.2.1's
+    // tabulated array outranks TR-1 would contradict the legacy struct, so the array shape is
+    // asserted against here rather than left to chance.
     expect(Array.isArray(formatted)).toBe(false);
 
-    // The KEY is the group name. Order is first-seen group order: `Size` was yielded first.
+    // The key is the group name. Order is first-seen group order: `Size` was yielded first.
     expect(groupNames(formatted)).toEqual(['Size', 'Color']);
     expect(requireGroup(formatted, 'Size')).toEqual([
       { name: 'Small', value: physicalID('o-small') },
@@ -1311,7 +1030,7 @@ describe('getFormattedOptionGroups — the option-group projection', () => {
     ]);
     expect(requireGroup(formatted, 'Color')).toEqual([{ name: 'Red', value: physicalID('o-red') }]);
 
-    // ⛔ AND NO IDENTIFIER IS PUBLISHED ALONGSIDE THE NAME (S9). `:L76` maps a name straight to the option
+    // And no identifier is published alongside the name (AAP §0.7.3). `:L76` maps a name straight to the option
     // list, so each value is that bare list — an entry carrying `optionGroupID`, or wrapping the list in an
     // object, would report a shape the legacy struct cannot hold.
     expect(formatted).toStrictEqual({
@@ -1323,7 +1042,7 @@ describe('getFormattedOptionGroups — the option-group projection', () => {
     });
   });
 
-  it('NET-NEW: X14 — the values are OptionService bare-option-name projections, never the DAO composite label', async () => {
+  it('NET-NEW: the values are OptionService bare-option-name projections, never the DAO composite label', async () => {
     const sizeGroup = buildOptionGroup({
       optionGroupID: physicalID('og-size'),
       optionGroupName: 'Size',
@@ -1342,8 +1061,8 @@ describe('getFormattedOptionGroups — the option-group projection', () => {
     );
 
     // `model/service/OptionService.cfc:L55-L63` builds `{name = getOptionName(), value = getOptionID()}`
-    // — the BARE option name. `model/dao/OptionDAO.cfc:L51-L91` builds the composite
-    // "<group> - <option>" label instead, and that is a DIFFERENT projection used by a DIFFERENT member.
+    // — the bare option name. `model/dao/OptionDAO.cfc:L51-L91` builds the composite
+    // "<group> - <option>" label instead, and that is a different projection used by a different member.
     // Mixing them up is the easiest way to break this member, so the distinction is asserted.
     const sizeOptions: readonly SelectOption[] = requireGroup(formatted, 'Size');
     expect(requireAt(sizeOptions, 0).name).toBe('Small');
@@ -1358,7 +1077,7 @@ describe('getFormattedOptionGroups — the option-group projection', () => {
     );
 
     // `:L75` iterates `arrayLen(productObjectGroups)` times, which is zero, so nothing is accumulated and
-    // `:L79` returns the empty struct `:L71` created. It is EMPTY rather than absent, and it is an OBJECT
+    // `:L79` returns the empty struct `:L71` created. It is empty rather than absent, and it is an object
     // rather than an array — `{}` is what the legacy answers, and a client destructuring by name must not
     // have to special-case the no-groups product.
     expect(formatted).toStrictEqual({});
@@ -1389,14 +1108,10 @@ describe('getFormattedOptionGroups — the option-group projection', () => {
       buildProduct({ productID: physicalID('p-collision') }),
     );
 
-    // `:L77` keys the struct by NAME, so the second group overwrites the first. The port keeps that
-    // exactly: the answer holds ONE entry, it does NOT re-label by optionGroupID and it does NOT
+    // `:L77` keys the struct by name, so the second group overwrites the first. The port keeps that
+    // exactly: the answer holds one entry, it does not re-label by optionGroupID and it does not
     // concatenate the two option lists, because either change would make the member answer something the
     // legacy never answered.
-    //
-    // ⭐ ONE ENTRY, AND THE LAST GROUP'S OPTIONS. Accumulating through a `Map` keyed by name before
-    // materialising is what reproduces `:L76`'s plain struct assignment: the surviving value is the LAST
-    // group's, sitting at the FIRST occurrence's position.
     expect(groupNames(formatted)).toEqual(['Size']);
     expect(requireGroup(formatted, 'Size')).toEqual([
       { name: 'Huge', value: physicalID('o-huge') },
@@ -1427,11 +1142,11 @@ describe('getFormattedOptionGroups — the option-group projection', () => {
       'Alpha',
     ]);
 
-    // `Product.getOptionGroups` memoises into the ENTITY, so a repeat call must not re-query the groups
-    // while the per-group option lookup, which is NOT memoised, must run again. That asymmetry is the
+    // `Product.getOptionGroups` memoises into the entity, so a repeat call must not re-query the groups
+    // while the per-group option lookup, which is not memoised, must run again. That asymmetry is the
     // landed behaviour and it is asserted rather than assumed.
     await first.service.getFormattedOptionGroups(firstProduct);
-    // The service derives its own option finders from ITS smart-list port (`ProductService.ts` wires
+    // The service derives its own option finders from its smart-list port (`ProductService.ts` wires
     // `createProductOptionFinders(collaborators.smartListQueryPort)`), so both query shapes land on the
     // product stream rather than on the OptionService's own stream.
     const groupQueries = first.smartListQueries.filter(
@@ -1476,9 +1191,7 @@ describe('getFormattedOptionGroups — the option-group projection', () => {
   });
 });
 
-// ==================================================================================================
-// Phase 6 — getProductSkusBySelectedOptions (T1 through T5)
-// ==================================================================================================
+// getProductSkusBySelectedOptions (T1 through T5).
 
 describe('getProductSkusBySelectedOptions — option-to-SKU resolution', () => {
   const PRODUCT_ID = physicalID('p-resolve');
@@ -1558,7 +1271,7 @@ describe('getProductSkusBySelectedOptions — option-to-SKU resolution', () => {
       PRODUCT_ID,
     );
 
-    // ⚠️ THE NAME MISMATCH IS PRESERVED, NOT MECHANICALLY RENAMED. The service member is
+    // The name mismatch is preserved, not mechanically renamed. The service member is
     // `getProductSkusBySelectedOptions` (`model/service/ProductService.cfc:L104`) and the collaborator
     // member it delegates to is `getSkusBySelectedOptions` (`model/dao/SkuDAO.cfc:L107`), landing here
     // as the repository's `findSkusBySelectedOptions`. Assuming the two names match is a real way to
@@ -1578,10 +1291,10 @@ describe('getProductSkusBySelectedOptions — option-to-SKU resolution', () => {
     );
 
     // `model/service/ProductService.cfc:L104` declares `required string productID` and `:L105` forwards
-    // `argumentCollection=arguments`, and this service is the DAO member's ONLY caller. The DAO's
+    // `argumentCollection=arguments`, and this service is the DAO member's only caller. The DAO's
     // `structKeyExists(arguments,"productID")` branch at `model/dao/SkuDAO.cfc:L120` is therefore always
     // true in practice, so the landed signature types `productID` as required and always emits the
-    // predicate. That is a DECLARED translation decision (AAP §0.6.1.3 T2), not a silent branch
+    // predicate. That is a declared translation decision (AAP §0.6.1.3 T2), not a silent branch
     // deletion — the branch was unreachable, and the port says so instead of pretending it existed.
     expect(
       requireAt(fixture.harness.skuCalls.filter(isSkuCall('findSkusBySelectedOptions')), 0)
@@ -1599,8 +1312,8 @@ describe('getProductSkusBySelectedOptions — option-to-SKU resolution', () => {
       PRODUCT_ID,
     );
 
-    // `model/dao/SkuDAO.cfc:L112-L118` appends one correlated `and exists (…)` clause PER option. A SKU
-    // must carry EVERY listed option. Rewriting that as `optionID IN (…)` turns the conjunction into a
+    // `model/dao/SkuDAO.cfc:L112-L118` appends one correlated `and exists (…)` clause per option. A SKU
+    // must carry every listed option. Rewriting that as `optionID IN (…)` turns the conjunction into a
     // disjunction and would have returned `redLarge` too.
     expect(matches).toEqual([fixture.redSmall]);
     expect(matches).not.toContain(fixture.redLarge);
@@ -1614,7 +1327,7 @@ describe('getProductSkusBySelectedOptions — option-to-SKU resolution', () => {
       PRODUCT_ID,
     );
 
-    // The legacy loop appends one clause per LIST ELEMENT, so a duplicated entry produces two identical
+    // The legacy loop appends one clause per list element, so a duplicated entry produces two identical
     // EXISTS clauses. A `GROUP BY … HAVING COUNT(*) = N` rewrite diverges on exactly this input, and a
     // de-duplicating port would change the emitted predicate count. Both are refused.
     expect(
@@ -1630,7 +1343,7 @@ describe('getProductSkusBySelectedOptions — option-to-SKU resolution', () => {
 
     // `model/dao/SkuDAO.cfc:L108` opens with `inner join sku.options as opt` and never references
     // `opt` in the WHERE clause, which makes the alias look removable. It is not: the join silently
-    // EXCLUDES option-less SKUs from every result, including this degenerate one.
+    // excludes option-less SKUs from every result, including this degenerate one.
     expect(matches).toEqual([fixture.redSmall, fixture.redLarge]);
     expect(matches).not.toContain(fixture.optionless);
   });
@@ -1665,9 +1378,7 @@ describe('getProductSkusBySelectedOptions — option-to-SKU resolution', () => {
   });
 });
 
-// ==================================================================================================
-// Phase 7A — processProductAddOptionGroup (D14, D10, X17)
-// ==================================================================================================
+// processProductAddOptionGroup (D14, and the unnumbered D10 class).
 
 describe('processProductAddOptionGroup — adding a whole option group', () => {
   const PRODUCT_ID = physicalID('p-add-group');
@@ -1762,7 +1473,7 @@ describe('processProductAddOptionGroup — adding a whole option group', () => {
           optionsByOptionGroupID: { [EXISTING_GROUP_ID]: [small, large] },
           resolvableOptionGroups: [existingGroup, newGroup],
         },
-        // The unused-group query answers "every group NOT already on the product", so the pool must
+        // The unused-group query answers "every group not already on the product", so the pool must
         // hold both for `minCollection: 1` (`model/validation/Product.json:L14`) to be satisfiable.
         repositoryOptionGroups: [existingGroup, newGroup],
         repositorySkus: [firstSku, secondSku],
@@ -1778,16 +1489,10 @@ describe('processProductAddOptionGroup — adding a whole option group', () => {
   }
 
   /**
-   * 📝 TODO(parity) D14 — model/service/ProductService.cfc:L119.
+   * TODO(parity) D14 — model/service/ProductService.cfc:L119.
    *
-   * The loop body is `skus[i].addOption(options[1])`. `options` is the WHOLE option list of the newly
-   * added group, and `options[1]` is CFML's one-based FIRST element, so every existing SKU receives
-   * exactly ONE option — the first — and the rest of the group is never distributed. Carried unrepaired:
-   * this member does NOT enumerate combinations, does NOT round-robin, and does NOT add the remaining
-   * options anywhere.
-   *
-   * 📝 TODO(parity) D10-class — model/service/ProductService.cfc:L118. The enclosing
-   * `for(i=1; i<=arrayLen(skus); i++)` declares `i` UNSCOPED, the same leak into the component's shared
+   * TODO(parity) D10-class — model/service/ProductService.cfc:L118. The enclosing
+   * `for(i=1; i<=arrayLen(skus); i++)` declares `i` unscoped, the same leak into the component's shared
    * `variables` scope catalogued as D10 for `getFormattedOptionGroups`. Strict TypeScript block scoping
    * removes the hazard by construction; no shared mutable state is fabricated to reproduce it.
    */
@@ -1801,7 +1506,7 @@ describe('processProductAddOptionGroup — adding a whole option group', () => {
 
     expect(fixture.newGroup.getOptions()).toEqual([fixture.red, fixture.blue]);
 
-    // Every existing SKU gains the FIRST option and nothing else.
+    // Every existing SKU gains the first option and nothing else.
     expect(fixture.firstSku.getOptions()).toContain(fixture.red);
     expect(fixture.secondSku.getOptions()).toContain(fixture.red);
     expect(fixture.firstSku.getOptions()).not.toContain(fixture.blue);
@@ -1816,8 +1521,8 @@ describe('processProductAddOptionGroup — adding a whole option group', () => {
     const fixture = buildAddOptionGroupFixture();
 
     // `model/service/ProductService.cfc:L115` calls `getOptionService().getOptionGroup(...)`, a member
-    // that has NO source declaration anywhere: `org/Hibachi/HibachiService.cfc:L255-L281` fabricated it
-    // at runtime from the `get` prefix. Strict TypeScript has no such facility, so the port DECLARES it
+    // that has no source declaration anywhere: `org/Hibachi/HibachiService.cfc:L255-L281` fabricated it
+    // at runtime from the `get` prefix. Strict TypeScript has no such facility, so the port declares it
     // and this test proves the declared member is what resolves the group (IR-1, AAP §0.4.2.5).
     const resolved = await fixture.harness.optionService.getOptionGroup(NEW_GROUP_ID);
     expect(resolved).toBe(fixture.newGroup);
@@ -1829,13 +1534,13 @@ describe('processProductAddOptionGroup — adding a whole option group', () => {
     expect(fixture.firstSku.getOptions()).toContain(fixture.red);
   });
 
-  it('NET-NEW: X17 — chains updateDefaultImageFileNames with no payload and returns THAT call product (:L123)', async () => {
+  it('NET-NEW: chains updateDefaultImageFileNames with no payload and returns THAT call product (:L123)', async () => {
     const fixture = buildAddOptionGroupFixture();
     const chained = buildProduct({ productID: physicalID('p-returned-by-the-chain') });
 
     // `:L123` is `arguments.product = this.processProduct(arguments.product, {}, 'updateDefaultImageFileNames');`
-    // — an ASSIGNMENT, so the value the chained call answers with is what `:L125` returns. Proving the
-    // reassignment needs the chained call to answer with a DIFFERENT object, which is what the typed spy
+    // — an assignment, so the value the chained call answers with is what `:L125` returns. Proving the
+    // reassignment needs the chained call to answer with a different object, which is what the typed spy
     // on the landed seam provides. (`jest.mock` is never used in this file; this is a spy on one member
     // of the instance under test.)
     const chainSpy = jest
@@ -1850,8 +1555,8 @@ describe('processProductAddOptionGroup — adding a whole option group', () => {
     expect(answer).toBe(chained);
     expect(answer).not.toBe(fixture.product);
     expect(chainSpy).toHaveBeenCalledTimes(1);
-    // EMPTY DATA AND EXACT CONTEXT, as the port expresses them. `{}` at `:L123` carried no keys, and the
-    // port's chained member takes the product ALONE — there is no data argument to be non-empty. The
+    // Empty data and exact context, as the port expresses them. `{}` at `:L123` carried no keys, and the
+    // port's chained member takes the product alone — there is no data argument to be non-empty. The
     // context `'updateDefaultImageFileNames'` is likewise fixed by the member's identity rather than by
     // a string, which is the whole point of retiring `process#getClassName()#_#processContext#`.
     expect(requireAt(chainSpy.mock.calls, 0)).toEqual([fixture.product]);
@@ -1950,9 +1655,7 @@ describe('processProductAddOptionGroup — adding a whole option group', () => {
   });
 });
 
-// ==================================================================================================
-// Phase 7B — processProductAddOption (:L128-:L155)
-// ==================================================================================================
+// processProductAddOption (:L128-:L155).
 
 describe('processProductAddOption — adding one option to the SKU set', () => {
   const PRODUCT_ID = physicalID('p-add-option');
@@ -1970,8 +1673,8 @@ describe('processProductAddOption — adding one option to the SKU set', () => {
 
   /**
    * Three existing SKUs, chosen so one fixture exercises all three branches of the `:L140-:L148` walk
-   * at once: an option in a DIFFERENT group is listed, an option in the SAME group as the new one is
-   * skipped, and an option whose identifier differs only in CASE from one already listed is skipped.
+   * at once: an option in a different group is listed, an option in the same group as the new one is
+   * skipped, and an option whose identifier differs only in case from one already listed is skipped.
    */
   function buildAddOptionFixture(
     overrides: { readonly withListPrice?: boolean } = {},
@@ -2051,7 +1754,7 @@ describe('processProductAddOption — adding one option to the SKU set', () => {
         resolvableOptionGroups: [sizeGroup, colorGroup],
         resolvableOptions: [red, green, small, large, smallShouted],
       },
-      // `findUnusedOptions` looks INSIDE the product's existing groups for options no SKU uses, so
+      // `findUnusedOptions` looks inside the product's existing groups for options no SKU uses, so
       // `large` and `O-SMALL` satisfy `model/validation/Product.json:L13`'s `minCollection: 1`.
       repositoryOptionGroups: [sizeGroup],
       optionRepositorySkus: [firstSku],
@@ -2060,7 +1763,7 @@ describe('processProductAddOption — adding one option to the SKU set', () => {
 
     if (overrides.withListPrice === false) {
       // `model/service/ProductService.cfc:L135-L137` only copies the list price when the default SKU
-      // HAS one, so the absent case needs a delegate that answers `undefined` — the support factory's
+      // has one, so the absent case needs a delegate that answers `undefined` — the support factory's
       // delegate always answers a value because `Sku.getListPrice()` always does.
       product.defaultSku = {
         getPrice: (): ReturnType<ProductDefaultSkuDelegate['getPrice']> => defaultSku.getPrice(),
@@ -2090,13 +1793,13 @@ describe('processProductAddOption — adding one option to the SKU set', () => {
     const [passedProduct, passedData] = requireAt(createSkus.mock.calls, 0);
     expect(passedProduct).toBe(fixture.product);
 
-    // `:L131` seeds the list with `newOption.getOptionID()`, so the new option is FIRST. Then `:L140-:L148`
+    // `:L131` seeds the list with `newOption.getOptionID()`, so the new option is first. Then `:L140-:L148`
     // appends. `o-green` is skipped because it shares the new option's group, and `O-SMALL` is skipped
     // because `listFindNoCase` at `:L144` already found `o-small`.
     expect(passedData['options']).toBe(
       `${physicalID('o-red')},${physicalID('o-small')},${physicalID('o-large')}`,
     );
-    // ⚠️ THE COMMA-DELIMITED BOUNDARY IS PRESERVED, NOT MODERNISED INTO AN ARRAY. `:L150` hands the
+    // The comma-delimited boundary is preserved, not modernised into an array. `:L150` hands the
     // struct straight to `createSkus`, whose merchandise branch parses a CFML list, so converting it
     // here would break the collaborator contract.
     expect(typeof passedData['options']).toBe('string');
@@ -2114,7 +1817,7 @@ describe('processProductAddOption — adding one option to the SKU set', () => {
     );
 
     const [, withListData] = requireAt(withListSpy.mock.calls, 0);
-    // `ExactDecimal` is a BRANDED STRING at runtime, so the copied values compare as strings.
+    // `ExactDecimal` is a branded string at runtime, so the copied values compare as strings.
     expect(withListData['price']).toBe(DEFAULT_SKU_PRICE);
     expect(withListData['listPrice']).toBe(DEFAULT_SKU_LIST_PRICE);
 
@@ -2130,7 +1833,7 @@ describe('processProductAddOption — adding one option to the SKU set', () => {
 
     const [, withoutListData] = requireAt(withoutListSpy.mock.calls, 0);
     expect(withoutListData['price']).toBe(DEFAULT_SKU_PRICE);
-    // `:L135` guards the assignment, so the key is ABSENT rather than present-and-undefined.
+    // `:L135` guards the assignment, so the key is absent rather than present-and-undefined.
     expect('listPrice' in withoutListData).toBe(false);
   });
 
@@ -2150,7 +1853,7 @@ describe('processProductAddOption — adding one option to the SKU set', () => {
     expect(new Set(listed).size).toBe(listed.length);
   });
 
-  it('NET-NEW: resolves the option through the explicit getOption member, then chains X17 and returns its product', async () => {
+  it('NET-NEW: resolves the option through the explicit getOption member, then chains updateDefaultImageFileNames and returns its product', async () => {
     const fixture = buildAddOptionFixture();
     jest.spyOn(fixture.harness.skuService, 'createSkus').mockResolvedValue(true);
     const chained = buildProduct({ productID: physicalID('p-chained-add-option') });
@@ -2244,31 +1947,9 @@ describe('processProductAddOption — adding one option to the SKU set', () => {
   });
 });
 
-// ==================================================================================================
-// AGENT PROMPT PHASE 7C — processProduct_updateSkus(product, processObject)
-// SOURCE: model/service/ProductService.cfc:L216-L233
-// RULES:  model/validation/Product_UpdateSkus.json
-//
-// Two behaviours are pinned here that a reasonable-looking port gets wrong in opposite directions.
-//
-// 1. THE FLAGS ARE CFML BOOLEANS, NOT JAVASCRIPT TRUTHINESS. `:L222` and `:L226` place the flag
-//    DIRECTLY inside an `if`, so CFML casts it: `1`, `"1"`, `"true"` and `"yes"` are true, and `0`,
-//    `"0"`, `"false"` and `"no"` are false. JavaScript disagrees on exactly one of those — the STRING
-//    `"0"` is truthy — and that single disagreement would apply a price the legacy leaves alone.
-//    A value that cannot be cast at all raises, because CFML raises on null in an `if`, and
-//    `model/process/Product_UpdateSkus.cfc:L49` declares the flag with no default.
-//
-// 2. THE RULES CARRY NO `contexts` KEY. Both rules in `model/validation/Product_UpdateSkus.json`
-//    declare only `conditions`, so — unlike every rule in `model/validation/Product.json`, each of
-//    which names its contexts — they apply in EVERY context. The mirror image of that is the entity
-//    pass: no Product rule names `updateSkus`, so the entity contributes nothing to this context even
-//    when the product would fail `save` outright. Both halves of that asymmetry are asserted, because
-//    collapsing them into one "global context" is the mistake the AAP warns against in §0.8.2 G6.
-//
-// X3: there is NO `minValue` constraint on either property. `entity.sku.price` carries one in
-// `model/validation/Sku.json`, and it is tempting to assume the process object inherits it. It does
-// not, and a zero or negative price is applied here without complaint.
-// ==================================================================================================
+// Agent prompt phase 7c — processProduct_updateSkus(product, processObject)
+// source: model/service/ProductService.cfc:L216-L233
+// rules: model/validation/Product_UpdateSkus.json.
 
 describe('processProductUpdateSkus — the flag-gated bulk price update', () => {
   const PRODUCT_ID = physicalID('p-update-skus');
@@ -2281,12 +1962,7 @@ describe('processProductUpdateSkus — the flag-gated bulk price update', () => 
     readonly second: Sku;
   }
 
-  /**
-   * Builds a product carrying two persisted SKUs at a known price and list price.
-   *
-   * `identified: false` omits `productName` and `productCode` entirely, which makes the product
-   * invalid for the `save` context — the state the entity-pass test needs.
-   */
+  /** Builds a product carrying two persisted SKUs at a known price and list price. */
   function buildFixture(options: { readonly identified?: boolean } = {}): UpdateSkusFixture {
     const productType = buildProductType({
       productTypeID: MERCHANDISE_PRODUCT_TYPE_ID,
@@ -2325,7 +2001,7 @@ describe('processProductUpdateSkus — the flag-gated bulk price update', () => 
     const { product, first, second } = buildFixture();
     const harness = buildHarness();
 
-    // Declared THROUGH the landed process-object type rather than inferred from the literal, so the four
+    // Declared through the landed process-object type rather than inferred from the literal, so the four
     // data properties of `model/process/Product_UpdateSkus.cfc:L52-L55` are checked against the ported
     // interface at compile time: a renamed, dropped or mistyped property fails here instead of quietly
     // passing an extra key the member would ignore.
@@ -2345,7 +2021,7 @@ describe('processProductUpdateSkus — the flag-gated bulk price update', () => 
     expect(second.getPrice()).toBe('25');
     expect(second.getListPrice()).toBe('40');
 
-    // `:L229-:L231` walks the SKUs a SECOND time to persist them, so every SKU is written exactly
+    // `:L229-:L231` walks the SKUs a second time to persist them, so every SKU is written exactly
     // once and the writes happen after the whole set has been mutated — not interleaved with it.
     expect(harness.persistedSkus).toEqual([first, second]);
   });
@@ -2449,7 +2125,7 @@ describe('processProductUpdateSkus — the flag-gated bulk price update', () => 
     expect(harness.skuCalls.filter(isSkuCall('persistSku'))).toHaveLength(0);
   });
 
-  it('NET-NEW: the two Product_UpdateSkus rules declare no contexts and no minValue (X3)', () => {
+  it('NET-NEW: the two Product_UpdateSkus rules declare no contexts and no minValue', () => {
     const rules = productUpdateSkusValidationRuleSet.properties.flatMap((property) => [
       ...property.rules,
     ]);
@@ -2466,7 +2142,7 @@ describe('processProductUpdateSkus — the flag-gated bulk price update', () => 
       expect(Object.prototype.hasOwnProperty.call(rule, 'contexts')).toBe(false);
       expect(rule.conditions).toBeDefined();
 
-      // X3: the constraint list is enumerated exhaustively rather than probed, so a `minValue` added
+      // The constraint list is enumerated exhaustively rather than probed, so a `minValue` added
       // later cannot slip past. `model/validation/Product_UpdateSkus.json` declares neither a minimum
       // nor a maximum for either property.
       expect(rule.constraints.map((constraint) => constraint.constraintType)).toEqual([
@@ -2476,7 +2152,7 @@ describe('processProductUpdateSkus — the flag-gated bulk price update', () => 
     }
   });
 
-  it('NET-NEW: applies zero and negative prices, because no minValue constraint exists (X3)', async () => {
+  it('NET-NEW: applies zero and negative prices, because no minValue constraint exists', async () => {
     const { product, first, second } = buildFixture();
     const harness = buildHarness();
 
@@ -2511,7 +2187,7 @@ describe('processProductUpdateSkus — the flag-gated bulk price update', () => 
     expect(answer).toBe(product);
     expect(product.hasErrors()).toBe(true);
 
-    // A rejected PROCESS OBJECT surfaces on the ENTITY as one context-named entry under the shared
+    // A rejected process object surfaces on the entity as one context-named entry under the shared
     // process-objects key — the legacy shape, so downstream error reporting stays comparable.
     expect(product.getError(PROCESS_OBJECTS_ERROR_KEY)).toEqual(['updateSkus']);
 
@@ -2606,8 +2282,8 @@ describe('processProductUpdateSkus — the flag-gated bulk price update', () => 
     expect(product.hasError('productCode')).toBe(false);
     expect(first.getPrice()).toBe('25');
 
-    // The entity pass still RAN — it simply matched nothing. Both passes are visible in order, which is
-    // the N3 contract Phase 8 exercises in full.
+    // The entity pass still ran — it simply matched nothing. Both passes are visible in order, which is
+    // the process-flow contract the update-SKUs cases exercise in full.
     expect(harness.validations).toEqual([
       {
         kind: 'validateProcess',
@@ -2621,30 +2297,7 @@ describe('processProductUpdateSkus — the flag-gated bulk price update', () => 
   });
 });
 
-// ==================================================================================================
-// AGENT PROMPT PHASE 7D — the five members whose legacy work crosses an excluded boundary
-//
-// `processProduct_addProductReview` (:L157), `processProduct_addSubscriptionTerm` (:L173),
-// `processProduct_deleteDefaultImage` (:L198), `processProduct_updateDefaultImageFileNames` (:L208)
-// and `processProduct_uploadDefaultImage` (:L235).
-//
-// Each reaches something §0.2.2 excludes — ProductReview, the subscription domain, the filesystem, or
-// the image service. NONE of them is asserted by inventing the excluded behaviour. What IS asserted is
-// the outcome the LANDED member actually produces at the boundary, which in three cases is a typed
-// refusal carrying the source locator, and in two cases is real work the port could keep.
-//
-// Two members are NOT uniformly stubbed, and pretending otherwise would be the mistake here:
-//   - `addProductReview` performs its whole legacy body — the auto-approve setting read, the
-//     active-flag decision and the account attachment — on a structurally checked process object.
-//     It is also the ONLY process member that never calls the process validator at all, and that
-//     asymmetry is asserted rather than smoothed over.
-//   - `updateDefaultImageFileNames` regenerates and persists real image file names, which is why the
-//     X17 chain in Phases 7A/7B has observable effects.
-//
-// M8: the setting resolver is SYNCHRONOUS. `addProductReview`, `deleteDefaultImage` and
-// `uploadDefaultImage` all read settings without awaiting, so no test here awaits a background
-// settings completion, and none may be added later.
-// ==================================================================================================
+// Agent prompt phase 7d — the five members whose legacy work crosses an excluded boundary.
 
 describe('processProductAddProductReview — the review boundary', () => {
   const PRODUCT_ID = physicalID('p-add-review');
@@ -2655,13 +2308,7 @@ describe('processProductAddProductReview — the review boundary', () => {
     readonly processObject: unknown;
   }
 
-  /**
-   * The smallest object that satisfies the landed structural guard.
-   *
-   * Hand-built rather than taken from `test/support/inMemoryRepositories.ts` because ProductReview is
-   * out of scope (AAP §0.2.2.4), so support declares no double for it — and the landed member declares
-   * no process-object type for it either, checking the shape structurally instead.
-   */
+  /** The smallest object that satisfies the landed structural guard. */
   function createReviewRecorder(options: { readonly reviewable?: boolean } = {}): ReviewRecorder {
     const activeFlags: number[] = [];
     const accounts: { readonly accountID: string; readonly newFlag: boolean }[] = [];
@@ -2715,7 +2362,7 @@ describe('processProductAddProductReview — the review boundary', () => {
       { accountID: TEST_ADMIN_ACCOUNT_ID, newFlag: false, adminAccountFlag: true },
     ]);
 
-    // The setting is read entity-scoped to THIS product, which is how the legacy hierarchical
+    // The setting is read entity-scoped to this product, which is how the legacy hierarchical
     // `setting()` accessor resolves a product-level override before the global default.
     expect(harness.settingReads).toEqual([
       {
@@ -2724,7 +2371,7 @@ describe('processProductAddProductReview — the review boundary', () => {
       },
     ]);
 
-    // THE ASYMMETRY: this is the only process member that never runs the process validator. Every
+    // The asymmetry: this is the only process member that never runs the process validator. Every
     // other one opens with `runProcessValidation`; `:L157-L171` opens with the body.
     expect(harness.validations).toEqual([]);
   });
@@ -2732,7 +2379,7 @@ describe('processProductAddProductReview — the review boundary', () => {
   it('NET-NEW: leaves the review pending when auto-approve reads false, using the CFML cast rather than truthiness', async () => {
     const product = buildReviewProduct();
     const recorder = createReviewRecorder();
-    // The STRING "0" — truthy in JavaScript, false in CFML. Reading it with truthiness would approve a
+    // The string "0" — truthy in JavaScript, false in CFML. Reading it with truthiness would approve a
     // review the legacy leaves pending, which is a moderation failure rather than a cosmetic one.
     const harness = buildHarness({
       settings: [{ settingName: 'productAutoApproveReviewsFlag', value: '0' }],
@@ -2756,7 +2403,7 @@ describe('processProductAddProductReview — the review boundary', () => {
       newAccountRecorder.processObject,
     );
 
-    // `:L165` guards on the account NOT being new, so an unsaved account is never written onto the
+    // `:L165` guards on the account not being new, so an unsaved account is never written onto the
     // review. The review is still activated, so the guard is on the account only.
     expect(newAccountRecorder.activeFlags).toEqual([1]);
     expect(newAccountRecorder.accounts).toEqual([]);
@@ -2805,7 +2452,7 @@ describe('processProductAddProductReview — the review boundary', () => {
       productID: PRODUCT_ID,
       locator: 'model/service/ProductService.cfc:L157-L171',
     });
-    // The refusal happens BEFORE the setting is read, so the boundary is closed at the shape check.
+    // The refusal happens before the setting is read, so the boundary is closed at the shape check.
     expect(harness.settingReads).toEqual([]);
   });
 
@@ -2858,9 +2505,6 @@ describe('processProductAddSubscriptionTerm — the subscription boundary', () =
   /**
    * Builds a subscription product whose single existing SKU is its default SKU and carries one benefit
    * of each kind, so the two copy loops at `:L186` and `:L189` have something to copy.
-   *
-   * `SubscriptionBenefitReference` is `{ subscriptionBenefitID }` and nothing more, so the two benefit
-   * values are written as literals of that exact port type — no subscription entity is fabricated.
    */
   function buildFixture(): SubscriptionFixture {
     const productType = buildProductType({
@@ -2903,8 +2547,8 @@ describe('processProductAddSubscriptionTerm — the subscription boundary', () =
     return buildHarness({
       settings: IMAGE_FILE_NAME_SETTINGS,
       subscriptionTermIDs: options.subscriptionTermIDs ?? [SUBSCRIPTION_TERM_ID],
-      // G6: the real `addSubscriptionTerm` rules can never pass (see the test immediately below), so
-      // reaching the body at all requires a validator that records no findings. This is the ONLY place
+      // the real `addSubscriptionTerm` rules can never pass (see the test immediately below), so
+      // reaching the body at all requires a validator that records no findings. This is the only place
       // in the suite where the real rule set is stood down, and it is stood down to expose D6 rather
       // than to avoid a failure.
       validator: createPermissiveValidator(),
@@ -2923,7 +2567,7 @@ describe('processProductAddSubscriptionTerm — the subscription boundary', () =
 
     // TODO(parity) — `model/validation/Product.json:L15` requires `minCollection 1` on
     // `unusedProductSubscriptionTerms` for this context, and the landed process-validation subject
-    // resolves that collection through `Product.getUnusedProductSubscriptionTerms()` with NO finder,
+    // resolves that collection through `Product.getUnusedProductSubscriptionTerms()` with no finder,
     // because the subscription domain is out of scope (AAP §0.2.2.1). The collection is therefore
     // always empty and the gate always closes. Carried as the observed boundary outcome: the member is
     // declared, typed and reachable, and the excluded collaborator is what stops it.
@@ -2942,7 +2586,7 @@ describe('processProductAddSubscriptionTerm — the subscription boundary', () =
     // `processObject.getListPrice()` and the assignment reads `arguments.data.listPrice`, but the
     // signature at `:L173` declares no `data` argument. The assignment therefore cannot be performed,
     // so a caller who supplies a numeric list price hits an unconditional failure. Carried unrepaired:
-    // repairing it would invent a data argument the legacy signature does not have.
+    // Repairing it would invent a data argument the legacy signature does not have.
     const error = await captureDomainError(
       harness.service.processProductAddSubscriptionTerm(product, createTermProcessObject(45)),
     );
@@ -2955,7 +2599,7 @@ describe('processProductAddSubscriptionTerm — the subscription boundary', () =
       assignedFrom: 'arguments.data.listPrice',
     });
 
-    // The new SKU is built and priced before the guard, but it is attached to the product AFTER it, so
+    // The new SKU is built and priced before the guard, but it is attached to the product after it, so
     // the raise leaves the product's SKU set exactly as it was.
     expect(product.getSkus()).toEqual([defaultSku]);
     expect(harness.persistedSkus).toEqual([]);
@@ -2982,20 +2626,15 @@ describe('processProductAddSubscriptionTerm — the subscription boundary', () =
     expect(created.getRenewalPrice()).toBe('27');
     expect(created.subscriptionTerm).toEqual({ subscriptionTermID: SUBSCRIPTION_TERM_ID });
 
-    // The benefits are COPIED from the default SKU, not resolved from the subscription domain.
+    // The benefits are copied from the default SKU, not resolved from the subscription domain.
     expect(created.subscriptionBenefits).toEqual([{ subscriptionBenefitID: 'sb-access' }]);
     expect(created.renewalSubscriptionBenefits).toEqual([{ subscriptionBenefitID: 'sb-renewal' }]);
 
-    // `:L183` derives the code from the LIVE SKU count, so the first added SKU is `-2`.
-    //
-    // NOTE, do not repair: `<productCode>-<skuCount+1>` is not collision-safe. Two invocations that
-    // interleave before either attaches its SKU both read the same count and mint the same code, which
-    // `model/validation/Sku.json` then rejects for uniqueness. The derivation is carried exactly as the
-    // legacy writes it; making it collision-safe would change observable SKU codes.
+    // `:L183` derives the code from the live SKU count, so the first added SKU is `-2`.
     expect(created.skuCode).toBe(`${TEST_MERCHANDISE_PRODUCT_CODE}-2`);
 
-    // X17: the member ends by chaining `updateDefaultImageFileNames`, which regenerates and persists
-    // BOTH SKUs — the pre-existing one and the one just created.
+    // The member ends by chaining `updateDefaultImageFileNames`, which regenerates and persists
+    // both SKUs — the pre-existing one and the one just created.
     expect(harness.persistedSkus).toEqual([defaultSku, created]);
     expect(created.imageFile).toBe(`${TEST_MERCHANDISE_PRODUCT_CODE}.jpg`);
   });
@@ -3128,7 +2767,7 @@ describe('processProductDeleteDefaultImage — the filesystem boundary', () => {
       'globalAssetsImageFolderPath',
     ]);
 
-    // TODO(parity) — the legacy interpolates a BARE `imageFile`, not `arguments.data.imageFile`, so it
+    // TODO(parity) — the legacy interpolates a bare `imageFile`, not `arguments.data.imageFile`, so it
     // raises in CFML too the moment the key is present. The defect is carried, not repaired: reading
     // `data.imageFile` instead would give the member a working path the legacy never had.
     expect(requireNotImplemented(error).member).toBe(
@@ -3301,7 +2940,7 @@ describe('processProductUploadDefaultImage — the upload boundary', () => {
     expect(answer).toBe(product);
 
     // The finding lands on the process object under the same resource-bundle key the legacy uses, and
-    // NOT on the entity. Moving it to the entity would change which form field renders the message.
+    // not on the entity. Moving it to the entity would change which form field renders the message.
     expect(recorder.errors).toEqual([{ errorName: 'imageFile', errorMessage: FILE_UPLOAD_RBKEY }]);
     expect(product.hasErrors()).toBe(false);
 
@@ -3347,34 +2986,12 @@ describe('processProductUploadDefaultImage — the upload boundary', () => {
   });
 });
 
-// ==================================================================================================
-// AGENT PROMPT PHASE 8 — N3, the two-pass process orchestration
-// SOURCE: org/Hibachi/HibachiService.cfc:L84-L129 (the orchestrator),
-//         org/Hibachi/HibachiService.cfc:L55 (delete's hard-coded context),
-//         org/Hibachi/HibachiService.cfc:L133 and model/service/HibachiService.cfc:L86 (save's default)
-//
-// The legacy orchestrator does four things in a fixed order, and all four are asserted here:
-//   1. validate the ENTITY with the process context (`:L96`);
-//   2. STOP if the entity carries findings (`:L99`) — the process object is not even populated;
-//   3. otherwise validate the PROCESS OBJECT with THE SAME context string (`:L108`);
-//   4. only then invoke the process member (`:L114`).
-//
-// TWO CONTEXTS ARE NOT INTERCHANGEABLE, AND THE THREE MECHANISMS THAT PRODUCE THEM STAY DISTINCT:
-//   - `delete` is HARD-CODED by the framework member (`org/Hibachi/HibachiService.cfc:L55`);
-//   - `save` is a DEFAULT that a caller may override (`:L133`, and the local override at
-//     `model/service/HibachiService.cfc:L86`);
-//   - a process context is SUPPLIED EXPLICITLY by the calling member.
-// Collapsing them into one invented global context would make the delete guards fire on save and the
-// save requirements fire on delete, so the last test in this block pins all three separately.
-//
-// DISPATCH IS BY EXPLICIT MEMBER, NOT BY COMPOSED STRING. The legacy invokes
-// `process#getClassName()#_#context#` by name (`org/Hibachi/HibachiService.cfc:L114`), which is the
-// same metaprogramming family as the `onMissingMethod` synthesis of IR-1. Every process call in this
-// suite is a direct, compile-checked member call on the landed class; no string is composed, no
-// locator is consulted, and no dynamic member is reached anywhere.
-// ==================================================================================================
+// Agent prompt phase 8 — the two-pass process orchestration
+// source: org/Hibachi/HibachiService.cfc:L84-L129 (the orchestrator),
+// org/Hibachi/HibachiService.cfc:L55 (delete's hard-coded context),
+// org/Hibachi/HibachiService.cfc:L133 and model/service/HibachiService.cfc:L86 (save's default)
 
-describe('N3 — the two-pass process orchestration', () => {
+describe('the two-pass process orchestration', () => {
   const PRODUCT_ID = physicalID('p-n3');
 
   function buildN3ProductType(): ProductType {
@@ -3403,7 +3020,7 @@ describe('N3 — the two-pass process orchestration', () => {
       updateListPriceFlag: 0,
     });
 
-    // The orchestrator is entered ONCE and issues exactly two passes, in the legacy order, both with
+    // The orchestrator is entered once and issues exactly two passes, in the legacy order, both with
     // the one context string. A third entry, a reversed pair, or two different context values would all
     // be divergences from `org/Hibachi/HibachiService.cfc:L96` and `:L108`.
     expect(harness.validations).toEqual([
@@ -3452,9 +3069,9 @@ describe('N3 — the two-pass process orchestration', () => {
       optionGroup: physicalID('og-n3'),
     });
 
-    // AAP §0.2.1.5: there is NO `model/validation/Product_AddOptionGroup.json` and no
+    // AAP §0.2.1.5: there is no `model/validation/Product_AddOptionGroup.json` and no
     // `Product_AddOption.json`. Those two process contexts are validated by context-scoped rules
-    // declared INSIDE `model/validation/Product.json`, so the orchestrator legitimately runs a
+    // declared inside `model/validation/Product.json`, so the orchestrator legitimately runs a
     // single-pass shape here. Mistaking that for a missing rule set is the error this test forecloses.
     expect(harness.validations).toEqual([
       {
@@ -3470,9 +3087,9 @@ describe('N3 — the two-pass process orchestration', () => {
   it('NET-NEW: the entity gate blocks the process-object pass entirely, and nothing is populated or read', async () => {
     // Exercised directly against the landed orchestrator, because the short-circuit is unreachable
     // through this service's own rule sets: `updateSkus` is the only context that supplies a
-    // process-object target, and NO rule in `model/validation/Product.json` names `updateSkus`, so the
+    // process-object target, and no rule in `model/validation/Product.json` names `updateSkus`, so the
     // entity pass there can never produce a finding. The two rule sets below are deliberately minimal
-    // test probes — they exist to observe the ORCHESTRATOR's ordering contract, not to model any
+    // test probes — they exist to observe the orchestrator's ordering contract, not to model any
     // product rule, and no production rule is invented or altered anywhere.
     const reads: string[] = [];
     const entitySubject: ValidationSubject = {
@@ -3562,7 +3179,7 @@ describe('N3 — the two-pass process orchestration', () => {
       }
     }
 
-    // ONE context string, used twice. `org/Hibachi/HibachiService.cfc` passes the same value to both
+    // One context string, used twice. `org/Hibachi/HibachiService.cfc` passes the same value to both
     // passes, and the landed request type carries a single `processContext` field so a caller cannot
     // do otherwise.
     expect(result.processObjectRan).toBe(true);
@@ -3622,7 +3239,7 @@ describe('N3 — the two-pass process orchestration', () => {
   });
 
   it('NET-NEW: the validator never persists — a refused process leaves every repository untouched', async () => {
-    // `addOptionGroup` on a SUBSCRIPTION product: `model/validation/Product.json:L4` restricts the
+    // `addOptionGroup` on a subscription product: `model/validation/Product.json:L4` restricts the
     // context to `merchandise`, so the entity pass refuses it.
     const productType = buildProductType({
       productTypeID: SUBSCRIPTION_PRODUCT_TYPE_ID,
@@ -3665,7 +3282,7 @@ describe('N3 — the two-pass process orchestration', () => {
     expect(answer).toBe(product);
     expect(product.hasError('baseProductType')).toBe(true);
 
-    // Validation MUTATES the entity's error state and writes nothing else. No product was persisted or
+    // Validation mutates the entity's error state and writes nothing else. No product was persisted or
     // removed, no SKU was written, and no maintenance cleanup ran.
     expect(harness.persistedProducts()).toEqual([]);
     expect(harness.savedProducts).toEqual([]);
@@ -3677,28 +3294,9 @@ describe('N3 — the two-pass process orchestration', () => {
   });
 });
 
-// ==================================================================================================
-// AGENT PROMPT PHASE 9 — the two save members
-// SOURCE: model/service/ProductService.cfc:L264-L292 (saveProduct)
-//         model/service/ProductService.cfc:L294-L311 (saveProductType)
-//
-// The two members look alike and are NOT alike, in three ways that all show up here:
-//
-//   1. THE URL-TITLE GUARD. `saveProduct` at `:L268` tests `isNull()` ONLY, so an entity carrying an
-//      EMPTY urlTitle counts as having one and nothing is generated — after which the `required` rule
-//      refuses the save. `saveProductType` at `:L297` tests null OR length, so the same empty value is
-//      regenerated. The two are deliberately not normalised to each other.
-//   2. WHERE THE VALUE LANDS. `saveProduct` writes the generated title onto the ENTITY;
-//      `saveProductType` writes it into the DATA PAYLOAD, which its BaseService save then populates.
-//   3. WHO PERSISTS. `saveProduct` persists through the direct Product persister — and on the
-//      new-product path it persists TWICE (`:L280` and `:L290`). `saveProductType` delegates to
-//      BaseService entirely and persists nothing itself.
-//
-// The slug algorithm itself is NOT re-tested here. It lives in `src/util/urlTitle.ts` and its full
-// behaviour — including that the first collision suffix is `-2` because the counter is pre-incremented
-// — belongs to the BrandService suite. What is asserted here is DELEGATION: the right table token, the
-// right title string, and the probe actually being consulted rather than a slug being invented locally.
-// ==================================================================================================
+// Agent prompt phase 9 — the two save members
+// source: model/service/ProductService.cfc:L264-L292 (saveProduct)
+// model/service/ProductService.cfc:L294-L311 (saveProductType)
 
 describe('saveProduct — populate, title, validate, create, persist', () => {
   const PRODUCT_TITLE_SLUG = 'test-product';
@@ -3770,8 +3368,8 @@ describe('saveProduct — populate, title, validate, create, persist', () => {
     expect(product.productName).toBe(TEST_MERCHANDISE_PRODUCT_NAME);
     expect(product.productCode).toBe(TEST_MERCHANDISE_PRODUCT_CODE);
 
-    // 1. The URL title was generated from the product TITLE — the rendered `productTitleString`, not
-    //    the raw product name — and probed against `SwProduct`.
+    // 1. The URL title was generated from the product title — the rendered `productTitleString`, not
+    // the raw product name — and probed against `SwProduct`.
     expect(product.urlTitle).toBe(PRODUCT_TITLE_SLUG);
     expect(harness.urlTitleProbes).toEqual([
       { tableName: PRODUCT_TABLE, value: PRODUCT_TITLE_SLUG },
@@ -3783,8 +3381,8 @@ describe('saveProduct — populate, title, validate, create, persist', () => {
     ]);
     expect(product.hasErrors()).toBe(false);
 
-    // 3. SKU creation receives the SAME payload the caller supplied, and the image-name chain runs
-    //    AFTER it — the legacy order at `:L282` then `:L284`.
+    // 3. SKU creation receives the same payload the caller supplied, and the image-name chain runs
+    // after it — the legacy order at `:L282` then `:L284`.
     expect(createSkus).toHaveBeenCalledTimes(1);
     expect(requireAt(createSkus.mock.calls, 0)).toEqual([product, data]);
     expect(chain).toHaveBeenCalledTimes(1);
@@ -3793,9 +3391,9 @@ describe('saveProduct — populate, title, validate, create, persist', () => {
       requireAt(chain.mock.invocationCallOrder, 0),
     );
 
-    // 4. The new-product path persists TWICE — once at `:L280` so the SKUs have a saved parent to
-    //    attach to, and again at `:L290`. Carried exactly: collapsing it to one write would change
-    //    what the SKU creation sees.
+    // 4. The new-product path persists twice — once at `:L280` so the SKUs have a saved parent to
+    // attach to, and again at `:L290`. Carried exactly: collapsing it to one write would change
+    // what the SKU creation sees.
     expect(harness.persistedProducts()).toEqual([product, product]);
   });
 
@@ -3814,7 +3412,7 @@ describe('saveProduct — populate, title, validate, create, persist', () => {
     await harness.service.saveProduct(product, validPayload());
 
     // Two probes, and the second carries the suffixed candidate: the availability decision is the
-    // utility's, not this member's. The suffix VALUE is the utility's contract and is asserted in full
+    // utility's, not this member's. The suffix value is the utility's contract and is asserted in full
     // by the BrandService suite; what matters here is that this member asks rather than assumes.
     expect(harness.urlTitleProbes).toEqual([
       { tableName: PRODUCT_TABLE, value: PRODUCT_TITLE_SLUG },
@@ -3849,7 +3447,7 @@ describe('saveProduct — populate, title, validate, create, persist', () => {
 
     await harness.service.saveProduct(product, { ...validPayload(), urlTitle: '' });
 
-    // The SAME empty string, opposite outcome — because population treats a blank payload value for a
+    // The same empty string, opposite outcome — because population treats a blank payload value for a
     // nullable column as a DELETE rather than an assignment, so the property is genuinely absent by the
     // time `:L268` reads it. The two cases are not interchangeable and are not normalised.
     expect(product.urlTitle).toBe(PRODUCT_TITLE_SLUG);
@@ -3894,9 +3492,9 @@ describe('saveProduct — populate, title, validate, create, persist', () => {
 
   it('NET-NEW (legacy scenario: issue_1690, meta/tests/unit/IssuesTest.cfc:L192-L201) — a brand-new blank product accumulates save findings and is never persisted', async () => {
     // The legacy regression builds a bare `newEntity("Product")`, validates it in the `save` context and
-    // saves it ONLY if it reports no errors. It contains NO assert statement at all, so it passes as long
+    // saves it only if it reports no errors. It contains no assert statement at all, so it passes as long
     // as nothing throws — which is why this case is labelled NET-NEW even though it names a legacy
-    // locator: the SCENARIO carries across, the verdict below has no legacy counterpart to extend.
+    // locator: the scenario carries across, the verdict below has no legacy counterpart to extend.
     const product = buildProduct({});
     const harness = buildHarness({ settings: [PRODUCT_TITLE_STRING_SETTING] });
     const createSkus = jest.spyOn(harness.skuService, 'createSkus').mockResolvedValue(true);
@@ -3916,7 +3514,7 @@ describe('saveProduct — populate, title, validate, create, persist', () => {
   });
 
   it('NET-NEW (legacy fixture: meta/tests/unit/Helper.cfc:L52-L77) — the legacy merchandise fixture saves unaltered', async () => {
-    // `getTestMerchandiseProduct()` hard-codes ONE struct — product name `Test Product`, price `100`,
+    // `getTestMerchandiseProduct()` hard-codes one struct — product name `Test Product`, price `100`,
     // product code `TESTPRODUCTXXX` and the seeded merchandise product-type UUID (IR-7,
     // `config/dbdata/SlatwallProductType.xml.cfm:L13`) — and every legacy catalog test that needed a
     // product built it from there. The literals are carried across verbatim so a reviewer can line the
@@ -3924,7 +3522,7 @@ describe('saveProduct — populate, title, validate, create, persist', () => {
     // saved, and asserted nothing, so the outcome below has no legacy counterpart to compare against.
     //
     // TODO(parity) D17 — meta/tests/unit/Helper.cfc:L52: the legacy helper declared `productData`
-    // UNSCOPED, leaking it into the component's shared variables scope — the same defect class as D10.
+    // unscoped, leaking it into the component's shared variables scope — the same defect class as D10.
     // Strict TypeScript removes the hazard by construction: the fixture factory returns a frozen value
     // built fresh on every call, so nothing is shared between tests and there is nothing to leak.
     const fixture = createMerchandiseProductFixture();
@@ -3977,7 +3575,7 @@ describe('saveProductType — payload-side titling and parent inheritance', () =
 
     const answer = await harness.service.saveProductType(productType, data);
 
-    // The payload name wins over the entity name, and the generated value is written into the DATA —
+    // The payload name wins over the entity name, and the generated value is written into the data —
     // not onto the entity — so the BaseService save populates it in the same pass.
     expect(harness.urlTitleProbes).toEqual([{ tableName: PRODUCT_TYPE_TABLE, value: 'wall-art' }]);
     expect(data['urlTitle']).toBe('wall-art');
@@ -4023,7 +3621,7 @@ describe('saveProductType — payload-side titling and parent inheritance', () =
 
     await entityHarness.service.saveProductType(entityProductType, entityData);
 
-    // BOTH halves of the guard must be unusable before anything is generated, so an entity that already
+    // Both halves of the guard must be unusable before anything is generated, so an entity that already
     // has a title is left alone even when the payload has none.
     expect(entityHarness.urlTitleProbes).toEqual([]);
     expect(entityData['urlTitle']).toBeUndefined();
@@ -4084,8 +3682,8 @@ describe('saveProductType — payload-side titling and parent inheritance', () =
       productID: physicalID('p-inherit-2'),
       productName: 'Canvas',
     });
-    // The parent's collection is seeded DIRECTLY, because the domain's `addProduct`/`setProducts` pair
-    // maintains only the OWNING side of the relationship — the inverse collection is what Hibernate
+    // The parent's collection is seeded directly, because the domain's `addProduct`/`setProducts` pair
+    // maintains only the owning side of the relationship — the inverse collection is what Hibernate
     // filled from the database. Calling `parentProductType.setProducts([...])` here would leave the
     // parent's own collection empty and the inheritance branch would never be entered.
     parentProductType.getProducts().push(firstInherited, secondInherited);
@@ -4098,14 +3696,14 @@ describe('saveProductType — payload-side titling and parent inheritance', () =
 
     const answer = await harness.service.saveProductType(productType, {});
 
-    // The child adopts the parent's whole product collection by RE-POINTING each product at itself,
-    // and EVERY adopted product is written back through the product repository — one call each, in
+    // The child adopts the parent's whole product collection by re-pointing each product at itself,
+    // and every adopted product is written back through the product repository — one call each, in
     // collection order.
     expect(firstInherited.productType).toBe(productType);
     expect(secondInherited.productType).toBe(productType);
     expect(harness.savedProducts).toEqual([firstInherited, secondInherited]);
 
-    // The child's OWN collection stays empty, because the domain's `addProduct` sets only the owning
+    // The child's own collection stays empty, because the domain's `addProduct` sets only the owning
     // side of the relationship — the inverse collection is refreshed from the database, exactly as the
     // Hibernate mapping did. Asserting the adopted products on `child.getProducts()` would assert an
     // in-memory convenience the legacy never had. The parent's collection is likewise left untouched in
@@ -4149,17 +3747,11 @@ describe('saveProductType — payload-side titling and parent inheritance', () =
 
   it('NET-NEW: findings from BaseService.save ride on the returned entity and block inheritance', async () => {
     /*
-     * ⭐ THE MEMBER NO LONGER CATCHES ANYTHING, AND THAT IS THE FIX RATHER THAN A REGRESSION.
-     * `model/service/ProductService.cfc:L310` returns on every path and its `:L306` gate reads
-     * `hasErrors()`, so findings have always had to arrive as DATA on the entity. An earlier revision
-     * reached that end by the wrong route: `BaseService.save` THREW the bag and this member wrapped the
-     * delegation in `try`/`catch` to convert the raise back into entity-carried findings — one layer
-     * inventing a divergence and the next undoing it. The base service now honours
-     * `model/service/HibachiService.cfc:L103` directly, so the conversion has nothing left to do and is
-     * gone; the `:L306` gate reads the same bag it always meant to read.
-     *
-     * The assertions below are UNCHANGED from that revision, which is the useful part: they always
-     * described the legacy contract correctly, and only the mechanism underneath them was wrong.
+     * The member catches nothing. `model/service/ProductService.cfc:L310` returns on every path and
+     * its `:L306` gate reads `hasErrors()`, so findings arrive as data on the entity. Throwing the
+     * bag from `baseService.save` and wrapping the delegation in `try`/`catch` to convert the raise
+     * back would have one layer invent a divergence and the next undo it; the base service honours
+     * the single exit instead.
      */
     const parentProductType = buildProductType({
       productTypeID: PARENT_PRODUCT_TYPE_ID,
@@ -4169,9 +3761,9 @@ describe('saveProductType — payload-side titling and parent inheritance', () =
       .getProducts()
       .push(buildProduct({ productID: physicalID('p-inherit-1'), productName: 'Poster' }));
     /*
-     * ⭐ SEEDED AS FINDINGS, NOT AS A REJECTION, AND THE OPTION NAME IS THE WHOLE DISTINCTION. An earlier
+     * Seeded as findings, not as a rejection, and the option name is the whole distinction. An earlier
      * revision built a `ValidationError` here and passed it as `productTypeSaveFailure`, which makes the
-     * double REJECT. Under the landed contract a validation refusal never rejects — `BaseService.save`
+     * double reject. Under the landed contract a validation refusal never rejects — `BaseService.save`
      * attaches the findings to the entity's own bag and returns the same instance — so seeding through
      * `productTypeSaveFindings` is what actually exercises the path these assertions describe.
      * `productTypeSaveFailure` is reserved for the non-validation case, in the very next test.
@@ -4189,7 +3781,7 @@ describe('saveProductType — payload-side titling and parent inheritance', () =
 
     const answer = await harness.service.saveProductType(productType, {});
 
-    // A validation refusal is DATA, not control flow: it rides on the entity's error bag and the member
+    // A validation refusal is data, not control flow: it rides on the entity's error bag and the member
     // returns normally, exactly as the legacy `super.save()` contract does.
     expect(answer.hasError('productTypeName')).toBe(true);
     expect(harness.savedProducts).toEqual([]);
@@ -4205,9 +3797,9 @@ describe('saveProductType — payload-side titling and parent inheritance', () =
     });
 
     /*
-     * An infrastructure failure must surface, or a caller would read an unsaved entity as saved. This
-     * now holds for the plainest possible reason — the delegation has no `try`/`catch` around it at all
-     * — where the earlier revision had to filter by error class to get the same answer. The identity
+     * An infrastructure failure must surface, or a caller would read an unsaved entity as saved.
+     * This holds for the plainest possible reason: the delegation has no `try`/`catch` around it at
+     * all, so nothing filters by error class. The identity
      * assertion is deliberate: the very object is rethrown, unwrapped and unre-tagged.
      */
     await expect(harness.service.saveProductType(productType, {})).rejects.toBe(failure);
@@ -4215,7 +3807,7 @@ describe('saveProductType — payload-side titling and parent inheritance', () =
 
   it('NET-NEW: the ported ProductType rule set is what makes the titling step necessary, and it carries a SECOND inert physicalCounts guard', async () => {
     // This member generates a URL title for a reason, and the reason is declarative:
-    // `model/validation/ProductType.json:L4` marks `urlTitle` required AND unique in the `save` context,
+    // `model/validation/ProductType.json:L4` marks `urlTitle` required and unique in the `save` context,
     // so a product type saved without one could never pass. Pinning the rule set here is what stops a
     // later reader from deciding the titling step at `:L297-:L301` is redundant and removing it.
     expect(
@@ -4229,13 +3821,13 @@ describe('saveProductType — payload-side titling and parent inheritance', () =
       'physicalCounts',
     ]);
 
-    // G6 / S7, SECOND OCCURRENCE — `model/validation/ProductType.json:L8` declares the same
-    // `physicalCounts` delete guard that `model/validation/Product.json:L7` does, and it is inert for the
-    // same reason: `model/entity/ProductType.cfc:L77` declares the collection as `physicals`, nothing in
-    // the repository declares `physicalCounts` on either entity, and
-    // `org/Hibachi/HibachiValidationService.cfc:L171` silently skips a rule whose property the subject
-    // does not carry. Transliterated as an inert guard on BOTH entities — never renamed, never invented,
-    // and no PhysicalService reached (AAP §0.2.2.1 excludes all six `model/**/Physical*.cfc` files).
+    // AAP §0.7.3, second occurrence — `model/validation/ProductType.json:L8` declares the same
+    // `physicalCounts` delete guard that `model/validation/Product.json:L7` does, and it is inert
+    // for the same reason: `model/entity/ProductType.cfc:L77` declares the collection as
+    // `physicals`, nothing in the repository declares `physicalCounts` on either entity, and
+    // `org/Hibachi/HibachiValidationService.cfc:L171` silently skips a rule whose property the
+    // subject does not carry. Transliterated as an inert guard on both entities: never renamed to
+    // `physicals`, and never invented where the document does not declare it.
     expect(Object.hasOwn(PRODUCT_TYPE_DECLARED_PROPERTIES, 'physicalCounts')).toBe(false);
     expect(Object.hasOwn(PRODUCT_TYPE_DECLARED_PROPERTIES, 'physicals')).toBe(true);
 
@@ -4249,32 +3841,14 @@ describe('saveProductType — payload-side titling and parent inheritance', () =
   });
 });
 
-// ==================================================================================================
-// AGENT PROMPT PHASE 10 — deleteProduct(product)
-// SOURCE: model/service/ProductService.cfc:L317-L336
-//
-// The member does one unusual thing and it is the whole point of it: it CLEARS the default-SKU
-// relationship before delegating to the base delete, and puts it back if the delete does not happen.
-// The legacy reason is the circular foreign key — `SwProduct.defaultSkuID` points at a SKU whose
-// `SwSku.productID` points back — so the product cannot be removed while the pointer stands.
-//
-// G6 / S7 — THE INERT `physicalCounts` GUARD. `model/validation/Product.json:L7` declares a
-// `maxCollection 0` guard on `physicalCounts` for the delete context. `model/entity/Product.cfc:L90`
-// declares the collection as `physicals`. `physicalCounts` is declared NOWHERE on Product, and
-// `org/Hibachi/HibachiValidationService.cfc:L171` SILENTLY SKIPS a rule whose property the subject does
-// not carry. The guard is therefore inert in the legacy system, and it is transliterated as an inert
-// guard here — present in the rule set, never evaluated. It is NOT renamed to `physicals`, no
-// `physicalCounts` member is invented, and no PhysicalService is reached: `model/**/Physical*.cfc` is
-// six files of explicitly out-of-scope code (AAP §0.2.2.1).
-//
-// TODO(parity) X15 — model/service/HibachiService.cfc:L93-L95. This is the one place in this suite that
-// exercises a landed BaseService CLEANUP seam, so the note belongs here. The legacy `delete()` override
-// declares `settingsRemoved` TWICE with `var` in a single scope, which CFML tolerates and TypeScript
-// cannot express; the translation declares it once. Nothing behavioural hangs on it — the second
-// declaration overwrote the first — and the assertions below observe only the two cleanup collaborators
-// the landed `BaseServiceCollaborators` actually requires. No cache-invalidation hook is invented, and
-// `SettingResolverPort` stays strictly READ-ONLY: it is never used as a write path for cleanup.
-// ==================================================================================================
+// Agent prompt phase 10 — deleteProduct(product) source: model/service/ProductService.cfc:L317-L336
+// TODO(parity) — model/service/HibachiService.cfc:L93-L95. this is the one place in this suite that
+// exercises a landed baseService cleanup seam, so the note belongs here. The legacy `delete()`
+// override declares `settingsRemoved` twice with `var` in a single scope, which CFML tolerates and
+// TypeScript cannot express; the translation declares it once. Nothing behavioural hangs on it —
+// the second declaration overwrote the first — and the assertions below observe only the two
+// cleanup collaborators the landed `BaseServiceCollaborators` actually requires, and no cache-
+// invalidation hook is invented alongside them.
 
 describe('deleteProduct — the default-SKU dance and the delete guards', () => {
   const PRODUCT_ID = physicalID('p-delete');
@@ -4324,7 +3898,7 @@ describe('deleteProduct — the default-SKU dance and the delete guards', () => 
     expect(answer).toBe(true);
     expect(harness.removedProducts).toEqual([product]);
 
-    // On success the pointer is NOT put back. The legacy restores it only on the failure branch, and
+    // On success the pointer is not put back. The legacy restores it only on the failure branch, and
     // fabricating a restoration here would leave a deleted product holding a live relationship.
     expect(product.defaultSku).toBeUndefined();
 
@@ -4334,7 +3908,7 @@ describe('deleteProduct — the default-SKU dance and the delete guards', () => 
   });
 
   it('NET-NEW: restores the default SKU and reports false when the delete is refused (:L332-:L334)', async () => {
-    // A transaction against THIS product closes `model/validation/Product.json:L5`.
+    // A transaction against this product closes `model/validation/Product.json:L5`.
     const harness = buildHarness({ transactionProductIDs: [PRODUCT_ID] });
     const { product, delegate } = buildDeleteFixture(harness);
 
@@ -4350,7 +3924,7 @@ describe('deleteProduct — the default-SKU dance and the delete guards', () => 
     expect(harness.commentCleanups).toEqual([]);
   });
 
-  it('NET-NEW: X12 — a transaction against ANOTHER product does not block this one', async () => {
+  it('NET-NEW: a transaction against ANOTHER product does not block this one', async () => {
     // The DAO check is product-scoped. If the port were consulted without the product identifier — or if
     // the identifier landed in the skuID parameter, which wins at `model/dao/SkuDAO.cfc:L58-L64` — every
     // product in a store with any transaction history would become undeletable.
@@ -4362,13 +3936,13 @@ describe('deleteProduct — the default-SKU dance and the delete guards', () => 
     expect(answer).toBe(true);
     expect(harness.removedProducts).toEqual([product]);
 
-    // The check really was made, and it was made with the product identifier in the SECOND position.
+    // The check really was made, and it was made with the product identifier in the second position.
     expect(harness.skuCalls.filter(isSkuCall('transactionExists'))).toEqual([
       { member: 'transactionExists', productID: PRODUCT_ID, skuID: undefined },
     ]);
   });
 
-  it('NET-NEW: G6/S7 — the physicalCounts guard is transliterated but inert, so physicals never block a delete', async () => {
+  it('NET-NEW: the physicalCounts guard is transliterated but inert, so physicals never block a delete', async () => {
     const harness = buildHarness();
     const { product } = buildDeleteFixture(harness);
     // Two out-of-scope physical associations. `model/validation/Product.json:L7` reads as "refuse the
@@ -4382,7 +3956,7 @@ describe('deleteProduct — the default-SKU dance and the delete guards', () => 
     expect(product.hasError('physicalCounts')).toBe(false);
     expect(harness.removedProducts).toEqual([product]);
 
-    // The rule is still THERE — transliterated faithfully rather than dropped — and it is the subject's
+    // The rule is still there — transliterated faithfully rather than dropped — and it is the subject's
     // property declaration that makes it unreachable. Asserting both halves is what keeps a future
     // reader from "fixing" the name.
     expect(physicalCountsValidation.propertyIdentifier).toBe('physicalCounts');
@@ -4402,7 +3976,7 @@ describe('deleteProduct — the default-SKU dance and the delete guards', () => 
     expect(harness.validations).toEqual([
       { kind: 'validate', className: 'Product', context: 'delete' },
     ]);
-    // The flag is resolved BEFORE the rule reads it — the delete-subject resolution step is what makes a
+    // The flag is resolved before the rule reads it — the delete-subject resolution step is what makes a
     // lazily calculated property available to a declarative rule at all.
     expect(harness.skuCalls.filter(isSkuCall('transactionExists'))).toHaveLength(1);
   });
@@ -4452,34 +4026,8 @@ describe('deleteProduct — the default-SKU dance and the delete guards', () => 
   });
 });
 
-// ==================================================================================================
-// AGENT PROMPT PHASE 11 — getProductSmartList(data?, currentURL?)
-// SOURCE: model/service/ProductService.cfc:L342-L357
-//
-// DISCREPANCY 1 — `currentURL` is declared with NO TYPE at `:L342`, in a signature whose sibling
-// parameter IS typed. The target types it `string | undefined` and does not consume it: the legacy value
-// feeds FW/1's saved-state URL handling, which has no counterpart behind a Lambda router. It is
-// therefore accepted and ignored, which is asserted here rather than left to be discovered.
-//
-// The three joins and five keyword properties are the CONFIGURATION the legacy member registers on the
-// SmartList before returning it, and asserting them IS this member's parity contract: it executes no
-// query and computes nothing, so that configuration is the whole of its observable behaviour.
-//
-// ⛔ THE GOOGLE FEED IS NOT A CONSUMER OF IT. An earlier revision of this comment claimed the joins and
-// keyword properties were "what the Google feed controller depends on downstream", and that is FALSE.
-// `integrationServices/google/controllers/feed.cfc:L63` builds a SKU SmartList through
-// `getSkuService().getSkuSmartList()` and then registers its OWN three joins at `:L64-L66`, including its
-// own `brand` LEFT join at `:L66`. It never calls `getProductSmartList`, and its
-// `property name="productService"` at `:L51` is referenced nowhere else in that file — a FIFTH dead
-// injection beyond the four §0.6.3 registers, as the harness's not-wired list above already records.
-// The legacy consumers of THIS member are `model/transient/HibachiScope.cfc:L142`,
-// `model/entity/ProductType.cfc:L263`, the admin controllers, the storefront listing template and the two
-// `meta/tests/unit/IssuesTest.cfc` regressions at `:L75` and `:L93` — all of them out of scope, which is
-// why no downstream consumer is imported or asserted here.
-//
-// No excluded calculated member is reached. `calculatedTitle` and `brand.brandName` appear as KEYWORD
-// PROPERTY IDENTIFIERS — strings in a query — and are never read off an entity.
-// ==================================================================================================
+// Agent prompt phase 11 — getProductSmartList(data?, currentURL?)
+// source: model/service/ProductService.cfc:L342-L357.
 
 describe('getProductSmartList — the paginated product query', () => {
   const KEYWORD_WEIGHT = 1;
@@ -4504,7 +4052,7 @@ describe('getProductSmartList — the paginated product query', () => {
     // Order matters: the legacy registers productType, then defaultSku, then brand, and only brand is a
     // LEFT join — a product with no brand must still appear. Promoting brand to an inner join would
     // silently drop every unbranded product from the result, and the `brand.brandName` keyword property
-    // asserted below would then only ever match branded rows. The feed's own conditional `g:brand` is NOT
+    // asserted below would then only ever match branded rows. The feed's own conditional `g:brand` is not
     // what this join serves: that comes from the LEFT join the feed controller registers for itself on a
     // SKU SmartList at `integrationServices/google/controllers/feed.cfc:L66`.
     expect(query.joins).toEqual([
@@ -4529,7 +4077,7 @@ describe('getProductSmartList — the paginated product query', () => {
     ]);
   });
 
-  it('NET-NEW: both arguments are optional, and an omitted payload adds no filter, order or pagination (S9)', async () => {
+  it('NET-NEW: both arguments are optional, and an omitted payload adds no filter, order or pagination', async () => {
     const harness = buildHarness();
 
     const result = await harness.service.getProductSmartList();
@@ -4612,23 +4160,8 @@ describe('getProductSmartList — the paginated product query', () => {
   });
 });
 
-// ==================================================================================================
 // IR-1 — the three members that exist only because of onMissingMethod, declared explicitly
-// SOURCE: org/Hibachi/HibachiService.cfc:L255-L281
-//
-// `newProduct()`, `getProduct(id)` and `getProductType(id)` have NO declaration anywhere in
-// `model/service/ProductService.cfc`. They resolve at run time through the framework's prefix dispatch,
-// which fabricates `get*`, `new*`, `save*`, `delete*`, `count*`, `list*`, `export*` and `process*` from
-// the method NAME. TypeScript under `strict` has no such facility, so AAP §0.4.2.5 requires each real
-// call site to become an explicitly declared, typed member — and these three are real call sites:
-// `saveProductType` is reached through `getProductType`, and the handler and process paths reach
-// `getProduct` and `newProduct`.
-//
-// They are covered here rather than left implicit, because "the synthesis was replaced by declarations"
-// is a claim about the port that a reviewer should be able to check by running something. Synthesis is
-// NOT reproduced wholesale: `countProduct*`, `listProduct*` and `exportProduct*` are not called by this
-// slice, are not declared, and get no test.
-// ==================================================================================================
+// source: org/Hibachi/HibachiService.cfc:L255-L281.
 
 describe('IR-1 — the explicitly declared replacements for the synthesized members', () => {
   it('NET-NEW: newProduct() answers a brand-new, unsaved Product and shares nothing between calls', () => {
@@ -4680,7 +4213,7 @@ describe('IR-1 — the explicitly declared replacements for the synthesized memb
     const found = await harness.service.getProductType(MERCHANDISE_PRODUCT_TYPE_ID);
 
     expect(found).toBe(wanted);
-    // A different entity AND a different identifier property. The legacy synthesis derived both from the
+    // A different entity and a different identifier property. The legacy synthesis derived both from the
     // method name, so a single mistyped declaration here would silently query the wrong table.
     expect(requireAt(harness.smartListQueries, 0)).toEqual({
       entityName: PRODUCT_TYPE_ENTITY,
@@ -4706,7 +4239,7 @@ describe('IR-1 — the explicitly declared replacements for the synthesized memb
 
     for (const query of harness.smartListQueries) {
       // A primary-key read needs none of the SmartList configuration `getProductSmartList` registers, and
-      // inventing a page size or a default order for it would be a behaviour the synthesis never had (S9).
+      // inventing a page size or a default order for it would be a behaviour the synthesis never had (AAP §0.7.3).
       expect(query.joins).toBeUndefined();
       expect(query.keywordProperties).toBeUndefined();
       expect(query.orders).toBeUndefined();
@@ -4717,65 +4250,16 @@ describe('IR-1 — the explicitly declared replacements for the synthesized memb
   });
 });
 
-/* =====================================================================================================
- * FOLDED IN FROM `test/handlers/productHandler.test.ts` — AAP §0.4.1.12 SUITE ALIGNMENT (F1, F5)
- * =====================================================================================================
- * WHY THESE CASES ARE HERE RATHER THAN IN A SUITE OF THEIR OWN. AAP §0.4.1.12 declares exactly seventeen
- * executable suites, and `test/handlers/productHandler.test.ts` was not one of them — a QA pass recorded it,
- * with eighteen siblings, as running outside the declared test plan. The coverage was never the problem;
- * the file's existence was. So the cases are folded into an approved suite, unchanged.
- *
- * ⭐ WHY THIS HOST. Same relationship as every other handler fold: the eighteen product routes dispatch to members this
- * file already tests directly, and the handler's own contribution is the layer above them. It is also the
- * surface that carries the importer entry point, whose boundary refusal this file already reasons about.
- *
- * ⛔ THE BODY IS WRAPPED IN ONE `describe`, WHICH IS THE WHOLE OF THE MECHANICAL CHANGE. Every helper,
- * constant and type the folded suite declared at module scope is now block-scoped to this callback, so it
- * cannot collide with this file's own declarations or with another folded body's — and any `beforeEach`,
- * `afterEach` or `beforeAll` it carries now applies to its own cases only, never to the host's. Not one
- * assertion, case name or comment was altered.
- * ================================================================================================== */
+/*
+ * AAP §0.4.1.12 declares exactly seventeen executable suites, so this subject is covered
+ * inside an approved suite rather than in one of its own.
+ */
 
 /**
  * `productHandler` — the Lambda boundary that exposes the `ProductService` surface, and the contracts
  * that boundary must not silently alter.
- *
- * AAP authority: the AAP §0.4.4 wildcard row authorises `slatwall-ts/test/**` | CREATE. The suite sits
- * beside `test/handlers/skuHandler.test.ts`, which covers the SKU boundary the same way, so the two
- * Lambda boundaries that have coverage are covered in the same place. `test/services/ProductService.test.ts`
- * keeps the SERVICE matrix — the URL-title derivation, the validation merge and the per-member
- * persistence steps — and this file keeps the BOUNDARY matrix; neither duplicates the other.
- *
- * =============================================================================================
- * WHAT IS UNDER TEST
- * =============================================================================================
- * The handler is a thin, injectable function OF the service — its build specification requires exactly
- * that, so that it is "assertable without a database, a network call or an AWS runtime". What is under
- * test here is therefore the service's surface as observed through its boundary: member names, arity,
- * argument order, the transaction graph a write route enters, and the authorization gate in front of
- * them all.
- *
- *   - AAP §0.7.3 makes "one test per converted method, explicitly labelled" a BINDING standard, and
- *     §0.7.2 records that the absence of user rules "is not permission to relax standards". Eighteen
- *     routed operations with no coverage at all would violate that standard outright.
- *   - `src/handlers/productHandler.ts` declares eighteen routed members — the fifteen public functions
- *     `model/service/ProductService.cfc` declares across 367 lines, plus the three the legacy
- *     fabricated at run time (IR-1) — and the count is asserted here rather than assumed.
- *
- * TEST PROVENANCE: every case below is **NET-NEW**. AAP §0.6.5.2 verified that no legacy
- * `ProductServiceTest` exists — "therefore all 28 public service members of §0.4.2 are net-new
- * coverage" — and that the legacy suite contains no controller test of any kind, the one functional
- * scaffold at [meta/tests/functional/admin/entity/ProductTest.cfc:L49-L52] being an empty component
- * with zero test methods. Nothing in this file extends a legacy assertion, and none is labelled as
- * though it did. ⚠️ NO PARITY WITH A LEGACY ASSERTION IS CLAIMED OR IMPLIED ANYWHERE BELOW.
- *
- * WHAT THIS FILE DOES NOT COVER: the service's own internals are exercised only as far as the boundary
- * makes them observable, and how a route string reaches a member belongs to `src/handlers/router.ts`,
- * which owns the `slatAction` table and mounts these members; that seam is asserted in
- * `test/handlers/entrySurface.test.ts` rather than here. Stating that is preferable to implying a
- * completeness this file does not have.
  */
-describe("test/handlers/productHandler.test.ts — the product surface's final wiring (folded, F1, F5)", () => {
+describe("The product surface's final wiring", () => {
   /** A 32-character identifier, the width IR-6 fixes for every primary key in this schema. */
   const PRODUCT_ID = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
@@ -4785,7 +4269,9 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
   /** Every entity CRUD type the permission model can be asked about. */
   const EVERY_CRUD_TYPE: readonly string[] = ['create', 'read', 'update', 'delete'];
 
-  /** The eighteen operations AAP §0.4.2.1 (fifteen declared) and §0.4.2.5 (three synthesized) allow. */
+  /**
+   * The eighteen operations AAP §0.4.2.1 (fifteen declared) and §0.4.2.5 (three synthesized) allow.
+   */
   const APPROVED_MEMBERS: readonly string[] = [
     'loadDataFromFile',
     'getFormattedOptionGroups',
@@ -4819,14 +4305,7 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     return product;
   }
 
-  /**
-   * A product type the two product-type routes can address.
-   *
-   * MANAGED, because `ProductTypeWithErrorState` is what `ProductService.saveProductType` resolves and what
-   * `ProductWriteGraph` now declares. `../../src/domain/product/ProductType` is forbidden to declare the six
-   * error members itself, so the surface is composed on exactly as the service composes it — with the same
-   * `manageEntity`, which mutates and returns the SAME object so identity survives.
-   */
+  /** A product type the two product-type routes can address. */
   function makeProductType(): ProductTypeWithErrorState {
     const productType = new ProductType();
     productType.productTypeID = PRODUCT_TYPE_ID;
@@ -4851,54 +4330,31 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
   interface SurfaceOptions {
     /** What `getProduct` answers. `null` means "no such row"; omitted means a default product. */
     readonly product?: Product | null;
-    /**
-     * What `saveProduct` answers, when it must differ from its argument.
-     *
-     * ⚠️ THIS EXISTS BECAUSE THE SERVICE REBINDS ITS LOCAL. STEP 5 of `ProductService.saveProduct` is
-     * `product = await this.persistProduct(product)`, so the persister MAY answer with a different
-     * instance from the one validation accumulated onto. Without this option a gate narrowed to the
-     * returned instance alone would look correct.
-     */
+    /** What `saveProduct` answers, when it must differ from its argument. */
     readonly savedProduct?: Product;
     /**
-     * An error key `saveProductType` should attach to the product type it returns, expressing a REFUSED
+     * An error key `saveProductType` should attach to the product type it returns, expressing a refused
      * save. Omitted means the save succeeded.
-     *
-     * ⚠️ IT IS A RETURNED FINDING AND NOT A REJECTION, WHICH IS THE WHOLE POINT.
-     * `model/service/ProductService.cfc:L310` returns `arguments.productType` on every path, so a refusal
-     * arrives on the entity's own bag. A double that rejected instead would let the boundary's commit gate
-     * look correct while never being exercised.
      */
     readonly productTypeSaveError?: string;
-    /** What `deleteProduct` answers. `false` is a guard REFUSING the delete, not an error. */
+    /** What `deleteProduct` answers. `false` is a guard refusing the delete, not an error. */
     readonly deleteResult?: boolean;
-    /**
-     * A failure `loadDataFromFile` rejects with instead of resolving.
-     *
-     * ⚠️ THIS EXISTS FOR REVIEW FINDING F9 AND FOR NOTHING ELSE. The importer's location gate lives at the
-     * retrieval SINK — `MySqlProductRepository` — so a refusal reaches this route as a rejection from
-     * beneath it, and the only thing the route owns is how that rejection is PRESENTED. Every other member
-     * of this probe resolves, because no other member has a refusal to present.
-     */
+    /** A failure `loadDataFromFile` rejects with instead of resolving. */
     readonly importFailure?: unknown;
   }
 
   /** What one invocation of the surface recorded. */
   interface Invocation {
-    /** Which member, and whether it arrived through the captured service or the transaction graph. */
+    /**
+     * Which member, and whether it arrived through the captured service or the transaction graph.
+     */
     readonly member: string;
     readonly through: 'service' | 'graph';
     /** The arguments, so argument ORDER is observable and not merely arity. */
     readonly args: readonly unknown[];
   }
 
-  /**
-   * A recording surface that answers every one of the eighteen members.
-   *
-   * ⛔ THE SERVICE AND THE GRAPH ARE DISTINCT OBJECTS, and each records which one it was. A double that
-   * shared one object between them would make TX-01's "the route calls the captured service instead of
-   * the transaction-scoped graph" defect UNOBSERVABLE — which is the whole point of the distinction.
-   */
+  /** A recording surface that answers every one of the eighteen members. */
   function makeSurface(options: SurfaceOptions = {}): {
     readonly calls: Invocation[];
     readonly service: ProductHandlerService;
@@ -4916,8 +4372,10 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
         loadDataFromFile: (fileURL: string, textQualifier?: string): Promise<void> => {
           record('loadDataFromFile', [fileURL, textQualifier]);
 
-          /* Recorded BEFORE the rejection, so a case can assert the route did forward the location it was
-           * given rather than short-circuiting on a guess about it. */
+          /*
+           * Recorded before the rejection, so a case can assert the route did forward the location it was
+           * given rather than short-circuiting on a guess about it.
+           */
           if (options.importFailure !== undefined) {
             const failure: unknown = options.importFailure;
 
@@ -4930,8 +4388,10 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
         },
         getFormattedOptionGroups: (product: Product): Promise<FormattedOptionGroups> => {
           record('getFormattedOptionGroups', [product]);
-          /* The service answers a record KEYED by option-group name — TR-1's tightening of
-           * `model/service/ProductService.cfc:L71`'s struct — so the double answers that shape too. */
+          /*
+           * The service answers a record keyed by option-group name — TR-1's tightening of
+           * `model/service/ProductService.cfc:L71`'s struct — so the double answers that shape too.
+           */
           return Promise.resolve({ Size: [{ name: 'Large', value: 'large' }] });
         },
         getProductSkusBySelectedOptions: (
@@ -5005,7 +4465,7 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
           record('saveProductType', [productType, data]);
 
           /*
-           * The double reproduces the SERVICE's contract, not a convenience: `saveProductType` returns the
+           * The double reproduces the service's contract, not a convenience: `saveProductType` returns the
            * entity on every path and attaches its findings to that entity's own bag
            * (`model/service/ProductService.cfc:L310`). So a failing save is expressed by seeding a finding
            * here, never by rejecting.
@@ -5050,19 +4510,14 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     return { calls, service, graph };
   }
 
-  /**
-   * A write runner that EVALUATES the gate and throws on a roll-back.
-   *
-   * ⛔ It must do both, because the commit DECISION is what TX-01 is about. A double that ran the work
-   * and returned its value unconditionally would make every gate case pass while asserting nothing.
-   */
+  /** A write runner that evaluates the gate and throws on a roll-back. */
   function makeWriteRunner(graph: ProductWriteGraph): {
     readonly runner: TransactionalWriteRunner<ProductWriteGraph>;
     readonly decisions: ('commit' | 'rollback')[];
     readonly securityContexts: RequestAuthorizationContext[];
   } {
     const decisions: ('commit' | 'rollback')[] = [];
-    /* SEC-AUTH-03 — every context the handler handed the boundary, in order. */
+    /* — every context the handler handed the boundary, in order. */
     const securityContexts: RequestAuthorizationContext[] = [];
 
     return {
@@ -5070,7 +4525,7 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
       securityContexts,
       runner: {
         runWrite: async <TResult>(
-          /* SEC-AUTH-03 — see the identical note in BrandService.test.ts. */
+          /* — see the identical note in brandService.test.ts. */
           security: RequestAuthorizationContext,
           work: (graph: ProductWriteGraph) => Promise<TResult>,
           hasErrors: () => boolean,
@@ -5095,24 +4550,23 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
   interface Probe {
     /** Every entity question asked, in order, so the legacy sequence is observable. */
     readonly asked: EntityAuthorizationRequest[];
-    /** Every request the resolver was HANDED — SEC-AUTH-03's widened input. */
+    /** Every request the resolver was handed —'s widened input. */
     readonly requests: InvocationSecurityRequest[];
     /** Every member reached, with its arguments and which object answered. */
     readonly calls: Invocation[];
     /** Every commit decision the runner took. */
     readonly decisions: ('commit' | 'rollback')[];
-    /** Every context handed to the write boundary — SEC-AUTH-03's propagation half. */
+    /** Every context handed to the write boundary —'s propagation half. */
     readonly securityContexts: readonly RequestAuthorizationContext[];
     readonly handler: ProductHandler;
   }
 
-  /**
+  /*
    * @param account the principal the resolver reports, or `undefined` for "no principal at all"
-   * @param grant   the entity CRUD types the permission model grants
-   * @param options see {@link SurfaceOptions}
-   * @param refusedEntities entity names whose questions are REFUSED whatever the grant. ⭐ ADDED FOR
-   *   REVIEW FINDING SEC-AUTH-02: the subordinate question asks about a DIFFERENT entity, so a case that
-   *   wants "may update the product but not its SKUs" cannot express itself through `grant` alone.
+   * @param grant the entity CRUD types the permission model grants @param options see {@link
+   * SurfaceOptions} @param refusedEntities entity names whose questions are refused whatever the
+   * grant. The subordinate question asks about a different entity, so a case that wants "may update
+   * the product but not its SKUs" cannot express itself through `grant` alone.
    */
   function makeHandler(
     principal: AccountReference | undefined,
@@ -5151,12 +4605,7 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     };
   }
 
-  /**
-   * Another party's product identifier — the victim in SEC-AUTH-02's exploit.
-   *
-   * A distinct 32-character value, so an assertion that the addressed identifier reached the question
-   * cannot pass by coincidence with the fixture's own product.
-   */
+  /** Another party's product identifier — the victim in's exploit. */
   const VICTIM_PRODUCT_ID = 'ffffffff000000000000000000000009';
 
   /** A handler admitting every request, for cases about routing rather than the gate. */
@@ -5179,12 +4628,7 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     return { body, pathParameters: { productID }, headers: {} };
   }
 
-  /**
-   * The payload slice that addresses NO product, so `saveProduct` is a creation.
-   *
-   * ⭐ ADDED FOR REVIEW FINDING SEC-AUTH-01: the gate's question now follows the operation, so the create
-   * and update arms need two different events to tell them apart.
-   */
+  /** The payload slice that addresses no product, so `saveProduct` is a creation. */
   function unaddressedPayloadEvent(body: string): ProductPayloadEvent {
     return { body, pathParameters: {}, headers: {} };
   }
@@ -5198,15 +4642,13 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     };
   }
 
-  /* ==============================================================================================
-   * API-01 — THE ROUTED SURFACE
-   * ============================================================================================== */
+  /* API-01 — the routed surface. */
 
   describe('productHandler — API-01, the routed surface is exactly the eighteen approved operations', () => {
     it('NET-NEW — AAP §0.4.2.1 + §0.4.2.5 — routes all eighteen and not one more', () => {
       const probe = admitAll();
 
-      // Sorted on both sides, so the assertion is about MEMBERSHIP rather than declaration order.
+      // Sorted on both sides, so the assertion is about membership rather than declaration order.
       expect(Object.keys(probe.handler).sort()).toStrictEqual([...APPROVED_MEMBERS].sort());
     });
 
@@ -5214,8 +4656,10 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
       const probe = admitAll();
       const routed = Object.keys(probe.handler);
 
-      /* "Not called by the slice … Not declared — synthesis is not reproduced wholesale, only where
-       * used." A prefix-driven port would have fabricated all of these. */
+      /*
+       * "Not called by the slice … Not declared — synthesis is not reproduced wholesale, only where
+       * used." a prefix-driven port would have fabricated all of these.
+       */
       for (const forbidden of [
         'countProduct',
         'listProduct',
@@ -5243,9 +4687,7 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
   });
 
-  /* ==============================================================================================
-   * API-01 — THE GATE `setupRequest()` RAN
-   * ============================================================================================== */
+  /* API-01 — the gate `setupRequest()` ran. */
 
   describe('productHandler — API-01, the authorization gate', () => {
     it('NET-NEW — org/Hibachi/HibachiAuthenticationService.cfc:L83 — NO principal refuses with 401', async () => {
@@ -5264,7 +4706,7 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
         expect(JSON.parse(result.body)).toStrictEqual({ message: 'Authentication is required' });
       }
 
-      // Refused BEFORE the service, so nothing was read, written or imported…
+      // Refused before the service, so nothing was read, written or imported….
       expect(probe.calls).toStrictEqual([]);
       // …and before any permission question, because there was no principal to ask about.
       expect(probe.asked).toStrictEqual([]);
@@ -5273,9 +4715,11 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
 
     it('NET-NEW — productHandler — HibachiScope.cfc:L40-L45 — the logged-in test is the NEGATION of newFlag', async () => {
-      /* `getLoggedInFlag()` is `if(!getSession().getAccount().isNew())`, and `newFlag` carries
-       * `isNew()`. A principal that is NEW is therefore NOT logged in. Inverting this predicate would
-       * have admitted exactly the first caller and refused the second. */
+      /*
+       * `getLoggedInFlag()` is `if(!getSession().getAccount().isNew())`, and `newFlag` carries
+       * `isNew()`. A principal that is NEW is therefore not logged in. Inverting this predicate would
+       * have admitted exactly the first caller and refused the second.
+       */
       const notLoggedIn = makeHandler(account({ newFlag: true }), ['read']);
       expect((await notLoggedIn.handler.getProduct(identifierEvent(PRODUCT_ID))).statusCode).toBe(
         401,
@@ -5296,23 +4740,15 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
       expect(probe.calls).toStrictEqual([]);
     });
 
-    /* ==============================================================================================
-     * ⭐⭐ REVIEW FINDING SEC-AUTH-02 (CWE-862, CWE-639) — THIS CASE USED TO REQUIRE THE VULNERABILITY
-     * ==============================================================================================
-     * It was named "every process member is anyLogin" and it required a logged-in account with NO entity
-     * grant to be ADMITTED to `processProductAddOptionGroup`, `processProductAddOption` and
-     * `processProductUpdateSkus`, with `probe.asked` left EMPTY to prove the permission model was never
-     * consulted. Its legacy citation is accurate — the ladder's `process` branch really is a bare
-     * `return true` — but in the legacy that branch was reached only through an administrative subsystem
-     * that had already placed the request; carrying the `return true` without the subsystem that guarded
-     * it reproduced the short-circuit and none of its context. The consequence was that ANY authenticated
-     * account could mutate ANY product by naming its identifier.
-     *
-     * The replacement below is the corrected contract: every process route requires `update` on `Product`,
-     * and the four that write SKU or image state additionally require `update` on `Sku`.
-     * `../../src/handlers/productHandler.ts` carries the full withdrawal record.
-     * ============================================================================================ */
-    it('NET-NEW — SEC-AUTH-02 — a grant-less account is REFUSED by every process route', async () => {
+    /*
+     * Why a logged-in account is not enough here (CWE-862, CWE-639). Treating every process member
+     * as `anyLogin` would admit a logged-in account with no entity grant to
+     * `processProductAddOptionGroup`, `processProductAddOption` and `processProductUpdateSkus`
+     * without consulting the permission model at all. The legacy ladder's `process` branch really
+     * is a bare `return true`, but in the legacy that branch was reached only through an
+     * administrative subsystem.
+     */
+    it('NET-NEW — a grant-less account is REFUSED by every process route', async () => {
       const probe = makeHandler(account(), []);
 
       const processRoutes = [
@@ -5326,14 +4762,18 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
         await probe.handler.processProductUploadDefaultImage(payloadEvent('{}')),
       ];
 
-      /* 403, not 401: the principal IS authenticated. And not 200: the operation is not authorised. */
+      /*
+       * 403, not 401: the principal is authenticated. And not 200: the operation is not authorised.
+       */
       for (const result of processRoutes) {
         expect(result.statusCode).toBe(403);
       }
 
-      /* ⛔ AND THE PERMISSION MODEL WAS CONSULTED, which is the assertion whose inverse this case used to
+      /*
+       * And the permission model was consulted, which is the assertion whose inverse this case used to
        * make. Every route asked `update` on `Product` — the operation it performs — before resolving
-       * anything. Nothing reached the service, so no victim product was read or written. */
+       * anything. Nothing reached the service, so no victim product was read or written.
+       */
       expect(probe.asked).toHaveLength(processRoutes.length);
       expect(probe.asked.every((request) => request.entityName === 'Product')).toBe(true);
       expect(probe.asked.every((request) => request.crudType === 'update')).toBe(true);
@@ -5341,10 +4781,12 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
       expect(probe.decisions).toStrictEqual([]);
     });
 
-    it('NET-NEW — SEC-AUTH-02 — the addressed victim identifier travels with the question', async () => {
-      /* The exploit named another party's product in `pathParameters.productID`. The gate now asks about
+    it('NET-NEW — the addressed victim identifier travels with the question', async () => {
+      /*
+       * The exploit named another party's product in `pathParameters.productID`. The gate now asks about
        * that identifier, so a deployment that scopes grants per row can refuse it — and a deployment that
-       * does not still refuses on the entity question above. */
+       * does not still refuses on the entity question above.
+       */
       const probe = makeHandler(account(), []);
 
       await probe.handler.processProductUpdateSkus(payloadEvent('{}', VICTIM_PRODUCT_ID));
@@ -5354,10 +4796,12 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
       ]);
     });
 
-    it('NET-NEW — SEC-AUTH-02 — Product update alone is not enough where SKU state is written', async () => {
-      /* The subordinate question is a CONJUNCTION. A principal that may update the product but not its
+    it('NET-NEW — Product update alone is not enough where SKU state is written', async () => {
+      /*
+       * The subordinate question is a conjunction. A principal that may update the product but not its
        * SKUs is refused by the four routes that write SKU or image state, and admitted by the two whose
-       * writes belong to families this deliverable does not model. */
+       * writes belong to families this deliverable does not model.
+       */
       const productOnly = makeHandler(account(), ['update'], {}, [{ entityName: 'Sku' }]);
 
       expect(
@@ -5369,9 +4813,11 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
       ]);
       expect(productOnly.calls).toStrictEqual([]);
 
-      /* The two boundary rows ask about `Product` and nothing else: inventing a permission name for an
-       * entity this port does not model would be fabrication (AAP §0.7.3 S9). They are admitted by the
-       * gate and then answer the boundary's own refusal. */
+      /*
+       * The two boundary rows ask about `Product` and nothing else: inventing a permission name for an
+       * entity this port does not model would be fabrication (AAP §0.7.3). They are admitted by the
+       * gate and then answer the boundary's own refusal.
+       */
       const boundary = makeHandler(account(), ['update'], {}, [{ entityName: 'Sku' }]);
       const review = await boundary.handler.processProductAddProductReview(payloadEvent('{}'));
       expect(review.statusCode).not.toBe(401);
@@ -5379,7 +4825,7 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
       expect(boundary.asked.map((request) => request.entityName)).toStrictEqual(['Product']);
     });
 
-    it('NET-NEW — SEC-AUTH-02 — both grants together admit a SKU-writing process route', async () => {
+    it('NET-NEW — both grants together admit a SKU-writing process route', async () => {
       const granted = makeHandler(account(), ['update']);
 
       const result = await granted.handler.processProductUpdateSkus(payloadEvent('{}'));
@@ -5392,14 +4838,12 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
       ]);
     });
 
-    /* ==============================================================================================
-     * ⭐⭐ REVIEW FINDING SEC-AUTH-01 — THE OTHER TWO CASES THAT USED TO REQUIRE A VULNERABILITY
-     * ==============================================================================================
-     * "save asks create THEN update, in order" and "the create grant SHORT-CIRCUITS, so update is never
-     * asked" both required the ordered pair. Under that pair a `create`-only principal could name an
-     * existing product and have it UPDATED. The question now follows the operation.
-     * ============================================================================================ */
-    it('NET-NEW — SEC-AUTH-01 — saveProduct asks create when UNADDRESSED and update when ADDRESSED', async () => {
+    /*
+     * Why the question follows the operation rather than a fixed order. Asking `create` then
+     * `update` in a fixed pair lets a `create`-only principal name an existing product and have it
+     * updated, because the first grant short-circuits the second.
+     */
+    it('NET-NEW — saveProduct asks create when UNADDRESSED and update when ADDRESSED', async () => {
       // Unaddressed — a creation. `create` alone grants it; `update` is never asked.
       const creating = makeHandler(account(), ['create']);
       await creating.handler.saveProduct(unaddressedPayloadEvent('{}'));
@@ -5413,7 +4857,7 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
       ]);
     });
 
-    it('NET-NEW — SEC-AUTH-01 — a create-only principal can no longer UPDATE an addressed product', async () => {
+    it('NET-NEW — a create-only principal can no longer UPDATE an addressed product', async () => {
       const escalating = makeHandler(account(), ['create']);
 
       const result = await escalating.handler.saveProduct(payloadEvent('{}'));
@@ -5427,8 +4871,10 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
 
     it('NET-NEW — AAP §0.4.2.1 — getProductSkusBySelectedOptions asks about Sku, not Product', async () => {
-      /* The member answers with SKUs, so the entity whose read permission governs it is `Sku`. A
-       * handler that asked about `Product` would admit and refuse the wrong callers. */
+      /*
+       * The member answers with SKUs, so the entity whose read permission governs it is `Sku`. A
+       * handler that asked about `product` would admit and refuse the wrong callers.
+       */
       const probe = makeHandler(account(), ['read']);
 
       await probe.handler.getProductSkusBySelectedOptions({
@@ -5449,8 +4895,10 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
         { entityName: 'ProductType', crudType: 'read', entityID: PRODUCT_TYPE_ID },
       ]);
 
-      /* SEC-AUTH-01: `saveProductType` has no creation path at all — an unaddressed request is a 400 —
-       * so it asks `update` and never `create`, and a `create`-only grant no longer reaches it. */
+      /*
+       * `saveProductType` has no creation path at all — an unaddressed request is a 400 —
+       * so it asks `update` and never `create`, and a `create`-only grant no longer reaches it.
+       */
       const save = makeHandler(account(), ['update']);
       await save.handler.saveProductType(productTypePayloadEvent('{}', PRODUCT_TYPE_ID));
       expect(save.asked).toStrictEqual([
@@ -5465,10 +4913,12 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
 
     it('NET-NEW — loadDataFromFile is SECURE on Product, not anyLogin', async () => {
-      /* Its `load` prefix matches no branch of the legacy ladder, so it falls through to the terminal
-       * `return false` at [:L83] — i.e. it is NOT a process member and must not be admitted as one.
-       * SEC-AUTH-01: the importer addresses no single row, so the question is the CREATE arm of the save
-       * requirement, asked once rather than as an ordered pair. */
+      /*
+       * Its `load` prefix matches no branch of the legacy ladder, so it falls through to the terminal
+       * `return false` at [:L83] — i.e. it is not a process member and must not be admitted as one.
+       * The importer addresses no single row, so the question is the create arm of the save
+       * requirement, asked once rather than as an ordered pair.
+       */
       const refused = makeHandler(account(), []);
       const result = await refused.handler.loadDataFromFile({
         queryStringParameters: { fileURL: 'https://example.test/products.txt' },
@@ -5492,12 +4942,12 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
       ]);
     });
 
-    it('NET-NEW — SEC-AUTH-03 — the resolver is told the action and the resolved context reaches the write', async () => {
+    it('NET-NEW — the resolver is told the action and the resolved context reaches the write', async () => {
       const probe = makeHandler(account(), ['update']);
 
       await probe.handler.processProductUpdateSkus(payloadEvent('{}'));
 
-      /* ONE resolution, carrying the routed action, the single operation and the addressed row. */
+      /* One resolution, carrying the routed action, the single operation and the addressed row. */
       expect(probe.requests).toHaveLength(1);
       expect(probe.requests[0]).toMatchObject({
         action: 'product.processProductUpdateSkus',
@@ -5506,7 +4956,7 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
         entityID: PRODUCT_ID,
       });
 
-      /* And the write ran under THAT context rather than a memoised principal. */
+      /* And the write ran under that context rather than a memoised principal. */
       expect(probe.securityContexts).toHaveLength(1);
       expect(probe.securityContexts[0]?.accountContext.getCurrentAccount()).toStrictEqual(
         account(),
@@ -5514,14 +4964,14 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
   });
 
-  /* ==============================================================================================
-   * API-01 — THE PROMPT'S OWN WORKED EXAMPLE, AND ITS T5 EDGE CASE
-   * ============================================================================================== */
+  /* API-01 — the prompt's own worked example, and its T5 edge case. */
 
   describe('productHandler — API-01, getProductSkusBySelectedOptions argument order and T5', () => {
     it('NET-NEW — model/entity/Product.cfc:L366-L368 — selectedOptions FIRST, productID SECOND', async () => {
-      /* ⛔ Both are 32-character-capable strings, so a forward written in the wrong order TYPE-CHECKS
-       * PERFECTLY and silently asks the wrong question. Only an order assertion can catch it. */
+      /*
+       * Both are 32-character-capable strings, so a forward written in the wrong order type-checks
+       * perfectly and silently asks the wrong question. Only an order assertion can catch it.
+       */
       const probe = admitAll();
 
       await probe.handler.getProductSkusBySelectedOptions({
@@ -5540,10 +4990,12 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
 
     it('NET-NEW — AAP §0.6.1.3 T5 — an EMPTY selectedOptions is legal and must reach the service', async () => {
-      /* `listLen("")` is zero, so zero EXISTS clauses are appended and the query legitimately degenerates
+      /*
+       * `listLen("")` is zero, so zero EXISTS clauses are appended and the query legitimately degenerates
        * to "all option-bearing SKUs of this product". Both `Product.getSkuBySelectedOptions` and
        * `Sku.hasUniqueOptions` depend on that degenerate form — rejecting, defaulting or normalising it
-       * would break both callers. */
+       * would break both callers.
+       */
       const probe = admitAll();
 
       const result = await probe.handler.getProductSkusBySelectedOptions({
@@ -5559,8 +5011,10 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
 
     it('NET-NEW — an ABSENT selectedOptions parameter is a 400, which is not the same as an empty one', async () => {
-      /* T5 makes the EMPTY STRING meaningful; it does not make the parameter optional. The distinction
-       * is the reason the reader tests for presence rather than for truthiness. */
+      /*
+       * T5 makes the empty string meaningful; it does not make the parameter optional. The distinction
+       * is the reason the reader tests for presence rather than for truthiness.
+       */
       const probe = admitAll();
 
       const result = await probe.handler.getProductSkusBySelectedOptions({
@@ -5587,16 +5041,16 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
   });
 
-  /* ==============================================================================================
-   * API-01 — M1: THE IMPORTER, DISCLOSED AND DELIBERATELY NOT TRANSACTIONAL
-   * ============================================================================================== */
+  /* API-01 — M1: the importer, disclosed and deliberately not transactional. */
 
   describe('productHandler — API-01/M1, the importer entry point', () => {
     it('NET-NEW — AAP §0.6.6 M3 — the importer does NOT enter a transaction', async () => {
-      /* [model/dao/ProductDAO.cfc:L177] opens `transaction{` INSIDE the record loop, so each row commits
+      /*
+       * [model/dao/ProductDAO.cfc:L177] opens `transaction{` inside the record loop, so each row commits
        * independently: "one transaction per row, not one per import". Wrapping the whole import in a
-       * single transaction would CHANGE that semantics, converting a partially-imported catalog into an
-       * all-or-nothing one. `ProductWriteGraph` structurally excludes the member for this reason. */
+       * single transaction would change that semantics, converting a partially-imported catalog into an
+       * all-or-nothing one. `ProductWriteGraph` structurally excludes the member for this reason.
+       */
       const probe = admitAll();
 
       const result = await probe.handler.loadDataFromFile({
@@ -5636,30 +5090,25 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
       expect(result.statusCode).toBe(400);
       expect(probe.calls).toStrictEqual([]);
     });
-    /* ⛔ NO CASE HERE ASSERTS A PARTICULAR STATUS FOR A REFUSED IMPORT LOCATION, BECAUSE THIS PORT DECIDES
-     * NO REFUSAL GROUNDS. `model/dao/ProductDAO.cfc:L87` retrieves whatever location it is handed and checks
-     * nothing, so an allow-list of schemes, hosts or addresses authored HERE would be a behavioural departure
-     * and AAP §0.6.7.7 licenses exactly ONE (D18, the importer's parameterised SQL). What the port does
-     * require is that an injected `ProductImportSourcePolicy` be CONSULTED before any retrieval — asserted
-     * in the folded adapter suite, not here — and whatever that policy rejects with propagates through this
-     * service untranslated, which the neighbouring case pins. The residual exposure is carried as AAP §0.6.6
-     * mismatch M4 (CWE-918) and flagged at the member in `src/services/ProductService.ts` and at the
-     * retrieval seam in `src/adapters/mysql/MySqlProductRepository.ts`.
-     *
-     * The 400-versus-500 presentation rule the case also exercised is still covered: the neighbouring cases
-     * pin the request-shape 400 for an absent `fileURL` and the exact two-argument forwarding, and the
-     * handler's error mapping is asserted in the folded `handlers/productHandler.test.ts` section below. */
+    /*
+     * No case here asserts a particular status for a refused import location, because this port decides
+     * no refusal grounds. `model/dao/ProductDAO.cfc:L87` retrieves whatever location it is handed and checks
+     * nothing, so an allow-list of schemes, hosts or addresses authored here would be a behavioural departure
+     * and AAP §0.6.7.7 licenses exactly one (D18, the importer's parameterised SQL). What the port does
+     * require is that an injected `ProductImportSourcePolicy` be consulted before any retrieval — asserted
+     * in the folded adapter suite, not here — and whatever that policy rejects with propagates through this.
+     */
   });
 
-  /* ==============================================================================================
-   * API-01/TX-01 — THE PROCESS PIPELINE
-   * ============================================================================================== */
+  /* API-01/tx-01 — the process pipeline. */
 
   describe('productHandler — API-01/TX-01, the process pipeline enters a transaction', () => {
     it('NET-NEW — every process route reaches the GRAPH, never the captured service', async () => {
-      /* ⛔ This is TX-01's defect shape at the Product boundary. A route that closed over the injected
-       * service would run identically in every happy-path assertion while performing its writes OUTSIDE
-       * the transaction — so the only thing that catches it is asserting WHICH object answered. */
+      /*
+       * This is tx-01's defect shape at the product boundary. A route that closed over the injected
+       * service would run identically in every happy-path assertion while performing its writes outside
+       * the transaction — so the only thing that catches it is asserting which object answered.
+       */
       const probe = admitAll();
 
       await probe.handler.processProductAddOptionGroup(payloadEvent('{"optionGroup":"g1"}'));
@@ -5687,10 +5136,12 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
 
     it('NET-NEW — an unknown identifier is a 404, and the process member is never reached', async () => {
-      /* ⚠️ THE UNIT STILL COMMITS, and that is correct rather than a leak. The subject is read INSIDE the
+      /*
+       * The unit still commits, and that is correct rather than a leak. The subject is read inside the
        * transaction, so a miss returns early with the gate's `subject` still unset — leaving a read-only
        * unit with nothing to undo. Rolling a pure read back would raise a spurious failure. The assertion
-       * that carries weight is therefore that NO WRITE MEMBER RAN, not that no transaction opened. */
+       * that carries weight is therefore that no write member ran, not that no transaction opened.
+       */
       const probe = admitAll({ product: null });
 
       const result = await probe.handler.processProductUpdateSkus(payloadEvent('{}'));
@@ -5702,13 +5153,17 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
 
     it('NET-NEW — TX-01 — a SKU-level finding ROLLS BACK, not only a product-level one', async () => {
-      /* ⛔ THE COMPLETE PREDICATE, NOT `product.hasErrors()`. `skuBatchHasErrors` reads the product's own
-       * bag OR any member SKU's bag. Narrowing the gate to the product alone would commit a batch whose
-       * SKUs carry findings — exactly what AAP §0.6.2's read-back loop depends on being prevented. */
+      /*
+       * The complete predicate, not `product.hasErrors()`. `skuBatchHasErrors` reads the product's own
+       * bag or any member SKU's bag. Narrowing the gate to the product alone would commit a batch whose
+       * SKUs carry findings — exactly what AAP §0.6.2's read-back loop depends on being prevented.
+       */
       const withFailingSku = makeProduct();
-      /* `Sku` declares no error surface of its own; `manageEntity` is what attaches the bag, exactly as
+      /*
+       * `Sku` declares no error surface of its own; `manageEntity` is what attaches the bag, exactly as
        * the service's own creation path does. Using a bare `Sku` here would leave the member invisible to
-       * `carriesErrorSurface` and the case would pass for the wrong reason. */
+       * `carriesErrorSurface` and the case would pass for the wrong reason.
+       */
       const failing = manageEntity(new Sku(), SKU_ENTITY_METADATA);
       failing.skuID = 'cccccccccccccccccccccccccccccccc';
       failing.addError('skuCode', 'is not unique');
@@ -5723,11 +5178,11 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
       expect(result.statusCode).not.toBe(200);
 
       /*
-       * ⭐ AND THE FINDING ITSELF IS PUBLISHED, WHICH IT WAS NOT. The write boundary reports a refused gate
+       * And the finding itself is published, which it was not. The write boundary reports a refused gate
        * by raising a plain `DomainError`, and ./httpResponse maps that to `500` with all detail withheld —
        * so this caller used to receive an opaque service fault for a request its own SKU code refused. A
        * code review classified that as a MAJOR validation/error-mapping defect; the handler now lifts the
-       * COMPLETE bag — the product's and every SKU's, because per-SKU findings never merge upward — into a
+       * complete bag — the product's and every SKU's, because per-SKU findings never merge upward — into a
        * `ValidationError`, verbatim.
        */
       expect(result.statusCode).toBe(400);
@@ -5754,9 +5209,11 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
 
     it('NET-NEW — AAP §0.4.1.5 — a legitimate ZERO survives into the process object', async () => {
-      /* `model/validation/Product_UpdateSkus.json` conditions the price rules on `{"eq":1}`, so the flag
-       * values are data, not booleans. Reading them with truthiness would silently DROP a legitimate `0`
-       * and turn "explicitly do not update" into "unspecified". */
+      /*
+       * `model/validation/Product_UpdateSkus.json` conditions the price rules on `{"eq":1}`, so the flag
+       * values are data, not booleans. Reading them with truthiness would silently drop a legitimate `0`
+       * and turn "explicitly do not update" into "unspecified".
+       */
       const probe = admitAll();
 
       await probe.handler.processProductUpdateSkus(
@@ -5802,8 +5259,10 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
 
     it('NET-NEW — processProductUpdateDefaultImageFileNames takes ONE argument, not two', async () => {
-      /* [model/service/ProductService.cfc:L208] declares `( required any product )` alone. It is the only
-       * process member with that arity, and it reads no body. */
+      /*
+       * [model/service/ProductService.cfc:L208] declares `( required any product )` alone. It is the only
+       * process member with that arity, and it reads no body.
+       */
       const probe = admitAll();
 
       await probe.handler.processProductUpdateDefaultImageFileNames(identifierEvent(PRODUCT_ID));
@@ -5815,9 +5274,7 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
   });
 
-  /* ==============================================================================================
-   * API-01 — SAVE, DELETE AND THE READ-ONLY ROUTES
-   * ============================================================================================== */
+  /* API-01 — save, delete and the read-only routes. */
 
   describe('productHandler — API-01, saveProduct, saveProductType and deleteProduct', () => {
     it('NET-NEW — an ABSENT identifier CREATES through newProduct, and does not 404', async () => {
@@ -5843,16 +5300,18 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
       const missing = admitAll({ product: null });
       const result = await missing.handler.saveProduct(payloadEvent('{}'));
       expect(result.statusCode).toBe(404);
-      // The read happened inside the unit, so it commits with nothing to undo; the SAVE never ran.
+      // The read happened inside the unit, so it commits with nothing to undo; the save never ran.
       expect(missing.calls.map((call) => call.member)).toStrictEqual(['getProduct']);
     });
 
     it('NET-NEW — the saveProduct gate reads the PRE-SAVE subject, not only the returned instance', async () => {
-      /* ⛔ THE DECISIVE CASE FOR THE GATE'S FIRST HALF. STEP 5 of the service rebinds its local —
-       * `product = await this.persistProduct(product)` — so the instance the persister answers with MAY
-       * DIFFER from the one validation accumulated onto. Here the PRE-SAVE subject carries the finding and
-       * the persister answers with a DIFFERENT, CLEAN product. A gate reading only the returned instance
-       * would see no findings and COMMIT a subject that had them. */
+      /*
+       * The decisive case for the gate's first half. Step 5 of the service rebinds its local —
+       * `product = await this.persistProduct(product)` — so the instance the persister answers with may
+       * differ from the one validation accumulated onto. Here the pre-save subject carries the finding and
+       * the persister answers with a different, clean product. A gate reading only the returned instance
+       * would see no findings and commit a subject that had them.
+       */
       const withError = makeProduct();
       withError.addError('productCode', 'is not unique');
 
@@ -5863,7 +5322,7 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
       const result = await probe.handler.saveProduct(payloadEvent('{}'));
 
       expect(probe.decisions).toStrictEqual(['rollback']);
-      /* The bag that caused the refusal is the PRE-SAVE subject's, and it is the one published. */
+      /* The bag that caused the refusal is the pre-save subject's, and it is the one published. */
       expect(result.statusCode).toBe(400);
       expect(JSON.parse(result.body)).toStrictEqual({
         message: 'Validation failed',
@@ -5872,8 +5331,10 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
 
     it('NET-NEW — the saveProduct gate ALSO reads the returned instance, not only the subject', async () => {
-      /* The mirror of the case above, so neither half of the disjunction can be dropped: the subject is
-       * clean and the instance the persister answers with carries the finding. */
+      /*
+       * The mirror of the case above, so neither half of the disjunction can be dropped: the subject is
+       * clean and the instance the persister answers with carries the finding.
+       */
       const clean = makeProduct();
 
       const withError = makeProduct('eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee');
@@ -5884,8 +5345,10 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
       const result = await probe.handler.saveProduct(payloadEvent('{}'));
 
       expect(probe.decisions).toStrictEqual(['rollback']);
-      /* And when the finding lives on the RETURNED instance instead, that bag is the one published — which
-       * is why the lift consults both references in the gate's own order. */
+      /*
+       * And when the finding lives on the returned instance instead, that bag is the one published — which
+       * is why the lift consults both references in the gate's own order.
+       */
       expect(result.statusCode).toBe(400);
       expect(JSON.parse(result.body)).toStrictEqual({
         message: 'Validation failed',
@@ -5894,8 +5357,10 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
 
     it('NET-NEW — L294 — saveProductType REQUIRES an identifier, so an absent one is a 400', async () => {
-      /* Unlike `saveProduct` there is no create route here: AAP §0.4.2.5 approves `getProductType` but no
-       * `newProductType`, and no `createproducttype.cfm` view exists to imply one. */
+      /*
+       * Unlike `saveProduct` there is no create route here: AAP §0.4.2.5 approves `getProductType` but no
+       * `newProductType`, and no `createproducttype.cfm` view exists to imply one.
+       */
       const probe = admitAll();
 
       const result = await probe.handler.saveProductType(productTypePayloadEvent('{}'));
@@ -5906,9 +5371,11 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
 
     it('NET-NEW — saveProductType commits when the returned product type carries no findings', async () => {
-      /* The success half of the gate. `model/service/ProductService.cfc:L310` returns the product type on
-       * every path, so "succeeded" is expressed as a returned entity with an EMPTY bag — not as the absence
-       * of a rejection. */
+      /*
+       * The success half of the gate. `model/service/ProductService.cfc:L310` returns the product type on
+       * every path, so "succeeded" is expressed as a returned entity with an empty bag — not as the absence
+       * of a rejection.
+       */
       const probe = admitAll();
 
       const result = await probe.handler.saveProductType(
@@ -5924,19 +5391,15 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
 
     it('NET-NEW — saveProductType ROLLS BACK and refuses when the returned product type carries findings', async () => {
-      /* ⛔ THE CASE THAT PINS THE COMMIT GATE, AND THE ONE AN EARLIER REVISION COULD NOT HAVE WRITTEN.
-       * `../../src/handlers/productHandler`'s gate was hardcoded to `() => false` on the reasoning that
-       * `ProductType` has no error surface and that `BaseService.save` raises. Both grounds are gone: the
-       * service composes the surface with `manageEntity` and resolves `ProductTypeWithErrorState`, and the
-       * base service reproduces `model/service/HibachiService.cfc:L103`'s single exit, so a validation
-       * failure RETURNS. With a constant `false` this exact request would have committed the transaction and
-       * answered 200 with a projection of a product type that was never written — a caller told its write
-       * succeeded when it did not. The gate must therefore answer `true` here, and the boundary must refuse.
-       *
-       * The findings stay ON THE ENTITY, exactly where `:L306` reads them — AND they are now also published.
-       * An earlier revision said "the roll-back is what reports the refusal, which is why nothing is lifted
-       * into a carrier at this boundary"; that produced an opaque `500` for a caller whose product-type name
-       * was rejected, which a code review classified as a MAJOR validation/error-mapping defect. */
+      /*
+       * The case that pins the commit gate. A gate hardcoded to ` => false` would rest on
+       * `productType` having no error surface and on `baseService.save` raising, and neither holds:
+       * The service composes the surface with `manageEntity` and resolves
+       * `ProductTypeWithErrorState`, and the base service reproduces
+       * `model/service/HibachiService.cfc:L103`'s single exit, so a validation failure returns.
+       * With a constant `false` this exact request would commit the transaction and publish the
+       * invalid entity.
+       */
       const probe = admitAll({ productTypeSaveError: 'productTypeName' });
 
       const result = await probe.handler.saveProductType(
@@ -5949,7 +5412,9 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
         message: 'Validation failed',
         errors: { productTypeName: ['refused'] },
       });
-      /* The work still ran in full — the gate is a COMMIT decision, not a pre-check that skips the save. */
+      /*
+       * The work still ran in full — the gate is a commit decision, not a pre-check that skips the save.
+       */
       expect(probe.calls.map((call) => call.member)).toStrictEqual([
         'getProductType',
         'saveProductType',
@@ -5957,9 +5422,11 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
 
     it('NET-NEW — L317 — deleteProduct reports its boolean UNINVERTED, and false is not a refusal', async () => {
-      /* The legacy declares `public boolean function deleteProduct(...)`. `false` means "the delete was
-       * refused by a validation guard", which is a 200 carrying `false` — NOT a 4xx. Reinterpreting it as
-       * a status would invent a refusal the legacy does not express. */
+      /*
+       * The legacy declares `public boolean function deleteProduct(...)`. `false` means "the delete was
+       * refused by a validation guard", which is a 200 carrying `false` — not a 4xx. Reinterpreting it as
+       * a status would invent a refusal the legacy does not express.
+       */
       const probe = admitAll();
 
       const result = await probe.handler.deleteProduct(identifierEvent(PRODUCT_ID));
@@ -5970,11 +5437,13 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
 
     it('NET-NEW — L317 — a REFUSED delete is a 200 carrying false, NOT a 404 and NOT a 4xx', async () => {
-      /* ⛔ THE CASE THAT PINS THE BOOLEAN'S MEANING. `model/validation/Product.json` guards the delete on
+      /*
+       * The case that pins the boolean's meaning. `model/validation/Product.json` guards the delete on
        * `transactionExistsFlag` and `physicalCounts`, and a guard that refuses makes the legacy member
-       * answer `false` — a SUCCESSFUL call reporting "not deleted". Mapping that onto a 404 would conflate
+       * answer `false` — a successful call reporting "not deleted". Mapping that onto a 404 would conflate
        * "no such product" with "this product may not be deleted", and mapping it onto any 4xx would invent
-       * a client error the legacy does not express. */
+       * a client error the legacy does not express.
+       */
       const probe = admitAll({ deleteResult: false });
 
       const result = await probe.handler.deleteProduct(identifierEvent(PRODUCT_ID));
@@ -5986,9 +5455,11 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
 
     it('NET-NEW — deleteProduct on an unknown identifier is a 404, distinct from a refused delete', async () => {
-      /* Three outcomes must stay distinguishable: 404 "no such row", 200-carrying-`false` "a guard refused
+      /*
+       * Three outcomes must stay distinguishable: 404 "no such row", 200-carrying-`false` "a guard refused
        * the delete", and 200-carrying-`true` "deleted". Collapsing any pair would lose information the
-       * legacy boolean carries. */
+       * legacy boolean carries.
+       */
       const probe = admitAll({ product: null });
 
       const result = await probe.handler.deleteProduct(identifierEvent(PRODUCT_ID));
@@ -6032,9 +5503,11 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
 
     it('NET-NEW — AAP §0.4.2.1 Discrepancy 1 — currentURL is NOT forwarded from the request', async () => {
-      /* [L342] declares `getProductSmartList(struct data={}, currentURL="")`, and `currentURL` carries NO
+      /*
+       * [L342] declares `getProductSmartList(struct data={}, currentURL="")`, and `currentURL` carries no
        * CFML type at all. The target tightens it to an optional string and the boundary supplies no value
-       * for it: a request-supplied URL is not the legacy's `currentURL`, which came from the framework. */
+       * for it: a request-supplied URL is not the legacy's `currentURL`, which came from the framework.
+       */
       const probe = admitAll();
 
       await probe.handler.getProductSmartList({
@@ -6047,8 +5520,10 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
 
     it('NET-NEW — only the legacy SmartList vocabulary is forwarded; unknown names are ignored', async () => {
-      /* `org/Hibachi/HibachiSmartList.cfc` recognises seven exact names and seven prefixes. Anything else
-       * is not a filter and must not be smuggled into the query as one. */
+      /*
+       * `org/Hibachi/HibachiSmartList.cfc` recognises seven exact names and seven prefixes. Anything else
+       * is not a filter and must not be smuggled into the query as one.
+       */
       const probe = admitAll();
 
       await probe.handler.getProductSmartList({
@@ -6103,11 +5578,13 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
       const result = await probe.handler.getFormattedOptionGroups(identifierEvent(PRODUCT_ID));
 
       expect(result.statusCode).toBe(200);
-      /* ⭐ A KEYED OBJECT on the wire, one member per option-group NAME, because that is the shape the
+      /*
+       * A keyed object on the wire, one member per option-group name, because that is the shape the
        * service answers — TR-1's tightening of the CFML struct at
-       * `model/service/ProductService.cfc:L71-L79`. A revision published an ARRAY of
-       * `{optionGroupName, options}` entries and this case asserted it; review finding F3 withdrew both.
-       * Both option members are copied verbatim and nothing else is published — no `optionGroupID` (S9). */
+       * `model/service/ProductService.cfc:L71-L79`. Publishing an array of `{optionGroupName,
+       * options}` entries would contradict the legacy struct, which is what this case pins.
+       * Both option members are copied verbatim and nothing else is published — no `optionGroupID` (AAP §0.7.3).
+       */
       expect(JSON.parse(result.body)).toStrictEqual({
         Size: [{ name: 'Large', value: 'large' }],
       });
@@ -6115,15 +5592,15 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
   });
 
-  /* ==============================================================================================
-   * API-01 — THE PLAN-ANNOTATED BOUNDARY MEMBERS: FLAGGED, NEVER DROPPED (TR-5) — AND MEASURED
-   * ============================================================================================== */
+  /* API-01 — the plan-annotated boundary members: flagged, never dropped (TR-5) — and measured. */
 
   describe('productHandler — API-01/TR-5, the boundary-limited members stay routable', () => {
     it('NET-NEW — TR-5 — all five plan-annotated process members are PRESENT on the surface', () => {
-      /* "The member is never quietly dropped from the interface." Whatever each one DOES at run time is a
+      /*
+       * "The member is never quietly dropped from the interface." Whatever each one does at run time is a
        * separate question, settled by the three cases below; presence on the surface is unconditional,
-       * because §0.4.2's 28-member count is only checkable from the outside if every member is reachable. */
+       * because §0.4.2's 28-member count is only checkable from the outside if every member is reachable.
+       */
       const probe = admitAll();
 
       for (const member of [
@@ -6142,18 +5619,10 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
 
     it('NET-NEW — the CONDITIONAL member answers the product on the legacy no-op path', async () => {
       /*
-       * ⭐ THE MEASURED INVENTORY, HALF ONE. Of the five members AAP §0.4.2.1 annotates as boundary-stubbed,
-       * `processProductDeleteDefaultImage` refuses only CONDITIONALLY, and the condition is the legacy's own:
-       * [model/service/ProductService.cfc:L199] tests `structKeyExists(arguments.data, "imageFile")` and does
-       * NOTHING when the key is absent, returning the product at [:L205]. A request naming no image file
-       * therefore answers the product — reaching the graph twice, once to resolve it and once to run the
-       * member. Only the path that WOULD delete a file touches the excluded `fileExists`/`fileDelete` pair at
-       * [:L200-L201], and only that path refuses.
-       *
-       * ⛔ A REVISION OF `../src/handlers/router.ts` DECLARED THAT ALL SEVEN ANNOTATED MEMBERS "answer with
-       * the documented not-implemented failure". Review finding F4 measured the claim false of this member and
-       * of the one below, and the inventory was corrected rather than the code bent to match it — refusing
-       * here would refuse input the legacy accepts. This case fails if that claim is ever reinstated.
+       * Of the five members AAP §0.4.2.1 annotates as boundary-stubbed,
+       * `processProductDeleteDefaultImage` refuses only conditionally, and the condition is the legacy's
+       * own: with no image file named there is nothing to delete, so the legacy no-op path answers the
+       * product rather than refusing.
        */
       const probe = admitAll();
 
@@ -6165,16 +5634,10 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
 
     it('NET-NEW — the FULLY PORTED member answers the product, and refusing would break saveProduct', async () => {
       /*
-       * ⭐ THE MEASURED INVENTORY, HALF TWO. `processProductUpdateDefaultImageFileNames` is not stubbed at all.
+       * The measured inventory, half two. `processProductUpdateDefaultImageFileNames` is not stubbed at all.
        * [model/service/ProductService.cfc:L208-L214] is a two-line loop — `sku.setImageFile(
        * sku.generateImageFileName() )` — and `generateImageFileName` reads only `SettingResolverPort`, an
-       * IN-SCOPE port with a shipped resolver. Nothing excluded is on the path, so there is nothing to stub.
-       *
-       * ⛔ AND REFUSING HERE WOULD BE A FUNCTIONAL REGRESSION, NOT A BOUNDARY. `saveProduct` invokes this
-       * member at [model/service/ProductService.cfc:L282], and both `processProduct_addOptionGroup` [:L123]
-       * and `processProduct_addSubscriptionTerm` [:L193] END by delegating to it, so a refusal would take
-       * every new-product save down with it. That is why F4 was resolved by correcting the declared inventory
-       * rather than by "making both members consistent" with an annotation that measurement disproved.
+       * in-scope port with a shipped resolver. Nothing excluded is on the path, so there is nothing to stub.
        */
       const probe = admitAll();
 
@@ -6192,16 +5655,9 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
 
     it('NET-NEW — the three process-object routes answer 501 WITHOUT reaching the graph', async () => {
       /*
-       * ⛔ THE DEFECT THIS PINS. Each of these three forwards a process object whose members
-       * ../src/services/ProductService narrows by testing for a CALLABLE accessor — `getNewProductReview`;
-       * `getSubscriptionTermID`/`getPrice`/`getRenewalPrice`/`getListPrice`; and
-       * `getImageFile`/`getPropertyMetaData`/`addError`. A parsed JSON body cannot carry a function, so the
-       * narrowing failed for EVERY input and every request answered a deterministic 500 with the reason
-       * withheld. A code review classified that as a MAJOR boundary-contract defect and directed an explicit
-       * NotImplementedError/501 boundary, which is what these assertions hold in place.
-       *
-       * ⭐ AND NO TRANSACTION IS OPENED, which is the second half of the fix: `calls` stays empty, so nothing
-       * resolved a product or began a unit of work for work that cannot succeed.
+       * What these three pin. Each forwards a process object whose members
+       * `src/services/ProductService.ts` narrows by testing for a callable accessor, so a plain
+       * payload cannot satisfy the narrowing and the route answers 501 before the graph is reached.
        */
       for (const member of [
         'processProductAddProductReview',
@@ -6213,7 +5669,9 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
         const result = await probe.handler[member](payloadEvent('{"listPrice":10}'));
 
         expect(result.statusCode).toBe(501);
-        /* The neutral text ./httpResponse publishes for this family — the member is named nowhere in it. */
+        /*
+         * The neutral text ./httpResponse publishes for this family — the member is named nowhere in it.
+         */
         expect(JSON.parse(result.body)).toStrictEqual({
           message: 'This operation is not implemented',
         });
@@ -6222,8 +5680,10 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
 
     it('NET-NEW — the request-shape answers still come FIRST, so 501 is not a blanket reply', async () => {
-      /* An unaddressed product is still a 400 and an unparseable body is still a 400: the boundary refusal
-       * is what a WELL-FORMED request receives, not what every request receives. */
+      /*
+       * An unaddressed product is still a 400 and an unparseable body is still a 400: the boundary refusal
+       * is what a well-formed request receives, not what every request receives.
+       */
       const probe = admitAll();
 
       const unaddressed = await probe.handler.processProductAddProductReview({
@@ -6239,8 +5699,10 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
     });
 
     it('NET-NEW — the GATE still answers before the boundary does', async () => {
-      /* Ordering, not status: an unauthorised caller must not be able to distinguish an unavailable member
-       * from an available one. The refusal it receives is the gate's, and the graph is untouched. */
+      /*
+       * Ordering, not status: an unauthorised caller must not be able to distinguish an unavailable member
+       * from an available one. The refusal it receives is the gate's, and the graph is untouched.
+       */
       const probe = makeHandler(undefined, EVERY_CRUD_TYPE);
 
       const result = await probe.handler.processProductAddSubscriptionTerm(payloadEvent('{}'));

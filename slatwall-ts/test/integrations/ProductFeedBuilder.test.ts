@@ -1,55 +1,23 @@
 /*
- * =====================================================================================================
  * NET-NEW — `src/integrations/google/ProductFeedBuilder.ts`
- * =====================================================================================================
  *
- * PROVENANCE, STATED PLAINLY AND WITHOUT SOFTENING.
+ * Provenance, stated plainly and without softening.
  *
- * This suite is NET-NEW in its entirety. There is NO legacy Google feed test of any kind: the legacy
+ * This suite is NET-NEW in its entirety. There is no legacy Google feed test of any kind: the legacy
  * suite under `meta/tests/` contains no feed test, no `integrationServices` test, and no serializer
  * test, so there is nothing here to replicate and nothing to claim parity with. Every case title
  * therefore carries a visible `[NET-NEW]` prefix rather than relying on a suite-level label.
- *
- * TRACEABILITY IS DOCUMENTARY, NEVER EMPIRICAL. The legacy expectations pinned below were established by
- * reading legacy source line by line, not by running the legacy application and diffing its output:
- *
- *   - MXUnit and CFSelenium are NOT vendored in this repository. `meta/tests/readme.txt:L4-L5` states
- *     that the tests require MXUnit installed with a mapping inside CFIDE, and the `functional` folder
- *     additionally requires CFSelenium with its own CFIDE mapping. Neither mapping exists here, so the
- *     legacy suite cannot be collected, let alone executed.
- *   - `meta/docker/slatwall-local-dev/` DOES NOT EXIST. The repository's `meta/` directory contains only
- *     the test material under `meta/tests/` and the editor material under `meta/eclipse/`. There is no
- *     Dockerfile, no Compose file, no Lucee version pin and no MySQL runtime pin anywhere that would
- *     make the CFML application reproducible in this environment.
- *   - The CFML runtime was therefore NOT reproduced, NO runtime behavioural comparison was performed,
- *     and NO legacy feed XML was captured for diffing. Any statement below about what the legacy view
- *     emitted is a reading of the template, carried with its locator so it can be checked.
- *
- * WHAT THIS SUITE IS. A static logic-extraction test. Every assertion is grounded in a named source
- * locator, chiefly the legacy view `integrationServices/google/views/feed/product.cfm`, which is the
- * SOLE field-map authority for the feed. `integrationServices/google/controllers/feed.cfc` supplies
- * documentary input-shape context only. `integrationServices/google/Integration.cfc` is a faithful stub
- * carrying no feed logic. `integrationServices/google/model/dao/FeedDAO.cfc` is orphaned, broken dead
- * code and is not a source of behaviour.
- *
- * SCOPE. `ProductFeedBuilder`'s public serialization surface, and nothing else. This file does not test
- * `IntegrationContract`, `BaseIntegration`, `GoogleIntegration`, `ProductFeedQuery`, any handler, any
- * router, any repository, any service, or any port implementation. It is a SERIALIZER test: the legacy
- * `.cfm` emits RSS 2.0 XML for machine consumption by a merchant feed processor, so there is no user
- * interface, no component library, no design token, no DOM and no browser API anywhere in it.
- * =====================================================================================================
  */
-
-// No user-specified rules were provided for this project; the nine enterprise
-// standards of AAP §0.7.3 govern instead, and the bar is not lowered.
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-/* ⚠️ NEITHER `FEED_RENDERING` NOR `FeedRendering` IS IMPORTED, AND BOTH USED TO BE. The serializer
- * exposed a rendering discriminant so a caller could ask for byte-parity output instead of escaped
- * output. That mode is withdrawn — its unsafe half was a reachable code path — so there is one rendering,
- * nothing to select, and no constant or union to name. */
+/*
+ * Neither `feed_rendering` nor `FeedRendering` is imported, and both used to be. The serializer
+ * declares no rendering discriminant: a caller cannot ask for byte-parity output instead of escaped
+ * output, because the byte-parity half is an injection path. There is one rendering, nothing to
+ * select, and no constant or union to name.
+ */
 import {
   ProductFeedBuilder,
   createProductFeedRenderBudget,
@@ -59,15 +27,19 @@ import {
   type ProductFeedRenderContext,
 } from '../../src/integrations/google/ProductFeedBuilder';
 import { DataIntegrityError, DomainError, NotImplementedError } from '../../src/errors/DomainError';
-/* The composition root and the feed's entry point are named for the F4 wiring cases at the foot of this
- * file, which cross the shipped wiring rather than hand-building records. Both are TYPE-ONLY here: the
+/*
+ * The composition root and the feed's entry point are named for the wiring cases at the foot of this
+ * file, which cross the shipped wiring rather than hand-building records. Both are type-only here: the
  * modules themselves are reached with `require` after `process.env` is set, for the module-load reason
- * that section's header records. */
+ * that section's header records.
+ */
 import type { CatalogContainer, CatalogContainerOverrides } from '../../src/config/container';
 import type { GoogleFeedHandler } from '../../src/handlers/googleFeedHandler';
 import type { SettingResolutionContext } from '../../src/ports/SettingResolverPort';
-/* The three additional image-port types and the pricing port itself are named by §1.5's gating wrappers,
- * which stand in front of the shared doubles to observe the render's execution order. */
+/*
+ * The three additional image-port types and the pricing port itself are named by §1.5's gating wrappers,
+ * which stand in front of the shared doubles to observe the render's execution order.
+ */
 import type {
   ImagePathPort,
   ImageWebPath,
@@ -75,8 +47,10 @@ import type {
   SaveImageFileRequest,
 } from '../../src/ports/ImagePathPort';
 import type { PricingPort, SalePriceDetailsBySkuId } from '../../src/ports/PricingPort';
-/* A VALUE import, not a type-only one: the folded `ProductFeedQuery` cases assert `toBeInstanceOf(Sku)`
- * on the hydrated records, which needs the constructor at run time. */
+/*
+ * A value import, not a type-only one: the folded `ProductFeedQuery` cases assert `toBeInstanceOf(Sku)`
+ * on the hydrated records, which needs the constructor at run time.
+ */
 import { Sku } from '../../src/domain/sku/Sku';
 import type { Product, ProductOwnedAssociation } from '../../src/domain/product/Product';
 import type { ProductType } from '../../src/domain/product/ProductType';
@@ -149,60 +123,7 @@ import type {
 import { createGoogleFeedHandlerFromContainer } from '../../src/handlers/googleFeedHandler';
 
 /*
- * -----------------------------------------------------------------------------------------------------
- * DOCUMENTARY FINDINGS — recorded here with locators, deliberately NOT turned into extra test scope.
- * -----------------------------------------------------------------------------------------------------
- *
- * D11 — OBSERVED, NOT CORRECTED. `integrationServices/google/Integration.cfc:L49` declares
- * `displayname="USA epay"` on the component while `getDisplayName()` at
- * `integrationServices/google/Integration.cfc:L59-L60` returns `Google`. It is a copy/paste artifact
- * from the payment adapter the file was cloned from. The METHOD supplies the effective display name, so
- * the artifact is inert. This suite does not test `GoogleIntegration` and corrects neither file.
- *
- * D12 — DOCUMENTED DEAD CODE. `integrationServices/google/model/dao/FeedDAO.cfc:L52-L74` has zero
- * callers repository-wide, an unscoped `rs` result variable, a trailing comma after
- * `SwProduct.calculatedTitle,`, an `INNER JOIN SwProduct` with no `ON` clause, no datasource, and a
- * `<cfcomponent>` that extends nothing. It could never have executed successfully. It is not ported,
- * not tested, not repaired, not deleted, and is never treated as a source of behaviour here.
- *
- * LEGACY ROUTE — BUILDER ONLY. The carried route `?slatAction=google:feed.product` is documented by
- * `integrationServices/google/views/main/default.cfm:L49-L51` and in
- * `src/integrations/google/README.md`. This suite asserts the BUILDER, not routing. The target router
- * lives under `src/handlers/**` and no `test/handlers/` target was authorized for the feed.
- *
- * EMPTY INHERITED CONTROLLER. `integrationServices/google/controllers/main.cfc:L49-L52` is an empty
- * inherited controller with no method bodies. It has no TypeScript counterpart and no test counterpart.
- *
- * UPSTREAM RECORD SELECTION — COMMENTARY, NOT ASSERTED HERE. The legacy view received its records from
- * `rc.skuSmartList.getRecords()` (`integrationServices/google/views/feed/product.cfm:L8,L16`), and the
- * controller composed that SmartList at `integrationServices/google/controllers/feed.cfc:L63-L72`:
- *   - `L64` joins SlatwallSku to `product`; `L65` joins SlatwallProduct to `defaultSku`; `L66` joins
- *     SlatwallProduct to `brand` with join type LEFT. Brand is the ONLY left join, which is precisely
- *     why `product.getBrand()` can be null and why the conditional brand element below exists.
- *   - `L68-L70` filter `activeFlag = 1`, `product.activeFlag = 1` and `product.publishedFlag = 1`.
- *   - `L72` ranges `product.calculatedQATS` at `'1^'`, which
- *     `org/Hibachi/HibachiSmartList.cfc:L632-L646` establishes as an inclusive lower bound of 1 with an
- *     open upper bound — the availability gate.
- *   - `org/Hibachi/HibachiSmartList.cfc:L212` declares
- *     `joinRelatedProperty(parentEntityName, relatedProperty, joinType, fetch, isAttribute)`, so the
- *     ENTITY NAME comes first in every one of those three join calls.
- * Those joins, filters and ranges belong to `ProductFeedQuery` and are NOT asserted here.
- * `ProductFeedQuery` is neither imported nor instantiated by this file. What this suite does prove is
- * that records originate BEHIND the SmartList port boundary and are serialized in the order the port
- * returned them.
- *
- * Also recorded without wiring or testing:
- *   - `integrationServices/google/controllers/feed.cfc:L51` declares a fifth injection,
- *     `productService`, which `product(rc)` never uses. It is a dead injection and is not injected here.
- *   - `integrationServices/google/controllers/feed.cfc:L54-L56` sets `this.publicMethods="product"`,
- *     making the feed action fully public and unauthenticated.
- *   - `integrationServices/google/controllers/feed.cfc:L60` disables the layout for the response.
- *   - `integrationServices/google/controllers/feed.cfc:L63` obtains the SKU SmartList itself.
- *
- * M7/M8 OBEYED. The setting resolver is SYNCHRONOUS here because the port declares it so; nothing in
- * this suite awaits a setting or depends on background completion. No value is memoised across tests:
- * every double, entity and builder is constructed fresh per case, so no warm-container state can bleed
- * between them.
+ * Documentary findings — recorded here with locators, deliberately not turned into extra test scope.
  */
 
 /*
@@ -210,10 +131,7 @@ import { createGoogleFeedHandlerFromContainer } from '../../src/handlers/googleF
  * `integrationServices/google/views/feed/product.cfm:L4-L5`, preserved verbatim because deleting it
  * would lose the only pointer the legacy author left to the field specification:
  *
- *   http://support.google.com/merchants/bin/answer.py?hl=en&answer=188494&topic=2473824&ctx=topic#US
- *
- * It sat inside `<!--- ... --->`, a CFML server-side comment, so it was NEVER emitted. The assertion
- * below proves the port did not promote it into output.
+ * http://support.google.com/merchants/bin/answer.py?hl=en&answer=188494&topic=2473824&ctx=topic#us.
  */
 const LEGACY_SPECIFICATION_URL =
   'http://support.google.com/merchants/bin/answer.py?hl=en&answer=188494&topic=2473824&ctx=topic#US';
@@ -222,44 +140,12 @@ const LEGACY_SPECIFICATION_URL =
 const EXPECTED_XML_DECLARATION = '<?xml version="1.0"?>';
 /**
  * The `g:` namespace URI, byte-exact from `integrationServices/google/views/feed/product.cfm:L11`.
- *
- * ⚠️ IT IS AN `http://` URL AND MUST STAY ONE, WHICH IS WHY IT IS NAMED SEPARATELY. A namespace URI is an
- * IDENTIFIER compared by exact string equality, not a fetch target: rewriting it to `https://` would declare
- * a DIFFERENT namespace and every `g:` element in the document would cease to be a Google feed element. It
- * is therefore NOT one of the five absolute URLs the feed publishes, and the scheme census cases below
- * count `http://` occurrences with this one accounted for separately rather than lumped in.
  */
 const GOOGLE_FEED_NAMESPACE_URI = 'http://base.google.com/ns/1.0';
 const EXPECTED_RSS_OPEN_TAG = `<rss version="2.0" xmlns:g="${GOOGLE_FEED_NAMESPACE_URI}">`;
 const EXPECTED_CHANNEL_TITLE_ELEMENT = '<title>Slatwall Product Feed</title>';
 
-/*
- * Deterministic render inputs.
- *
- * JUDGMENT, RECORDED RATHER THAN APPLIED SILENTLY: the two instants are constructed with the
- * LOCAL-TIME `new Date(y, m, d, …)` form rather than with `Date.UTC`, and the expected bytes below
- * repeat the very same components. That is what makes these assertions host-timezone-independent, and
- * it is host-independent for the right reason: `integrationServices/google/views/feed/product.cfm:L30`
- * formats each value with `dateFormat`/`timeFormat`, neither of which converts a zone, so whatever
- * components a value carries in the engine's own zone are the components emitted. Constructing the
- * instant FROM those components and asserting them BACK reproduces exactly that identity, wherever the
- * suite runs.
- *
- * ⚠️ AN EARLIER REVISION OF THIS SUITE USED `Date.UTC` AND EXPECTED SHIFTED COMPONENTS — `12:30:45`
- * supplied, `07:30:45-5` asserted — because the builder then subtracted the raw offset and read UTC
- * accessors. That arithmetic has no counterpart at `:L30`, so the expectations were blessing a
- * five-hour drift rather than detecting it; both the production shift and these expectations are gone.
- * The suffix is a LABEL: the case below proves that changing only the offset text moves neither
- * endpoint's date nor its time.
- *
- * THE TIMES ARE CHOSEN TO BE UNAMBIGUOUS IN EVERY REAL ZONE. Daylight-saving transitions fall in the
- * small hours, so a mid-morning and a mid-afternoon wall clock exist exactly once on every date in
- * every zone — no local literal below can land in a skipped or repeated hour. `09:05:07` additionally
- * exercises zero-padding on all three time components at once.
- *
- * Epoch milliseconds are held at module scope because a number is immutable; the `Date` objects
- * themselves are constructed inside the scenario factory so no two cases can share one.
- */
+/* Deterministic render inputs. */
 const RENDER_INSTANT_EPOCH_MS = new Date(2024, 0, 1, 9, 5, 7).getTime();
 const SALE_EXPIRATION_EPOCH_MS = new Date(2024, 1, 9, 14, 15, 0).getTime();
 const RAW_UTC_HOUR_OFFSET = '5';
@@ -267,7 +153,7 @@ const RENDER_HOST = 'catalog.example.test';
 const ABSOLUTE_URL_PREFIX = `http://${RENDER_HOST}`;
 
 /*
- * The two endpoint timestamps, WITHOUT the offset label — the components of the two instants above,
+ * The two endpoint timestamps, without the offset label — the components of the two instants above,
  * written out rather than derived, so a reader can diff them against the constructor arguments.
  */
 const EXPECTED_LOCAL_TIMESTAMP_START = '2024-01-01T09:05:07';
@@ -291,8 +177,8 @@ const PRODUCT_ID = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2';
 const BRAND_ID = 'ddddddddddddddddddddddddddddddd4';
 
 /*
- * Setting values. These are FIXTURE values chosen so each one is observable in the output; none is a
- * claim about a production default. `config/dbdata/SlatwallSetting.xml.cfm` seeds NEITHER shipping key,
+ * Setting values. These are fixture values chosen so each one is observable in the output; none is a
+ * claim about a production default. `config/dbdata/SlatwallSetting.xml.cfm` seeds neither shipping key,
  * and the effective-value engine that would supply a metadata default lives in the out-of-scope setting
  * service, so inventing a default here would be fabrication. The resolver double refuses an unseeded
  * key for exactly that reason, which is why every case seeds precisely what it reads.
@@ -313,7 +199,7 @@ const DEFAULT_SETTING_SEEDS: readonly SettingSeed[] = Object.freeze([
 ]);
 
 /*
- * Image fixtures. The image port double ECHOES by default rather than composing a directory layout, so
+ * Image fixtures. The image port double echoes by default rather than composing a directory layout, so
  * the composed value is seeded explicitly. The shape of the seeded value follows the hard-coded
  * `/product/default/` segment the legacy entity used at `model/entity/Sku.cfc:L145-L147`; the real
  * composition is the adapter's responsibility and is not asserted here.
@@ -324,33 +210,11 @@ const FIRST_ADDITIONAL_IMAGE_PATH = '/product/default/nike-air-side.jpg';
 const SECOND_ADDITIONAL_IMAGE_PATH = '/product/default/nike-air-sole.jpg';
 const THIRD_ADDITIONAL_IMAGE_PATH = '/product/default/nike-air-top.jpg';
 
-/*
- * The escaping sentinel and its legacy-compatible result.
- *
- * `htmlEditFormat` processes `&` FIRST and then the three angle/quote characters, and it leaves the
- * APOSTROPHE alone. Ordering matters: escaping `<` before `&` would double-escape the ampersand it
- * introduces. The single quote surviving untouched is the asymmetry that makes this sentinel worth
- * using rather than a bare `&`.
- */
+/* The escaping sentinel and its legacy-compatible result. */
 const ESCAPE_SENTINEL = 'A&B<C>D"E\'F';
 const ESCAPED_SENTINEL = "A&amp;B&lt;C&gt;D&quot;E'F";
 
-/*
- * The RAW-SINK sentinels, and why two are needed rather than one.
- *
- * Review finding CQ-9 restored the legacy's split: `integrationServices/google/views/feed/product.cfm`
- * escapes SIX of its fifteen dynamic values and emits NINE RAW. A raw sink can therefore no longer be
- * probed with {@link ESCAPE_SENTINEL}, because two of that sentinel's characters — `&` and `<` — are now
- * REFUSED at a raw sink rather than escaped (finding SEC-2: a document a parser cannot read must never be
- * published with a 200).
- *
- *   - {@link RAW_SAFE_SENTINEL} carries `>`, `"` and `'`, every one of which is LEGAL, unambiguous element
- *     content that the legacy emits unmodified. It is the discriminator between the two censuses: at a RAW
- *     sink it must survive byte-for-byte, and at an ESCAPED sink the same `>` and `"` must come back as
- *     `&gt;` and `&quot;`.
- *   - {@link RAW_REFUSED_SENTINEL} carries a bare `&`, which is a fatal XML well-formedness error. It is
- *     what proves the refusal fires rather than being asserted only in prose.
- */
+/* The raw-sink sentinels, and why two are needed rather than one. */
 const RAW_SAFE_SENTINEL = 'A>B"C\'D';
 const RAW_SAFE_SENTINEL_ESCAPED = "A&gt;B&quot;C'D";
 const RAW_REFUSED_SENTINEL = 'A&B';
@@ -361,21 +225,13 @@ const RAW_REFUSED_SENTINEL = 'A&B';
  * `src/config/env.ts`'s host rule accepts them by design — which is exactly why the serializer, not the
  * config layer, has to own the treatment. This value is not a hypothetical: it passes the module-load
  * rule and reaches the builder.
- *
- * ⚠️ IT NO LONGER CARRIES `&`, AND THE OMISSION IS THE FINDING RATHER THAN A WEAKENING. It used to be
- * `a&b'c.example`, and under DECISION G-3 the ampersand was ESCAPED into the five URLs it composes.
- * Review finding CQ-9 withdrew that escape — all five host sinks are RAW in `product.cfm` — so an
- * ampersand in a host is now REFUSED by {@link DataIntegrityError} instead, because raw emission would
- * leave the whole document unparseable (finding SEC-2). That refusal is asserted in its own case below;
- * this constant's job is to prove the LEGAL sub-delimiters still travel byte-for-byte, which is the half
- * CQ-9 is about. Every character here is both an RFC 3986 sub-delimiter and legal XML element content.
  */
 const CONFORMING_HOSTILE_HOST = "a'b!c$d.example";
 
 /*
  * The builder indents channel children with two tabs and item children with three. That difference is
  * the only thing separating the channel-level `<title>`/`<description>` pair from the item-level pair,
- * and the channel pair is NOT escaped while the item pair IS — so every assertion that could be
+ * and the channel pair is not escaped while the item pair is — so every assertion that could be
  * ambiguous between them is anchored on the indent rather than on the bare tag.
  */
 const CHANNEL_FIELD_INDENT = '\t\t';
@@ -391,7 +247,9 @@ function channelField(markup: string): string {
   return `${CHANNEL_FIELD_INDENT}${markup}`;
 }
 
-/** Count non-overlapping occurrences of `needle`. Used where "exactly one element" is the assertion. */
+/**
+ * Count non-overlapping occurrences of `needle`. used where "exactly one element" is the assertion.
+ */
 function countOccurrences(haystack: string, needle: string): number {
   let count = 0;
   let at = haystack.indexOf(needle);
@@ -402,43 +260,28 @@ function countOccurrences(haystack: string, needle: string): number {
   return count;
 }
 
-/* -----------------------------------------------------------------------------------------------------
- * ⭐ A STRICT XML READER, WRITTEN HERE ON PURPOSE — review finding F1's parser requirement
- * -----------------------------------------------------------------------------------------------------
- * WHY THIS EXISTS AT ALL. Review finding F1 records that this suite "expressly require[d] malformed XML
- * and avoid[ed] a parser", and it required parser-based assertions instead. Substring assertions can
- * only ever say "these bytes appear somewhere"; they cannot say "the document has ONE channel link whose
+/*
+ * A strict XML reader, written here on purpose. Assertions in this suite are parser-based rather
+ * than substring-based, because a suite that expressly requires malformed XML and avoids a parser
+ * proves nothing about well-formedness. Substring assertions can
+ * only ever say "these bytes appear somewhere"; they cannot say "the document has one channel link whose
  * value is exactly this", which is the only assertion that distinguishes an escaped host from a host
  * that closed the element and opened three of its own. Every escaping case below therefore parses.
- *
- * WHY IT IS HAND-WRITTEN RATHER THAN A DEPENDENCY. Two independent constraints. Node 20 exposes no
- * `DOMParser` and no XML parser in its standard library — `node -e "typeof DOMParser"` answers
- * `undefined` on the pinned 20.20.2 runtime. And AAP §0.5.2 fixes the dependency set at one runtime and
- * ten development packages, every version verified; adding an eleventh to satisfy a test would change the
- * manifest the plan pins (AAP §0.5.3) for a need the subtree can meet on its own.
- *
- * WHY BEING NARROW IS A FEATURE. This reader accepts only the grammar the feed emits — an optional
- * declaration, elements, attributes on the root, character data, and the five predefined entity
- * references plus numeric character references. It REFUSES a comment, a processing instruction, a CDATA
- * section, a self-closing tag, a mismatched end tag, an unquoted attribute, a raw `<` in character data,
- * an unknown entity reference and any trailing content after the root. A permissive parser would recover
- * from exactly the malformation an escaping bug produces, and recovery is what must not happen here: the
- * point is that a hostile value CANNOT change the document's shape, so anything that would change it has
- * to fail loudly.
- *
- * NOT A PRODUCTION COMPONENT. It lives in the suite, is exported nowhere, and asserts nothing about
- * `src/**`'s own behaviour beyond the bytes it produced.
- * -------------------------------------------------------------------------------------------------- */
+ */
 
 interface ParsedElement {
   readonly name: string;
   readonly attributes: Readonly<Record<string, string>>;
   readonly children: readonly ParsedElement[];
-  /** The DECODED character data directly inside this element, excluding any child element's text. */
+  /**
+   * The decoded character data directly inside this element, excluding any child element's text.
+   */
   readonly text: string;
 }
 
-/** The five entity references XML predefines. Anything else is refused rather than passed through. */
+/**
+ * The five entity references XML predefines. Anything else is refused rather than passed through.
+ */
 const PREDEFINED_ENTITIES: Readonly<Record<string, string>> = Object.freeze({
   amp: '&',
   lt: '<',
@@ -467,13 +310,7 @@ function resolveEntityReference(reference: string): string {
   throw new Error(`Feed document carries an unknown entity reference "&${reference};".`);
 }
 
-/**
- * Decode one run of character data, refusing anything XML forbids there.
- *
- * A raw `<` is refused because it can only be a tag the caller did not intend. A bare `&` is refused
- * because it has no defined meaning — which is precisely the state an unescaped ampersand used to leave
- * this document in, and precisely what this suite must be able to detect rather than tolerate.
- */
+/** Decode one run of character data, refusing anything XML forbids there. */
 function decodeCharacterData(raw: string): string {
   let decoded = '';
   let index = 0;
@@ -507,7 +344,7 @@ function decodeCharacterData(raw: string): string {
  * Parse the rendered feed into an element tree, or throw.
  *
  * @param xml the complete document as the builder returned it
- * @returns the root element, with every text node already decoded
+ * @returns the root element, with every text Node already decoded.
  */
 function parseFeedDocument(xml: string): ParsedElement {
   let index = 0;
@@ -693,19 +530,12 @@ function parseSoleFeedItem(xml: string): ParsedElement {
   return only;
 }
 
-/* -----------------------------------------------------------------------------------------------------
- * The typed scenario factory.
- *
- * Everything it returns is created fresh on every call: the four port doubles with their own call logs,
- * the five entities, the builder, and both `Date` instants. There is no module-scope mutable state, no
- * singleton double, no shared call array and no shared result queue anywhere in this file, so no case
- * can observe another's writes. Only frozen literal constants live at module scope.
- * -------------------------------------------------------------------------------------------------- */
+/* The typed scenario factory. */
 
 interface ScenarioSeed {
   readonly host?: string;
   readonly utcHourOffset?: string;
-  /** Appended AFTER the defaults, so a later seed for the same key wins. */
+  /** Appended after the defaults, so a later seed for the same key wins. */
   readonly settings?: readonly SettingSeed[];
   readonly imagePathsByImageFile?: Readonly<Record<string, string>>;
   readonly productDescription?: string;
@@ -725,12 +555,6 @@ interface ScenarioSeed {
   /** `'absent'` omits the brand object entirely, exercising the legacy `isNull` branch. */
   /**
    * Park every pricing read until the case settles it, instead of answering on the next microtask.
-   *
-   * ⭐ THE ONLY WAY TO TELL A SEQUENTIAL RENDER FROM A CONCURRENT ONE. With immediate doubles, a
-   * `Promise.all` over the records starts every call in input order and resolves them in input order, so
-   * a start-order assertion passes for the wrong implementation. Gating separates the START of a call
-   * from its RESOLUTION and puts the second under the case's control, which is what makes "record N+1 has
-   * not begun" observable. Defaults off, so every existing case is untouched.
    */
   readonly deferPricing?: boolean;
   /** The same, for the resized-image reads inside one record. Defaults off. */
@@ -739,12 +563,8 @@ interface ScenarioSeed {
   readonly brandName?: string;
 
   /**
-   * The SEC-DOS-02 render budget this case states — the per-record image ceiling and the document byte
+   * The render budget this case states — the per-record image ceiling and the document byte
    * ceiling.
-   *
-   * Defaults to {@link GENEROUS_FEED_RENDER_BUDGET}, deliberately: every OTHER case in this file is about
-   * the serializer, and a case decided incidentally by a ceiling would be a case about the wrong thing.
-   * Each ceiling's own behaviour is asserted only where a case states a tight figure here.
    */
   readonly renderBudget?: ProductFeedRenderBudget;
 }
@@ -770,16 +590,7 @@ interface FeedScenario {
   readonly saleExpiration: Date;
   /** Seed one product's sale details, keyed by SKU identifier exactly as the port declares. */
   seedSaleDetails(details: SalePriceDetailsBySkuId): void;
-  /**
-   * Materialize records THROUGH the SmartList port, then serialize them.
-   *
-   * This is the boundary the legacy view crossed at
-   * `integrationServices/google/views/feed/product.cfm:L8,L16`, where the records arrived already
-   * materialized from `rc.skuSmartList.getRecords()`. The double is configured with the rows, the real
-   * `executeRecords` member is called to obtain them, and only then are they handed to the builder — so
-   * this suite proves the records originate behind the port without asserting anything about how the
-   * query that produced them was composed.
-   */
+  /** Materialize records through the smartList port, then serialize them. */
   render(request?: RenderRequest): Promise<string>;
 }
 
@@ -795,7 +606,7 @@ function createScenario(seed: ScenarioSeed = {}): FeedScenario {
   });
   const images = createImagePathDouble({
     /*
-     * `resizedImagePath` is deliberately left unseeded: the double then echoes each request's OWN
+     * `resizedImagePath` is deliberately left unseeded: the double then echoes each request's own
      * `imagePath`, which is the only configuration under which "each additional image used its own
      * resized path" is a falsifiable claim. A single global resize answer would collapse every image
      * onto one value and make the repeated-image assertions vacuous.
@@ -846,9 +657,9 @@ function createScenario(seed: ScenarioSeed = {}): FeedScenario {
     productID: PRODUCT_ID,
     productCode: seed.productCode ?? legacyFixture.productCode,
     /*
-     * A sentinel distinct from `calculatedTitle`. `Product.getTitle()` is the TEMPLATE-driven member
+     * A sentinel distinct from `calculatedTitle`. `Product.getTitle()` is the template-driven member
      * (`model/entity/Product.cfc:L540-L545`) that interpolates `productTitleString`; the feed reads the
-     * PERSISTED `calculatedTitle` instead (`integrationServices/google/views/feed/product.cfm:L18`).
+     * persisted `calculatedTitle` instead (`integrationServices/google/views/feed/product.cfm:L18`).
      * Keeping the two values different is what makes the item title's source unambiguous.
      */
     productName: seed.productName ?? 'TEMPLATE-ONLY-PRODUCT-NAME',
@@ -915,8 +726,8 @@ function createScenario(seed: ScenarioSeed = {}): FeedScenario {
         productImages,
       }));
       /*
-       * TWO ARGUMENTS, WHICH IS THE WHOLE DECLARED SURFACE. A third `ProductFeedRenderOptions` parameter
-       * carrying an `AbortSignal` was withdrawn as an unapproved behaviour addition with no legacy
+       * Two arguments, which is the whole declared surface. A third `ProductFeedRenderOptions`
+       * parameter carrying an `AbortSignal` would be a behaviour addition with no legacy
        * counterpart, so there is no options bag to omit or supply and this helper has no branch.
        */
       return builder.build(records, context);
@@ -953,16 +764,7 @@ function firstResolutionContext(
   return undefined;
 }
 
-/* -----------------------------------------------------------------------------------------------------
- * Source-text inspection for the two source-level censuses.
- *
- * Two mandated checks cannot be observed at runtime at all: that the eleven fields the legacy author
- * disabled remain present as SOURCE COMMENTS in three separate blocks interleaved with the live fields,
- * and that the escape helper is called at exactly six sites. Both are properties of the source text, so
- * the builder is read as TEXT with `node:fs`/`node:path` only. Nothing here parses, evaluates, imports
- * for reflection, or modifies the builder, and neither built-in is used anywhere else in this file —
- * there is no filesystem double, no network double and no product behaviour routed through them.
- * -------------------------------------------------------------------------------------------------- */
+/* Source-text inspection for the two source-level censuses. */
 
 const BUILDER_SOURCE_PATH = join(
   __dirname,
@@ -988,20 +790,7 @@ interface PartitionedSource {
   readonly codeSpans: readonly SourceSpan[];
 }
 
-/*
- * Split the source into comment spans and code spans.
- *
- * A naive `indexOf('//')` scan would mistake the `//` inside a `'http://…'` literal for a comment, and
- * the builder contains eleven such literals, so the walk tracks string, template-literal and
- * `${…}`-substitution state explicitly. Template substitutions nest arbitrarily, hence the frame stack
- * rather than a boolean. `charAt` is used rather than indexing because it answers `string` for an
- * out-of-range position, which keeps the walk total under `noUncheckedIndexedAccess` without a narrowing
- * branch on every character.
- *
- * The partition is verified to be exhaustive and non-overlapping by a dedicated case below: the two span
- * collections must reconstruct the source byte for byte. Without that self-check a silent bug in this
- * walk could make the censuses assert nothing.
- */
+/* Split the source into comment spans and code spans. */
 function partitionBuilderSource(text: string): PartitionedSource {
   type Frame = { kind: 'code'; braceDepth: number } | { kind: 'template' };
   const commentSpans: SourceSpan[] = [];
@@ -1111,7 +900,7 @@ function spanText(source: PartitionedSource, spans: readonly SourceSpan[]): stri
   return spans.map((span) => source.text.slice(span.start, span.end)).join('\n');
 }
 
-/** Every offset at which `needle` occurs inside a CODE span, in source order. */
+/** Every offset at which `needle` occurs inside a code span, in source order. */
 function codeOffsetsOf(source: PartitionedSource, needle: string): readonly number[] {
   const offsets: number[] = [];
   for (const span of source.codeSpans) {
@@ -1155,18 +944,14 @@ function escapeCensus(
   return { escaped, raw };
 }
 
-/**
- * A field name matcher with an identifier boundary.
- *
- * `g:shipping` must not match live `g:shipping_weight`, and `g:tax` must not match `g:tax_ship`, so the
- * trailing character class excludes the underscore as well as alphanumerics. Every disabled-field check
- * in this file goes through this one builder so no call site can forget the boundary.
- */
+/** A field name matcher with an identifier boundary. */
 function fieldNamePattern(fieldName: string): RegExp {
   return new RegExp(`${fieldName}(?![A-Za-z0-9_])`);
 }
 
-/** The single comment span containing every one of `fieldNames`; fails loudly when there is not exactly one. */
+/**
+ * The single comment span containing every one of `fieldNames`; fails loudly when there is not exactly one.
+ */
 function soleCommentSpanContaining(
   source: PartitionedSource,
   fieldNames: readonly string[],
@@ -1197,7 +982,9 @@ function soleCodeOffsetOf(source: PartitionedSource, needle: string): number {
   return only;
 }
 
-/* The eleven top-level field names the legacy author disabled, grouped exactly as the source groups them. */
+/*
+ * The eleven top-level field names the legacy author disabled, grouped exactly as the source groups them.
+ */
 const DISABLED_BLOCK_ONE_FIELDS: readonly string[] = Object.freeze([
   'g:gtin',
   'g:mpn',
@@ -1227,22 +1014,10 @@ const ALL_DISABLED_TOP_LEVEL_FIELDS: readonly string[] = Object.freeze([
   ...DISABLED_BLOCK_THREE_FIELDS,
 ]);
 
-/* =====================================================================================================
- * §1 — The RSS envelope and the channel, byte for byte.
- * ================================================================================================== */
+/* §1 — The RSS envelope and the channel, byte for byte. */
 
 describe('NET-NEW ProductFeedBuilder — RSS envelope and channel', () => {
-  /*
-   * M2 — EXECUTION-MODEL MISMATCH, FLAGGED AND LEFT UNRESOLVED.
-   *
-   * `integrationServices/google/views/feed/product.cfm:L9` set `<cfsetting requesttimeout="360" />`,
-   * granting the feed render a 360-second budget on a persistent application server. That budget fits
-   * inside AWS Lambda's 900-second function ceiling but far exceeds the roughly 29-second synchronous
-   * API Gateway integration budget, so a synchronous route cannot carry the legacy budget. The choice
-   * between an asynchronous and a streamed delivery model is a HANDLER-LAYER decision and is explicitly
-   * unresolved: no timeout assertion, timeout constant, page size, chunk size or delivery policy appears
-   * anywhere in this file, because inventing one would substitute a guess for the decision.
-   */
+  /* M2 — execution-model mismatch, flagged and left unresolved. */
   it('[NET-NEW] opens with the exact declaration, RSS tag and channel, and no encoding attribute', async () => {
     const scenario = createScenario();
 
@@ -1250,9 +1025,9 @@ describe('NET-NEW ProductFeedBuilder — RSS envelope and channel', () => {
 
     /*
      * `integrationServices/google/views/feed/product.cfm:L1` carries the declaration and the opening
-     * `<cfsilent>` on the SAME physical line. `<cfsilent>` is a server-side tag that suppresses output
+     * `<cfsilent>` on the same physical line. `<cfsilent>` is a server-side tag that suppresses output
      * and is never emitted, so the emitted prefix is the declaration alone — and the declaration itself
-     * carries NO `encoding` attribute, which is preserved rather than "corrected" to UTF-8.
+     * carries no `encoding` attribute, which is preserved rather than "corrected" to UTF-8.
      */
     expect(xml.startsWith(EXPECTED_XML_DECLARATION)).toBe(true);
     expect(xml).not.toContain('encoding=');
@@ -1270,21 +1045,14 @@ describe('NET-NEW ProductFeedBuilder — RSS envelope and channel', () => {
 
     /* `:L13` — a fixed literal, not derived from any setting. */
     expect(xml).toContain(channelField(EXPECTED_CHANNEL_TITLE_ELEMENT));
-    /*
-     * `:L14` — `http://#CGI.HTTP_HOST#`, byte for byte.
-     *
-     * ⚠️ AND THE SCHEME IS PART OF THAT PARITY, WHICH IS WHAT THIS CASE PINS. The legacy hard-codes
-     * `http://` at all five absolute URLs, with no `https` branch, no setting behind it and no
-     * request-scheme read, so `FEED_SCHEME_PREFIX` transcribes that one literal and reaches all five. An
-     * earlier revision emitted `https://` as a second declared departure beside D18; AAP §0.6.7.7 admits
-     * exactly one, so the upgrade is reversed and the cleartext exposure is carried as an annotated
-     * TODO(parity) at `FEED_SCHEME_PREFIX` instead.
-     */
+    /* `:L14` — `http://#CGI.HTTP_HOST#`, byte for byte. */
     expect(xml).toContain(channelField(`<link>http://${RENDER_HOST}</link>`));
-    /* ⭐ AND NO SECURE-SCHEME ORIGIN IS INVENTED ANYWHERE IN THE DOCUMENT — the negative half of the same
+    /*
+     * And no secure-scheme origin is invented anywhere in the document — the negative half of the same
      * parity claim, so an upgrade cannot be reintroduced without this case failing. The positive census
-     * counts the `http://` occurrences: one per absolute URL the document publishes, PLUS the one in the
-     * `xmlns:g` namespace URI, which is an identifier rather than a fetch target. */
+     * counts the `http://` occurrences: one per absolute URL the document publishes, plus the one in the
+     * `xmlns:g` namespace uri, which is an identifier rather than a fetch target.
+     */
     expect(xml).not.toContain('https://');
     expect(countOccurrences(xml, 'http://')).toBe(
       countOccurrences(xml, `http://${RENDER_HOST}`) +
@@ -1337,7 +1105,7 @@ describe('NET-NEW ProductFeedBuilder — RSS envelope and channel', () => {
     /*
      * The rows crossed the SmartList port boundary and were materialized through its real
      * `executeRecords` member — the records-only view, which is the one the legacy `getRecords()` read.
-     * Nothing about how the query was COMPOSED is asserted: joins, filters and the `'1^'` availability
+     * Nothing about how the query was composed is asserted: joins, filters and the `'1^'` availability
      * range belong to `ProductFeedQuery`, which this file never imports.
      */
     expect(scenario.smartList.executions).toHaveLength(1);
@@ -1345,8 +1113,8 @@ describe('NET-NEW ProductFeedBuilder — RSS envelope and channel', () => {
     expect(scenario.smartList.lastQuery()?.entityName).toBe('SlatwallSku');
 
     /*
-     * ⚠️ THIS CASE PROVES OUTPUT ORDER, NOT EXECUTION ORDER, AND THE DIFFERENCE IS LOAD-BEARING.
-     * `Promise.all(records.map(buildItem))` resolves to an array in ARGUMENT order regardless of which
+     * This case proves output order, not execution order, and the difference is load-bearing.
+     * `Promise.all(records.map(buildItem))` resolves to an array in argument order regardless of which
      * item finished first, so it would satisfy every assertion above while rendering both records
      * concurrently. §1.5 below is where the sequencing itself is pinned, with ports that do not resolve
      * until released.
@@ -1380,31 +1148,7 @@ describe('NET-NEW ProductFeedBuilder — RSS envelope and channel', () => {
   });
 });
 
-/* =====================================================================================================
- * §1.5 — SEQUENTIAL RENDERING: ONE RECORD AT A TIME, PROVED BY PORTS THAT DO NOT RESOLVE.
- *
- * `integrationServices/google/views/feed/product.cfm:L16` is an ordered `cfloop` over
- * `rc.skuSmartList.getRecords()` on a single-threaded request: record 2's first data access could not
- * begin until record 1's item was complete. `ProductFeedBuilder.build` reproduces that with a `for…of`
- * loop that awaits one `buildItem` at a time.
- *
- * ⛔ NO ASSERTION ON FINAL OUTPUT CAN ESTABLISH THAT. `Promise.all(records.map(buildItem))` produces its
- * results in argument order however the individual renders interleave, so a concurrent implementation
- * emits a byte-identical document and passes every value, branch, order and record-order case in this
- * file. The doubles the rest of the suite uses resolve immediately, which hides the difference
- * completely.
- *
- * SO EXECUTION IS OBSERVED DIRECTLY. Both asynchronous ports — images and pricing — are wrapped in a
- * gate that RECORDS each call as it starts and then blocks until the test releases it. With record 1
- * held at its very first await, a sequential render cannot have started record 2, and a concurrent one
- * cannot have avoided starting it. Releasing one operation at a time then exposes the whole execution
- * order rather than just its endpoints.
- *
- * WHY IT MATTERS BEYOND TIDINESS: M2 (AAP §0.6.6) leaves the feed's delivery model an open decision, and
- * a future revision reaching for concurrency to fit a narrower budget is exactly the change this section
- * is here to catch. The synchronous setting port is NOT gated — it is synchronous by contract (M8) and
- * has no await to hold.
- * ================================================================================================== */
+/* §1.5 — sequential rendering: one record at a time, proved by ports that do not resolve. */
 
 /** One operation the builder started and has not been allowed to finish. */
 interface GatedOperation {
@@ -1413,13 +1157,7 @@ interface GatedOperation {
   release(): void;
 }
 
-/**
- * Records every gated operation in START order and holds each one until released.
- *
- * The label is recorded BEFORE the promise is handed back, so `started` is the order in which the
- * builder REACHED each await — which is the property under test — rather than the order in which the
- * answers arrived.
- */
+/** Records every gated operation in start order and holds each one until released. */
 interface OperationGate {
   /** Labels in the order the builder started them. */
   readonly started: readonly string[];
@@ -1433,14 +1171,7 @@ interface OperationGate {
   releaseAll(): Promise<void>;
 }
 
-/**
- * Hand control back to the event loop so every microtask the release unblocked can run.
- *
- * `setImmediate` rather than a bare `await Promise.resolve()`: one microtask tick only advances the
- * render past one `await`, whereas a macrotask boundary drains the whole queue, so `started` is fully
- * settled before it is inspected. No timer, no delay and no polling interval is involved — nothing here
- * depends on elapsed time, which is what keeps these cases deterministic rather than flaky.
- */
+/** Hand control back to the event loop so every microtask the release unblocked can run. */
 async function settleStartedOperations(): Promise<void> {
   await new Promise<void>((resolve) => {
     setImmediate(resolve);
@@ -1516,26 +1247,18 @@ function gateSalePriceReads(pricing: PricingPort, operations: OperationGate): Pr
   };
 }
 
-/*
- * Two records over two DISTINCT products, each with one additional image.
- *
- * DISTINCT PRODUCTS AND DISTINCT IMAGE PATHS ARE REQUIRED, not incidental. The builder memoises resized
- * paths per render keyed on the whole request, and sale-price detail per product; two records sharing a
- * product or a path would have their second record's port calls served from those memos, leaving nothing
- * to observe. Each record therefore performs exactly three gated operations, in this order:
- *   1. `resize:<primary image>`      — `product.cfm:L23`
- *   2. `resize:<additional image>`   — `product.cfm:L24`
- *   3. `pricing:<product>`           — the `:L28` gate's sale-price read
- */
+/* Two records over two distinct products, each with one additional image. */
 const SEQUENCING_SECOND_PRODUCT_ID = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb3';
 const SEQUENCING_FIRST_IMAGE_FILE = 'first-primary.jpg';
 const SEQUENCING_SECOND_IMAGE_FILE = 'second-primary.jpg';
-/* ⭐ THE PRIMARY PATHS ARE SEEDED ROOTED, AND THE SEEDING IS NOT COSMETIC. The image double answers
- * `getImagePath` with `imagePathsByImageFile[file] ?? file`, so leaving it unseeded made the port echo a
- * BARE FILE NAME where the real adapter composes `<image folder>/product/default/<file>` — an artefact of
- * the double, not a value the port can produce. Review finding F8 added
- * `assertSameOriginRelativePath` at all three URL sinks, and the bare name fails it correctly, so the
- * harness now seeds the composed form the same way the main scenario does at `imagePathsByImageFile`. */
+/*
+ * The primary paths are seeded rooted, and the seeding is not cosmetic. The image double answers
+ * `getImagePath` with `imagePathsByImageFile[file] ?? file`, so leaving it unseeded made the port
+ * echo a bare file name where the real adapter composes `<image folder>/product/default/<file>` —
+ * an artefact of the double, not a value the port can produce. `assertSameOriginRelativePath`
+ * guards all three URL sinks, and the bare name fails it correctly, so the
+ * harness now seeds the composed form the same way the main scenario does at `imagePathsByImageFile`.
+ */
 const SEQUENCING_FIRST_COMPOSED_IMAGE_PATH = `/product/default/${SEQUENCING_FIRST_IMAGE_FILE}`;
 const SEQUENCING_SECOND_COMPOSED_IMAGE_PATH = `/product/default/${SEQUENCING_SECOND_IMAGE_FILE}`;
 const SEQUENCING_FIRST_ADDITIONAL_PATH = '/product/default/first-additional.jpg';
@@ -1554,18 +1277,20 @@ const SEQUENCING_SECOND_RECORD_OPERATIONS: readonly string[] = Object.freeze([
 
 interface SequencingHarness {
   readonly operations: OperationGate;
-  /** Start the render WITHOUT awaiting it, so the gate can be inspected mid-flight. */
+  /** Start the render without awaiting it, so the gate can be inspected mid-flight. */
   start(): Promise<string>;
 }
 
 function createSequencingHarness(): SequencingHarness {
   const operations = createOperationGate();
   const settings = createSettingResolverDouble({ settings: [...DEFAULT_SETTING_SEEDS] });
-  /* Unseeded RESIZE answers, so the double echoes each request's own path and every gated label is
+  /*
+   * Unseeded resize answers, so the double echoes each request's own path and every gated label is
    * distinct — a single global answer would make the two records' operations indistinguishable. The
-   * per-file IMAGE PATHS are seeded, though, for the reason recorded at
+   * per-file image paths are seeded, though, for the reason recorded at
    * {@link SEQUENCING_FIRST_COMPOSED_IMAGE_PATH}: an unseeded `getImagePath` echoes a bare file name, which
-   * is not a same-origin relative path and which the real adapter never produces. */
+   * is not a same-origin relative path and which the real adapter never produces.
+   */
   const images = createImagePathDouble({
     imagePathsByImageFile: {
       [SEQUENCING_FIRST_IMAGE_FILE]: SEQUENCING_FIRST_COMPOSED_IMAGE_PATH,
@@ -1636,7 +1361,7 @@ describe('NET-NEW ProductFeedBuilder — sequential record rendering', () => {
     await settleStartedOperations();
 
     /*
-     * THE CORE ANTI-CONCURRENCY ASSERTION. One operation has started: record 1's primary image resize,
+     * The core anti-concurrency assertion. One operation has started: record 1's primary image resize,
      * `product.cfm:L23`. Under `Promise.all(records.map(buildItem))` record 2's primary resize would
      * appear here too, because both calls are made before either is awaited — so this single equality is
      * what fails a concurrent render.
@@ -1660,7 +1385,7 @@ describe('NET-NEW ProductFeedBuilder — sequential record rendering', () => {
     await settleStartedOperations();
 
     /*
-     * Released one at a time, asserting after each release, so the ENTIRE execution order is observed
+     * Released one at a time, asserting after each release, so the entire execution order is observed
      * rather than only its first and last steps. Record 1's three operations must appear in the order
      * `:L23`, `:L24`, then the `:L28` sale-price read, and record 2's first must not appear until record
      * 1's third has been released — i.e. until record 1's item is complete.
@@ -1676,7 +1401,7 @@ describe('NET-NEW ProductFeedBuilder — sequential record rendering', () => {
     await harness.operations.releaseOldest();
     expect(harness.operations.started).toStrictEqual(SEQUENCING_FIRST_RECORD_OPERATIONS);
 
-    /* Record 1's last operation released — only NOW may record 2 begin. */
+    /* Record 1's last operation released — only now may record 2 begin. */
     await harness.operations.releaseOldest();
     expect(harness.operations.started).toStrictEqual([
       ...SEQUENCING_FIRST_RECORD_OPERATIONS,
@@ -1685,13 +1410,17 @@ describe('NET-NEW ProductFeedBuilder — sequential record rendering', () => {
 
     await harness.operations.releaseAll();
 
-    /* The full execution order: record 1's three operations, then record 2's three, never interleaved. */
+    /*
+     * The full execution order: record 1's three operations, then record 2's three, never interleaved.
+     */
     expect(harness.operations.started).toStrictEqual([
       ...SEQUENCING_FIRST_RECORD_OPERATIONS,
       ...SEQUENCING_SECOND_RECORD_OPERATIONS,
     ]);
 
-    /* And the document that came out of that execution is the two records in the order supplied. */
+    /*
+     * And the document that came out of that execution is the two records in the order supplied.
+     */
     const xml = await rendering;
     expect(countOccurrences(xml, `${CHANNEL_FIELD_INDENT}<item>`)).toBe(2);
     expect(xml.indexOf(`<g:id>${PRODUCT_ID}-SKU</g:id>`)).toBeLessThan(
@@ -1707,7 +1436,7 @@ describe('NET-NEW ProductFeedBuilder — sequential record rendering', () => {
 
     /*
      * The same claim from the other direction, and the reason it is worth a third case: settling the
-     * event loop REPEATEDLY, without releasing anything, must not advance the render at all. A render
+     * event loop repeatedly, without releasing anything, must not advance the render at all. A render
      * that had dispatched record 2's calls ahead of time would reveal them here even if the first case
      * happened to inspect the gate a tick too early.
      */
@@ -1721,9 +1450,7 @@ describe('NET-NEW ProductFeedBuilder — sequential record rendering', () => {
   });
 });
 
-/* =====================================================================================================
- * §2 — Identity, title, description, category and product type.
- * ================================================================================================== */
+/* §2 — identity, title, description, category and product type. */
 
 describe('NET-NEW ProductFeedBuilder — identity, title, description, category, product type', () => {
   it('[NET-NEW] emits g:id from the escaped SKU code', async () => {
@@ -1731,7 +1458,9 @@ describe('NET-NEW ProductFeedBuilder — identity, title, description, category,
 
     const xml = await scenario.render();
 
-    /* `integrationServices/google/views/feed/product.cfm:L17` — `htmlEditFormat(sku.getSkuCode())`. */
+    /*
+     * `integrationServices/google/views/feed/product.cfm:L17` — `htmlEditFormat(sku.getSkuCode())`.
+     */
     expect(xml).toContain(itemField(`<g:id>${ESCAPED_SENTINEL}</g:id>`));
   });
 
@@ -1744,7 +1473,7 @@ describe('NET-NEW ProductFeedBuilder — identity, title, description, category,
     const xml = await scenario.render();
 
     /*
-     * `:L18` reads the PERSISTED `calculatedTitle`. `Product.getTitle()`
+     * `:L18` reads the persisted `calculatedTitle`. `Product.getTitle()`
      * (`model/entity/Product.cfc:L540-L545`) is a different member entirely: it interpolates the
      * `productTitleString` setting template. The two sentinels are deliberately distinct so the source is
      * unambiguous, and this suite never calls `getTitle()`.
@@ -1752,27 +1481,14 @@ describe('NET-NEW ProductFeedBuilder — identity, title, description, category,
     expect(xml).toContain(itemField(`<title>${ESCAPED_SENTINEL}</title>`));
     expect(xml).not.toContain('TEMPLATE-ONLY-PRODUCT-NAME');
     /*
-     * A second, independent proof: `productTitleString` is never seeded, and the resolver double RAISES
+     * A second, independent proof: `productTitleString` is never seeded, and the resolver double raises
      * for an unseeded key. Its absence from the call log therefore establishes that the template member
      * was not reached, rather than merely that its output did not happen to appear.
      */
     expect(resolvedSettingNames(scenario.settings)).not.toContain('productTitleString');
   });
 
-  /*
-   * THE THREE-BRANCH DESCRIPTION — a judgment call, recorded rather than smoothed over.
-   *
-   * `integrationServices/google/views/feed/product.cfm:L19` is a single element with a three-way body:
-   *   BRANCH A — `len(product.getProductDescription())` is truthy, so the PRODUCT description is emitted.
-   *   BRANCH B — it is falsy, so the fallback tests `len(productType.getProductTypeDescription())` and
-   *              emits the PRODUCT TYPE description.
-   *   BRANCH C — both are falsy, and the `<cfif>`/`<cfelseif>` pair has no `<cfelse>`, so the element is
-   *              still emitted with an EMPTY body.
-   * The gate is `len()`, which is a LENGTH test rather than a null test and rather than a trimmed test.
-   * A whitespace-only product description therefore has non-zero length and WINS, and the port does not
-   * trim, does not coalesce whitespace, and does not harmonise this gate with the `isNull()` object test
-   * that guards the brand element at `:L32`.
-   */
+  /* The three-branch description — a judgment call, recorded rather than smoothed over. */
   it('[NET-NEW] description branch A — a non-empty product description wins and is escaped', async () => {
     const scenario = createScenario({
       productDescription: ESCAPE_SENTINEL,
@@ -1802,8 +1518,8 @@ describe('NET-NEW ProductFeedBuilder — identity, title, description, category,
     const xml = await scenario.render();
 
     /*
-     * `:L19` has no `<cfelse>`, so the element is emitted with nothing inside it. It is NOT omitted and
-     * NOT self-closing — a reader tidying this into `<description/>` would change the bytes a merchant
+     * `:L19` has no `<cfelse>`, so the element is emitted with nothing inside it. It is not omitted and
+     * not self-closing — a reader tidying this into `<description/>` would change the bytes a merchant
      * feed processor receives.
      */
     expect(xml).toContain(itemField('<description></description>'));
@@ -1819,7 +1535,7 @@ describe('NET-NEW ProductFeedBuilder — identity, title, description, category,
 
     const xml = await scenario.render();
 
-    /* Three spaces have non-zero length, so branch A wins and the spaces survive verbatim. */
+    /* Three spaces have non-zero length, so branch a wins and the spaces survive verbatim. */
     expect(xml).toContain(itemField('<description>   </description>'));
     expect(xml).not.toContain('TYPE-LEVEL-DESCRIPTION');
   });
@@ -1830,10 +1546,10 @@ describe('NET-NEW ProductFeedBuilder — identity, title, description, category,
     const xml = await scenario.render();
 
     /*
-     * `:L20` is a hard-coded empty element. THE CATEGORY DRIFT TRAP: the integration declares a
+     * `:L20` is a hard-coded empty element. The category drift trap: the integration declares a
      * `productGoogleProductType` select setting at
      * `integrationServices/google/Integration.cfc:L68-L70`, and it is tempting to conclude the feed
-     * populates the category from it. It does not — `getSettingOptions()` in that same file has an EMPTY
+     * populates the category from it. It does not — `getSettingOptions()` in that same file has an empty
      * body, and the view never reads the setting. The element ships empty.
      */
     expect(xml).toContain(itemField('<g:google_product_category></g:google_product_category>'));
@@ -1861,7 +1577,7 @@ describe('NET-NEW ProductFeedBuilder — identity, title, description, category,
     const xml = await scenario.render();
 
     /*
-     * `model/entity/ProductType.cfc:L273-L278` joins a child to its parent with the LITERAL text
+     * `model/entity/ProductType.cfc:L273-L278` joins a child to its parent with the literal text
      * ` &raquo; ` — an HTML entity written out as characters, not a Unicode guillemet. `htmlEditFormat`
      * then escapes its leading ampersand, so the emitted separator is ` &amp;raquo; `. That double-escaped
      * look is the legacy output and is preserved rather than "repaired" to a real `»`.
@@ -1871,17 +1587,7 @@ describe('NET-NEW ProductFeedBuilder — identity, title, description, category,
   });
 });
 
-/* =====================================================================================================
- * §3 — Absolute URLs and images. Every one of these fields is now ESCAPED at its emission site.
- *
- * ⭐ THIS HEADER READ "Every one of these fields is UNESCAPED", which was true of the legacy view and true
- * of the port until review finding F7. Reinstated DECISION G-3 escapes the item `<link>`, `<g:image_link>`
- * and every `<g:additional_image_link>` — each in ONE pass over its finished URL, prefix and path
- * together, so a host containing `&` is escaped exactly once rather than twice. The escaping is
- * byte-identical for every URL with no XML metacharacter in it, which is every URL the legacy could
- * render into a well-formed document; it diverges only where the legacy emitted bytes with no defined XML
- * parse at all. That is D18's shape, and it is declared rather than silent.
- * ================================================================================================== */
+/* §3 — Absolute URLs and images. Every one of these fields is now escaped at its emission site. */
 
 describe('NET-NEW ProductFeedBuilder — links and images', () => {
   it('[NET-NEW] emits the item link over HTTPS, keeping the product URL leading and trailing slashes', async () => {
@@ -1892,16 +1598,8 @@ describe('NET-NEW ProductFeedBuilder — links and images', () => {
     /*
      * `integrationServices/google/views/feed/product.cfm:L22` concatenates a hard-coded scheme, the
      * configured host and `product.getProductURL()`. `model/entity/Product.cfc:L207-L209` composes that
-     * path as `/#setting('globalURLKeyProduct')#/#getURLTitle()#/`, so it carries BOTH a leading and a
+     * path as `/#setting('globalURLKeyProduct')#/#getURLTitle()#/`, so it carries both a leading and a
      * trailing slash. Neither is trimmed, and the two slashes are why the concatenation needs no separator.
-     *
-     * ⭐ THE LEADING SLASH IS ALSO WHY REVIEW FINDING F8's PATH CONSTRAINT FORECLOSES NOTHING. The legacy
-     * writes that slash into the composed literal itself, so `assertSameOriginRelativePath`'s requirement is
-     * satisfied by every value the legacy composition can produce — the case below exercises the refusal.
-     *
-     * ⚠️ AND THE SCHEME IS `:L22`'s OWN `http`. The negative assertion below pins that half: no item link
-     * may be published over an invented secure scheme, because a second declared departure beside D18 is
-     * exactly what AAP §0.6.7.7 excludes. The channel-link case carries the full argument.
      */
     expect(xml).toContain(
       itemField(`<link>${ABSOLUTE_URL_PREFIX}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/nike-air/</link>`),
@@ -1911,20 +1609,8 @@ describe('NET-NEW ProductFeedBuilder — links and images', () => {
     expect(resolvedSettingNames(scenario.settings)).toContain('globalURLKeyProduct');
   });
 
-  it('[NET-NEW] CQ-9 emits a raw URL path byte-for-byte, and refuses one carrying markup', async () => {
-    /*
-     * THE RAW-SINK CONTRACT AT `:L22`, AND HOW IT CHANGED TWICE.
-     *
-     * `:L22` wraps the link in no `htmlEditFormat` call, so it is one of the NINE RAW sinks. An earlier
-     * revision percent-encoded each path segment and then escaped the finished URL, on review finding F7's
-     * authority; review finding CQ-9 withdrew BOTH, because each changes the bytes of a field the legacy
-     * publishes unmodified — `%` became `%25`, so a stored `a%20b` was published as `a%2520b` with no
-     * metacharacter involved at all.
-     *
-     * ⭐ SO THE FIRST HALF OF THIS CASE IS BYTE PARITY. `>`, `"` and `'` are legal, unambiguous element
-     * content; the legacy emits them untouched and so does the port. Neither percent-encoding nor entity
-     * escaping may appear.
-     */
+  it('[NET-NEW] emits a raw URL path byte-for-byte, and refuses one carrying markup', async () => {
+    /* The raw-sink contract at `:L22`, and how it changed twice. */
     const safeScenario = createScenario({ urlTitle: RAW_SAFE_SENTINEL });
 
     const safeXml = await safeScenario.render();
@@ -1934,7 +1620,7 @@ describe('NET-NEW ProductFeedBuilder — links and images', () => {
         `<link>${ABSOLUTE_URL_PREFIX}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/${RAW_SAFE_SENTINEL}/</link>`,
       ),
     );
-    /* Neither remedy the earlier revision applied may be observable in the emitted bytes. */
+    /* Neither remedy may be observable in the emitted bytes. */
     expect(safeXml).not.toContain(encodeURIComponent(RAW_SAFE_SENTINEL));
     expect(safeXml).not.toContain(`/${RAW_SAFE_SENTINEL_ESCAPED}/`);
     /* And the separators the legacy relies on survive, as they did under the encoder. */
@@ -1944,11 +1630,11 @@ describe('NET-NEW ProductFeedBuilder — links and images', () => {
     expect(resolvedSettingNames(safeScenario.settings)).toContain('globalURLKeyProduct');
 
     /*
-     * ⭐ AND THE SECOND HALF IS THE REFUSAL THAT KEEPS CWE-91 CLOSED. Raw emission alone would let a
-     * stored `&` reach the document and leave it unparseable, which is exactly the exposure finding SEC-2
-     * names. So the value is REFUSED rather than escaped: no document is published, and the failure is a
+     * And the second half is the refusal that keeps CWE-91 closed. Raw emission alone would let a
+     * stored `&` reach the document and leave it unparseable, which is exactly the exposure finding
+     * names. So the value is refused rather than escaped: no document is published, and the failure is a
      * `DataIntegrityError`, which `googleFeedHandler` answers 500. Escaping made such a payload harmless
-     * DATA; refusing makes it unpublished. Both close the injection route, and only refusing leaves the
+     * data; refusing makes it unpublished. Both close the injection route, and only refusing leaves the
      * legitimate bytes above untouched.
      */
     const hostileScenario = createScenario({ urlTitle: RAW_REFUSED_SENTINEL });
@@ -1962,9 +1648,9 @@ describe('NET-NEW ProductFeedBuilder — links and images', () => {
     const xml = await scenario.render();
 
     /*
-     * `:L23` calls `sku.getResizedImagePath()` with NO arguments at all. `model/entity/Sku.cfc:L192-L218`
+     * `:L23` calls `sku.getResizedImagePath()` with no arguments at all. `model/entity/Sku.cfc:L192-L218`
      * accepts an optional size, width and height and applies a deprecated-size gate when one is supplied;
-     * the feed supplies none, so none of that gate runs. The recorded request proves the absence rather
+     * The feed supplies none, so none of that gate runs. The recorded request proves the absence rather
      * than assuming it.
      */
     expect(xml).toContain(
@@ -2045,22 +1731,10 @@ describe('NET-NEW ProductFeedBuilder — links and images', () => {
     expect(countOccurrences(xml, SKU_COMPOSED_IMAGE_PATH)).toBe(1);
 
     /*
-     * ONE RESOLUTION PER IMAGE, THE REPEAT INCLUDED — FIVE IN TOTAL FOR THE SKU'S OWN IMAGE PLUS FOUR
-     * PRODUCT IMAGES. `:L23` resolves a resized path once per SKU and `:L24` resolves one per element of
-     * the product's image collection, with no de-duplication anywhere, so the DUPLICATE path is resolved
-     * TWICE. That call pattern is the behaviour being ported.
-     *
-     * ⛔ AN EARLIER REVISION COLLAPSED THE REPEAT AND THIS CASE REQUIRED THE COLLAPSE, asserting FOUR
-     * requests and describing the difference as a "PORT-CALL optimisation". Both the memo and the
-     * requirement are withdrawn: AAP §0.1.1.1 records "Explicitly not: Performance refactoring" as a
-     * dimension of this migration and §0.8.2 guideline 4 forbids optimising beyond what the migration
-     * requires. Neither `../../src/ports/ImagePathPort` nor `../../src/ports/PricingPort` declares its
-     * reads idempotent or cacheable either, so collapsing them assumed something the contracts never
-     * promised.
-     *
-     * The count is asserted in the POSITIVE direction — five calls, in this order, duplicate included —
-     * rather than as a ceiling, so this case pins the legacy pattern instead of pinning an efficiency
-     * claim in either direction.
+     * One resolution per image, the repeat included — five in total for the SKU'S own image plus four
+     * product images. `:L23` resolves a resized path once per SKU and `:L24` resolves one per element of
+     * the product's image collection, with no de-duplication anywhere, so the duplicate path is resolved
+     * twice. That call pattern is the behaviour being ported.
      */
     const requests = resizeRequests(scenario.images);
     expect(requests).toHaveLength(5);
@@ -2073,7 +1747,7 @@ describe('NET-NEW ProductFeedBuilder — links and images', () => {
     ]);
 
     /*
-     * Every resize — the SKU's and each image's — was requested with NO size, width, height or
+     * Every resize — the SKU's and each image's — was requested with no size, width, height or
      * resize method, exactly as `:L23-L24` call the two accessors.
      */
     for (const request of requests) {
@@ -2098,15 +1772,12 @@ describe('NET-NEW ProductFeedBuilder — links and images', () => {
     );
 
     /*
-     * M7 — THE BUILDER HOLDS NO STATE AT ALL, WHICH IS A STRONGER STATEMENT THAN THE ONE THIS CASE USED TO
-     * MAKE. It previously asserted that an invocation-scoped resized-path MEMO did not outlive a `build`
-     * call; the memo is withdrawn (see the case above), so there is now nothing to outlive anything and the
-     * second render simply repeats the first render's two resolutions. Nothing survives between invocations
+     * M7 — the builder holds no state at all, which is stronger than saying an invocation-scoped
+     * memo does not outlive a `build` call. There is no memo (see the case above), so nothing can
+     * outlive anything and the second render simply repeats the first render's two resolutions.
+     * Nothing survives between invocations
      * of a serverless runtime except module scope, and the only module-scope values in the builder are
      * frozen literal constants — so a warm container cannot serve one tenant's resolved paths to the next.
-     *
-     * Nothing here asserts a cache size, a hit rate or a timing figure: the claim is that the second render
-     * behaves exactly like the first.
      */
     expect(afterFirstBuild).toStrictEqual([SKU_COMPOSED_IMAGE_PATH, FIRST_ADDITIONAL_IMAGE_PATH]);
     expect(afterSecondBuild).toStrictEqual([
@@ -2115,14 +1786,14 @@ describe('NET-NEW ProductFeedBuilder — links and images', () => {
       SKU_COMPOSED_IMAGE_PATH,
       FIRST_ADDITIONAL_IMAGE_PATH,
     ]);
-    /* Stated once more as the relation itself, so the intent survives a change to either literal. */
+    /*
+     * Stated once more as the relation itself, so the intent survives a change to either literal.
+     */
     expect(afterSecondBuild.slice(afterFirstBuild.length)).toStrictEqual(afterFirstBuild);
   });
 });
 
-/* =====================================================================================================
- * §4 — Fixed literals, the product price, and the price/sale-gate asymmetry.
- * ================================================================================================== */
+/* §4 — Fixed literals, the product price, and the price/sale-gate asymmetry. */
 
 describe('NET-NEW ProductFeedBuilder — fixed literals, price and the conditional sale pair', () => {
   it('[NET-NEW] emits g:condition and g:availability as fixed literals, keeping the space in "in stock"', async () => {
@@ -2141,16 +1812,7 @@ describe('NET-NEW ProductFeedBuilder — fixed literals, price and the condition
     expect(xml).not.toContain('<g:availability>instock</g:availability>');
   });
 
-  /*
-   * THE PRICE / SALE-GATE ASYMMETRY — a judgment call, recorded so it is never "tidied up".
-   *
-   * `integrationServices/google/views/feed/product.cfm:L27` emits `sku.getProduct().getPrice()`: the
-   * PRODUCT's price. `:L28` then gates the sale pair on `sku.getPrice() gt sku.getSalePrice()`: the SKU's
-   * OWN regular price. The two lines read DIFFERENT prices, and they sit one line apart, which is exactly
-   * why a well-intentioned port is tempted to harmonise them. Harmonising either direction changes which
-   * items appear on sale and what price they advertise. The two cases below straddle the sale price with
-   * the product and SKU prices in both directions, so each half of the asymmetry is independently pinned.
-   */
+  /* The price / sale-gate asymmetry — a judgment call, recorded so it is never "tidied up". */
   it('[NET-NEW] emits g:price from the product price while gating the sale pair on the SKU price', async () => {
     const scenario = createScenario({ productPrice: 60, skuPrice: 90 });
     scenario.seedSaleDetails({
@@ -2162,16 +1824,18 @@ describe('NET-NEW ProductFeedBuilder — fixed literals, price and the condition
 
     const xml = await scenario.render();
 
-    /* `:L27` — the PRODUCT price, 60, not the SKU's 90. */
+    /* `:L27` — the product price, 60, not the SKU's 90. */
     expect(xml).toContain(itemField('<g:price>60</g:price>'));
     /*
      * `:L28-L29` — the gate compared the SKU's 90 against the sale price 79.5 and passed. Had it read the
-     * product's 60 instead, 60 is NOT greater than 79.5 and the pair would have been omitted, so the
+     * product's 60 instead, 60 is not greater than 79.5 and the pair would have been omitted, so the
      * presence of these elements proves the gate reads the SKU price.
      */
     expect(xml).toContain(itemField('<g:sale_price>79.5</g:sale_price>'));
     expect(xml).toContain('<g:sale_price_effective_date>');
-    /* The sale price came through the pricing port, never off an excluded calculated entity member. */
+    /*
+     * The sale price came through the pricing port, never off an excluded calculated entity member.
+     */
     expect(scenario.pricing.requestedProductIds).toStrictEqual([PRODUCT_ID]);
   });
 
@@ -2187,7 +1851,7 @@ describe('NET-NEW ProductFeedBuilder — fixed literals, price and the condition
     const xml = await scenario.render();
 
     /*
-     * `:L28` uses `gt`, a STRICT comparison, so equality omits the pair. The product price of 100 is
+     * `:L28` uses `gt`, a strict comparison, so equality omits the pair. The product price of 100 is
      * greater than 79.5; had the gate read it, both elements would appear. Their absence is the other half
      * of the asymmetry.
      */
@@ -2214,15 +1878,11 @@ describe('NET-NEW ProductFeedBuilder — fixed literals, price and the condition
   it('[NET-NEW] falls back to the regular SKU price when no salePrice is supplied, so the pair is omitted', async () => {
     const scenario = createScenario({ productPrice: 100, skuPrice: 90 });
     /*
-     * The details object carries a discount TYPE but no `salePrice`. `model/entity/Sku.cfc:L546-L551`
+     * The details object carries a discount type but no `salePrice`. `model/entity/Sku.cfc:L546-L551`
      * returns `salePriceDetails["salePrice"]` only when that key exists and otherwise falls back to
      * `getPrice()` — the SKU's own regular price. The comparison therefore becomes 90 against 90, which
      * `gt` rejects, and the pair is omitted. Substituting null or zero for a missing sale price would put
-     * EVERY SKU in the catalogue on sale, which is why the fallback is pinned rather than assumed.
-     *
-     * `SalePriceDetails` declares exactly three optional keys — `salePrice`, `salePriceDiscountType` and
-     * `salePriceExpirationDateTime`. There is deliberately no `salePriceDiscountAmount`, and the builder
-     * for this object admits no such key, so one cannot be added by accident.
+     * every SKU in the catalogue on sale, which is why the fallback is pinned rather than assumed.
      */
     scenario.seedSaleDetails({
       [SKU_ID]: buildSalePriceDetails({ salePriceDiscountType: 'percentageOff' }),
@@ -2233,7 +1893,7 @@ describe('NET-NEW ProductFeedBuilder — fixed literals, price and the condition
     expect(xml).toContain(itemField('<g:price>100</g:price>'));
     expect(xml).not.toContain('<g:sale_price>');
     expect(xml).not.toContain('<g:sale_price_effective_date>');
-    /* The port WAS consulted; the omission is the fallback's outcome, not a skipped lookup. */
+    /* The port was consulted; the omission is the fallback's outcome, not a skipped lookup. */
     expect(scenario.pricing.requestedProductIds).toStrictEqual([PRODUCT_ID]);
   });
 
@@ -2250,27 +1910,11 @@ describe('NET-NEW ProductFeedBuilder — fixed literals, price and the condition
     await scenario.render({ skus: [scenario.sku, secondSku] });
 
     /*
-     * ⭐ THE PRICING HALF OF REVIEW FINDING F2, WHICH HAD NO MULTI-SKU COVERAGE AT ALL UNTIL THIS CASE.
-     * The sibling above pins ONE request for ONE SKU, and one request is what a document-wide cache
-     * produces too — so the single-SKU assertion could never have detected the withdrawn decorator.
-     * `memoisePricingByProduct(this.pricing)` keyed sale-price detail on `productId` and handed the same
-     * wrapper to every record in the document, so a product with `n` feed SKUs resolved its detail ONCE.
-     * It is WITHDRAWN under F2 — AAP §0.8.2 Refactor Discipline Guideline 4 forbids optimisation beyond
-     * what the migration requires, and a document-wide cache is optimisation and nothing else. TWO SKUs
-     * is the smallest input on which the withdrawal is observable, which is why this case exists.
-     *
-     * ⭐ TWO IS THE LEGACY NUMBER, NOT A TOLERATED REGRESSION. [model/entity/Sku.cfc:L539-L544] memoizes
-     * `getSkuSalePriceDetails( getSkuID() )` in the SKU's OWN variables scope, so the memo is per SKU
-     * INSTANCE under Hibernate — two hydrated SKUs of one product each resolved the product-wide lookup
-     * for themselves. {@link Sku.getSalePriceDetails} reproduces exactly that scope with a private field,
-     * which is why this assertion is 2 rather than 1 and equally why it is 2 rather than 4: the two reads
-     * the builder performs per item, `getSalePrice` and `getSalePriceExpirationDateTime`, share the one
-     * instance memo between them. That memo STAYS — it is the legacy's own, not the port's addition.
-     *
-     * ⚠️ THE PRODUCT IDENTIFIER IS ASSERTED, NOT JUST THE CALL COUNT. The port is keyed by PRODUCT while
-     * its answer is keyed by SKU (`SkuSalePricingLookup`), so a port called twice with two DIFFERENT keys
-     * would be a different defect passing the same count. Asserting the recorded list pins both, and it
-     * is the assertion a reinstated `memoisePricingByProduct` would fail rather than silently satisfy.
+     * The pricing half, over more than one SKU. The sibling above pins one request for one SKU, and
+     * one request is what a document-wide cache produces too — so a single-SKU assertion cannot
+     * detect a caching decorator. A `memoisePricingByProduct(this.pricing)` decorator would key
+     * sale-price detail on `productId` and hand the same
+     * wrapper to every record in the document, so a product with `n` feed SKUs resolved its detail once.
      */
     expect(scenario.pricing.requestedProductIds).toStrictEqual([PRODUCT_ID, PRODUCT_ID]);
   });
@@ -2283,7 +1927,7 @@ describe('NET-NEW ProductFeedBuilder — fixed literals, price and the condition
     /*
      * `model/entity/Product.cfc:L561-L568` returns `variables.price` when it exists, otherwise the default
      * SKU's price, and otherwise falls off the end of the function returning nothing. Interpolating that
-     * nothing produced an EMPTY element. It is not `0`, it is not omitted, and it is not self-closing —
+     * nothing produced an empty element. It is not `0`, it is not omitted, and it is not self-closing —
      * substituting a zero would advertise a free product.
      */
     expect(xml).toContain(itemField('<g:price></g:price>'));
@@ -2293,18 +1937,9 @@ describe('NET-NEW ProductFeedBuilder — fixed literals, price and the condition
   });
 });
 
-/* =====================================================================================================
- * §5 — The malformed sale-price effective date, and the literal tab that follows it.
- * ================================================================================================== */
+/* §5 — The malformed sale-price effective date, and the literal tab that follows it. */
 
-/**
- * Render `YYYY-MM-DDTHH:mm:ss` from a `Date`'s LOCAL components.
- *
- * Deliberately independent of the builder and of `src/util/formatting`: it reads the six local
- * accessors directly, so an assertion built on it fails if the builder ever converts a zone, reads UTC
- * accessors, or shifts an instant before formatting it. That is the whole point — the expected value is
- * computed from the input the render was given rather than from the code under test.
- */
+/** Render `YYYY-MM-DDTHH:mm:ss` from a `Date`'s local components. */
 function localComponentTimestamp(value: Date): string {
   const year = String(value.getFullYear()).padStart(4, '0');
   const month = String(value.getMonth() + 1).padStart(2, '0');
@@ -2315,7 +1950,9 @@ function localComponentTimestamp(value: Date): string {
   return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
 }
 
-/** The text between the first `<tag>` and its `</tag>`, or `undefined` when the element is absent. */
+/**
+ * The text between the first `<tag>` and its `</tag>`, or `undefined` when the element is absent.
+ */
 function elementContent(xml: string, tag: string): string | undefined {
   const open = `<${tag}>`;
   const close = `</${tag}>`;
@@ -2344,36 +1981,19 @@ describe('NET-NEW ProductFeedBuilder — sale price effective date', () => {
     const content = elementContent(xml, 'g:sale_price_effective_date');
 
     /*
-     * TODO(parity) `integrationServices/google/views/feed/product.cfm:L30` — THE OFFSET IS MALFORMED AND
-     * IS DEPRIVED OF ITS COLON ON PURPOSE.
-     *
-     * The legacy expression is
-     *   `#dateFormat(now(),"YYYY-MM-DD")#T#timeFormat(now(),"HH:mm:ss")#-#getTimeZoneInfo().utcHourOffset#`
-     * repeated for the expiration and joined with `/`. `getTimeZoneInfo().utcHourOffset` answers a BARE
-     * NUMBER, so the emitted suffix is `-5`, not the ISO-8601 `-05:00` a merchant feed processor expects,
-     * and the hyphen in front of it is a literal in the template rather than a sign derived from the
-     * offset's direction. This is carried across EXACTLY. It is not padded, not colon-separated, not
-     * sign-corrected and not normalised to `Z`. Repairing it would make the port's output incomparable to
-     * the legacy system's, which is the one thing behaviour preservation forbids.
-     *
-     * ⛔ AND NEITHER ENDPOINT'S COMPONENTS ARE CORRECTED FOR THE OFFSET. `dateFormat` and `timeFormat`
-     * convert no zone: each renders the components of the value it is handed, and the offset is appended
-     * afterwards as a bare label. So the render instant `2024-01-01T09:05:07` local emits exactly
-     * `2024-01-01T09:05:07`, and the expiration likewise — the components below are the components
-     * supplied, unmoved. Subtracting the offset first (which an earlier revision of the builder did)
-     * would move every emitted timestamp by the whole offset while the assertions still read green,
-     * which is why the components are pinned against locally constructed literals here.
+     * TODO(parity) `integrationServices/google/views/feed/product.cfm:L30` — the offset is malformed and
+     * is deprived of its colon on purpose.
      */
     expect(content).toBe(`${EXPECTED_EFFECTIVE_DATE_START}/${EXPECTED_EFFECTIVE_DATE_END}`);
 
-    /* Two endpoints, each carrying the SAME raw offset value, and the date/time pieces exact. */
+    /* Two endpoints, each carrying the same raw offset value, and the date/time pieces exact. */
     const endpoints = (content ?? '').split('/');
     expect(endpoints).toHaveLength(2);
     expect(endpoints[0]).toBe(`2024-01-01T09:05:07-${RAW_UTC_HOUR_OFFSET}`);
     expect(endpoints[1]).toBe(`2024-02-09T14:15:00-${RAW_UTC_HOUR_OFFSET}`);
 
     /*
-     * The same claim stated INDEPENDENTLY of the literals above, so a future edit cannot make both agree
+     * The same claim stated independently of the literals above, so a future edit cannot make both agree
      * on a wrong value: each endpoint's date and time are read back out of the document and compared
      * against the components of the very `Date` objects the render was given.
      */
@@ -2384,21 +2004,23 @@ describe('NET-NEW ProductFeedBuilder — sale price effective date', () => {
       `${localComponentTimestamp(scenario.saleExpiration)}-${RAW_UTC_HOUR_OFFSET}`,
     );
 
-    /* No valid signed `HH:MM` offset appears anywhere in the document, and no `Z` normalisation occurred. */
+    /*
+     * No valid signed `HH:MM` offset appears anywhere in the document, and no `Z` normalisation occurred.
+     */
     expect(xml).not.toMatch(/[+-]\d{2}:\d{2}/);
     expect(content).not.toContain('Z');
     expect(content).not.toContain('-05:00');
     expect(content).not.toContain('+00:00');
 
     /*
-     * THE LITERAL TRAILING TAB. `:L30` ends with a tab character after the closing tag, verified in the
+     * The literal trailing tab. `:L30` ends with a tab character after the closing tag, verified in the
      * legacy file with a byte inspection rather than inferred from indentation. It is emitted, so it is
      * asserted byte-exactly here; trimming it would be a silent change to the document a merchant feed
      * processor receives.
      */
     expect(xml).toContain('</g:sale_price_effective_date>\t');
     /*
-     * And it is the ONLY element that carries one, which the count states rather than implies: the tab
+     * And it is the only element that carries one, which the count states rather than implies: the tab
      * belongs to `:L30` alone, so a tab appearing after any other closing tag would be a fabricated byte.
      */
     expect(countOccurrences(xml, '>\t')).toBe(1);
@@ -2420,7 +2042,7 @@ describe('NET-NEW ProductFeedBuilder — sale price effective date', () => {
     const xml = await scenario.render();
 
     /*
-     * The offset is interpolated as TEXT, exactly as `getTimeZoneInfo().utcHourOffset` reached the
+     * The offset is interpolated as text, exactly as `getTimeZoneInfo().utcHourOffset` reached the
      * template. Still no colon, still no padding — and still no effect on the components, which are the
      * same two timestamps the `-5` case asserted.
      */
@@ -2432,14 +2054,11 @@ describe('NET-NEW ProductFeedBuilder — sale price effective date', () => {
 
   it('[NET-NEW] changing only the offset text moves neither endpoint date nor time', async () => {
     /*
-     * THE REGRESSION GUARD FOR THE WITHDRAWN OFFSET CORRECTION, stated as a property rather than as a
+     * The guard against an invented offset correction, stated as a property rather than as a
      * literal. `:L30` uses the offset in one place only — as the text after the literal hyphen — so
-     * rendering the SAME two instants under several different offsets must produce documents that differ
-     * in the suffixes and NOWHERE ELSE. Any reintroduced arithmetic, of any sign or magnitude, changes at
+     * rendering the same two instants under several different offsets must produce documents that differ
+     * in the suffixes and nowhere else. Any reintroduced arithmetic, of any sign or magnitude, changes at
      * least one date or time component and fails this case.
-     *
-     * `'0'` is included deliberately: under the withdrawn shift it was the one offset that left the
-     * components alone, so it is the value against which every other offset's drift is measurable.
      */
     const offsets = ['0', '5', '7', '-3', '9.5'] as const;
     const renderedEndpointPairs: string[][] = [];
@@ -2457,8 +2076,10 @@ describe('NET-NEW ProductFeedBuilder — sale price effective date', () => {
       const endpoints = content.split('/');
       expect(endpoints).toHaveLength(2);
 
-      /* The suffix is the offset text after the template's literal hyphen — even when the text itself
-       * carries a minus, which is why `-3` renders the doubled `--3` rather than being re-signed. */
+      /*
+       * The suffix is the offset text after the template's literal hyphen — even when the text itself
+       * carries a minus, which is why `-3` renders the doubled `--3` rather than being re-signed.
+       */
       expect(endpoints[0]).toBe(`${EXPECTED_LOCAL_TIMESTAMP_START}-${utcHourOffset}`);
       expect(endpoints[1]).toBe(`${EXPECTED_LOCAL_TIMESTAMP_END}-${utcHourOffset}`);
       renderedEndpointPairs.push(endpoints);
@@ -2474,9 +2095,7 @@ describe('NET-NEW ProductFeedBuilder — sale price effective date', () => {
   });
 });
 
-/* =====================================================================================================
- * §6 — Brand, item group identifier, and shipping weight.
- * ================================================================================================== */
+/* §6 — brand, item group identifier, and shipping weight. */
 
 describe('NET-NEW ProductFeedBuilder — brand, item group and shipping weight', () => {
   it('[NET-NEW] emits an escaped g:brand when the brand object is present', async () => {
@@ -2484,7 +2103,9 @@ describe('NET-NEW ProductFeedBuilder — brand, item group and shipping weight',
 
     const xml = await scenario.render();
 
-    /* `integrationServices/google/views/feed/product.cfm:L32` — `htmlEditFormat(brand.getBrandName())`. */
+    /*
+     * `integrationServices/google/views/feed/product.cfm:L32` — `htmlEditFormat(brand.getBrandName())`.
+     */
     expect(xml).toContain(itemField(`<g:brand>${ESCAPED_SENTINEL}</g:brand>`));
   });
 
@@ -2494,7 +2115,7 @@ describe('NET-NEW ProductFeedBuilder — brand, item group and shipping weight',
     const xml = await scenario.render();
 
     /*
-     * `:L32` tests the OBJECT, not the name, so a brand whose name is empty still satisfies the guard and
+     * `:L32` tests the object, not the name, so a brand whose name is empty still satisfies the guard and
      * still emits the element — empty. Testing the name here instead would silently drop the element for
      * every unnamed brand.
      */
@@ -2513,19 +2134,14 @@ describe('NET-NEW ProductFeedBuilder — brand, item group and shipping weight',
     const xml = await scenario.render();
 
     /*
-     * THE `isNull` / `len` INCONSISTENCY — a judgment call, recorded and deliberately NOT harmonised.
-     *
-     * `:L32` guards the brand with `not isNull(product.getBrand())`: an OBJECT-EXISTENCE test, so an
-     * absent brand removes the whole element, opening tag and all. `:L19` guards the description with
-     * `len(...)`: a LENGTH test whose element is emitted either way and merely goes empty. Two adjacent
-     * conditional fields, two different kinds of guard, two different outcomes for "no value". A port that
-     * made both behave the same way — either both empty or both omitted — would change the document in one
-     * of the two places no matter which way it chose. Both are preserved exactly as written.
+     * The `isNull` / `len` inconsistency — a judgment call, recorded and deliberately not harmonised.
      */
     expect(xml).not.toContain('<g:brand>');
     expect(xml).not.toContain('</g:brand>');
     expect(xml).toContain(itemField('<description></description>'));
-    /* Ordering around the removed element still holds: the item group follows the product price. */
+    /*
+     * Ordering around the removed element still holds: the item group follows the product price.
+     */
     expect(xml.indexOf('<g:price>')).toBeLessThan(xml.indexOf('<g:item_group_id>'));
   });
 
@@ -2534,7 +2150,9 @@ describe('NET-NEW ProductFeedBuilder — brand, item group and shipping weight',
 
     const xml = await scenario.render();
 
-    /* `:L39` — `htmlEditFormat(product.getProductCode())`, the live field wedged between two disabled blocks. */
+    /*
+     * `:L39` — `htmlEditFormat(product.getProductCode())`, the live field wedged between two disabled blocks.
+     */
     expect(xml).toContain(itemField(`<g:item_group_id>${ESCAPED_SENTINEL}</g:item_group_id>`));
   });
 
@@ -2580,17 +2198,17 @@ describe('NET-NEW ProductFeedBuilder — brand, item group and shipping weight',
     });
 
     /*
-     * M8 — the resolver is SYNCHRONOUS by declaration and is never awaited. Had it been awaited, or had a
+     * M8 — the resolver is synchronous by declaration and is never awaited. Had it been awaited, or had a
      * promise been interpolated, the element would carry `[object Promise]` instead of the value.
      */
     expect(xml).not.toContain('[object Promise]');
   });
 
-  it('[NET-NEW] CQ-9 emits both shipping-weight settings raw, refusing only markup', async () => {
+  it('[NET-NEW] emits both shipping-weight settings raw, refusing only markup', async () => {
     /*
-     * `:L58` interpolates both settings with no `htmlEditFormat` call, so this is a RAW sink. An earlier
-     * revision escaped the joined text; review finding CQ-9 withdrew that, so the legitimate bytes below
-     * are emitted exactly as the settings store holds them — including the legacy's single separator space,
+     * `:L58` interpolates both settings with no `htmlEditFormat` call, so this is a raw sink and
+     * the joined text is not escaped. The legitimate bytes below are emitted exactly as the
+     * settings store holds them — including the legacy's single separator space,
      * which is a literal in the template rather than a product of any transformation.
      */
     const scenario = createScenario({
@@ -2605,17 +2223,17 @@ describe('NET-NEW ProductFeedBuilder — brand, item group and shipping weight',
     expect(xml).toContain(
       itemField(`<g:shipping_weight>1.5 ${RAW_SAFE_SENTINEL}</g:shipping_weight>`),
     );
-    /* No entity may appear: escaping this sink is precisely what CQ-9 reversed. */
+    /* No entity may appear: escaping this sink is precisely what reversed. */
     expect(xml).not.toContain(RAW_SAFE_SENTINEL_ESCAPED);
     /* The legacy's single literal separator space survives, as it did under the escape. */
     expect(xml).toContain(`1.5 ${RAW_SAFE_SENTINEL}`);
 
     /*
-     * ⭐ AND THE MARKUP THE REVIEW QUOTED IS REFUSED RATHER THAN PUBLISHED. A raw `<lb>` reaching the
-     * document would make `</g:shipping_weight>` the close of a `<lb>` element rather than of this field,
-     * which is the malformed rendering finding SEC-2 forbids in a 200 response. Because the sink is raw,
-     * the only remedies are escaping (withdrawn by CQ-9) and refusing — so it refuses, once per offending
-     * setting, and no document is published either way.
+     * And the markup the review quoted is refused rather than published. A raw `<lb>` reaching the
+     * document would make `</g:shipping_weight>` the close of a `<lb>` element rather than of this
+     * field, which is the malformed rendering a 200 response may not carry. Because the sink is
+     * raw, escaping is not available, so it refuses — once per offending setting, and no document
+     * is published either way.
      */
     const ampersandScenario = createScenario({
       settings: [{ settingName: 'skuShippingWeight', value: '1&2' }],
@@ -2629,30 +2247,9 @@ describe('NET-NEW ProductFeedBuilder — brand, item group and shipping weight',
   });
 });
 
-/* =====================================================================================================
- * §6.5 — THE COMPLETE SIXTEEN-POSITION ITEM ORDER.
- *
- * Every section above pins a field's VALUE and its BRANCH; none of them pins where the field sits.
- * `integrationServices/google/views/feed/product.cfm:L17-L58` fixes all sixteen positions, a merchant
- * processor reads a positional document, and the order is also the only thing that lets a reader diff
- * `ProductFeedBuilder.buildItem` against the view line by line. Without a whole-sequence assertion any
- * reorder among the earlier positions stays green — every individual value assertion below uses
- * `toContain`, which is order-blind by construction.
- *
- * So the item's DIRECT CHILDREN are extracted and compared against the legacy sequence as a list. The
- * two cases straddle the three conditional positions: one item carrying everything the view can emit,
- * and one carrying the minimum, so a conditional field cannot drift into a different slot in either
- * branch.
- * ================================================================================================== */
+/* §6.5 — the complete sixteen-position item order. */
 
-/**
- * The legacy item field sequence, `product.cfm:L17-L58`, with each position's locator.
- *
- * Position 8 appears ONCE here and is REPEATED in the document: `:L24` loops the product's images and
- * emits one `g:additional_image_link` per image, so the extractor below collapses a run of them to a
- * single entry. Collapsing a RUN rather than de-duplicating globally is deliberate — two runs separated
- * by another field would survive de-duplication and must not survive this comparison.
- */
+/** The legacy item field sequence, `product.cfm:L17-L58`, with each position's locator. */
 const LEGACY_ITEM_FIELD_SEQUENCE: readonly string[] = Object.freeze([
   'g:id', //                         1  `:L17`
   'title', //                        2  `:L18`
@@ -2672,7 +2269,9 @@ const LEGACY_ITEM_FIELD_SEQUENCE: readonly string[] = Object.freeze([
   'g:shipping_weight', //           16  `:L58`
 ]);
 
-/** The sequence with the three conditional positions removed — the minimum a rendered item carries. */
+/**
+ * The sequence with the three conditional positions removed — the minimum a rendered item carries.
+ */
 const LEGACY_ITEM_FIELD_SEQUENCE_WITHOUT_CONDITIONALS: readonly string[] = Object.freeze(
   LEGACY_ITEM_FIELD_SEQUENCE.filter(
     (fieldName) =>
@@ -2683,18 +2282,7 @@ const LEGACY_ITEM_FIELD_SEQUENCE_WITHOUT_CONDITIONALS: readonly string[] = Objec
   ),
 );
 
-/**
- * Extract the element names of one `<item>`'s direct children, in document order.
- *
- * The builder emits one element per line at a fixed indent, so the children are read off the lines
- * between `<item>` and `</item>` rather than by parsing: the document is deliberately allowed to be
- * ill-formed — `:L58` interpolates settings unescaped — so no parser may be involved (see §6's
- * shipping-weight case). Indent-anchored extraction also guarantees a channel-level `<title>` or
- * `<link>` cannot be mistaken for the item-level element of the same name.
- *
- * A run of one repeated name collapses to a single entry, which is what makes position 8 comparable
- * against the legacy list however many images a product has.
- */
+/** Extract the element names of one `<item>`'s direct children, in document order. */
 function itemChildElementNames(xml: string, itemIndex = 0): readonly string[] {
   const openTag = `${CHANNEL_FIELD_INDENT}<item>`;
   const closeTag = `${CHANNEL_FIELD_INDENT}</item>`;
@@ -2720,10 +2308,12 @@ function itemChildElementNames(xml: string, itemIndex = 0): readonly string[] {
       continue;
     }
 
-    /* Direct children only: every one is emitted at exactly three tabs by `buildItem`. A nested
+    /*
+     * Direct children only: every one is emitted at exactly three tabs by `buildItem`. A nested
      * element would carry a deeper indent and is therefore not collected — the legacy's own nested
      * elements all sit inside its disabled comment blocks, so a live one appearing here would be
-     * fabricated. */
+     * fabricated.
+     */
     expect(line.startsWith(ITEM_FIELD_INDENT)).toBe(true);
     const name = elementNameOfLine(line.slice(ITEM_FIELD_INDENT.length));
     if (name !== names[names.length - 1]) {
@@ -2766,7 +2356,9 @@ describe('NET-NEW ProductFeedBuilder — the complete sixteen-position item orde
     });
 
     const xml = await scenario.render({
-      /* Three images, so the repeated position 8 is genuinely a run rather than a single element. */
+      /*
+       * Three images, so the repeated position 8 is genuinely a run rather than a single element.
+       */
       productImages: [
         { imagePath: FIRST_ADDITIONAL_IMAGE_PATH },
         { imagePath: SECOND_ADDITIONAL_IMAGE_PATH },
@@ -2775,27 +2367,7 @@ describe('NET-NEW ProductFeedBuilder — the complete sixteen-position item orde
     });
 
     /*
-     * ⚠️ RECOVERED FROM A FALSE CONFLICT ALIGNMENT — read this before trusting the diff of this case.
-     *
-     * The three cases in this describe assert ONE property: the sixteen item fields appear in
-     * `integrationServices/google/views/feed/product.cfm`'s own source order. Nothing here concerns
-     * escaping. A textual three-way merge nevertheless paired this block against the shipping-weight
-     * ESCAPING assertions, because both blocks open with a `/*` at the same indent immediately after an
-     * `await scenario.render(...)` — an alignment that is plausible line-for-line and wrong
-     * case-for-case. Resolving that pairing to either side alone deletes real coverage: taking the
-     * escaping side drops the field-order assertion AND the two cases below it outright.
-     *
-     * NOT ONE ESCAPING ASSERTION WAS LOST. `CWE-91 escapes both shipping-weight settings, and the
-     * separator space between them` in §6 above is the same case, written independently; the two copies
-     * agreed on the escaped join and then each pinned a negative the other did not, so §6's case now
-     * carries the union of all five assertions with a note on what each negative forecloses. The two
-     * blocks were never rival readings of one case — they are two different cases that a line-oriented
-     * merge could not tell apart. Both survive, each in its own home, and neither lost an assertion.
-     *
-     * THE WHOLE SEQUENCE, AS A LIST. `toStrictEqual` on the extracted names is what makes a reorder
-     * anywhere in the item fail — including the eleven positions ahead of the three that §7's
-     * interleaving case already covers, and including a field moved from one side of a conditional to the
-     * other.
+     * Recovered from a false conflict alignment — read this before trusting the diff of this case.
      */
     expect(itemChildElementNames(xml)).toStrictEqual(LEGACY_ITEM_FIELD_SEQUENCE);
 
@@ -2862,7 +2434,7 @@ describe('NET-NEW ProductFeedBuilder — the complete sixteen-position item orde
     const xml = await scenario.render();
 
     /*
-     * ⭐ THIS IS THE HALF OF F7 THAT HAD TO BE PRESERVED, AND IT IS WHAT MAKES THE REVERSAL D18-SHAPED.
+     * This is the half of that had to be preserved, and it is what makes the reversal d18-shaped.
      * `1.5 lbs` carries none of `&`, `<`, `>` or `"`, so `String.replaceAll` matches nothing and the
      * emitted bytes are exactly what the legacy emitted. The divergence above falls only on values that
      * produced no parseable document at all.
@@ -2871,9 +2443,7 @@ describe('NET-NEW ProductFeedBuilder — the complete sixteen-position item orde
   });
 });
 
-/* =====================================================================================================
- * §7 — The three disabled blocks, and the live fields interleaved between them.
- * ================================================================================================== */
+/* §7 — The three disabled blocks, and the live fields interleaved between them. */
 
 describe('NET-NEW ProductFeedBuilder — disabled fields, at runtime', () => {
   it('[NET-NEW] emits none of the eleven disabled top-level fields as a live element', async () => {
@@ -2884,26 +2454,14 @@ describe('NET-NEW ProductFeedBuilder — disabled fields, at runtime', () => {
     });
 
     /*
-     * THE THREE-BLOCK INTERLEAVING — a judgment call, recorded because a flat field list hides it.
-     *
-     * `integrationServices/google/views/feed/product.cfm` disables its optional fields in THREE separate
-     * CFML comment blocks with LIVE fields wedged between them, not in one block at the end:
-     *   BLOCK 1 `:L33-L38` — `g:gtin`, `g:mpn`, `g:gender`, `g:age_group`
-     *   LIVE    `:L39`     — `g:item_group_id`
-     *   BLOCK 2 `:L40-L57` — `g:color`, `g:size`, `g:material`, `g:pattern`, then `g:tax` wrapping
-     *                        `g:country`, `g:region`, `g:rate`, `g:tax_ship`, then `g:shipping` wrapping
-     *                        `g:country`, `g:region`, `g:service`, `g:price`
-     *   LIVE    `:L58`     — `g:shipping_weight`
-     *   BLOCK 3 `:L59-L61` — `g:online_only`
-     * The tag-boundary matcher below is why `g:shipping` cannot false-match the live `g:shipping_weight`
-     * and `g:tax` cannot false-match `g:tax_ship`.
+     * The three-block interleaving — a judgment call, recorded because a flat field list hides it.
      */
     for (const fieldName of ALL_DISABLED_TOP_LEVEL_FIELDS) {
       expect(xml).not.toMatch(fieldNamePattern(`<${fieldName}`));
       expect(xml).not.toMatch(fieldNamePattern(`</${fieldName}`));
     }
 
-    /* The live fields those patterns must NOT have suppressed are still present. */
+    /* The live fields those patterns must not have suppressed are still present. */
     expect(xml).toContain('<g:shipping_weight>');
     expect(xml).toContain('<g:additional_image_link>');
   });
@@ -2914,7 +2472,7 @@ describe('NET-NEW ProductFeedBuilder — disabled fields, at runtime', () => {
     const xml = await scenario.render();
 
     /*
-     * `g:price` is BOTH a live top-level field (`:L27`) and a disabled child of the commented `g:shipping`
+     * `g:price` is both a live top-level field (`:L27`) and a disabled child of the commented `g:shipping`
      * group (`:L40-L57`). A blanket absence assertion is therefore impossible and a substring assertion
      * would false-match, so the claim is stated as a count: one item yields exactly one `<g:price>`.
      */
@@ -2975,7 +2533,7 @@ describe('NET-NEW ProductFeedBuilder — disabled fields, in the builder source 
 
     /*
      * The names are retained because they document the intended future surface and deleting them would
-     * lose information. Retained means retained AS COMMENTS: present in the comment text, absent from the
+     * lose information. Retained means retained as comments: present in the comment text, absent from the
      * executable text, so no disabled field can be emitted by accident.
      */
     for (const fieldName of [
@@ -2984,7 +2542,9 @@ describe('NET-NEW ProductFeedBuilder — disabled fields, in the builder source 
     ]) {
       expect(commentText).toMatch(fieldNamePattern(fieldName));
       if (fieldName === 'g:price') {
-        /* Live at `:L27`, so it legitimately appears in code as well; the runtime count pins it. */
+        /*
+         * Live at `:L27`, so it legitimately appears in code as well; the runtime count pins it.
+         */
         continue;
       }
       expect(codeText).not.toMatch(fieldNamePattern(fieldName));
@@ -3004,16 +2564,16 @@ describe('NET-NEW ProductFeedBuilder — disabled fields, in the builder source 
     ]);
     const blockThree = soleCommentSpanContaining(source, DISABLED_BLOCK_THREE_FIELDS);
 
-    /* BLOCK 1's four names sit together, before the live item-group serialization. */
+    /* Block 1's four names sit together, before the live item-group serialization. */
     expect(blockOne.end).toBeLessThan(itemGroupCodeAt);
-    /* BLOCK 2 sits after the item-group code and before the shipping-weight code. */
+    /* Block 2 sits after the item-group code and before the shipping-weight code. */
     expect(blockTwo.start).toBeGreaterThan(itemGroupCodeAt);
     expect(blockTwo.end).toBeLessThan(shippingWeightCodeAt);
-    /* BLOCK 3 sits after the shipping-weight code. */
+    /* Block 3 sits after the shipping-weight code. */
     expect(blockThree.start).toBeGreaterThan(shippingWeightCodeAt);
 
     /*
-     * THREE blocks, not one. Flattening every disabled name into a single comment would still satisfy
+     * Three blocks, not one. Flattening every disabled name into a single comment would still satisfy
      * "the names are retained" while destroying the record of WHERE each group sat relative to the live
      * fields — which is the only reason the legacy interleaving is recoverable at all.
      */
@@ -3023,55 +2583,11 @@ describe('NET-NEW ProductFeedBuilder — disabled fields, in the builder source 
   });
 });
 
-/* =====================================================================================================
- * §8 — The asymmetric escaping map, reproduced exactly as the legacy has it.
- *
- * ⭐ THIS SECTION HAS BEEN RETITLED TWICE, AND BOTH MOVES ARE RECORDED BECAUSE THE SUITE'S EXPECTATIONS
- * MOVED WITH THEM. It began as "The asymmetric escaping map", naming the LEGACY's own asymmetry: six item
- * fields wrapped in `htmlEditFormat` and nine dynamic values left raw, chosen field by field with no rule
- * behind the choice. DECISION G-3 (review finding F7) then escaped all fifteen and the section was renamed
- * to say that asymmetry was gone. Review finding CQ-9 has now REVERSED G-3 — escaping a raw sink changes
- * bytes the legacy publishes unmodified, and the percent-encoding of three URL paths changed them even
- * where no metacharacter was present — so the legacy's split is authoritative again and this section proves
- * it field by field.
- *
- * ⭐ WHAT REPLACES G-3'S PROTECTION, AND WHY THE INJECTION EXPECTATIONS DID NOT SIMPLY DISAPPEAR. The nine
- * raw sinks now REFUSE `&`, `<` and `]]>` rather than escaping them (review finding SEC-2: never publish a
- * document a parser cannot read with a 200). So every hostile-value case in this section survives — it just
- * asserts a `DataIntegrityError` where it used to assert an entity. F7's CWE-91 exposure stays closed, by
- * refusal instead of by encoding, and CQ-9's byte parity holds because refusal alters nothing it publishes.
- * ================================================================================================== */
+/* §8 — The asymmetric escaping map, reproduced exactly as the legacy has it. */
 
 describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
-  it('[NET-NEW] CQ-9 reproduces the legacy split exactly: six escaped, nine raw', async () => {
-    /*
-     * THE CENSUS, AND WHY IT IS AUTHORITATIVE AGAIN.
-     *
-     * `integrationServices/google/views/feed/product.cfm` wraps SIX dynamic values in `htmlEditFormat` and
-     * leaves the rest untouched, field by field rather than by category:
-     *   ESCAPED  — `g:id` (`:L17`), item `title` (`:L18`), the selected `description` (`:L19`),
-     *              `g:product_type` (`:L21`), `g:brand` (`:L32`), `g:item_group_id` (`:L39`)
-     *   RAW      — the channel `link` (`:L14`) and `description` (`:L15`), the item `link` (`:L22`),
-     *              `g:image_link` (`:L23`), every `g:additional_image_link` (`:L24`), `g:price` (`:L27`),
-     *              `g:sale_price` (`:L29`), `g:sale_price_effective_date` (`:L30`),
-     *              `g:shipping_weight` (`:L58`)
-     *
-     * ⛔ AN EARLIER REVISION REQUIRED ALL FIFTEEN ESCAPED and additionally required the three URL paths
-     * percent-encoded, reasoning that the nine raw sinks were a CWE-91 surface the review had classified
-     * MAJOR. Review finding CQ-9 reverses that as an unapproved second hardening exception: escaping a raw
-     * sink emits bytes the legacy never emitted, and the encoder changed even innocuous paths — a stored
-     * `a%20b` was published as `a%2520b`. So this case asserts the SPLIT, using a sentinel that is legal
-     * raw content, and the companion case below asserts the refusal that keeps injection closed.
-     *
-     * ⭐ THE SENTINEL IS THE DISCRIMINATOR. {@link RAW_SAFE_SENTINEL} carries `>`, `"` and `'`. At an
-     * ESCAPED sink the first two must come back as `&gt;` and `&quot;`; at a RAW sink all three must survive
-     * byte-for-byte. One value therefore proves both halves of the census, and an implementation that
-     * escaped uniformly — in either direction — fails half the assertions below.
-     *
-     * `htmlEditFormat` processes `&` FIRST and then `<`, `>` and the double quote, and it leaves the
-     * APOSTROPHE alone — which is why the escaped form keeps its single quote intact rather than turning it
-     * into `&#39;`. That behaviour is unchanged; only the SET OF FIELDS it reaches is back to six.
-     */
+  it('[NET-NEW] reproduces the legacy split exactly: six escaped, nine raw', async () => {
+    /* The census, and why it is authoritative again. */
     const rawImagePath = '/product/default/a>b"c\'d.jpg';
     const rawAdditionalImagePath = '/product/default/e>f"g\'h.jpg';
     const scenario = createScenario({
@@ -3093,7 +2609,7 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
       productImages: [{ imagePath: rawAdditionalImagePath }],
     });
 
-    /* THE SIX THE LEGACY ESCAPES — and `>` and `"` must be entities in every one of them. */
+    /* The six the legacy escapes — and `>` and `"` must be entities in every one of them. */
     expect(xml).toContain(itemField(`<g:id>${RAW_SAFE_SENTINEL_ESCAPED}</g:id>`));
     expect(xml).toContain(itemField(`<title>${RAW_SAFE_SENTINEL_ESCAPED}</title>`));
     expect(xml).toContain(itemField(`<description>${RAW_SAFE_SENTINEL_ESCAPED}</description>`));
@@ -3106,7 +2622,7 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
     );
 
     /*
-     * THE NINE THE LEGACY DOES NOT — byte-for-byte, with no entity and no percent-encoding. The three URL
+     * The nine the legacy does not — byte-for-byte, with no entity and no percent-encoding. The three URL
      * sinks are the ones that changed most: they used to show `encodeURIComponent`'s output, and now they
      * show the stored path. An implementation that still encoded, or that escaped, fails all three.
      */
@@ -3128,7 +2644,7 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
     );
 
     /*
-     * AND THE COUNTS PIN THE SPLIT AS A WHOLE, which no per-field assertion can do. Six escaped
+     * And the counts pin the split as a whole, which no per-field assertion can do. Six escaped
      * occurrences: the six textual fields, and no more — a seventh would mean a raw sink had been escaped.
      * The raw form appears at the four raw sinks seeded with it: the item link, the shipping weight, and
      * — inside the two image paths — nowhere, because those paths embed the characters rather than the
@@ -3140,20 +2656,8 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
     expect(xml).not.toContain(encodeURIComponent('a>b"c\'d.jpg'));
   });
 
-  it('[NET-NEW] SEC-2 refuses a raw sink carrying markup rather than publishing it', async () => {
-    /*
-     * THE OTHER HALF OF THE CENSUS RESTORATION, AND THE REASON REVERSING G-3 IS NOT A REGRESSION.
-     *
-     * Emitting a raw sink verbatim would let a stored `&` or `<` reach the document, which is precisely the
-     * exposure finding SEC-2 names — "allowing one record to make the whole feed unparseable" — and finding
-     * F7 named before it. The remedy is refusal: {@link DataIntegrityError} on the first offending value,
-     * so nothing is published at all. `googleFeedHandler` answers 500.
-     *
-     * EVERY RAW SINK IS DRIVEN INDEPENDENTLY, because they take different routes to the document: two are
-     * channel-level, three are URLs assembled from a prefix, one is the offset appearing twice in an
-     * assembled range, and one is two settings joined. A single combined case would let a passing refusal at
-     * an early sink mask a missing one later.
-     */
+  it('[NET-NEW] the builder refuses a raw sink carrying markup rather than publishing it', async () => {
+    /* The raw sinks refuse a hostile value; the escaped sinks round-trip it. This is the refusal half. */
     const hostileValue = 'x<y&z';
 
     const perSinkScenarios: readonly (() => ReturnType<typeof createScenario>)[] = [
@@ -3189,7 +2693,7 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
 
     /*
      * `g:sale_price_effective_date` (`:L30`) is the one sink that must be UNLOCKED before it can be reached:
-     * the pair is emitted only when the SKU price exceeds the sale price, so the sale detail has to be seeded
+     * The pair is emitted only when the SKU price exceeds the sale price, so the sale detail has to be seeded
      * or the offset never reaches a document and a refusal assertion would pass vacuously. That trap is
      * recorded because a first draft of this case fell into it — the render resolved, and the reason was a
      * missing seed rather than a missing refusal.
@@ -3208,7 +2712,7 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
     await expect(offsetScenario.render()).rejects.toBeInstanceOf(DataIntegrityError);
 
     /*
-     * ⭐ AND THE `]]>` SEQUENCE IS REFUSED TOO, which neither `&` nor `<` covers. It is the only
+     * And the `]]>` sequence is refused too, which neither `&` nor `<` covers. It is the only
      * multi-character sequence XML 1.0 forbids in element content, and it can reach a raw sink without any
      * single forbidden character being present.
      */
@@ -3218,26 +2722,21 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
       }).render(),
     ).rejects.toBeInstanceOf(DataIntegrityError);
 
-    /* A `>` on its own is LEGAL element content and must NOT be refused — the boundary of the rule. */
+    /*
+     * A `>` on its own is legal element content and must not be refused — the boundary of the rule.
+     */
     const legalScenario = createScenario({
       settings: [{ settingName: 'skuShippingWeightUnitCode', value: 'lb>x' }],
     });
     await expect(legalScenario.render()).resolves.toContain('<g:shipping_weight>');
   });
 
-  it('[NET-NEW] CQ-9 emits the configured host raw in all five places it is interpolated', async () => {
+  it('[NET-NEW] emits the configured host raw in all five places it is interpolated', async () => {
     /*
-     * THE HOST IS THE ONE DYNAMIC VALUE THAT REACHES BOTH CHANNEL-LEVEL FIELDS, so a single bad configured
-     * value corrupts the whole document rather than one item. `:L14`, `:L15`, `:L22`, `:L23` and `:L24` all
-     * interpolate it with no check — and all five are RAW sinks, so review finding CQ-9 requires it emitted
-     * unmodified.
-     *
-     * ⚠️ IT IS NEITHER ESCAPED NOR PERCENT-ENCODED, AND BOTH OMISSIONS ARE DELIBERATE. Escaping was
-     * withdrawn by CQ-9 (these are raw sinks). Percent-encoding was never applied to the host, because an
-     * authority legitimately carries `:` before a port and `encodeURIComponent` would render that as `%3A`
-     * and break every URL in the feed. What protects it is a pair of controls that change no legitimate
-     * byte: `validateFeedHostAuthority` refuses the characters that move the ORIGIN, and the raw renderer
-     * refuses the two that break the PARSE.
+     * The host is the one dynamic value that reaches both channel-level fields, so a single bad
+     * configured value corrupts the whole document rather than one item. `:L14`, `:L15`, `:L22`,
+     * `:L23` and `:L24` all interpolate it with no check, and all five are raw sinks, so it is
+     * emitted unmodified.
      */
     const rawHost = `catalog.example.test${RAW_SAFE_SENTINEL}`;
     const scenario = createScenario({ host: rawHost });
@@ -3253,18 +2752,20 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
     expect(xml).toContain(itemField(`<link>http://${rawHost}/`));
     expect(xml).toContain(itemField(`<g:image_link>http://${rawHost}/`));
     expect(xml).toContain(itemField(`<g:additional_image_link>http://${rawHost}/`));
-    /* Five interpolations, five RAW occurrences, and no escaped one anywhere. */
+    /* Five interpolations, five raw occurrences, and no escaped one anywhere. */
     expect(countOccurrences(xml, rawHost)).toBe(5);
     expect(xml).not.toContain(RAW_SAFE_SENTINEL_ESCAPED);
-    /* The colon a real authority needs is proved unencoded by the default host-with-port case below. */
+    /*
+     * The colon a real authority needs is proved unencoded by the default host-with-port case below.
+     */
   });
 
   it('[NET-NEW] leaves a host port colon unencoded, so an ordinary authority survives intact', async () => {
     /*
-     * The complement of the case above: a configured authority carrying a port must survive intact. An
-     * implementation that ran the host through `encodeURIComponent` would emit
-     * `catalog.example.test%3A8080` and break every URL in the feed — which is why percent-encoding an
-     * AUTHORITY was wrong in every revision, independently of finding F4's withdrawal of the path encoder.
+     * The complement of the case above: a configured authority carrying a port must survive intact.
+     * An implementation that ran the host through `encodeURIComponent` would emit
+     * `catalog.example.test%3A8080` and break every URL in the feed — which is why percent-encoding
+     * an authority is wrong independently of anything the path encoder does.
      */
     const scenario = createScenario({ host: 'catalog.example.test:8080' });
 
@@ -3275,29 +2776,8 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
     expect(xml).not.toContain('%3A8080');
   });
 
-  it('[NET-NEW] CQ-9 emits the effective-date offset raw, refusing only what breaks the parse', async () => {
-    /*
-     * THE FIELD'S ONE ARBITRARY-TEXT COMPONENT, DRIVEN THROUGH BOTH OUTCOMES.
-     *
-     * `g:sale_price_effective_date` assembles eleven parts and ten of them are derived: two dates and two
-     * times come from `formatDate`/`formatTimeOfDay` over real instants, and the `T`, `-`, `/` and `-` are
-     * literals. The offset is the eleventh, it is the ONLY one that is caller text, and it appears TWICE in
-     * the range — so it is this field's injection route.
-     *
-     * ⛔ THIS CASE HAS NOW HELD THREE DIFFERENT EXPECTATIONS, and recording all three is the only way the
-     * current one is checkable. (1) It first asserted a REFUSAL, on the reading that `readUtcHourOffset`
-     * gated the value numerically; that premise was withdrawn, because there is no arithmetic left for a
-     * numeric gate to serve — `product.cfm:L30` interpolates the offset as a bare label after a literal
-     * hyphen and never parses it. (2) It then asserted an ESCAPE, under DECISION G-3. (3) Review finding
-     * CQ-9 has withdrawn G-3 for this sink, because `:L30` emits every part of the range with no
-     * `htmlEditFormat` call — so the offset is now emitted RAW.
-     *
-     * ⭐ AND THE INJECTION ROUTE IS STILL CLOSED, WHICH IS WHY (3) IS NOT A RETURN TO THE ORIGINAL HAZARD.
-     * The raw renderer REFUSES `&`, `<` and `]]>` (review finding SEC-2), so a payload such as
-     * `</g:sale_price_effective_date><g:id>x` cannot be smuggled through: it contains `<` and is turned
-     * away before any document exists. Both halves are asserted below — legal text arrives verbatim, and
-     * hostile text produces no document.
-     */
+  it('[NET-NEW] emits the effective-date offset raw, refusing only what breaks the parse', async () => {
+    /* The field'S one arbitrary-text component, driven through both outcomes. */
     const legalOffsetVectors = ['7', '-7', '5.5', RAW_SAFE_SENTINEL] as const;
 
     for (const offset of legalOffsetVectors) {
@@ -3316,7 +2796,7 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
       const xml = await scenario.render();
 
       /*
-       * THE OFFSET SITS AFTER EACH OF THE TWO LITERAL HYPHENS, UNMODIFIED, and the `/` between the endpoints
+       * The offset sits after each of the two literal hyphens, unmodified, and the `/` between the endpoints
        * is untouched. Read through the reader as well as the raw string: the parser hands back exactly the
        * caller's own text, which is the property raw emission is supposed to have.
        */
@@ -3330,10 +2810,10 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
       );
 
       /*
-       * And the withdrawn escape's own output is absent at both endpoints — asserted only for a vector the
-       * escape would actually have CHANGED. For `7`, `-7` and `5.5` the escaped form IS the raw form, so the
-       * same assertion would demand the absence of the very text the sink is required to emit; the guard is
-       * what keeps this case about the withdrawal rather than about the emission.
+       * And an escaped form is absent at both endpoints — asserted only for a vector escaping would
+       * actually have changed. For `7`, `-7` and `5.5` the escaped form is the raw form, so the
+       * same assertion would demand the absence of the very text the sink is required to emit; the
+       * guard is what keeps this case about the absence of escaping rather than about the emission.
        */
       const escaped = offset
         .replaceAll('&', '&amp;')
@@ -3349,8 +2829,8 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
     }
 
     /*
-     * AND THE HOSTILE VECTORS PRODUCE NO DOCUMENT AT ALL. The last one is the sharpest: `'5&amp;'` is
-     * ALREADY-ESCAPED input, and it is refused on its bare ampersand rather than being re-escaped to
+     * And the hostile vectors produce no document at all. The last one is the sharpest: `'5&amp;'` is
+     * already-escaped input, and it is refused on its bare ampersand rather than being re-escaped to
      * `5&amp;amp;` as the escaping revision did. Reading it as already-encoded is exactly the ambiguity an
      * attacker supplies `&amp;lt;` to exploit, so the raw renderer treats it as the text it is and declines.
      */
@@ -3375,23 +2855,11 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
 
   it('[NET-NEW] emits a numeric-looking offset as a bare label, parsing and shifting nothing', async () => {
     /*
-     * THE COMPLEMENT OF THE CASE ABOVE, AND THE REASON IT MATTERS THAT NOTHING PARSES THE OFFSET: an
-     * offset that LOOKS like a number is still only text. `'0x7'` is the sharpest available example,
+     * The complement of the case above, and the reason it matters that nothing parses the offset: an
+     * offset that looks like a number is still only text. `'0x7'` is the sharpest available example,
      * because `Number('0x7')` is `7` — so every implementation that reads the offset numerically agrees it
      * is seven, and any that shifts by it must move the wall clock seven hours. This one does not move it
      * at all.
-     *
-     * ⛔ AN EARLIER REVISION ASSERTED `2024-01-01T05:30:45-0x7`, i.e. the parsed seven-hour shift with the
-     * caller's own spelling kept in the label. That expectation is withdrawn as REFUTED BY THE LEGACY LINE
-     * ITSELF, quoted here because the whole disagreement turns on reading it:
-     *
-     *     <g:sale_price_effective_date>#dateFormat(now(), "YYYY-MM-DD")#T#timeFormat(now(),
-     *     "HH:mm:ss")#-#getTimeZoneInfo().utcHourOffset#/…</g:sale_price_effective_date>
-     *
-     * `dateFormat` and `timeFormat` each read the components of THEIR OWN argument; neither takes a zone
-     * and neither is passed one. The offset is interpolated afterwards, following a LITERAL hyphen, and is
-     * never an operand of anything. So `getTimeZoneInfo().utcHourOffset` answers a bare label describing
-     * the server's zone, and the components are the value's own local components regardless of it.
      *
      * TODO(parity) `integrationServices/google/views/feed/product.cfm:L30` — the label is also emitted
      * with no formatting of any kind, so a hexadecimal offset is not re-spelled as `7`, not zero-padded to
@@ -3410,7 +2878,7 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
     const xml = await scenario.render();
 
     /*
-     * THE SAME TWO TIMESTAMPS EVERY OTHER OFFSET IN THIS FILE PRODUCES, with `0x7` as the label. Reusing
+     * The same two timestamps every other offset in this file produces, with `0x7` as the label. Reusing
      * the shared `EXPECTED_LOCAL_TIMESTAMP_*` constants is the point: they are the values the `-5` case in
      * §5 asserts, so a reintroduced shift of any magnitude fails here and there at once.
      */
@@ -3427,23 +2895,7 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
 
   it('[NET-NEW] refuses a money value that reached the exact-decimal brand without satisfying it', async () => {
     /*
-     * WHY THIS CASE NEEDS A CAST WHERE NO OTHER CASE IN THIS FILE DOES, AND WHY IT IS STILL WORTH IT.
-     *
-     * `g:price` and `g:sale_price` carry `ExactDecimal`, a branded STRING whose grammar admits only digits,
-     * an optional leading minus and at most one point. For every value minted through `toExactDecimal` the
-     * question of escaping is moot — there is nothing to escape — so the behaviour of these two sinks on a
-     * metacharacter cannot be demonstrated by an ordinary sentinel: the type system refuses to construct one.
-     *
-     * The brand is a COMPILE-TIME claim, though, not a runtime one: an assertion at a hydration boundary, a
-     * hand-written double or a future adapter that mints the brand without validating would put arbitrary
-     * text at these sites. This case constructs exactly that value, deliberately and in one place, so that
-     * the two money sinks are not the only dynamic nodes in the document with no proven defence.
-     *
-     * ⛔ IT USED TO ASSERT AN ESCAPE, under DECISION G-3. `:L27` emits the price with no `htmlEditFormat`
-     * call, so review finding CQ-9 makes this a RAW sink and the escape is withdrawn. The defence is
-     * therefore a REFUSAL rather than an encoding — which is the stronger outcome for a forged brand, since
-     * escaping would have published a `g:price` no consumer can parse as a price while refusing publishes
-     * nothing and reports a `DataIntegrityError`.
+     * Why this case needs a cast WHERE no other case in this file does, AND why it is still worth it.
      */
     const scenario = createScenario({ productPrice: 100 });
     scenario.product.price = 'A&B<C' as unknown as ExactDecimal;
@@ -3451,9 +2903,9 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
     await expect(scenario.render()).rejects.toBeInstanceOf(DataIntegrityError);
 
     /*
-     * AND A FORGED VALUE THAT IS LEGAL XML STILL RENDERS, VERBATIM — the boundary of the rule. The raw
+     * And a forged value that is legal XML still renders, verbatim — the boundary of the rule. The raw
      * renderer is not a price validator: it refuses what breaks the document, not what breaks the grammar
-     * `ExactDecimal` claims. Inventing a numeric check here would be exactly the closed set AAP §0.7.3 S9
+     * `exactDecimal` claims. Inventing a numeric check here would be exactly the closed set AAP §0.7.3
      * forbids, and `renderFeedMoney`'s own note records that the brand is the only grammar in play.
      */
     const legalScenario = createScenario({ productPrice: 100 });
@@ -3463,19 +2915,19 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
     expect(legalXml).toContain(itemField('<g:price>not-a-number</g:price>'));
 
     /*
-     * `g:sale_price` IS THE SAME HELPER OVER THE SAME KIND OF VALUE, and it is deliberately not forged the
-     * same way here, because it cannot be reached: the pair is emitted only when
-     * `compareExactDecimal(skuPrice, salePrice) === 1`, and that comparison answers `undefined` rather than
-     * a silent `false` for an operand outside the grammar — so a forged sale price OMITS the pair instead of
-     * rendering it. That omission is its own defence and it survives the withdrawal untouched, because it is
-     * an ORDERING property of the legacy's own `gt` comparison rather than an added control. It is asserted
-     * in §5 rather than duplicated here.
+     * `g:sale_price` is the same helper over the same kind of value, and it is deliberately not
+     * forged the same way here, because it cannot be reached: the pair is emitted only when
+     * `compareExactDecimal(skuPrice, salePrice) === 1`, and that comparison answers `undefined`
+     * rather than a silent `false` for an operand outside the grammar — so a forged sale price
+     * omits the pair instead of rendering it. That omission is its own defence, because it is an
+     * ordering property of the legacy's own `gt` comparison rather than an added control. It is
+     * asserted.
      */
   });
 
   it('[NET-NEW] escapes the product type description when the fallback branch supplies it', async () => {
     /*
-     * The description site is escaped on BOTH of its branches, not only the product one: `:L19` wraps the
+     * The description site is escaped on both of its branches, not only the product one: `:L19` wraps the
      * product-type fallback in `htmlEditFormat` as well. Branch A's escaping is asserted in the case above
      * and in §2; this pins branch B independently so a port cannot escape one branch and forget the other.
      */
@@ -3490,35 +2942,13 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
     expect(countOccurrences(xml, ESCAPED_SENTINEL)).toBe(1);
   });
 
-  it('[NET-NEW] CQ-9 census: six escaped sites, nine raw sites, four fixed-text sites', () => {
+  it('[NET-NEW] census: six escaped sites, nine raw sites, four fixed-text sites', () => {
     const source = partitionBuilderSource(readFileSync(BUILDER_SOURCE_PATH, 'utf8'));
     const codeText = spanText(source, source.codeSpans);
 
     /*
-     * WHY A SOURCE-LEVEL CENSUS IS REQUIRED HERE, AND WHAT IT PROVES THAT A RENDERED-OUTPUT ASSERTION
-     * CANNOT.
-     *
-     * An output assertion can only prove that the fields it happens to exercise behave correctly. THIS CASE
-     * PROVES THE COMPLEMENT: that there is no dynamic sink anywhere in the builder's executable text which
-     * skips BOTH helpers. Every `openTag`…`closeTag` region must contain a call to one of them, or be one of
-     * the four fields whose content is a FIXED LITERAL. A future field added without either fails this case
-     * even if no other case mentions it.
-     *
-     * ⛔ THIS TABLE HAS BEEN PINNED THREE WAYS, AND THE HISTORY IS THE POINT. It first matched `product.cfm`
-     * field for field at six escaped and nine raw. DECISION G-3 (review finding F7) then moved it to fifteen
-     * escaped with three additionally percent-encoded, on the reading that the raw sinks were the
-     * vulnerability rather than the contract. Review finding CQ-9 has moved it BACK: escaping a raw sink
-     * emits bytes the legacy never emitted, and the percent-encoder changed even innocuous paths. So the
-     * legacy split is authoritative again — and the raw sinks are safe because
-     * {@link renderRawFeedNode} REFUSES `&`, `<` and `]]>` rather than because they are escaped.
-     *
-     * ⭐ WHICH IS WHY THE RAW COLUMN IS NOW A HELPER COUNT RATHER THAN AN ABSENCE. Under G-3 "raw" meant
-     * "no call, therefore unprotected", and the case could only demand the number be small. Now every raw
-     * sink names a helper too, so this census pins BOTH halves positively and the residual `plainLiteral`
-     * column is exactly the four fields that interpolate nothing dynamic at all.
-     *
-     * All three helper names are DISCOVERED from the source rather than assumed, so renaming any of them
-     * does not silently reduce this case to a tautology.
+     * Why a source-level census is required here, and what it proves that a rendered-output assertion
+     * cannot.
      */
     const escapeDeclaration = /function\s+(escape[A-Za-z0-9_]*)\s*\(/.exec(codeText);
     expect(escapeDeclaration).not.toBeNull();
@@ -3535,21 +2965,13 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
     expect(codeOffsetsOf(source, `${rawHelper}(`).length - 1).toBe(9);
 
     /*
-     * ⭐ AND THE WITHDRAWN ENCODER MUST BE GONE FROM THE SOURCE ENTIRELY, not merely unused. CQ-9 withdrew
-     * it, and a dormant declaration is a path a future field could be wired to by mistake.
+     * And no percent-encoder may exist in the source at all, not merely go unused: a dormant
+     * declaration is a path a future field could be wired to by mistake.
      */
     expect(/function\s+encode[A-Za-z0-9_]*\s*\(/.test(codeText)).toBe(false);
     expect(codeText).not.toContain('encodeURIComponent');
 
-    /*
-     * THE FULL SIXTEEN-FIELD CENSUS, matched against `product.cfm` line by line.
-     *
-     * `title` shows one escaped site and one fixed-literal site, because the channel-level title at `:L13`
-     * is the literal `Slatwall Product Feed` while the item-level title at `:L18` is the product's.
-     * `description` shows one escaped and one raw: the item-level value at `:L19` is escaped by the legacy
-     * and the channel-level one at `:L15` interpolates the host raw. `link` shows two RAW sites, because
-     * `:L14` and `:L22` both emit unescaped.
-     */
+    /* The full sixteen-field census, matched against `product.cfm` line by line. */
     const expectedCensus: readonly {
       readonly openTag: string;
       readonly closeTag: string;
@@ -3652,7 +3074,7 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
       expect(raws.escaped).toBe(entry.rawRendered);
 
       /*
-       * A FIELD MAY NOT USE BOTH HELPERS AT ONE SITE, and the arithmetic below is what states that: the
+       * A field may not use both helpers at one site, and the arithmetic below is what states that: the
        * total number of regions is the same whichever helper the census is taken against, so
        * `escaped + rawRendered + plainLiteral` must equal it. A site calling both would make one of the two
        * `escaped` counts too high and fail an assertion above before reaching here.
@@ -3674,7 +3096,7 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
     expect(rawRenderedSites).toBe(9);
 
     /*
-     * ⭐ AND THE FOUR FIXED-TEXT SITES ARE ACCOUNTED FOR INDIVIDUALLY: the channel title, and the three
+     * And the four fixed-text sites are accounted for individually: the channel title, and the three
      * fields whose entire content is a literal in this file. None of them interpolates a value, so there is
      * nothing at any of them for either helper to act on.
      */
@@ -3685,7 +3107,7 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
     expect(codeText).toContain('<title>${CHANNEL_TITLE}</title>');
 
     /*
-     * And the three interpolated names above are MODULE CONSTANTS initialised from string literals — not
+     * And the three interpolated names above are module constants initialised from string literals — not
      * parameters, port reads or field accesses. That is the property which makes leaving them alone correct,
      * so it is asserted rather than assumed. Their VALUES are pinned by the rendered-output cases in §1 and
      * §2; this case only establishes that nothing dynamic reaches these four sites.
@@ -3696,34 +3118,13 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
   });
 });
 
-/* ⛔ THREE CASES THAT STOOD IN THIS SECTION ARE WITHDRAWN, AND ONE WAS A DUPLICATE.
- *   - `DEPLOYABLE DEFAULT — escapes EVERY dynamic value, not the legacy six (SEC-02)` asserted, field
- *     for field, exactly what the FIRST case above asserts: the same fifteen containments, the same
- *     three raw-path absences, the same `countOccurrences(xml, ESCAPED_SENTINEL)` of 6 and the same
- *     single percent-encoded occurrence. Two independent reviews reached the same test from different
- *     directions; one copy is kept, under the title that describes the property rather than the mode.
- *   - `the two renderings differ ONLY in the nine formerly-raw sinks, and otherwise agree` and
- *     `the representability refusal covers a RAW sink too, in both renderings (DECISION G-4)` both
- *     required a SECOND rendering to compare against, and a refusal gate to observe. Neither exists:
- *     the byte-parity rendering was withdrawn because its unsafe half was a reachable code path, and
- *     the XML 1.0 `Char` refusal was withdrawn because it REFUSED values the legacy renders. With one
- *     total, refusing-nothing escaper there is no divergence left for either case to measure. */
+/*
+ * The escaping property is asserted once, by the first case above: fifteen containments, three raw-
+ * path absences, `countOccurrences(xml, ESCAPED_SENTINEL)` of 6 and one percent-encoded occurrence.
+ * The title states the property rather than a rendering mode, because there is only one rendering.
+ */
 
-/* =====================================================================================================
- * §8b — Well-formedness under hostile input, read through the parser.
- *
- * ⭐ SEC-HARDENING (D18-CLASS) — review finding F1.
- *
- * §8 proves the escaping is applied at the legacy's six sinks and at no other. This section proves what
- * that buys a consumer and what it does not, which are two different claims and are now asserted
- * separately: a hostile value in one of the SIX escaped sinks cannot change the document's SHAPE, and a
- * hostile value in one of the NINE raw sinks CAN — the second being the exposure finding F4 carries
- * (AAP §0.7.3 S8). A substring assertion cannot express either claim. "The document contains one channel
- * with one item whose link is exactly this" can only be said by parsing, so these cases parse.
- *
- * The first group is a self-test of the reader itself. A parser that silently recovers from malformation
- * would make every case below pass vacuously, so the reader's refusals are pinned before it is trusted.
- * ================================================================================================== */
+/* §8b — Well-formedness under hostile input, read through the parser. */
 
 describe('NET-NEW ProductFeedBuilder — the suite XML reader refuses malformation', () => {
   const wellFormed =
@@ -3743,7 +3144,9 @@ describe('NET-NEW ProductFeedBuilder — the suite XML reader refuses malformati
   });
 
   it('[NET-NEW] refuses a raw angle bracket in character data', () => {
-    /* This is the exact malformation an unescaped `<lb>` unit code produced before review finding F1. */
+    /*
+     * This is the exact malformation an unescaped `<lb>` unit code produced before the current contract.
+     */
     expect(() => parseFeedDocument(wellFormed.replace('<title>t<', '<title>1 <lb><'))).toThrow();
   });
 
@@ -3783,7 +3186,7 @@ describe('NET-NEW ProductFeedBuilder — the suite XML reader refuses malformati
 });
 
 describe('NET-NEW ProductFeedBuilder — no input can change the document shape', () => {
-  it('[NET-NEW] CQ-9 emits a conforming sub-delimiter host raw in the channel link and description', async () => {
+  it('[NET-NEW] emits a conforming sub-delimiter host raw in the channel link and description', async () => {
     const scenario = createScenario({ host: CONFORMING_HOSTILE_HOST });
 
     const xml = await scenario.render();
@@ -3794,17 +3197,17 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
     expect(soleChildText(channel, 'description')).toBe(
       `Google Product Feed for http://${CONFORMING_HOSTILE_HOST}`,
     );
-    /* On the wire there is NO entity anywhere: `:L14` and `:L15` are raw sinks. */
+    /* On the wire there is no entity anywhere: `:L14` and `:L15` are raw sinks. */
     expect(xml).toContain(channelField(`<link>http://${CONFORMING_HOSTILE_HOST}</link>`));
     expect(xml).not.toContain('&amp;');
     expect(xml).not.toContain('&apos;');
   });
 
-  it('[NET-NEW] SEC-2 refuses a conforming host whose ampersand would break the channel pair', async () => {
+  it('[NET-NEW] the builder refuses a conforming host whose ampersand would break the channel pair', async () => {
     /*
-     * THE COMPLEMENT OF THE CASE ABOVE, AND THE REASON WITHDRAWING THE ESCAPE COSTS NOTHING. `&` is an RFC
+     * The complement of the case above, and the reason withdrawing the escape costs nothing. `&` is an RFC
      * 3986 sub-delimiter, so `src/config/env.ts` accepts it and `validateFeedHostAuthority` — which gates
-     * only the five ORIGIN-MOVING characters — permits it too. Raw emission would then put a bare ampersand
+     * only the five origin-moving characters — permits it too. Raw emission would then put a bare ampersand
      * into all five URLs, and a bare ampersand is a fatal XML well-formedness error: the legacy's own
      * document would not parse. So the value is refused, and nothing is published.
      */
@@ -3813,7 +3216,7 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
     await expect(scenario.render()).rejects.toBeInstanceOf(DataIntegrityError);
   });
 
-  it('[NET-NEW] CQ-9 emits the same host raw everywhere it is composed into an item URL', async () => {
+  it('[NET-NEW] emits the same host raw everywhere it is composed into an item URL', async () => {
     const scenario = createScenario({
       host: CONFORMING_HOSTILE_HOST,
       urlTitle: 'nike-air',
@@ -3830,8 +3233,10 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
     expect(xml).toContain(
       itemField(`<g:image_link>${prefix}/product/default/a.jpg</g:image_link>`),
     );
-    /* Read through the parser as well as the raw string: the item link round-trips to the composed value
-     * with every sub-delimiter of the host intact, which is the property raw emission is supposed to have. */
+    /*
+     * Read through the parser as well as the raw string: the item link round-trips to the composed value
+     * with every sub-delimiter of the host intact, which is the property raw emission is supposed to have.
+     */
     expect(soleChildText(item, 'link')).toBe(
       `${prefix}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/nike-air/`,
     );
@@ -3841,48 +3246,26 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
       ),
     );
     /*
-     * FIVE places compose the host — the channel link, the channel description, the item link,
-     * `g:image_link` and the one `g:additional_image_link` — and every one carries it RAW. The count is
-     * measured rather than reasoned: a first draft of this assertion said four, having forgotten that the
-     * channel description interpolates the host as well as the channel link. A revision escaped all five and
-     * counted the ESCAPED form here; the count is unchanged and only the form has flipped, which is exactly
-     * what makes this a withdrawal regression.
+     * Five places compose the host — the channel link, the channel description, the item link,
+     * `g:image_link` and the one `g:additional_image_link` — and every one carries it raw. The
+     * count is measured rather than reasoned: a first draft of this assertion said four, having
+     * forgotten that the channel description interpolates the host as well as the channel link. A
+     * revision escaped all five and counts the raw form here, and the count is the same either way
+     * — which is why the form, not the count, is the subject.
      */
     expect(countOccurrences(xml, CONFORMING_HOSTILE_HOST)).toBe(5);
-    /* And no percent-encoded form appears: CQ-9 withdrew the encoder from the path, and the host never
-     * had it. */
+    /*
+     * And no percent-encoded form appears: the path carries no encoder, and the host never had one.
+     */
     expect(xml).not.toContain(encodeURIComponent(CONFORMING_HOSTILE_HOST));
   });
 
-  it('[NET-NEW] F8 REFUSES an origin-moving host, atomically, before any byte is produced', async () => {
+  it('[NET-NEW] REFUSES an origin-moving host, atomically, before any byte is produced', async () => {
     /*
-     * ⭐ THE SHARPEST EXPOSURE IN THIS FILE, NOW CLOSED, AND THE CASE THAT WENT THROUGH THE MOST REVISIONS.
+     * The sharpest exposure in this file, now closed, and the case that went through the most revisions.
      * {@link ProductFeedRenderContext.host} is a plain `string` with no brand, and every one of the five
-     * absolute URLs is composed from it. A host carrying `/`, `@`, `?` or `#` MOVES THE ORIGIN of every URL
-     * in the document; one carrying `<` breaks the CHANNEL out of its own element.
-     *
-     * ⛔ FOUR ANSWERS WERE TRIED, AND THE HISTORY IS KEPT BECAUSE EACH ARGUMENT IS WORTH HAVING ON RECORD.
-     * Revision 1 ESCAPED the value, so the document stayed well-formed with `http://x</title>…` sitting
-     * inside `<link>` as text — well-formed and still wrong, because the harm is in the VALUE rather than in
-     * the markup. Revision 2 added a `validateFeedHostAuthority` deny check at the sink and refused the
-     * render. Revision 3 WITHDREW it, reasoning that AAP §0.6.7.7 authorises exactly ONE departure from
-     * behavioural preservation (D18) and that `product.cfm:L14` interpolates `CGI.HTTP_HOST` with no test
-     * whatsoever — and this case then asserted the hostile OUTCOME, so that the carry was visible.
-     *
-     * ⭐ REVISION 4 REINSTATES THE REFUSAL, ON REVIEW FINDING F8, AND THE COUNT ARGUMENT DOES NOT REACH IT.
-     * F8 classifies the unvalidated read as a MAJOR security defect — CWE-20 feeding CWE-601. Revision 3's
-     * objection presumes the gate IS a behavioural departure; it is not. RFC 9110 §7.2 defines the `Host`
-     * field value that `ProductFeedRenderContext.host` stands in for as an RFC 3986 §3.2.2 `host` with
-     * §3.2.3's optional `port`, userinfo expressly excluded — so NO value this gate refuses could ever have
-     * reached `product.cfm:L14`. A rule that admits every value the legacy input could hold and refuses only
-     * values it could not enters no divergence register at all.
-     *
-     * ⭐ THE PAYLOAD IS ORIGIN-MOVING BUT XML-REPRESENTABLE, AND THE DISTINCTION IS WHY THIS CASE PROVES THE
-     * AUTHORITY GATE RATHER THAN THE MARKUP ONE. `legit.example@attacker.example` moves the origin to
-     * `attacker.example` for all five URLs while containing NO markup character, so
-     * {@link renderRawFeedNode}'s `&`/`<`/`]]>` refusal cannot fire on it and only
-     * `validateFeedHostAuthority` can. The `<`-bearing variant is refused by the OTHER gate, and its sibling
-     * case above asserts that.
+     * absolute URLs is composed from it. A host carrying `/`, `@`, `?` or `#` moves the origin of every URL
+     * in the document; one carrying `<` breaks the channel out of its own element.
      */
     const hostileHost = 'legit.example@attacker.example';
     const scenario = createScenario({ host: hostileHost });
@@ -3890,17 +3273,12 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
     await expect(scenario.render()).rejects.toBeInstanceOf(DataIntegrityError);
   });
 
-  it('[NET-NEW] F8 refuses every origin-moving character, and admits the conforming authority forms', async () => {
+  it('[NET-NEW] refuses every origin-moving character, and admits the conforming authority forms', async () => {
     /*
-     * THE GATE'S WHOLE ALPHABET, ASSERTED RATHER THAN READ OFF ITS DOCBLOCK. Each refused character has a
+     * The gate's whole alphabet, asserted rather than read off its docblock. Each refused character has a
      * distinct mechanism: `@` introduces userinfo; `/` and `\\` end the authority and begin a path; `?` and
      * `#` begin a query and a fragment; whitespace and control characters are admitted in no authority. A
      * blank host is refused too, because five URLs with no authority resolve nowhere.
-     *
-     * ⭐ AND THE ADMITTED FORMS ARE ASSERTED IN THE SAME CASE, WHICH IS THE HALF THAT KEEPS THE GATE HONEST.
-     * A bracketed IPv6 literal, a `host:port` pair, an underscore label and an RFC 3986 sub-delimiter all
-     * RENDER — they are legitimate authorities, and a gate that refused them would be the invented
-     * DNS-label grammar AAP §0.7.3 S9 forbids and that this port withdrew twice.
      */
     for (const refused of [
       'legit.example@attacker.example',
@@ -3924,26 +3302,13 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
     }
   });
 
-  it('[NET-NEW] F8 refuses a URL path that is not same-origin relative, at all three sinks', async () => {
+  it('[NET-NEW] refuses a URL path that is not same-origin relative, at all three sinks', async () => {
     /*
-     * ⭐ THE PATH HALF OF THE SAME FINDING, AND THE ROUTE IT CLOSES IS THE MISSING LEADING SLASH. A stored
+     * The path half of the same finding, and the route it closes is the missing leading slash. A stored
      * path of `attacker.example/x` appended to `http://<host>` yields the authority `<host>attacker.example`
-     * — a DIFFERENT origin, reached without any delimiter the host gate inspects. `//x` is refused as well,
+     * — a different origin, reached without any delimiter the host gate inspects. `//x` is refused as well,
      * on the narrower ground that RFC 3986 §4.2 classifies it as a network-path reference rather than the
-     * absolute-path reference F8 constrains these values to.
-     *
-     * ⭐ IT FORECLOSES NOTHING THE LEGACY COULD PRODUCE. `model/entity/Product.cfc:L207-L209` writes the
-     * leading slash into the composed product URL literal, and the image paths are composed beneath a rooted
-     * image-folder setting — the legacy appends all three to `http://#CGI.HTTP_HOST#` precisely because they
-     * are root-relative. The conforming forms in the third loop below are the proof.
-     *
-     * ⭐ ONLY TWO OF THE THREE SINKS ARE REACHABLE BY A HOSTILE VALUE, AND THAT IS A FINDING RATHER THAN A
-     * GAP IN THIS CASE. The item `link` reads `Product.getProductURL`, which composes
-     * `/${'${'}setting('globalURLKeyProduct')}/${'${'}urlTitle}/` — the leading slash is a LITERAL in the composition,
-     * not part of either datum, so no setting value and no stored title can remove it. The gate still runs
-     * there, because the composition is the domain's and this file must not assume it; the last assertion
-     * below proves the conforming path renders. The two sinks a hostile value CAN reach are `g:image_link`
-     * and each `g:additional_image_link`, whose whole value arrives from the port.
+     * absolute-path reference constrains these values to.
      */
     for (const hostilePath of ['attacker.example/x.jpg', '//attacker.example/x.jpg', 'x.jpg']) {
       /* `g:image_link`: the SKU's composed path, seeded directly. */
@@ -3953,14 +3318,18 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
         }).render(),
       ).rejects.toBeInstanceOf(DataIntegrityError);
 
-      /* Each `g:additional_image_link`: the image's own path, echoed by the unseeded resize answer. */
+      /*
+       * Each `g:additional_image_link`: the image's own path, echoed by the unseeded resize answer.
+       */
       await expect(
         createScenario().render({ productImages: [{ imagePath: hostilePath }] }),
       ).rejects.toBeInstanceOf(DataIntegrityError);
     }
 
-    /* And the conforming forms still render at all three sinks, including a path carrying a dot segment —
-     * dot-segment resolution stays same-origin, so it is not a rebasing route and is not refused. */
+    /*
+     * And the conforming forms still render at all three sinks, including a path carrying a dot segment —
+     * dot-segment resolution stays same-origin, so it is not a rebasing route and is not refused.
+     */
     await expect(
       createScenario({
         imagePathsByImageFile: { [SKU_IMAGE_FILE]: '/product/default/../default/a.jpg' },
@@ -3970,14 +3339,9 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
 
   it('[NET-NEW] keeps one item per SKU when every ESCAPED field is hostile', async () => {
     /*
-     * THE BREAKOUT CASE, NOW SPLIT ALONG THE CENSUS. Every value here targets one of the SIX sinks
+     * The breakout case, now split along the census. Every value here targets one of the six sinks
      * `product.cfm` escapes, so every one of them is escaped by the port too and must come back as
      * character data — one item, one child per field, whatever the payload attempted.
-     *
-     * ⛔ IT USED TO SEED THE RAW SINKS AS WELL — the host, the `urlTitle` and both shipping-weight settings
-     * — because DECISION G-3 escaped those too. Review finding CQ-9 withdrew that escape, so those values
-     * are now REFUSED rather than neutralised, and asserting a round trip for them would assert the exact
-     * behaviour CQ-9 reversed. They move to the companion case below, which requires the refusal.
      */
     const scenario = createScenario({
       host: CONFORMING_HOSTILE_HOST,
@@ -3994,7 +3358,9 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
     const channel = parseFeedChannel(xml);
     const item = parseSoleFeedItem(xml);
 
-    /* Exactly one item, and exactly one g:id inside it, no matter how many the payloads tried to open. */
+    /*
+     * Exactly one item, and exactly one g:id inside it, no matter how many the payloads tried to open.
+     */
     expect(childrenNamed(channel, 'item')).toHaveLength(1);
     expect(childrenNamed(item, 'g:id')).toHaveLength(1);
     expect(soleChildText(item, 'g:id')).toBe('</item><item><g:id>a');
@@ -4005,8 +3371,8 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
     expect(soleChildText(item, 'g:item_group_id')).toBe('&\'<>"');
 
     /*
-     * ⭐ THE `]]>` IN THE DESCRIPTION IS THE SHARPEST ONE HERE, and it round-trips because the sink is
-     * ESCAPED: the `>` becomes `&gt;`, so the sequence cannot terminate anything. At a RAW sink the same
+     * The `]]>` in the description is the sharpest one here, and it round-trips because the sink is
+     * escaped: the `>` becomes `&gt;`, so the sequence cannot terminate anything. At a raw sink the same
      * value is refused instead — the two treatments are asserted side by side in §8, and this is the half
      * where escaping is the legacy's own behaviour.
      */
@@ -4019,25 +3385,8 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
     expect(childrenNamed(item, 'link')).toHaveLength(1);
   });
 
-  it('[NET-NEW] CQ-9 and SEC-2: every hostile RAW field is refused rather than neutralised', async () => {
-    /*
-     * THE OTHER HALF OF THE BREAKOUT CASE ABOVE, AND THE ONE THAT CARRIES THE FINDING.
-     *
-     * These four values used to be seeded alongside the six escaped ones and asserted as round trips. CQ-9
-     * withdrew the escape at every raw sink, so a round trip is no longer the contract: each of them would
-     * make the published document unparseable, and finding SEC-2 forbids publishing that with a 200. Each is
-     * therefore driven separately — a combined seed would let one refusal mask three missing ones.
-     *
-     * ⚠️ AND THE PATH TRAVERSAL THAT USED TO BE HALF-CLOSED HERE IS NOW FULLY OPEN, DECLARED RATHER THAN
-     * IMPLIED. `../../etc/passwd` contains nothing XML forbids, so it is PUBLISHED, raw, exactly as the
-     * legacy published it. Under G-3 the percent-encoder made the `?` and `&` in `?a=1&b=2` inert while
-     * leaving the `..` segments traversing just as far; CQ-9 withdrew the encoder, so both the query
-     * smuggling and the traversal are now residual risk. DECISION G-2's path grammar stays withdrawn for the
-     * reason it always was — no published production governs a Slatwall product URL, and
-     * `imageMissingImagePath` is an operator-editable setting whose relative forms the legacy published — so
-     * inventing one would be the enhancement AAP §0.8.2 guideline 4 forbids. The risk is recorded in
-     * `ProductFeedBuilder.ts` at THERE IS NO `encodeFeedUrlPath` and in `README.md`.
-     */
+  it('[NET-NEW] every hostile raw sink field is refused rather than neutralised', async () => {
+    /* The other half of the breakout case above, and the one that carries the finding. */
     const refusedSeeds: readonly (() => ReturnType<typeof createScenario>)[] = [
       () => createScenario({ urlTitle: '../../etc/passwd?a=1&b=2' }),
       () =>
@@ -4055,8 +3404,8 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
     }
 
     /*
-     * ⭐ AND THE TRAVERSAL WITHOUT THE QUERY IS PUBLISHED, WHICH IS THE PROOF THAT THE REFUSAL IS SHAPED BY
-     * WELL-FORMEDNESS AND NOT BY TASTE. `../../etc/passwd` carries no `&`, no `<` and no `]]>`, so it goes
+     * And the traversal without the query is published, which is the proof that the refusal is shaped by
+     * Well-formedness and not by taste. `../../etc/passwd` carries no `&`, no `<` and no `]]>`, so it goes
      * out raw and unmodified — the same bytes `product.cfm` emits. Reading this as a defect in the port
      * rather than in the legacy would be misreading it: the port's contract is parity plus parseability, and
      * this value satisfies both.
@@ -4072,30 +3421,7 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
   });
 });
 
-/* =====================================================================================================
- * §9 — The guards on the builder's own public render surface.
- *
- * These are part of `build()`'s declared contract, not of any collaborator's, so they belong here. Two of
- * them carry legacy-parity judgments that the field assertions above would otherwise leave invisible: the
- * legacy view dereferenced the product and product-type associations WITHOUT a guard while guarding the
- * brand association, and an unrepresentable character is refused rather than silently stripped.
- *
- * ⚠️ THE ERROR **TYPE** IS ASSERTED; THE MESSAGE **TEXT** IS NOT. An earlier revision of this header
- * claimed the file "neither imports nor couples to" `src/errors/**` and asserted only `Error`, and the
- * distinction it was reaching for is right — the wording of a message belongs to the module that owns it,
- * and pinning it here would couple a serializer test to a sibling's copy. But `Error` is too weak to be
- * the whole assertion, for a reason specific to these two guards: they raise DIFFERENT classes on
- * purpose. A missing product is a `DomainError` (a defect in what was selected), a missing product type is
- * a `DataIntegrityError` (a broken row), and the builder's own docblock calls that choice out. Under
- * `toBeInstanceOf(Error)` the two are indistinguishable, so a revision that collapsed them — or a
- * `TypeError` from an unguarded dereference in the harness — would satisfy the assertion while destroying
- * the distinction.
- *
- * `DataIntegrityError extends DomainError`, so the subclass case additionally asserts the DIRECTION of the
- * relationship: the product-type failure must be the subclass, and the product failure must NOT be. The
- * structured `context` is asserted for its LOCATOR only — the legacy line each guard reproduces — because
- * that is the field this suite's parity claims rest on, and it is stable in a way a sentence is not.
- * ================================================================================================== */
+/* §9 — The guards on the builder's own public render surface. */
 
 /** Await a render that must reject, and hand back the reason as an `Error`. */
 async function captureRejection(work: Promise<string>): Promise<Error> {
@@ -4112,35 +3438,18 @@ async function captureRejection(work: Promise<string>): Promise<Error> {
   throw new Error('The builder resolved a document where a rejection was required.');
 }
 
-/* =====================================================================================================
- * ⭐⭐ THE TWO FEED RENDER BOUNDS — REVIEW FINDING SEC-DOS-02's PER-RECORD AND RESPONSE-SIZE CLAUSES
- * =====================================================================================================
- * The finding required, verbatim, that the port "cap per-record image expansion and response bytes". Both
- * are bounded here, both by an OPERATOR-STATED figure, and neither by a number this port authors.
- *
- * ⛔ WHY THIS MATTERS MORE ON THIS ROUTE THAN ANY OTHER. `google:feed.product` is the ONE anonymous address
- * in the slice [`integrationServices/google/controllers/feed.cfc:L54-L56`] — the single route an
- * unauthenticated caller can reach at all — and `integrationServices/google/views/feed/product.cfm:L9` asks
- * for a 360-second render budget, which AAP §0.6.6 M2 records as unmappable to a synchronous invocation.
- * Unbounded work on the only anonymous route is the worst combination available.
- *
- * ⭐ IR-12 AND AAP §0.7.3 S9 ARE HONOURED, NOT WORKED AROUND. `../../src/config/env.ts` declares both
- * variables OPTIONAL with NO default, and each is reached through a RESOLVER that raises a named
- * `ConfigurationError` when a deployment stated nothing. So the port invents no capacity figure and an
- * unstated bound fails CLOSED. The fixtures below state figures because a TEST IS THE OPERATOR.
- *
- * ⚠️ AND NEITHER BOUND TRUNCATES. That is the design decision both cases turn on, and it is the opposite of
- * what a naive "cap" would do: a shortened image list is a feed that misrepresents the catalog, and a
- * shortened document is not a smaller feed but a malformed one — the closing `</channel></rss>` would be
- * missing and a merchant processor would either reject it or act on a partial catalog.
- * ================================================================================================== */
+/*
+ * The two feed render bounds — per-record image expansion and response size The port caps per-
+ * record image expansion and response bytes. Both
+ * are bounded here, both by an operator-stated figure, and neither by a number this port authors.
+ */
 
-describe('NET-NEW ProductFeedBuilder — the SEC-DOS-02 per-record image ceiling', () => {
+describe('NET-NEW ProductFeedBuilder — the per-record image ceiling', () => {
   /**
    * Builds `count` additional product images, each with a distinct path.
    *
    * @param count how many images the record should carry
-   * @returns the image list, in input order
+   * @returns the image list, in input order.
    */
   function manyImages(count: number): readonly ProductFeedImage[] {
     return Object.freeze(
@@ -4152,12 +3461,10 @@ describe('NET-NEW ProductFeedBuilder — the SEC-DOS-02 per-record image ceiling
 
   it('[NET-NEW] refuses an over-ceiling record BEFORE resolving a single image path', async () => {
     /*
-     * ⭐ THE ORDERING IS THE FIX, NOT THE REFUSAL. `product.cfm:L24` iterates the product's whole image
-     * collection with no ceiling, and this port issues ONE image-port resolution per image per record — so
-     * the cost of a single record is `images` port calls. The ceiling is therefore applied BEFORE the loop,
-     * and an over-budget record calls the port ZERO times rather than n-plus-one times before refusing.
-     *
-     * Four images against a stated ceiling of three.
+     * The ordering is the fix, not the refusal. `product.cfm:L24` iterates the product's whole image
+     * collection with no ceiling, and this port issues one image-port resolution per image per record — so
+     * the cost of a single record is `images` port calls. The ceiling is therefore applied before the loop,
+     * and an over-budget record calls the port zero times rather than n-plus-one times before refusing.
      */
     const scenario = createScenario({ renderBudget: createProductFeedRenderBudget(3, 10_000_000) });
 
@@ -4170,14 +3477,11 @@ describe('NET-NEW ProductFeedBuilder — the SEC-DOS-02 per-record image ceiling
       locator: 'integrationServices/google/views/feed/product.cfm:L24',
     });
 
-    /* ⛔ ZERO of the RECORD'S OWN IMAGES were resolved. This is the assertion the case exists for: a ceiling
-     * checked INSIDE the loop would have made three port calls before refusing, so it would satisfy a
+    /*
+     * Zero of the record's own images were resolved. This is the assertion the case exists for: a ceiling
+     * checked inside the loop would have made three port calls before refusing, so it would satisfy a
      * rejects-assertion and still leave most of the cost unbounded.
-     *
-     * The `extra-` filter is deliberate rather than a blanket count. The ONE resize request the port does
-     * receive is for the SKU's own `g:image_link` at `product.cfm:L23`, which is a different field composed
-     * before the additional-image loop of `:L24` and is not what this ceiling bounds. Asserting zero
-     * requests overall would make this case fail for the wrong reason if that unrelated field ever moved. */
+     */
     const extraRequests = resizeRequests(scenario.images).filter((request) =>
       request.imagePath.includes('extra-'),
     );
@@ -4186,7 +3490,7 @@ describe('NET-NEW ProductFeedBuilder — the SEC-DOS-02 per-record image ceiling
 
   it('[NET-NEW] admits a record landing exactly AT the ceiling, emitting every image in input order', async () => {
     /*
-     * The admitting side, so the ceiling BOUNDS rather than refuses, and the admitted document is
+     * The admitting side, so the ceiling bounds rather than refuses, and the admitted document is
      * byte-identical to the unbudgeted one: three images, three `g:additional_image_link` elements, in the
      * order they were supplied. That is the concrete form of "the ceiling changes no admitted request".
      */
@@ -4211,8 +3515,8 @@ describe('NET-NEW ProductFeedBuilder — the SEC-DOS-02 per-record image ceiling
 
   it('[NET-NEW] refuses with NO image ceiling stated, naming the variable, resolving nothing', async () => {
     /*
-     * The fail-closed half. A DELIBERATELY TINY record — one image — so the case cannot pass because the
-     * record happened to be large: the refusal is about the ABSENCE of a figure, not the size of the work.
+     * The fail-closed half. A deliberately tiny record — one image — so the case cannot pass because the
+     * record happened to be large: the refusal is about the absence of a figure, not the size of the work.
      */
     const scenario = createScenario({ renderBudget: UNSTATED_FEED_RENDER_BUDGET });
 
@@ -4227,8 +3531,10 @@ describe('NET-NEW ProductFeedBuilder — the SEC-DOS-02 per-record image ceiling
   });
 
   it('[NET-NEW] refuses a USELESS figure when the budget is BUILT, not when a render first runs', () => {
-    /* A wiring error should present at wiring time. Zero would refuse every record — including one with no
-     * additional images at all — rather than bounding the expansion. */
+    /*
+     * A wiring error should present at wiring time. Zero would refuse every record — including one with no
+     * additional images at all — rather than bounding the expansion.
+     */
     expect(() => createProductFeedRenderBudget(0, 10)).toThrow(/positive safe integer/);
     expect(() => createProductFeedRenderBudget(-1, 10)).toThrow(/positive safe integer/);
     expect(() => createProductFeedRenderBudget(1.5, 10)).toThrow(/positive safe integer/);
@@ -4245,15 +3551,12 @@ describe('NET-NEW ProductFeedBuilder — the SEC-DOS-02 per-record image ceiling
   });
 });
 
-describe('NET-NEW ProductFeedBuilder — the SEC-DOS-02 document byte ceiling', () => {
+describe('NET-NEW ProductFeedBuilder — the document byte ceiling', () => {
   it('[NET-NEW] REFUSES an over-budget document rather than truncating it', async () => {
     /*
-     * ⛔ THE ASSERTION THAT MATTERS IS THAT NOTHING IS RETURNED. A "cap" that truncated would answer a
+     * The assertion that matters is that nothing is returned. A "cap" that truncated would answer a
      * document missing its closing `</channel></rss>`, which a merchant processor either rejects outright
      * or — worse — acts on as a partial catalog. So the ceiling refuses and names the size it measured.
-     *
-     * One byte is the tightest possible ceiling and no real document fits it, which keeps the case about
-     * the refusal rather than about any particular document size.
      */
     const scenario = createScenario({ renderBudget: createProductFeedRenderBudget(100, 1) });
 
@@ -4262,8 +3565,10 @@ describe('NET-NEW ProductFeedBuilder — the SEC-DOS-02 document byte ceiling', 
     expect(error).toBeInstanceOf(DomainError);
     expect((error as DomainError).message).toMatch(/truncated, malformed document/);
 
-    /* The measured size and the ceiling are both reported, so an operator can pick a figure rather than
-     * guess one — and the measured size is the REAL byte length, greater than the ceiling it broke. */
+    /*
+     * The measured size and the ceiling are both reported, so an operator can pick a figure rather than
+     * guess one — and the measured size is the real byte length, greater than the ceiling it broke.
+     */
     const context = (error as DomainError).context as Record<string, unknown>;
     expect(context.maximumResponseBytes).toBe(1);
     expect(typeof context.documentBytes).toBe('number');
@@ -4273,9 +3578,9 @@ describe('NET-NEW ProductFeedBuilder — the SEC-DOS-02 document byte ceiling', 
 
   it('[NET-NEW] measures BYTES rather than characters, so multi-byte content is charged honestly', async () => {
     /*
-     * The response goes out as UTF-8, so a ceiling measured in JavaScript string LENGTH would under-charge
+     * The response goes out as UTF-8, so a ceiling measured in JavaScript string length would under-charge
      * every non-ASCII document — a product name in Japanese costs three bytes per character and one unit of
-     * length. The case states a ceiling BETWEEN the two measures and requires a refusal: it passes only if
+     * length. The case states a ceiling between the two measures and requires a refusal: it passes only if
      * bytes are what is counted.
      */
     const multiByteTitle = 'あ'.repeat(400);
@@ -4287,16 +3592,18 @@ describe('NET-NEW ProductFeedBuilder — the SEC-DOS-02 document byte ceiling', 
     const error = await captureRejection(scenario.render());
     const context = (error as DomainError).context as Record<string, unknown>;
 
-    /* Four hundred three-byte characters is 1,200 bytes of title alone, so the finished document is over the
-     * 1,200-byte ceiling on byte measurement and comfortably under it on character measurement. */
+    /*
+     * Four hundred three-byte characters is 1,200 bytes of title alone, so the finished document is over the
+     * 1,200-byte ceiling on byte measurement and comfortably under it on character measurement.
+     */
     expect(context.documentBytes as number).toBeGreaterThan(1200);
   });
 
   it('[NET-NEW] admits a document under the ceiling, byte-for-byte unchanged', async () => {
     /*
      * The admitting side, and the strongest available form of "the ceiling changes no admitted response":
-     * the SAME scenario rendered with a generous ceiling and with a ceiling just above the measured size
-     * produces the IDENTICAL document. So the bound is a gate and never a filter.
+     * The same scenario rendered with a generous ceiling and with a ceiling just above the measured size
+     * produces the identical document. So the bound is a gate and never a filter.
      */
     const unbudgeted = await createScenario().render();
     const measured = Buffer.byteLength(unbudgeted, 'utf8');
@@ -4307,8 +3614,10 @@ describe('NET-NEW ProductFeedBuilder — the SEC-DOS-02 document byte ceiling', 
 
     expect(tight).toBe(unbudgeted);
 
-    /* And exactly-at-the-ceiling is ADMITTED — the comparison is strictly greater-than — while one byte
-     * less refuses. Off-by-one in either direction fails one of these two. */
+    /*
+     * And exactly-at-the-ceiling is admitted — the comparison is strictly greater-than — while one byte
+     * less refuses. Off-by-one in either direction fails one of these two.
+     */
     await expect(
       createScenario({ renderBudget: createProductFeedRenderBudget(100, measured - 1) }).render(),
     ).rejects.toThrow(/truncated, malformed document/);
@@ -4318,7 +3627,7 @@ describe('NET-NEW ProductFeedBuilder — the SEC-DOS-02 document byte ceiling', 
     /*
      * Fail-closed on the second feed bound too. The image ceiling is stated here and only the byte ceiling
      * withheld, which is what proves the byte resolver is fail-closed in its own right rather than merely
-     * shadowed by the image one — the image ceiling is reached FIRST, per record.
+     * shadowed by the image one — the image ceiling is reached first, per record.
      */
     const scenario = createScenario({
       renderBudget: createProductFeedRenderBudget(100, undefined),
@@ -4347,7 +3656,9 @@ describe('NET-NEW ProductFeedBuilder — render guards', () => {
      * than inventing a skip that would silently shrink the feed.
      */
     expect(error).toBeInstanceOf(DomainError);
-    /* NOT the data-integrity subclass: a SKU with no product is a selection defect, not a broken row. */
+    /*
+     * Not the data-integrity subclass: a SKU with no product is a selection defect, not a broken row.
+     */
     expect(error).not.toBeInstanceOf(DataIntegrityError);
     expect(error.message.length).toBeGreaterThan(0);
     expect((error as DomainError).context).toMatchObject({
@@ -4374,8 +3685,8 @@ describe('NET-NEW ProductFeedBuilder — render guards', () => {
     const error = await captureRejection(scenario.render({ skus: [sku] }));
 
     /*
-     * THE OTHER FACE OF THE `isNull` / `len` INCONSISTENCY. `:L21` dereferences
-     * `product.getProductType().getSimpleRepresentation()` with NO guard, while `:L32` guards the brand
+     * The other face of the `isNull` / `len` inconsistency. `:L21` dereferences
+     * `product.getProductType().getSimpleRepresentation()` with no guard, while `:L32` guards the brand
      * association with `isNull`. Two associations one line apart, one guarded and one not: an absent brand
      * quietly drops an element, an absent product type fails the render outright. Both outcomes are
      * preserved, and neither is harmonised into the other.
@@ -4383,14 +3694,11 @@ describe('NET-NEW ProductFeedBuilder — render guards', () => {
     expect(error).toBeInstanceOf(DataIntegrityError);
     expect(error.message.length).toBeGreaterThan(0);
     /*
-     * THE LOCATOR IS `:L19`, NOT `:L21`, AND THE DIFFERENCE IS EVIDENCE RATHER THAN BOOKKEEPING. `:L21`'s
+     * The locator is `:L19`, not `:L21`, and the difference is evidence rather than bookkeeping. `:L21`'s
      * `<g:product_type>` is the dereference this case's own docblock quotes, and it was the first guess
-     * here — it is wrong, because `:L19`'s `<description>` reaches the association FIRST. Its `cfelseif`
+     * here — it is wrong, because `:L19`'s `<description>` reaches the association first. Its `cfelseif`
      * tests `len(local.sku.getProduct().getProductType().getProductTypeDescription())`, so a product with
      * no description of its own dereferences the product type one field earlier than `<g:product_type>`
-     * does. The builder reproduces that ordering, passes each call site its own locator, and this
-     * assertion pins which of the two fires — so a reordering of the item fields that moved the first
-     * unguarded dereference would fail here rather than pass silently.
      */
     expect((error as DomainError).context).toMatchObject({
       locator: 'integrationServices/google/views/feed/product.cfm:L19',
@@ -4423,31 +3731,30 @@ describe('NET-NEW ProductFeedBuilder — render guards', () => {
     const onSaleXml = await onSale.render();
 
     /*
-     * ⛔ THE RENDER SUCCEEDS, AND AN EARLIER REVISION OF THIS CASE REQUIRED IT TO FAIL. The builder then
-     * read the offset as a number of hours, shifted both instants by it and raised when the text was not
+     * The render succeeds. A builder that read the offset as a number of hours would shift both
+     * instants by it and raise when the text was not
      * finite. `:L30` does none of that: it formats each value's own components and interpolates the
      * offset text straight in, with no parse, no test and no failure mode. So a non-numeric offset is a
-     * malformed LABEL on a well-formed timestamp — which is exactly what the legacy would have emitted —
-     * and refusing to render it would foreclose a legacy outcome (AAP §0.8.2 guideline 4, §0.6.7
-     * preserve-and-annotate; D18 licenses no such hardening).
-     *
-     * The components are therefore the supplied ones, untouched, and the odd text appears verbatim.
+     * malformed label on a well-formed timestamp — which is exactly what the legacy would have emitted —
+     * and refusing to render it would foreclose a legacy outcome (AAP §0.8.2 guideline 4, §0.6.7.
      */
     expect(elementContent(onSaleXml, 'g:sale_price_effective_date')).toBe(
       `${EXPECTED_LOCAL_TIMESTAMP_START}-not-an-offset/${EXPECTED_LOCAL_TIMESTAMP_END}-not-an-offset`,
     );
-    /* Twice per range, exactly as `:L30` interpolates it — and never escaped, since `:L30` escapes it not. */
+    /*
+     * Twice per range, exactly as `:L30` interpolates it — and never escaped, since `:L30` escapes it not.
+     */
     expect(countOccurrences(onSaleXml, 'not-an-offset')).toBe(2);
   });
 
   it('[NET-NEW] renders an empty date and time for an absent expiration while keeping the T, hyphen and offset', async () => {
     const scenario = createScenario({ productPrice: 100, skuPrice: 90 });
     /*
-     * `model/entity/Sku.cfc:L560-L565` returns the EMPTY STRING when the sale-price detail carries no
+     * `model/entity/Sku.cfc:L560-L565` returns the empty string when the sale-price detail carries no
      * expiration key, and `:L30` feeds that straight into `dateFormat`/`timeFormat`. A lenient CFML engine
      * renders nothing for both, leaving the `T`, the literal hyphen and the offset in place — the branch
      * the builder reproduces, with the engine disagreement carried as a TODO(parity) rather than resolved.
-     * No date is invented and the render instant is NOT substituted for the missing expiration, which is
+     * No date is invented and the render instant is not substituted for the missing expiration, which is
      * the substitution this assertion exists to forbid.
      */
     scenario.seedSaleDetails({ [SKU_ID]: buildSalePriceDetails({ salePrice: 79.5 }) });
@@ -4462,33 +3769,12 @@ describe('NET-NEW ProductFeedBuilder — render guards', () => {
     );
   });
 
-  it('[NET-NEW] SEC-2 refuses a value XML 1.0 forbids rather than publishing an unparseable feed', async () => {
-    /*
-     * THE ONE EXPOSURE THIS PORT USED TO CARRY, AND NOW CLOSES.
-     *
-     * ⛔ THIS CASE ASSERTED THE OPPOSITE TWICE, AND BOTH ASSERTIONS ARE RECORDED BECAUSE THE REVERSAL IS THE
-     * FINDING. A gate scanning every value against XML 1.0's `Char` production was written, then withdrawn,
-     * then proposed again as DECISION G-4 and declined — each time on the reading that `htmlEditFormat`
-     * classifies nothing, that `integrationServices/google/views/feed/product.cfm` completes the render
-     * whatever a column contains, and that refusing to publish a document the legacy published is a NEW
-     * OBSERVABLE OUTCOME. This case then asserted POSITIVELY that the forbidden character survives, so that
-     * reinstating the gate would break it.
-     *
-     * ⭐ IT HAS BEEN REINSTATED, ON REVIEW FINDING SEC-2, and this case now asserts the refusal. SEC-2 names
-     * the exposure exactly — "XML 1.0-illegal code points are emitted into a 200 response, allowing one
-     * record to make the whole feed unparseable" — and directs the remedy: "do not publish malformed XML
-     * successfully". The old reasoning fails on its own terms once tested against D18: parameterised SQL does
-     * not return the same rows as interpolated SQL for an input containing a quote, and D18 is declared
-     * anyway, because the divergence falls only where the legacy's behaviour was itself the flaw. A document
-     * no parser accepts is such a case — one record poisons the whole feed, and no consumer ever ingested it.
-     *
-     * ⚠️ AND IT REFUSES WITHOUT ALTERING DATA, which is the half of the old argument that still holds.
-     * Nothing is stripped, substituted or normalised: deciding what a stray control character should BECOME
-     * has no answer in the legacy source. SEC-2's own remedy names that half — "remediate existing invalid
-     * data" — as work at the point the data is WRITTEN, outside this module.
-     */
+  it('[NET-NEW] the builder refuses a value XML 1.0 forbids rather than publishing an unparseable feed', async () => {
+    /* The one exposure this port used to carry, and now closes. */
     const forbiddenTitles = [
-      /* A lone high surrogate, and a lone low one: what a truncated or mis-sliced string carries. */
+      /*
+       * A lone high surrogate, and a lone low one: what a truncated or mis-sliced string carries.
+       */
       'Nike \ud800 Air',
       'Nike \udc00 Air',
       /* A C0 control that is not tab, line feed or carriage return. */
@@ -4505,7 +3791,7 @@ describe('NET-NEW ProductFeedBuilder — render guards', () => {
     }
 
     /*
-     * ⭐ AND THE THREE WHITESPACE CONTROLS `Char` ADMITS STILL TRAVEL, unescaped and unaltered, which is the
+     * And the three whitespace controls `Char` admits still travel, unescaped and unaltered, which is the
      * boundary that makes the gate a transcription rather than a preference. Tab, line feed and carriage
      * return are legal XML content, the legacy emits them, and so does this.
      */
@@ -4518,7 +3804,7 @@ describe('NET-NEW ProductFeedBuilder — render guards', () => {
     }
 
     /*
-     * ⭐ AND A WELL-FORMED SURROGATE PAIR SURVIVES BYTE-FOR-BYTE, which is why the scan iterates CODE POINTS
+     * And a well-formed surrogate pair survives byte-for-byte, which is why the scan iterates code points
      * rather than code units. An emoji is two code units and one legal code point; a code-unit scan would
      * see two surrogate halves and refuse a perfectly valid product title.
      */
@@ -4531,10 +3817,10 @@ describe('NET-NEW ProductFeedBuilder — render guards', () => {
 
   it('[NET-NEW] emits a legal supplementary character unchanged', async () => {
     /*
-     * A supplementary character is encoded as a surrogate PAIR and is perfectly legal in XML 1.0, so the
-     * escaper must leave it alone: it carries none of the four characters `htmlEditFormat` substitutes.
-     * The case is kept from the era of the withdrawn representability gate, where it proved the gate paired
-     * surrogates rather than walking code units; it is still worth asserting, because an escaper
+     * A supplementary character is encoded as a surrogate pair and is perfectly legal in XML 1.0,
+     * so the escaper must leave it alone: it carries none of the four characters `htmlEditFormat`
+     * substitutes. A representability gate would have to pair surrogates rather than walk code
+     * units, and this case pins that; it is worth asserting either way, because an escaper
      * implemented over code units instead of characters would be the next thing to mangle it.
      */
     const scenario = createScenario({ calculatedTitle: 'Nike \u{1F600} Air' });
@@ -4550,8 +3836,8 @@ describe('NET-NEW ProductFeedBuilder — render guards', () => {
      * `htmlEditFormat` never touched them, so a stored value carrying them reaches the document verbatim.
      * The legacy view itself relied on that: `integrationServices/google/views/feed/product.cfm:L30` ends
      * with a literal tab that is emitted rather than swallowed. An escaper that turned them into character
-     * references would change stored product copy on its way out, which is the difference between ENCODING
-     * a character that has an escaped form and REWRITING one that does not need it.
+     * references would change stored product copy on its way out, which is the difference between encoding
+     * a character that has an escaped form and rewriting one that does not need it.
      */
     const scenario = createScenario({ productDescription: 'first\tsecond\r\nthird' });
 
@@ -4564,33 +3850,11 @@ describe('NET-NEW ProductFeedBuilder — render guards', () => {
   });
 });
 
-/* =====================================================================================================
- * §10 — Parsing the finished document, with hostile values in every dynamic sink.
- *
- * THIS IS THE SECTION §8's ITEM-LINK CASE FORWARDS TO, and it is the only place in this file that reads the
- * rendered feed as XML rather than as text. Every other case asserts a SUBSTRING, which is exactly the kind
- * of assertion that cannot distinguish "this value was escaped" from "this value happened not to contain a
- * metacharacter on this input". A parser can: it either accepts the document or it does not, and it either
- * hands the hostile datum back as CHARACTER DATA or it hands back an element that the attacker named.
- *
- * WHY THE SCANNER IS HAND-WRITTEN RATHER THAN INSTALLED. AAP §0.5.2 admits exactly ONE runtime dependency,
- * `mysql2`, and the lockfile is committed so that resolution is reproducible; adding an XML library — even
- * as a dev dependency — would put a parser's correctness between this suite and its subject, and would have
- * to be justified against a manifest the plan froze. A scanner is a few dozen lines, so it is written here.
- *
- * WHAT IT ACCEPTS. The XML declaration, elements with quoted attributes, nested elements, character data,
- * the five predefined entity references and numeric character references. Nothing else: a comment, a CDATA
- * section, a DOCTYPE or a processing instruction is REFUSED rather than skipped. That is stricter than XML
- * 1.0, and deliberately so — this builder emits none of them, so any occurrence in its output arrived from
- * a value, which is precisely the failure being tested for. A raw `>` in character data IS accepted,
- * because XML 1.0 permits it outside `]]>`; the scanner is not made wrong in order to be strict.
- *
- * ⭐ AND IT IS PROVED TO BE ABLE TO FAIL. A scanner that accepted everything would turn this whole section
- * into theatre, so the last case feeds it the same document with the four substitutions REVERSED — the
- * output the pre-fix builder produced — and requires a refusal.
- * ================================================================================================== */
+/* §10 — Parsing the finished document, with hostile values in every dynamic sink. */
 
-/** A parsed element: its qualified name, its attributes, its element children and its own resolved text. */
+/**
+ * A parsed element: its qualified name, its attributes, its element children and its own resolved text.
+ */
 interface XmlElement {
   readonly name: string;
   readonly attributes: ReadonlyMap<string, string>;
@@ -4599,7 +3863,9 @@ interface XmlElement {
   readonly text: string;
 }
 
-/** Refused input. A distinct type so a case can require a scanner refusal rather than any old `Error`. */
+/**
+ * Refused input. A distinct type so a case can require a scanner refusal rather than any old `error`.
+ */
 class XmlScanError extends Error {}
 
 /**
@@ -4607,7 +3873,7 @@ class XmlScanError extends Error {}
  *
  * @param source the complete rendered feed
  * @returns the root element, with references resolved
- * @throws {XmlScanError} for anything outside the accepted subset described in this section's header
+ * @throws {XmlScanError} for anything outside the accepted subset described in this section's header.
  */
 function parseXmlDocument(source: string): XmlElement {
   let at = 0;
@@ -4639,7 +3905,9 @@ function parseXmlDocument(source: string): XmlElement {
     return source.slice(start, at);
   };
 
-  /** Resolve one reference, starting at the `&`. Every ampersand in a conforming document begins one. */
+  /**
+   * Resolve one reference, starting at the `&`. every ampersand in a conforming document begins one.
+   */
   const readReference = (): string => {
     const terminator = source.indexOf(';', at);
     if (terminator === -1 || terminator - at > 12) {
@@ -4821,36 +4089,22 @@ function soleElement(root: XmlElement, name: string): XmlElement {
   return only;
 }
 
-/*
- * ONE HOSTILE VALUE, CARRYING EVERY SHAPE THAT MATTERS, used in every text sink at once.
- *
- *   `</title>`      closes whichever element it lands in, which is how a text sink becomes a markup sink
- *   `<injected>`    the element an attacker actually wants, and the thing this section proves absent
- *   ` & `           a bare ampersand, which is not a reference and makes a document non-well-formed
- *   `&amp;`         an ALREADY-ESCAPED sequence, which must be escaped AGAIN and come back unchanged
- *   `<!-- c -->`    a comment, refused outright by the scanner if it ever reaches markup
- *   `"q" 'a'`       both quote characters, one of which `htmlEditFormat` escapes and one of which it does not
- *   `]]>`           refused in character data by XML 1.0, so its `>` must be escaped
- */
+/* One hostile value, carrying every shape that matters, used in every text sink at once. */
 const HOSTILE_TEXT = '</title><injected>pwned</injected> & &amp; <!-- c --> "q" \'a\' ]]>';
 
-/** A host with three of the four escapable characters, and no colon, so the authority stays interpretable. */
+/**
+ * A host with three of the four escapable characters, and no colon, so the authority stays interpretable.
+ */
 const HOSTILE_HOST = 'h&<>st';
 
-/* ⛔ THERE IS NO `encodePathLikeTheBuilder`. A local mirror of the builder's per-segment percent-encoder
- * stood here, so the three URL sinks could be asserted against their encoded form. Review finding CQ-9
- * withdrew the encoder itself — it changed the emitted bytes of three fields `product.cfm` publishes
- * unmodified, including innocuous paths where `%` became `%25` — so the mirror has nothing left to mirror
- * and the URL sinks are now asserted against their STORED path, which is a stronger expectation because it
+/*
+ * There is no `encodePathLikeTheBuilder`. A local mirror of a per-segment percent-encoder would let
+ * the three URL sinks be asserted against an encoded form, but the builder has no such encoder:
+ * Encoding would change the emitted bytes of three fields `product.cfm` publishes unmodified,
+ * including innocuous paths where `%` becomes `%25`. So there is nothing to mirror
+ * and the URL sinks are now asserted against their stored path, which is a stronger expectation because it
  * is written by hand rather than computed by a re-implementation.
- *
- * ⚠️ WHAT THAT LEAVES OPEN IS DECLARED RATHER THAN GLOSSED, and it is the residual risk CQ-9 asks to be
- * documented. A stored path can add segments, and a `..` segment traverses; a stored `?` or `#` can open a
- * query or a fragment; and a path that does not begin with `/` lands inside the authority. The ORIGIN half
- * is closed for the configured HOST by `validateFeedHostAuthority`. The PATH half is not closed, because
- * `imageMissingImagePath` is an operator-editable setting whose relative forms the legacy published, so a
- * leading-slash rule would refuse a legitimate value — DECISION G-2's ground, unchanged. The MARKUP half is
- * closed at every sink: the raw renderer refuses `&`, `<` and `]]>`. */
+ */
 
 describe('NET-NEW ProductFeedBuilder — parsed well-formedness over hostile values', () => {
   it('[NET-NEW] parses an ordinary rendered document, so a scanner that refuses everything cannot pass', async () => {
@@ -4877,20 +4131,16 @@ describe('NET-NEW ProductFeedBuilder — parsed well-formedness over hostile val
     expect(soleElement(root, 'g:id').text).toBe('CONTROL-1');
     expect(soleElement(root, 'g:condition').text).toBe('new');
     expect(soleElement(root, 'g:availability').text).toBe('in stock');
-    /* The always-empty category element parses as a present element with no content, not as absent. */
+    /*
+     * The always-empty category element parses as a present element with no content, not as absent.
+     */
     expect(soleElement(root, 'g:google_product_category').text).toBe('');
   });
 
   it('[NET-NEW] CWE-91 keeps a hostile value in every ESCAPED sink as character data', async () => {
     /*
-     * ⛔ THIS CASE SEEDED EVERY SINK, INCLUDING THE NINE RAW ONES, and asserted a round trip for all of them
-     * — because DECISION G-3 escaped them all. Review finding CQ-9 withdrew that escape, so the raw sinks
-     * now REFUSE a hostile value instead of neutralising it, and asserting a round trip there would assert
-     * the exact behaviour CQ-9 reversed. The raw sinks move to the companion case below.
-     *
-     * ⭐ WHAT THIS CASE STILL PROVES IS THE PART THE LEGACY ITSELF GUARANTEES: at the six sinks
-     * `product.cfm` wraps in `htmlEditFormat`, a hostile value is DATA. It cannot open an element, cannot
-     * close the element it sits in, and comes back byte-identical through a real parse.
+     * Escaped sinks only. A raw sink refuses a hostile value rather than neutralising it, so a round trip
+     * cannot be asserted there; the nine raw sinks are covered by the companion case below.
      */
     const scenario = createScenario({
       host: CONFORMING_HOSTILE_HOST,
@@ -4909,7 +4159,9 @@ describe('NET-NEW ProductFeedBuilder — parsed well-formedness over hostile val
       productImages: [{ imagePath: FIRST_ADDITIONAL_IMAGE_PATH }],
     });
 
-    /* First: the document is well-formed at all. Everything below depends on this not having thrown. */
+    /*
+     * First: the document is well-formed at all. Everything below depends on this not having thrown.
+     */
     const root = parseXmlDocument(xml);
 
     /*
@@ -4922,7 +4174,7 @@ describe('NET-NEW ProductFeedBuilder — parsed well-formedness over hostile val
     expect(findElements(root, 'title')).toHaveLength(2);
 
     /*
-     * Positively: every ESCAPED sink hands the ORIGINAL BYTES back. This is the round trip — escaped on the
+     * Positively: every escaped sink hands the original bytes back. This is the round trip — escaped on the
      * way out, resolved by the parser on the way in — and it is a stronger statement than "no markup
      * appeared", because it also rules out an implementation that sanitised the value by dropping characters
      * from it.
@@ -4933,11 +4185,11 @@ describe('NET-NEW ProductFeedBuilder — parsed well-formedness over hostile val
     expect(soleElement(root, 'g:item_group_id').text).toBe(HOSTILE_TEXT);
 
     /*
-     * `title` and `description` each occur TWICE in a one-item feed — once at channel level and once at item
-     * level — so they are reached through their PARENT rather than by name across the whole tree. Doing that
+     * `title` and `description` each occur twice in a one-item feed — once at channel level and once at item
+     * level — so they are reached through their parent rather than by name across the whole tree. Doing that
      * is the point rather than a mechanical necessity: it asserts the two levels are still distinct elements
      * after a value tried to close one of them, which a whole-tree lookup could not show. The channel pair
-     * carries the CLEAN host here, which is what keeps this document parseable at all.
+     * carries the clean host here, which is what keeps this document parseable at all.
      */
     const channel = soleElement(root, 'channel');
     const item = soleElement(root, 'item');
@@ -4958,7 +4210,7 @@ describe('NET-NEW ProductFeedBuilder — parsed well-formedness over hostile val
     expect(soleElement(item, 'description').text).toBe(HOSTILE_TEXT);
 
     /*
-     * ⭐ AND THE RAW SINKS IN THIS DOCUMENT CARRY LEGITIMATE VALUES, EMITTED VERBATIM — which is the parity
+     * And the raw sinks in this document carry legitimate values, emitted verbatim — which is the parity
      * half of the census standing beside the safety half. No percent-encoding appears in any of the three
      * URLs, and the host returns byte-identical because it was never transformed at all.
      */
@@ -4973,7 +4225,7 @@ describe('NET-NEW ProductFeedBuilder — parsed well-formedness over hostile val
     );
 
     /*
-     * And the value really did travel — it is present in the raw text in its ESCAPED spelling, so none of
+     * And the value really did travel — it is present in the raw text in its escaped spelling, so none of
      * the assertions above passed because the datum was silently dropped. The double escape of the
      * already-escaped `&amp;` is visible here as `&amp;amp;`, and the `]]>` survives only because its `>`
      * became `&gt;`.
@@ -4984,15 +4236,8 @@ describe('NET-NEW ProductFeedBuilder — parsed well-formedness over hostile val
     expect(xml).not.toContain('<injected>');
   });
 
-  it('[NET-NEW] CQ-9 and SEC-2: the same hostile value at a RAW sink produces no document', async () => {
-    /*
-     * THE COMPANION TO THE ROUND TRIP ABOVE, AND THE REASON REVERSING G-3 LEAVES NOTHING OPEN.
-     *
-     * {@link HOSTILE_TEXT} carries `<`, a bare `&` and a literal `]]>` — every one of which the raw renderer
-     * refuses. So at a raw sink the outcome is not a neutralised value but NO DOCUMENT, which is what
-     * finding SEC-2 requires of a value that would otherwise poison the whole feed. {@link HOSTILE_HOST} is
-     * driven too, because the host is the one value that reaches BOTH channel-level fields.
-     */
+  it('[NET-NEW] the same hostile value at a RAW sink produces no document', async () => {
+    /* The companion to the round trip above: the raw sinks, which refuse rather than escape. */
     const rawSinkScenarios: readonly (() => ReturnType<typeof createScenario>)[] = [
       () => createScenario({ host: HOSTILE_HOST }),
       () => createScenario({ urlTitle: HOSTILE_TEXT }),
@@ -5021,19 +4266,7 @@ describe('NET-NEW ProductFeedBuilder — parsed well-formedness over hostile val
 
   it('[NET-NEW] refuses the same document with the escapes reversed, proving the scanner can fail', async () => {
     /*
-     * THE NEGATIVE CONTROL, AND THE CLOSEST THING TO A DIRECT MEASUREMENT OF WHAT THE ESCAPING BUYS.
-     *
-     * Reversing the four substitutions reconstructs the document that would exist if the SIX legacy-escaped
-     * sinks were emitted raw. The reversal is applied in the opposite order to the escape — `&amp;` LAST —
-     * so that an `&amp;amp;` collapses to `&amp;` rather than to a bare `&`, exactly as a single un-escaping
-     * pass over such output would.
-     *
-     * The scanner must refuse it. If it did not, every acceptance above would be worthless.
-     *
-     * ⚠️ THE HOST AND THE RAW SINKS ARE SEEDED CLEAN HERE, deliberately: under review finding CQ-9 they are
-     * emitted raw, so a hostile value at any of them never reaches a document at all (it is refused) and
-     * there would be nothing for this reversal to act on. The reversal therefore isolates the six sinks whose
-     * escaping is the legacy's own behaviour.
+     * The negative control, and the closest thing to a direct measurement of what the escaping buys.
      */
     const scenario = createScenario({
       host: CONFORMING_HOSTILE_HOST,
@@ -5053,7 +4286,9 @@ describe('NET-NEW ProductFeedBuilder — parsed well-formedness over hostile val
       .replaceAll('&quot;', '"')
       .replaceAll('&amp;', '&');
 
-    /* The reversal genuinely reintroduced the markup, so the refusal below is about that and nothing else. */
+    /*
+     * The reversal genuinely reintroduced the markup, so the refusal below is about that and nothing else.
+     */
     expect(unescaped).toContain('<injected>');
 
     expect(() => parseXmlDocument(escaped)).not.toThrow();
@@ -5061,32 +4296,9 @@ describe('NET-NEW ProductFeedBuilder — parsed well-formedness over hostile val
   });
 });
 
-/* =====================================================================================================
- * §10 SUPPORT — fixtures and readers used only by the three carried sections below.
- *
- * ⚠️ THESE TRAVELLED WITH THE SECTIONS THAT USE THEM. They were declared beside seven sections, four of
- * which are withdrawn (see the §10 banner). Removing those four took the declarations with them and left
- * the three survivors referencing names that no longer existed — a failure the compiler caught rather
- * than one a reader would have. Only the declarations the three surviving sections actually reference are
- * carried: the identifier fixtures, the item-field reader, the microtask drain and the second-product
- * builder. Nothing that existed solely for a memo or a cancellation signal is carried.
- * ================================================================================================== */
+/* §10 support — fixtures and readers used only by the three carried sections below. */
 
-/**
- * The sixteen live item fields, in the order `product.cfm` emits them.
- *
- * ⭐ THIS LIST IS DERIVED FROM THE LEGACY VIEW, NOT FROM THE PORT'S OUTPUT, and the direction matters:
- * transcribing it from a render would make the ordering assertion circular — it would prove only that
- * the builder is consistent with itself. Each entry carries the view line it comes from, so the sequence
- * can be diffed against `integrationServices/google/views/feed/product.cfm` line by line.
- *
- * `g:additional_image_link` appears ONCE here and repeats in the document, one element per product image
- * (`:L24`); the ordering case expands it to the record's actual image count before comparing.
- *
- * The four disabled blocks contribute nothing: they sit inside CFML server-side comments at `:L33-L38`,
- * `:L40-L57` and `:L59-L61`, so they never reached the document and §7 and §8 already prove the port did
- * not promote them.
- */
+/** The sixteen live item fields, in the order `product.cfm` emits them. */
 const LIVE_ITEM_FIELD_ORDER: readonly string[] = Object.freeze([
   'g:id', //                          product.cfm:L17
   'title', //                         product.cfm:L18
@@ -5106,13 +4318,7 @@ const LIVE_ITEM_FIELD_ORDER: readonly string[] = Object.freeze([
   'g:shipping_weight', //             product.cfm:L58 — two settings joined by one literal space
 ]);
 
-/**
- * Every element name inside the first `item`, in document order, opening tags only.
- *
- * Reading names rather than whole elements is what makes the ordering claim independent of every field's
- * VALUE, so this section fails for a reordering and stays green for a value change — which is precisely
- * the division of labour between it and §2 through §6.
- */
+/** Every element name inside the first `item`, in document order, opening tags only. */
 function itemFieldSequence(xml: string): readonly string[] {
   const openTag = '\t\t<item>';
   const closeTag = '\t\t</item>';
@@ -5132,7 +4338,7 @@ function itemFieldSequence(xml: string): readonly string[] {
   return names;
 }
 
-/** A second product identifier, so a case can put two records under two DIFFERENT products. */
+/** A second product identifier, so a case can put two records under two different products. */
 const OTHER_PRODUCT_ID = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb1';
 /** A third, for the three-record cancellation case. */
 const THIRD_PRODUCT_ID = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb3';
@@ -5141,26 +4347,11 @@ const THIRD_SKU_ID = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3';
 /**
  * A second SKU image file, so two records can own two DISTINCT resized reads, and the composed path the
  * image port answers for it.
- *
- * ⭐ IT IS SEEDED RATHER THAN LEFT TO THE DOUBLE'S ECHO. It was unseeded while the echo's bare file name
- * was harmless — an ordering case cares only that the two labels differ. Review finding F8 added
- * `assertSameOriginRelativePath` at the three URL sinks, and a bare file name is not a same-origin relative
- * path, so the echo would now be REFUSED: the double composes no directory on purpose, which means an
- * unseeded name comes back without the leading slash the real adapter always supplies. Seeding it keeps the
- * two labels distinct AND keeps the value one the port can actually produce.
  */
 const SECOND_SKU_IMAGE_FILE = 'nike-air-2.jpg';
 const SECOND_SKU_COMPOSED_PATH = `/product/default/${SECOND_SKU_IMAGE_FILE}`;
 
-/**
- * Hands control back to the event loop until every pending microtask has run.
- *
- * ⭐ IT IS A BARRIER, NOT A DELAY, AND THE DISTINCTION MATTERS FOR DETERMINISM. `setImmediate` is a
- * macrotask, so it is scheduled strictly AFTER the whole microtask queue drains — which means every
- * continuation the builder could take without waiting on a gated call has already been taken by the time
- * this resolves. No duration is named and no timer fires, so nothing here is flaky and nothing here
- * invents a figure (IR-12): the render is either waiting on a call the case controls, or it has finished.
- */
+/** Hands control back to the event loop until every pending microtask has run. */
 async function drainMicrotasks(): Promise<void> {
   await new Promise<void>((resolve) => {
     setImmediate(resolve);
@@ -5187,37 +4378,13 @@ function buildOtherProduct(
   return product;
 }
 
-/* =====================================================================================================
- * §10 — THREE SECTIONS CARRIED FORWARD, AND FOUR DELIBERATELY NOT.
- *
- * ⚠️ WHY THIS BANNER EXISTS. Seven further sections stood below §9. Four asserted behaviour that has
- * since been WITHDRAWN from the builder, and they are removed with it rather than weakened:
- *   - `the per-product pricing memo` and `the per-build pricing memo (F7)` asserted that a product's
- *     sale-price details and a SKU's resized image path were each resolved at most once per document,
- *     through `memoisePricingByProduct` / `memoiseResizedImagePaths` decorators bundled into a
- *     `FeedDocumentScope`. That memoisation is a FORBIDDEN OPTIMIZATION (AAP §0.8.2 guideline 4 — no
- *     enhancement beyond what the migration requires): `product.cfm` reads each value once per field,
- *     so the legacy call pattern is `n*(1+i)` and the port now reproduces it. §3 asserts the resize
- *     requests INCLUDING the duplicate, which is the assertion these two sections contradicted.
- *   - `cancellation between complete records` and `cancellation between two complete records (F9c)`
- *     asserted a `ProductFeedRenderOptions.signal` stop mechanism. That option is an UNAPPROVED
- *     ADDITION with no legacy counterpart, and settling a stop policy here would have resolved half of
- *     the delivery-model mismatch AAP §0.6.6 M2 requires to stay OPEN. Record selection still honours a
- *     signal — that is `ProductFeedQuery`'s own declared option, and `googleFeedHandler` still forwards
- *     it there.
- *
- * ⭐ THE THREE BELOW SURVIVE BECAUSE NONE DEPENDS ON EITHER WITHDRAWAL. Each was re-read against the
- * retained builder before being carried: they assert field ORDER, the no-expiration branch of the
- * conditional sale pair, and that dependency reads are issued ONE AT A TIME. The last is a property of
- * awaiting each port call in turn, which is if anything more visible once the memo is gone, since every
- * read now reaches the port.
- * ================================================================================================== */
+/* §10 — three sections carried forward, and four deliberately not. */
 
 describe('NET-NEW ProductFeedBuilder — the whole-item field order', () => {
   it('[NET-NEW] product.cfm:L17-L58 — a fully populated item emits all sixteen live fields in the legacy order', async () => {
     /*
-     * FULLY POPULATED MEANS EVERY CONDITIONAL BRANCH TAKEN. The two sale fields need a product price
-     * STRICTLY greater than the sale price; `g:brand` needs the brand ASSOCIATION present; and
+     * Fully populated means every conditional branch taken. The two sale fields need a product price
+     * strictly greater than the sale price; `g:brand` needs the brand association present; and
      * `g:additional_image_link` needs the product to carry images. Anything less than all three leaves a
      * hole in the sequence and the ordering claim becomes partial.
      */
@@ -5244,7 +4411,7 @@ describe('NET-NEW ProductFeedBuilder — the whole-item field order', () => {
 
     /*
      * The repeated field is expanded to the record's actual image count, so the comparison is against
-     * eighteen names for sixteen fields — and the three repeats sit BETWEEN `g:image_link` and
+     * eighteen names for sixteen fields — and the three repeats sit between `g:image_link` and
      * `g:condition` rather than being appended at the end, which is the ordering detail a naive
      * "collect the images last" implementation gets wrong.
      */
@@ -5284,17 +4451,11 @@ describe('NET-NEW ProductFeedBuilder — the whole-item field order', () => {
     });
 
     /*
-     * ⭐ ONE ORDERED COMPARISON RATHER THAN SIXTEEN INDEPENDENT `toContain` CALLS, WHICH IS THE WHOLE
-     * POINT. `toContain` is order-blind: sixteen of them pass against any permutation of the same
-     * sixteen lines. Joining the expected fields with newlines and asserting the document CONTAINS that
-     * exact block pins the values AND their adjacency in a single assertion, so a reordering, an
+     * One ordered comparison rather than sixteen independent `toContain` calls, which is the whole
+     * point. `toContain` is order-blind: sixteen of them pass against any permutation of the same
+     * sixteen lines. Joining the expected fields with newlines and asserting the document contains that
+     * exact block pins the values and their adjacency in a single assertion, so a reordering, an
      * insertion, a deletion or a changed byte all fail here.
-     *
-     * Every value below is derived from a seed this case set or from a module constant this file already
-     * declares — none is transcribed from a previous run. Two carried oddities are visible in it and
-     * neither is smoothed over: the item link keeps BOTH its leading and trailing slash
-     * (`model/entity/Product.cfc:L207-L209`), and the shipping weight is two setting values joined by one
-     * literal space (`:L58`).
      */
     const expectedFields = [
       '<g:id>TESTPRODUCTXXX-1</g:id>',
@@ -5322,9 +4483,9 @@ describe('NET-NEW ProductFeedBuilder — the whole-item field order', () => {
 
   it('[NET-NEW] omitting the two conditional families removes exactly those fields and disturbs no other position', async () => {
     /*
-     * THE COMPLEMENT OF THE CASE ABOVE, and it is what makes the ordering claim safe against the opposite
+     * The complement of the case above, and it is what makes the ordering claim safe against the opposite
      * error. With no sale, no brand and no images, the emitted sequence must be the sixteen-field list
-     * MINUS exactly four names — the two sale fields, the brand, and the repeated image — with every
+     * minus exactly four names — the two sale fields, the brand, and the repeated image — with every
      * surviving field still in its original relative position. An implementation that reordered on the
      * conditional path, or that emitted an empty placeholder for a skipped field, fails here.
      */
@@ -5357,7 +4518,7 @@ describe('NET-NEW ProductFeedBuilder — the whole-item field order', () => {
     const xml = await scenario.render({ skus: [scenario.sku, second] });
 
     /*
-     * The ordering contract is per ITEM and the record order is the port's. Both are asserted together
+     * The ordering contract is per item and the record order is the port's. Both are asserted together
      * because a concurrent render would satisfy neither reliably — and the builder awaits one item at a
      * time precisely so the emitted order cannot depend on resolution timing.
      */
@@ -5382,9 +4543,9 @@ describe('NET-NEW ProductFeedBuilder — a sale with NO expiration', () => {
   it('[NET-NEW] TODO(parity) product.cfm:L30 — an absent expiration renders an empty date and time, keeping the T, the hyphen and the offset', async () => {
     const scenario = createScenario({ productPrice: 100, skuPrice: 90 });
     /*
-     * ⭐ THE EXPIRATION KEY IS OMITTED, NOT SET TO `undefined`, AND THE DISTINCTION IS THE WHOLE CASE.
+     * The expiration key is omitted, not set to `undefined`, and the distinction is the whole case.
      * Under `exactOptionalPropertyTypes` those are different states, and `buildSalePriceDetails` exists to
-     * express the ABSENT one — which is what `model/entity/Sku.cfc:L560-L565` turns into the EMPTY STRING
+     * express the absent one — which is what `model/entity/Sku.cfc:L560-L565` turns into the empty string
      * rather than into a date. Every other sale case in this file supplies an expiration, so this is the
      * only route to the lenient endpoint branch.
      */
@@ -5394,14 +4555,11 @@ describe('NET-NEW ProductFeedBuilder — a sale with NO expiration', () => {
     const content = elementContent(xml, 'g:sale_price_effective_date');
 
     /*
-     * TODO(parity) — THE LENIENT BRANCH IS REPRODUCED BECAUSE IT IS THE ONE THAT PRODUCES OUTPUT AT ALL.
+     * TODO(parity) — the lenient branch is reproduced because it is the one that produces output at all.
      * The legacy accessor's empty-string return is fed straight into `dateFormat()` and `timeFormat()`,
-     * and CFML engines DISAGREE about that call: one renders nothing where another raises a conversion
+     * and CFML engines disagree about that call: one renders nothing where another raises a conversion
      * failure, so the legacy behaviour for a sale with no expiration is engine-dependent. The branch that
-     * emits is carried, and the four things it deliberately does NOT do are each asserted below.
-     *
-     * The second endpoint is therefore `T-5` — an empty date, the literal `T`, an empty time, the literal
-     * hyphen, and the raw offset. The delimiters survive their empty operands.
+     * emits is carried, and the four things it deliberately does not do are each asserted below.
      */
     expect(content).toBe(`${EXPECTED_EFFECTIVE_DATE_START}/T-${RAW_UTC_HOUR_OFFSET}`);
 
@@ -5410,10 +4568,10 @@ describe('NET-NEW ProductFeedBuilder — a sale with NO expiration', () => {
     expect(endpoints[1]).toBe(`T-${RAW_UTC_HOUR_OFFSET}`);
 
     /*
-     * ⛔ NO DATE IS INVENTED, AND THE RENDER INSTANT IS NOT SUBSTITUTED FOR THE MISSING EXPIRATION —
+     * No date is invented, and the render instant is not substituted for the missing expiration —
      * substituting it would advertise a sale ending the moment the feed was generated, which is both a
      * fabricated value and the worst possible one. The start endpoint's own date must therefore appear
-     * exactly ONCE in the range.
+     * exactly once in the range.
      */
     expect(countOccurrences(content ?? '', '2024-01-01')).toBe(1);
     expect(content).not.toContain('2024-02-08');
@@ -5429,8 +4587,8 @@ describe('NET-NEW ProductFeedBuilder — a sale with NO expiration', () => {
     const xml = await scenario.render();
 
     /*
-     * ⚠️ THE MISSING EXPIRATION MUST NOT SUPPRESS EITHER FIELD. The legacy condition at `:L28` tests only
-     * the PRICE COMPARISON, so an absent expiration cannot drop the pair — and dropping `g:sale_price`
+     * The missing expiration must not suppress either field. The legacy condition at `:L28` tests only
+     * the price comparison, so an absent expiration cannot drop the pair — and dropping `g:sale_price`
      * along with the date would remove a discount the catalogue genuinely carries. The field census and
      * the ordering are asserted rather than only the presence.
      */
@@ -5449,7 +4607,7 @@ describe('NET-NEW ProductFeedBuilder — a sale with NO expiration', () => {
     const xml = await scenario.render();
 
     /*
-     * `:L30` ends with a literal tab after the closing tag, and it belongs to the ELEMENT rather than to
+     * `:L30` ends with a literal tab after the closing tag, and it belongs to the element rather than to
      * the value — so an endpoint that renders empty must not take the tab with it. It is the only element
      * in the document that carries one, which is asserted alongside so a stray second tab would also fail.
      */
@@ -5488,7 +4646,7 @@ describe('NET-NEW ProductFeedBuilder — a sale with NO expiration', () => {
   });
 });
 
-describe('NET-NEW — one dependency read outstanding at a time (F8a)', () => {
+describe('NET-NEW — one dependency read outstanding at a time', () => {
   it('NET-NEW — record N+1 does not start its pricing read until record N has resolved', async () => {
     const scenario = createScenario({ deferPricing: true, productPrice: 100, skuPrice: 90 });
     const otherProduct = buildOtherProduct(scenario.productType, OTHER_PRODUCT_ID, 'OTHER', 50);
@@ -5501,7 +4659,7 @@ describe('NET-NEW — one dependency read outstanding at a time (F8a)', () => {
     });
 
     /*
-     * TWO DIFFERENT PRODUCTS, deliberately. The F7 memo means two SKUs of ONE product share a single read,
+     * Two different products, deliberately. The memo means two SKUs of one product share a single read,
      * which would leave nothing to sequence — so a case about ordering has to defeat the memo to have two
      * reads to order at all.
      */
@@ -5510,8 +4668,8 @@ describe('NET-NEW — one dependency read outstanding at a time (F8a)', () => {
     await drainMicrotasks();
 
     /*
-     * ⭐ THE ASSERTION THE WHOLE SECTION IS FOR. The render is now as far as it can get without help, and
-     * that point is INSIDE record one: one read started, one outstanding, and record two's product has not
+     * The assertion the whole section is for. The render is now as far as it can get without help, and
+     * that point is inside record one: one read started, one outstanding, and record two's product has not
      * been asked about at all. A concurrent implementation would show two of each here.
      */
     expect(scenario.pricing.requestedProductIds).toStrictEqual([PRODUCT_ID]);
@@ -5531,8 +4689,10 @@ describe('NET-NEW — one dependency read outstanding at a time (F8a)', () => {
     scenario.pricing.settleNextRead();
     const xml = await running;
 
-    /* Resolution order matched start order, and the document is in record order — the sequencing bought
-     * ordering, not merely a different call pattern. */
+    /*
+     * Resolution order matched start order, and the document is in record order — the sequencing bought
+     * ordering, not merely a different call pattern.
+     */
     expect(scenario.pricing.resolvedProductIds).toStrictEqual([PRODUCT_ID, OTHER_PRODUCT_ID]);
     expect(xml.indexOf('<g:id>TESTPRODUCTXXX-1</g:id>')).toBeLessThan(
       xml.indexOf('<g:id>OTHER-1</g:id>'),
@@ -5565,9 +4725,9 @@ describe('NET-NEW — one dependency read outstanding at a time (F8a)', () => {
     const running = scenario.render({ skus: records });
 
     /*
-     * Driven as a loop rather than as three hand-written steps, so the invariant is stated ONCE and holds
+     * Driven as a loop rather than as three hand-written steps, so the invariant is stated once and holds
      * for every record instead of only for the boundary the case happened to write out. The outstanding
-     * count is checked BEFORE each settle, which is the moment a concurrent implementation would have
+     * count is checked before each settle, which is the moment a concurrent implementation would have
      * more than one parked.
      */
     const outstandingHighWaterMark: number[] = [];
@@ -5600,7 +4760,7 @@ describe('NET-NEW — one dependency read outstanding at a time (F8a)', () => {
     });
 
     /*
-     * FOUR reads make up one record's image work: the SKU's own composed path, the SKU's resized path, and
+     * Four reads make up one record's image work: the SKU's own composed path, the SKU's resized path, and
      * one resized path per additional image. They are driven one at a time and the outstanding set is
      * recorded before each settle, so both the ORDER and the one-at-a-time invariant come out of the same
      * loop. A concurrent image map would park the additional images together and fail the length check.
@@ -5642,23 +4802,17 @@ describe('NET-NEW — one dependency read outstanding at a time (F8a)', () => {
   it('NET-NEW — record two starts no image read until every image read of record one has resolved', async () => {
     const scenario = createScenario({
       deferImages: true,
-      /* BOTH files seeded, because supplying this member REPLACES the default single-entry map. See
-       * {@link SECOND_SKU_COMPOSED_PATH} for why an unseeded second file is no longer viable. */
+      /*
+       * Both files seeded, because supplying this member replaces the default single-entry map. See
+       * {@link SECOND_SKU_COMPOSED_PATH} for why an unseeded second file is no longer viable.
+       */
       imagePathsByImageFile: {
         [SKU_IMAGE_FILE]: SKU_COMPOSED_IMAGE_PATH,
         [SECOND_SKU_IMAGE_FILE]: SECOND_SKU_COMPOSED_PATH,
       },
     });
     const otherProduct = buildOtherProduct(scenario.productType, OTHER_PRODUCT_ID, 'OTHER', 50);
-    /*
-     * A DIFFERENT image file on record two, and no additional images on either record.
-     *
-     * ⚠️ THE MEMO WOULD OTHERWISE SWALLOW THE SECOND RECORD'S WORK ENTIRELY, and that is a real finding
-     * rather than a fixture inconvenience: `memoiseResizedImagePaths` is keyed on the whole request, so two
-     * records whose SKUs carry the SAME image file share ONE resized read across records — which leaves
-     * nothing to sequence. Distinct files give each record its own two reads and put the question back to
-     * the record loop.
-     */
+    /* A different image file on record two, and no additional images on either record. */
     const otherSku = buildSku({
       skuID: SECOND_SKU_ID,
       skuCode: 'OTHER-1',
@@ -5685,7 +4839,7 @@ describe('NET-NEW — one dependency read outstanding at a time (F8a)', () => {
     await drainMicrotasks();
 
     /*
-     * ⭐ THE CROSS-RECORD BOUNDARY. Exactly two reads had resolved before record two asked for anything, and
+     * The cross-record boundary. Exactly two reads had resolved before record two asked for anything, and
      * the third — record two's first — is only outstanding now. A concurrent record loop would have had
      * record two's reads parked alongside record one's from the very first drain.
      */
@@ -5701,7 +4855,9 @@ describe('NET-NEW — one dependency read outstanding at a time (F8a)', () => {
 
     const xml = await running;
 
-    /* All four reads resolved in start order, and both items are in the document in record order. */
+    /*
+     * All four reads resolved in start order, and both items are in the document in record order.
+     */
     expect(scenario.images.resolved).toStrictEqual([
       `getImagePath:${SKU_IMAGE_FILE}`,
       `getResizedImagePath:${SKU_COMPOSED_IMAGE_PATH}`,
@@ -5716,36 +4872,9 @@ describe('NET-NEW — one dependency read outstanding at a time (F8a)', () => {
   });
 });
 
-/* =====================================================================================================
- * THE SHIPPED FEED WIRING — REVIEW FINDING F4
- *
- * Everything above this line asserts the SERIALIZER against hand-built records, which is what the
- * declared suite is for. It cannot, on its own, catch the defect F4 reported: the serializer's repeated
- * `g:additional_image_link` path was exhaustively covered while the PRODUCTION factory wired a reader
- * that answered `[]` for every product, so nothing that path emits could ever appear in a deployed feed.
- * A suite that only ever supplies its own records is blind to that by construction.
- *
- * ⭐ SO THESE CASES CROSS THE WIRING INSTEAD, THROUGH THE REAL COMPOSITION ROOT. `createCatalogContainer`
- * builds the graph and `createGoogleFeedHandlerFromContainer` builds the operation, both unmodified, with
- * only the four boundary collaborators this feed reaches substituted — the SmartList port that supplies
- * the records, and the setting, image-path and pricing ports the serializer holds. The record selection,
- * the serializer, the response shaping and the image reader are all the shipped ones.
- *
- * ⚠️ THE MODULES ARE REACHED BY `require` AFTER `process.env` IS SET, AND THAT IS FORCED RATHER THAN
- * PREFERRED. `src/config/container.ts` statically imports `src/config/env.ts`, which validates the
- * environment as a MODULE-LOAD side effect, and `src/config/database.ts`, which creates the `mysql2` pool
- * at module scope. A static import at the top of this file would therefore run both before any case
- * could set a variable. `createPool` is synchronous and opens no connection until one is checked out
- * (`src/config/database.ts` DECISION A), so no database exists, is contacted, or is needed anywhere
- * below — measured, not assumed: every case here passes with no server listening.
- *
- * ⛔ NO CLOCK IS FAKED AND NO TIMER IS INSTALLED. `createGoogleFeedHandlerFromContainer` wires the real
- * `FEED_RENDER_CLOCK`, so the two timestamp fields carry the wall clock. Nothing below asserts on them —
- * the timestamp contract is settled by the render-context cases above, which inject an instant — so the
- * suite keeps its no-fake-timers property (AAP §0.7.3 S6).
- * ================================================================================================== */
+/* The shipped feed wiring. */
 
-/** The handler module read as TEXT, for the source-level halves of the F4 assertions. */
+/** The handler module read as text, for the source-level halves of the assertions. */
 const FEED_HANDLER_SOURCE_PATH = join(
   __dirname,
   '..',
@@ -5755,14 +4884,7 @@ const FEED_HANDLER_SOURCE_PATH = join(
   'googleFeedHandler.ts',
 );
 
-/**
- * Every variable `src/config/env.ts` reads, cleared before each wiring case applies its own.
- *
- * Exhaustive on purpose: a value left behind by the ambient environment of the machine running the suite
- * could otherwise decide whether a case passes. The list is the same one
- * `src/config/env.ts` reads, and a variable added to the loader without being added here would surface as
- * a load failure naming itself rather than as a silent pass.
- */
+/** Every variable `src/config/env.ts` reads, cleared before each wiring case applies its own. */
 const FEED_WIRING_VARIABLE_NAMES: readonly string[] = Object.freeze([
   'DB_HOST',
   'DB_PORT',
@@ -5778,9 +4900,11 @@ const FEED_WIRING_VARIABLE_NAMES: readonly string[] = Object.freeze([
   'SETTING_SKU_ELIGIBLE_CURRENCIES',
   'SETTING_SKU_ELIGIBLE_FULFILLMENT_METHODS',
 
-  /* The six resource bounds of README §8.1, listed for the same exhaustiveness reason as the rest: a figure
+  /*
+   * The six resource bounds of README §8.1, listed for the same exhaustiveness reason as the rest: a figure
    * left behind by the ambient environment could otherwise decide whether a bounded route here serves or
-   * refuses. Values in {@link FEED_WIRING_ENVIRONMENT}. */
+   * refuses. Values in {@link FEED_WIRING_ENVIRONMENT}.
+   */
   'CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY',
   'CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY',
   'CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST',
@@ -5789,14 +4913,7 @@ const FEED_WIRING_VARIABLE_NAMES: readonly string[] = Object.freeze([
   'CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES',
 ]);
 
-/**
- * A valid environment for the wiring cases.
- *
- * `GOOGLE_FEED_HOST` is {@link RENDER_HOST} so the absolute URLs the shipped handler composes are the
- * same {@link ABSOLUTE_URL_PREFIX} every other case in this file expects — the host is the ONE value the
- * handler reads from configuration, and matching it here is what lets a wiring case assert a full URL.
- * `DB_QUEUE_LIMIT` is `'1'` rather than `'0'` because the loader enforces a floor of 1.
- */
+/** A valid environment for the wiring cases. */
 const FEED_WIRING_ENVIRONMENT: Readonly<Record<string, string>> = Object.freeze({
   DB_HOST: 'localhost',
   DB_PORT: '3306',
@@ -5810,37 +4927,14 @@ const FEED_WIRING_ENVIRONMENT: Readonly<Record<string, string>> = Object.freeze(
   GOOGLE_FEED_HOST: RENDER_HOST,
 
   /*
-   * ⭐ SEC-1 — THE ANONYMOUS ROUTE REQUIRES A STATED CEILING, SO THIS FIXTURE STATES ONE. The gate the
-   * composition root builds refuses an UNBOUNDED anonymous materialisation, and `google:feed.product` is
+   * — the anonymous route requires a stated ceiling, so this fixture states one. The gate the
+   * composition root builds refuses an unbounded anonymous materialisation, and `google:feed.product` is
    * the one anonymous address in the slice [`integrationServices/google/controllers/feed.cfc:L54-L56`].
-   * Every case in this section drives the SHIPPED wiring, so a fixture that stated no ceiling would get a
+   * Every case in this section drives the shipped wiring, so a fixture that stated no ceiling would get a
    * `500` from the gate before the image semantics under test were ever reached — which is what a
    * deployment gets too, and is correct.
-   *
-   * ⛔ SO THE FIGURE IS THE FIXTURE'S, NOT A DEFAULT ANYWHERE IN THE SOURCE. `../../src/config/env.ts`
-   * declares the variable OPTIONAL with no default (IR-12), and the gate's own behaviour — refusing when
-   * nothing is stated, rendering when something is — is asserted by the two dedicated SEC-1 cases in the
-   * handler section below rather than here. This value is only what lets these cases reach the serializer.
    */
-  /*
-   * ⭐⭐ SEC-DOS-01/02/03 — THE SIX RESOURCE BOUNDS, AND WHY A FIXTURE MAY STATE THEM.
-   *
-   * `../../src/config/env.ts` declares all six OPTIONAL with NO default, because IR-12 and AAP §0.7.3 S9
-   * forbid this port from AUTHORING a capacity figure. What the port does instead is refuse to serve a
-   * bounded route until an operator states one: each bound is reached through a RESOLVER that raises a
-   * named `ConfigurationError` when the variable is unset, so an unstated bound fails CLOSED rather than
-   * silently unbounded.
-   *
-   * ⛔ THIS FIXTURE IS THE OPERATOR. A test supplying a figure is not introducing a production default; it
-   * is standing in for the deployment that must state one, which is the only way to exercise the mechanism.
-   * Every figure is deliberately GENEROUS so that no case in this section is decided by a ceiling — these
-   * cases are about the SERIALIZER and the wiring. Each bound's own refuse-at-the-ceiling behaviour is
-   * asserted by dedicated cases that state a deliberately TIGHT figure.
-   *
-   * The two feed bounds matter most here, because `google:feed.product` is the route these cases drive:
-   * `..._MAX_IMAGES_PER_RECORD` bounds the per-record `g:additional_image_link` expansion, and
-   * `..._MAX_RESPONSE_BYTES` bounds the finished document.
-   */
+  /* /02/03 — the six resource bounds, and why a fixture may state them. */
   CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY: '5000',
   CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY: '250',
   CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST: '10000',
@@ -5858,7 +4952,7 @@ interface ShippedFeedWiring {
 /**
  * Load the composition root and the feed entry point with a valid environment in place.
  *
- * @returns the two shipped factories, freshly loaded
+ * @returns the two shipped factories, freshly loaded.
  */
 function loadShippedFeedWiring(): ShippedFeedWiring {
   for (const name of FEED_WIRING_VARIABLE_NAMES) {
@@ -5896,21 +4990,7 @@ const ENVIRONMENT_BEFORE_WIRING_CASES: Readonly<Record<string, string | undefine
   },
 );
 
-/**
- * Attach one image to `product` THROUGH the entity's own helper, and answer the association.
- *
- * ⭐ THE ELEMENT TYPE IS THE WHOLE REASON F4 HAS A BOUNDARY AT ALL. `Product.productImages` is typed
- * `ProductOwnedAssociation`, which declares ONLY `setProduct` and `removeProduct` — there is no path
- * member on it — so a reader can count a product's images and cannot read one. Building the element here
- * from that interface rather than from an image entity states the same fact in the test.
- *
- * ⚠️ THE OWNING SIDE REGISTERS, WHICH IS WHY A NO-OP ASSOCIATION WOULD PROVE NOTHING.
- * `Product.addProductImage` is a bare `productImage.setProduct(this)`, faithful to
- * `model/entity/Product.cfc:L688-L690`, so the ENTITY never touches its own collection: it is the
- * association's `setProduct` that appends. A first draft of this helper returned two empty mutators, and
- * the collection stayed empty through two `addProductImage` calls — which read as a source defect and was
- * this harness misdescribing the legacy relationship.
- */
+/** Attach one image to `product` through the entity's own helper, and answer the association. */
 function attachProductImage(product: Product): ProductOwnedAssociation {
   const association: ProductOwnedAssociation = {
     setProduct: (owner: Product): void => {
@@ -5928,13 +5008,7 @@ function attachProductImage(product: Product): ProductOwnedAssociation {
   return association;
 }
 
-/**
- * Run `operation` and answer whatever it threw, or `undefined` when it returned.
- *
- * Needed because `loadShippedFeedWiring` resets the module registry, which gives the container graph its
- * own class objects — so a refusal has to be asserted on its observable identity rather than with
- * `toThrow(SomeClass)`. See the case that uses it.
- */
+/** Run `operation` and answer whatever it threw, or `undefined` when it returned. */
 function captureThrown(operation: () => unknown): unknown {
   try {
     operation();
@@ -5952,7 +5026,7 @@ function additionalImageElements(xml: string): readonly string[] {
     .filter((line) => line.startsWith('<g:additional_image_link>'));
 }
 
-describe('NET-NEW ProductFeedBuilder — the shipped feed wiring (F4)', () => {
+describe('NET-NEW ProductFeedBuilder — the shipped feed wiring', () => {
   afterEach(() => {
     for (const name of FEED_WIRING_VARIABLE_NAMES) {
       const before = ENVIRONMENT_BEFORE_WIRING_CASES[name];
@@ -5964,12 +5038,12 @@ describe('NET-NEW ProductFeedBuilder — the shipped feed wiring (F4)', () => {
     }
   });
 
-  it('[NET-NEW] the shipped factory publishes the container reader images as repeated elements in input order (F4)', async () => {
+  it('[NET-NEW] the shipped factory publishes the container reader images as repeated elements in input order', async () => {
     const scenario = createScenario();
     scenario.smartList.enqueue({ kind: 'page', metrics: {}, records: [scenario.sku] });
 
     /*
-     * FOUR IMAGES, DELIBERATELY NOT SORTED AND DELIBERATELY CARRYING A REPEAT. The order is third,
+     * Four images, deliberately not sorted and deliberately carrying a repeat. The order is third,
      * first, second, first — so a document that sorted, de-duplicated or filtered them would differ from
      * this expectation, and one that emitted them in the collection's own order matches it. This is the
      * order `integrationServices/google/views/feed/product.cfm:L24` walks.
@@ -6002,8 +5076,8 @@ describe('NET-NEW ProductFeedBuilder — the shipped feed wiring (F4)', () => {
     expect(xml.startsWith(EXPECTED_XML_DECLARATION)).toBe(true);
 
     /*
-     * ⭐ THE ASSERTION F4 ASKED FOR. Four elements, each carrying its OWN resized path, in the exact
-     * order the reader returned them. The predecessor wiring produced ZERO of these for any input.
+     * The assertion asked for. Four elements, each carrying its own resized path, in the exact
+     * order the reader returned them. The predecessor wiring produced zero of these for any input.
      */
     expect(additionalImageElements(xml)).toStrictEqual([
       `<g:additional_image_link>${ABSOLUTE_URL_PREFIX}${THIRD_ADDITIONAL_IMAGE_PATH}</g:additional_image_link>`,
@@ -6012,13 +5086,17 @@ describe('NET-NEW ProductFeedBuilder — the shipped feed wiring (F4)', () => {
       `<g:additional_image_link>${ABSOLUTE_URL_PREFIX}${FIRST_ADDITIONAL_IMAGE_PATH}</g:additional_image_link>`,
     ]);
 
-    /* The reader was consulted once, with the SKU the port selected — not with the product, and not
-     * once per image. `product.cfm:L24` reaches the collection through the SKU it is rendering. */
+    /*
+     * The reader was consulted once, with the SKU the port selected — not with the product, and not
+     * once per image. `product.cfm:L24` reaches the collection through the SKU it is rendering.
+     */
     expect(readerSubjects).toStrictEqual([scenario.sku]);
 
-    /* Every image the reader yielded was resolved through `ImagePathPort`, which is the other half of
-     * F4's resolution: the reader supplies paths, the port resizes them. Five resize calls in all — one
-     * for the SKU's own image and one per additional image. */
+    /*
+     * Every image the reader yielded was resolved through `ImagePathPort`, which is the other half of
+     * 's resolution: the reader supplies paths, the port resizes them. Five resize calls in all — one
+     * for the SKU's own image and one per additional image.
+     */
     expect(resizeRequests(scenario.images).map((request) => request.imagePath)).toStrictEqual([
       SKU_COMPOSED_IMAGE_PATH,
       THIRD_ADDITIONAL_IMAGE_PATH,
@@ -6028,7 +5106,7 @@ describe('NET-NEW ProductFeedBuilder — the shipped feed wiring (F4)', () => {
     ]);
   });
 
-  it('[NET-NEW] the shipped default answers an empty list for a product whose image collection is empty (F4)', async () => {
+  it('[NET-NEW] the shipped default answers an empty list for a product whose image collection is empty', async () => {
     const scenario = createScenario();
     expect(scenario.product.getProductImages()).toHaveLength(0);
     scenario.smartList.enqueue({ kind: 'page', metrics: {}, records: [scenario.sku] });
@@ -6044,16 +5122,16 @@ describe('NET-NEW ProductFeedBuilder — the shipped feed wiring (F4)', () => {
     const response = await wiring.createGoogleFeedHandlerFromContainer(container).product();
 
     /*
-     * ⭐ `[]` IS THE LEGACY OUTPUT HERE, WHICH IS WHY IT IS NOT A FABRICATION.
+     * `[]` is the legacy output here, which is why it is not a fabrication.
      * `integrationServices/google/views/feed/product.cfm:L24` emits one element per entry, so an empty
-     * collection emits none — and this is the ONLY input for which the empty answer is the truthful one.
+     * collection emits none — and this is the only input for which the empty answer is the truthful one.
      */
     expect(response.statusCode).toBe(200);
     expect(response.body).toContain('<g:image_link>');
     expect(response.body).not.toContain('<g:additional_image_link');
   });
 
-  it('[NET-NEW] the shipped default REFUSES a product that carries images rather than reporting none (F4)', async () => {
+  it('[NET-NEW] the shipped default REFUSES a product that carries images rather than reporting none', async () => {
     const scenario = createScenario();
     attachProductImage(scenario.product);
     attachProductImage(scenario.product);
@@ -6071,7 +5149,7 @@ describe('NET-NEW ProductFeedBuilder — the shipped feed wiring (F4)', () => {
     const response = await wiring.createGoogleFeedHandlerFromContainer(container).product();
 
     /*
-     * ⭐ THE WHOLE OF FINDING F4, AS ONE ASSERTION. The predecessor wiring answered 200 with a complete,
+     * The whole of finding, as one assertion. The predecessor wiring answered 200 with a complete,
      * well-formed, entirely plausible feed in which both images had silently vanished. The shipped
      * wiring answers the boundary refusal instead, so an operator learns that a boundary was reached
      * rather than publishing a product's images as absent.
@@ -6079,19 +5157,23 @@ describe('NET-NEW ProductFeedBuilder — the shipped feed wiring (F4)', () => {
     expect(response.statusCode).toBe(501);
     expect(response.body).toContain('This operation is not implemented');
 
-    /* AND NOTHING PARTIAL IS PUBLISHED. The document is built whole or not at all, so no envelope, no
-     * channel and no item reaches the body. */
+    /*
+     * And nothing partial is published. The document is built whole or not at all, so no envelope, no
+     * channel and no item reaches the body.
+     */
     expect(response.body).not.toContain('<rss');
     expect(response.body).not.toContain('<item>');
     expect(response.body).not.toContain('<g:additional_image_link');
 
-    /* The refusal discloses no member identifier and no locator — that is `errorResponse`'s rule, and it
-     * holds for this boundary exactly as it does for the five ports beside it. */
+    /*
+     * The refusal discloses no member identifier and no locator — that is `errorResponse`'s rule, and it
+     * holds for this boundary exactly as it does for the five ports beside it.
+     */
     expect(response.body).not.toContain('ProductFeedImageReader');
     expect(response.body).not.toContain('model/entity/Image.cfc');
   });
 
-  it('[NET-NEW] the shipped default reader answers each of its three inputs directly (F4)', () => {
+  it('[NET-NEW] the shipped default reader answers each of its three inputs directly', () => {
     const scenario = createScenario();
 
     const wiring = loadShippedFeedWiring();
@@ -6102,27 +5184,20 @@ describe('NET-NEW ProductFeedBuilder — the shipped feed wiring (F4)', () => {
       pricing: scenario.pricing.pricing,
     }).productFeedImages;
 
-    /* 1. NO PRODUCT — `[]`, deliberately not a refusal. `ProductFeedBuilder.requireProduct` already
-     *    raises for such a record, reproducing the legacy null dereference at `product.cfm:L18`, so
-     *    raising here too would put the same rule on both sides of a layer boundary and would replace a
-     *    message that names the SKU with one that does not. */
+    /*
+     * 1. no product — `[]`, deliberately not a refusal. `ProductFeedBuilder.requireProduct` already
+     * raises for such a record, reproducing the legacy null dereference at `product.cfm:L18`, so
+     * raising here too would put the same rule on both sides of a layer boundary and would replace a
+     * message that names the SKU with one that does not.
+     */
     expect(readProductImages(buildSku({ skuID: SKU_ID, skuCode: 'NO-PRODUCT-1' }))).toStrictEqual(
       [],
     );
 
-    /* 2. A PRODUCT WITH NO IMAGES — `[]`, which is the legacy output for that product. */
+    /* 2. A product with no images — `[]`, which is the legacy output for that product. */
     expect(readProductImages(scenario.sku)).toStrictEqual([]);
 
-    /* 3. A PRODUCT THAT CARRIES ONE IMAGE — a refusal, on the very first image.
-     *
-     * ⚠️ `toThrow(NotImplementedError)` IS DELIBERATELY NOT USED, AND THE REASON IS THE LOADER RATHER
-     * THAN THE ERROR. `loadShippedFeedWiring` calls `jest.resetModules()`, so the container's graph holds
-     * a FRESHLY REQUIRED `src/errors/DomainError` whose class object is not the one this file imported
-     * statically — the constructor check fails with the memorable "Expected constructor:
-     * NotImplementedError / Received constructor: NotImplementedError". `test/config/env.test.ts` records
-     * the same finding for its own configuration error. The assertions below are therefore on the
-     * observable identity: the class NAME, which `src/errors/DomainError.ts:L407` sets from
-     * `new.target.name`, the refusing MEMBER, and the diagnostic text. */
+    /* 3. A product that carries one image — a refusal, on the very first image. */
     attachProductImage(scenario.product);
     const refusal = captureThrown(() => readProductImages(scenario.sku));
     expect(refusal).toBeInstanceOf(Error);
@@ -6134,110 +5209,52 @@ describe('NET-NEW ProductFeedBuilder — the shipped feed wiring (F4)', () => {
     );
   });
 
-  it('[NET-NEW] the shipped factory takes its reader from the container and declares no constant-empty reader (F4)', () => {
+  it('[NET-NEW] the shipped factory takes its reader from the container and declares no constant-empty reader', () => {
     const source = partitionBuilderSource(readFileSync(FEED_HANDLER_SOURCE_PATH, 'utf8'));
 
     /*
-     * The wiring itself, in CODE rather than in a comment — and the literal is the whole expression, which
-     * asserts TWO settled facts at once: the reader's only source is the composition root, and a caller's
-     * `overrides.readProductImages` takes precedence over it. An earlier revision searched for
-     * `readProductImages: container.productFeedImages` alone, before the override slot existed; matching the
-     * shorter literal would now pass while silently permitting the slot's removal.
+     * The wiring itself, in code rather than in a comment — and the literal is the whole
+     * expression, which asserts two facts at once: the reader's only source is the composition
+     * root, and a caller's `overrides.readProductImages` takes precedence over it. Searching for
+     * `readProductImages: container.productFeedImages` alone would miss the override slot: matching
+     * that shorter literal would pass while silently permitting the slot's removal.
      */
     expect(
       codeOffsetsOf(source, 'overrides?.readProductImages ?? container.productFeedImages'),
     ).toHaveLength(1);
 
     /*
-     * ⛔ AND NO READER IS DECLARED IN THIS FILE AT ALL. The defect was a module-scope
-     * `const readNoProductImages: ProductFeedImageReader = () => [];`, so the check is that NOTHING in
-     * the executable text binds a value of that type. The withdrawal note above the factory QUOTES the
-     * deleted line verbatim, which is exactly why the search is over code spans only — a whole-text
-     * `not.toContain` would report the documentation as the defect.
+     * And no reader is declared in this file at all: a module-scope
+     * `const readNoProductImages: ProductFeedImageReader = () => [];` would make a silently incomplete
+     * feed the shipped default, so the check is that nothing in the executable text binds a value of
+     * that type. The search is over code spans only, so prose that names the rejected binding cannot
+     * itself trip the assertion.
      */
     const executableText = spanText(source, source.codeSpans);
     expect(executableText).not.toContain('readNoProductImages');
     expect(/:\s*ProductFeedImageReader\s*=/.test(executableText)).toBe(false);
     expect(/readProductImages:\s*\(\s*\)\s*=>/.test(executableText)).toBe(false);
-
-    /* The withdrawal IS documented, so a later revision cannot quietly restore the constant reader
-     * without contradicting the file it lives in. */
-    const commentText = spanText(source, source.commentSpans);
-    expect(commentText).toContain('THERE IS NO `readNoProductImages`');
-    expect(commentText).toContain('REVIEW FINDING F4');
   });
 });
 
-/* =====================================================================================================
- * FOLDED IN FROM `test/integrations/ProductFeedQuery.test.ts` — AAP §0.4.1.12 SUITE ALIGNMENT (F1, F5, F7)
- * =====================================================================================================
- * WHY THESE CASES ARE HERE RATHER THAN IN A SUITE OF THEIR OWN. AAP §0.4.1.12 declares exactly seventeen
- * executable suites, and `test/integrations/ProductFeedQuery.test.ts` was not one of them — a QA pass recorded it,
- * with eighteen siblings, as running outside the declared test plan. The coverage was never the problem;
- * the file's existence was. So the cases are folded into an approved suite, unchanged.
- *
- * ⭐ WHY THIS HOST. The feed splits three ways and this is the second of the three: `ProductFeedQuery` composes the
- * selection `integrationServices/google/controllers/feed.cfc:L49-L74` describes, and this file serializes
- * what it selects. The host's own header used to record the joins and filters as "commentary, not asserted
- * here"; folding the query's cases in is what makes them asserted, which is half of review finding F7.
- *
- * ⛔ THE BODY IS WRAPPED IN ONE `describe`, WHICH IS THE WHOLE OF THE MECHANICAL CHANGE. Every helper,
- * constant and type the folded suite declared at module scope is now block-scoped to this callback, so it
- * cannot collide with this file's own declarations or with another folded body's — and any `beforeEach`,
- * `afterEach` or `beforeAll` it carries now applies to its own cases only, never to the host's. Not one
- * assertion, case name or comment was altered.
- * ================================================================================================== */
-
-/**
- * Google product-feed record selection — INT-01.
- *
- * AAP authority: AAP §0.4.4 authorises `slatwall-ts/test/**` | CREATE. This file covers
- * `src/integrations/google/ProductFeedQuery.ts` and the two layers its declaration has to survive:
- * `translateSmartListInput` in `src/ports/SmartListQueryPort.ts`, and the SQL emitter in
- * `src/adapters/mysql/SmartListQueryBuilder.ts`.
- *
- * =================================================================================================
- * WHAT THESE CASES PROVE
- * =================================================================================================
- * `integrationServices/google/controllers/feed.cfc:L63-L72` makes SEVEN additions to the SKU smart
- * list: three related-property joins (`:L64-L66`), three equality filters (`:L68-L70`) and one range
- * (`:L72`). Before this fix the four DATA additions crossed into the target and THE THREE JOINS DID
- * NOT — they were transcribed into an exported constant and then never handed to anything, so the
- * emitted SQL named neither the product's default SKU nor its brand. The feed's own field mapping reads
- * both.
- *
- * The cases below assert the three things that have to hold for that to be genuinely fixed rather than
- * merely plumbed:
- *
- *   1. the transcription still matches `feed.cfc:L64-L66` exactly — right pairs, right order, and the
- *      `left` kind on the brand join present while the other two omit the kind entirely;
- *   2. all seven additions arrive in ONE call, and the three joins land AFTER the three the SKU service
- *      declares for every smart list, because two of the feed's name `SlatwallProduct` as their parent
- *      and that entity is in the registry only because a service join put it there;
- *   3. the joins reach the emitted statement, the duplicated one is absorbed rather than doubled, and
- *      nothing renders as an inner join — an inner join on brand would silently drop every brandless
- *      product out of a merchant feed.
- *
- * ⚠️ EVERY JOIN RENDERS AS `LEFT JOIN`, AND THAT IS THE LEGACY BEHAVIOUR RATHER THAN A BUG IN THESE
- * ASSERTIONS. `org/Hibachi/HibachiSmartList.cfc:L212` defaults the join kind to the EMPTY STRING and
- * `:L537-L540` rewrites an empty kind to `left`, so an omitted kind and an explicit `left` emit the same
- * keyword. Asserting that no statement contains `INNER JOIN` is therefore the assertion that carries
- * the meaning here: it is what proves no row can be eliminated by any of the six joins.
- *
- * NO DATABASE. A recording executor double answers each statement by shape, exactly as the sibling
- * adapter suites do: no CFML runtime exists here and the `Sw*` tables are absent from this repository.
- *
- * TEST PROVENANCE: every case is **NET-NEW**. AAP §0.6.5.2 records that no legacy test exercises the
- * feed controller at all, and AAP §0.8.3.7 requires that absence to be flagged rather than implied away.
+/*
+ * AAP §0.4.1.12 declares exactly seventeen executable suites, so this subject is covered
+ * inside an approved suite rather than in one of its own.
  */
-describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTION — the three joins, the three filters and the QATS range (folded, F1, F5, F7)', () => {
-  /* ⛔ AN `UNREACHED_COLLABORATOR` SENTINEL STOOD HERE — `{} as never`, the discipline
+
+/** Google product-feed record selection. */
+describe('The feed record selection — the three joins, the three filters and the QATS range', () => {
+  /*
+   * An `UNREACHED_COLLABORATOR` sentinel stood here — `{} as never`, the discipline
    * `test/services/SkuService.test.ts` established for a collaborator that must exist to construct a
    * subject but is never called. It filled nine of the ten constructor positions of the real `SkuService`
    * the old harness built. With the service off this path there is nothing left to fill: the subject takes
-   * ONE collaborator, and every case supplies a live one. */
+   * one collaborator, and every case supplies a live one.
+   */
 
-  /** Distinct 32-character identifiers, so a crossed association is visible rather than coincidental. */
+  /**
+   * Distinct 32-character identifiers, so a crossed association is visible rather than coincidental.
+   */
   const ID = {
     sku: 'aaaaaaaa000000000000000000000001',
     product: 'bbbbbbbb000000000000000000000001',
@@ -6252,40 +5269,14 @@ describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTI
     readonly params: readonly unknown[];
   }
 
-  /**
-   * Builds a `ProductFeedQuery` over a live query port.
-   *
-   * ⭐ IT NO LONGER CONSTRUCTS A `SkuService`, AND THE REASON IS THE SUBJECT OF THIS FILE'S OWN FINDING.
-   * The harness used to build a REAL nine-collaborator service with only the smart-list port live and hand
-   * that service to the integration, because the base list — the root entity, the three service joins and
-   * the five keyword properties — travelled through `getSkuSmartList`. `ProductFeedQuery` now composes that
-   * base list from `src/ports/SmartListQueryPort.ts`, the same module the service composes through,
-   * and executes it through `SmartListQueryPort.executeRecords`. So the chain this file exists to protect
-   * is UNCHANGED IN SUBSTANCE — the feed's declaration still has to survive the service's base list, the
-   * shared translator and the SQL emitter — while the link that carried it is one module rather than a
-   * service instance. Nine sentinel arguments and a positional-drift hazard go with it.
-   *
-   * ⚠️ WHICH MEANS THE INHERITANCE CLAIM STILL NEEDS PROVING, AND IT IS PROVED THE SAME WAY: the cases
-   * below read the DESCRIPTION the port received and assert that the service's three joins and five keyword
-   * properties are in it without the integration restating any of them.
-   */
+  /** Builds a `ProductFeedQuery` over a live query port. */
   function makeFeedQuery(port: SmartListQueryPort): ProductFeedQuery {
     return new ProductFeedQuery(port);
   }
 
   /**
-   * A port that records the description it was handed, WITH THE MEMBER THAT RECEIVED IT, and answers with
+   * A port that records the description it was handed, with the member that received it, and answers with
    * an empty result.
-   *
-   * ⚠️⚠️ THE TWO MEMBERS RECORD SEPARATELY, AND THAT SEPARATION IS ITSELF A REVIEW FINDING. They used to
-   * push into ONE list, on the reasoning that every case here asserts on the DESCRIPTION the feed composed
-   * rather than on which reading issued it. That reasoning left this suite unable to detect the difference
-   * that matters most on this path: `execute` materialises all three legacy views — the unpaged records, the
-   * current page and a `COUNT(*)` — while `executeRecords` materialises the unpaged collection alone, which
-   * is the one view `integrationServices/google/views/feed/product.cfm:L16` loops. A revision that routed
-   * the feed back through the three-view reading would have issued a count on every request and a paged
-   * statement past the first page, and every case in this file would still have passed. Recording the member
-   * makes that regression a failing test.
    */
   function makeCapturingPort(): {
     readonly port: SmartListQueryPort;
@@ -6321,16 +5312,7 @@ describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTI
     };
   }
 
-  /**
-   * A recording executor over a tiny table store that honours `WHERE <column> IN (…)`.
-   *
-   * The table is read from the statement's FIRST `FROM`, so the root projection's own joins cannot be
-   * mistaken for the table it selects from. Honouring the `IN` form matters for the same reason it does
-   * in the AGGREGATE LOADERS section of `test/adapters/MySqlProductRepository.test.ts` (where
-   * `catalogAggregates.test.ts` was folded): two different statements read `SwSku` on this path — the
-   * feed's record projection and the aggregate loader's default-SKU lookup by identifier — and a double
-   * that answered both with the same rows would hand the lookup rows it never asked for.
-   */
+  /** A recording executor over a tiny table store that honours `WHERE <column> IN (…)`. */
   function makeRecordingExecutor(tables: Readonly<Record<string, readonly MySqlRow[]>>): {
     readonly executor: SqlExecutor;
     readonly statements: Statement[];
@@ -6380,7 +5362,7 @@ describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTI
     };
   }
 
-  /** Every row the feed's records and their aggregate need. Money columns are strings (F16). */
+  /** Every row the feed's records and their aggregate need. Money columns are strings. */
   const FEED_TABLES: Readonly<Record<string, readonly MySqlRow[]>> = {
     SwSku: [
       { skuID: ID.sku, skuCode: 'SKU-1', price: '10.00', productID: ID.product },
@@ -6400,14 +5382,16 @@ describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTI
     SwBrand: [{ brandID: ID.brand, brandName: 'Nike' }],
   };
 
-  describe('the feed joins transcribed from feed.cfc:L64-L66 (INT-01)', () => {
+  describe('the feed joins transcribed from feed.cfc:L64-L66', () => {
     it('NET-NEW — the three pairs are transcribed exactly, in source order', () => {
-      /* Spelled out rather than compared against itself, so a drift in the constant is a failing
-       * assertion rather than a self-consistent one. */
+      /*
+       * Spelled out rather than compared against itself, so a drift in the constant is a failing
+       * assertion rather than a self-consistent one.
+       */
       expect(PRODUCT_FEED_JOINS).toEqual([
         // feed.cfc:L64 — a deliberate duplicate of model/service/SkuService.cfc:L314.
         { parentEntityName: 'SlatwallSku', relatedProperty: 'product' },
-        // feed.cfc:L65 — `defaultSku`, NOT a second `product` join.
+        // feed.cfc:L65 — `defaultSku`, not a second `product` join.
         { parentEntityName: 'SlatwallProduct', relatedProperty: 'defaultSku' },
         // feed.cfc:L66 — the one call that states a kind.
         { parentEntityName: 'SlatwallProduct', relatedProperty: 'brand', joinType: 'left' },
@@ -6415,16 +5399,20 @@ describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTI
     });
 
     it('NET-NEW — the first two OMIT the join kind rather than spelling it inner', () => {
-      /* org/Hibachi/HibachiSmartList.cfc:L212 defaults the kind to the empty string, and :L537-L540
+      /*
+       * Org/Hibachi/HibachiSmartList.cfc:L212 defaults the kind to the empty string, and :L537-L540
        * rewrites empty to `left`. Writing `inner` here would be a behaviour change wearing a cleanup's
-       * clothes, so absence is asserted as absence. */
+       * clothes, so absence is asserted as absence.
+       */
       expect(PRODUCT_FEED_JOINS[0]).not.toHaveProperty('joinType');
       expect(PRODUCT_FEED_JOINS[1]).not.toHaveProperty('joinType');
       expect(PRODUCT_FEED_JOINS[2]?.joinType).toBe('left');
     });
 
     it('NET-NEW — the sequence and every entry are frozen, so no invocation can rewrite them', () => {
-      /* Module-scope state on a warm container is M7's concern; a frozen constant is the answer. */
+      /*
+       * Module-scope state on a warm container is M7's concern; a frozen constant is the answer.
+       */
       expect(Object.isFrozen(PRODUCT_FEED_JOINS)).toBe(true);
       for (const join of PRODUCT_FEED_JOINS) {
         expect(Object.isFrozen(join)).toBe(true);
@@ -6432,17 +5420,19 @@ describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTI
     });
   });
 
-  describe('all seven feed additions arrive in one described query (INT-01)', () => {
+  describe('all seven feed additions arrive in one described query', () => {
     it('NET-NEW — the query carries SIX joins: the service’s three, then the feed’s three', async () => {
       const { port, queries } = makeCapturingPort();
 
       await makeFeedQuery(port).getFeedSkus();
 
       expect(queries).toHaveLength(1);
-      /* ORDER IS THE ASSERTION. The controller cannot add to a smart list it does not hold, so
+      /*
+       * Order is the assertion. The controller cannot add to a smart list it does not hold, so
        * model/service/SkuService.cfc:L314-L316 has always run before feed.cfc:L64-L66 — and it has to be
        * that way round, because feed joins #2 and #3 name `SlatwallProduct`, which the service's first
-       * join is what registers. */
+       * join is what registers.
+       */
       expect(queries[0]?.joins).toEqual([
         { parentEntityName: 'SlatwallSku', relatedProperty: 'product' },
         { parentEntityName: 'SlatwallProduct', relatedProperty: 'productType' },
@@ -6458,9 +5448,11 @@ describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTI
 
       await makeFeedQuery(port).getFeedSkus();
 
-      /* feed.cfc:L64 repeats model/service/SkuService.cfc:L314 verbatim. Collapsing it here would be a
+      /*
+       * feed.cfc:L64 repeats model/service/SkuService.cfc:L314 verbatim. Collapsing it here would be a
        * repair; the adapter absorbs it instead, and proves against
-       * org/Hibachi/HibachiSmartList.cfc:L258 and :L269 that the legacy absorbs it too. */
+       * org/Hibachi/HibachiSmartList.cfc:L258 and :L269 that the legacy absorbs it too.
+       */
       const productJoins = (queries[0]?.joins ?? []).filter(
         (join) => join.parentEntityName === 'SlatwallSku' && join.relatedProperty === 'product',
       );
@@ -6474,13 +5466,15 @@ describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTI
 
       const group = queries[0]?.whereGroups?.[0];
       expect(group?.filters).toEqual([
-        // feed.cfc:L68-L70. The value is the NUMBER 1, as all three legacy call sites pass it.
+        // feed.cfc:L68-L70. The value is the number 1, as all three legacy call sites pass it.
         { propertyIdentifier: 'activeFlag', value: 1 },
         { propertyIdentifier: 'product.activeFlag', value: 1 },
         { propertyIdentifier: 'product.publishedFlag', value: 1 },
       ]);
-      /* feed.cfc:L72 — `1^` is a LOWER bound with no upper bound, per
-       * org/Hibachi/HibachiSmartList.cfc:L642-L646. */
+      /*
+       * feed.cfc:L72 — `1^` is a lower bound with no upper bound, per
+       * org/Hibachi/HibachiSmartList.cfc:L642-L646.
+       */
       expect(group?.ranges).toEqual([
         { propertyIdentifier: 'product.calculatedQATS', lowerBound: '1' },
       ]);
@@ -6491,8 +5485,10 @@ describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTI
 
       await makeFeedQuery(port).getFeedSkus();
 
-      /* model/service/SkuService.cfc:L318-L322, all at weight 1. The feed layers onto the service's
-       * smart list rather than replacing it, so these arrive without the integration restating them. */
+      /*
+       * Model/service/SkuService.cfc:L318-L322, all at weight 1. The feed layers onto the service's
+       * smart list rather than replacing it, so these arrive without the integration restating them.
+       */
       expect(queries[0]?.keywordProperties).toHaveLength(5);
       expect(queries[0]?.entityName).toBe('SlatwallSku');
     });
@@ -6503,17 +5499,13 @@ describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTI
       await makeFeedQuery(port).getFeedSkus();
 
       /*
-       * ⭐ THE FINDING THIS CASE EXISTS FOR (PERF-02). `integrationServices/google/views/feed/product.cfm:L16`
-       * loops the smart list's RECORDS and reads no page and no count in its 66 lines, and the legacy
-       * framework materialises each view only on first read of that view
-       * [org/Hibachi/HibachiSmartList.cfc:L751-L755, :L759-L764, :L771] — so the legacy feed issues exactly
-       * ONE statement. An earlier revision reached the selection through `SkuService.getSkuSmartList`, which
-       * answers all three views, so the port materialised a `COUNT(*)` on every request and a paged
-       * statement too whenever the selection exceeded one page — neither ever read.
-       *
-       * ⚠️ AND NOTHING IN THIS SUITE COULD SEE IT, which is why the assertion is on the MEMBER and not only
-       * on the count of descriptions. The capturing port recorded both readings into one list, so a
-       * regression to the three-view reading would have left every other case here green.
+       * The finding this case exists for (perf-02).
+       * `integrationServices/google/views/feed/product.cfm:L16` loops the smart list's records and
+       * reads no page and no count in its 66 lines, and the legacy framework materialises each view
+       * only on first read of that view [org/Hibachi/HibachiSmartList.cfc:L751-L755, :L759-L764,
+       * :L771] — so the legacy feed issues exactly one statement. Reaching the selection through
+       * `skuService.getSkuSmartList`, which answers all three views, would materialise a `COUNT(*)`
+       * and a paged statement on every request.
        */
       expect(reads.executeRecords).toBe(1);
       expect(reads.execute).toBe(0);
@@ -6532,15 +5524,11 @@ describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTI
       const feed = await makeFeedQuery(port).getFeedSkus();
 
       /*
-       * IDENTITY, NOT EQUALITY. `SmartListQueryPort.executeRecords` answers a MUTABLE array built for this
+       * Identity, not equality. `SmartListQueryPort.executeRecords` answers a mutable array built for this
        * caller, so the previous `[...selection.records]` spread — needed only because
        * `SmartListResult.records` is `readonly` — was a full shallow copy of every published SKU in the
        * catalog on every feed request. Asserting identity is what keeps that copy from coming back: an
        * equality assertion would pass with the spread reinstated.
-       *
-       * ⛔ AND THE THREE-VIEW READING THROWS ON THIS PORT RATHER THAN ANSWERING, so this case doubles as a
-       * second guard on the member: reaching `execute` fails loudly instead of returning a plausible empty
-       * result.
        */
       expect(feed).toBe(rows);
     });
@@ -6550,19 +5538,23 @@ describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTI
 
       await makeFeedQuery(port).getFeedSkus();
 
-      /* feed.cfc:L63 passes nothing at all, so a default here would change every one of the six
-       * in-repository callers invisibly. */
+      /*
+       * feed.cfc:L63 passes nothing at all, so a default here would change every one of the six
+       * in-repository callers invisibly.
+       */
       expect(queries[0]?.orders).toBeUndefined();
       expect(queries[0]?.pagination).toBeUndefined();
       expect(queries[0]?.keywords).toBeUndefined();
     });
   });
 
-  describe('the feed joins reach the emitted statement (INT-01)', () => {
+  describe('the feed joins reach the emitted statement', () => {
     function runFeed(): {
-      /* The feed reads the unpaged collection alone, so this is the records array rather than the
+      /*
+       * The feed reads the unpaged collection alone, so this is the records array rather than the
        * three-view result — see `ProductFeedQuery.getFeedSkus`, which executes the shared SKU selection
-       * through `SmartListQueryPort.executeRecords`. */
+       * through `smartListQueryPort.executeRecords`.
+       */
       readonly result: Promise<Sku[]>;
       readonly statements: Statement[];
     } {
@@ -6600,9 +5592,11 @@ describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTI
       const { result, statements } = runFeed();
       await result;
 
-      /* The assertion that carries the meaning. An omitted kind and an explicit `left` emit the same
+      /*
+       * The assertion that carries the meaning. An omitted kind and an explicit `left` emit the same
        * keyword (org/Hibachi/HibachiSmartList.cfc:L537-L540), so the observable guarantee is the absence
-       * of an eliminating join rather than the presence of the word `left` on one of the six. */
+       * of an eliminating join rather than the presence of the word `left` on one of the six.
+       */
       for (const statement of statements) {
         expect(statement.sql).not.toContain('INNER JOIN');
       }
@@ -6612,8 +5606,10 @@ describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTI
     it('NET-NEW — the six declared joins emit FIVE, because the duplicate is absorbed', async () => {
       const sql = await recordsSql();
 
-      /* org/Hibachi/HibachiSmartList.cfc:L269 finds the key already registered and appends nothing, so
-       * the repeated `("SlatwallSku","product")` contributes no entity, no alias and no FROM fragment. */
+      /*
+       * Org/Hibachi/HibachiSmartList.cfc:L269 finds the key already registered and appends nothing, so
+       * the repeated `("SlatwallSku","product")` contributes no entity, no alias and no from fragment.
+       */
       expect(sql.match(/JOIN SwProduct\b/g)).toHaveLength(1);
       expect(sql.match(/ JOIN /g)).toHaveLength(5);
     });
@@ -6638,9 +5634,11 @@ describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTI
       const { result, statements } = runFeed();
       await result;
 
-      /* Three equality predicates bound to the number 1, then the inclusive lower bound. The bound value
-       * is the STRING `1`: it is the first element of the two-character range value, carried as the
-       * legacy carries it rather than coerced. */
+      /*
+       * Three equality predicates bound to the number 1, then the inclusive lower bound. The bound value
+       * is the string `1`: it is the first element of the two-character range value, carried as the
+       * legacy carries it rather than coerced.
+       */
       expect(statements[0]?.params).toEqual([1, 1, 1, '1']);
       expect(statements[0]?.sql).toContain('>= ?');
       for (const statement of statements) {
@@ -6654,26 +5652,10 @@ describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTI
       await result;
 
       /*
-       * ⭐ THE SQL-LEVEL HALF OF THE PERF-02 GUARD, NARROWED TO THE HALF THAT STILL HOLDS. Not one statement
+       * The sql-level half of the perf-02 guard, narrowed to the half that still holds. Not one statement
        * in the emitted set carries a `LIMIT`/`OFFSET` page window: the feed reads the records-only port
        * member, `getRecords()` at `org/Hibachi/HibachiSmartList.cfc:L751-L755` reads no page, and a page on
        * this path would silently shorten a merchant feed.
-       *
-       * ⛔ THE COUNT HALF IS WITHDRAWN — REVIEW FINDING SEC-DOS-02. This case was titled "the emitted
-       * statements include NO count query, which is what the legacy issues" and asserted that none projected
-       * `recordsCount`, reasoning that "a count on this path would be work the system being replaced never
-       * does." True, and beside the point: the count is how the operator's materialisation ceiling is
-       * enforced BEFORE the driver hydrates objects out of the rows, and `google:feed.product` is the one
-       * ANONYMOUS address in the slice — the single route an unauthenticated caller can reach. Leaving it
-       * uncounted is what made the ceiling unenforceable exactly where it was needed most.
-       *
-       * ⚠️ THE PARITY COST IS ONE EXTRA STATEMENT PER FEED RENDER, AND IT IS NAMED RATHER THAN HIDDEN. It
-       * returns exactly one row whatever the catalog holds and it changes not one `<item>` in the document.
-       *
-       * EXACTLY ONE count, asserted as a count rather than as "at least one", so a regression that counted
-       * per record — or per association batch — fails here. The remaining statements are the record
-       * projection and the batched product-aggregate reads that make `sku.product.brand` navigable for
-       * `ProductFeedBuilder`; the case below asserts that navigation.
        */
       expect(statements.length).toBeGreaterThan(0);
       expect(statements.filter((statement) => statement.sql.includes('recordsCount'))).toHaveLength(
@@ -6690,8 +5672,10 @@ describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTI
       const { result } = runFeed();
       const feed = await result;
 
-      /* The other half of the feed's contract: `ProductFeedBuilder` reads `sku.product`, then that
-       * product's `productType`, `brand` and — through `getPrice()` — its `defaultSku`. */
+      /*
+       * The other half of the feed's contract: `ProductFeedBuilder` reads `sku.product`, then that
+       * product's `productType`, `brand` and — through `getPrice()` — its `defaultSku`.
+       */
       expect(feed).toHaveLength(2);
       const first = feed[0];
       expect(first).toBeInstanceOf(Sku);
@@ -6699,103 +5683,22 @@ describe('test/integrations/ProductFeedQuery.test.ts — the feed record SELECTI
       expect(first?.product?.productType?.productTypeID).toBe(ID.productType);
       expect(first?.product?.brand?.brandID).toBe(ID.brand);
       expect(first?.product?.defaultSku?.getPrice()).toBe(toExactDecimal('99.00'));
-      /* '99.00', not 99: F07 preserves the digits AND the scale the row carried — the fixture row spells
-       * `price: '99.00'`, and keeping that spelling is the whole point of the exact-decimal type. */
+      /*
+       * '99.00', not 99: preserves the digits and the scale the row carried — the fixture row spells
+       * `price: '99.00'`, and keeping that spelling is the whole point of the exact-decimal type.
+       */
     });
   });
 });
 
-/* =====================================================================================================
- * FOLDED IN FROM `test/integrations/GoogleIntegration.test.ts` — AAP §0.4.1.12 SUITE ALIGNMENT (F1, F5)
- * =====================================================================================================
- * WHY THESE CASES ARE HERE RATHER THAN IN A SUITE OF THEIR OWN. AAP §0.4.1.12 declares exactly seventeen
- * executable suites, and `test/integrations/GoogleIntegration.test.ts` was not one of them — a QA pass recorded it,
- * with eighteen siblings, as running outside the declared test plan. The coverage was never the problem;
- * the file's existence was. So the cases are folded into an approved suite, unchanged.
- *
- * ⭐ WHY THIS HOST. The third of the feed's three parts. AAP §0.6.4 makes the point this fold makes physical: the
- * integration component carries NO feed logic, so its stub is nearly empty by faithfulness, and reading it
- * beside the builder that carries the real work is what stops a reviewer expecting the logic there.
- *
- * ⛔ THE BODY IS WRAPPED IN ONE `describe`, WHICH IS THE WHOLE OF THE MECHANICAL CHANGE. Every helper,
- * constant and type the folded suite declared at module scope is now block-scoped to this callback, so it
- * cannot collide with this file's own declarations or with another folded body's — and any `beforeEach`,
- * `afterEach` or `beforeAll` it carries now applies to its own cases only, never to the host's. Not one
- * assertion, case name or comment was altered.
- * ================================================================================================== */
-
-/**
- * The Google integration stub — INT-05.
- *
- * AAP authority: AAP §0.4.4 authorises `slatwall-ts/test/**` | CREATE. This file covers
- * `src/integrations/google/GoogleIntegration.ts`, whose legacy origin is
- * `integrationServices/google/Integration.cfc:L49-L79` (AAP §0.4.1.10).
- *
- * =================================================================================================
- * WHAT THESE CASES PROVE — AND WHY THE SUBJECT IS ALMOST EMPTY
- * =================================================================================================
- * AAP §0.6.4 records the counter-intuitive finding this whole file rests on: the interface-conformant
- * component carries NO FEED LOGIC AT ALL. The record selection lives in
- * `integrationServices/google/controllers/feed.cfc` and the field mapping lives in
- * `integrationServices/google/views/feed/product.cfm`, so a faithful stub is nearly empty BY
- * FAITHFULNESS rather than by neglect (AAP §0.6.4.3, §0.8.3.3). A reviewer expecting the integration
- * class to hold the feed should read that section first; the two files that do hold it are covered by
- * `ProductFeedQuery.test.ts` and `ProductFeedBuilder.test.ts`.
- *
- * What the legacy component DOES declare, in its own declaration order, is six members:
- * `init` (`:L51`), `getIntegrationTypes` (`:L55`), `getDisplayName` (`:L59`), `getSettings` (`:L63`),
- * `getIntegratedSettings` (`:L67`) and `getSettingOptions` (`:L73`). Note the order: the component
- * declares `getIntegrationTypes` BEFORE `getDisplayName`, which is the reverse of the interface at
- * `integrationServices/IntegrationInterface.cfc:L56-L63`. The port keeps the component's order, and
- * that is asserted rather than tidied.
- *
- * Five claims carry the weight:
- *
- *   1. THE OVERRIDES TOOK. `getIntegrationTypes()` is `'fw1'` and `getDisplayName()` is `'Google'`.
- *      The display name is additionally asserted NOT to be the base default `'Not Defined'`, because
- *      an override that silently failed to bind would return the default and every positive assertion
- *      about "a string" would still pass.
- *   2. THE INHERITANCE IS REAL. `getEventHandlers()` and `getAdminNavbarHTML()` are NOT declared on
- *      this component and must still answer the base defaults, so they are asserted here as inherited
- *      AND asserted absent from this class's own prototype.
- *   3. `getSettings()` AND `getIntegratedSettings()` ARE NOT THE SAME MEMBER. `:L63` returns an empty
- *      struct while `:L67` returns exactly one descriptor. Conflating them would be an easy and
- *      invisible port error, so each is asserted against the other.
- *   4. DEFECT D11 IS CARRIED, NOT CORRECTED. `:L49` carries the component attribute
- *      `displayname="USA epay"` — a copy-paste artefact from the payment adapter this file was cloned
- *      from. AAP §0.6.7.6 records it as recorded-not-corrected, because the EFFECTIVE display name
- *      comes from the method. The assertion is therefore twofold: the method returns `'Google'`, and
- *      the string `'USA epay'` has no behavioural expression anywhere in the ported surface. The
- *      marker itself lives at `GoogleIntegration.ts:188`.
- *   5. `getSettingOptions` RETURNS NOTHING, FOR EVERY INPUT. `:L73-L77` opens
- *      `if(arguments.settingName eq "productGoogleProductType") { }` — an EMPTY branch — and then ends
- *      with NO return statement at all. The port preserves the empty branch, so the seeded name and an
- *      unrelated name are indistinguishable from outside. Two unnumbered `TODO(parity)` notes travel
- *      with it: the declared return type admits an array the body can never produce, and CFML's `eq`
- *      is case-insensitive where TypeScript's `===` is not — a difference with no observable effect
- *      precisely BECAUSE the branch is empty. Both are asserted as they behave (AAP §0.8.2 g4).
- *
- * NO DATABASE, NO NETWORK, NO CREDENTIAL, NO LIVE GOOGLE CALL. AAP §0.8.3.3 forbids a live call and
- * the subject introduces no HTTP client, so a case below sweeps every returned value for an endpoint,
- * a credential or an OAuth token and asserts none appears. The subject has no collaborators and no
- * constructor parameters, so every case constructs it directly.
- *
- * TEST PROVENANCE: every case is **NET-NEW**. AAP §0.6.5.2 records that no legacy test exercises the
- * Google adapter, and AAP §0.8.3.7 requires that absence to be flagged explicitly rather than implied
- * away. TRACEABILITY HERE IS DOCUMENTARY, NEVER EMPIRICAL: MXUnit and CFSelenium are not vendored
- * (`meta/tests/readme.txt:L4-L5`), `meta/docker/slatwall-local-dev/` does not exist, and no CFML
- * runtime is reproducible in this environment, so the legacy suite was read rather than run
- * (AAP §0.6.5.3, §0.8.4).
- *
- * SCOPE. This component's six members and its relationship to the base. The five-member contract
- * boundary belongs to `IntegrationContract.test.ts`, the base defaults to `BaseIntegration.test.ts`,
- * the feed selection to `ProductFeedQuery.test.ts` and the serialization to
- * `ProductFeedBuilder.test.ts`.
+/*
+ * AAP §0.4.1.12 declares exactly seventeen executable suites, so this subject is covered
+ * inside an approved suite rather than in one of its own.
  */
 
-// No user-specified rules were provided for this project; the nine enterprise
-// standards of AAP §0.7.3 govern instead, and the bar is not lowered.
-describe('test/integrations/GoogleIntegration.test.ts — the interface-conformant STUB, which carries no feed logic at all (folded, F1, F5)', () => {
+/** The Google integration stub — int-05. */
+
+describe('The interface-conformant stub, which carries no feed logic at all', () => {
   /** The six members in `google/Integration.cfc` declaration order — types before display name. */
   const GOOGLE_MEMBERS = [
     'init',
@@ -6809,16 +5712,20 @@ describe('test/integrations/GoogleIntegration.test.ts — the interface-conforma
   /** `:L57` — the one integration type this adapter claims. */
   const LEGACY_INTEGRATION_TYPE = 'fw1';
 
-  /** `:L61` — the effective display name, which is the method's answer and not the `:L49` attribute. */
+  /**
+   * `:L61` — the effective display name, which is the method's answer and not the `:L49` attribute.
+   */
   const LEGACY_DISPLAY_NAME = 'Google';
 
-  /** `:L49` — defect D11's copy-paste artefact. Asserted ABSENT from behaviour, never repaired. */
+  /** `:L49` — defect D11's copy-paste artefact. Asserted absent from behaviour, never repaired. */
   const D11_COPY_PASTE_ARTEFACT = 'USA epay';
 
   /** `:L55` on the base — the default the override must be seen to displace. */
   const BASE_DISPLAY_NAME_DEFAULT = 'Not Defined';
 
-  /** `:L68` — the sole integrated setting, and the name `getSettingOptions` tests against at `:L74`. */
+  /**
+   * `:L68` — the sole integrated setting, and the name `getSettingOptions` tests against at `:L74`.
+   */
   const INTEGRATED_SETTING_NAME = 'productGoogleProductType';
 
   /** `:L68` — the descriptor's only member and its value. */
@@ -6831,12 +5738,7 @@ describe('test/integrations/GoogleIntegration.test.ts — the interface-conforma
     );
   }
 
-  /**
-   * Every string the ported surface can emit, joined for the two sweeps below.
-   *
-   * `getSettingOptions` is excluded deliberately: it returns `undefined` for every input, so it emits no
-   * string at all, and the cases that own it assert exactly that.
-   */
+  /** Every string the ported surface can emit, joined for the two sweeps below. */
   function renderEverySurfaceString(subject: GoogleIntegration): string {
     return [
       subject.getDisplayName(),
@@ -6848,12 +5750,12 @@ describe('test/integrations/GoogleIntegration.test.ts — the interface-conforma
     ].join(' ');
   }
 
-  describe('NET-NEW GoogleIntegration — the prototype shape and the inheritance (INT-05)', () => {
+  describe('NET-NEW GoogleIntegration — the prototype shape and the inheritance', () => {
     it('[NET-NEW] declares the six members in the google/Integration.cfc order, types before name', () => {
       /*
        * `:L51`, `:L55`, `:L59`, `:L63`, `:L67`, `:L73`. The component declares `getIntegrationTypes` second
        * and `getDisplayName` third, the reverse of the interface at IntegrationInterface.cfc:L56-L63. The
-       * port follows the COMPONENT, and asserting the order keeps a side-by-side reading honest.
+       * port follows the component, and asserting the order keeps a side-by-side reading honest.
        */
       expect(prototypeMembersOf(GoogleIntegration)).toEqual([
         'init',
@@ -6899,7 +5801,7 @@ describe('test/integrations/GoogleIntegration.test.ts — the interface-conforma
 
       /*
        * `getEventHandlers` and `getAdminNavbarHTML` are absent from `google/Integration.cfc` entirely. They
-       * must therefore be INHERITED rather than re-declared — a port that copied them down would satisfy
+       * must therefore be inherited rather than re-declared — a port that copied them down would satisfy
        * every value assertion below while quietly duplicating the base.
        */
       expect(members).not.toContain('getEventHandlers');
@@ -6926,7 +5828,7 @@ describe('test/integrations/GoogleIntegration.test.ts — the interface-conforma
     });
   });
 
-  describe('NET-NEW GoogleIntegration — the four overridden members (INT-05)', () => {
+  describe('NET-NEW GoogleIntegration — the four overridden members', () => {
     it('[NET-NEW] returns the instance itself from init', () => {
       const subject = new GoogleIntegration();
 
@@ -6975,7 +5877,7 @@ describe('test/integrations/GoogleIntegration.test.ts — the interface-conforma
     });
   });
 
-  describe('NET-NEW GoogleIntegration — getIntegratedSettings, the one member with content (INT-05)', () => {
+  describe('NET-NEW GoogleIntegration — getIntegratedSettings, the one member with content', () => {
     it('[NET-NEW] returns exactly one descriptor, keyed productGoogleProductType with fieldType select', () => {
       const subject = new GoogleIntegration();
       const integrated = subject.getIntegratedSettings();
@@ -7008,7 +5910,7 @@ describe('test/integrations/GoogleIntegration.test.ts — the interface-conforma
       const subject = new GoogleIntegration();
 
       /*
-       * `:L68` builds both objects as literals, so both are new on every call. The NESTED object is asserted
+       * `:L68` builds both objects as literals, so both are new on every call. The nested object is asserted
        * separately because hoisting only the descriptor to module scope would satisfy the outer check and
        * still share mutable state across every invocation on a warm container (AAP §0.6.6 M7).
        */
@@ -7022,7 +5924,9 @@ describe('test/integrations/GoogleIntegration.test.ts — the interface-conforma
       const subject = new GoogleIntegration();
       const poisoned = subject.getIntegratedSettings();
 
-      /* The adversarial half — `Object.assign` mutates in place, with no cast and no assertion operator. */
+      /*
+       * The adversarial half — `object.assign` mutates in place, with no cast and no assertion operator.
+       */
       Object.assign(poisoned, { injectedByTest: { fieldType: 'text' } });
       const poisonedDescriptor = poisoned[INTEGRATED_SETTING_NAME];
       if (poisonedDescriptor !== undefined) {
@@ -7045,7 +5949,7 @@ describe('test/integrations/GoogleIntegration.test.ts — the interface-conforma
     });
   });
 
-  describe('NET-NEW GoogleIntegration — getSettingOptions returns nothing, for every input (INT-05)', () => {
+  describe('NET-NEW GoogleIntegration — getSettingOptions returns nothing, for every input', () => {
     /** The seeded name, a case variant of it, an unrelated name, and the empty string. */
     const PROBED_SETTING_NAMES = [
       INTEGRATED_SETTING_NAME,
@@ -7059,7 +5963,7 @@ describe('test/integrations/GoogleIntegration.test.ts — the interface-conforma
       const subject = new GoogleIntegration();
 
       /*
-       * This is the ONE member in the whole folder that takes an argument, which is why
+       * This is the one member in the whole folder that takes an argument, which is why
        * `IntegrationContract.test.ts` can assert zero arity across all five contract members without
        * exception — this member is deliberately off the contract.
        */
@@ -7082,7 +5986,7 @@ describe('test/integrations/GoogleIntegration.test.ts — the interface-conforma
 
       /*
        * TODO(parity), unnumbered — the empty branch makes the seeded name and an unrelated name
-       * INDISTINGUISHABLE from outside. That is the carried behaviour, and it is what makes the second
+       * indistinguishable from outside. That is the carried behaviour, and it is what makes the second
        * unnumbered note harmless: CFML's `eq` is case-insensitive where TypeScript's `===` is not, but with
        * an empty branch the case-varied inputs below land on the same answer either way.
        */
@@ -7121,14 +6025,14 @@ describe('test/integrations/GoogleIntegration.test.ts — the interface-conforma
     });
   });
 
-  describe('NET-NEW GoogleIntegration — carried defect D11 and the absent live-Google surface (INT-05)', () => {
+  describe('NET-NEW GoogleIntegration — carried defect D11 and the absent live-Google surface', () => {
     it('[NET-NEW] carries D11 without correcting it: the method answers Google, the attribute is inert', () => {
       const subject = new GoogleIntegration();
 
       /*
        * Defect D11 — `google/Integration.cfc:L49` carries `displayname="USA epay"`, a copy-paste artefact
        * from the payment adapter this component was cloned from. AAP §0.6.7.6 records it as
-       * recorded-not-corrected because the EFFECTIVE display name comes from the method at `:L59`. The port
+       * recorded-not-corrected because the effective display name comes from the method at `:L59`. The port
        * therefore has no member expressing the attribute, and the marker lives at GoogleIntegration.ts:188.
        * Repairing it would be a silent behavioural change; asserting it converts an invisible temptation
        * into a checked decision.
@@ -7146,7 +6050,7 @@ describe('test/integrations/GoogleIntegration.test.ts — the interface-conforma
       /*
        * AAP §0.8.3.3 — "Implement it as a stub/mock satisfying the same interface contract — do not make
        * live calls to Google's real API." The component introduces no HTTP client, and AAP §0.5.2 records
-       * that `mysql2` is the ONLY runtime dependency, so there is nothing here that could reach the network.
+       * that `mysql2` is the only runtime dependency, so there is nothing here that could reach the network.
        * This sweep is the observable form of that claim.
        */
       expect(rendered).not.toContain('http://');
@@ -7175,81 +6079,14 @@ describe('test/integrations/GoogleIntegration.test.ts — the interface-conforma
   });
 });
 
-/* =====================================================================================================
- * FOLDED IN FROM `test/integrations/BaseIntegration.test.ts` — AAP §0.4.1.12 SUITE ALIGNMENT (F1, F5)
- * =====================================================================================================
- * WHY THESE CASES ARE HERE RATHER THAN IN A SUITE OF THEIR OWN. AAP §0.4.1.12 declares exactly seventeen
- * executable suites, and `test/integrations/BaseIntegration.test.ts` was not one of them — a QA pass recorded it,
- * with eighteen siblings, as running outside the declared test plan. The coverage was never the problem;
- * the file's existence was. So the cases are folded into an approved suite, unchanged.
- *
- * ⭐ WHY THIS HOST. `BaseIntegration` supplies the defaults `GoogleIntegration` inherits, so it belongs with the stub that
- * inherits them — which is now in this file.
- *
- * ⛔ THE BODY IS WRAPPED IN ONE `describe`, WHICH IS THE WHOLE OF THE MECHANICAL CHANGE. Every helper,
- * constant and type the folded suite declared at module scope is now block-scoped to this callback, so it
- * cannot collide with this file's own declarations or with another folded body's — and any `beforeEach`,
- * `afterEach` or `beforeAll` it carries now applies to its own cases only, never to the host's. Not one
- * assertion, case name or comment was altered.
- * ================================================================================================== */
-
-/**
- * The base integration's default implementations — INT-04.
- *
- * AAP authority: AAP §0.4.4 authorises `slatwall-ts/test/**` | CREATE. This file covers
- * `src/integrations/google/BaseIntegration.ts`, whose legacy origin is
- * `integrationServices/BaseIntegration.cfc:L49-L73` (AAP §0.4.1.10).
- *
- * =================================================================================================
- * WHAT THESE CASES PROVE
- * =================================================================================================
- * The legacy base declares SIX members where the interface declares five: `init` (`:L51`),
- * `getDisplayName` (`:L55`), `getIntegrationTypes` (`:L59`), `getSettings` (`:L63`),
- * `getEventHandlers` (`:L67`) and — beyond the contract — `getAdminNavbarHTML` (`:L71`). Every one is
- * a default an adapter may leave alone, so each default VALUE is observable behaviour rather than
- * incidental initialisation, and every one is asserted as an exact literal.
- *
- * Four properties carry the weight here:
- *
- *   1. THE HIBACHI BASE CLASS IS GONE. `BaseIntegration.cfc:L49` reads
- *      `component extends="Slatwall.org.Hibachi.HibachiObject"`. AAP §0.8.3.2 is unambiguous that
- *      nothing from `org/Hibachi/` is ported or depended upon, so the ported class must extend
- *      NOTHING. That is asserted directly off the prototype chain, which is the only place a dropped
- *      base class can be observed once the file compiles.
- *   2. `init()` RETURNS THE INSTANCE. `:L51-L53` is `return this;`. Identity is asserted with `toBe`,
- *      not equality, because a base that returned a copy would satisfy `toEqual` and still break the
- *      `getIntegration().init()` chaining idiom the legacy factory relies on.
- *   3. THE MUTABLE DEFAULTS ARE FRESH PER CALL. `:L63` and `:L67` return a literal `{}` and a literal
- *      `[]`. A port that hoisted either to a shared module-scope constant would pass every value
- *      assertion and then leak one integration's mutation into the next — a genuine hazard under AAP
- *      §0.6.6 M7, where module scope is the ONLY thing that survives between Lambda invocations on a
- *      warm container. Freshness is therefore proven ADVERSARIALLY: the first result is poisoned, and
- *      the next call must still be clean.
- *   4. THE DEFAULTS ARE MUTABLE, AND DELIBERATELY SO. CFML's `{}` and `[]` are ordinary mutable
- *      values, so the port neither freezes nor deep-clones them. That is asserted rather than left
- *      implicit, because inventing immutability the legacy did not have is exactly the kind of quiet
- *      "improvement" AAP §0.8.2 guideline 4 forbids.
- *
- * NO DATABASE, NO NETWORK, NO FILESYSTEM. The subject is a six-method class with no collaborators, no
- * constructor parameters and no I/O, so every case constructs it directly. Member ORDER is read off
- * `BaseIntegration.prototype` rather than out of the source text, because a class body defines its
- * methods on the prototype in declaration order and that makes the claim observable from a value.
- *
- * TEST PROVENANCE: every case is **NET-NEW**. AAP §0.6.5.2 records that no legacy test exercises the
- * base integration, and AAP §0.8.3.7 requires that absence to be flagged explicitly rather than
- * implied away. TRACEABILITY HERE IS DOCUMENTARY, NEVER EMPIRICAL: MXUnit and CFSelenium are not
- * vendored (`meta/tests/readme.txt:L4-L5`), `meta/docker/slatwall-local-dev/` does not exist, and no
- * CFML runtime is reproducible in this environment, so the legacy suite was read rather than run
- * (AAP §0.6.5.3, §0.8.4).
- *
- * SCOPE. The base class's own six defaults and its prototype shape. The five-member contract boundary
- * belongs to `IntegrationContract.test.ts`; the Google overrides belong to
- * `GoogleIntegration.test.ts`; no feed selection, serialization or handler behaviour appears here.
+/*
+ * AAP §0.4.1.12 declares exactly seventeen executable suites, so this subject is covered
+ * inside an approved suite rather than in one of its own.
  */
 
-// No user-specified rules were provided for this project; the nine enterprise
-// standards of AAP §0.7.3 govern instead, and the bar is not lowered.
-describe('test/integrations/BaseIntegration.test.ts — the default implementations the stub inherits (folded, F1, F5)', () => {
+/** The base integration's default implementations — int-04. */
+
+describe('The default implementations the stub inherits', () => {
   /**
    * The six members in `BaseIntegration.cfc` declaration order. The sixth is beyond the contract, which
    * is why it is listed here and asserted absent in `IntegrationContract.test.ts`.
@@ -7266,15 +6103,7 @@ describe('test/integrations/BaseIntegration.test.ts — the default implementati
   /** `:L56` — the exact literal. Not "Undefined", not an empty string, not a localised key. */
   const LEGACY_DISPLAY_NAME_DEFAULT = 'Not Defined';
 
-  /**
-   * A subclass that overrides nothing at all.
-   *
-   * AAP §0.4.3.3 replaces template-method inheritance with composition for the SERVICE layer, but the
-   * integration base is an inheritance point in the legacy design and stays one here — `google/
-   * Integration.cfc:L49` extends it. This class is the check that the defaults are genuinely inherited
-   * rather than re-declared per adapter: if `BaseIntegration` ever stopped supplying one, an adapter
-   * that overrides nothing would start returning `undefined` and the cases below would catch it.
-   */
+  /** A subclass that overrides nothing at all. */
   class InheritingIntegration extends BaseIntegration {}
 
   /** Fresh instances per case, so no case can observe a value another case produced or mutated. */
@@ -7292,7 +6121,7 @@ describe('test/integrations/BaseIntegration.test.ts — the default implementati
     );
   }
 
-  describe('NET-NEW BaseIntegration — the prototype shape (INT-04)', () => {
+  describe('NET-NEW BaseIntegration — the prototype shape', () => {
     it('[NET-NEW] declares the six members in the BaseIntegration.cfc order', () => {
       /*
        * `:L51`, `:L55`, `:L59`, `:L63`, `:L67`, `:L71`. A class body installs its methods on the prototype
@@ -7340,7 +6169,9 @@ describe('test/integrations/BaseIntegration.test.ts — the default implementati
       const subject = new InheritingIntegration();
 
       for (const name of BASE_MEMBERS) {
-        /* `in` rather than an own-property check, because inheritance is the point of this case. */
+        /*
+         * `in` rather than an own-property check, because inheritance is the point of this case.
+         */
         expect(name in subject).toBe(true);
       }
 
@@ -7349,7 +6180,7 @@ describe('test/integrations/BaseIntegration.test.ts — the default implementati
     });
   });
 
-  describe('NET-NEW BaseIntegration — the six default values (INT-04)', () => {
+  describe('NET-NEW BaseIntegration — the six default values', () => {
     it('[NET-NEW] returns the instance itself from init, which is what `return this` means', () => {
       for (const { subject } of subjects()) {
         /*
@@ -7365,7 +6196,7 @@ describe('test/integrations/BaseIntegration.test.ts — the default implementati
       for (const { label, subject } of subjects()) {
         /*
          * `:L55-L57`. The literal matters: it is what an integration that forgets to override displays, and
-         * `GoogleIntegration.test.ts` asserts the Google adapter does NOT return it, which only proves the
+         * `GoogleIntegration.test.ts` asserts the Google adapter does not return it, which only proves the
          * override took effect while this default is pinned.
          */
         expect({ from: label, displayName: subject.getDisplayName() }).toEqual({
@@ -7399,7 +6230,9 @@ describe('test/integrations/BaseIntegration.test.ts — the default implementati
       for (const { subject } of subjects()) {
         const handlers = subject.getEventHandlers();
 
-        /* `:L67-L69`. Empty, and an array rather than the ColdSpring XML string the stale hint describes. */
+        /*
+         * `:L67-L69`. empty, and an array rather than the ColdSpring XML string the stale hint describes.
+         */
         expect(handlers).toEqual([]);
         expect(Array.isArray(handlers)).toBe(true);
         expect(handlers).toHaveLength(0);
@@ -7424,17 +6257,19 @@ describe('test/integrations/BaseIntegration.test.ts — the default implementati
       const subject = new BaseIntegration();
 
       expect(contract.getDisplayName()).toBe(LEGACY_DISPLAY_NAME_DEFAULT);
-      /* Reachable at runtime, and off the contract at compile time — both halves are the intent. */
+      /*
+       * Reachable at runtime, and off the contract at compile time — both halves are the intent.
+       */
       expect(typeof subject.getAdminNavbarHTML).toBe('function');
     });
   });
 
-  describe('NET-NEW BaseIntegration — the mutable defaults are fresh per call (INT-04)', () => {
+  describe('NET-NEW BaseIntegration — the mutable defaults are fresh per call', () => {
     it('[NET-NEW] hands back a different struct on every getSettings call', () => {
       const subject = new BaseIntegration();
 
       /*
-       * `:L64` returns a LITERAL `{}`. A port that hoisted it to a module-scope constant would satisfy every
+       * `:L64` returns a literal `{}`. A port that hoisted it to a module-scope constant would satisfy every
        * value assertion above and still share one object across every integration and — under AAP §0.6.6 M7
        * — across every invocation on a warm Lambda container, because module scope is the only thing that
        * survives. Reference inequality is the assertion that rules that out.
@@ -7445,7 +6280,7 @@ describe('test/integrations/BaseIntegration.test.ts — the default implementati
     it('[NET-NEW] hands back a different array on every getEventHandlers call', () => {
       const subject = new BaseIntegration();
 
-      /* `:L68` returns a LITERAL `[]`; same hazard, same assertion. */
+      /* `:L68` returns a literal `[]`; same hazard, same assertion. */
       expect(subject.getEventHandlers()).not.toBe(subject.getEventHandlers());
     });
 
@@ -7487,7 +6322,9 @@ describe('test/integrations/BaseIntegration.test.ts — the default implementati
       Object.assign(first.getSettings(), { injectedByTest: { fieldType: 'select' } });
       Object.assign(first.getEventHandlers(), ['injectedByTest']);
 
-      /* Cross-instance leakage is the same defect one step further out; it is asserted separately. */
+      /*
+       * Cross-instance leakage is the same defect one step further out; it is asserted separately.
+       */
       expect(second.getSettings()).toEqual({});
       expect(second.getEventHandlers()).toEqual([]);
       expect(first.getSettings()).not.toBe(second.getSettings());
@@ -7508,96 +6345,15 @@ describe('test/integrations/BaseIntegration.test.ts — the default implementati
   });
 });
 
-/* =====================================================================================================
- * FOLDED IN FROM `test/integrations/IntegrationContract.test.ts` — AAP §0.4.1.12 SUITE ALIGNMENT (F1, F5)
- * =====================================================================================================
- * WHY THESE CASES ARE HERE RATHER THAN IN A SUITE OF THEIR OWN. AAP §0.4.1.12 declares exactly seventeen
- * executable suites, and `test/integrations/IntegrationContract.test.ts` was not one of them — a QA pass recorded it,
- * with eighteen siblings, as running outside the declared test plan. The coverage was never the problem;
- * the file's existence was. So the cases are folded into an approved suite, unchanged.
- *
- * ⭐ WHY THIS HOST. The contract `integrationServices/IntegrationInterface.cfc:L51-L89` declares, which the stub and the
- * base both implement. All four integration suites now sit in the one approved integration suite, which is
- * where AAP §0.4.1.12 puts integration coverage.
- *
- * ⛔ THE BODY IS WRAPPED IN ONE `describe`, WHICH IS THE WHOLE OF THE MECHANICAL CHANGE. Every helper,
- * constant and type the folded suite declared at module scope is now block-scoped to this callback, so it
- * cannot collide with this file's own declarations or with another folded body's — and any `beforeEach`,
- * `afterEach` or `beforeAll` it carries now applies to its own cases only, never to the host's. Not one
- * assertion, case name or comment was altered.
- * ================================================================================================== */
-
-/**
- * The integration contract — INT-03.
- *
- * AAP authority: AAP §0.4.4 authorises `slatwall-ts/test/**` | CREATE. This file covers
- * `src/integrations/google/IntegrationContract.ts`, whose legacy origin is the `<cfinterface>` at
- * `integrationServices/IntegrationInterface.cfc:L50-L89` (AAP §0.4.1.10).
- *
- * =================================================================================================
- * WHAT THESE CASES PROVE
- * =================================================================================================
- * The legacy contract is a five-member `<cfinterface>`: `init` (`:L52`), `getDisplayName` (`:L56`),
- * `getIntegrationTypes` (`:L63`), `getSettings` (`:L75`) and `getEventHandlers` (`:L82`). Three
- * further members exist in the surrounding legacy files and are DELIBERATELY not part of the
- * contract — `getAdminNavbarHTML` (`integrationServices/BaseIntegration.cfc:L71`),
- * `getIntegratedSettings` (`integrationServices/google/Integration.cfc:L67`) and `getSettingOptions`
- * (`:L73`). A port that widened the interface to five-plus-one would look harmless and would change
- * the contract every future adapter has to satisfy, so the boundary is asserted from both sides:
- * every declared name is on the contract, and every contract key is one of the declared names.
- *
- * Three properties of the legacy declaration survive translation and are each asserted here:
- *
- *   1. ARITY. Every one of the five `<cffunction>` tags declares no `<cfargument>` at all, so every
- *      ported member is zero-arity. `getSettingOptions` — the one member in the folder that DOES take
- *      an argument (`required string settingName`) — is precisely one of the three excluded.
- *   2. SYNCHRONICITY. CFML has no `async` facility, so no legacy caller can await anything. The port
- *      must therefore not have introduced a promise anywhere in the contract; AAP §0.6.6 M8 records
- *      the same commitment for `SettingResolverPort`, so no caller in the slice depends on background
- *      completion. This is asserted at RUNTIME rather than by the declared type alone, because a
- *      declaration reading `string` can still be produced by an `async` function body.
- *   3. VISIBILITY. Four of the five legacy tags carry `access="public"`; `getEventHandlers` at `:L82`
- *      carries NO `access` attribute. A TypeScript interface has no visibility facility at all, so the
- *      translation makes all five equally reachable, and the assertion is that the un-annotated member
- *      is reachable from outside its class exactly like the other four.
- *
- * TWO CARRIED DOC-DRIFT DEFECTS ARE ASSERTED AS BEHAVIOUR, NOT AS PROSE. `IntegrationInterface.cfc`
- * declares `getSettings` with `returntype="struct"` while its own hint says to "return true"; and it
- * declares `getEventHandlers` with `returntype="array"` while its hint describes ColdSpring XML. Both
- * are stale legacy prose carried across as unnumbered `TODO(parity)` notes rather than repaired, per
- * AAP §0.8.2 guideline 4. What is asserted is the DECLARED shape that the port kept — an object and an
- * array — because that is the observable behaviour; the prose is not executable and is not asserted.
- *
- * NO DATABASE, NO NETWORK, NO FILESYSTEM PRODUCT PATH. The contract is a type. Two of its cases read
- * the port's own source file as TEXT with `node:fs`/`node:path`, because "declares exactly five
- * members, in this order" is a property of the declaration and cannot be observed from a value at
- * runtime — an interface leaves nothing behind after compilation. Nothing here parses, evaluates or
- * modifies that file, and no product behaviour is routed through either built-in. Only files inside
- * this subtree are read: the CFML tree is reference-only and is never touched by a test.
- *
- * TEST PROVENANCE: every case is **NET-NEW**. AAP §0.6.5.2 records that no legacy test exercises the
- * integration contract, the base integration or the Google adapter, and AAP §0.8.3.7 requires that
- * absence to be flagged explicitly rather than implied away. TRACEABILITY HERE IS DOCUMENTARY, NEVER
- * EMPIRICAL: MXUnit and CFSelenium are not vendored (`meta/tests/readme.txt:L4-L5`),
- * `meta/docker/slatwall-local-dev/` does not exist, and no CFML runtime is reproducible in this
- * environment, so the legacy suite was read rather than run (AAP §0.6.5.3, §0.8.4).
- *
- * SCOPE. The contract's declaration and the conformance of the two classes that implement it. This
- * file asserts no default VALUE (that is `BaseIntegration.test.ts`), no Google override (that is
- * `GoogleIntegration.test.ts`), no feed selection, no serialization and no handler behaviour.
+/*
+ * AAP §0.4.1.12 declares exactly seventeen executable suites, so this subject is covered
+ * inside an approved suite rather than in one of its own.
  */
 
-// No user-specified rules were provided for this project; the nine enterprise
-// standards of AAP §0.7.3 govern instead, and the bar is not lowered.
-describe('test/integrations/IntegrationContract.test.ts — the five-method `<cfinterface>` contract both of the above implement (folded, F1, F5)', () => {
-  /* =================================================================================================
-   * Compile-time claims.
-   *
-   * `type AssertAssignable<TActual extends TExpected, TExpected> = TActual` fails to COMPILE when the
-   * claim stops holding, which is the only way to assert something about an interface that leaves no
-   * runtime value behind. The two mutual aliases below are together an exhaustiveness proof: dropping a
-   * member from the contract breaks the first, and adding a sixth breaks the second.
-   * ============================================================================================== */
+/** The integration contract — int-03. */
+
+describe('The five-method `<cfinterface>` contract both of the above implement', () => {
+  /* compile-time claims. */
   type AssertAssignable<TActual extends TExpected, TExpected> = TActual;
 
   /** The five members, in the `<cfinterface>` declaration order of `IntegrationInterface.cfc`. */
@@ -7621,7 +6377,7 @@ describe('test/integrations/IntegrationContract.test.ts — the five-method `<cf
   >;
 
   /**
-   * The three members that exist in the folder and are deliberately NOT on the contract, each with the
+   * The three members that exist in the folder and are deliberately not on the contract, each with the
    * legacy locator that would justify adding it if the boundary were ever widened.
    */
   const EXCLUDED_CANDIDATES = [
@@ -7647,14 +6403,7 @@ describe('test/integrations/IntegrationContract.test.ts — the five-method `<cf
     IntegrationContract
   >;
 
-  /* =================================================================================================
-   * A conformer that is NOT a `BaseIntegration`.
-   *
-   * `integrationServices/google/Integration.cfc:L49` both `extends` the base and `implements` the
-   * interface, but those are independent declarations: the interface itself demands no base class. This
-   * class proves the ported contract kept that independence — if the port had folded a base-class
-   * dependency into the interface, this would stop compiling.
-   * ============================================================================================== */
+  /* A conformer that is not a `BaseIntegration`. */
   class MinimalConformer implements IntegrationContract {
     public init(): this {
       return this;
@@ -7677,14 +6426,7 @@ describe('test/integrations/IntegrationContract.test.ts — the five-method `<cf
     }
   }
 
-  /* =================================================================================================
-   * Exhaustive member access without `any`.
-   *
-   * Both records are keyed by the member-name union, so a member added to or removed from
-   * `CONTRACT_MEMBERS` fails to compile here rather than silently going unasserted. One record hands
-   * back the FUNCTION (for arity and for the `AsyncFunction` check), the other INVOKES it (for the
-   * returned-value checks); neither needs `Function.prototype.call`, a cast, or a non-null assertion.
-   * ============================================================================================== */
+  /* Exhaustive member access without `any`. */
   type ContractMethod = (...args: never[]) => unknown;
 
   const METHOD_READERS: Readonly<
@@ -7719,14 +6461,7 @@ describe('test/integrations/IntegrationContract.test.ts — the five-method `<cf
     ];
   }
 
-  /* =================================================================================================
-   * Source-text inspection.
-   *
-   * An interface produces no runtime value, so "declares exactly these five, in this order" can only be
-   * observed in the declaration itself. The port's own file is read as text and the member lines are
-   * lifted out of the interface body. `readDeclaredContractMembers` deliberately re-reads on every call
-   * rather than memoising at module scope, so no case can be influenced by another's read.
-   * ============================================================================================== */
+  /* Source-text inspection. */
   const CONTRACT_SOURCE_PATH = join(
     __dirname,
     '..',
@@ -7739,7 +6474,7 @@ describe('test/integrations/IntegrationContract.test.ts — the five-method `<cf
 
   const CONTRACT_INTERFACE_OPENING = 'export interface IntegrationContract {';
 
-  /** Matches a two-space-indented member declaration such as `  getSettings(): …;`. */
+  /** Matches a two-space-indented member declaration such as ` getSettings(): …;`. */
   const MEMBER_DECLARATION_PATTERN = /^ {2}([A-Za-z][A-Za-z0-9]*)\(/;
 
   interface ContractDeclaration {
@@ -7785,7 +6520,7 @@ describe('test/integrations/IntegrationContract.test.ts — the five-method `<cf
     return { body, members };
   }
 
-  describe('NET-NEW IntegrationContract — the five declared members (INT-03)', () => {
+  describe('NET-NEW IntegrationContract — the five declared members', () => {
     it('[NET-NEW] reads the interface body, so the two source-text cases below assert something', () => {
       const declaration = readDeclaredContractMembers();
 
@@ -7824,7 +6559,7 @@ describe('test/integrations/IntegrationContract.test.ts — the five-method `<cf
       /*
        * The compile-time half of the same claim lives in `_EveryContractKeyIsDeclaredHere` above: a sixth
        * key on the interface would fail `tsc` before this case ever ran. Both halves are kept, because the
-       * type alias catches a widened INTERFACE while this case also catches a widened FILE — a member added
+       * type alias catches a widened interface while this case also catches a widened file — a member added
        * to the declaration but shadowed by an identical name elsewhere would slip past the type alone.
        */
     });
@@ -7833,10 +6568,10 @@ describe('test/integrations/IntegrationContract.test.ts — the five-method `<cf
       const { members } = readDeclaredContractMembers();
 
       /*
-       * `getAdminNavbarHTML` — BaseIntegration.cfc:L71. Present on the BASE CLASS, so every integration
+       * `getAdminNavbarHTML` — BaseIntegration.cfc:L71. Present on the base class, so every integration
        * inherits it; absent from the interface, so no adapter is obliged to provide it.
        * `getIntegratedSettings` — google/Integration.cfc:L67. A Google-only member.
-       * `getSettingOptions` — google/Integration.cfc:L73. Google-only, and the ONE member in the folder
+       * `getSettingOptions` — google/Integration.cfc:L73. Google-only, and the one member in the folder
        * that takes an argument, which is why the zero-arity case below can be unconditional.
        */
       for (const candidate of EXCLUDED_CANDIDATES) {
@@ -7873,7 +6608,7 @@ describe('test/integrations/IntegrationContract.test.ts — the five-method `<cf
     });
   });
 
-  describe('NET-NEW IntegrationContract — arity, synchronicity and visibility (INT-03)', () => {
+  describe('NET-NEW IntegrationContract — arity, synchronicity and visibility', () => {
     it('[NET-NEW] declares every member zero-arity, because no legacy tag declares a cfargument', () => {
       for (const { subject } of conformers()) {
         for (const name of CONTRACT_MEMBERS) {
@@ -7921,7 +6656,7 @@ describe('test/integrations/IntegrationContract.test.ts — the five-method `<cf
 
     it('[NET-NEW] leaves getEventHandlers as reachable as the four that declare access="public"', () => {
       /*
-       * `IntegrationInterface.cfc:L82` is the one tag with NO `access` attribute, while `:L52`, `:L56`,
+       * `IntegrationInterface.cfc:L82` is the one tag with no `access` attribute, while `:L52`, `:L56`,
        * `:L63` and `:L75` all declare `access="public"`. A TypeScript interface has no visibility facility,
        * so the translation makes all five equally reachable; the observable claim is that the un-annotated
        * member is callable from outside its class exactly like its four siblings.
@@ -7933,10 +6668,12 @@ describe('test/integrations/IntegrationContract.test.ts — the five-method `<cf
     });
   });
 
-  describe('NET-NEW IntegrationContract — the declared return shapes (INT-03)', () => {
+  describe('NET-NEW IntegrationContract — the declared return shapes', () => {
     it('[NET-NEW] returns the subject itself from init, which is what `return this` means', () => {
       for (const { subject } of conformers()) {
-        /* `IntegrationInterface.cfc:L52` declares `returntype="any"`; every implementation returns itself. */
+        /*
+         * `IntegrationInterface.cfc:L52` declares `returntype="any"`; every implementation returns itself.
+         */
         expect(subject.init()).toBe(subject);
       }
     });
@@ -7956,7 +6693,7 @@ describe('test/integrations/IntegrationContract.test.ts — the five-method `<cf
          * TODO(parity), unnumbered — IntegrationInterface.cfc:L75-L79. The tag declares
          * `returntype="struct"` while its own hint says to "return true only if there is a
          * /views/main/default.cfm file". The prose is stale and is carried across rather than repaired
-         * (AAP §0.8.2 guideline 4); what is asserted is the DECLARED shape the port kept, because that is
+         * (AAP §0.8.2 guideline 4); what is asserted is the declared shape the port kept, because that is
          * the part that is executable.
          */
         expect(typeof settings).toBe('object');
@@ -7994,7 +6731,7 @@ describe('test/integrations/IntegrationContract.test.ts — the five-method `<cf
     });
   });
 
-  describe('NET-NEW IntegrationContract — conformance of the shipped implementations (INT-03)', () => {
+  describe('NET-NEW IntegrationContract — conformance of the shipped implementations', () => {
     it('[NET-NEW] is satisfied by BaseIntegration', () => {
       const subject: IntegrationContract = new BaseIntegration();
 
@@ -8013,7 +6750,7 @@ describe('test/integrations/IntegrationContract.test.ts — the five-method `<cf
 
     it('[NET-NEW] is satisfiable without extending BaseIntegration, as the legacy interface demands', () => {
       /*
-       * `google/Integration.cfc:L49` carries `extends="…BaseIntegration"` AND
+       * `google/Integration.cfc:L49` carries `extends="…BaseIntegration"` and
        * `implements="…IntegrationInterface"` as two independent declarations. The interface itself demands
        * no base class, and `MinimalConformer` is the proof the port preserved that: it satisfies the
        * contract while inheriting nothing. Were the port to have folded a base-class dependency into the
@@ -8050,115 +6787,15 @@ describe('test/integrations/IntegrationContract.test.ts — the five-method `<cf
   });
 });
 
-/* =====================================================================================================
- * FOLDED IN FROM `test/handlers/googleFeedHandler.test.ts` — AAP §0.4.1.12 SUITE ALIGNMENT (F1, F5, F7)
- * =====================================================================================================
- * WHY THESE CASES ARE HERE RATHER THAN IN A SUITE OF THEIR OWN. AAP §0.4.1.12 declares exactly seventeen
- * executable suites, and `test/handlers/googleFeedHandler.test.ts` was not one of them — a QA pass recorded it,
- * with eighteen siblings, as running outside the declared test plan. The coverage was never the problem;
- * the file's existence was. So the cases are folded into an approved suite, unchanged.
- *
- * ⭐ WHY THIS HOST. The feed is the one surface whose three production parts — the selection, the serializer and the stub —
- * now all sit in this file, so the handler that wires them belongs here too. It is also the layer review
- * finding F4 was about, and this file already carries the shipped-wiring cases that answer it, so the
- * handler's collaborator surface and its wiring are now asserted side by side.
- *
- * ⛔ THE BODY IS WRAPPED IN ONE `describe`, WHICH IS THE WHOLE OF THE MECHANICAL CHANGE. Every helper,
- * constant and type the folded suite declared at module scope is now block-scoped to this callback, so it
- * cannot collide with this file's own declarations or with another folded body's — and any `beforeEach`,
- * `afterEach` or `beforeAll` it carries now applies to its own cases only, never to the host's. Not one
- * assertion, case name or comment was altered.
- * ================================================================================================== */
-
-/**
- * The Google product-feed handler — INT-06.
- *
- * AAP authority: AAP §0.4.4 authorises `slatwall-ts/test/**` | CREATE. This file covers
- * `src/handlers/googleFeedHandler.ts`, whose legacy origin is the `product(rc)` action at
- * `integrationServices/google/controllers/feed.cfc:L58-L73`, reached as
- * `?slatAction=google:feed.product` (`integrationServices/google/views/main/default.cfm:L50`).
- * AAP §0.4.1.9 lists the file and flags M2 against it.
- *
- * =================================================================================================
- * WHAT THESE CASES PROVE
- * =================================================================================================
- * The handler is the thin AWS boundary AAP §0.1.2.1 requires: it composes no selection, emits no
- * element, chooses no status and inspects no error. Everything it DOES do is a sequencing decision,
- * and each one is asserted:
- *
- *   1. THE BODY IS THE DOCUMENT, VERBATIM. `product.cfm:L1` puts the XML declaration in the first
- *      bytes, so the response body must be raw XML with no envelope, no layout, no wrapper and no
- *      second encoding pass. Asserted BYTE-IDENTICALLY against a document this file builds itself
- *      from the same records, the same context and the same serializer — which is the only form of
- *      the claim that cannot pass while the handler quietly alters a character.
- *   2. THE CONFIGURED HOST REACHES EVERY ABSOLUTE URL. `product.cfm` composes four content URLs and
- *      the channel description from `http://` plus the host. The host is read ONCE at creation,
- *      which is asserted with a counting accessor, because AAP §0.6.6 M7 records that it cannot vary
- *      between invocations of one container.
- *   3. NOTHING SURVIVES BETWEEN INVOCATIONS. The selection is re-issued every call, the clock is read
- *      every call, and a second selection that is empty is NOT masked by a first that was not. This
- *      is the M7 claim in its observable form: on a warm container, module scope is the only thing
- *      that persists, so a memoised selection or a captured render instant would be a real defect.
- *   4. EVERY FAILURE FUNNELS THROUGH ONE MAPPING, AND NOTHING LEAKS. Seven distinct thrown values are
- *      driven through the single catch and each is asserted at its exact status AND its exact public
- *      body — including the two that are easy to get wrong: `NotImplementedError` publishes
- *      `./httpResponse`'s own neutral text rather than the presentation's, and `LegacyParityError` is
- *      the ONLY branch that publishes a thrown message. The suppression record written to the error
- *      stream is captured and asserted too, because "redirected, not discarded" is only half a
- *      guarantee if nobody checks that the message stayed out of it.
- *   5. M2 IS FLAGGED, NEVER SOLVED. `product.cfm:L9` asks for `requesttimeout="360"`, which AAP
- *      §0.6.6 M2 records as a mismatch to be surfaced rather than resolved. Three cases hold that
- *      honest: the collaborator surface admits no budget, page size, chunk, cursor or concurrency
- *      control; the source schedules nothing and races nothing; and a slow serialization still
- *      completes rather than being cut off by something this file invented. No figure is asserted for
- *      any ceiling, because AAP §0.8.3.5 and IR-12 forbid inventing one.
- *
- * WHY THE REAL SELECTION AND THE REAL SERIALIZER ARE USED. `ProductFeedQuery` owns the cancellation
- * refusal and `ProductFeedBuilder` owns every emitted byte, so substituting either would make the
- * cancellation and byte-parity claims assertions about a test fixture instead of about the port. Both
- * are constructed here against the support doubles the sibling suites use, and only the four seams the
- * handler cannot supply itself — a SKU source, a host, an image reader and a clock — are doubled.
- * The error matrix is the one exception: there a serializer double raises each value deliberately,
- * because the mapping under test is the handler's contract and the failure's origin is irrelevant to
- * it.
- *
- * NO DATABASE, NO NETWORK, NO HTTP LISTENER. This is headless library code: the handler is a function
- * that returns a response object, so every case calls it directly. Two cases read the handler's own
- * source file as TEXT with `node:fs`/`node:path`, because "schedules nothing" is a property of the
- * source; nothing parses, evaluates or modifies it, and only files inside this subtree are read.
- *
- * TEST PROVENANCE: every case is **NET-NEW**. AAP §0.6.5.2 records that no legacy test exercises the
- * feed controller at all — `meta/tests/functional/admin/entity/ProductTest.cfc:L49-L52` is an empty
- * component — and AAP §0.8.3.7 requires that absence to be flagged explicitly rather than implied
- * away. TRACEABILITY HERE IS DOCUMENTARY, NEVER EMPIRICAL: MXUnit and CFSelenium are not vendored
- * (`meta/tests/readme.txt:L4-L5`), `meta/docker/slatwall-local-dev/` does not exist, and no CFML
- * runtime is reproducible in this environment, so the legacy suite was read rather than run
- * (AAP §0.6.5.3, §0.8.4).
- *
- * SCOPE. The handler's sequencing, its response envelope and its failure mapping. The field mapping
- * belongs to `ProductFeedBuilder.test.ts`, the selection composition to `ProductFeedQuery.test.ts`,
- * the emitted SQL to `SmartListQueryBuilder.test.ts`, and the router is out of scope for this
- * checkpoint.
+/*
+ * AAP §0.4.1.12 declares exactly seventeen executable suites, so this subject is covered
+ * inside an approved suite rather than in one of its own.
  */
 
-// No user-specified rules were provided for this project; the nine enterprise
-// standards of AAP §0.7.3 govern instead, and the bar is not lowered.
-describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the fourth and last part of the feed's coverage (folded, F1, F5 case 7, F7)", () => {
-  /* =================================================================================================
-   * Compile-time claims about the collaborator surface.
-   *
-   * The two mutual aliases are an exhaustiveness proof over the seams the handler accepts. They are the
-   * cheapest and strongest form of "no page size, chunk size, cursor, concurrency limit, re-attempt count or
-   * cache lifetime was invented here" (M2, AAP §0.8.2 guideline 4): a collaborator not in this list would fail
-   * `tsc` before a single case ran.
-   *
-   * ⭐ THE LIST HAS SIX NAMES, AND IT USED TO HAVE FIVE. Review finding SEC-1 (CWE-400) added
-   * `assertMaterialisationBounded` — the bound check this ANONYMOUS route runs before it materialises anything.
-   * The census is what makes that addition visible rather than incidental: a reviewer reading this list sees
-   * exactly one new collaborator, and the note above no longer claims "no budget" was involved, because one
-   * now is. What has NOT changed is that no FIGURE is named — here or anywhere in the module — since the gate
-   * requires the operator to have stated one and supplies none itself.
-   * ============================================================================================== */
+/** The Google product-feed handler — int-06. */
+
+describe("The feed's handler — the fourth and last part of the feed's coverage", () => {
+  /* compile-time claims about the collaborator surface. */
   type AssertAssignable<TActual extends TExpected, TExpected> = TActual;
 
   const COLLABORATOR_NAMES = [
@@ -8184,14 +6821,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
   /** The handler's own response shape, taken from its declaration rather than re-imported. */
   type FeedResponse = Awaited<ReturnType<GoogleFeedHandler['product']>>;
 
-  /* =================================================================================================
-   * Fixture values.
-   *
-   * Every one is a FIXTURE chosen so its effect is observable in the output; none is a claim about a
-   * production default. The four settings are seeded explicitly because
-   * `config/dbdata/SlatwallSetting.xml.cfm` seeds neither shipping key and the effective-value engine
-   * lives in the out-of-scope setting service, so inventing a default would be fabrication.
-   * ============================================================================================== */
+  /* Fixture values. */
   const RENDER_HOST = 'catalog.example.test';
   const ABSOLUTE_URL_PREFIX = 'http://catalog.example.test';
   const SECOND_RENDER_HOST = 'second.example.test';
@@ -8228,21 +6858,12 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
     Object.freeze({ imagePath: ADDITIONAL_IMAGE_PATH }),
   ]);
 
-  /* =================================================================================================
+  /*
    * Hand-written call logs. No mocking library is used anywhere: AAP §0.5.2 closes the dependency set,
    * and AAP §0.4.3.6 records that the legacy suite has no mocking facility at all.
-   * ============================================================================================== */
-
-  /**
-   * One recorded execution of the feed's selection.
-   *
-   * ⚠️ IT RECORDS THE DESCRIBED QUERY AND WHICH VIEW WAS ASKED FOR, WHERE IT USED TO RECORD A SERVICE
-   * CALL'S ARGUMENTS. `ProductFeedQuery` no longer holds a `SkuService`: it composes the shared SKU
-   * selection and executes it through `SmartListQueryPort.executeRecords`, so what a double can observe is
-   * the query description and the member that received it. Recording the member is the point — a
-   * regression to the three-view reading would show up here as `execute` rather than as a silently extra
-   * statement nothing asserts on.
    */
+
+  /** One recorded execution of the feed's selection. */
   interface SelectionCall {
     readonly query: SmartListQuery;
     readonly member: 'execute' | 'executeRecords';
@@ -8265,25 +6886,22 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
     readonly context: ProductFeedRenderContext;
     readonly sku: Sku;
     readonly secondSku: Sku;
-    /** The one product both SKUs hang off, exposed so a case can seed its owned image collection. */
-    readonly product: Product;
     /**
-     * The two SKU codes as strings.
-     *
-     * `Sku.skuCode` is declared optional (`src/domain/sku/Sku.ts:L977`) because the column is nullable, so
-     * the fixture's own values are surfaced here rather than narrowed at every assertion site.
+     * The one product both SKUs hang off, exposed so a case can seed its owned image collection.
      */
+    readonly product: Product;
+    /** The two SKU codes as strings. */
     readonly skuCode: string;
     readonly secondSkuCode: string;
     readonly selectionCalls: readonly SelectionCall[];
     readonly imageReaderCalls: readonly string[];
     readonly clockCalls: ClockCallLog;
-    /** How many times the SEC-1 materialisation gate was consulted. */
+    /** How many times the materialisation gate was consulted. */
     readonly materialisationGateCalls: { readonly count: number };
     readonly hostReads: HostReadLog;
     readonly images: ImagePathDouble;
     readonly pricing: PricingDouble;
-    /** Replaces what the NEXT selection returns. */
+    /** Replaces what the next selection returns. */
     setSelection(skus: readonly Sku[]): void;
     /** Builds the document this file expects, from the same records and the same serializer. */
     buildDirectly(skus: readonly Sku[]): Promise<string>;
@@ -8295,31 +6913,17 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
     readonly serializer?: ProductFeedSerializer;
     /** Makes the SKU source itself fail, proving the catch wraps the selection step too. */
     readonly selectionFailure?: Error;
-    /**
-     * Replaces the image reader.
-     *
-     * ⭐ IT EXISTS TO DRIVE THE SHIPPED DEFAULT'S BEHAVIOUR. `src/config/container.ts` supplies a reader
-     * that RAISES a `NotImplementedError` when no deployment has injected an image subsystem, and a code
-     * review required that the feed then answer `501` rather than publish a document with every
-     * `g:additional_image_link` element silently missing. Seeding a raising reader here is how that outcome
-     * is asserted without building a container (which would read the environment).
-     */
+    /** Replaces the image reader. */
     readonly readProductImages?: (sku: Sku) => readonly ProductFeedImage[];
 
-    /**
-     * Replaces the anonymous materialisation gate — review finding SEC-1 (CWE-400).
-     *
-     * ⭐ IT EXISTS TO DRIVE BOTH OUTCOMES OF A REQUIRED COLLABORATOR. `src/config/container.ts` builds the
-     * real gate with `createAnonymousMaterialisationGate`, which raises a `ConfigurationError` when no
-     * deployment has stated `CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY`. Seeding a raising gate here is how the
-     * `500` is asserted without building a container (which would read the environment); the default below is a
-     * gate that returns, so every other case in this file exercises the bounded path.
-     */
+    /** Stands in for the anonymous materialisation gate (CWE-400). */
     readonly assertMaterialisationBounded?: () => void;
   }
 
   function createHandlerScenario(seed: ScenarioSeed = {}): HandlerScenario {
-    /* The legacy fixture contract from `meta/tests/unit/Helper.cfc:L52-L77`, reused rather than retyped. */
+    /*
+     * The legacy fixture contract from `meta/tests/unit/Helper.cfc:L52-L77`, reused rather than retyped.
+     */
     const legacyFixture = createTestMerchandiseProductData();
 
     const settings = createSettingResolverDouble({ settings: [...SETTING_SEEDS] });
@@ -8367,10 +6971,12 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
 
     const selectionCalls: SelectionCall[] = [];
     let selectedSkus: readonly Sku[] = [sku];
-    /* The records-only reading `ProductFeedQuery` declares as its seam — the view
+    /*
+     * The records-only reading `ProductFeedQuery` declares as its seam — the view
      * `integrationServices/google/views/feed/product.cfm:L16` loops. The double answers the rows and
      * records the description it was handed, so a case can assert both what was selected and that only
-     * this member was used. */
+     * this member was used.
+     */
     const skuSource: ProductFeedSkuSource = {
       executeRecords: <TEntityName extends SmartListRootEntityName>(
         query: SmartListQuery<TEntityName>,
@@ -8381,9 +6987,11 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
           return Promise.reject(seed.selectionFailure);
         }
 
-        /* The seeded SKUs ARE the rows for this root entity. The cast is confined to this one line and is
+        /*
+         * The seeded SKUs are the rows for this root entity. The cast is confined to this one line and is
          * unavoidable in a double that satisfies a generic member: the harness seeds SKUs because the feed
-         * roots at `SlatwallSku`, and a query rooted anywhere else never reaches this double. */
+         * roots at `SlatwallSku`, and a query rooted anywhere else never reaches this double.
+         */
         return Promise.resolve([...selectedSkus] as unknown as SmartListRecord<TEntityName>[]);
       },
     };
@@ -8406,7 +7014,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       feedSerializer: seed.serializer ?? builder,
       /*
        * A counting accessor rather than a plain literal. It is the only way to observe that the host is
-       * read ONCE at creation rather than per invocation, which is the M7 commitment the module states.
+       * read once at creation rather than per invocation, which is the M7 commitment the module states.
        */
       hostConfiguration: {
         get host(): string {
@@ -8433,7 +7041,9 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
           return RAW_UTC_HOUR_OFFSET;
         },
       },
-      /* SEC-1. Counted as well as delegated, so a case can assert the gate ran BEFORE the selection did. */
+      /*
+       * Counted as well as delegated, so a case can assert the gate ran before the selection did.
+       */
       assertMaterialisationBounded: (): void => {
         materialisationGateCalls.count += 1;
         seed.assertMaterialisationBounded?.();
@@ -8475,14 +7085,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
     };
   }
 
-  /* =================================================================================================
-   * The error-stream capture.
-   *
-   * `./httpResponse` writes an allowlisted diagnostic through `console.error` on three of its five
-   * branches, so a case that ignored it would leave the "redirected, not discarded" guarantee unchecked
-   * — and would print noise that looks like a failure. `console.error` is swapped for a typed collector
-   * and restored in a `finally`, which is a hand-written call log rather than a mocking facility.
-   * ============================================================================================== */
+  /* The error-stream capture. */
   interface ConsoleErrorCapture {
     readonly lines: readonly string[];
     restore(): void;
@@ -8549,12 +7152,12 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
     'googleFeedHandler.ts',
   );
 
-  describe('NET-NEW googleFeedHandler — the successful response envelope (INT-06)', () => {
+  describe('NET-NEW googleFeedHandler — the successful response envelope', () => {
     it('[NET-NEW] answers 200 with Content-Type application/xml and nothing else in the headers', async () => {
       const { response } = await invoke(createHandlerScenario().handler);
 
       /*
-       * `./httpResponse.xmlResponse` owns all three. The header map is asserted WHOLE rather than by key,
+       * `./httpResponse.xmlResponse` owns all three. The header map is asserted whole rather than by key,
        * so an added header — a charset parameter, a cache directive, a CORS allowance — fails here. None is
        * invented: `product.cfm` sets no header of its own beyond the content type implied by the document.
        */
@@ -8569,14 +7172,16 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       const body = response.body;
 
       /*
-       * `product.cfm:L1` puts the declaration in the FIRST bytes, so the body starts with it and is not
+       * `product.cfm:L1` puts the declaration in the first bytes, so the body starts with it and is not
        * wrapped. `JSON.parse` throwing is the falsifiable form of "not a JSON envelope"; the absence of
        * `<html` is the falsifiable form of "no layout was applied", which is what `request.layout = false`
        * at `feed.cfc:L60` achieves in the legacy controller.
        */
       expect(body.startsWith(EXPECTED_XML_DECLARATION)).toBe(true);
       expect(() => {
-        /* Called for its throw, not its value: returning the parse result would hand back `any`. */
+        /*
+         * Called for its throw, not its value: returning the parse result would hand back `any`.
+         */
         JSON.parse(body);
       }).toThrow();
       expect(body).not.toContain('<html');
@@ -8590,8 +7195,8 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       const expected = await scenario.buildDirectly([scenario.sku]);
 
       /*
-       * THE CENTRAL CLAIM OF THIS FILE. The expected document is built from the SAME serializer instance,
-       * the SAME record shape and the SAME render context, so any difference is something the handler did
+       * The central claim of this file. The expected document is built from the same serializer instance,
+       * the same record shape and the same render context, so any difference is something the handler did
        * to the body — a trim, a prepend, a re-encode, a normalisation. `toBe` on the whole string is the
        * only assertion that cannot pass while one character differs.
        */
@@ -8603,7 +7208,9 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       const { response } = await invoke(createHandlerScenario().handler);
       const body = response.body;
 
-      /* `product.cfm:L1`, `:L11`, `:L13` — the declaration, the namespaced root and the channel title. */
+      /*
+       * `product.cfm:L1`, `:L11`, `:L13` — the declaration, the namespaced root and the channel title.
+       */
       expect(body).toContain(EXPECTED_XML_DECLARATION);
       expect(body).toContain(EXPECTED_RSS_OPEN_TAG);
       expect(body).toContain(EXPECTED_CHANNEL_TITLE_ELEMENT);
@@ -8618,7 +7225,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       const body = response.body;
 
       /*
-       * `product.cfm:L16` loops the smart list's RECORDS — the unpaged collection — so the handler must not
+       * `product.cfm:L16` loops the smart list's records — the unpaged collection — so the handler must not
        * re-sort, filter, de-duplicate or page. Order is asserted by offset because feed order is
        * observable behaviour: a merchant processor reads the document top to bottom.
        */
@@ -8645,14 +7252,14 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
     });
   });
 
-  describe('NET-NEW googleFeedHandler — the configured host reaches every absolute URL (INT-06)', () => {
+  describe('NET-NEW googleFeedHandler — the configured host reaches every absolute URL', () => {
     it('[NET-NEW] puts http://<host> in the channel link, the channel description and the item link', async () => {
       const { response } = await invoke(createHandlerScenario().handler);
       const body = response.body;
 
       /*
        * The handler contributes the host and nothing else about these URLs; the composition is the
-       * serializer's. What is asserted here is that the ONE configured value reaches every place the legacy
+       * serializer's. What is asserted here is that the one configured value reaches every place the legacy
        * template put it, because a handler that dropped it would still produce a well-formed document.
        */
       expect(body).toContain(`<link>${ABSOLUTE_URL_PREFIX}</link>`);
@@ -8666,16 +7273,13 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       const body = response.body;
 
       /*
-       * ⚠️ THE SCHEME IS PARITY, AND THIS IS ITS ROUTE-LEVEL PIN.
-       * `integrationServices/google/views/feed/product.cfm:L14` and its four siblings hard-code `http://`,
-       * and `ProductFeedBuilder.FEED_SCHEME_PREFIX` transcribes that literal. An earlier revision emitted
-       * `https://` as a second declared departure beside D18; AAP §0.6.7.7 admits exactly one, so the
+       * The scheme is parity, and this is its route-level pin.
+       * `integrationServices/google/views/feed/product.cfm:L14` and its four siblings hard-code
+       * `http://`, and `ProductFeedBuilder.FEED_SCHEME_PREFIX` transcribes that literal. Emitting
+       * `https://` would be a second declared departure beside D18, and AAP §0.6.7.7 admits exactly
+       * one, so the
        * upgrade is reversed and the cleartext exposure (CWE-319) is carried as an annotated TODO(parity) at
        * that constant instead — where a reviewer diffing behaviour will find it.
-       *
-       * ⭐ THE CENSUS ACCOUNTS FOR THE NAMESPACE URI SEPARATELY. It is itself an `http://` URL and must stay
-       * one — an identifier compared by string equality, not a fetch target — so it is added to the expected
-       * count rather than folded into the published URLs.
        */
       expect(body).not.toContain('https://');
       expect(countOccurrences(body, 'http://')).toBe(
@@ -8706,56 +7310,31 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       const { response } = await invoke(scenario.handler);
 
       /*
-       * ⭐ VALIDATION AND NORMALISATION ARE DIFFERENT THINGS, AND THIS CASE PINS THE SECOND HALF ONLY.
-       * `validateFeedHostAuthority` IS applied — at construction here and again per render in the serializer
-       * — so the value is judged. What it never does is REWRITE: a host that passes is emitted byte-for-byte,
+       * Validation and normalisation are different things, and this case pins the second half only.
+       * `validateFeedHostAuthority` is applied — at construction here and again per render in the serializer
+       * — so the value is judged. What it never does is rewrite: a host that passes is emitted byte-for-byte,
        * with nothing trimmed, case-folded, punycoded or stripped of a default port. A gate that silently
        * corrected a value would publish a URL the operator did not configure, which is the failure mode
        * `assertSameOriginRelativePath` gives the same answer to.
-       *
-       * ⚠️ THE SCHEME IS NOT A NORMALISATION OF THIS VALUE EITHER. `http://` is a module constant transcribed
-       * from the legacy and applied to every URL, not a rewrite of the configured host.
        */
       expect(response.body).toContain(`<link>http://${SECOND_RENDER_HOST}</link>`);
       expect(response.body).not.toContain(RENDER_HOST);
     });
 
-    /* ==============================================================================================
-     * ⭐ THE NINE CASES BELOW PIN THE HOST-AUTHORITY REFUSAL AT THE CONSTRUCTION BOUNDARY
-     *
-     * WHAT THEY ASSERT. That `createHandlerScenario` REFUSES at construction for a host carrying a userinfo
-     * delimiter, a path delimiter, a backslash, a query delimiter, a fragment delimiter, an embedded space,
-     * an embedded newline, a whitespace-only value or an empty value. All nine drive
-     * {@link validateFeedHostAuthority}, a deny check over the origin-moving characters, which
-     * `createGoogleFeedHandler` applies to `hostConfiguration.host` at construction.
-     *
-     * ⛔ WHY THEY WERE WITHDRAWN, AND WHY THAT ARGUMENT NO LONGER GOVERNS. The gate was added under findings
-     * F7/SEC-06 and INT-06 and removed by a later review's withdrawal of seven hardening categories, on
-     * CARDINALITY rather than merits: `product.cfm:L14` interpolates `CGI.HTTP_HOST` with NO test, and AAP
-     * §0.6.7.7 licenses EXACTLY ONE departure from behavioural preservation (D18). The current review's
-     * finding F8 classifies the unvalidated read as a MAJOR security defect (CWE-20 feeding CWE-601), and the
-     * cardinality objection does not reach it: RFC 9110 §7.2 defines the `Host` field value this variable
-     * stands in for as an RFC 3986 §3.2.2 `host` with §3.2.3's optional `port`, userinfo expressly excluded,
-     * so NO value the gate refuses could ever have reached `:L14`. A rule that admits every value the legacy
-     * input could hold and refuses only values it could not is ALIGNMENT, and enters no departure register.
-     *
-     * ⭐ CONSTRUCTION, NOT INVOCATION, AND THE POSITION IS THE POINT. A misconfiguration is reported when the
-     * container is built rather than as a 500 on the first public request, so an operator learns of it at
-     * deploy time. `src/config/env.ts` additionally applies the FULL RFC 3986 production to
-     * `GOOGLE_FEED_HOST` at load, and `ProductFeedBuilder.build` re-applies the deny set per render — three
-     * checks of one rule at three trust boundaries, none trusting the others to have run.
-     * ============================================================================================== */
+    /* The nine cases below pin the host-authority refusal at the construction boundary. */
 
-    it('[NET-NEW] F8 REFUSES a userinfo-bearing host at CONSTRUCTION, before any request', () => {
-      /* The sharpest of the nine: `<configured>@evil.example` resolves every one of the five absolute URLs
+    it('[NET-NEW] REFUSES a userinfo-bearing host at CONSTRUCTION, before any request', () => {
+      /*
+       * The sharpest of the nine: `<configured>@evil.example` resolves every one of the five absolute URLs
        * to `evil.example`, with the intended host demoted to userinfo, and it carries no markup character so
-       * no XML gate can catch it. */
+       * no XML gate can catch it.
+       */
       expect(() => createHandlerScenario({ host: `${RENDER_HOST}@evil.example` })).toThrow(
         DataIntegrityError,
       );
     });
 
-    it('[NET-NEW] F8 REFUSES every origin-moving and blank host at CONSTRUCTION', () => {
+    it('[NET-NEW] REFUSES every origin-moving and blank host at CONSTRUCTION', () => {
       /*
        * The remaining eight, each with its own mechanism: `/` and `\\` end the authority and begin a path;
        * `?` and `#` begin a query and a fragment, and `#` in particular collapses all five URLs onto one
@@ -8778,7 +7357,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
 
     it('[NET-NEW] the construction refusal NEVER echoes the rejected host', () => {
       /*
-       * ⛔ A REJECTED AUTHORITY IS ATTACKER-SUPPLIED BY HYPOTHESIS, so copying it into the diagnostic would
+       * A rejected authority is attacker-supplied by hypothesis, so copying it into the diagnostic would
        * carry the payload one layer further — into a log, and from there into whatever reads the log. The
        * message names the rule and the offending code point by `U+XXXX`; the value appears nowhere in it.
        * The same discipline `assertRepresentableInXml` and `src/config/env.ts` follow.
@@ -8798,10 +7377,10 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
 
     it('[NET-NEW] admits an IPv6 literal, a port and an underscore, because no grammar was invented', async () => {
       /*
-       * ⛔ THE WITHDRAWN RFC 1035 GRAMMAR AND ITS 63-OCTET CEILING STAY WITHDRAWN, AND THIS CASE IS WHY.
-       * A positive grammar of "legal hostnames" refuses values real deployments use, and refusing a
+       * No RFC 1035 grammar and no 63-octet ceiling are applied, and this case is why. A positive
+       * grammar of "legal hostnames" refuses values real deployments use, and refusing a
        * legitimate authority is the outcome change AAP §0.8.2 guideline 4 actually forbids. The gate is a
-       * DENY set of authority delimiters instead, so each of these passes and is emitted verbatim.
+       * deny set of authority delimiters instead, so each of these passes and is emitted verbatim.
        */
       for (const host of [
         '[2001:db8::1]:8080',
@@ -8813,27 +7392,12 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       }
     });
 
-    it('[NET-NEW] CQ-9 and SEC-2 answer 500 for an ampersand host rather than escaping it into the feed', async () => {
+    it('[NET-NEW] the handler answers 500 for an ampersand host rather than escaping it into the feed', async () => {
       /*
-       * ⭐ THE TWO CONTROLS DIVIDE THE EXPOSURE, AND THIS CASE PINS THE SEAM. `&` cannot move an
+       * The two controls divide the exposure, and this case pins the seam. `&` cannot move an
        * authority, so `validateFeedHostAuthority` has no business refusing it and does not — the host reaches
        * the serializer. What happens there has changed twice, and the current answer is the one this case
        * asserts.
-       *
-       * ⛔ IT USED TO BE ESCAPED, and this case required `<link>http://a&amp;b.example.test</link>`, reasoning
-       * that a working document beats a refusal. Review finding CQ-9 withdrew that escape: the channel link at
-       * `integrationServices/google/views/feed/product.cfm:L14` is one of NINE RAW sinks, and escaping it emits
-       * bytes the legacy never emitted.
-       *
-       * ⭐ SO THE VALUE IS NOW REFUSED, WHICH IS WHAT FINDING SEC-2 REQUIRES OF IT. Emitted raw, a bare `&`
-       * leaves the whole document with no defined XML parse — "allowing one record to make the whole feed
-       * unparseable" — so `ProductFeedBuilder` raises a `DataIntegrityError` and this handler translates that
-       * to 500. No document is published either way; the difference is that a 500 is diagnosable and a
-       * malformed 200 is not.
-       *
-       * ⚠️ AND THE BODY MUST NOT LEAK THE HOST, which is why the negative below is on the configured value
-       * rather than only on the markup. A 500 body is a neutral public message; echoing configuration into it
-       * would be a new disclosure introduced by a security fix.
        */
       const { response } = await invoke(
         createHandlerScenario({ host: 'a&b.example.test' }).handler,
@@ -8846,21 +7410,17 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
     });
   });
 
-  describe('NET-NEW googleFeedHandler — SEC-1: the anonymous route requires a stated bound', () => {
+  describe('NET-NEW googleFeedHandler — the anonymous route requires a stated bound', () => {
     /*
-     * WHY THIS ROUTE AND NO OTHER. `integrationServices/google/controllers/feed.cfc:L54-L56` declares
-     * `this.publicMethods="product"`, so `google:feed.product` is the ONE action in the whole service
-     * reachable with no principal — every other catalog route answers 401 without one. Review finding SEC-1
-     * (CWE-400) is about unbounded ANONYMOUS materialisation specifically, which is why the gate lives here
+     * Why this route and no other. `integrationServices/google/controllers/feed.cfc:L54-L56`
+     * declares `this.publicMethods="product"`, so `Google:feed.product` is the one action in the
+     * whole service reachable with no principal — every other catalog route answers 401 without
+     * one. Unbounded anonymous materialisation (CWE-400) is the exposure that follows, which is why
+     * the gate lives here
      * rather than in the shared response layer.
-     *
-     * ⭐ AND WHY THE GATE DEMANDS A BOUND RATHER THAN CHOOSING ONE. `src/config/env.ts` reads
-     * `CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY` as an OPTIONAL variable with no default, so an operator who
-     * has measured a figure can state it and this module never authors one (AAP §0.7.3 S9, IR-12). The
-     * consequence of stating nothing is a refusal, not a fabricated ceiling.
      */
 
-    it('[NET-NEW] SEC-1 answers 500 and selects nothing when no bound is stated', async () => {
+    it('[NET-NEW] it answers 500 and selects nothing when no bound is stated', async () => {
       const scenario = createHandlerScenario({
         assertMaterialisationBounded: (): void => {
           throw new ConfigurationError('no bound stated');
@@ -8872,9 +7432,9 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       expect(response.statusCode).toBe(500);
 
       /*
-       * ⭐ THE ASSERTION THAT MATTERS MOST IS THE SECOND ONE. A refusal that arrived after the selection had
+       * The assertion that matters most is the second one. A refusal that arrived after the selection had
        * already hydrated the catalog would report the exposure without preventing it, so the gate must run
-       * BEFORE `getFeedSkus` — and an empty selection log is the direct statement that it did.
+       * before `getFeedSkus` — and an empty selection log is the direct statement that it did.
        */
       expect(scenario.selectionCalls).toHaveLength(0);
       expect(scenario.imageReaderCalls).toStrictEqual([]);
@@ -8885,7 +7445,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       expect(response.body).not.toContain('CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY');
     });
 
-    it('[NET-NEW] SEC-1 renders normally once a bound is stated, and re-checks every invocation', async () => {
+    it('[NET-NEW] it renders normally once a bound is stated, and re-checks every invocation', async () => {
       const scenario = createHandlerScenario();
 
       const first = await invoke(scenario.handler);
@@ -8896,9 +7456,9 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       expect(first.response.body).toContain('<rss');
 
       /*
-       * ⚠️ TWO INVOCATIONS, TWO CHECKS. Memoising the verdict would make the gate a construction-time fact
+       * Two invocations, two checks. Memoising the verdict would make the gate a construction-time fact
        * again, and a construction-time fact is exactly what this design avoids — `createGoogleFeedHandler` runs
-       * at MODULE LOAD inside the router, so a raise there would take all 34 routes down over a bound only this
+       * at module load inside the router, so a raise there would take all 34 routes down over a bound only this
        * one needs (M7).
        */
       expect(scenario.materialisationGateCalls.count).toBe(2);
@@ -8906,7 +7466,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
     });
   });
 
-  describe('NET-NEW googleFeedHandler — nothing survives between invocations (INT-06)', () => {
+  describe('NET-NEW googleFeedHandler — nothing survives between invocations', () => {
     it('[NET-NEW] re-issues the selection on every invocation', async () => {
       const scenario = createHandlerScenario();
 
@@ -8976,7 +7536,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
 
     it('[NET-NEW] an UNWIRED image subsystem answers 501, and publishes no partial feed', async () => {
       /*
-       * ⛔ THE DEFECT THIS PINS. Production used to wire a reader that answered an EMPTY LIST on every call,
+       * The defect this pins. Production used to wire a reader that answered an empty list on every call,
        * so every feed render silently omitted every `g:additional_image_link` element and still answered
        * `200`. A code review classified that as a MAJOR integration-contract defect and directed the remedy:
        * "inject a real typed image reader; if unavailable, return explicit 501 rather than incomplete data".
@@ -8996,16 +7556,18 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
 
       expect(response.statusCode).toBe(HTTP_STATUS.NOT_IMPLEMENTED);
       expect(response.headers).toEqual({ 'Content-Type': 'application/json' });
-      /* NOT a document with the images missing, and not an empty channel either: no XML at all. */
+      /* Not a document with the images missing, and not an empty channel either: no XML at all. */
       expect(response.body).toBe(JSON.stringify({ message: 'This operation is not implemented' }));
       expect(response.body).not.toContain('<rss');
     });
 
     it('[NET-NEW] an EMPTY selection still renders 200, because the reader is consulted per record', async () => {
-      /* The refusal above is per record, so a catalog with nothing to select never reaches the image
+      /*
+       * The refusal above is per record, so a catalog with nothing to select never reaches the image
        * boundary and answers exactly what the legacy answers for an empty smart list: a complete document
        * with an empty channel. This is what keeps the 501 confined to the case that would otherwise have
-       * been published incomplete. */
+       * been published incomplete.
+       */
       const scenario = createHandlerScenario({
         readProductImages: () => {
           throw new NotImplementedError('ProductFeedImageReader');
@@ -9022,8 +7584,10 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
     });
 
     it('[NET-NEW] an INJECTED reader emits one additional-image element per image, as the legacy does', async () => {
-      /* The other half of the seam: a deployment that supplies a reader gets `product.cfm:L24`'s own output.
-       * `PRODUCT_IMAGES` holds two entries, so two elements are emitted for the one selected SKU. */
+      /*
+       * The other half of the seam: a deployment that supplies a reader gets `product.cfm:L24`'s own output.
+       * `PRODUCT_IMAGES` holds two entries, so two elements are emitted for the one selected SKU.
+       */
       const scenario = createHandlerScenario();
 
       const { response } = await invoke(scenario.handler);
@@ -9044,23 +7608,25 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
        * declaration. The handler must contribute nothing: no companion joins, and no second call.
        */
       expect(scenario.selectionCalls).toHaveLength(1);
-      /* ONE records-only execution, and the description carries the feed's own joins and filters — so the
+      /*
+       * One records-only execution, and the description carries the feed's own joins and filters — so the
        * handler added no companion join, issued no second call, and did not reach the three-view reading
-       * that would have counted the whole catalog on the way past. */
+       * that would have counted the whole catalog on the way past.
+       */
       expect(scenario.selectionCalls[0]?.member).toBe('executeRecords');
       expect(scenario.selectionCalls[0]?.query.entityName).toBe('SlatwallSku');
       expect(scenario.selectionCalls[0]?.query.joins).toBeDefined();
     });
   });
 
-  describe('NET-NEW googleFeedHandler — the returned handler object (INT-06)', () => {
+  describe('NET-NEW googleFeedHandler — the returned handler object', () => {
     it('[NET-NEW] returns a frozen object exposing exactly one operation', async () => {
       const { handler } = createHandlerScenario();
 
       /*
-       * `feed.cfc:L54` declares `this.publicMethods="product"` — ONE public action in the whole slice — and
+       * `feed.cfc:L54` declares `this.publicMethods="product"` — one public action in the whole slice — and
        * `:L55-L56` leave the admin and secure lists empty. The frozen single-key object is the port of that:
-       * nothing else is reachable, and the shape cannot be extended after creation.
+       * Nothing else is reachable, and the shape cannot be extended after creation.
        */
       expect(Object.isFrozen(handler)).toBe(true);
       expect(Object.keys(handler)).toEqual(['product']);
@@ -9076,7 +7642,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       const { handler } = createHandlerScenario();
 
       /*
-       * A TypeScript optional parameter compiles to an ORDINARY parameter with no default, so it still
+       * A TypeScript optional parameter compiles to an ordinary parameter with no default, so it still
        * counts towards `Function.length` — the arity is 1, and the optionality is a type-level fact the
        * runtime cannot see. What proves the option is genuinely optional is the case above, which invokes
        * the operation with no argument at all and gets a rendered feed. Both halves are stated because
@@ -9086,7 +7652,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
     });
   });
 
-  describe('NET-NEW googleFeedHandler — cancellation is forwarded, never honoured here (INT-06)', () => {
+  describe('NET-NEW googleFeedHandler — cancellation is forwarded, never honoured here', () => {
     it('[NET-NEW] refuses a pre-aborted invocation before a single selection is issued', async () => {
       const scenario = createHandlerScenario();
       const controller = new AbortController();
@@ -9095,7 +7661,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       const { response } = await invoke(scenario.handler, controller.signal);
 
       /*
-       * The refusal is REAL production code: `ProductFeedQuery.getFeedSkus` raises before it calls the SKU
+       * The refusal is real production code: `ProductFeedQuery.getFeedSkus` raises before it calls the SKU
        * source at all, so the zero call count is the proof that no catalog-wide read was issued. The
        * response is the neutral service-fault answer, because the handler inspects nothing.
        */
@@ -9114,7 +7680,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
 
       /*
        * The thrown text is a diagnostic for an engineer, not for a caller, and `./httpResponse` publishes an
-       * ALLOWLIST — situation, failure class and a correlation identifier — so the message stays out of the
+       * allowlist — situation, failure class and a correlation identifier — so the message stays out of the
        * error stream as well as out of the body. Both halves are asserted, because "redirected, not
        * discarded" is only half a guarantee if nobody checks what was redirected.
        */
@@ -9133,7 +7699,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       await invoke(scenario.handler, controller.signal);
 
       /*
-       * ⛔ The cancellation is deliberately NOT forwarded to `PricingPort` or `ImagePathPort`
+       * The cancellation is deliberately not forwarded to `PricingPort` or `ImagePathPort`
        * (`googleFeedHandler.ts:L760-L764`): both describe domains AAP §0.2.2 excludes, and widening them for
        * a collaborator nobody supplies would be inventing contract. On this path they are simply never
        * reached, which is the observable consequence.
@@ -9159,7 +7725,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
     });
   });
 
-  describe('NET-NEW googleFeedHandler — every failure funnels through one mapping (INT-06)', () => {
+  describe('NET-NEW googleFeedHandler — every failure funnels through one mapping', () => {
     /** A serializer that rejects with a real `Error`, exercising the asynchronous failure path. */
     function rejectingSerializer(failure: Error): ProductFeedSerializer {
       return {
@@ -9180,7 +7746,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       const { response } = await invokeWithSerializerFailure(failure);
 
       /*
-       * BRANCH 1. The keyed structure reaches the body UNCHANGED — not flattened, re-keyed, de-duplicated or
+       * Branch 1. The keyed structure reaches the body unchanged — not flattened, re-keyed, de-duplicated or
        * sorted — because AAP §0.4.1.11 requires validation failures to stay comparable to legacy output. The
        * whole body is compared as a string, so key order and the absence of extra members are both asserted.
        */
@@ -9206,9 +7772,9 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       );
 
       /*
-       * BRANCH 2, and the row most easily got wrong. The status is DERIVED from the error's own
+       * Branch 2, and the row most easily got wrong. The status is derived from the error's own
        * presentation, but the published text is `./httpResponse`'s own neutral constant — "This operation is
-       * not implemented" — and NOT the presentation's "This operation is not available". Neither
+       * not implemented" — and not the presentation's "This operation is not available". Neither
        * `error.member` nor `error.message` is read, so the member identifier stays server-side.
        */
       expect(response.statusCode).toBe(HTTP_STATUS.NOT_IMPLEMENTED);
@@ -9225,9 +7791,9 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       );
 
       /*
-       * BRANCH 3. The message is COPIED, never processed, because the type is the throw site's declaration
+       * Branch 3. The message is copied, never processed, because the type is the throw site's declaration
        * that this exact text is legacy behaviour (`model/service/SkuService.cfc:L204`). It is also the only
-       * branch that writes NO diagnostic, since nothing was suppressed.
+       * branch that writes no diagnostic, since nothing was suppressed.
        */
       expect(response.body).toBe(
         JSON.stringify({ message: 'There was an unexpected error when creating this product' }),
@@ -9241,7 +7807,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
         new DataIntegrityError('a row named a column the schema does not declare'),
       );
 
-      /* BRANCH 4, read polymorphically: `DataIntegrityError` declares its own family. */
+      /* Branch 4, read polymorphically: `DataIntegrityError` declares its own family. */
       expect(response.statusCode).toBe(HTTP_STATUS.INTERNAL_SERVER_ERROR);
       expect(response.body).toBe(
         JSON.stringify({ message: 'The request could not be completed from the stored data' }),
@@ -9253,7 +7819,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
         new ConfigurationError('a setting the feed reads was never seeded'),
       );
 
-      /* BRANCH 4 again, with the other override. Same status, different neutral text. */
+      /* Branch 4 again, with the other override. Same status, different neutral text. */
       expect(response.statusCode).toBe(HTTP_STATUS.INTERNAL_SERVER_ERROR);
       expect(response.body).toBe(
         JSON.stringify({ message: 'The service is not correctly configured' }),
@@ -9265,7 +7831,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
         new DomainError('a diagnostic an engineer needs and a caller must never see'),
       );
 
-      /* BRANCH 4, base class. `error.message` is not read. */
+      /* Branch 4, base class. `error.message` is not read. */
       expect(response.statusCode).toBe(HTTP_STATUS.INTERNAL_SERVER_ERROR);
       expect(response.body).toBe(JSON.stringify({ message: 'The request could not be completed' }));
       expect(response.body).not.toContain('diagnostic');
@@ -9277,7 +7843,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       );
 
       /*
-       * BRANCH 5 — a value this port did not raise. It is not swallowed: the diagnostic still records the
+       * Branch 5 — a value this port did not raise. It is not swallowed: the diagnostic still records the
        * failure class, which is how a runtime error stays findable while disclosing nothing.
        */
       expect(response.statusCode).toBe(HTTP_STATUS.INTERNAL_SERVER_ERROR);
@@ -9289,7 +7855,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
 
     it('[NET-NEW] answers a thrown non-Error at 500, and a synchronous throw is caught too', async () => {
       /*
-       * A value that is not an `Error` at all, thrown SYNCHRONOUSLY from the serializer rather than returned
+       * A value that is not an `Error` at all, thrown synchronously from the serializer rather than returned
        * as a rejection. Both halves matter: branch 5 must not assume an `Error`, and the handler's single
        * `try` must cover the synchronous part of the call as well as the awaited part.
        */
@@ -9319,7 +7885,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
 
       /*
        * The `try` wraps the whole sequence, not just the serialization, so a failure in step 2 answers
-       * identically to one in step 4. Asserting this separately is what proves there is ONE mapping rather
+       * identically to one in step 4. Asserting this separately is what proves there is one mapping rather
        * than one per step.
        */
       expect(scenario.selectionCalls).toHaveLength(1);
@@ -9343,7 +7909,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
 
         /*
          * A consolidated sweep across every suppressing branch. `LegacyParityError` is excluded by design:
-         * publishing its message verbatim is its whole purpose, and the case above asserts that separately.
+         * Publishing its message verbatim is its whole purpose, and the case above asserts that separately.
          * "No partial feed" matters because the document is built whole or not at all — there is no fallback
          * document, no retry and no degraded response.
          */
@@ -9359,21 +7925,14 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
     });
   });
 
-  describe('NET-NEW googleFeedHandler — M2 is flagged, never solved (INT-06)', () => {
+  describe('NET-NEW googleFeedHandler — M2 is flagged, never solved', () => {
     it('[NET-NEW] admits no page size, chunk, cursor or concurrency collaborator', () => {
       /*
-       * ⚠️ M2 (AAP §0.6.6) — `product.cfm:L9` asks for `requesttimeout="360"`, which exceeds what a
+       * M2 (AAP §0.6.6) — `product.cfm:L9` asks for `requesttimeout="360"`, which exceeds what a
        * synchronous gateway in front of this function will generally allow. Flagging is the required
        * response and solving is the forbidden one (AAP §0.8.2 guideline 4), so the file must not have
        * acquired a control that quietly resolves it. The compile-time aliases above are the exhaustiveness
        * proof; this case asserts the same names as values so the list itself cannot silently change.
-       *
-       * ⭐ THE LIST GREW BY ONE, AND THE DISTINCTION BETWEEN THE TWO CEILINGS IS WHY THAT IS NOT A BREACH.
-       * Review finding SEC-1 (CWE-400) added `assertMaterialisationBounded`, which bounds ROWS. M2 is about
-       * TIME. Nothing in the new collaborator pages, chunks, batches, streams, caches, re-attempts, re-times
-       * or races anything, and it names no figure — it reports whether the OPERATOR named one. So the M2
-       * mismatch is still flagged and still unsolved, which is the mandated behaviour, while the row exposure
-       * SEC-1 identified is closed for the one route reachable without a principal.
        */
       expect(COLLABORATOR_NAMES).toEqual([
         'feedQuery',
@@ -9385,8 +7944,10 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       ]);
       expect(COLLABORATOR_NAMES).toHaveLength(6);
 
-      /* ⛔ AND THE FOUR TIME-SHAPED CONTROLS ARE STILL ABSENT BY NAME, so the growth cannot be read as the
-       * beginning of a delivery-model solution. */
+      /*
+       * And the four time-shaped controls are still absent by name, so the growth cannot be read as the
+       * beginning of a delivery-model solution.
+       */
       for (const forbidden of ['pageSize', 'chunkSize', 'cursor', 'concurrency']) {
         expect(COLLABORATOR_NAMES).not.toContain(forbidden);
       }
@@ -9396,8 +7957,8 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       const source = readFileSync(HANDLER_SOURCE_PATH, 'utf8');
 
       /*
-       * NO FIGURE IS ASSERTED FOR ANY CEILING, because AAP §0.8.3.5 and IR-12 forbid inventing one and the
-       * module states in full why the second ceiling is deliberately left unnamed. What IS asserted is that
+       * no figure is asserted for any ceiling, because AAP §0.8.3.5 and IR-12 forbid inventing one and the
+       * module states in full why the second ceiling is deliberately left unnamed. What is asserted is that
        * the file contains no timing mechanism at all: none of these tokens appears anywhere in it, in code
        * or in prose, so a plain text search is exact here.
        */
@@ -9406,7 +7967,9 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       expect(source).not.toContain('Promise.race(');
       expect(source).not.toContain('new AbortController(');
 
-      /* And the flag itself is present, because surfacing the mismatch is the mandated behaviour. */
+      /*
+       * And the flag itself is present, because surfacing the mismatch is the mandated behaviour.
+       */
       expect(source).toContain('M2');
       expect(source).toContain('requesttimeout="360"');
     });
@@ -9437,44 +8000,14 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
     });
   });
 
-  /* =================================================================================================
-   * THE PRODUCTION WIRING — `createGoogleFeedHandlerFromContainer`
-   *
-   * TEST PROVENANCE: every case below is **NET-NEW**. AAP §0.6.5.2 records that the legacy repository
-   * contains no test for the feed at all, so nothing here extends legacy coverage.
-   *
-   * ⚠️ WHY THIS BLOCK EXISTS, STATED AS THE REGRESSION IT GUARDS. Every case above builds the handler
-   * through `createGoogleFeedHandler` and supplies its own image reader, which covers the SERIALIZER's
-   * additional-image capability completely and covers the DELIVERED ROUTE's behaviour not at all. Under
-   * review finding F24 that distinction turned out to matter: the container factory hardwired a reader
-   * that answered an empty list for every SKU, so `?slatAction=google:feed.product` could never emit
-   * `g:additional_image_link` — and reported "this product has no additional images" for products that
-   * had several, which is a different fact presented as data. The factory is now the thing under test,
-   * so the wiring cannot silently regress to a value where it should carry a boundary.
-   * ============================================================================================== */
+  /* The production wiring — `createGoogleFeedHandlerFromContainer` */
 
   /** A record source that answers a fixed selection, standing in for the container's own query. */
   function feedRecordSourceFor(skus: readonly Sku[]): ProductFeedRecordSource {
     return { getFeedSkus: (): Promise<Sku[]> => Promise.resolve([...skus]) };
   }
 
-  /**
-   * The container's shipped image reader, MIRRORED rather than imported.
-   *
-   * ⛔ WHY IT IS NOT IMPORTED, WHICH IS THE ONE THING A READER WILL WANT TO KNOW. `src/config/container.ts`
-   * exports the shipped reader, but it also statically imports `src/config/env.ts`, which VALIDATES the
-   * environment at module load — so a static value import here would make merely LOADING this suite throw
-   * `ConfigurationError` before any case ran. `loadShippedFeedWiring` above reaches the real container the
-   * only way that works: it sets an environment first and then `require`s. These cases are about the
-   * FACTORY's delegation rather than about the container's contents, so they mirror the two-branch semantics
-   * instead of paying that cost.
-   *
-   * ⭐ AND THE REAL DEFAULT IS STILL ASSERTED AGAINST THE REAL CONTAINER — in the shipped-feed-wiring block
-   * above, which loads the actual graph and drives all three branches through it. So a revision that
-   * replaced the container's reader with a constant-empty one fails there, and a revision that reinstates a
-   * reader inside the HANDLER fails the source-scan case beside it. This mirror can therefore drift from the
-   * container only in a way that two other cases already catch.
-   */
+  /** The container's shipped image reader, mirrored rather than imported. */
   function mirrorOfShippedProductFeedImages(
     sku: ProductFeedRecord['sku'],
   ): readonly ProductFeedImage[] {
@@ -9490,20 +8023,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
     );
   }
 
-  /**
-   * Gives a scenario's product one owned image, so the shipped boundary has SOMETHING TO READ.
-   *
-   * ⭐ THIS IS THE PRECONDITION THE 501 IS A PROPERTY OF, AND STATING IT IS THE POINT. The shipped reader
-   * answers `[]` for a product whose image collection is genuinely empty — `product.cfm:L24` emits no
-   * element for such a product either, so refusing there would fail a feed the legacy serves — and refuses
-   * only for a product that CARRIES images, whose paths come from `model/entity/Image.cfc:L79-L81`, an
-   * entity AAP §0.2.1.2 excludes. A case that wants to observe the refusal must therefore seed an image;
-   * the sibling empty-catalogue case below deliberately does not, and asserts the 200.
-   *
-   * ⚠️ THE ELEMENT IS THE OWNED-ASSOCIATION SHAPE, NOT AN IMAGE ENTITY, which is exactly the gap. Its
-   * only members are the two ownership mutators, so there is no path member on it to read — which is why
-   * the boundary exists rather than the domain composing the path itself.
-   */
+  /** Gives a scenario's product one owned image, so the shipped boundary has something to read. */
   function seedOneOwnedProductImage(product: Product): void {
     product.getProductImages().push({
       setProduct: (): void => {
@@ -9515,19 +8035,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
     });
   }
 
-  /**
-   * The members the factory reads, assembled from a scenario's own collaborators.
-   *
-   * ⚠️ `productFeedImages` IS DELIBERATELY OMITTED, WHICH IS THE WHOLE POINT OF THIS BLOCK. The slice
-   * declares it optional so that omitting it exercises the factory's SHIPPED fallback — the refusal —
-   * rather than a reader this test supplied. Supplying one here would assert the test's own wiring.
-   *
-   * ⭐ SEC-1's GATE IS SUPPLIED AND PERMISSIVE, because it is not what these cases are about. The slice
-   * declares it REQUIRED so no production wiring path can reach the factory without one; a no-op here
-   * stands for "an operator stated a ceiling", which lets the image assertions below reach the serializer.
-   * The gate's own refusing behaviour is asserted in `../regression/issues.test.ts`, against the real
-   * composition root, where an absent ceiling is the condition under test.
-   */
+  /** The members the factory reads, assembled from a scenario's own collaborators. */
   function containerSliceFor(
     scenario: HandlerScenario,
     skus: readonly Sku[],
@@ -9544,7 +8052,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
     };
   }
 
-  describe('NET-NEW googleFeedHandler — the wiring the delivered route actually gets (F24)', () => {
+  describe('NET-NEW googleFeedHandler — the wiring the delivered route actually gets', () => {
     it('[NET-NEW] reports the image boundary at 501 instead of publishing "no images"', async () => {
       const scenario = createHandlerScenario();
       seedOneOwnedProductImage(scenario.product);
@@ -9555,8 +8063,8 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       const { response } = await invoke(handler);
 
       /*
-       * THE ASSERTION IS THE STATUS *AND* THE ABSENCE OF A 200, because the defect was not a wrong
-       * status — it was a SUCCESSFUL response carrying a false fact. A feed that answers 200 with no
+       * The assertion is the status *and* the absence of a 200, because the defect was not a wrong
+       * status — it was a successful response carrying a false fact. A feed that answers 200 with no
        * additional-image element is indistinguishable, to the merchant consuming it, from a catalogue
        * whose products have no extra images. 501 cannot be mistaken for that.
        */
@@ -9580,7 +8088,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       const { response } = await invoke(handler);
 
       /*
-       * The other half of the finding: the builder's capability must be REACHABLE from the production
+       * The other half of the finding: the builder's capability must be reachable from the production
        * factory, not only from a hand-built handler. `product.cfm:L24` emits one element per entry of
        * `sku.getProduct().getProductImages()`, so the count is the assertion rather than mere presence.
        */
@@ -9604,7 +8112,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       const { response } = await invoke(handler);
 
       /*
-       * The reader is consulted once per SELECTED record, which is why the shipped boundary does not turn
+       * The reader is consulted once per selected record, which is why the shipped boundary does not turn
        * an empty catalogue into an error. This is the case that proves the 501 above is a property of
        * having something to read, not of the route existing.
        */
@@ -9630,54 +8138,29 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       expect(shipped.response.statusCode).toBe(HTTP_STATUS.NOT_IMPLEMENTED);
       expect(supplied.response.statusCode).toBe(HTTP_STATUS.OK);
 
-      /* An empty override object is not a reader: it must fall back to the boundary, not to `[]`. */
+      /*
+       * An empty override object is not a reader: it must fall back to the boundary, not to `[]`.
+       */
       const empty = await invoke(createGoogleFeedHandlerFromContainer(slice, {}));
       expect(empty.response.statusCode).toBe(HTTP_STATUS.NOT_IMPLEMENTED);
     });
   });
 });
 
-/* =====================================================================================================
- * NET-NEW — THE FEED, END TO END: THE PUBLIC ROUTE, THE SELECTION, THE HYDRATION AND THE DOCUMENT (F7)
- * =====================================================================================================
- * WHY THIS SECTION EXISTS, AND WHY IT IS NOT A DUPLICATE OF ANYTHING ABOVE. A QA pass found that this
- * suite tested the BUILDER only: every case above it hands the serializer records it constructed by hand,
+/*
+ * Net-new — the feed, end to end: the public route, the selection, the hydration and the document
+ * every case above this section hands the serializer records it constructed by hand,
  * and the folded selection cases drive the query without ever reaching a route or a document. So the four
- * pieces of the feed were each covered and the SEAMS BETWEEN THEM were not — which is where a feed breaks
- * in practice. Nothing here re-asserts a field mapping; what it asserts is that ONE dispatch of the public
- * address carries a record from the selection query, through real aggregate hydration, into the document.
- *
- * ⭐ THE WHOLE CHAIN IS REAL EXCEPT THE DRIVER, AND THAT IS THE POINT. `createCatalogContainer` builds the
- * graph, `createRouter` mounts it, the route table resolves the address, the feed handler reads the clock
- * and assembles the records, `ProductFeedQuery` composes the selection through the REAL `SkuService`, the
- * REAL `SmartListQueryBuilder` translates it to SQL, the REAL `createCatalogAggregateLoaders` hydrate the
- * product, product type, brand and default SKU from rows, and the REAL `ProductFeedBuilder` serializes the
- * result. The only substitution beneath the port boundary is the `SqlExecutor`, which answers from a table
- * store and records every statement — so the SQL is asserted as EMITTED rather than as intended.
- *
- * ⭐ HYDRATION IS OBSERVABLE BECAUSE THREE FIELDS CAN ONLY COME FROM IT. `g:brand` exists only if the
- * `SwBrand` row was loaded and attached; `g:product_type` only if the `SwProductType` row was; and
- * `g:price` only if the DEFAULT SKU row was — `model/entity/Product.cfc:L563-L568` falls through to
- * `defaultSku.getPrice()` whenever the product carries no override, which is every freshly mapped product
- * because `price` is a column of `SwSku` and not of `SwProduct`. The fixture gives the selected SKU a
- * DIFFERENT price from the default SKU's for exactly that reason: a document reading the record's own price
- * would show `90.00`, and one reading the hydrated aggregate shows `99.00`.
- *
- * ⛔ AND THE HELPERS ARE THIS SECTION'S OWN RATHER THAN THE FOLDED SUITE'S. The folded selection body
- * declares an equivalent executor and table store, but they are block-scoped inside a fold that is carried
- * VERBATIM — reaching into it would mean editing it. So this section declares its own, prefixed
- * `END_TO_END_`, and the two remain independent by construction.
- * ================================================================================================== */
-
-/** The configured feed host for this section, distinct from {@link RENDER_HOST} so its source is visible. */
-const END_TO_END_HOST = 'feed.example.test';
+ * pieces of the feed were each covered and the seams between them were not — which is where a feed breaks
+ * in practice. Nothing here re-asserts a field mapping; what it asserts is that one dispatch of the public.
+ */
 
 /**
- * The default SKU's stored image file, and the composed path the image port answers for it.
- *
- * Both exist so the SECOND record of the end-to-end feed reaches the image port on the same terms as the
- * first. See the `SwSku` default row for why the column is stored rather than generated.
+ * The configured feed host for this section, distinct from {@link RENDER_HOST} so its source is visible.
  */
+const END_TO_END_HOST = 'feed.example.test';
+
+/** The default SKU's stored image file, and the composed path the image port answers for it. */
 const END_TO_END_DEFAULT_SKU_IMAGE_FILE = 'feed-product-default.jpg';
 const END_TO_END_DEFAULT_SKU_COMPOSED_IMAGE_PATH = `/product/default/${END_TO_END_DEFAULT_SKU_IMAGE_FILE}`;
 
@@ -9693,17 +8176,21 @@ const END_TO_END_ENVIRONMENT: Readonly<Record<string, string>> = Object.freeze({
   DB_PASSWORD: 'fixture-not-a-real-password',
   DB_TLS_MODE: 'disabled',
   DB_QUEUE_LIMIT: '1',
-  /* Short on purpose: no statement here reaches a driver, so this only bounds the failure of a
-   * regression that started to. */
+  /*
+   * Short on purpose: no statement here reaches a driver, so this only bounds the failure of a
+   * regression that started to.
+   */
   DB_CONNECT_TIMEOUT_MS: '1000',
   GOOGLE_FEED_HOST: END_TO_END_HOST,
 
-  /* SEC-1 / SEC-DOS-01/02/03 — the anonymous route requires stated ceilings, and these cases drive the
-   * SHIPPED route through the real router, so every gate runs. The figures are the fixture's, and generous:
-   * `../../src/config/env.ts` declares all six OPTIONAL with no default (IR-12, AAP §0.7.3 S9), each is
+  /*
+   * //02/03 — the anonymous route requires stated ceilings, and these cases drive the
+   * shipped route through the real router, so every gate runs. The figures are the fixture's, and generous:
+   * `../../src/config/env.ts` declares all six optional with no default (IR-12, AAP §0.7.3), each is
    * reached through a resolver that raises when unset, and each bound's refusing behaviour is asserted by
    * dedicated cases stating a tight figure rather than incidentally here. See the block on
-   * {@link FEED_WIRING_ENVIRONMENT} for the full argument. */
+   * {@link FEED_WIRING_ENVIRONMENT} for the full argument.
+   */
   CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY: '5000',
   CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY: '250',
   CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST: '10000',
@@ -9712,7 +8199,9 @@ const END_TO_END_ENVIRONMENT: Readonly<Record<string, string>> = Object.freeze({
   CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES: '10000000',
 });
 
-/** Distinct 32-character identifiers, so a crossed association is visible rather than coincidental. */
+/**
+ * Distinct 32-character identifiers, so a crossed association is visible rather than coincidental.
+ */
 const END_TO_END_ID = Object.freeze({
   sku: 'aaaa0000000000000000000000000001',
   product: 'bbbb0000000000000000000000000001',
@@ -9722,11 +8211,7 @@ const END_TO_END_ID = Object.freeze({
 });
 
 /**
- * Every row the selection and its aggregate need. Money columns are STRINGS, as the driver returns them.
- *
- * `SwSku` deliberately holds TWO rows — the selected SKU and the product's default SKU — because the
- * legacy selection is over `SwSku` with no exclusion of default SKUs, so a real feed contains both. That
- * also makes per-record behaviour observable: the image reader below answers for the first only.
+ * Every row the selection and its aggregate need. Money columns are strings, as the driver returns them.
  */
 const END_TO_END_TABLES: Readonly<Record<string, readonly MySqlRow[]>> = Object.freeze({
   SwSku: [
@@ -9742,13 +8227,15 @@ const END_TO_END_TABLES: Readonly<Record<string, readonly MySqlRow[]>> = Object.
       skuID: END_TO_END_ID.defaultSku,
       skuCode: 'FP-1-DEFAULT',
       price: '99.00',
-      /* ⭐ A STORED FILE NAME RATHER THAN NONE, AND THE REASON IS THE IMAGE DOUBLE'S ECHO. With this
-       * column absent the SKU falls back to `generateImageFileName()`, whose output the double then echoes
-       * BARE — the double composes no directory on purpose, so an unseeded name comes back without a
-       * leading slash, which is a value the real adapter cannot produce and which review finding F8's
-       * `assertSameOriginRelativePath` correctly refuses. Naming the file here lets it be SEEDED to the
-       * composed form below, so the record exercises the port exactly as the selected SKU does. The
-       * generator itself is covered directly in `test/domain/Sku.test.ts`. */
+      /*
+       * A stored file name rather than none, and the reason is the image double's echo. With this
+       * column absent the SKU falls back to `generateImageFileName()`, whose output the double then
+       * echoes bare — the double composes no directory on purpose, so an unseeded name comes back
+       * without a leading slash, which is a value the real adapter cannot produce and which the
+       * current contract's `assertSameOriginRelativePath` correctly refuses. Naming the file here
+       * lets it be seeded to the composed form below, so the record exercises the port exactly as
+       * the selected SKU does.
+       */
       imageFile: END_TO_END_DEFAULT_SKU_IMAGE_FILE,
       productID: END_TO_END_ID.product,
     },
@@ -9756,9 +8243,11 @@ const END_TO_END_TABLES: Readonly<Record<string, readonly MySqlRow[]>> = Object.
   SwProduct: [
     {
       productID: END_TO_END_ID.product,
-      /* `productName` is the TEMPLATE-driven member's input; the feed reads `calculatedTitle`. Keeping
+      /*
+       * `productName` is the template-driven member's input; the feed reads `calculatedTitle`. Keeping
        * them different is what makes the item title's source unambiguous, exactly as `createScenario`
-       * does above. */
+       * does above.
+       */
       productName: 'TEMPLATE-ONLY-PRODUCT-NAME',
       productCode: 'FP-1',
       calculatedTitle: 'PERSISTED-CALCULATED-TITLE',
@@ -9778,8 +8267,10 @@ const END_TO_END_ADDITIONAL_IMAGES: readonly ProductFeedImage[] = Object.freeze(
   { imagePath: THIRD_ADDITIONAL_IMAGE_PATH },
   { imagePath: FIRST_ADDITIONAL_IMAGE_PATH },
   { imagePath: SECOND_ADDITIONAL_IMAGE_PATH },
-  /* The repeat is deliberate: a document that de-duplicated would emit three, and `product.cfm:L24`
-   * emits one element per collection entry with no de-duplication anywhere. */
+  /*
+   * The repeat is deliberate: a document that de-duplicated would emit three, and `product.cfm:L24`
+   * emits one element per collection entry with no de-duplication anywhere.
+   */
   { imagePath: FIRST_ADDITIONAL_IMAGE_PATH },
 ]);
 
@@ -9789,15 +8280,7 @@ interface EndToEndStatement {
   readonly params: readonly unknown[];
 }
 
-/**
- * A recording executor over {@link END_TO_END_TABLES} that honours `WHERE <column> IN (…)`.
- *
- * The table is read from the statement's FIRST ` FROM`, so the root projection's own joins cannot be
- * mistaken for the table it selects from. Honouring the `IN` form matters because TWO different statements
- * read `SwSku` on this path — the selection's record projection and the aggregate loader's default-SKU
- * lookup by identifier — and a double answering both with every row would hand the lookup rows it never
- * asked for, silently attaching the wrong default SKU.
- */
+/** A recording executor over {@link END_TO_END_TABLES} that honours `WHERE <column> IN (…)`. */
 function createEndToEndExecutor(): {
   readonly executor: SqlExecutor;
   readonly statements: readonly EndToEndStatement[];
@@ -9831,14 +8314,7 @@ function createEndToEndExecutor(): {
   };
 }
 
-/**
- * The delegate binder the aggregate loaders need, answering the default SKU's own price.
- *
- * `src/config/container.ts` builds its own binder and explains why one is needed at all: `Sku` is
- * intentionally NOT assignable to the nine-member delegate `Product.defaultSku` accepts, because the
- * entity's currency and image equivalents are asynchronous and port-parameterised while the delegate wants
- * synchronous, argument-free readers. Only the price member is read on this path.
- */
+/** The delegate binder the aggregate loaders need, answering the default SKU's own price. */
 function bindEndToEndDefaultSku(sku: Sku): ProductDefaultSkuDelegate {
   return {
     getPrice: (): ExactDecimal | undefined => sku.price,
@@ -9858,12 +8334,7 @@ interface EndToEndDispatch {
   readonly response: APIGatewayProxyResult;
   readonly statements: readonly EndToEndStatement[];
   /**
-   * Every query the port was handed, BEFORE translation — the input review finding F7 asked to capture.
-   *
-   * Recorded by a thin wrapper that pushes and then delegates to the real builder, so the described query
-   * and the SQL it became are both observable from one dispatch. Asserting only the SQL would leave the
-   * layer that COMPOSES the description — `ProductFeedQuery` over `SkuService.getSkuSmartList` — inferred
-   * rather than observed.
+   * Every query the port was handed, before translation — the input the current contract asked to capture.
    */
   readonly queries: readonly SmartListQuery[];
   /** Every SKU the image reader was consulted about, in call order. */
@@ -9874,16 +8345,6 @@ interface EndToEndDispatch {
 
 /**
  * Dispatch `google:feed.product` through the real router over a real graph, and answer what it produced.
- *
- * ⚠️ THE TWO MODULES ARE REACHED BY `require` AFTER `process.env` IS SET, for the reason the F4 wiring
- * section above records: both validate configuration at MODULE LOAD, and `src/handlers/router.ts`
- * additionally resolves the production graph at module scope. That load builds a production graph which is
- * then unused — every dispatch below goes through `createRouter(container)` with the graph built here.
- *
- * ⛔ NOTHING CONTACTS A DATABASE. The feed's only read goes through the overridden `smartListQueryPort`,
- * whose executor is the recorder above; `createPool` is synchronous and opens no connection until one is
- * checked out, so the untouched pool in the graph costs nothing. A regression that reached the driver would
- * fail on a connection error rather than pass.
  */
 async function dispatchEndToEndFeed(action = 'google:feed.product'): Promise<EndToEndDispatch> {
   for (const name of FEED_WIRING_VARIABLE_NAMES) {
@@ -9907,9 +8368,11 @@ async function dispatchEndToEndFeed(action = 'google:feed.product'): Promise<End
   const { executor, statements } = createEndToEndExecutor();
   const settings = createSettingResolverDouble({ settings: DEFAULT_SETTING_SEEDS });
   const images = createImagePathDouble({
-    /* Seeded so BOTH selected SKUs' images resolve to composed paths; the resize answer is left
-     * unseeded so the double ECHOES each request's `imagePath`, which is the only configuration under
-     * which "each additional image used its OWN resized path" is falsifiable. */
+    /*
+     * Seeded so both selected SKUs' images resolve to composed paths; the resize answer is left
+     * unseeded so the double echoes each request's `imagePath`, which is the only configuration under
+     * which "each additional image used its own resized path" is falsifiable.
+     */
     imagePathsByImageFile: {
       [SKU_IMAGE_FILE]: SKU_COMPOSED_IMAGE_PATH,
       [END_TO_END_DEFAULT_SKU_IMAGE_FILE]: END_TO_END_DEFAULT_SKU_COMPOSED_IMAGE_PATH,
@@ -9919,7 +8382,7 @@ async function dispatchEndToEndFeed(action = 'google:feed.product'): Promise<End
   const imageReaderSubjects: string[] = [];
 
   /*
-   * The REAL builder, wrapped only to record the description it is handed. The wrapper delegates every
+   * The real builder, wrapped only to record the description it is handed. The wrapper delegates every
    * call unchanged, so translation, aliasing, binding and hydration are all still the adapter's.
    */
   const builder = new SmartListQueryBuilder(
@@ -9930,11 +8393,11 @@ async function dispatchEndToEndFeed(action = 'google:feed.product'): Promise<End
   const queries: SmartListQuery[] = [];
 
   /*
-   * ⭐ THE WRAPPER IS GENERIC IN THE ROOT ENTITY NAME, NOT IN A RECORD TYPE, BECAUSE THE PORT IS. Both
+   * The wrapper is generic in the root entity name, not in a record type, because the port is. Both
    * members derive their element type from the query's own `entityName` literal — which is what stops a
    * caller nominating a record type the description could not produce — so the wrapper has to carry that
    * parameter through rather than introduce one of its own. Writing it any other way needs a cast, and
-   * AAP §0.7.3 S1 forbids one.
+   * AAP §0.7.3 forbids one.
    */
   const recordingPort: SmartListQueryPort = {
     executeRecords: <TEntityName extends SmartListRootEntityName>(
@@ -9959,11 +8422,11 @@ async function dispatchEndToEndFeed(action = 'google:feed.product'): Promise<End
     imagePaths: images.imagePaths,
     pricing: pricing.pricing,
     /*
-     * ⭐ THE READER IS CONSULTED PER RECORD, AND ANSWERING FOR ONLY ONE OF THE TWO IS WHAT PROVES IT.
+     * The reader is consulted per record, and answering for only one of the two is what proves it.
      * `src/handlers/googleFeedHandler.ts` maps the selection into `{ sku, productImages }` pairs and
-     * deliberately does NOT memoise by product, because the seam takes a SKU and the handler is not
+     * deliberately does not memoise by product, because the seam takes a SKU and the handler is not
      * entitled to assume an implementor's reader is a pure function of the product. A handler that read
-     * once and reused the answer would put four elements in BOTH items.
+     * once and reused the answer would put four elements in both items.
      */
     productFeedImages: (sku) => {
       imageReaderSubjects.push(sku.skuID);
@@ -9980,7 +8443,7 @@ async function dispatchEndToEndFeed(action = 'google:feed.product'): Promise<End
   return { response, statements, queries, imageReaderSubjects, settings, images };
 }
 
-describe('NET-NEW — the feed end to end, from the public route to the document (F7)', () => {
+describe('NET-NEW — the feed end to end, from the public route to the document', () => {
   afterEach(() => {
     for (const name of FEED_WIRING_VARIABLE_NAMES) {
       const before = ENVIRONMENT_BEFORE_WIRING_CASES[name];
@@ -9992,15 +8455,15 @@ describe('NET-NEW — the feed end to end, from the public route to the document
     }
   });
 
-  it('[NET-NEW] captures the ONE description composed through SkuService.getSkuSmartList (F7)', async () => {
+  it('[NET-NEW] captures the ONE description composed through SkuService.getSkuSmartList', async () => {
     const { queries } = await dispatchEndToEndFeed();
 
     /*
-     * ⭐ ONE DESCRIPTION, NOT ONE PER ADDITION, WHICH IS THE WHOLE OF THE DECLARE-THEN-EXECUTE
-     * TRANSLATION. The legacy controller MUTATED a live smart list — `rc.skuSmartList.joinRelatedProperty`
+     * One description, not one per addition, which is the whole of the declare-then-execute
+     * translation. The legacy controller mutated a live smart list — `rc.skuSmartList.joinRelatedProperty`
      * three times, `addFilter` three times, `addRange` once, each call reaching into an object the service
      * had already seeded [`feed.cfc:L63-L72`]. The port has no mutable list to reach into, so all seven
-     * additions travel inside the ONE input the service is handed, and the port is called ONCE. A design
+     * additions travel inside the one input the service is handed, and the port is called once. A design
      * that had kept the mutation would show several calls here.
      */
     expect(queries).toHaveLength(1);
@@ -10013,8 +8476,8 @@ describe('NET-NEW — the feed end to end, from the public route to the document
     expect(described.entityName).toBe('SlatwallSku');
 
     /*
-     * SIX JOIN DECLARATIONS IN ONE LIST — the service's three first, then the feed's three — with the
-     * duplicate STILL PRESENT at this layer. It is absorbed by the translation rather than by the
+     * Six JOIN declarations in one list — the service's three first, then the feed's three — with the
+     * duplicate still present at this layer. It is absorbed by the translation rather than by the
      * composition, and that ordering is load-bearing: the adapter is what proves the legacy absorbs a
      * repeat, so removing it here would move a decision out of the layer that owns it.
      */
@@ -10026,11 +8489,13 @@ describe('NET-NEW — the feed end to end, from the public route to the document
     ]);
     expect(described.joins?.slice(3)).toStrictEqual(PRODUCT_FEED_JOINS);
 
-    /* And the duplicate really is a duplicate — the same pair appears at position 0 and position 3. */
+    /*
+     * And the duplicate really is a duplicate — the same pair appears at position 0 and position 3.
+     */
     expect(described.joins?.[3]).toStrictEqual(described.joins?.[0]);
 
     /*
-     * THE THREE ACTIVITY FILTERS AND THE ONE RANGE, IN ONE WHERE GROUP, IN DECLARATION ORDER. One group
+     * The three activity filters AND the one range, in one WHERE GROUP, in declaration ORDER. One group
      * rather than three is what makes them conjunctive; the legacy's three `addFilter` calls accumulate
      * into a single predicate set [`feed.cfc:L68-L70`].
      */
@@ -10042,11 +8507,11 @@ describe('NET-NEW — the feed end to end, from the public route to the document
     ]);
 
     /*
-     * ⭐ AND THE CARET IS RESOLVED HERE, AT THE COMPOSITION LAYER, RATHER THAN IN THE ADAPTER — which is
+     * And the caret is resolved here, at the composition layer, rather than in the adapter — which is
      * exactly where a reader would not expect to find it, so it is worth pinning. `addRange('…','1^')`
-     * [`feed.cfc:L72`] arrives as a LOWER BOUND ONLY: `lowerBound: '1'` with NO `upperBound` member at
+     * [`feed.cfc:L72`] arrives as a lower bound only: `lowerBound: '1'` with no `upperBound` member at
      * all, not an `upperBound` of `''`, `undefined` or `Infinity`. Any of those three would translate to a
-     * second predicate and quietly bound a range the legacy left open. The bound keeps its STRING
+     * second predicate and quietly bound a range the legacy left open. The bound keeps its string
      * spelling, uncoerced, and the adapter case below is what proves that string reaches the driver.
      */
     expect(described.whereGroups?.[0]?.ranges).toStrictEqual([
@@ -10054,8 +8519,10 @@ describe('NET-NEW — the feed end to end, from the public route to the document
     ]);
     expect(Object.hasOwn(described.whereGroups?.[0]?.ranges?.[0] ?? {}, 'upperBound')).toBe(false);
 
-    /* The service's five weight-1 keyword properties travel too, unchanged by the feed's additions —
-     * `model/service/SkuService.cfc:L318-L322`. Two of them only resolve because of the joins above. */
+    /*
+     * The service's five weight-1 keyword properties travel too, unchanged by the feed's additions —
+     * `model/service/SkuService.cfc:L318-L322`. Two of them only resolve because of the joins above.
+     */
     expect(described.keywordProperties).toHaveLength(5);
     expect(
       described.keywordProperties?.map((property) => property.propertyIdentifier),
@@ -10067,54 +8534,41 @@ describe('NET-NEW — the feed end to end, from the public route to the document
       'alternateSkuCodes.alternateSkuCode',
     ]);
 
-    /* ⛔ AND NO PAGINATION IS DESCRIBED. `product.cfm:L16` loops the UNPAGED collection, so a page window
-     * here would silently truncate a merchant feed to its first page. */
+    /*
+     * And no pagination is described. `product.cfm:L16` loops the unpaged collection, so a page window
+     * here would silently truncate a merchant feed to its first page.
+     */
     expect(described.pagination).toBeUndefined();
-    /* No keyword search either: the feed passes no term, so the weighted properties stay unused. */
+    /*
+     * No keyword search either: the feed passes no term, so the weighted properties stay unused.
+     */
     expect(described.keywords ?? []).toStrictEqual([]);
   });
 
-  it('[NET-NEW] emits the six declared joins as five, in declaration order, none of them eliminating (F7)', async () => {
+  it('[NET-NEW] emits the six declared joins as five, in declaration order, none of them eliminating', async () => {
     const { statements } = await dispatchEndToEndFeed();
 
-    /*
-     * The record projection is statement 1, BEHIND THE MATERIALISATION COUNT AT STATEMENT 0.
-     *
-     * ⛔ THE INDEX HAS MOVED TWICE, SO BOTH MOVES ARE RECORDED. Review finding PERF-02 removed a count from
-     * this path, and this case then read `statements[0]` with the note that "an earlier revision indexed
-     * `statements[1]` past a count that no longer exists". Review finding SEC-DOS-02 puts a count back, for
-     * a different reason than the one PERF-02 removed: not to answer a question the feed asks — it still
-     * asks none, and no total reaches the document — but to measure the row set against the operator's
-     * materialisation ceiling BEFORE the driver hydrates it. `google:feed.product` is the one ANONYMOUS
-     * address in the slice, so it is the route where an unenforceable ceiling mattered most.
-     *
-     * ⚠️ WHAT PERF-02 STILL GUARANTEES, AND IT IS ASSERTED BELOW RATHER THAN ASSUMED: no PAGE window. The
-     * feed loops the UNPAGED collection at `product.cfm:L16`, so a `LIMIT` would silently truncate a
-     * merchant feed. The count carries no `LIMIT` either.
-     */
+    /* The record projection is statement 1, behind the materialisation count at statement 0. */
     expect(statements[0]?.sql).toContain('AS recordsCount');
     expect(statements[1]?.sql).toContain('FROM SwSku');
     expect(statements[1]?.sql).not.toContain('COUNT(');
     const projection = statements[1]?.sql ?? '';
 
     /*
-     * SIX DECLARED, FIVE EMITTED, AND THE ARITHMETIC IS THE ASSERTION. Two layers contribute joins to one
+     * Six declared, five emitted, and the arithmetic is the assertion. Two layers contribute joins to one
      * list, which is what makes this seam worth a case at all:
-     *   • `model/service/SkuService.cfc:L314-L316` registers THREE on every SKU smart list — `product`,
-     *     `productType` and a LEFT `alternateSkuCodes` — because five of its keyword properties cannot
-     *     resolve without them.
-     *   • `integrationServices/google/controllers/feed.cfc:L64-L66` then registers THREE more, and the
-     *     FIRST of those repeats `("SlatwallSku","product")` verbatim.
-     * `org/Hibachi/HibachiSmartList.cfc:L269` finds that key already registered and appends nothing — no
-     * entity, no alias and no FROM fragment — so the repeat is absorbed and six declarations emit five
-     * joins. The `SwProduct` count below is what proves the absorption rather than a coincidence.
+     * • `model/service/SkuService.cfc:L314-L316` registers three on every SKU smart list — `product`,
+     * `productType` and a left `alternateSkuCodes` — because five of its keyword properties cannot
+     * resolve without them.
      */
     expect(PRODUCT_FEED_JOINS).toHaveLength(3);
     expect(projection.match(/ JOIN /g)).toHaveLength(5);
     expect(projection.match(/JOIN SwProduct\b/g)).toHaveLength(1);
 
-    /* Every one of the five, named. The default-SKU join is a SECOND alias over the same physical table,
-     * which is the pairing most likely to be dropped by an implementation that keyed joins by table. */
+    /*
+     * Every one of the five, named. The default-SKU join is a second alias over the same physical table,
+     * which is the pairing most likely to be dropped by an implementation that keyed joins by table.
+     */
     expect(projection).toContain(
       'JOIN SwProduct aslatwallproduct ON aslatwallproduct.productID = aslatwallsku.productID',
     );
@@ -10141,9 +8595,9 @@ describe('NET-NEW — the feed end to end, from the public route to the document
     expect(positions).toStrictEqual([...positions].sort((left, right) => left - right));
 
     /*
-     * ⭐ THE BRAND JOIN IS A LEFT JOIN, AND NOTHING IN EITHER STATEMENT IS AN INNER ONE. An omitted kind
+     * The brand join is a left join, and nothing in either statement is an inner one. An omitted kind
      * and an explicit `left` emit the same keyword (`org/Hibachi/HibachiSmartList.cfc:L537-L540`), so the
-     * observable guarantee is the ABSENCE of an eliminating join rather than the presence of the word on
+     * observable guarantee is the absence of an eliminating join rather than the presence of the word on
      * one of the five. It matters most for the brand: `Product.brand` is optional, and an inner join there
      * would silently drop every brandless product out of the merchant feed.
      */
@@ -10153,19 +8607,23 @@ describe('NET-NEW — the feed end to end, from the public route to the document
     expect(projection).toContain('LEFT JOIN SwBrand');
   });
 
-  it('[NET-NEW] emits the three activity filters and the QATS `1^` lower bound, all bound positionally (F7)', async () => {
+  it('[NET-NEW] emits the three activity filters and the QATS `1^` lower bound, all bound positionally', async () => {
     const { statements } = await dispatchEndToEndFeed();
-    /* Statement 0, not 1: PERF-02's records-only read issues no count. See the joins case above. */
+    /*
+     * Statement 0, not 1: perf-02's records-only read issues no count. See the joins case above.
+     */
     const projection = statements[0];
 
-    /* `feed.cfc:L68-L70` — the SKU's own flag, then the product's, then the product's publication. */
+    /*
+     * `feed.cfc:L68-L70` — the SKU's own flag, then the product's, then the product's publication.
+     */
     expect(projection?.sql).toContain('aslatwallsku.activeFlag = ?');
     expect(projection?.sql).toContain('aslatwallproduct.activeFlag = ?');
     expect(projection?.sql).toContain('aslatwallproduct.publishedFlag = ?');
 
     /*
      * `feed.cfc:L72` — `addRange('product.calculatedQATS','1^')`. The trailing caret is the legacy's
-     * open-ended upper bound, so the range emits a LOWER bound only: one predicate, `>=`, never
+     * open-ended upper bound, so the range emits a lower bound only: one predicate, `>=`, never
      * `BETWEEN`. This is the availability gate, and it is the reason `SmartListQueryPort` is a boundary
      * port rather than something the feed resolves itself — it reads a calculated inventory property.
      */
@@ -10174,7 +8632,7 @@ describe('NET-NEW — the feed end to end, from the public route to the document
     expect(projection?.sql).not.toContain('<=');
 
     /*
-     * Four values, in predicate order, and the bound one is the STRING `'1'` — the first element of the
+     * Four values, in predicate order, and the bound one is the string `'1'` — the first element of the
      * two-character range value, carried as the legacy carries it rather than coerced to a number.
      * Nothing is interpolated: no quote and no identifier appears in either statement.
      */
@@ -10185,28 +8643,17 @@ describe('NET-NEW — the feed end to end, from the public route to the document
     }
   });
 
-  it('[NET-NEW] hydrates the brand, the product type and the default SKU into the document (F7)', async () => {
+  it('[NET-NEW] hydrates the brand, the product type and the default SKU into the document', async () => {
     const { response, statements } = await dispatchEndToEndFeed();
 
     expect(response.statusCode).toBe(HTTP_STATUS.OK);
     expect(response.headers?.['Content-Type']).toBe(XML_CONTENT_TYPE);
 
     /*
-     * SIX STATEMENTS: the SEC-DOS-02 materialisation count, the record projection, then ONE lookup per
+     * Six statements: the materialisation count, the record projection, then one lookup per
      * aggregate — product, product type, brand, default SKU. Four lookups for two records is the point: the
      * loaders batch by identifier rather than issuing a statement per row, which is what keeps a
      * whole-catalog feed from degenerating into a statement storm.
-     *
-     * ⛔ THE CENSUS HAS BEEN SIX, THEN FIVE, AND IS SIX AGAIN — FOR TWO DIFFERENT REASONS, SO BOTH ARE KEPT.
-     * Review finding PERF-02 removed a count on the ground that "the feed reads through the records-only
-     * member, because `product.cfm:L16` loops the UNPAGED collection and never reads a total, so the count
-     * answered a question the feed does not ask". Review finding SEC-DOS-02 restores one on a ground PERF-02
-     * did not consider: the count is how an operator's materialisation ceiling is ENFORCED, and enforcing it
-     * after the rows are hydrated is not enforcing it. No total reaches the document either way, so PERF-02's
-     * observation about what the feed asks for is still true and no longer decisive.
-     *
-     * The exact figure is asserted rather than left implicit precisely because it has moved; a regression
-     * that counted per RECORD rather than once per read would show as eight here.
      */
     expect(statements).toHaveLength(6);
     expect(statements[0]?.sql).toContain('AS recordsCount');
@@ -10227,29 +8674,29 @@ describe('NET-NEW — the feed end to end, from the public route to the document
 
     /* The record's own column. */
     expect(soleChildText(selected, 'g:id')).toBe('FP-1-SKU');
-    /* The PERSISTED calculated title, not the template-driven `getTitle()` — `product.cfm:L18`. */
+    /* The persisted calculated title, not the template-driven `getTitle()` — `product.cfm:L18`. */
     expect(soleChildText(selected, 'title')).toBe('PERSISTED-CALCULATED-TITLE');
     expect(soleChildText(selected, 'description')).toBe('A running shoe');
 
     /*
-     * ⭐ THE THREE FIELDS THAT CAN ONLY COME FROM HYDRATION.
-     *   • `g:product_type` — the `SwProductType` row, reached through the product.
-     *   • `g:brand` — the `SwBrand` row, reached through the same product. Present only because the LEFT
-     *     join above did not eliminate it and the loader attached it.
-     *   • `g:price` — `99.00`, the DEFAULT SKU's price, NOT the selected record's `90.00`.
-     *     `model/entity/Product.cfc:L563-L568` falls through to `defaultSku.getPrice()` because the
-     *     product carries no override, and `price` is a column of `SwSku` rather than `SwProduct`, so
-     *     every freshly mapped product takes that fall-through. A document that read the record's own
-     *     price would show `90.00` here and would be wrong in exactly the way no unit case can see.
+     * The three fields that can only come from hydration.
+     * • `g:product_type` — the `SwProductType` row, reached through the product.
+     * • `g:brand` — the `SwBrand` row, reached through the same product. Present only because the left
+     * join above did not eliminate it and the loader attached it.
+     * • `g:price` — `99.00`, the default SKU's price, not the selected record's `90.00`.
      */
     expect(soleChildText(selected, 'g:product_type')).toBe('Merchandise');
     expect(soleChildText(selected, 'g:brand')).toBe('Nike');
     expect(soleChildText(selected, 'g:price')).toBe('99.00');
 
-    /* The item group is the PRODUCT's code, which is what groups variants together for the merchant. */
+    /*
+     * The item group is the product's code, which is what groups variants together for the merchant.
+     */
     expect(soleChildText(selected, 'g:item_group_id')).toBe('FP-1');
 
-    /* The configured host reaches every absolute URL, and the product URL key comes from a setting. */
+    /*
+     * The configured host reaches every absolute URL, and the product URL key comes from a setting.
+     */
     expect(soleChildText(selected, 'link')).toBe(
       `http://${END_TO_END_HOST}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/feed-product/`,
     );
@@ -10263,7 +8710,7 @@ describe('NET-NEW — the feed end to end, from the public route to the document
     );
   });
 
-  it('[NET-NEW] emits one additional-image element per supplied image, in INPUT order, per record (F7)', async () => {
+  it('[NET-NEW] emits one additional-image element per supplied image, in INPUT order, per record', async () => {
     const { response, imageReaderSubjects, images } = await dispatchEndToEndFeed();
 
     /* Consulted once per selected record, in selection order — never once per product. */
@@ -10276,10 +8723,10 @@ describe('NET-NEW — the feed end to end, from the public route to the document
     }
 
     /*
-     * ⭐ FOUR ELEMENTS, IN THE READER'S OWN ORDER, WITH THE REPEAT INTACT. The supplied order is third,
+     * Four elements, in the reader's own order, with the repeat intact. The supplied order is third,
      * first, second, first. A document that sorted them, de-duplicated them, or emitted one element with
      * a joined value would differ from this expectation; `product.cfm:L24` loops the collection and emits
-     * one element per entry, so the collection's order IS the document's order.
+     * one element per entry, so the collection's order is the document's order.
      */
     const emitted = childrenNamed(selected, 'g:additional_image_link').map(
       (element) => element.text,
@@ -10291,12 +8738,14 @@ describe('NET-NEW — the feed end to end, from the public route to the document
       `http://${END_TO_END_HOST}${FIRST_ADDITIONAL_IMAGE_PATH}`,
     ]);
 
-    /* The record the reader answered `[]` for emits none — the empty collection's legacy output. */
+    /*
+     * The record the reader answered `[]` for emits none — the empty collection's legacy output.
+     */
     expect(childrenNamed(defaultSkuItem, 'g:additional_image_link')).toStrictEqual([]);
 
     /*
-     * ⭐ AND EVERY ONE OF THEM WENT THROUGH `ImagePathPort.getResizedImagePath`, which is the half of
-     * review finding F4 that asked for the port to do the resolution rather than the reader. Four
+     * And every one of them went through `ImagePathPort.getResizedImagePath`, which is the half of
+     * the current contract that asked for the port to do the resolution rather than the reader. Four
      * additional images plus the selected record's own image file; the repeat is requested twice, because
      * the serializer's memo is keyed on the whole request and two entries carrying the same path are the
      * same request.
@@ -10309,18 +8758,17 @@ describe('NET-NEW — the feed end to end, from the public route to the document
   });
 
   it(
-    '[NET-NEW] answers the document from the ANONYMOUS address, and 404 from every other spelling (F7)',
+    '[NET-NEW] answers the document from the ANONYMOUS address, and 404 from every other spelling',
     async () => {
       const { response } = await dispatchEndToEndFeed();
 
       /*
-       * ⭐ THE ADDRESS IS `google:feed.product` AND IT IS UNGATED, WHICH IS A PORTED FACT RATHER THAN A
-       * CHOICE. `integrationServices/google/views/main/default.cfm` documents the route as
+       * The address is `Google:feed.product` and it is ungated, which is a ported fact rather than A
+       * choice. `integrationServices/google/views/main/default.cfm` documents the route as
        * `?slatAction=google:feed.product`, and `integrationServices/google/controllers/feed.cfc:L54-L56`
        * declares `this.publicMethods="product"` with `this.anyAdminMethods=""` and `this.secureMethods=""`
-       * both EMPTY — so the legacy feed demanded neither a login nor a permission. It is therefore the ONE
-       * route in this deliverable that answers a document rather than a 401, and the colon in its name is
-       * part of the address rather than a namespace this router resolves.
+       * both empty — so the legacy feed demanded neither a login nor a permission. It is therefore the one
+       * route in this deliverable that answers a document rather than a 401, and the colon in its name is.
        */
       expect(response.statusCode).toBe(HTTP_STATUS.OK);
       expect(response.body.startsWith(EXPECTED_XML_DECLARATION)).toBe(true);
@@ -10330,16 +8778,11 @@ describe('NET-NEW — the feed end to end, from the public route to the document
       expect(soleChildText(channel, 'link')).toBe(`http://${END_TO_END_HOST}`);
 
       /*
-       * ⭐ THE ADDRESS IS EXACT IN ITS PUNCTUATION AND CASE-INSENSITIVE IN ITS LETTERS, WHICH IS TWO
-       * FINDINGS MEETING RATHER THAN AN INCONSISTENCY.
-       *   • The whole string is ONE declared key — the colon is part of the address, not a namespace this
-       *     router resolves — so a reader who expects `org/Hibachi/FW1/framework.cfc`'s `slatAction`
-       *     convention to treat `google` as a section and resolve variants of it is answered 404.
-       *   • But the LETTERS match case-insensitively, restored under review finding F4, because CFML
-       *     resolves `slatAction` case-insensitively and a deployment addressing the documented route in a
-       *     different casing was served by the legacy. `createCanonicalActionLookup` normalises both the
-       *     declared keys and the incoming value, which is why the assertion below is a 200 rather than the
-       *     404 an earlier revision of this case expected.
+       * The address is exact in its punctuation and case-insensitive in its letters, which is two
+       * findings meeting rather than an inconsistency.
+       * • The whole string is one declared key — the colon is part of the address, not a namespace this
+       * router resolves — so a reader who expects `org/Hibachi/FW1/framework.cfc`'s `slatAction`
+       * convention to treat `Google` as a section and resolve variants of it is answered 404.
        */
       const differentCasing = await dispatchEndToEndFeed('GOOGLE:FEED.PRODUCT');
       expect(differentCasing.response.statusCode).toBe(HTTP_STATUS.OK);
@@ -10354,10 +8797,12 @@ describe('NET-NEW — the feed end to end, from the public route to the document
         expect(refused.queries).toStrictEqual([]);
       }
     },
-    /* FIVE dispatches, each resetting the module registry and re-requiring the composition root and the
+    /*
+     * Five dispatches, each resetting the module registry and re-requiring the composition root and the
      * router, so this case costs materially more than its siblings. The budget is stated rather than left to
      * the 5-second default — a timeout here would read as a hang in the subject rather than as the cost of
-     * loading the graph five times. */
+     * loading the graph five times.
+     */
     END_TO_END_MULTI_DISPATCH_TIMEOUT_MS,
   );
 });

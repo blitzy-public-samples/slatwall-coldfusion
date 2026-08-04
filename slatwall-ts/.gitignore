@@ -1,102 +1,69 @@
 # Ignore rules scoped to the slatwall-ts/ subtree. Git applies every pattern below relative
-# to THIS directory, so nothing here reaches the legacy CFML tree.
+# to this directory, so nothing here reaches the legacy CFML tree.
 #
 # That scoping is the reason the file exists. The repository-root .gitignore covers the legacy
 # application and not one of its fifteen entries covers node_modules, dist, build-meta or
 # coverage; closing that gap here rather than there keeps the root file, and the whole CFML tree,
 # byte-for-byte unchanged, so this port stays a single additive diff.
 #
-# The list is deliberately short — FIVE patterns and nothing else, and the count has now been
-# wrong twice, so it is stated against the file rather than from memory: the FOUR generated
-# directories node_modules/, dist/, build-meta/ and coverage/, plus the single file pattern
-# .env at the end. An earlier version of this note said three and listed four; the version
-# after it said four while build-meta/ was already present, making five. Count the patterns
-# below before editing this sentence. Speculative boilerplate is omitted rather than copied
-# in (AAP 0.7.3 standard 9, guideline 0.8.2/1). The four DIRECTORY names are shared with
-# tsconfig.json "exclude", tsconfig.build.json "outDir" and "exclude", eslint.config.mjs
-# "ignores", jest.config.ts "coverageDirectory" and "testPathIgnorePatterns", and the output,
-# staging and sourcemap directories in build/esbuild.mjs. Every one of those must keep saying
-# the same words, or a build product ends up tracked — or, as a QA pass found for build-meta/
-# in eslint.config.mjs, ends up LINTED.
+# The list is five patterns: the four generated directories node_modules/, dist/, build-meta/ and
+# coverage/, plus the file pattern .env. Count the patterns below before restating that number here.
+# Speculative boilerplate is omitted rather than copied in (AAP §0.7.3 standard 9; §0.8.2 guideline 1).
 #
-# Nothing else belongs here, and the omissions are decisions rather than oversights. The
-# fifth pattern is the only credential-bearing entry, and it is deliberate: a real .env
-# may hold live database credentials, whereas configuration otherwise reaches the service
-# only through the process environment (AAP 0.4.3.5, 0.8.3.9) and no file in this subtree
-# holds a credential. The committed .env.example carries variable NAMES only — the required ones
-# blank, the optional ones commented out, and no value of any kind — and is therefore tracked on
-# purpose; see the note on the .env entry below. No editor, OS or tool-cache pattern is listed:
-# each would be boilerplate for an artifact this subtree never emits.
+# The four directory names are shared with tsconfig.json "exclude", tsconfig.build.json "outDir" and
+# "exclude", eslint.config.mjs "ignores", jest.config.ts "coverageDirectory" and
+# "testPathIgnorePatterns", and the output, staging and sourcemap directories in build/esbuild.mjs.
+# Every one of those must keep spelling them identically: a name that drifts here leaves a build
+# product tracked, and one that drifts in eslint.config.mjs leaves it linted.
+#
+# The omissions are decisions rather than oversights. .env is the only credential-bearing entry: a
+# real .env may hold live database credentials, whereas configuration otherwise reaches the service
+# only through the process environment (AAP §0.4.3.5 and §0.8.3.9) and no file in this subtree holds a
+# credential. The committed .env.example carries variable names only — required ones blank, optional
+# ones commented out, no value of any kind — and is tracked on purpose; see the note on the .env
+# entry below. No editor, OS or tool-cache pattern is listed: each would be boilerplate for an
+# artifact this subtree never emits.
 
 # Installed dependency tree, materialised by `npm ci` from package-lock.json. The
 # lockfile itself is deliberately NOT ignored: a committed lockfile is what makes the
-# exact-version resolution reproducible (AAP 0.7.3 standard 5).
+# exact-version resolution reproducible (AAP §0.7.3 standard 5).
 node_modules/
 
 # Compiled and bundled output. Both routes to an artifact emit here — `tsc -p
-# tsconfig.build.json` (outDir "dist") and `node build/esbuild.mjs` (the bundles) — and
-# build products are never committed. `dist/` is the PACKAGED tree: after a build it holds
-# exactly one CommonJS artifact per declared Lambda entry point and nothing else.
+# tsconfig.build.json` (outDir "dist") and `node build/esbuild.mjs` (the bundles) — and build
+# products are never committed. `dist/` is the packaged tree: after a build it holds one
+# CommonJS bundle per declared Lambda entry point under `handlers/`, the derived production
+# `package.json`, and the staged runtime dependency closure under `node_modules/`.
 dist/
 
-# Source maps for those bundles, emitted beside `dist/` rather than into it so the packaged
-# tree carries only the artifacts the runtime loads. `build/esbuild.mjs` writes them here
-# with `sourcemap: 'external'` — no `sourceMappingURL` comment is written into the
-# JavaScript, so the maps are relocatable without leaving a dangling reference. Generated
-# output like the directory above, and never committed.
+# Source maps for those bundles, emitted beside `dist/` rather than into it so the packaged tree
+# carries only what the runtime loads — the maps are several times the size of the code they
+# describe. `build/esbuild.mjs` writes them with `sourcemap: 'external'`, so no
+# `sourceMappingURL` comment is written into the JavaScript and relocating a map leaves no
+# dangling reference.
 #
-# IT ALSO HOLDS THE PACKAGE WHILE IT IS BEING ASSEMBLED. `build/esbuild.mjs` writes every
-# artifact — the six bundles, the production manifest and the staged runtime dependency
-# closure — into `build-meta/package-staging/` and then creates `dist/` with a single
-# `rename` of that directory, so a build that fails at any step leaves `dist/` ABSENT rather
-# than stale or partial. The staging directory is a sibling of `dist/` for a concrete reason:
-# `rename` is atomic only within one filesystem, so a system temporary directory would not do.
-# It normally exists only for the duration of a build; the failure handler removes it, and this
-# pattern is what guarantees a hard crash cannot leave it tracked.
-#
-# NOT to be confused with `build/`, which holds the build script itself and IS tracked. The
-# names are deliberately distinct for that reason.
+# It also holds the package while it is being assembled: every artifact is written into
+# `build-meta/package-staging/` and `dist/` is then created by a single `rename` of that
+# directory, so a build that fails at any step leaves `dist/` absent rather than stale or
+# partial. The staging directory is a sibling of `dist/` because `rename` is atomic only within
+# one filesystem. Not to be confused with `build/`, which holds the build script and is tracked.
 build-meta/
 
 # Jest coverage reports (jest.config.ts, coverageDirectory: 'coverage').
 coverage/
 
-# THIS FILE IS ALSO PRETTIER'S IGNORE LIST, AND IT IS NOW THE ONLY ONE: no .prettierignore
-# exists in this subtree. Prettier's CLI defaults `--ignore-path` to
-# `[.gitignore, .prettierignore]` — its own `prettier --help` on 3.9.6 says so verbatim —
-# and it skips whichever of the two is absent, so the directories above are already
-# excluded from `npx prettier --check .` without a second list to keep in sync.
-#
-# HISTORY, READ OUT OF `git log --follow --name-status` RATHER THAN RECALLED, because every
-# earlier version of this note got some of it wrong. The file's whole life is three commits:
-#
-#   c747b7455  A  added by the setup commit, alongside eleven other toolchain files
-#   ef7f10c79  D  deleted — the commit that also wrote the "no .prettierignore exists" notes
-#                 here, in eslint.config.mjs, in jest.config.ts and in build/esbuild.mjs
-#   1c93bd295  A  RE-ADDED, carrying a header arguing it was "kept rather than deleted"
-#
-# So those four notes were TRUE when they were written and were falsified afterwards by a
-# commit that restored the file without revisiting them. That is the failure mode worth
-# remembering: the notes were not careless, they were duplicated — four copies of one claim,
-# and re-adding one file made all four wrong at once. The review recorded the resulting
-# disagreement between configuration and repository state as a scope finding. The file has
-# now been removed again, and this file — the owning declaration for what is ignored — is the
-# single place that records it, so the three sibling notes point here rather than restating
-# anything that a future commit could falsify a second time.
-#
-# WHY REMOVAL IS SAFE, MEASURED RATHER THAN ASSUMED. With the file absent, deliberately
-# mis-formatted probe files were written to dist/, to coverage/ and to src/, and then
-# `npx prettier --check .` was run once: it reported ONLY the src/ probe. That single run
-# proves both halves of the claim — that the two generated directories really are excluded,
-# and that the scan really was happening rather than silently matching nothing. The removed
-# list named one further path, package-lock.json, and `npx prettier package-lock.json`
-# output is byte-identical to the file on disk, so checking the lockfile is a no-op rather
-# than a churn risk. Do not re-add the file to silence a hypothetical: measure first,
-# exactly as this note did.
+# This file is also Prettier's ignore list, and it is the only one: no .prettierignore exists in
+# this subtree. Prettier's CLI defaults `--ignore-path` to `[.gitignore, .prettierignore]` and
+# skips whichever is absent, so the directories above are already excluded from
+# `npx prettier --check .` without a second list to keep in sync. Verified by writing
+# deliberately mis-formatted probes into dist/, coverage/ and src/ and running the check once:
+# only the src/ probe was reported, which proves both that the generated directories are excluded
+# and that the scan was happening at all. `npx prettier package-lock.json` also emits the file
+# byte-for-byte, so checking the lockfile is a no-op rather than a churn risk.
 
 # A real .env is a local developer convenience that may hold live database credentials,
 # so it never enters git; configuration reaches the service through the environment and
-# no credential is hardcoded (AAP 0.8.3.9). The pattern is the exact filename and not a
+# no credential is hardcoded (AAP §0.8.3.9). The pattern is the exact filename and not a
 # wildcard, so the required, committed .env.example — variable names only, no values —
 # is never swallowed.
 .env

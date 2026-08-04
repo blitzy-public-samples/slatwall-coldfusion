@@ -1,85 +1,61 @@
 {
-  /* ==============================================================================================
-   * The EMIT / PACKAGING program for the extracted Slatwall Catalog slice: the same rules as
+  /*
+   * The emit / packaging program for the extracted Slatwall Catalog slice: the same rules as
    * ./tsconfig.json over a narrower program — shippable src/** only, with emit switched on.
-   *
-   * The division of labour with the base configuration:
-   *   tsconfig.json        type-checks src/**, test/** and jest.config.ts, and never emits.
-   *   tsconfig.build.json  emits src/** only, so nothing test-only can reach a Lambda artifact for
-   *                        the simplest possible reason: nothing test-only is in the program.
-   *
-   * Program scope and emit are the only differences between the two files.
-   *
-   * `tsc -p tsconfig.build.json` consumes this file. The bundler does not: build/esbuild.mjs derives
-   * its inputs from the src/handlers entry points plus the import graph and applies its own platform
-   * and format flags. So this program proves the shippable set type-checks and emits cleanly under
-   * the same strict contract as the gate that approved it, and the bundler then packages it.
-   *
-   * Every path below is subtree-relative and none walks up out of this directory, so no program
-   * defined here can reach the CFML tree.
-   * ============================================================================================ */
+   */
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    /* --- INHERITED, AND NEVER WEAKENED -------------------------------------------------------
+    /*
+     * --- inherited, and never weakened -------------------------------------------------------
      * Everything about the language and the type system comes from ./tsconfig.json and is
      * deliberately absent below. Inherit and narrow; never duplicate. Duplicating the compiler
      * options would let the two files drift, and a drifted build config would ship an artifact
      * checked less strictly than the gate that approved it — precisely the false assurance this
      * configuration exists to prevent. No relaxing option may ever be added here. If a file under
-     * src/ fails to compile, THE SOURCE IS FIXED. `tsc --showConfig -p tsconfig.build.json` prints
+     * src/ fails to compile, the source is fixed. `tsc --showConfig -p tsconfig.build.json` prints
      * the resolved set, which is how to prove the inheritance is intact rather than assume it.
-     *
-     * No module path aliases are declared here and none exist in the base: every intra-subtree
-     * import is relative, because esbuild does not honour tsconfig alias maps and an alias that
-     * type-checks could fail to resolve at bundle time, throwing MODULE_NOT_FOUND on cold start
-     * where no compiler is left to catch it.
-     *
-     * The five options below are the entire content of this file — two overrides that turn a
-     * type-check program into an emit program, and three emit settings restated at their inherited
-     * values because this is the only program that emits. */
+     */
 
-    /* OVERRIDE 1 of 2 — emit. The base sets noEmit true so that `npm run typecheck`, and any bare
+    /*
+     * Override 1 of 2 — emit. The base sets noEmit true so that `npm run typecheck`, and any bare
      * `tsc -p tsconfig.json`, can never scatter JavaScript into dist/. This is the one
-     * configuration that flips it, which is exactly what makes the base's setting meaningful. */
+     * configuration that flips it, which is exactly what makes the base's setting meaningful.
+     */
     "noEmit": false,
 
-    /* OVERRIDE 2 of 2 — emit layout. The base uses rootDir "." because its program spans src/,
+    /*
+     * Override 2 of 2 — emit layout. The base uses rootDir "." because its program spans src/,
      * test/ and jest.config.ts. Here the program is src/ alone, so rootDir "src" makes dist/ mirror
      * src/ directly rather than nesting under dist/src/. build/esbuild.mjs sets outbase to src/ for
      * the same reason, so a path in a stack trace means the same thing whichever step produced the
-     * JavaScript. */
+     * JavaScript.
+     */
     "rootDir": "src",
 
-    /* Restated at the inherited value; never divergent. outDir is an emit concern and this is the
+    /*
+     * Restated at the inherited value; never divergent. outDir is an emit concern and this is the
      * emitting program, so the destination is pinned where emission is switched on. Three artifacts
      * must agree on this name: the `dist/` entry in .gitignore, this option, and the outDir in
-     * build/esbuild.mjs. */
+     * build/esbuild.mjs.
+     */
     "outDir": "dist",
 
-    /* Source maps are what let a stack trace from a deployed invocation point back at the
+    /*
+     * Source maps are what let a stack trace from a deployed invocation point back at the
      * TypeScript that produced it. build/esbuild.mjs sets sourcemap for the same reason, so both
-     * routes to an artifact stay debuggable. */
+     * routes to an artifact stay debuggable.
+     */
     "sourceMap": true,
 
-    /* No .d.ts output. The package is private and the deliverable is bundled Lambda artifacts, so
+    /*
+     * No .d.ts output. The package is private and the deliverable is bundled Lambda artifacts, so
      * nothing outside this subtree consumes it as a typed library and declaration files would be
-     * unread build products. declarationMap is absent for the same reason. */
+     * unread build products. declarationMap is absent for the same reason.
+     */
     "declaration": false
   },
 
-  /* Program scope — the defining purpose of this file: emit excludes tests.
-   *
-   * `include` admits shippable TypeScript under src/ and nothing else. `exclude` states the same
-   * boundary from the other side so the intent survives any later edit to `include`.
-   *
-   * build/esbuild.mjs is absent from both lists because it is .mjs and belongs to no TypeScript
-   * program, and no pattern walks up out of this directory.
-   *
-   * One caveat worth knowing when auditing what ships: `exclude` filters the initial file glob and
-   * cannot remove a file that an included file imports. Keeping test-only code out of the emitted
-   * output therefore also depends on nothing under src/ importing from test/ — which the hexagonal
-   * layering already implies, since test doubles are injected through constructors rather than
-   * imported by production classes. */
+  /* Program scope — the defining purpose of this file: emit excludes tests. */
   "include": ["src/**/*.ts"],
   "exclude": [
     "node_modules",

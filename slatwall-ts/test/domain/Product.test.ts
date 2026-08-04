@@ -1,136 +1,13 @@
 /**
  * TRACEABLE — the `Product` domain entity.
  *
- * ==================================================================================================
- * PROVENANCE
- * ==================================================================================================
+ * Provenance
  * This file carries the legacy Product entity suite across into the TypeScript port. Two legacy
  * documents supply its traceable content, and one supplies a single further case:
  *
- *   - `meta/tests/unit/entity/ProductTest.cfc:L58-L62` — the ONE assertion the legacy Product test
- *     owns outright: `productUrlIsCorrectlyFormatted()`. It sets the URL title to a specific literal
- *     and asserts the rendered product URL, leading and trailing slash included.
- *   - `meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L67` — the FOUR assertions
- *     `ProductTest.cfc` inherits by extension rather than declaring: validate-as-save fails for a new
- *     instance, the simple representation exists and is simple, a primary-ID property name exists,
- *     and the defaults are correct.
- *   - `meta/tests/unit/IssuesTest.cfc:L101-L108` — `issue_1331`, which asserts that
- *     `isProcessable('addOptionGroup')` answers false for a product carrying the content-access
- *     product type. It lives in the issue-regression document rather than in the entity test, so it
- *     is labelled with its own locator where it appears below.
- *
- * ==================================================================================================
- * TRACEABILITY IS DOCUMENTARY, NOT EMPIRICAL
- * ==================================================================================================
- * ⚠️ THE LEGACY SUITE CANNOT BE EXECUTED IN THIS ENVIRONMENT, so nothing here was derived by running
- * the original tests and comparing output. Three independent facts establish that:
- *
- *   1. `meta/tests/readme.txt:L4-L5` states that the suite requires MXUnit installed under an
- *      external CFIDE mapping, and CFSelenium for the functional tests. Neither framework is
- *      vendored in this repository, so the harness the legacy tests extend cannot be resolved.
- *   2. No CFML engine is available here, and the Docker-based local-development directory the task
- *      brief cites does not exist in the tree, so no ColdFusion/Railo/Lucee runtime can be started.
- *   3. `meta/tests/coverage/SlatwallCoverageTestBase.cfc:L54` points its entity directory at a path
- *      that release 3.1.39 does not contain, so even the structural coverage gate is inert.
- *
- * Every assertion below was therefore derived by READING legacy source — the test documents named
- * above and the entity, service, DAO and validation documents they exercise — and each is cited with
- * a `path:Lnn-Lnn` locator so a reviewer can check the derivation against the original text. Claiming
- * a runtime comparison that never happened would be the one thing worse than the gap itself.
- *
- * ==================================================================================================
- * THE STRUCTURAL TRANSLATION: LEGACY INTEGRATION TEST → TARGET UNIT TEST
- * ==================================================================================================
- * The two suites are not the same KIND of test, and a reviewer comparing them should expect the
- * difference by design rather than read it as a gap.
- *
- * The legacy tests are integration tests. `meta/tests/unit/SlatwallUnitTestBase.cfc:L51-L58` boots
- * the entire FW/1 application before the first assertion runs and mutates request scope, and
- * `meta/tests/unit/entity/ProductTest.cfc:L52-L56` then obtains its subject by resolving a service
- * through DI/1 by string name and calling a method that only exists because of `onMissingMethod`
- * prefix dispatch. A database, an ORM session and a full dependency graph are live throughout.
- *
- * The target tests construct the class under test directly — `new Product()` takes no arguments and
- * performs no I/O — and hand it collaborators as ordinary typed values. Two consequences worth
- * stating:
- *
- *   - Every collaborator is a HAND-WRITTEN double, either a factory from `../support`
- *     `inMemoryRepositories` or a small recording object literal declared here. No mocking library is
- *     used, no module registry is patched, and no module-factory interception of any kind occurs:
- *     the legacy repository contains no mocking library at all, and the port's explicit constructor
- *     and parameter seams make one unnecessary. Every double is reachable by reading this file and
- *     `../support/inMemoryRepositories` alone.
- *   - The runtime-synthesized surface the legacy relied upon is gone. Where the legacy called an
- *     option-service member that no source file declares, the port passes an explicitly typed finder
- *     in as a parameter, and this file supplies it.
- *
- * ==================================================================================================
- * LABELLING
- * ==================================================================================================
- * Exactly one file-level label appears, at the top of this comment: TRACEABLE. Every individual case
- * name then carries its own visible label:
- *
- *   - `TRACEABLE — <path:Lnn-Lnn> — …` for an assertion genuinely present in, or inherited by, one of
- *     the three named legacy documents.
- *   - `NET-NEW — …` for retained-behaviour, defect-regression, boundary and port cases that have no
- *     legacy counterpart. The great majority of this file is net-new, and that asymmetry is reported
- *     rather than smoothed over: the legacy Product signal amounts to one own assertion, four
- *     inherited ones and one issue regression.
- *
- * ==================================================================================================
- * SCOPE BOUNDARIES OBSERVED HERE
- * ==================================================================================================
- *   - The sixteen excluded calculated members are never touched. Their owning services — pricing,
- *     currency, stock, inventory, promotion, location, fulfilment and attribute — are all outside the
- *     catalog slice, and following one of those getters is the documented way to drag half the
- *     platform into the port.
- *   - The four protected legacy throw texts are never retyped, not in an assertion, not in a name and
- *     not in a comment. `../../src/errors/DomainError` owns those strings; this file imports the
- *     factory or the constant and compares generated values, so a change to either half fails a test
- *     instead of drifting silently.
- *   - Nothing here imports a database driver, an adapter, a handler or an AWS type. The subject is a
- *     domain entity and the collaborators are interfaces.
- *
- * ==================================================================================================
- * THE RETAINED SURFACE, AND WHAT "ONE LABELLED TEST PER CONVERTED MEMBER" MEANS HERE
- * ==================================================================================================
- * ⚠️ THIS SECTION EXISTS BECAUSE AN EARLIER REVISION OF THIS FILE CLAIMED THE STANDARD WITHOUT
- * MEETING IT. The claim — one labelled test per converted member — was stated among the enterprise
- * standards below while FIFTEEN retained `Product` paths were never invoked by any case in the file:
- *
- *     getSkuByID, getImages, getProductImages, getAttributeValues, getProductReviews, getTemplate,
- *     getBrandName, removeSku, addAttributeValue, removeAttributeValue, addProductImage,
- *     removeProductImage, addProductReview, removeProductReview, and the finder-PRESENT branch of
- *     getUnusedProductSubscriptionTerms.
- *
- * That is the failure mode worth naming precisely: every one of those fifteen could have been DELETED
- * OUTRIGHT, or had its behaviour INVERTED, and this suite would still have gone green. A claim of
- * per-member coverage that a member's removal cannot falsify is not coverage — it is an assertion
- * about the file's intent. The gap was closed rather than the claim softened, in the four sections at
- * the end of this file, and every case added there is MUTATION-SENSITIVE by construction: each pins
- * either the exact collaborator call the delegation makes, the exact array instance the accessor hands
- * back, or the exact short-circuit the guard performs.
- *
- * FOUR THINGS THOSE SECTIONS DELIBERATELY DO **NOT** DO:
- *   - They do not repair the `getBrandName` memo defect. It is carried and pinned, per
- *     preserve-and-annotate; a case asserts the first read and the permanently-empty second read.
- *   - They do not push into a local collection on behalf of the six relationship helpers. The legacy
- *     bodies are pure delegations onto the MANY side, which owns the foreign key, and the cases assert
- *     that the product's own array stays empty — because a helpful local push here would
- *     double-register every association.
- *   - They do not invent a shape for a subscription term. Only the finder call and the returned arity
- *     are asserted, matching the deliberate asymmetry the production member documents.
- *   - They do not import an adapter, a port module or a database driver to reach any of it. Every
- *     collaborator is a typed value handed in as a parameter.
- *
- * ==================================================================================================
- * RULES
- * ==================================================================================================
- * No user-specified rules were provided for this project. That is not licence to lower the bar: this
- * file holds to the enterprise standards the plan names in their place — strict type safety with no
- * suppression of any kind, one labelled test per converted member (see the section directly above for
- * what that costs and how it is now met), preserve-and-annotate rather than repair for every carried
- * defect, and no invented value anywhere.
+ * - `meta/tests/unit/entity/ProductTest.cfc:L58-L62` — the one assertion the legacy product test
+ * owns outright: `productUrlIsCorrectlyFormatted()`. It sets the URL title to a specific literal
+ * and asserts the rendered product URL, leading and trailing slash included.
  */
 
 import { PRODUCT_PRIMARY_ID_PROPERTY_NAME, Product } from '../../src/domain/product/Product';
@@ -198,19 +75,13 @@ import { PRODUCT_ADD_OPTION_PROPERTY_DESCRIPTORS } from '../../src/domain/proces
 import { PRODUCT_ADD_OPTION_GROUP_PROPERTY_DESCRIPTORS } from '../../src/domain/process/ProductAddOptionGroup';
 import { PRODUCT_UPDATE_SKUS_PROPERTY_DESCRIPTORS } from '../../src/domain/process/ProductUpdateSkus';
 
-/* ==================================================================================================
- * IDENTIFIERS AND SEED VALUES
- * ==================================================================================================
- * Every identifier below is a NAMED, DOCUMENTED, DELIBERATELY SYNTHETIC constant, following the
+/*
+ * Identifiers and seed VALUES
+ * Every identifier below is a named, documented, deliberately synthetic constant, following the
  * convention the neighbouring suites already established — see `test/services/ProductService.test.ts`
  * for the same pattern. Each is thirty-two characters wide with no dashes, which is the shape IR-6
  * fixes for every primary key in this schema: the legacy generator produces a thirty-two-character
  * hexadecimal string, never an auto-increment integer and never a dashed RFC-4122 value.
- *
- * They are declared here rather than written inline so that no ad-hoc identifier literal is scattered
- * through the assertions, and so that "the call was scoped to THIS entity" is checkable by name.
- * The three seeded product-type discriminators are NOT declared here — they are imported from
- * `../fixtures/productTypes`, which carries the literal values from the legacy seed-data document.
  */
 
 const PRODUCT_ID = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -236,33 +107,13 @@ const SECOND_SKU_ID = '22222222222222222222222222222222';
 /** A child product type whose own system code is absent, forcing the root walk. */
 const CHILD_PRODUCT_TYPE_ID = '33333333333333333333333333333333';
 
-/**
- * A root identifier the resolver double holds NO seed for, so the root walk resolves nothing.
- *
- * It exists to keep the two absences apart: a product with no product type at all RAISES (unguarded at
- * `model/entity/Product.cfc:L494`), while an ASSIGNED product type whose root cannot be resolved answers
- * `undefined` — the guarded fall-through of `model/entity/ProductType.cfc:L110-L115`.
- */
+/** A root identifier the resolver double holds no seed for, so the root walk resolves nothing. */
 const UNSEEDED_ROOT_PRODUCT_TYPE_ID = '44444444444444444444444444444444';
 
-/**
- * The URL title from `meta/tests/unit/entity/ProductTest.cfc:L59`, byte for byte.
- *
- * ⭐ THE VALUE IS PART OF THE TRACE, so it is reproduced exactly — including the legacy document's own
- * spelling of the final word, which is not corrected. Tidying it would sever the link between this
- * assertion and the one it ports.
- */
+/** The URL title from `meta/tests/unit/entity/ProductTest.cfc:L59`, byte for byte. */
 const LEGACY_URL_TITLE = 'nike-air-jorden';
 
-/**
- * The value seeded for the global product URL key.
- *
- * ⭐ DELIBERATELY NOT THE PRODUCTION DEFAULT. `meta/tests/unit/entity/ProductTest.cfc:L60` builds its
- * expected string from `setting('globalURLKeyProduct')` rather than from a literal, so the legacy
- * assertion proves that the entity CONSULTS THE SETTING. Seeding a distinctive value preserves that
- * property: a port that hard-coded a default, or that read the wrong key, would fail here instead of
- * passing by coincidence.
- */
+/** The value seeded for the global product URL key. */
 const SEEDED_URL_KEY = 'catalog-item';
 
 /**
@@ -270,30 +121,16 @@ const SEEDED_URL_KEY = 'catalog-item';
  */
 const RESEEDED_URL_KEY = 'store-product';
 
-/**
- * A system code that is NOT one of the three seeded discriminators.
- *
- * The base-product-type reader is deliberately typed as an open string rather than as a three-member
- * union, so an installation that seeded a fourth type keeps its own code. This value exercises that.
- */
+/** A system code that is not one of the three seeded discriminators. */
 const UNRECOGNISED_SYSTEM_CODE = 'legacyImportedType';
 
-/* ==================================================================================================
- * SHARED HELPERS
- * ==================================================================================================
+/*
+ * Shared helpers
  * Four helpers, each existing to keep an assertion honest rather than to shorten it.
  */
 
 /**
  * Awaits an operation that is expected to reject and hands the thrown value back for inspection.
- *
- * ⭐ WHY NOT `expect(...).rejects.toThrow(message)`: that matcher treats a string argument as a
- * SUBSTRING test, so it would pass on a partial match. The parity errors this file checks are exact
- * strings produced by an imported factory, and an exact comparison is the point — a factory that
- * dropped its interpolated segment would still satisfy a substring test.
- *
- * The `unknown` return type is deliberate: narrowing happens in the assertion through `toBeInstanceOf`
- * and `toHaveProperty`, neither of which requires a cast.
  *
  * @param operation - The promise expected to reject.
  * @returns The rejection value.
@@ -310,10 +147,6 @@ const captureRejection = async (operation: Promise<unknown>): Promise<unknown> =
 /**
  * Runs a synchronous operation that is expected to throw and hands the thrown value back.
  *
- * Kept separate from {@link captureRejection} because the DISTINCTION MATTERS: the member this helper
- * serves throws synchronously, and a test that awaited it would still pass if the port had quietly
- * turned it into a rejected promise. Two helpers keep the two signatures from being interchangeable.
- *
  * @param operation - The call expected to throw.
  * @returns The thrown value.
  */
@@ -328,9 +161,6 @@ const captureThrow = (operation: () => unknown): unknown => {
 
 /**
  * The values a product validation subject carries that the entity itself does not hold as a field.
- *
- * Only the members the contexts exercised here actually read are declared. Nothing is invented: each
- * corresponds to a property `model/validation/Product.json` names.
  */
 interface DerivedValidationValues {
   /** The resolved base product type, as `Product.getBaseProductType` computes it. */
@@ -345,29 +175,9 @@ interface DerivedValidationValues {
  * Wraps a product as a validation subject, carrying the values the rule set reads but the entity does
  * not store.
  *
- * ⭐ WHY THIS INDIRECTION EXISTS, AND WHY IT IS NOT A SHORTCUT. `model/validation/Product.json:L2`
- * declares its add-option-group rule against the property `baseProductType`, which
- * `model/entity/Product.cfc:L103` declares `persistent="false"` and computes on demand. The ported
- * entity is faithful to that: `baseProductType` is a METHOD requiring a resolver, not a field. The
- * validator, by contrast, reads property values SYNCHRONOUSLY, exactly as the legacy engine does.
- *
- * So the resolved value has to be handed to the validator by whoever performed the asynchronous
- * resolution. Production does precisely this — `src/services/ProductService.ts` builds the same
- * delegating subject before validating — and this helper mirrors that shape so the test exercises the
- * real seam rather than a convenience of its own.
- *
- * ⚠️ AND THE INDIRECTION IS WHAT MAKES THE `issue_1331` ASSERTION MEAN WHAT IT SAYS. Validating a bare
- * entity in the add-option-group context also fails — but it fails because the value is ABSENT, and an
- * in-list constraint rejects an absent value. That failure would pass a naive assertion while proving
- * nothing about content access. Supplying the genuinely resolved code, and contrasting it against the
- * merchandise code in the same context, is what distinguishes the gate from the absence.
- *
- * Every method delegates to the product rather than being reimplemented, so the class name, the
- * property set and the identifier reader under test are the entity's own.
- *
  * @param product - The subject entity.
  * @param derived - The asynchronously resolved values to carry.
- * @returns A validation subject over that product.
+ * @returns a validation subject over that product.
  */
 const asValidationSubject = (
   product: Product,
@@ -383,7 +193,7 @@ const asValidationSubject = (
     product.getValueByPropertyIdentifier(propertyIdentifier),
   productType: product.productType,
   /*
-   * Each spread is conditional because an ABSENT property and one explicitly set to `undefined` are
+   * Each spread is conditional because an absent property and one explicitly set to `undefined` are
    * different things under `exactOptionalPropertyTypes`, and the validator's absence handling is what
    * several of these rules turn on. Assigning `undefined` would quietly change the question.
    */
@@ -408,19 +218,6 @@ interface OptionGroupFinderRecorder {
 
 /**
  * A recording option-group finder over real option-group entities.
- *
- * ⭐ WHY THIS IS HAND-WRITTEN HERE RATHER THAN TAKEN FROM `../support/inMemoryRepositories`. The
- * support module exposes a paginated-query double and the option REPOSITORY, but not this shape,
- * because in production the shape is assembled by `src/services/OptionService.ts` — which composes the
- * distinct flag, the related-property filter path and the sort ordering onto the query. That service
- * is not on this file's dependency whitelist, and asserting a composition assembled inside the test
- * would exercise the test rather than the entity.
- *
- * ⚠️ SO THE DIVISION OF LABOUR IS EXPLICIT: the three query semantics
- * `model/entity/Product.cfc:L254-L258` composes — distinct rows, the `options.skus.product.productID`
- * filter path, and the ascending sort-order ordering — are OWNED one layer down and are asserted in
- * `test/services/OptionService.test.ts`. What the ENTITY controls, and what is asserted here, is which
- * identifier it hands over, that it returns the records untouched, and that it memoizes per instance.
  *
  * @param optionGroups - The records to return, in the order the query would produce them.
  * @returns The finder and its call record.
@@ -456,10 +253,6 @@ interface OptionFinderRecorder {
 /**
  * A recording option finder, keyed by option group.
  *
- * Hand-written for the same reason as {@link recordingOptionGroupFinder}: the query composition at
- * `model/entity/Product.cfc:L343-L346` belongs to the option service, and only the identifiers handed
- * over and the records handed back are the entity's contract.
- *
  * @param optionsByOptionGroupID - Records to return per option group; an unknown group yields none.
  * @returns The finder and its call record.
  */
@@ -482,21 +275,10 @@ const recordingOptionFinder = (
 };
 
 /**
- * Adapts the in-memory option REPOSITORY to the entity's unused-option FINDER shape.
- *
- * ⭐ THE ADAPTER IS THIN ON PURPOSE: it renames, and nothing else. Every behaviour that matters stays
- * with the real repository double — the opposite set polarities of `model/dao/OptionDAO.cfc:L51-L91`
- * and `:L93-L116` (options whose group is IN the supplied list, groups whose identifier is NOT IN it),
- * the `"<group name> - <option name>"` label format, the exclusion of options the product already
- * uses, and the two-term ordering. Reimplementing any of that here would replace the contract under
- * test with an invention.
- *
- * The two layers differ only in member name because the legacy layers did: the DAO members are
- * `getUnusedProductOptions`/`getUnusedProductOptionGroups` reached through a service of the same
- * names, and the port keeps the repository verbs distinct from the service verbs.
+ * Adapts the in-memory option repository to the entity's unused-option finder shape.
  *
  * @param repository - The in-memory option repository's `repository` member.
- * @returns A finder the entity accepts.
+ * @returns a finder the entity accepts.
  */
 const asUnusedOptionFinder = (
   repository: ReturnType<typeof createInMemoryOptionRepository>['repository'],
@@ -511,22 +293,11 @@ const asUnusedOptionFinder = (
   ): Promise<ProductSelectOption[]> => repository.findUnusedOptionGroups(existingOptionGroupIDList),
 });
 
-/* ==================================================================================================
- * THE ONE ASSERTION THE LEGACY PRODUCT TEST OWNS
- * ================================================================================================== */
+/* The one assertion the legacy product test owns. */
 
 describe('Product — the URL-formatting assertion ported from the legacy suite', () => {
   it('TRACEABLE — meta/tests/unit/entity/ProductTest.cfc:L58-L62 — the product URL is the resolved key and the URL title, wrapped in slashes', () => {
-    /*
-     * The legacy body, in full:
-     *
-     *     entity.setURLTitle("nike-air-jorden");
-     *     assertEquals("/#setting('globalURLKeyProduct')#/nike-air-jorden/", entity.getProductURL());
-     *
-     * The legacy subject came from `productService.newProduct()` — a method no source file declares,
-     * synthesized at runtime by prefix dispatch. The port's equivalent is a direct construction, which
-     * is possible because the entity's constructor takes no arguments and performs no I/O.
-     */
+    /* The legacy body sets the URL title and asserts the composed URL. */
     const settings = createSettingResolverDouble({
       settings: [{ settingName: 'globalURLKeyProduct', value: SEEDED_URL_KEY }],
     });
@@ -568,9 +339,8 @@ describe('Product — the URL-formatting assertion ported from the legacy suite'
   });
 });
 
-/* ==================================================================================================
- * THE FOUR ASSERTIONS INHERITED FROM THE LEGACY ENTITY BASE
- * ==================================================================================================
+/*
+ * The four assertions inherited from the legacy entity base
  * `meta/tests/unit/entity/ProductTest.cfc:L49` extends `SlatwallEntityTestBase`, so these four run
  * against a product without appearing in the Product test document at all. They are ported here
  * individually, each against the seam the target actually exposes for it — which is not always the
@@ -579,18 +349,7 @@ describe('Product — the URL-formatting assertion ported from the legacy suite'
 
 describe('Product — the four assertions inherited from the legacy entity base', () => {
   it('TRACEABLE — meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L54 — validating a new product as a save does not pass', async () => {
-    /*
-     * The legacy body:
-     *
-     *     entity.validate(context="save");
-     *     assert(entity.hasErrors());
-     *
-     * Two things relocate. The rule set is no longer read from JSON at runtime — it is
-     * `productValidationRuleSet`, typed and imported. And the entity no longer validates itself: the
-     * legacy `validate()` at `org/Hibachi/HibachiEntity.cfc:L196-L202` delegated to a service that
-     * wrote into the entity's own error bag, so the target reproduces that shape by validating INTO a
-     * bag and then copying it onto the entity, which is what makes `hasErrors()` the observable.
-     */
+    /* Re-expressed against the validator that now owns validation. */
     const harness = createValidatorHarness();
     const product = new Product();
     const errors = new ValidationError();
@@ -607,7 +366,7 @@ describe('Product — the four assertions inherited from the legacy entity base'
 
     /*
      * The five save-context requirements of `model/validation/Product.json`, each asserted against a
-     * message BUILT from the imported constraint rather than a copied string. A change to the message
+     * message built from the imported constraint rather than a copied string. A change to the message
      * format or to a constraint therefore fails here instead of leaving a stale literal that still
      * matches nothing.
      */
@@ -632,21 +391,9 @@ describe('Product — the four assertions inherited from the legacy entity base'
   it('TRACEABLE — meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L56-L58 — the simple representation of a new product exists and is a simple value', () => {
     /*
      * The legacy body is `assert(isSimpleValue(entity.getSimpleRepresentation()))`, run against the
-     * BRAND-NEW entity the legacy setup produced, and the inherited implementation at
+     * brand-NEW entity the legacy setup produced, and the inherited implementation at
      * `org/Hibachi/HibachiEntity.cfc` reads whichever property
      * `getSimpleRepresentationPropertyName()` names.
-     *
-     * ⭐ THE PORT DELIBERATELY KEEPS THAT SPLIT. `Product` declares the property NAME — the legacy
-     * override at `model/entity/Product.cfc:L791-L793` returns `"productName"` — and the framework
-     * default does the reading. Its sibling `ProductType` overrides the REPRESENTATION instead, and
-     * `Brand` overrides neither; harmonising the three would erase a real difference between the
-     * legacy entities. So the Product-visible seam is the pair asserted here: the property name, and
-     * the identifier reader that resolves it.
-     *
-     * ⭐ AND THE UNSET READ IS THE EMPTY STRING, NOT ABSENCE, exactly as
-     * `org/Hibachi/HibachiTransient.cfc:L466-L481` produced it. That is what made the legacy assertion
-     * hold on an entity with nothing populated, and the port preserves it — which is why this case can
-     * assert the legacy predicate literally rather than restating it in weaker terms.
      */
     const product = new Product();
     const propertyName = product.getSimpleRepresentationPropertyName();
@@ -691,17 +438,7 @@ describe('Product — the four assertions inherited from the legacy entity base'
   });
 
   it('TRACEABLE — meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L64-L67 — the defaults are correct: a new product is new and its primary ID is empty', () => {
-    /*
-     * The legacy body:
-     *
-     *     assert(entity.isNew());
-     *     assert(!len(entity.getPrimaryIDValue()));
-     *
-     * Under Hibernate, "new" meant "the ORM session has not persisted this instance". The port has no
-     * session, so newness is derived from the identifier itself — the empty string is the unsaved
-     * sentinel, and IR-6 makes a persisted identifier thirty-two characters wide, so the two states
-     * cannot be confused.
-     */
+    /* The base `defaults_are_correct()` body, re-expressed against the ported entity. */
     const product = new Product();
 
     expect(product.isNew()).toBe(true);
@@ -718,31 +455,20 @@ describe('Product — the four assertions inherited from the legacy entity base'
   });
 });
 
-/* ==================================================================================================
- * X12 — THE TRANSACTION-EXISTENCE FLAG IS PRODUCT-SCOPED
- * ================================================================================================== */
+/* The transaction-existence flag is product-scoped. */
 
 describe('Product.getTransactionExistsFlag — the flag answers about one product, not the whole table', () => {
   it('NET-NEW — model/entity/Product.cfc:L624-L629 — two products receive their own verdicts from the same collaborator', async () => {
     /*
-     * ⚠️⚠️ X12 / G6 — THE NAMED ARGUMENT SURVIVES THREE LAYERS, AND THIS ASSERTION IS WHY IT MATTERS.
+     * The named argument survives three layers, and this assertion is why it matters.
      * Read the legacy chain end to end before reading the expectation:
      *
-     *   1. `model/entity/Product.cfc:L624-L629` calls the SKU service with a NAMED argument,
-     *      `productID=this.getProductID()`.
-     *   2. `model/service/SkuService.cfc:L285-L287` declares NO formal parameters at all — and then
-     *      forwards `argumentCollection=arguments`. CFML places an UNDECLARED named argument into the
-     *      `arguments` scope exactly as it does a declared one, so the whole scope, identifier
-     *      included, travels onward.
-     *   3. `model/dao/SkuDAO.cfc:L53-L55` declares BOTH `productID` and `skuID` as optional arguments,
-     *      receives the product identifier, and takes its product-scoped branch.
-     *
-     * ⚠️ SO THE STALE READING IN AAP §0.4.2.2 (Discrepancy 4), WHICH TAKES THE SERVICE'S EMPTY
-     * PARAMETER LIST AT FACE VALUE AND CONCLUDES THE FLAG IS SYSTEM-WIDE, IS WRONG ABOUT CFML, AND THIS
-     * FILE DELIBERATELY DEPARTS FROM IT. Preserving the identifier is faithfulness, not enhancement.
-     * The consequence of getting it backwards is concrete and severe: the flag gates a delete
-     * (`model/validation/Product.json:L12`), so a system-wide `true` would make EVERY product in any
-     * installation undeletable the moment a single transaction had ever been recorded anywhere.
+     * 1. `model/entity/Product.cfc:L624-L629` calls the SKU service with a named argument,
+     * `productID=this.getProductID()`.
+     * 2. `model/service/SkuService.cfc:L285-L287` declares no formal parameters at all — and then
+     * forwards `argumentCollection=arguments`. CFML places an undeclared named argument into the
+     * `arguments` scope exactly as it does a declared one, so the whole scope, identifier
+     * included, travels onward.
      */
     const skuRepository = createInMemorySkuRepository({ transactionProductIDs: [PRODUCT_ID] });
     const transactionChecker = createTransactionExistenceChecker(skuRepository.repository);
@@ -757,7 +483,7 @@ describe('Product.getTransactionExistsFlag — the flag answers about one produc
     );
 
     /*
-     * The recorded calls, in order, each carrying ITS OWN product identifier. The `skuID` slot stays
+     * The recorded calls, in order, each carrying its own product identifier. The `skuID` slot stays
      * absent deliberately: a supplied SKU identifier wins at `model/dao/SkuDAO.cfc:L58-L64` and would
      * suppress the product-scoped branch at `:L61` entirely.
      */
@@ -770,7 +496,7 @@ describe('Product.getTransactionExistsFlag — the flag answers about one produc
   it('NET-NEW — every probe is scoped, so the unscoped whole-table question is never asked', async () => {
     /*
      * The complement of the case above, stated as an invariant rather than as two literals: no recorded
-     * probe may leave both identifiers absent. That combination is UNREPRESENTABLE in the legacy — the
+     * probe may leave both identifiers absent. That combination is unrepresentable in the legacy — the
      * DAO would fall into its product branch and interpolate an undefined identifier — so the in-memory
      * repository rejects it outright. Asserting the shape here catches a regression at the entity,
      * where it originates, instead of one layer down where it merely surfaces.
@@ -798,10 +524,6 @@ describe('Product.getTransactionExistsFlag — the flag answers about one produc
      * The legacy caches into the entity's own `variables` scope, so the memo lives and dies with the
      * instance. Under a warm Lambda container that distinction stops being academic: a memo shared at
      * module scope would answer one product's delete gate with another product's verdict.
-     *
-     * The proof is in two halves. First, a repeated read on ONE instance runs no second query. Then the
-     * repository's answer for the SECOND product is changed AFTER the first product has cached — and
-     * the first product's answer must be unaffected while the second sees the new state.
      */
     const skuRepository = createInMemorySkuRepository({ transactionProductIDs: [PRODUCT_ID] });
     const transactionChecker = createTransactionExistenceChecker(skuRepository.repository);
@@ -826,27 +548,11 @@ describe('Product.getTransactionExistsFlag — the flag answers about one produc
   });
 });
 
-/* ==================================================================================================
- * D5 — AN EXPLICIT UN-PORTABLE BOUNDARY
- * ================================================================================================== */
+/* D5 — an explicit un-portable boundary. */
 
 describe('Product.getProductOptionsByGroup — the defect D5 boundary', () => {
   it('NET-NEW — model/entity/Product.cfc:L631-L633 — the member reports the missing collaborator instead of inventing one', () => {
-    /*
-     * TODO(parity) D5 — model/entity/Product.cfc:L631-L633.
-     *
-     * The legacy body delegates to a product-service member of the same name. A repository-wide search
-     * finds NO such member declared anywhere, and it is not one of the surface the framework fabricates
-     * by prefix either — `getProductOptionsByGroup` matches no synthesized prefix. So the legacy call
-     * could never have resolved: it raises at runtime on the first invocation.
-     *
-     * ⚠️ THE DEFECT IS CARRIED, NOT REPAIRED. Supplying an implementation would be the single most
-     * tempting repair in this entity — the options-by-group data is genuinely reachable through the
-     * option finder — and it would make the port's behaviour differ from the legacy system's in a way
-     * no test of the legacy could detect. What the port does instead is name the gap in the type
-     * system: the member is declared, it returns `never`, and it raises the narrow boundary error so a
-     * caller learns which member is unavailable and why.
-     */
+    /* TODO(parity) D5 — model/entity/Product.cfc:L631-L633. */
     const product = buildProduct({ productID: PRODUCT_ID });
 
     const thrown = captureThrow(() => product.getProductOptionsByGroup());
@@ -862,8 +568,8 @@ describe('Product.getProductOptionsByGroup — the defect D5 boundary', () => {
   it('NET-NEW — the boundary raises synchronously, matching the legacy call shape', () => {
     /*
      * The legacy member is an ordinary synchronous function, so the port's is too. Stated as its own
-     * case because the failure mode is silent: a member that had drifted to returning a REJECTED
-     * PROMISE would satisfy an `await`-based assertion while changing every caller's control flow, and
+     * case because the failure mode is silent: a member that had drifted to returning a rejected
+     * promise would satisfy an `await`-based assertion while changing every caller's control flow, and
      * an unhandled rejection is a very different production event from a thrown error.
      */
     const product = buildProduct({ productID: PRODUCT_ID });
@@ -872,21 +578,16 @@ describe('Product.getProductOptionsByGroup — the defect D5 boundary', () => {
   });
 });
 
-/* ==================================================================================================
- * THE OPTION-TO-SKU RESOLUTION ENTRY POINTS
- * ==================================================================================================
- * `model/entity/Product.cfc:L349-L364` is the arity layer that sits ON TOP of the resolution query, and
+/*
+ * The option-to-sku resolution entry points
+ * `model/entity/Product.cfc:L349-L364` is the arity layer that sits on top of the resolution query, and
  * it is where three of the four protected legacy throw texts live. Its branch structure is reproduced
- * exactly, and every expected message is IMPORTED — two through interpolating factories, one as a
+ * exactly, and every expected message is imported — two through interpolating factories, one as a
  * constant — so no protected text is retyped anywhere in this file.
  */
 
 /**
  * Builds a product whose SKUs each carry the options given, wired to a repository-backed finder.
- *
- * A local arrangement helper rather than a shared fixture: every case below needs a slightly different
- * SKU-and-option population, and the alternative — one shared mutable arrangement — is exactly the
- * cross-test coupling that per-test freshness exists to prevent.
  *
  * @param optionsPerSku - One entry per SKU, listing the options that SKU carries.
  * @returns The product, its SKUs, the finder to pass in, and both call records.
@@ -904,7 +605,9 @@ const arrangeSkuSelection = (
   const skus = optionsPerSku.map((options, index) => {
     const skuID = skuIdentifiers[index];
     return buildSku({
-      /* Only the declared identifiers are used; a longer arrangement would need another named one. */
+      /*
+       * Only the declared identifiers are used; a longer arrangement would need another named one.
+       */
       ...(skuID === undefined ? {} : { skuID }),
       options,
       product,
@@ -933,8 +636,8 @@ describe('Product.getSkuBySelectedOptions — the five branches of model/entity/
 
   it('NET-NEW — model/entity/Product.cfc:L355 — more than one match raises the interpolating parity error', async () => {
     /*
-     * T1 CONJUNCTION MADE VISIBLE. Both SKUs carry the selected option, so both satisfy the single
-     * requirement and the arity check fails. The message is produced by the IMPORTED factory and
+     * T1 conjunction made visible. Both SKUs carry the selected option, so both satisfy the single
+     * requirement and the arity check fails. The message is produced by the imported factory and
      * compared exactly — the interpolated selection is part of the legacy text, so a factory that
      * dropped it would still pass a substring test but fails this one.
      */
@@ -971,7 +674,7 @@ describe('Product.getSkuBySelectedOptions — the five branches of model/entity/
   it('NET-NEW — model/entity/Product.cfc:L359-L361 — an empty selection with exactly one product SKU returns that sole SKU without querying', async () => {
     /*
      * The second path never touches the collaborator: `model/entity/Product.cfc:L359-L360` reads the
-     * product's own SKU collection. Asserting that the finder recorded NOTHING is what distinguishes
+     * product's own SKU collection. Asserting that the finder recorded nothing is what distinguishes
      * this path from the first — an implementation that always queried would still return the right SKU
      * here and would still pass a value-only assertion.
      */
@@ -987,15 +690,9 @@ describe('Product.getSkuBySelectedOptions — the five branches of model/entity/
 
   it('NET-NEW — model/entity/Product.cfc:L362 — an empty selection with a non-singleton SKU set raises the constant parity error', async () => {
     /*
-     * ⚠️ G6 — THIS IS THE ELSE OF THE SKU-COUNT TEST, NOT AN ARGUMENT GUARD, AND THE DIFFERENCE IS THE
-     * WHOLE POINT. `model/entity/Product.cfc:L358` tests `arrayLen(getSkus()) eq 1`; `:L362` is what
+     * This is the else of the sku-count test, not an argument guard, and the difference is the
+     * whole point. `model/entity/Product.cfc:L358` tests `arrayLen(getSkus()) eq 1`; `:L362` is what
      * happens when that test fails. The empty selection is not what is being rejected.
-     *
-     * ⭐ T5 — AN EMPTY SELECTION IS LEGAL AND MEANINGFUL. `getSkusBySelectedOptions` defaults it to the
-     * empty string and `listLen('')` is zero, so no requirement is appended and the underlying query
-     * legitimately degenerates to "every option-bearing SKU of this product". Both this member and
-     * `Sku.hasUniqueOptions` depend on that degenerate form. NOTHING IN THIS FILE MAY ASSERT THAT AN
-     * EMPTY SELECTION IS INVALID INPUT — the case immediately below proves the opposite by using it.
      */
     const optionGroup = buildOptionGroup({ optionGroupID: OPTION_GROUP_ID, sortOrder: 1 });
     const firstOption = buildOption({ optionID: OPTION_ID, optionGroup });
@@ -1032,13 +729,9 @@ describe('Product.getSkuBySelectedOptions — the five branches of model/entity/
 describe('Product.getSkusBySelectedOptions — the positional forwarding of model/entity/Product.cfc:L366-L368', () => {
   it('NET-NEW — the collaborator receives the selection first and this product identifier second', async () => {
     /*
-     * The legacy call passes `(arguments.selectedOptions, this.getProductID())` POSITIONALLY, and an
+     * The legacy call passes `(arguments.selectedOptions, this.getProductID())` positionally, and an
      * out-of-scope caller — `model/process/Order_AddOrderItem.cfc:L238` — invokes the service member the
      * same way, which is what fixes the order as contract rather than convention.
-     *
-     * The two recorded values are deliberately unmistakable for one another: an option identifier list
-     * in one slot and a thirty-two-character product identifier in the other. A transposed
-     * implementation therefore fails this assertion instead of producing a plausible-looking record.
      */
     const optionGroup = buildOptionGroup({ optionGroupID: OPTION_GROUP_ID, sortOrder: 1 });
     const carriedOption = buildOption({ optionID: OPTION_ID, optionGroup });
@@ -1053,12 +746,10 @@ describe('Product.getSkusBySelectedOptions — the positional forwarding of mode
 
   it('NET-NEW — T5 — an empty selection is forwarded and answered, never rejected', async () => {
     /*
-     * ⭐ THE DEGENERATE QUERY, OBSERVED AT THIS BOUNDARY. Three SKUs are arranged, two carrying options
+     * The degenerate query, observed at this boundary. Three SKUs are arranged, two carrying options
      * and one carrying none. An empty selection appends no requirement, so the query returns every
-     * OPTION-BEARING SKU of the product — which is T5 and T3 together: the empty selection is legal
+     * option-bearing SKU of the product — which is T5 and T3 together: the empty selection is legal
      * (T5), and the vestigial join that excludes option-less SKUs is still in force (T3).
-     *
-     * The option-less SKU is built last so it is present in the product's collection throughout.
      */
     const optionGroup = buildOptionGroup({ optionGroupID: OPTION_GROUP_ID, sortOrder: 1 });
     const firstOption = buildOption({ optionID: OPTION_ID, optionGroup });
@@ -1076,15 +767,8 @@ describe('Product.getSkusBySelectedOptions — the positional forwarding of mode
 
   it('NET-NEW — the selection string crosses this boundary unnormalised', async () => {
     /*
-     * ⚠️ WHAT THIS ENTITY MUST NOT DO: trim, deduplicate, re-order, split, or convert the selection to a
+     * What this entity must not do: trim, deduplicate, re-order, split, or convert the selection to a
      * set. Each of those looks like an improvement and each changes results.
-     *
-     * Deduplication is the dangerous one. T1 appends ONE requirement PER LIST ELEMENT, duplicates
-     * included, so a repeated identifier legitimately produces a repeated requirement; collapsing the
-     * list to a set — or rewriting the conjunction as a grouped count — diverges precisely when the
-     * caller passes a duplicate. The selection therefore arrives at the finder byte-identical, and the
-     * split into elements happens exactly once, at the adapter crossing below the entity, where CFML
-     * list semantics drop empty elements and change nothing else.
      */
     const optionGroup = buildOptionGroup({ optionGroupID: OPTION_GROUP_ID, sortOrder: 1 });
     const carriedOption = buildOption({ optionID: OPTION_ID, optionGroup });
@@ -1106,31 +790,17 @@ describe('Product.getSkusBySelectedOptions — the positional forwarding of mode
   });
 });
 
-/* ==================================================================================================
- * THE OPTION-GROUP AND OPTION MEMBERS
- * ================================================================================================== */
+/* The option-group and option members. */
 
 describe('Product option-group and option members', () => {
   it('NET-NEW — model/entity/Product.cfc:L251-L261 — getOptionGroups asks for this product and returns the records untouched', async () => {
     /*
-     * ⭐ WHERE EACH SEMANTIC LIVES, STATED ONCE SO THE ASSERTIONS BELOW READ CORRECTLY. The legacy body
-     * composes three things onto a paginated dynamic query at `model/entity/Product.cfc:L254-L258`:
-     * distinct-row retrieval, the related-property filter path `options.skus.product.productID`, and an
-     * ascending sort-order ordering. In the port those three are composed by
-     * `src/services/OptionService.ts`, which owns the query builder, and they are asserted directly in
-     * `test/services/OptionService.test.ts` — including the resolved filter identifier and the ascending
-     * order.
-     *
-     * ⚠️ THEY ARE DELIBERATELY NOT RE-ASSERTED HERE. The entity receives an explicitly typed finder —
-     * the declared replacement for the runtime-synthesized option-service member the legacy called
-     * (IR-1) — so the only query composition reachable from this file would be one the test itself
-     * assembled, and asserting that would exercise the test rather than the entity.
-     *
-     * What IS the entity's contract, and what is asserted: the identifier it hands over is its own, and
-     * the records come back unmodified — not re-sorted, not de-duplicated, not copied into new
-     * instances. The finder therefore returns groups in DESCENDING sort order on purpose: if the entity
-     * imposed an ordering of its own, the ordering owned by the query would be silently overridden, and
-     * this assertion is what catches it.
+     * The legacy body composes three things onto a paginated dynamic query at
+     * `model/entity/Product.cfc:L254-L258` — distinct-row retrieval, the related-property filter path
+     * `options.skus.product.productID`, and an ascending sort-order ordering. In the port those three
+     * belong to `src/services/OptionService.ts`, which owns the query builder, and are asserted in
+     * `test/services/OptionService.test.ts`. What is asserted here is the entity's own contract: the
+     * identifier it hands over is its own, and it returns the finder's records untouched.
      */
     const laterGroup = buildOptionGroup({
       optionGroupID: SECOND_OPTION_GROUP_ID,
@@ -1216,13 +886,10 @@ describe('Product option-group and option members', () => {
 
   it('NET-NEW — model/entity/Product.cfc:L340-L347 — getOptionsByOptionGroup passes the group and this product, and RE-QUERIES on every call', async () => {
     /*
-     * ⚠️ THE ASYMMETRY IS DELIBERATE AND IS BEHAVIOUR. `model/entity/Product.cfc:L340-L347` has NO cache
+     * The asymmetry is deliberate and is behaviour. `model/entity/Product.cfc:L340-L347` has no cache
      * of any kind, while its two option-group neighbours do. Extending the group memo to cover this
      * member would look like consistency and would change results: the legacy re-reads options every
      * time, so a second call after an option was added returns the addition.
-     *
-     * Both identifiers are recorded in the order the port passes them — group first, product second —
-     * which matches the two filters the legacy composes at `:L344-L345`.
      */
     const optionGroup = buildOptionGroup({ optionGroupID: OPTION_GROUP_ID, sortOrder: 1 });
     const carriedOption = buildOption({ optionID: OPTION_ID, optionName: 'Small', optionGroup });
@@ -1258,17 +925,11 @@ describe('Product option-group and option members', () => {
 
   it('NET-NEW — model/entity/Product.cfc:L635-L640 — getUnusedProductOptions sends this product and the comma-delimited list of groups already in use', async () => {
     /*
-     * The legacy second argument is `structKeyList(getOptionGroupsStruct())` — a COMMA-DELIMITED STRING
+     * The legacy second argument is `structKeyList(getOptionGroupsStruct())` — a comma-delimited string
      * built from the option-group map's keys, not an array. The port preserves the string contract
      * because the repository below it splits on commas, and the polarity of the two repository members
-     * depends on that same list: `model/dao/OptionDAO.cfc:L51-L91` selects options whose group is IN it,
-     * while `:L93-L116` selects groups whose identifier is NOT IN it.
-     *
-     * ONE group is in use here so the serialisation is unambiguous; object-key ORDER is deliberately not
-     * asserted anywhere in this file, and the multi-group case below compares order-insensitively.
-     *
-     * The label format `"<group name> - <option name>"` is the repository's, and it is exercised rather
-     * than restated: the adapter in this file only renames members.
+     * depends on that same list: `model/dao/OptionDAO.cfc:L51-L91` selects options whose group is in it,
+     * while `:L93-L116` selects groups whose identifier is not in it.
      */
     const usedGroup = buildOptionGroup({
       optionGroupID: OPTION_GROUP_ID,
@@ -1304,8 +965,8 @@ describe('Product unused-option members — the comma-delimited list contract', 
   it('NET-NEW — model/entity/Product.cfc:L642-L647 — getUnusedProductOptionGroups excludes the groups already in use', async () => {
     /*
      * The opposite polarity of its sibling: the same list is passed, and `model/dao/OptionDAO.cfc:L93`
-     * selects the groups whose identifier is NOT in it. Both groups exist in the repository; only the
-     * one the product does not already use may come back, and its label is the BARE group name with no
+     * selects the groups whose identifier is not in it. Both groups exist in the repository; only the
+     * one the product does not already use may come back, and its label is the bare group name with no
      * option prefix.
      */
     const usedGroup = buildOptionGroup({
@@ -1337,10 +998,10 @@ describe('Product unused-option members — the comma-delimited list contract', 
 
   it('NET-NEW — a product using two groups sends both identifiers, comma-delimited', async () => {
     /*
-     * ⚠️ ORDER IS DELIBERATELY NOT ASSERTED. The legacy list came from `structKeyList`, whose ordering is
+     * Order is deliberately not asserted. The legacy list came from `structKeyList`, whose ordering is
      * a property of the CFML struct implementation rather than of the catalog, and the port's equivalent
      * is object-key order. Asserting a sequence here would freeze an incidental detail into a contract,
-     * so the delimiter and the MEMBERSHIP are what get checked.
+     * so the delimiter and the membership are what get checked.
      */
     const firstGroup = buildOptionGroup({
       optionGroupID: OPTION_GROUP_ID,
@@ -1374,7 +1035,7 @@ describe('Product unused-option members — the comma-delimited list contract', 
 
   it('NET-NEW — a product with no option groups sends the empty list, and every group is unused', async () => {
     /*
-     * `structKeyList({})` is the empty string, so the NOT-IN exclusion matches nothing and every group in
+     * `structKeyList({})` is the empty string, so the not-in exclusion matches nothing and every group in
      * the catalog is available. Worth its own case because the empty list is the state a brand-new
      * product is in, and it is what the add-option-group process gate reads first.
      */
@@ -1427,9 +1088,7 @@ describe('Product unused-option members — the comma-delimited list contract', 
   });
 });
 
-/* ==================================================================================================
- * BASE PRODUCT TYPE, THE LISTING URL AND THE TITLE
- * ================================================================================================== */
+/* Base product type, the listing URL and the title. */
 
 describe('Product.getBaseProductType — delegation without narrowing', () => {
   it('NET-NEW — model/entity/Product.cfc:L493-L495 — the attached product type answers with its own system code', async () => {
@@ -1456,7 +1115,7 @@ describe('Product.getBaseProductType — delegation without narrowing', () => {
   it('NET-NEW — a product type with no system code of its own is resolved through its root', async () => {
     /*
      * The hierarchy walk: a child type carries the root identifier as the first element of its
-     * identifier path, and the base type is the ROOT'S system code. This is the path every non-root
+     * identifier path, and the base type is the root'S system code. This is the path every non-root
      * product type in a real catalog takes, since only the three seeded rows carry a code.
      */
     const rootResolver = createProductTypeRootResolverDouble();
@@ -1474,7 +1133,7 @@ describe('Product.getBaseProductType — delegation without narrowing', () => {
 
   it('NET-NEW — an unrecognised system code is returned unchanged, never narrowed to the three seeded discriminators', async () => {
     /*
-     * ⚠️ THE READER IS TYPED AS AN OPEN STRING ON PURPOSE. Only three product types are seeded, but
+     * The reader is typed as an open string on purpose. Only three product types are seeded, but
      * nothing stops an installation from adding its own, and `model/entity/ProductType.cfc:L110` returns
      * whatever code it finds. Narrowing the return to a three-member union would either drop such a code
      * or force an invented mapping; both would be repairs, and the validation rules that read this value
@@ -1495,18 +1154,10 @@ describe('Product.getBaseProductType — delegation without narrowing', () => {
 
   it('NET-NEW — a product with no product type RAISES, as model/entity/Product.cfc:L494 does', async () => {
     /*
-     * ⭐ THE LEGACY BODY IS `return getProductType().getBaseProductType();` WITH NO GUARD, so a product
+     * The legacy body is `return getProductType().getBaseProductType();` with no guard, so a product
      * carrying no product type raised a null-reference error. `model/validation/Product.json:L11` makes
      * the product type required for a save, so an unsaved product legitimately has none — and the legacy
-     * answer for that state is a FAULT, not a value.
-     *
-     * ⛔ AN EARLIER REVISION OF THIS CASE ASSERTED `resolves.toBeUndefined()` and called absence "the
-     * honest answer". That is withdrawn under AAP §0.6.7 (preserve and annotate, do not repair): all
-     * three process contexts in `model/validation/Product.json` gate on this discriminator, so answering
-     * absence let a gate be evaluated against a value the row does not carry — a hardening encoded as
-     * parity, which is exactly what the rule forbids.
-     *
-     * The resolver is asserted UNTOUCHED: the raise happens before any root walk, as it does in CFML.
+     * answer for that state is a fault, not a value.
      */
     const rootResolver = createProductTypeRootResolverDouble();
     const product = buildProduct({ productID: PRODUCT_ID });
@@ -1519,19 +1170,11 @@ describe('Product.getBaseProductType — delegation without narrowing', () => {
 
   it('NET-NEW — an ASSIGNED product type whose root cannot be RESOLVED also RAISES, one hop down at model/entity/ProductType.cfc:L112', async () => {
     /*
-     * ⭐ THE COMPANION OF THE CASE ABOVE, AND THE SECOND UNGUARDED DEREFERENCE ON THE SAME CHAIN. The
-     * delegation `getProductType().getBaseProductType()` has TWO of them, one per hop: `:L494` reads the
+     * The companion of the case above, and the second unguarded dereference on the same chain. The
+     * delegation `getProductType().getBaseProductType()` has two of them, one per hop: `:L494` reads the
      * product type without a guard, and `model/entity/ProductType.cfc:L112` then chains
      * `.getSystemCode()` onto a root lookup without a guard. Fixing only the near hop would have left
      * the finding half-resolved, since the port would still answer absence where the legacy failed.
-     *
-     * ⛔ AN EARLIER REVISION OF THIS CASE ASSERTED `resolves.toBeUndefined()`, under the title "still
-     * answers absence", and it is WITHDRAWN together with the sibling module's `TODO(parity)` that
-     * licensed it. Its stated defence — that the failure stayed loud downstream at
-     * `model/service/SkuService.cfc:L204` — holds at `createSkus` and FAILS at
-     * `src/adapters/mysql/MySqlSkuRepository.ts`, where an absent discriminator adds no option join and
-     * widens the returned SKU set instead of aborting. See the withdrawal recorded on
-     * `ProductType.getBaseProductType`.
      */
     const rootResolver = createProductTypeRootResolverDouble();
     const productType = buildProductType({
@@ -1543,22 +1186,18 @@ describe('Product.getBaseProductType — delegation without narrowing', () => {
     await expect(product.getBaseProductType(rootResolver.resolver)).rejects.toBeInstanceOf(
       DomainError,
     );
-    // The walk WAS attempted — this is a resolution failure, not a skipped read, and it is the far hop
+    // The walk was attempted — this is a resolution failure, not a skipped read, and it is the far hop
     // rather than the near one that failed.
     expect(rootResolver.requestedProductTypeIds).toEqual([UNSEEDED_ROOT_PRODUCT_TYPE_ID]);
   });
 
   it('NET-NEW — a resolvable root that carries NO system code answers absence, which is why the return type keeps its optional member', async () => {
     /*
-     * ⭐ THE ONE ABSENCE THAT SURVIVES ON THIS CHAIN, AND THE ONLY REASON `| undefined` REMAINS IN THE
-     * RETURN TYPE. `model/entity/ProductType.cfc:L112` succeeds at the LOOKUP and then reads
+     * The one absence that survives on this chain, and the only reason `| undefined` remains in the
+     * return type. `model/entity/ProductType.cfc:L112` succeeds at the lookup and then reads
      * `getSystemCode()` off a real row; when that column is null CFML returns null, the method hands it
      * back, and the caller receives absence. So absence here is the legacy answer rather than a
      * hardening — the distinction the two cases above exist to protect.
-     *
-     * Asserted from `Product` and not only from `ProductType` because this member is a pure delegation:
-     * if the pass-through ever started coercing the absence to a value, or raising on it, no
-     * `ProductType` test would notice.
      */
     const rootResolver = createProductTypeRootResolverDouble([
       { productTypeID: UNSEEDED_ROOT_PRODUCT_TYPE_ID },
@@ -1577,7 +1216,7 @@ describe('Product.getBaseProductType — delegation without narrowing', () => {
 describe('Product URL and title members', () => {
   it('NET-NEW — model/entity/Product.cfc:L211-L213 — the listing URL omits the leading slash the product URL carries', () => {
     /*
-     * ⚠️ THE DIFFERENCE IS ONE CHARACTER AND IT IS REAL. `:L207-L209` opens with a slash and `:L211-L213`
+     * The difference is one character and it is real. `:l207-l209` opens with a slash and `:L211-L213`
      * does not, while the rest of both strings is identical. Harmonising them is the obvious tidy-up and
      * it would change every listing link in the storefront, so the two are asserted together — the
      * relationship is the contract, not either string alone.
@@ -1601,13 +1240,12 @@ describe('Product URL and title members', () => {
      * Four substitution behaviours in one template, each of them behaviour rather than convenience, and
      * each traceable to `org/Hibachi/HibachiUtilityService.cfc:L70-L100`:
      *
-     *   1. A SIMPLE IDENTIFIER resolves against the entity.
-     *   2. A DOTTED IDENTIFIER is passed to the resolver UNTOUCHED and traversed there — the metadata
-     *      default for this very setting is a dotted identifier reaching the brand's name, which is why
-     *      dotted support exists at all.
-     *   3. AN UNRESOLVED TOKEN IS LEFT VERBATIM, delimiters included. It is not blanked, because the
-     *      legacy loop simply skips a key it cannot resolve.
-     *   4. A REPEATED TOKEN IS REPLACED EVERYWHERE, since the legacy replacement is a replace-all.
+     * 1. A simple identifier resolves against the entity.
+     * 2. A dotted identifier is passed to the resolver untouched and traversed there — the metadata
+     * default for this very setting is a dotted identifier reaching the brand's name, which is why
+     * dotted support exists at all.
+     * 3. an unresolved token is left verbatim, delimiters included. It is not blanked, because the
+     * legacy loop simply skips a key it cannot resolve.
      */
     const brand = buildBrand({ brandID: SECOND_PRODUCT_ID, brandName: 'Nike' });
     const settings = createSettingResolverDouble({
@@ -1650,7 +1288,7 @@ describe('Product URL and title members', () => {
   it('NET-NEW — model/entity/Product.cfc:L541 — the title memoizes per instance', () => {
     /*
      * The legacy caches the rendered title in the entity's own scope, so a template change mid-request
-     * does not re-render it. Proved by resolving once, then handing the SAME entity a resolver seeded
+     * does not re-render it. Proved by resolving once, then handing the same entity a resolver seeded
      * with a different template: the memoized value must win, and the second resolver must never be
      * consulted.
      */
@@ -1674,9 +1312,8 @@ describe('Product URL and title members', () => {
   });
 });
 
-/* ==================================================================================================
- * THE IMAGE MEMBERS — DELEGATION AT THE PRODUCT, THE PORT BENEATH IT
- * ==================================================================================================
+/*
+ * The image members — delegation at the product, the port beneath it
  * `model/entity/Product.cfc:L320-L338` declares five image members and every one of them is a bare
  * delegation to the default SKU, with no presence guard. Below the SKU sits the image port, which owns
  * path composition, resizing and the existence probe. Both layers are exercised: the product's
@@ -1708,24 +1345,9 @@ describe('Product image members — delegation to the default SKU', () => {
 
   it('NET-NEW — every image member RAISES when no default SKU is attached (:L319-:L338)', () => {
     /*
-     * ⭐ ALL FIVE LEGACY BODIES ARE BARE `return getDefaultSku().…` DELEGATIONS WITH NO
-     * `structKeyExists` TEST, so a product with no default SKU raised a null-reference error on every
+     * All five legacy bodies are bare `return getDefaultSku().…` delegations with no
+     * `structKeyExists` test, so a product with no default SKU raised a null-reference error on every
      * one of them. That fault is the behaviour, and it is reproduced.
-     *
-     * ⛔ AN EARLIER REVISION OF THIS CASE ASSERTED `toBeUndefined()` FOR ALL FIVE. It is withdrawn under
-     * AAP §0.6.7 — preserve and annotate, do not repair. Its reasoning was half right and is kept where
-     * it is right: returning `false` from the existence member WOULD be wrong, because it asserts the
-     * image is MISSING when the question was never answered. But `undefined` is not the legacy answer
-     * either — the legacy gives NO answer at all, and a caller that read a silent `undefined` where the
-     * legacy aborted changes what the Google feed emits.
-     *
-     * ⚠️ CONTRAST THE FOUR PRICE MEMBERS, WHICH ARE ASSERTED IN THEIR OWN CASE AND STILL ANSWER
-     * ABSENCE. `model/entity/Product.cfc:L554-L579` guards each of them with
-     * `if( structKeyExists(variables, "defaultSku") )` and falls off the end, so `undefined` there IS
-     * the transcription. The split inside this family is the legacy's own.
-     *
-     * The arrangement uses the legacy fixture helper and then clears the reference, which is exactly the
-     * teardown shape `meta/tests/unit/Helper.cfc` established for the same fixture.
      */
     const fixture = createMerchandiseProductFixture();
     fixture.clearDefaultSkuReference();
@@ -1736,15 +1358,17 @@ describe('Product image members — delegation to the default SKU', () => {
     expect(() => fixture.product.getResizedImagePath()).toThrow(DomainError);
     expect(() => fixture.product.getImageExistsFlag()).toThrow(DomainError);
 
-    /* The diagnostic names the member's own locator, so a log identifies WHICH delegation failed
-     * rather than reporting one undifferentiated fault for the family. */
+    /*
+     * The diagnostic names the member's own locator, so a log identifies which delegation failed
+     * rather than reporting one undifferentiated fault for the family.
+     */
     expect(() => fixture.product.getImagePath()).toThrow('model/entity/Product.cfc:L325');
     expect(() => fixture.product.getImageExistsFlag()).toThrow('model/entity/Product.cfc:L337');
   });
 
   it('NET-NEW — the four PRICE members still answer absence, because the legacy guards them (:L554-:L579)', () => {
     /*
-     * ⭐ THE OTHER HALF OF THE SPLIT, ASSERTED SO IT CANNOT BE "HARMONISED" WITH THE CASE ABOVE. Each of
+     * The other half of the split, asserted so it cannot be "harmonised" with the case above. Each of
      * these four opens with `if( structKeyExists(variables, "defaultSku") )` and has no `else`, so CFML
      * returns null. Making them raise would invent four faults the legacy does not have; making the five
      * image members answer absence would delete five it does.
@@ -1793,14 +1417,12 @@ describe('The image port beneath the default SKU', () => {
 
   it('NET-NEW — an arbitrary size string survives to the port unchanged', async () => {
     /*
-     * ⭐ THE SIZE IS NOT AN ENUMERATION. `model/entity/Sku.cfc:L168-L187` maps a handful of one-letter
+     * The size is not an enumeration. `model/entity/Sku.cfc:L168-L187` maps a handful of one-letter
      * aliases onto width and height settings, but that mapping only applies when the SKU has a product to
      * scope the settings read to and no explicit dimensions were given. Outside those conditions the
      * requested size is passed through, and an installation is free to name its own. This case exercises
      * the pass-through: the SKU has no product, so an unfamiliar size reaches the port verbatim rather
      * than being silently rewritten to a recognised one.
-     *
-     * The explicit missing-image path also proves option precedence over the setting fallback.
      */
     const images = createImagePathDouble({
       imagePathsByImageFile: { 'test-product.jpg': '/images/product/default/test-product.jpg' },
@@ -1895,40 +1517,18 @@ describe('The image port beneath the default SKU', () => {
   });
 });
 
-/* ==================================================================================================
- * N1 — THE NON-MUTATING DRY RUN
- * ==================================================================================================
+/*
+ * The non-mutating dry run
  * `org/Hibachi/HibachiValidationService.cfc:L153-L197` takes a `setErrors` flag. When it is true the
- * engine writes into the subject's OWN error bag; when it is false it takes a THROWAWAY bag from the
+ * engine writes into the subject's own error bag; when it is false it takes a throwaway bag from the
  * transient factory and never attaches it. `org/Hibachi/HibachiEntity.cfc:L204-L225` is built entirely
  * on the false form: `isDeletable`, `isEditable` and `isProcessable` each validate under a context and
- * report whether the returned bag is clean, WITHOUT disturbing the entity.
- *
- * ⭐ THE PORT EXPRESSES THAT AS AN OMITTED ARGUMENT. Passing a bag selects it; omitting the option
- * entirely selects a fresh one. Under `exactOptionalPropertyTypes` omission and an explicit `undefined`
- * are different, which is what makes the distinction a compile-time one rather than a convention.
- * There is no module-level or global error flag anywhere in the port — the legacy request-scoped
- * `getORMHasErrors()` gate has no stateless equivalent and is not reproduced here.
+ * report whether the returned bag is clean, without disturbing the entity.
  */
 
 describe('Product processability and deletability — the dry-run seam', () => {
   it('TRACEABLE — meta/tests/unit/IssuesTest.cfc:L101-L108 — isProcessable("addOptionGroup") is false for a content-access product', async () => {
-    /*
-     * The legacy regression, in full:
-     *
-     *     product = productService.newProduct();
-     *     product.setProductType( getProductType('444df313ec53a08c32d8ae434af5819a') );
-     *     assertFalse( product.isProcessable('addOptionGroup') );
-     *
-     * That literal identifier is the content-access discriminator seeded at
-     * `config/dbdata/SlatwallProductType.xml.cfm:L15`; it is imported from the fixture module here so the
-     * trace survives without the value being retyped.
-     *
-     * The mechanism: `model/validation/Product.json:L2` declares an in-list rule on `baseProductType` for
-     * the add-option-group and add-option contexts, admitting `merchandise` alone. A content-access
-     * product fails it, the returned bag is dirty, and the entity is therefore not processable in that
-     * context.
-     */
+    /* The legacy regression builds a content-access product and asserts the process is unavailable. */
     const harness = createValidatorHarness();
     const rootResolver = createProductTypeRootResolverDouble();
     const contentAccessProductType = buildProductType({
@@ -1942,7 +1542,7 @@ describe('Product processability and deletability — the dry-run seam', () => {
     });
 
     /*
-     * The base type is RESOLVED through the entity's own member before validating, which is what makes
+     * The base type is resolved through the entity's own member before validating, which is what makes
      * this assertion about content access rather than about an absent value — see `asValidationSubject`
      * for why the resolution has to happen here and how production does the same thing.
      */
@@ -1966,8 +1566,8 @@ describe('Product processability and deletability — the dry-run seam', () => {
 
   it('NET-NEW — the same context is processable for a merchandise product, so the gate and not the absence is what failed', async () => {
     /*
-     * ⚠️ THE CONTRAST IS WHAT GIVES THE REGRESSION ABOVE ITS MEANING. An in-list constraint also rejects
-     * an ABSENT value, so a product whose base type had never been resolved would fail the very same
+     * The contrast is what gives the regression above its meaning. An in-list constraint also rejects
+     * an absent value, so a product whose base type had never been resolved would fail the very same
      * assertion while proving nothing about content access. Running the identical arrangement with the
      * merchandise discriminator — the one value the rule admits — is what separates the two outcomes.
      */
@@ -1997,7 +1597,7 @@ describe('Product processability and deletability — the dry-run seam', () => {
   it('NET-NEW — model/validation/Product.json:L13 — the add-option-group context also requires at least one unused group', async () => {
     /*
      * The second rule the context declares, and the reason the case above supplies a group: a merchandise
-     * product with NO groups left to add is not processable either. A minimum-collection gate is
+     * product with no groups left to add is not processable either. A minimum-collection gate is
      * satisfied by absence but violated by a present-and-empty collection, which is exactly the state a
      * product using every available group is in.
      */
@@ -2028,7 +1628,7 @@ describe('Product processability and deletability — the dry-run seam', () => {
     /*
      * The property that makes `isProcessable` safe to call from a view or a permission check: asking the
      * question must not answer it destructively. A failing dry run therefore has to leave the entity
-     * exactly as clean as it was, and writing into the RETURNED bag afterwards must not reach the entity
+     * exactly as clean as it was, and writing into the returned bag afterwards must not reach the entity
      * either — the two bags are genuinely separate objects, not two views of one.
      */
     const harness = createValidatorHarness();
@@ -2072,8 +1672,8 @@ describe('Product processability and deletability — the dry-run seam', () => {
   it('NET-NEW — org/Hibachi/HibachiEntity.cfc:L204-L206 — isDeletable turns on the transaction flag the entity resolves for itself', async () => {
     /*
      * `model/validation/Product.json:L12` gates the delete on `transactionExistsFlag` equalling false,
-     * and X12 above established that the flag is scoped to one product. The two combine here: the entity
-     * resolves its OWN flag through the checker, that resolved value is what the delete rule reads, and
+     * and the case above established that the flag is scoped to one product. The two combine here: the entity
+     * resolves its own flag through the checker, that resolved value is what the delete rule reads, and
      * the verdict differs between a product a transaction references and one it does not.
      */
     const harness = createValidatorHarness();
@@ -2113,14 +1713,11 @@ describe('Product processability and deletability — the dry-run seam', () => {
 
   it('NET-NEW — org/Hibachi/HibachiEntity.cfc:L214-L216 — isEditable is true because the validation document declares no edit-context rule, and the dry run still does not mutate', async () => {
     /*
-     * ⚠️ REPORTED AS A FINDING RATHER THAN FILLED IN. Every rule in `model/validation/Product.json` names
-     * an explicit context, and none of them names `edit`, so the edit context selects NO rules and the
+     * Reported as a finding rather than filled in. Every rule in `model/validation/Product.json` names
+     * an explicit context, and none of them names `edit`, so the edit context selects no rules and the
      * returned bag is empty. That makes a product unconditionally editable in the legacy system, and
      * inventing an edit rule to make the answer look more considered would be exactly the kind of quiet
      * enhancement the port forbids.
-     *
-     * The assertion worth making is therefore about the SEAM, not the verdict: an empty result still
-     * arrives in a bag of its own, and the subject is still untouched.
      */
     const harness = createValidatorHarness();
     const product = new Product();
@@ -2138,22 +1735,15 @@ describe('Product processability and deletability — the dry-run seam', () => {
   });
 });
 
-/* ==================================================================================================
- * THE ERROR-BAG CONTRACT
- * ================================================================================================== */
+/* The error-bag contract. */
 
 describe('The validation error bag', () => {
   it('NET-NEW — org/Hibachi/HibachiTransient.cfc:L35-L44 — reading an unknown key yields an empty array and never throws', () => {
     /*
-     * ⚠️ THE PORTED BEHAVIOUR IS THE TRANSIENT'S, NOT THE ERRORS COMPONENT'S, AND THE CHOICE IS
-     * DELIBERATE. `org/Hibachi/HibachiTransient.cfc:L35-L44` checks for the key and DEFAULTS TO THE EMPTY
-     * ARRAY, which is what every caller in the slice was written against — a view iterating a property's
+     * The ported behaviour is the transient's, not the errors component's, and the choice is
+     * deliberate. `org/Hibachi/HibachiTransient.cfc:L35-L44` checks for the key and defaults to the empty
+     * array, which is what every caller in the slice was written against — a view iterating a property's
      * messages, a template testing arity.
-     *
-     * Its sibling `org/Hibachi/HibachiErrors.cfc:L47-L50` does the opposite: it reads one key, tests
-     * another, and raises for a key that is simply absent. That component is retired for this slice, and
-     * neither its behaviour nor its message is reproduced anywhere in the port. This case pins the
-     * surviving contract so a future change cannot quietly reintroduce the raise.
      */
     const errors = new ValidationError();
     const product = new Product();
@@ -2168,13 +1758,9 @@ describe('The validation error bag', () => {
 
   it('NET-NEW — repeated additions append in order and the value stays an array', () => {
     /*
-     * The legacy bag holds an ARRAY per property and appends, so two failures on one property are two
+     * The legacy bag holds an array per property and appends, so two failures on one property are two
      * messages rather than a replacement — which is what lets a single property report both a format
      * violation and a uniqueness violation from one save.
-     *
-     * ⭐ `addError` TAKES EXACTLY TWO ARGUMENTS. The three-argument override at
-     * `org/Hibachi/HibachiEntity.cfc:L151` is an entity concern that the validation engine never uses, and
-     * the port keeps the narrower signature so the two cannot be confused.
      */
     const errors = new ValidationError();
 
@@ -2214,22 +1800,19 @@ describe('The validation error bag', () => {
   });
 });
 
-/* ==================================================================================================
- * THE RETAINED SURFACE — SUPPORT DECLARATIONS
- * ==================================================================================================
+/*
+ * The retained surface — support declarations
  * Two local recording doubles and one reader factory, declared here rather than in `../support` for the
  * reason the support module's own header gives: a double belongs there when more than one suite needs
  * it, and these three are read only by the four sections below.
- *
- * ⚠️ ALL THREE ARE PURE FACTORIES. Nothing below this comment is module-scope mutable state — no array,
- * no map, no entity — so the M7 isolation property this file establishes at the top holds for the new
- * sections exactly as it holds for the old ones.
  */
 
 /** One recorded call on an association double, naming the member and the product it received. */
 interface AssociationCall {
   readonly member: 'setProduct' | 'removeProduct';
-  /** The product the delegation passed. `undefined` records the no-argument `removeProduct()` form. */
+  /**
+   * The product the delegation passed. `undefined` records the no-argument `removeProduct()` form.
+   */
   readonly product: Product | undefined;
 }
 
@@ -2239,16 +1822,7 @@ interface AssociationRecorder {
   readonly calls: readonly AssociationCall[];
 }
 
-/**
- * Builds a recording {@link ProductOwnedAssociation}.
- *
- * WHY A RECORDER AND NOT A REAL ENTITY. The six relationship helpers this double serves are pure
- * delegations of the form `arguments.x.setProduct( this )` — the whole observable behaviour is WHICH
- * member was called and WITH WHAT. `AttributeValue`, `ProductImage` and `ProductReview` are all
- * out of scope (§0.2.2.1 and §0.2.2.4), so there is no real entity to substitute and inventing one
- * would fabricate exactly the surface S9 forbids. The structural interface the production member
- * declares is the entire contract, and this satisfies it literally.
- */
+/** Builds a recording {@link ProductOwnedAssociation}. */
 const recordingAssociation = (): AssociationRecorder => {
   const calls: AssociationCall[] = [];
 
@@ -2265,29 +1839,18 @@ const recordingAssociation = (): AssociationRecorder => {
   };
 };
 
-/**
- * Builds a {@link ProductSkuIdReader} over an identity-keyed table of identifiers.
- *
- * ⭐ THE READER IS A PARAMETER RATHER THAN A MEMBER, AND THAT IS THE POINT BEING EXERCISED. The
- * production member cannot call `sku.getSkuID()` because `Product.ts` declares its SKU collaborator
- * structurally — {@link ProductSkuMember} names only `setProduct` and `removeProduct` — so the
- * identifier read arrives injected. Keying the table by object IDENTITY rather than by reading a field
- * keeps this file inside that same boundary instead of quietly widening it, and it makes a mis-scan
- * observable: a reader consulted for the wrong instance answers with the empty string, which matches
- * no seeded identifier.
- */
+/** Builds a {@link ProductSkuIdReader} over an identity-keyed table of identifiers. */
 const readingIdentifiers = (
   identifiers: ReadonlyMap<ProductSkuMember, string>,
 ): ProductSkuIdReader => {
   return (sku: ProductSkuMember): string => identifiers.get(sku) ?? '';
 };
 
-/* ==================================================================================================
- * THE SKU FINDER — [model/entity/Product.cfc:L162-L169]
- * ==================================================================================================
+/*
+ * The SKU finder — [model/entity/Product.cfc:L162-L169]
  * A 1-based CFML loop over `getSkus()` comparing `skus[i].getSkuID()` to the argument, falling through
  * to CFML null when nothing matches. Three properties are load-bearing and each gets its own case: the
- * scan reads the LIVE collection, a miss answers with absence rather than a sentinel, and the strict
+ * scan reads the live collection, a miss answers with absence rather than a sentinel, and the strict
  * comparison is on the injected reader's answer rather than on any field this module can see.
  */
 
@@ -2306,7 +1869,7 @@ describe('Product.getSkuByID — the live linear scan', () => {
     );
 
     /*
-     * IDENTITY, NOT EQUALITY. The legacy returns the element itself, and callers then mutate it — so a
+     * Identity, not equality. The legacy returns the element itself, and callers then mutate it — so a
      * defensive copy here would silently discard every downstream write. `toBe` is the assertion that
      * catches that; `toEqual` would pass against a copy.
      */
@@ -2321,7 +1884,7 @@ describe('Product.getSkuByID — the live linear scan', () => {
     const readSkuID = readingIdentifiers(new Map([[sku, SKU_ID]]));
 
     /*
-     * `:L169` ends the function with NO `return` statement, so the legacy answered CFML null. That is
+     * `:L169` ends the function with no `return` statement, so the legacy answered CFML null. That is
      * transcribed as an explicit `undefined` because `noImplicitReturns` requires it written out — it is
      * a transcription of the fall-through, not a new guard, and certainly not a thrown error.
      */
@@ -2338,7 +1901,7 @@ describe('Product.getSkuByID — the live linear scan', () => {
     expect(product.getSkuByID(readSkuID, SKU_ID)).toBe(sku);
 
     /*
-     * MUTATION SENSITIVITY, STATED AS AN ASSERTION. The member is documented as scanning
+     * Mutation sensitivity, stated as an assertion. The member is documented as scanning
      * `Product.getSkus()`, and the only way to prove it reads that array rather than a snapshot taken
      * earlier is to change the array between two calls. A memoized finder would keep answering with the
      * detached SKU here.
@@ -2357,15 +1920,13 @@ describe('Product.getSkuByID — the live linear scan', () => {
   });
 });
 
-/* ==================================================================================================
- * THE FOUR LIVE COLLECTION ACCESSORS — [model/entity/Product.cfc:L178-L180] AND THE THREE SIBLINGS
- * ==================================================================================================
+/*
+ * The four live collection accessors — [model/entity/Product.cfc:L178-L180] and the three siblings
  * `getImages` is a hand-written alias whose legacy body is the bare `return variables.productImages;`,
  * and the framework-generated `getProductImages` reads the same slot. The other three accessors follow
- * the same pattern over their own slots. What matters is that each hands back the LIVE array rather
- * than a copy, and that the aliased pair share ONE array while the four slots stay distinct — a mistake
- * in either direction (copying, or aliasing the wrong slot) is invisible to any assertion that only
- * compares contents.
+ * the same pattern over their own slots. What matters is that each hands back the live array rather
+ * than a copy, and that the aliased pair share one array while the four slots stay distinct — a mistake
+ * in either direction (copying, or aliasing the wrong slot) is invisible to any assertion that only.
  */
 
 describe('Product live collection accessors', () => {
@@ -2373,7 +1934,7 @@ describe('Product live collection accessors', () => {
     const product = buildProduct({ productID: PRODUCT_ID });
 
     /*
-     * ⚠️ `toBe`, DELIBERATELY. The legacy exposes both names over `variables.productImages`, so a
+     * `toBe`, deliberately. The legacy exposes both names over `variables.productImages`, so a
      * mutation through either must be visible through the other. `toEqual` would pass against two
      * separate empty arrays and would let the alias silently become a copy.
      */
@@ -2423,7 +1984,7 @@ describe('Product live collection accessors', () => {
 
     /*
      * A field initialiser on the class body gives each instance its own array; a module-scope default
-     * would give every product the SAME array, which is the failure this pins. Mutating one product must
+     * would give every product the same array, which is the failure this pins. Mutating one product must
      * not be visible from another.
      */
     first.getAttributeValues().push(recordingAssociation().association);
@@ -2433,20 +1994,12 @@ describe('Product live collection accessors', () => {
   });
 });
 
-/* ==================================================================================================
- * THE SEVEN RELATIONSHIP DELEGATIONS — [model/entity/Product.cfc:L680-L709]
- * ==================================================================================================
+/*
+ * The seven relationship delegations — [model/entity/Product.cfc:l680-l709]
  * Seven hand-written helpers, every one a single statement of the form
  * `arguments.x.setProduct( this )` or `arguments.x.removeProduct( this )`. They are declared
- * `inverse="true"` on the collection side, which means THE MANY SIDE OWNS THE FOREIGN KEY: ownership is
+ * `inverse="true"` on the collection side, which means the many side owns the foreign key: ownership is
  * handed to the associated entity and the collection follows from the persistence layer.
- *
- * ⚠️ SO THE PRODUCT'S OWN ARRAY IS EXPECTED TO STAY EMPTY, AND EVERY CASE BELOW ASSERTS THAT. Adding a
- * local push "for convenience" is the obvious improvement and it is wrong: it double-registers the
- * association, and for `skus` specifically it inflates the collection length that
- * `SkuService.createSkus` reads when it numbers generated SKU codes `-1`, `-2`, …. The one exception is
- * `addSku`, whose collaborator maintains BOTH sides itself — which is why it is asserted differently
- * from the other six.
  */
 
 describe('Product relationship delegations — the many side owns the key', () => {
@@ -2457,7 +2010,7 @@ describe('Product relationship delegations — the many side owns the key', () =
     product.addAttributeValue(attributeValue.association);
 
     expect(attributeValue.calls).toEqual([{ member: 'setProduct', product }]);
-    /* The delegation hands ownership over; it does NOT register locally. */
+    /* The delegation hands ownership over; it does not register locally. */
     expect(product.getAttributeValues()).toEqual([]);
 
     product.removeAttributeValue(attributeValue.association);
@@ -2510,8 +2063,8 @@ describe('Product relationship delegations — the many side owns the key', () =
     product.removeProductReview(review.association);
 
     /*
-     * ⚠️ THE ARGUMENT IS NOT DECORATIVE. The collaborator's `removeProduct` defaults to the association's
-     * CURRENT product when called with no argument, so `removeProduct()` and `removeProduct(this)` differ
+     * The argument is not decorative. The collaborator's `removeProduct` defaults to the association's
+     * current product when called with no argument, so `removeProduct()` and `removeProduct(this)` differ
      * whenever the association is attached elsewhere. The legacy passes `this` at every one of the three
      * call sites, and that is what is asserted — including that the product passed is this one and not
      * some other instance.
@@ -2530,10 +2083,10 @@ describe('Product relationship delegations — the many side owns the key', () =
     product.addSku(sku);
 
     /*
-     * ⭐ WHY THIS ONE LOOKS DIFFERENT FROM THE OTHER SIX. `addSku`/`removeSku` are the same one-line
-     * delegations, but their collaborator is IN SCOPE and its `setProduct` is one of only two legacy
+     * Why this one looks different from the other six. `addSku`/`removeSku` are the same one-line
+     * delegations, but their collaborator is in scope and its `setProduct` is one of only two legacy
      * members that maintain both sides of a relationship — it appends to `product.getSkus()` itself. So
-     * the collection DOES fill here, and it fills through the SKU rather than through the product.
+     * the collection does fill here, and it fills through the SKU rather than through the product.
      */
     expect(sku.product).toBe(product);
     expect(product.getSkus()).toEqual([sku]);
@@ -2561,10 +2114,9 @@ describe('Product relationship delegations — the many side owns the key', () =
   });
 });
 
-/* ==================================================================================================
- * THE TEMPLATE GUARD, THE BRAND-NAME DEFECT AND THE SUBSCRIPTION-TERM BOUNDARY
- * ==================================================================================================
- * Three retained members that share nothing except that each one's interesting behaviour is a BRANCH,
+/*
+ * The template guard, the brand-name defect and the subscription-term boundary
+ * Three retained members that share nothing except that each one's interesting behaviour is a branch,
  * and in each case one side of the branch is what a casual reading gets wrong: the template's guard
  * tests emptiness as well as absence; the brand-name memo is written with the wrong value and never
  * corrected; and the subscription-term finder is optional, so its absent branch is a real path rather
@@ -2581,7 +2133,7 @@ describe('Product.getTemplate — the two-part guard and its short-circuit', () 
 
     expect(product.getTemplate(settings.resolver)).toBe('custom-product-template');
     /*
-     * THE SHORT-CIRCUIT IS THE ASSERTION. The legacy consults the setting only inside the fallback
+     * The short-circuit is the assertion. The legacy consults the setting only inside the fallback
      * branch, so an override present means the out-of-scope setting engine is never reached at all. A
      * translation that resolved the setting first and then chose between the two answers would return
      * the same string here and still be wrong — an empty call log is what distinguishes them.
@@ -2607,7 +2159,7 @@ describe('Product.getTemplate — the two-part guard and its short-circuit', () 
     product.template = '';
 
     /*
-     * ⚠️ TWO STATES, ONE OUTCOME, AND THEY ARE GENUINELY DISTINCT HERE. The legacy guard is
+     * Two states, one outcome, and they are genuinely distinct here. The legacy guard is
      * `!structKeyExists(variables,"template") || variables.template == ""`, and under
      * `exactOptionalPropertyTypes` "key absent" and "key present holding `''`" really are different
      * states — so the guard is reproduced as an explicit two-part check. A truthiness test would agree
@@ -2629,7 +2181,7 @@ describe('Product.getTemplate — the two-part guard and its short-circuit', () 
 
     /*
      * The legacy body caches nothing — unlike `getTitle` and `getBrandName`, which do. Adding a cache
-     * here would be adding behaviour, and S8 is explicit that no new memoization is introduced. Two
+     * here would be adding behaviour, and AAP §0.7.3 is explicit that no new memoization is introduced. Two
      * calls therefore mean two resolutions.
      */
     expect(settings.calls).toHaveLength(2);
@@ -2637,22 +2189,11 @@ describe('Product.getTemplate — the two-part guard and its short-circuit', () 
 });
 
 describe('Product.getBrandName — the memo defect, carried and pinned', () => {
-  it('NET-NEW — model/entity/Product.cfc:L105 — TODO(parity): the first read answers the brand, EVERY LATER READ ANSWERS EMPTY', () => {
+  it('NET-NEW — model/entity/Product.cfc:L105 — TODO(parity): the first read answers the brand, every subsequent read answers empty', () => {
     const brand = buildBrand({ brandID: SECOND_PRODUCT_ID, brandName: 'Nike' });
     const product = buildProduct({ productID: PRODUCT_ID, brand });
 
-    /*
-     * ⚠️ THIS IS A PRESERVED DEFECT AND THE ASSERTION IS DELIBERATELY OF THE BROKEN BEHAVIOUR.
-     *
-     * The legacy body writes the EMPTY STRING into the memo slot and then returns the brand's name
-     * WITHOUT storing it. So the cache permanently holds `''`, and the second read — which finds the slot
-     * populated and trusts it — answers with the empty string for a product that plainly has a brand.
-     *
-     * Repairing it would be a one-character change and it is NOT made: preserve-and-annotate governs
-     * here, and a silent repair would make the port's output incomparable to the legacy system's for
-     * every consumer of this member. Pinning the broken behaviour is what makes the carry-over visible
-     * to a reviewer instead of being a comment nobody can check.
-     */
+    /* This is a preserved defect and the assertion is deliberately of the broken behaviour. */
     expect(product.getBrandName()).toBe('Nike');
     expect(product.getBrandName()).toBe('');
     expect(product.getBrandName()).toBe('');
@@ -2712,16 +2253,9 @@ describe('Product.getUnusedProductSubscriptionTerms — both branches of the opt
     });
 
     /*
-     * Two things are pinned and nothing else is. The finder receives THIS product's 32-character
+     * Two things are pinned and nothing else is. The finder receives this product's 32-character
      * identifier — not a whole entity, and not another product's identifier — and the result travels back
      * unreshaped, element identity included.
-     *
-     * ⚠️ NO SHAPE IS ASSERTED FOR A SUBSCRIPTION TERM, AND THAT ASYMMETRY IS CORRECT. The two sibling
-     * unused-* members do assert a `{name, value}` projection, because the legacy data-access layer
-     * builds that projection literally. No such evidence exists for subscription terms: the producing
-     * member is out of scope, no in-scope code reads a field off one, and only the ARITY is consumed —
-     * by the minimum-collection gate in `model/validation/Product.json`. Asserting a projection here
-     * would be inventing one.
      */
     expect(requestedProductIDs).toEqual([PRODUCT_ID]);
     expect(terms).toHaveLength(2);
@@ -2733,10 +2267,10 @@ describe('Product.getUnusedProductSubscriptionTerms — both branches of the opt
     const product = buildProduct({ productID: PRODUCT_ID });
 
     /*
-     * ⚠️ THE EMPTY ARRAY IS THE CORRECT BOUNDARY ANSWER, NOT A SWALLOWED ERROR. This member's arity is
-     * read by a minimum-collection gate of one, so an empty result FAILS that gate — which is exactly the
+     * The empty array is the correct boundary answer, not a swallowed error. This member's arity is
+     * read by a minimum-collection gate of one, so an empty result fails that gate — which is exactly the
      * outcome the legacy produced for a product with no unused terms. Throwing instead would convert a
-     * validation failure into a runtime error, and the error message would have to be invented (S9).
+     * validation failure into a runtime error, and the error message would have to be invented (AAP §0.7.3).
      */
     await expect(product.getUnusedProductSubscriptionTerms()).resolves.toEqual([]);
   });
@@ -2749,7 +2283,7 @@ describe('Product.getUnusedProductSubscriptionTerms — both branches of the opt
 
     /*
      * The legacy caches this result, but that cache belonged to a member with a real implementation.
-     * Caching a boundary stub's answer would cache the ABSENCE OF A CAPABILITY for the entity's whole
+     * Caching a boundary stub's answer would cache the absence of a capability for the entity's whole
      * lifetime, which is new behaviour rather than preserved behaviour — so no cache is added, and a
      * later call with a finder present is answered by the finder.
      */
@@ -2765,7 +2299,7 @@ describe('Product.getUnusedProductSubscriptionTerms — both branches of the opt
     const product = buildProduct({ productID: PRODUCT_ID });
 
     /*
-     * The empty-array answer belongs to ONE case only — the capability being absent. A finder that was
+     * The empty-array answer belongs to one case only — the capability being absent. A finder that was
      * supplied and failed is a different fact, and collapsing the two would report "no unused terms" for
      * a lookup that never completed.
      */
@@ -2777,104 +2311,23 @@ describe('Product.getUnusedProductSubscriptionTerms — both branches of the opt
   });
 });
 
-/* =====================================================================================================
- * FOLDED IN FROM `test/domain/process/processObjects.test.ts` — AAP §0.4.1.12 SUITE ALIGNMENT (F1)
- * =====================================================================================================
- * WHY THESE CASES ARE HERE RATHER THAN IN A SUITE OF THEIR OWN. AAP §0.4.1.12 declares exactly seventeen
- * executable suites, and `test/domain/process/processObjects.test.ts` was not one of them — a QA pass recorded it,
- * with eighteen siblings, as running outside the declared test plan. The coverage was never the problem;
- * the file's existence was. So the cases are folded into an approved suite, unchanged.
- *
- * ⭐ WHY THIS HOST. `ProductAddOptionGroup`, `ProductAddOption` and `ProductUpdateSkus` all carry an injected `product`,
- * and two of them are validated by context-scoped rules declared inside `model/validation/Product.json`.
- * The product entity is what they act on, so this is where their coverage belongs.
- *
- * ⛔ THE BODY IS WRAPPED IN ONE `describe`, WHICH IS THE WHOLE OF THE MECHANICAL CHANGE. Every helper,
- * constant and type the folded suite declared at module scope is now block-scoped to this callback, so it
- * cannot collide with this file's own declarations or with another folded body's — and any `beforeEach`,
- * `afterEach` or `beforeAll` it carries now applies to its own cases only, never to the host's. Not one
- * assertion, case name or comment was altered.
- * ================================================================================================== */
-
-/**
- * Process-object population descriptors — NET-NEW.
- *
- * PROVENANCE — EVERY CASE IN THIS FILE IS NET-NEW COVERAGE
- * There is no legacy `Product_AddOptionTest.cfc`, no `Product_AddOptionGroupTest.cfc` and no
- * `Product_UpdateSkusTest.cfc`. AAP §0.6.5.2 records the finding directly: the legacy MXUnit suite
- * under `meta/tests/` carries a dedicated component for `Product` and for `Brand` and for nothing
- * else in this slice, and it carries none at all for the three transient process objects. No
- * assertion below replicates a legacy case, so none is labelled TRACEABLE.
- *
- * THAT PROVENANCE IS DOCUMENTARY, NOT EMPIRICAL
- * No legacy result was observed and no output was compared, because the legacy suite CANNOT BE
- * EXECUTED in this environment: MXUnit is not vendored (`meta/tests/readme.txt:L4` requires it to be
- * installed on the machine with a mapping inside CFIDE, and `meta/tests/unit/SlatwallUnitTestBase.cfc`
- * extends `mxunit.framework.TestCase`, which is therefore unresolvable) and CFSelenium is not
- * vendored either. Every legacy claim below rests on the cited source locator and on nothing else.
- * That is a weaker claim than a re-run comparison, and it is stated rather than implied away
- * (AAP §0.6.5.3, §0.8.4.2).
- *
- * WHY THIS FILE EXISTS — THE ASYMMETRY IT CLOSES
- * Each of the three modules under `src/domain/process/` emits exactly ONE runtime value: a frozen
- * `PropertyDescriptorSet` that is the DECLARED replacement for the legacy runtime metadata walk at
- * `org/Hibachi/HibachiTransient.cfc:L178`. Two of the three had no value-importer anywhere in the
- * subtree — production or test — so two of the three module bodies never executed, and the parity
- * decisions they encode carried no executed assertion at all. The third,
- * `PRODUCT_UPDATE_SKUS_PROPERTY_DESCRIPTORS`, was covered only incidentally, because
- * `src/services/ProductService.ts` value-imports it to build a validation subject.
- *
- * ⭐ SO THE THREE ARE ASSERTED HERE TOGETHER, INCLUDING THE ONE THAT WAS ALREADY REACHED. Covering
- * only the two dead modules would close the coverage hole while leaving the more useful property —
- * that all three declare the SAME transient contract — unstated, and would leave the incidentally
- * covered set asserted by nothing that names it. The cross-module block at the end is where that
- * agreement is pinned.
- *
- * WHY A DECLARED TABLE IS THE THING UNDER TEST AT ALL
- * `org/Hibachi/HibachiTransient.cfc:L178` iterated COMPONENT METADATA at runtime. TR-3 retires that
- * machinery, and `strict` TypeScript has no equivalent facility, so the metadata becomes a declared,
- * compile-checked constant. A declared table can drift from the source it transcribes in a way
- * reflection could not, which is precisely why it needs assertions pointed back at the legacy
- * locators — and why the assertions below read the production constant rather than restating it.
- *
- * WHAT IS DELIBERATELY NOT HERE
- *   - No population run. `populate()` and the four legacy branches are owned by
- *     `src/domain/base/populate.ts` and asserted where they live; this file asserts the DECLARATION.
- *   - No process BEHAVIOUR. `processProductAddOption`, `processProductAddOptionGroup` and
- *     `processProductUpdateSkus` each already have their own executed describe block in
- *     `test/services/ProductService.test.ts`, which is where the service's use of these inputs
- *     belongs. Re-driving them from here would duplicate that coverage without adding a claim.
- *   - No collaborator, no repository, no validator, no pool. The three modules under test import
- *     TYPES ONLY, so importing them pulls in no runtime dependency chain — which is the same
- *     property their own headers assert as M7 inertness, and the reason a test may import them at
- *     all.
+/*
+ * AAP §0.4.1.12 declares exactly seventeen executable suites, so this subject is covered
+ * inside an approved suite rather than in one of its own.
  */
-describe('test/domain/process/processObjects.test.ts — the three transient process objects, every one of which takes a product (folded, F1)', () => {
-  /* ==================================================================================================
-   * DERIVATION HELPERS OVER THE PRODUCTION DESCRIPTOR SETS
-   *
-   * These READ the production constants and never restate them, so every assertion below is a claim
-   * about production rather than about a copy made for the test's convenience. `noUncheckedIndexedAccess`
-   * is honoured throughout: nothing is read by index, no `.at()` result is dereferenced and no non-null
-   * assertion appears anywhere in this file.
-   *
-   * They are generic over the set's two type parameters so one helper serves all three modules. That is
-   * what lets the cross-module block state the shared contract once instead of three times.
-   * ================================================================================================ */
 
-  /** The declared property names, in the order production declares them, which is population order. */
+/** Process-object population descriptors — net-new. */
+describe('The three transient process objects, every one of which takes a product', () => {
+  /* Derivation helpers over the production descriptor sets. */
+
+  /**
+   * The declared property names, in the order production declares them, which is population order.
+   */
   const declaredNames = <TTarget, TName extends string>(
     descriptorSet: PropertyDescriptorSet<TTarget, TName>,
   ): readonly string[] => descriptorSet.properties.map((descriptor) => descriptor.name);
 
-  /**
-   * Name-to-declared-value-type for every COLUMN descriptor in the set.
-   *
-   * The `'valueType' in descriptor` narrowing selects columns without importing the descriptor union's
-   * type names: a relationship descriptor declares a `kind` and no `valueType`, and a populate-disabled
-   * descriptor declares neither. All three process objects declare columns only, so for them the result
-   * covers every property — which is itself part of what the cross-module block asserts.
-   */
+  /** Name-to-declared-value-type for every column descriptor in the set. */
   const declaredValueTypes = <TTarget, TName extends string>(
     descriptorSet: PropertyDescriptorSet<TTarget, TName>,
   ): Record<string, string> => {
@@ -2889,14 +2342,7 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
     return valueTypes;
   };
 
-  /**
-   * The OWN enumerable member names of each descriptor, in declaration order per descriptor.
-   *
-   * This is how "the model is closed" (AAP §0.7.3 standard S9) becomes an assertion rather than a
-   * claim: the descriptor union offers `kind`, `notNull`, `populateArray`, `fileUpload` and
-   * `populateEnabled` in addition to `name` and `valueType`, and a process object declares NONE of
-   * them. Enumerating the keys catches an addition as readily as a removal, in either direction.
-   */
+  /** The own enumerable member names of each descriptor, in declaration order per descriptor. */
   const declaredDescriptorMembers = <TTarget, TName extends string>(
     descriptorSet: PropertyDescriptorSet<TTarget, TName>,
   ): readonly (readonly string[])[] =>
@@ -2905,38 +2351,27 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
   /**
    * The three optional members that would change population behaviour if any process object declared
    * one. Named here so both the per-module and the cross-module blocks assert the same list.
-   *
-   * `notNull` opens the empty-string branch at `org/Hibachi/HibachiTransient.cfc:L207` instead of the
-   * delete at `:L196`; `populateArray` opens BRANCH 2 at `:L216`; `fileUpload` EXCLUDES the property
-   * from ordinary population, because the column gate at `:L193` ends in a presence test for it. Each is
-   * absent from all three modules, and each absence is a transcription of the legacy source rather than
-   * an omission — `model/process/Product_AddOption.cfc:L52-L55`,
-   * `model/process/Product_AddOptionGroup.cfc:L52-L55` and `model/process/Product_UpdateSkus.cfc:L52-L58`
-   * carry no attribute other than `hb_rbKey`, which is a resource-bundle label and not a population
-   * instruction.
    */
   const BEHAVIOUR_CHANGING_DESCRIPTOR_MEMBERS = ['notNull', 'populateArray', 'fileUpload'] as const;
 
-  /* ==================================================================================================
-   * A — Product_AddOption — model/process/Product_AddOption.cfc:L49-L57
-   * ================================================================================================ */
+  /* A — Product_AddOption — model/process/Product_AddOption.cfc:L49-L57. */
 
   describe('ProductAddOption — NET-NEW — the exported population descriptors, model/process/Product_AddOption.cfc:L49-L57', () => {
     it('NET-NEW — model/process/Product_AddOption.cfc:L52,L55 — the two column descriptors appear in source declaration order', () => {
       /*
-       * Declaration order is preserved because it IS population order: the legacy loop at
-       * `org/Hibachi/HibachiTransient.cfc:L178` iterates DECLARED PROPERTIES rather than payload keys,
+       * Declaration order is preserved because it is population order: the legacy loop at
+       * `org/Hibachi/HibachiTransient.cfc:L178` iterates declared properties rather than payload keys,
        * never the reverse. A payload key matching no declared property is silently ignored, which is a
-       * direct consequence of that iteration direction and the reason a two-entry table is the COMPLETE
+       * direct consequence of that iteration direction and the reason a two-entry table is the complete
        * contract rather than a partial one.
        */
       expect(declaredNames(PRODUCT_ADD_OPTION_PROPERTY_DESCRIPTORS)).toEqual(['product', 'option']);
 
       /*
-       * ⚠️ NOTHING ELSE IS DECLARED, AND THE ABSENCES ARE THE CONTRACT. A process object is TRANSIENT:
+       * Nothing else is declared, and the absences are the contract. A process object is transient:
        * `model/process/Product_AddOption.cfc:L49` extends `HibachiProcess` and declares no identifier
        * property, no audit property and no relationship, so there is no `processObjectID`, no
-       * `createdDateTime` pair and no collection to declare. The entity the process acts ON arrives as
+       * `createdDateTime` pair and no collection to declare. The entity the process acts on arrives as
        * the injected `product` property, which is why `product` is declared and `productID` is not.
        */
       expect(declaredNames(PRODUCT_ADD_OPTION_PROPERTY_DESCRIPTORS)).toHaveLength(2);
@@ -2944,9 +2379,9 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
 
     it("NET-NEW — model/process/Product_AddOption.cfc:L52,L55 — both properties declare 'untyped', because the legacy declares no ormtype at all", () => {
       /*
-       * `'untyped'` is a POSITIVE statement that there is nothing to convert towards, not an absence of
+       * `'untyped'` is a positive statement that there is nothing to convert towards, not an absence of
        * thought: neither `property name="product";` at `:L52` nor `property name="option";` at `:L55`
-       * carries an `ormtype`, so BRANCH 1's coercion has no target type to coerce to. Declaring
+       * carries an `ormtype`, so branch 1's coercion has no target type to coerce to. Declaring
        * `'string'` here instead would stringify an injected entity reference, which is exactly the
        * defect the required `valueType` member exists to make impossible to introduce silently.
        */
@@ -2960,16 +2395,10 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
       /*
        * `getClassName()` at `org/Hibachi/HibachiObject.cfc:L135-L137` returns
        * `listLast(getClassFullname(), ".")`. The CFML file is `Product_AddOption.cfc`, so the legacy
-       * value is `Product_AddOption` — UNDERSCORE AND ALL — while the TypeScript interface is named
-       * `ProductAddOption`. The legacy spelling is carried because it is what ARM 3 of the population
+       * value is `Product_AddOption` — underscore and all — while the TypeScript interface is named
+       * `ProductAddOption`. The legacy spelling is carried because it is what arm 3 of the population
        * gate would have been keyed by (`org/Hibachi/HibachiTransient.cfc:L190`), and because
-       * `getEntityPermissionDetails()` builds its key set from a directory listing at
-       * `org/Hibachi/HibachiAuthenticationService.cfc:L131-L141`, where a renamed key would match no
-       * permission record and — the ladder being default-deny — silently deny every property.
-       *
-       * ⛔ THE TWO SPELLINGS ARE ASSERTED APART ON PURPOSE. Asserting only the literal would pass if the
-       * constant were later derived from `constructor.name`; asserting the inequality as well is what
-       * pins the DECISION rather than merely the current value.
+       * `getEntityPermissionDetails()` builds its key set from a directory listing at.
        */
       expect(PRODUCT_ADD_OPTION_PROPERTY_DESCRIPTORS.entityName).toBe('Product_AddOption');
       expect(PRODUCT_ADD_OPTION_PROPERTY_DESCRIPTORS.entityName).not.toBe('ProductAddOption');
@@ -2978,19 +2407,8 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
 
     it('NET-NEW — ProductAddOption org/Hibachi/HibachiTransient.cfc:L186-L190 — persistent is false, which is ARM 1 and therefore a short-circuit', () => {
       /*
-       * ⭐ THE CONSEQUENTIAL MEMBER, AND IT IS BEHAVIOUR RATHER THAN BOOKKEEPING. The master gate reads
+       * The consequential member, and it is behaviour rather than bookkeeping. The master gate reads
        * `!isPersistent() || (publicPopulateFlag && … == "public") || authenticateEntityProperty(…)`.
-       * `model/process/Product_AddOption.cfc:L49` declares
-       * `component output="false" accessors="true" extends="HibachiProcess" {` with NO `persistent`
-       * attribute, so `isPersistent()` at `org/Hibachi/HibachiObject.cfc:L11-L18` answers false, the OR
-       * short-circuits on its FIRST arm, and the process object populates freely — no authorisation
-       * question is ever asked about any of its properties. The six persistent catalog entities declare
-       * `persistent=true`, so for them the third arm really is consulted. That asymmetry is observable
-       * behaviour.
-       *
-       * The corollary is asserted too: because ARM 1 already decides the question, no descriptor needs
-       * ARM 2's `public` flag, and none declares it. If one ever did, the flag would be dead code whose
-       * presence implied a gate that cannot run.
        */
       expect(PRODUCT_ADD_OPTION_PROPERTY_DESCRIPTORS.persistent).toBe(false);
 
@@ -2999,10 +2417,10 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
       }
     });
 
-    it('NET-NEW — ProductAddOption AAP §0.7.3 S9 — the model is closed: three set members, and exactly {name, valueType} on each descriptor', () => {
+    it('NET-NEW — ProductAddOption AAP §0.7.3 — the model is closed: three set members, and exactly {name, valueType} on each descriptor', () => {
       /*
        * Every member the descriptor contract offers is either used or omitted for a documented reason.
-       * Enumerating the OWN keys is what makes that checkable in both directions — an added member is
+       * Enumerating the own keys is what makes that checkable in both directions — an added member is
        * caught as readily as a removed one.
        */
       expect(Object.keys(PRODUCT_ADD_OPTION_PROPERTY_DESCRIPTORS)).toEqual([
@@ -3019,22 +2437,20 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
         for (const behaviourChangingMember of BEHAVIOUR_CHANGING_DESCRIPTOR_MEMBERS) {
           expect(members).not.toContain(behaviourChangingMember);
         }
-        /* No relationship descriptor either, so nothing declares a `kind`, a loader or a related id. */
+        /*
+         * No relationship descriptor either, so nothing declares a `kind`, a loader or a related id.
+         */
         expect(members).not.toContain('kind');
       }
     });
 
     it('NET-NEW — ProductAddOption frozen at both declared levels, so a caller that receives the contract cannot mutate it', () => {
       /*
-       * The module's own header states the claim precisely: frozen at BOTH LEVELS — the set and its
+       * The module's own header states the claim precisely: frozen at both levels — the set and its
        * property list. It says nothing about a third level, and there is none: `Object.freeze([...])`
-       * freezes the ARRAY and not its elements, so the individual descriptor objects are extensible.
+       * freezes the array and not its elements, so the individual descriptor objects are extensible.
        * That is asserted as it stands rather than tightened, because tightening it here would assert a
        * property production does not have and would then quietly disagree with the source comment.
-       *
-       * `Reflect.set` and `Reflect.deleteProperty` are used rather than a cast-and-assign: they report
-       * refusal as a boolean, so the assertion needs no `any`, no double assertion through `unknown` and
-       * no reliance on which mutations happen to throw under the emitted strict mode.
        */
       expect(Object.isFrozen(PRODUCT_ADD_OPTION_PROPERTY_DESCRIPTORS)).toBe(true);
       expect(Object.isFrozen(PRODUCT_ADD_OPTION_PROPERTY_DESCRIPTORS.properties)).toBe(true);
@@ -3060,16 +2476,7 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
     });
   });
 
-  /* ==================================================================================================
-   * B — Product_AddOptionGroup — model/process/Product_AddOptionGroup.cfc:L49-L57
-   *
-   * The sibling of block A, and the difference between them is one property NAME. It is asserted
-   * separately rather than folded into a table-driven loop with A, because the point of the pair is that
-   * `option` and `optionGroup` are DIFFERENT contracts: `ProductService.processProductAddOption` resolves
-   * a single option while `processProductAddOptionGroup` resolves a group and then reads its collection
-   * (`model/service/ProductService.cfc:L115`). A loop that proved "both have two properties" would pass
-   * with the two names swapped.
-   * ================================================================================================ */
+  /* B — Product_AddOptionGroup — model/process/Product_AddOptionGroup.cfc:L49-L57. */
 
   describe('ProductAddOptionGroup — NET-NEW — the exported population descriptors, model/process/Product_AddOptionGroup.cfc:L49-L57', () => {
     it('NET-NEW — model/process/Product_AddOptionGroup.cfc:L52,L55 — the two column descriptors appear in source declaration order', () => {
@@ -3079,7 +2486,9 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
       ]);
       expect(declaredNames(PRODUCT_ADD_OPTION_GROUP_PROPERTY_DESCRIPTORS)).toHaveLength(2);
 
-      /* ⚠️ And it is `optionGroup`, NOT `option` — the whole distinction between this type and its sibling. */
+      /*
+       * And it is `optionGroup`, not `option` — the whole distinction between this type and its sibling.
+       */
       expect(declaredNames(PRODUCT_ADD_OPTION_GROUP_PROPERTY_DESCRIPTORS)).not.toContain('option');
     });
 
@@ -3110,7 +2519,7 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
       }
     });
 
-    it('NET-NEW — ProductAddOptionGroup AAP §0.7.3 S9 — the model is closed: three set members, and exactly {name, valueType} on each descriptor', () => {
+    it('NET-NEW — ProductAddOptionGroup AAP §0.7.3 — the model is closed: three set members, and exactly {name, valueType} on each descriptor', () => {
       expect(Object.keys(PRODUCT_ADD_OPTION_GROUP_PROPERTY_DESCRIPTORS)).toEqual([
         'entityName',
         'persistent',
@@ -3159,21 +2568,14 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
     });
   });
 
-  /* ==================================================================================================
-   * C — Product_UpdateSkus — model/process/Product_UpdateSkus.cfc:L49-L60
-   *
-   * The third in-scope process object, and the one already reached transitively because
-   * `src/services/ProductService.ts` value-imports its descriptor set to build the validation subject
-   * `../validation/rules/productUpdateSkus.rules` reads. Asserted here by NAME so the contract has an
-   * owner of its own rather than depending on a service test that could stop importing it.
-   * ================================================================================================ */
+  /* C — Product_UpdateSkus — model/process/Product_UpdateSkus.cfc:L49-L60. */
 
   describe('ProductUpdateSkus — NET-NEW — the exported population descriptors, model/process/Product_UpdateSkus.cfc:L49-L60', () => {
     it('NET-NEW — model/process/Product_UpdateSkus.cfc:L52-L58 — the five column descriptors appear in source declaration order', () => {
       /*
-       * ⭐ THE FLAG-BEFORE-VALUE ORDER IS THE POINT, NOT INCIDENTAL. `:L55` declares `updatePriceFlag`
+       * The flag-before-value order is the point, not incidental. `:L55` declares `updatePriceFlag`
        * and `:L56` declares `price`; `:L57` declares `updateListPriceFlag` and `:L58` declares
-       * `listPrice`. `model/validation/Product_UpdateSkus.json` names the FLAG and the PRICE as separate
+       * `listPrice`. `model/validation/Product_UpdateSkus.json` names the flag and the price as separate
        * property identifiers and gates each price on its own flag, so collapsing a pair into one
        * nullable price — letting presence stand in for the flag — would leave the conditions
        * unexpressible and would invent a meaning for a present price with an absent flag.
@@ -3190,8 +2592,8 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
 
     it("NET-NEW — model/process/Product_UpdateSkus.cfc:L52-L58 — all five properties declare 'untyped', hb_rbKey notwithstanding", () => {
       /*
-       * ⚠️ `:L56` and `:L58` DO carry an attribute — `hb_rbKey="entity.sku.price"` and
-       * `hb_rbKey="entity.sku.listPrice"` — and it is NOT a population instruction. It names a
+       * `:L56` and `:L58` do carry an attribute — `hb_rbKey="entity.sku.price"` and
+       * `hb_rbKey="entity.sku.listPrice"` — and it is not a population instruction. It names a
        * resource-bundle label for display, so it changes no value type and opens no branch. Reading it
        * as an `ormtype` would type two untyped properties as prices; the two are asserted `'untyped'`
        * alongside the other three precisely so that misreading cannot land silently.
@@ -3219,7 +2621,7 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
       }
     });
 
-    it('NET-NEW — ProductUpdateSkus AAP §0.7.3 S9 — the model is closed: three set members, and exactly {name, valueType} on each descriptor', () => {
+    it('NET-NEW — ProductUpdateSkus AAP §0.7.3 — the model is closed: three set members, and exactly {name, valueType} on each descriptor', () => {
       expect(Object.keys(PRODUCT_UPDATE_SKUS_PROPERTY_DESCRIPTORS)).toEqual([
         'entityName',
         'persistent',
@@ -3268,16 +2670,12 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
     });
   });
 
-  /* ==================================================================================================
-   * D — THE THREE TOGETHER — the shared transient contract, and the absence of shared state
-   *
-   * This block is the reason the file covers all three modules rather than only the two that had no
-   * importer. Each case states a property of the SET of process objects that no per-module case can:
-   * agreement where they must agree, and separation where they must not be joined.
-   * ================================================================================================ */
+  /* D — the three together — the shared transient contract, and the absence of shared state. */
 
   describe('the three in-scope process objects — NET-NEW — one transient contract, three independent tables', () => {
-    /** The complete in-scope process-object inventory of AAP §0.4.1.4, labelled for readable failures. */
+    /**
+     * The complete in-scope process-object inventory of AAP §0.4.1.4, labelled for readable failures.
+     */
     const PROCESS_OBJECT_DESCRIPTOR_SETS = [
       {
         legacyFile: 'model/process/Product_AddOption.cfc',
@@ -3311,9 +2709,9 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
 
     it('NET-NEW — org/Hibachi/HibachiObject.cfc:L11-L18 — every one of the three is transient, and none declares a persistent attribute to be read', () => {
       /*
-       * ⭐ THE AGREEMENT IS THE ASSERTION. All three legacy components declare, at L49 of each,
+       * The agreement is the assertion. All three legacy components declare, at L49 of each,
        * `component output="false" accessors="true" extends="HibachiProcess" {` with no `persistent`
-       * attribute, so `isPersistent()` is false for all three and ARM 1 short-circuits for all three.
+       * attribute, so `isPersistent()` is false for all three and arm 1 short-circuits for all three.
        * A single set flipping to `true` would silently start asking authorisation questions of a type
        * the legacy never asked any, and the per-module cases would each still pass in isolation while
        * the family stopped agreeing — which is exactly what a cross-module case exists to catch.
@@ -3322,7 +2720,9 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
         expect(entry.set.persistent).toBe(false);
       }
 
-      /* Stated positively as well, so the claim is "all false" rather than "none observed true". */
+      /*
+       * Stated positively as well, so the claim is "all false" rather than "none observed true".
+       */
       expect(PROCESS_OBJECT_DESCRIPTOR_SETS.map((entry) => entry.set.persistent)).toEqual([
         false,
         false,
@@ -3334,8 +2734,8 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
       /*
        * The persistent catalog entities carry twelve `ormtype="timestamp"` audit properties between
        * them, all populate-disabled, plus relationship descriptors that require a loader and a
-       * sub-populator. A process object carries NEITHER, and the difference is structural rather than
-       * incidental: it has no table, so it has no audit block, and its related entity ARRIVES injected
+       * sub-populator. A process object carries neither, and the difference is structural rather than
+       * incidental: it has no table, so it has no audit block, and its related entity arrives injected
        * rather than being loaded by identifier.
        */
       for (const entry of PROCESS_OBJECT_DESCRIPTOR_SETS) {
@@ -3361,7 +2761,7 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
     it('NET-NEW — every one of the three declares `product` FIRST, because the process acts on an injected entity', () => {
       /*
        * `model/process/Product_AddOption.cfc:L52`, `model/process/Product_AddOptionGroup.cfc:L52` and
-       * `model/process/Product_UpdateSkus.cfc:L52` each declare `product` as the FIRST property, and
+       * `model/process/Product_UpdateSkus.cfc:L52` each declare `product` as the first property, and
        * `src/services/ProductService.ts` takes the product as its own first parameter on all three
        * process members. The ordering is population order, so the shared first position is a real
        * property of the family rather than a coincidence of transcription.
@@ -3377,8 +2777,8 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
 
     it('NET-NEW — M7 — the three tables are independent objects, so nothing one module declares can leak into another', () => {
       /*
-       * ⚠️ WHY THIS IS AN M7 CASE AND NOT A STYLE CASE. AAP §0.6.6 M7 records that nothing survives
-       * between Lambda invocations except MODULE-SCOPE state, and these three constants are exactly
+       * Why this is an M7 case and not a style case. AAP §0.6.6 M7 records that nothing survives
+       * between Lambda invocations except module-scope state, and these three constants are exactly
        * that: module-scope values a warm container reuses across invocations. Sharing one array between
        * two sets — an easy transcription slip, since two of the three tables begin identically — would
        * make a single mutation observable from both, and freezing only makes that impossible while the
@@ -3390,7 +2790,9 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
       const sets = PROCESS_OBJECT_DESCRIPTOR_SETS.map((entry) => entry.set);
       expect(new Set(sets).size).toBe(3);
 
-      /* No two of the three declare the same property list, either — the tables genuinely differ. */
+      /*
+       * No two of the three declare the same property list, either — the tables genuinely differ.
+       */
       const declaredLists = PROCESS_OBJECT_DESCRIPTOR_SETS.map((entry) =>
         declaredNames(entry.set).join(','),
       );
@@ -3401,11 +2803,10 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
       /*
        * Each module's header states that freezing "is not a side effect … importing this module remains
        * observably inert (M7)". The observable form of that claim is what is asserted here: the export
-       * is the SAME frozen object on every read, so there is no factory to invoke, no lazily built cache
+       * is the same frozen object on every read, so there is no factory to invoke, no lazily built cache
        * to warm and no per-read allocation that two invocations could diverge on. A descriptor set built
        * by a factory would hand back a fresh object each time and this case would fail — which is the
-       * distinction worth pinning, because the repository's other memoised structures are deliberately
-       * factory-scoped for the opposite reason.
+       * distinction worth pinning, because the repository's other memoised structures are deliberately.
        */
       for (const entry of PROCESS_OBJECT_DESCRIPTOR_SETS) {
         expect(entry.set).toBe(entry.set);
@@ -3414,7 +2815,9 @@ describe('test/domain/process/processObjects.test.ts — the three transient pro
         expect(Array.isArray(entry.set.properties)).toBe(true);
       }
 
-      /* Read through the original import bindings as well, so identity is proven across both paths. */
+      /*
+       * Read through the original import bindings as well, so identity is proven across both paths.
+       */
       expect(PROCESS_OBJECT_DESCRIPTOR_SETS.map((entry) => entry.set)).toEqual([
         PRODUCT_ADD_OPTION_PROPERTY_DESCRIPTORS,
         PRODUCT_ADD_OPTION_GROUP_PROPERTY_DESCRIPTORS,
