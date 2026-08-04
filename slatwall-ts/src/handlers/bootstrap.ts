@@ -530,12 +530,19 @@ export interface RequestScope extends SalePriceResolver {
   /**
    * The instant every date comparison in this request resolves against.
    *
-   * A COPY, AND SAFE TO MUTATE. The graph holds its epoch as a PRIMITIVE and every
-   * consumer takes its own `Date` from the injected request clock, so this instance
-   * is not the baseline any repository, entity or the feed service compares against -
-   * moving it moves nothing. That is what lets one request bind ONE instant across the promotion,
-   * sale-price, price-group and feed paths without also making that instant
-   * reachable for mutation.
+   * A FRESH COPY ON EVERY READ, AND SAFE TO MUTATE. The graph holds its epoch as a PRIMITIVE and
+   * every consumer - this member included - takes its own `Date` from the injected request clock, so
+   * what you receive is not the baseline any repository, entity or the feed service compares
+   * against: moving it moves nothing, and it does not even move a later read of this member. That is
+   * what lets one request bind ONE instant across the promotion, sale-price, price-group and feed
+   * paths without also making that instant reachable for mutation.
+   *
+   * ★ QUOTE-THEN-REVISE. This docblock already promised "a copy … moving it moves nothing", and QA
+   * testing (INFO-2) found the second half true and the first half half-true: the member handed back
+   * ONE `Date` that the projection had copied out once, so a caller who mutated what it read saw its
+   * own mutation on the next read. The graph consumers were never affected - that was measured too -
+   * but the fix belongs where the claim was made, so the member is now an accessor over the request
+   * clock rather than a captured instance. Reading it twice yields two `Date`s with one time value.
    */
   readonly now: Date;
 
@@ -4878,7 +4885,16 @@ async function createModuleScopeGraph(overrides: CompositionOverrides): Promise<
     currencyRecords,
     europeanCentralBankRates,
   );
-  const settingsProvider = new BootstrapSettingsProvider(skuEligibleCurrencies);
+  // ★ FROZEN AT CONSTRUCTION, BECAUSE "STATELESS AND IMMUTABLE" HAS TO BE TRUE OF THE INSTANCE AND
+  // NOT ONLY OF ITS TABLE. The constructor freezes `this.values`, and the root that publishes this
+  // provider is itself frozen - but freezing the root stops a member from being REPLACED, not the
+  // object behind it from being EXTENDED. QA testing (INFO-3) walked exactly that gap:
+  // `root.settingsProvider.setting = () => 'HACKED'` installed a shadowing own property, every later
+  // `setting('skuCurrency')` answered `'HACKED'`, and because this is a TIER-ONE object the shadow
+  // outlived the request and was still there for the next one on a warm container. Sealing the
+  // instance makes that assignment a `TypeError` instead, at no cost: the class declares one field,
+  // writes it once here, and `setting()` only reads.
+  const settingsProvider = Object.freeze(new BootstrapSettingsProvider(skuEligibleCurrencies));
 
   // --- 5. The stateless adapters -----------------------------------------
   // Each is immutable and holds no memo, which is what makes module scope safe
@@ -4929,7 +4945,15 @@ async function createModuleScopeGraph(overrides: CompositionOverrides): Promise<
     // `init()` returns `this` and the component holds no state;
     // [integrationServices/google/controllers/feed.cfc:L51] `productService` is
     // the fifth dead injection and is not wired.
-    integration: new GoogleIntegration(),
+    //
+    // ★ FROZEN FOR THE SAME REASON AS `settingsProvider` ABOVE, AND THE SAME QA FINDING (INFO-3).
+    // "No state" describes the class - every one of its eight members answers with a literal - but a
+    // stateless instance is still EXTENSIBLE, and this one is published on the root and survives
+    // between invocations. `root.integration.getDisplayName = () => 'Spoofed'` was accepted and
+    // answered `'Spoofed'` thereafter; frozen, it raises instead. The prototype methods are
+    // untouched, so [integrationServices/google/Integration.cfc:L59-L61]'s preserved `'Google'` -
+    // and the display-name contradiction annotated at that file - still answer exactly as before.
+    integration: Object.freeze(new GoogleIntegration()),
   };
 
   // --- 6. Assemble and validate the COMPLETE binding graph ----------------
@@ -5182,7 +5206,13 @@ export function resetCompositionRoot(): void {
  * without inventing a host.
  */
 interface RequestGraph {
-  /** The one instant this request's every date comparison resolves against. */
+  /**
+   * The one instant this request's every date comparison resolves against.
+   *
+   * Satisfied by an ACCESSOR over the request clock, so reading it yields a fresh `Date` carrying
+   * that one instant rather than a shared mutable instance. {@link RequestScope.now} forwards this
+   * member through, which is why the published surface can promise a copy per read.
+   */
   readonly now: Date;
 
   /** The explicit T6 replacement for ambient scope, built from this request's input. */
@@ -5330,11 +5360,19 @@ function createRequestGraph(
   // It reads no clock: it answers the instant already captured above. `PromotionPeriod`
   // hydration receives the same value through the adapter, which copies again before
   // handing it to an entity.
+  //
+  // ★ AND IT IS ALSO WHAT THE PUBLISHED `now` MEMBER READS, rather than a `Date` captured here
+  // once. This function used to hold `const now = requestClock.now()` and hand that ONE instance to
+  // the graph, which the projection then copied onto the scope - so "every exposure is a fresh copy"
+  // was true of every INTERNAL consumer and false of the one EXTERNAL member. QA testing (INFO-2)
+  // measured the gap: mutating the `Date` a caller had already read back from `RequestScope.now`
+  // was visible on the next read of that member. Nothing downstream ever moved - the graph holds a
+  // primitive and each consumer draws its own reading - but the member's own documentation promised
+  // a copy, so the member now takes its reading the same way everything else does. See the accessor
+  // on the returned graph below and {@link RequestScope.now}.
   const requestClock = {
     now: (): Date => new Date(requestEpochMilliseconds),
   };
-
-  const now = requestClock.now();
 
   // --- The explicit replacement for ambient scope (T6) --------------------
   // [model/service/PriceGroupService.cfc:L262-L266], verbatim:
@@ -5903,10 +5941,10 @@ function createRequestGraph(
       // 0.8.1 freeze the product-feed contract and AAP 0.6.7 admits no fourth divergence.
       // A deployment needing HTTPS feed URLs terminates TLS in front of this service.
       //
-      // A FRESH COPY of the request epoch, not the instance exposed as
-      // `RequestScope.now`: the service closes over what it is handed, so sharing
-      // one mutable `Date` would let a caller that mutates the exposed instant move
-      // the feed's `<lastBuildDate>` and every generated-at stamp with it.
+      // A FRESH COPY of the request epoch, drawn the same way `RequestScope.now` draws its own: the
+      // service closes over what it is handed, so sharing one mutable `Date` with any other consumer
+      // would let whoever mutated it move the feed's `<lastBuildDate>` and every generated-at stamp
+      // with it. Since no consumer shares an instance, no consumer can move another's baseline.
       requestClock.now(),
     );
 
@@ -5931,7 +5969,14 @@ function createRequestGraph(
   }
 
   return {
-    now,
+    // AN ACCESSOR, SO THE MEMBER IS A READING RATHER THAN A HELD INSTANCE. It satisfies
+    // `readonly now: Date` exactly as a data property did - same name, same type, and still an own
+    // enumerable key, so `assertCompleteRequestGraph` walks it and the published key set is
+    // unchanged - while making every read a fresh `Date`. That is what lets the projection forward
+    // it without re-copying and what closes the one exposure that outlived a read (INFO-2).
+    get now(): Date {
+      return requestClock.now();
+    },
     currentAccountContext,
     currencyConverter,
     productRepository,
@@ -6089,7 +6134,14 @@ function projectRequestScope(requestGraph: RequestGraph, input: RequestScopeInpu
   // services and adapters whose own state is theirs to manage - so what this closes is the
   // substitution of a whole member on a scope another consumer holds.
   return Object.freeze({
-    now: requestGraph.now,
+    // FORWARDED AS AN ACCESSOR, because the graph's own member is one: copying the value here would
+    // put the held instance straight back onto the published surface, which is the arrangement
+    // INFO-2 found. Reading through keeps the promise the member's docblock makes - one instant per
+    // request, a fresh `Date` per read - and `Object.freeze` leaves an accessor readable while
+    // refusing any attempt to replace it.
+    get now(): Date {
+      return requestGraph.now;
+    },
     currentAccountContext: requestGraph.currentAccountContext,
     roundingRuleService: requestGraph.roundingRuleService,
     brandService: requestGraph.brandService,
