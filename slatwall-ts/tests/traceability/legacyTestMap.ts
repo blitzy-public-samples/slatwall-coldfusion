@@ -370,9 +370,14 @@ interface HarnessTraitNotCarried {
 
 // --- Shared justifications -------------------------------------------------
 //
-// Four reasons are shared verbatim by groups of rows below. They are hoisted so the
+// Three reasons are shared verbatim by groups of rows below. They are hoisted so the
 // wording is written once and cannot drift row to row; the rows themselves stay
 // individually enumerated, because an enumeration is what makes the map checkable.
+//
+// A fourth once stood here, shared by the six promotion-decomposition modules that were
+// owed a suite and had none. All nine of the decomposition modules now own a dedicated
+// suite, so the reason has no rows left to serve and is gone rather than kept as dead
+// prose - which is the register shrinking exactly as it was built to.
 
 const PORT_EXEMPTION =
   'A repository or collaborator port: an interface declaration with no value export, so ' +
@@ -387,11 +392,6 @@ const ORDER_VIEW_EXEMPTION =
   'A read-only order-shaped input type. It is the anti-corruption boundary that lets an ' +
   'out-of-scope aggregate drive an in-scope engine, and it emits nothing; the shapes are ' +
   'built and asserted by the order fixtures and the engine suites.';
-
-const DECOMPOSITION_PENDING =
-  'One of the nine modules the long promotion routine was decomposed into. Its arithmetic ' +
-  'is reached today only through the facade, so a defect confined to it would surface as a ' +
-  'facade failure rather than being located precisely.';
 
 // --- The map ---------------------------------------------------------------
 
@@ -566,12 +566,40 @@ export const LEGACY_TEST_MAP: {
       test: 'tests/unit/services/promotion/discountAmount.test.ts',
     },
     {
+      module: 'src/services/promotion/orderItemMembership.ts',
+      test: 'tests/unit/services/promotion/orderItemMembership.test.ts',
+    },
+    {
       module: 'src/services/promotion/overUseStripping.ts',
       test: 'tests/unit/services/promotion/overUseStripping.test.ts',
     },
     {
+      module: 'src/services/promotion/promotionApplication.ts',
+      test: 'tests/unit/services/promotion/promotionApplication.test.ts',
+    },
+    {
+      module: 'src/services/promotion/promotionPeriodQualification.ts',
+      test: 'tests/unit/services/promotion/promotionPeriodQualification.test.ts',
+    },
+    {
+      module: 'src/services/promotion/qualifierQualification.ts',
+      test: 'tests/unit/services/promotion/qualifierQualification.test.ts',
+    },
+    {
       module: 'src/services/promotion/rewardUsageLedger.ts',
       test: 'tests/unit/services/promotion/rewardUsageLedger.test.ts',
+    },
+    {
+      module: 'src/services/promotion/salePriceSeeding.ts',
+      test: 'tests/unit/services/promotion/salePriceSeeding.test.ts',
+    },
+    {
+      module: 'src/services/promotion/twoPassRewardIterator.ts',
+      test: 'tests/unit/services/promotion/twoPassRewardIterator.test.ts',
+    },
+    {
+      module: 'src/services/promotionService.ts',
+      test: 'tests/unit/services/promotionService.test.ts',
     },
     {
       module: 'src/services/roundingRuleService.ts',
@@ -838,6 +866,16 @@ export const LEGACY_TEST_MAP: {
   // module moves up into `coveredModules`.
   pendingModules: [
     {
+      module: 'src/handlers/bootstrap.ts',
+      owningBoundary: 'src/handlers/bootstrap.ts',
+      reason:
+        'The composition root that replaces the framework container\u2019s convention scan. ' +
+        'Every collaborator it hands out is asserted at the suite of the service that ' +
+        'receives it, but the wiring itself - which adapter satisfies which port, and the ' +
+        'single-instance reuse the two exported functions govern - has no suite of its own.',
+      plannedCoverage: ['tests/unit/handlers/bootstrap.test.ts'],
+    },
+    {
       module: 'src/handlers/router.ts',
       owningBoundary: 'src/handlers/router.ts',
       reason:
@@ -845,51 +883,6 @@ export const LEGACY_TEST_MAP: {
         'It carries no business logic, but it does carry dispatch decisions, and dispatch ' +
         'decisions are behaviour.',
       plannedCoverage: ['tests/unit/handlers/router.test.ts'],
-    },
-    {
-      module: 'src/services/promotionService.ts',
-      owningBoundary: 'src/services/promotionService.ts',
-      reason:
-        'The public promotion surface. Its arithmetic is pinned by the discount, ledger ' +
-        'and stripping suites it delegates to, but the facade itself - the ordering of ' +
-        'the two reward passes and the shape it returns - has no suite of its own.',
-      plannedCoverage: ['tests/unit/services/promotionService.test.ts'],
-    },
-    {
-      module: 'src/services/promotion/orderItemMembership.ts',
-      owningBoundary: 'src/services/promotionService.ts',
-      reason: DECOMPOSITION_PENDING,
-      plannedCoverage: ['tests/unit/services/promotion/orderItemMembership.test.ts'],
-    },
-    {
-      module: 'src/services/promotion/promotionApplication.ts',
-      owningBoundary: 'src/services/promotionService.ts',
-      reason: DECOMPOSITION_PENDING,
-      plannedCoverage: ['tests/unit/services/promotion/promotionApplication.test.ts'],
-    },
-    {
-      module: 'src/services/promotion/promotionPeriodQualification.ts',
-      owningBoundary: 'src/services/promotionService.ts',
-      reason: DECOMPOSITION_PENDING,
-      plannedCoverage: ['tests/unit/services/promotion/promotionPeriodQualification.test.ts'],
-    },
-    {
-      module: 'src/services/promotion/qualifierQualification.ts',
-      owningBoundary: 'src/services/promotionService.ts',
-      reason: DECOMPOSITION_PENDING,
-      plannedCoverage: ['tests/unit/services/promotion/qualifierQualification.test.ts'],
-    },
-    {
-      module: 'src/services/promotion/salePriceSeeding.ts',
-      owningBoundary: 'src/services/promotionService.ts',
-      reason: DECOMPOSITION_PENDING,
-      plannedCoverage: ['tests/unit/services/promotion/salePriceSeeding.test.ts'],
-    },
-    {
-      module: 'src/services/promotion/twoPassRewardIterator.ts',
-      owningBoundary: 'src/services/promotionService.ts',
-      reason: DECOMPOSITION_PENDING,
-      plannedCoverage: ['tests/unit/services/promotion/twoPassRewardIterator.test.ts'],
     },
   ],
 
