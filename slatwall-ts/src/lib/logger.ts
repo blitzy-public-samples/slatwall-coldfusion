@@ -272,6 +272,22 @@ const CONNECTION_KEYS: readonly string[] = [
   'databaseuser',
   'dbpassword',
   'databasepassword',
+  // ★ THE TWO BARE SPELLINGS, ADDED BECAUSE THE TWO SURFACES DISAGREED ABOUT THE SAME NAME. QA
+  // testing found `logger.error('user=root')` and `'username=root'` emitted in CLEARTEXT while
+  // `'dbUser=root'` was redacted and the CONTEXT key `user` was redacted - the context surface fails
+  // closed, so it withheld a name `isForbiddenKey` did not claim. `src/lib/config.ts` states "No value
+  // of DB_HOST, DB_USER or DB_PASSWORD is echoed above, by design" and `CompositionDiagnostics`
+  // redacts `user`, so the policy already classified this name; only the message surface had not been
+  // told.
+  //
+  // THEY ARE EXACT ENTRIES (rule 2) AND DELIBERATELY NOT FRAGMENTS (rule 3). A `user` FRAGMENT would
+  // claim `userID` - an opaque platform handle the policy publishes on purpose - and while rule 1's
+  // allow-list is consulted first and would keep `userid` legible, it would also claim `userAgent`
+  // (already listed as personal data) and every future `userSomething`. An exact name claims exactly
+  // the bare spelling, which is the one that was leaking. The note beside `userid` in
+  // `LEGIBLE_IDENTIFIER_KEYS` records the same decision from the other side.
+  'user',
+  'username',
 ];
 
 /** Payment instrument data, which must never reach a log stream. */
@@ -991,13 +1007,123 @@ function containsSqlStatement(text: string): boolean {
 }
 
 /**
- * `<identifier><separator><value>`, where the value may be quoted. The identifier capture
- * deliberately excludes spaces and dots, so it can only match the single token immediately left of
- * the separator: allowing spaces would let `identified by password=x` capture a name that is not on
- * the policy list, and the redaction would silently not happen.
+ * `<identifier><separator>`, AND DELIBERATELY NOT THE VALUE THAT FOLLOWS.
+ *
+ * The identifier capture excludes spaces and dots, so it can only match the single token immediately
+ * left of the separator: allowing spaces would let `identified by password=x` capture a name that is
+ * not on the policy list, and the redaction would silently not happen.
+ *
+ * ★★★ QUOTE-THEN-REVISE - THIS PATTERN USED TO CONSUME THE VALUE, AND THAT WAS A BYPASS. It read
+ *   /([A-Za-z][A-Za-z0-9_-]{0,63})(\s*(?:=>|=|:)\s*)(?:"[^"\n]{0,512}"|'[^'\n]{0,512}'|[^\s,;)\]}]{1,512})/g
+ * so ONE match spanned a key, its separator AND its value. A key the policy does not forbid was
+ * returned byte-for-byte - correctly - but the regex had already advanced past everything its value
+ * covered, so a forbidden name INSIDE that span was never examined at all. QA testing found the
+ * consequence with the commonest error-message shape there is:
+ *
+ *   'error: password=hunter2; user=root'   ->   emitted VERBATIM, password in cleartext
+ *
+ * because `error:` is not forbidden and its unquoted value ran to the `;`, swallowing
+ * `password=hunter2` whole. `<benign-word>: password=SECRET` is exactly how a caught error reads.
+ *
+ * The head is matched on its own now, and the value span is computed separately by
+ * {@link sensitiveValueEnd}. A non-forbidden key therefore consumes NOTHING, so the scan continues
+ * inside its value and every `name<sep>value` occurrence in the string is examined.
  */
-const SENSITIVE_ASSIGNMENT_PATTERN =
-  /([A-Za-z][A-Za-z0-9_-]{0,63})(\s*(?:=>|=|:)\s*)(?:"[^"\n]{0,512}"|'[^'\n]{0,512}'|[^\s,;)\]}]{1,512})/g;
+const ASSIGNMENT_HEAD_PATTERN = /([A-Za-z][A-Za-z0-9_-]{0,63})(\s*(?:=>|=|:)\s*)/g;
+
+/**
+ * The characters that end a value in prose, in a stack frame and in JSON.
+ *
+ * A space is NOT among them: whether a run continues across one is decided by
+ * {@link VALUE_CONTINUATION_HEADS}, because that is the difference between a two-token value and a
+ * value followed by a sentence.
+ */
+const VALUE_TERMINATORS: ReadonlySet<string> = new Set([';', ',', ')', ']', '}', '\n', '\r']);
+
+/**
+ * A new `name<sep>` pair beginning after whitespace - where one value's run has to stop.
+ *
+ * Without it a multi-token value would swallow the diagnostics that follow it, and the policy is
+ * explicit that an opaque identifier stays legible: `token=Bearer abc requestID=xyz` must withhold
+ * the material and keep the request identifier.
+ */
+const NEXT_ASSIGNMENT_HEAD_PATTERN = /\s[A-Za-z][A-Za-z0-9_-]{0,63}\s*(?:=>|=|:)/;
+
+/**
+ * First words after which the REST of the value is still the value.
+ *
+ * A single-token value is the common case and the default; these are the two shapes where stopping
+ * at the first space leaves the secret behind, which QA testing measured:
+ *
+ *   'authorization=Bearer xyz'  ->  used to emit `authorization=[REDACTED] xyz`, so `xyz` - the
+ *                                  actual bearer material - survived. `AUTH_SCHEME_PATTERN` does
+ *                                  not reach it either: that rule requires eight or more characters
+ *                                  of material, and a short opaque token is still a token.
+ *   'sql=SELECT 1'              ->  used to emit `sql=[REDACTED] 1`. A statement is tokens, and
+ *                                  `containsSqlStatement` deliberately does not claim a `SELECT`
+ *                                  with no `FROM`.
+ *
+ * The list is CLOSED and enumerated for the same reason every other list in this file is: a derived
+ * rule such as "keep consuming while the tokens look technical" would quietly eat the sentence after
+ * an ordinary value.
+ */
+const VALUE_CONTINUATION_HEADS: ReadonlySet<string> = new Set([
+  // Authorization schemes, whose material is the following token
+  'bearer',
+  'basic',
+  'digest',
+  'negotiate',
+  'ntlm',
+  'mac',
+  // Statement heads, because a statement continues in tokens
+  'select',
+  'insert',
+  'update',
+  'delete',
+  'replace',
+  'drop',
+  'alter',
+  'truncate',
+  'create',
+  'grant',
+  'call',
+  'with',
+  'show',
+  'set',
+]);
+
+/** The longest value span this scanner will mask, so a pathological string cannot stall it. */
+const MAX_ASSIGNMENT_VALUE_LENGTH = 512;
+
+/**
+ * `user 'account'@'host'` - the account half of a driver authentication failure.
+ *
+ * The canonical MySQL refusal is `Access denied for user 'slatwall'@'localhost' (using password:
+ * YES)`, and QA testing found it emitted with the account name intact: the name is not an
+ * ASSIGNMENT, so the `key<sep>value` scanner never sees it, and only the trailing `password: YES`
+ * was masked. The QUOTED value is what makes this narrow enough to be safe - `the user requested`
+ * has no quotes and is untouched - and the optional `@'host'` half is consumed too, because the
+ * database host is on the never-log list beside the account.
+ */
+const DATABASE_ACCOUNT_PATTERN =
+  /\b(user|username)\s+(?:'[^'\n]{0,128}'|"[^"\n]{0,128}")(?:@(?:'[^'\n]{0,128}'|"[^"\n]{0,128}")?)?/gi;
+
+/**
+ * The authority a driver names when it cannot reach the database.
+ *
+ * `connect ECONNREFUSED 127.0.0.1:3306` and `getaddrinfo ENOTFOUND db.internal` publish the DB host
+ * and port - values `src/lib/config.ts` refuses to echo and `CompositionDiagnostics` redacts - in a
+ * message the Lambda runtime logs by default. QA testing recorded it (INFO-1) after observing that
+ * `connection.ts` deliberately re-raises driver errors unchanged, so the text reaches whatever logs
+ * it. The error CODE survives, because it is the diagnostic; the target does not.
+ *
+ * ACCEPTED CONSEQUENCE, STATED PLAINLY: the token after one of these codes is masked whether or not
+ * it is an authority, so a message reading `ENOTFOUND while resolving` loses the word `while`. These
+ * codes are followed by their target by convention in Node and in `mysql2`, and erring towards the
+ * host is the right direction for a rule whose subject is a host.
+ */
+const DRIVER_CONNECTIVITY_TARGET_PATTERN =
+  /\b(ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN)\s+\S{1,256}/g;
 
 /**
  * `scheme://user:secret@host` - the credential half of a connection URI, and deliberately no more:
@@ -1073,15 +1199,132 @@ const ABSOLUTE_PATH_PATTERNS: readonly RegExp[] = [
 const AUTH_SCHEME_PATTERN = /\b(bearer|basic|digest)\s+[A-Za-z0-9._~+/=-]{8,}/gi;
 
 /**
+ * Where the value that starts at `start` ends, for masking purposes.
+ *
+ * Returns `start` itself when there is nothing to mask - an empty value, or one already masked -
+ * which is what makes this function idempotent: sanitizing an already-sanitized string leaves it
+ * alone rather than nesting one marker inside another.
+ *
+ * Total: every branch is a bounded scan or a set lookup, so there is no throwing path. It runs
+ * inside the emission path that must never throw.
+ *
+ * @param text the whole string being sanitized.
+ * @param start the index immediately after a key's separator.
+ * @returns the exclusive end index of the value to replace.
+ */
+function sensitiveValueEnd(text: string, start: number): number {
+  // ALREADY MASKED. A caller may hand in text this module has seen before - an error's message is
+  // sanitized on the way in and again if it is re-logged - and `[REDACTED]` contains a `]`, which is
+  // a value terminator, so masking it again would emit `[REDACTED]]`.
+  if (text.startsWith(REDACTED, start)) {
+    return start;
+  }
+
+  const limit = Math.min(text.length, start + MAX_ASSIGNMENT_VALUE_LENGTH);
+
+  // A QUOTED VALUE IS ITS QUOTES AND EVERYTHING BETWEEN THEM, so a value containing spaces,
+  // semicolons or brackets is masked whole. An unterminated quote falls through to the token scan
+  // rather than swallowing the rest of the line.
+  const opening = text[start];
+
+  if (opening === '"' || opening === "'") {
+    const closing = text.indexOf(opening, start + 1);
+    const lineEnd = text.indexOf('\n', start + 1);
+
+    if (closing !== -1 && closing < limit && (lineEnd === -1 || closing < lineEnd)) {
+      return closing + 1;
+    }
+  }
+
+  // THE FIRST TOKEN, which is the whole value in the common case.
+  let firstTokenEnd = start;
+
+  while (firstTokenEnd < limit) {
+    const character = text[firstTokenEnd] ?? '';
+
+    if (character === ' ' || character === '\t' || VALUE_TERMINATORS.has(character)) {
+      break;
+    }
+
+    firstTokenEnd += 1;
+  }
+
+  if (!VALUE_CONTINUATION_HEADS.has(text.slice(start, firstTokenEnd).toLowerCase())) {
+    return firstTokenEnd;
+  }
+
+  // A CONTINUATION HEAD: the material is what follows it. The run stops at the first value
+  // terminator or at the next `name<sep>` pair, whichever comes first, and trailing whitespace is
+  // given back so the emitted line keeps its spacing.
+  const rest = text.slice(firstTokenEnd, limit);
+
+  let stop = rest.length;
+
+  for (let offset = 0; offset < rest.length; offset += 1) {
+    if (VALUE_TERMINATORS.has(rest[offset] ?? '')) {
+      stop = offset;
+      break;
+    }
+  }
+
+  const nextPair = NEXT_ASSIGNMENT_HEAD_PATTERN.exec(rest);
+
+  if (nextPair !== null && nextPair.index < stop) {
+    stop = nextPair.index;
+  }
+
+  let end = firstTokenEnd + stop;
+
+  while (end > firstTokenEnd) {
+    const previous = text[end - 1] ?? '';
+
+    if (previous !== ' ' && previous !== '\t') {
+      break;
+    }
+
+    end -= 1;
+  }
+
+  return end;
+}
+
+/**
  * Replace the value in every `sensitiveKey <sep> value` pair, and nothing else. A pair whose key is
  * not on the policy list is returned byte-for-byte, so `orderID=4f3c...` stays legible.
+ *
+ * ★ IT EXAMINES EVERY PAIR IN THE STRING, INCLUDING ONE NESTED INSIDE ANOTHER PAIR'S VALUE. That is
+ * the correction QA testing forced: the previous single-pass form consumed a non-forbidden pair's
+ * value along with it, so `error: password=hunter2; user=root` went out in cleartext. A
+ * non-forbidden key now advances the scan only past its own separator, and the value is skipped only
+ * when it is actually masked.
  */
 function redactSensitiveAssignments(text: string): string {
-  return text.replace(
-    SENSITIVE_ASSIGNMENT_PATTERN,
-    (whole: string, key: string, separator: string): string =>
-      isForbiddenKey(key) ? `${key}${separator}${REDACTED}` : whole,
-  );
+  ASSIGNMENT_HEAD_PATTERN.lastIndex = 0;
+
+  let sanitized = '';
+  let copiedTo = 0;
+  let head = ASSIGNMENT_HEAD_PATTERN.exec(text);
+
+  while (head !== null) {
+    const key = head[1] ?? '';
+    const valueStart = head.index + head[0].length;
+
+    if (isForbiddenKey(key)) {
+      const valueEnd = sensitiveValueEnd(text, valueStart);
+
+      if (valueEnd > valueStart) {
+        sanitized += text.slice(copiedTo, valueStart) + REDACTED;
+        copiedTo = valueEnd;
+        // Past the masked span, so a `name=value` shape INSIDE a withheld value is not matched as a
+        // pair of its own - there is nothing left of it to police.
+        ASSIGNMENT_HEAD_PATTERN.lastIndex = valueEnd;
+      }
+    }
+
+    head = ASSIGNMENT_HEAD_PATTERN.exec(text);
+  }
+
+  return sanitized + text.slice(copiedTo);
 }
 
 /** Cut to the bound, and say so, so a reader never mistakes a cut for the end. */
@@ -1109,12 +1352,38 @@ function sanitizeText(text: string): string {
   if (containsSqlStatement(text)) {
     return SQL_REDACTED;
   }
-  const withoutUriCredentials = text.replace(URI_CREDENTIAL_PATTERN, `://${REDACTED}@`);
+
+  // ★ THE ASSIGNMENT SCAN RUNS BEFORE THE URI AND SCHEME RULES, AND THE ORDER IS LOAD-BEARING. It
+  // used to run after them, and QA testing found what that produced for a connection string under a
+  // forbidden name: the URI rule replaced the userinfo first, leaving
+  // `connectionString=mysql://[REDACTED]@h/db`, and the assignment scan then stopped its value at the
+  // `]` of that marker - emitting `connectionString=[REDACTED]]@h/db`, with the host, the database and
+  // a stray bracket surviving. Masking the whole value FIRST leaves the two later rules nothing to
+  // find there, while a URI or a scheme that is NOT under a forbidden name still reaches them
+  // untouched - `pool target mysql://user:pw@db.internal:3306/Slatwall` keeps its authority and loses
+  // its credential, exactly as before.
+  const withoutAssignedSecrets = redactSensitiveAssignments(text);
+  const withoutUriCredentials = withoutAssignedSecrets.replace(
+    URI_CREDENTIAL_PATTERN,
+    `://${REDACTED}@`,
+  );
   const withoutAuthMaterial = withoutUriCredentials.replace(
     AUTH_SCHEME_PATTERN,
     (_whole: string, scheme: string): string => `${scheme} ${REDACTED}`,
   );
-  let sanitized = redactSensitiveAssignments(withoutAuthMaterial);
+
+  // The two shapes a DRIVER writes rather than a caller: a quoted account (with its host) in an
+  // authentication refusal, and the target of a connectivity failure. Neither is an assignment, so
+  // neither is reachable by the scan above.
+  const withoutDatabaseAccount = withoutAuthMaterial.replace(
+    DATABASE_ACCOUNT_PATTERN,
+    (_whole: string, name: string): string => `${name} ${REDACTED}`,
+  );
+  let sanitized = withoutDatabaseAccount.replace(
+    DRIVER_CONNECTIVITY_TARGET_PATTERN,
+    (_whole: string, code: string): string => `${code} ${REDACTED}`,
+  );
+
   for (const pattern of ABSOLUTE_PATH_PATTERNS) {
     sanitized = sanitized.replace(pattern, PATH_REDACTED);
   }

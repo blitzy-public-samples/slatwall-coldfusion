@@ -129,12 +129,19 @@
 // `tests/setup.ts` resolves: its results are identical whether that flag is set, unset or malformed,
 // because nothing here consults it.
 //
-// The one exception to "reads no environment value" is narrow, deliberate and documented at its own
-// block: the `C-3` ordering statement cannot be built without a resolved dialect, and the shipped SQL
-// module states in its own words that "a test that exercises this builder configures the environment"
-// [src/repositories/mysql/sql/sortedProductSkus.sql.ts]. That block stubs five variables with
-// unmistakably fake placeholder values, holds no credential of any kind, and restores the process
-// environment afterwards. See `applyConfiguredDialectEnvironment` and its two companions below.
+// NO CASE IN THIS SUITE NEEDS A CONFIGURED ENVIRONMENT IN ORDER TO BUILD A STATEMENT, AND THAT USED
+// TO BE FALSE. This header carried an exception: "the `C-3` ordering statement cannot be built without
+// a resolved dialect, and the shipped SQL module states in its own words that 'a test that exercises
+// this builder configures the environment'". QA testing recorded that coupling as a MAJOR defect -
+// `buildSortedProductSkusStatement` read `process.env` mid-request through
+// `resolveConfiguredDialect()` - and the dialect is now the builder's third ARGUMENT, supplied by
+// `MysqlSkuRepository`'s `STATEMENT_DIALECT` constant. The exception is gone with it.
+//
+// Two blocks still touch the environment, and only because their SUBJECT is configuration: the
+// dialect-resolution block asserts `resolveConfiguredDialect`/`resolveDialect` directly, and one
+// case asserts case folding of a configured spelling. Both stub five variables with unmistakably
+// fake placeholder values, hold no credential of any kind, and restore the process environment
+// afterwards. See `applyConfiguredDialectEnvironment` and its two companions below.
 // ---------------------------------------------------------------------------
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -724,20 +731,36 @@ function makeSkuOptionRow(overrides: Readonly<Record<string, unknown>> = {}): Sq
 }
 
 // ---------------------------------------------------------------------------
-// Configuring a dialect for the one statement that needs one
+// Configuring a dialect for the cases whose SUBJECT is configuration
 //
-// JUDGMENT CALL: `buildSortedProductSkusStatement` resolves the dialect INSIDE its own body rather than
-// accepting it as an argument, and it does so deliberately — the legacy read the engine at the query
-// site itself through `getApplicationValue("databaseType")` [model/dao/SkuDAO.cfc:L194], and the legacy
-// method's only declared argument was `productID` [L173]. The shipped SQL module states the consequence
-// in its own words: "a test that exercises this builder configures the environment". This block is that
-// configuration.
+// QUOTE-THEN-REVISE. This block opened: "Configuring a dialect for the one statement that needs
+// one - JUDGMENT CALL: `buildSortedProductSkusStatement` resolves the dialect INSIDE its own body
+// rather than accepting it as an argument, and it does so deliberately". The CFML observation it
+// rested on is accurate - the legacy read the engine at the query site through
+// `getApplicationValue("databaseType")` [model/dao/SkuDAO.cfc:L194] and declared only `productID`
+// [L173] - but `getApplicationValue` read AMBIENT APPLICATION scope, a value resolved ONCE at
+// startup [config/configORM.cfm:L1-L15], whereas `resolveConfiguredDialect()` re-reads the process
+// environment on every call. AAP transformation rule T6 replaces ambient scope with an explicit
+// parameter passed down the call chain - "No ambient state" - rather than reproducing it, and QA
+// testing measured what the difference cost: COMPOSING A SQL STRING loaded the whole validated
+// configuration and demanded all five `DB_*` values that have no default, four of which the builder
+// never used, so no statement could be built under the credential-free composition every committed
+// suite must use, breaking the EMPTY-ENVIRONMENT GUARANTEE in `tests/setup.ts`.
 //
-// It is scoped to the statements that need it and reverted immediately afterwards. `appConfig.reset()`
-// is structurally required on BOTH sides: a no-argument `load()` memoizes, so without a reset the first
-// resolution would fix the dialect for the remainder of the file and the "unconfigured process raises"
-// assertions could not run. Passing an explicit source instead is not an option — an explicit source is
-// validated fresh and never memoized, so it cannot reach `resolveConfiguredDialect()`.
+// SO NO STATEMENT NEEDS CONFIGURATION NOW. The builder takes the dialect as its third argument and
+// `MysqlSkuRepository` supplies it from a module constant checked by `assertMySqlDialect`, so
+// `getSortedProductSkusID` completes on a completely unconfigured process - which the case named for
+// it now asserts. What remains in this block needs configuration because it IS configuration: the
+// `resolveConfiguredDialect()` resolution cases, which read `appConfig.load()` by design and are the
+// composition root's business rather than a statement builder's, and the case that asserts case
+// folding of a configured spelling.
+//
+// It is scoped to the cases that need it and reverted immediately afterwards. `appConfig.reset()`
+// is structurally required on BOTH sides: a no-argument `load()` memoizes, so without a reset the
+// first resolution would fix the dialect for the remainder of the file and the "unconfigured
+// process" assertions could not run. Passing an explicit source instead is not an option - an
+// explicit source is validated fresh and never memoized, so it cannot reach
+// `resolveConfiguredDialect()`.
 //
 // NO CREDENTIAL, NO REAL HOST AND NO REAL ACCOUNT APPEARS HERE. The host uses the reserved `.invalid`
 // top-level domain, which is guaranteed never to resolve; the other three values are the same
@@ -1250,11 +1273,13 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
     // CFML parity [model/dao/SkuDAO.cfc:L194-L197]: the MySQL POWER(10, n - sortOrder) ordering
     // expression is reproduced exactly.
 
-    describe('with a configured MySQL dialect', () => {
-      beforeEach(() => {
-        applyConfiguredDialectEnvironment();
-      });
-
+    describe('with the MySQL dialect the adapter states for itself', () => {
+      // ★ NO `beforeEach` STUBS THE ENVIRONMENT FOR THESE CASES ANY MORE, AND THAT ABSENCE IS THE
+      // ASSERTION. `buildSortedProductSkusStatement` used to call `resolveConfiguredDialect()` in its
+      // own body, so none of the statement-shape cases below could run without five `DB_*` variables
+      // in `process.env`; the dialect is now the builder's third ARGUMENT, supplied by
+      // `MysqlSkuRepository`'s own `STATEMENT_DIALECT` constant. The only case here that still reads
+      // configuration is the resolver case at the end, which configures itself.
       afterEach(() => {
         revertConfiguredDialectEnvironment();
       });
@@ -1348,9 +1373,12 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
       });
 
       it('resolves a case-folded dialect spelling to the canonical MySQL value', () => {
-        // The stubbed value is the lowercase `mysql`; the resolver normalizes it. CFML's `eq` was
-        // case-insensitive and the source spells the engine inconsistently across files, so folding is
-        // parity rather than leniency.
+        // The one case in this block that reads configuration, so it supplies its own. The stubbed
+        // value is the lowercase `mysql`; the resolver normalizes it. CFML's `eq` was case-insensitive
+        // and the source spells the engine inconsistently across files, so folding is parity rather
+        // than leniency.
+        applyConfiguredDialectEnvironment();
+
         expect(resolveConfiguredDialect()).toBe('MySQL');
       });
     });
@@ -1404,19 +1432,59 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
         );
       });
 
-      it('raises when the dialect is unset, after issuing only the aggregate statement', async () => {
-        // The aggregate is issued during argument evaluation, BEFORE the builder resolves a dialect. On an
-        // unconfigured process the recorded evidence is therefore exactly one statement followed by a
-        // configuration failure — which is a hard error, never a statement built against a guessed engine.
-        const executor = new RecordingExecutor([[Object.freeze({ max: 4 })], NO_ROWS]);
+      it('★ COMPLETES ON A COMPLETELY UNCONFIGURED PROCESS, emitting both statements', async () => {
+        // QUOTE-THEN-REVISE: THIS CASE ONCE ASSERTED THE OPPOSITE, AND THE ASSERTION WAS THE DEFECT.
+        // It read "raises when the dialect is unset, after issuing only the aggregate statement" and
+        // asserted that `getSortedProductSkusID` REJECTED whenever the five no-default `DB_*`
+        // variables were absent, on the reasoning that "a hard error [is] never a statement built
+        // against a guessed engine" - and it passed, because `buildSortedProductSkusStatement`
+        // resolved the configured dialect inside its own body, so composing a SQL string raised
+        // `ConfigurationError` naming five `DB_*` variables, four of which the statement never used.
+        // QA testing recorded that shipped behaviour as a MAJOR defect: it left
+        // `getSortedProductSkusID`, `SkuService.getSortedProductSkus` and
+        // `SkuService.getProductSkus(sorted=true)` unreachable under the sanctioned credential-free
+        // composition - the one a committed suite is required to use, because it may carry no host,
+        // account or authentication value. Composing SQL text is not a configuration question: AAP
+        // transformation rule T6 admits no ambient state, and `tests/setup.ts` states that the entire
+        // suite passes with a completely empty environment.
+        //
+        // NOTHING IS GUESSED NOW EITHER, WHICH IS THE POINT. The engine is not inferred from an
+        // absent variable: `MysqlSkuRepository` states the dialect it emits as a module constant
+        // pinned by `assertMySqlDialect`, exactly as `mysqlProductRepository.ts`,
+        // `mysqlProductTypeRepository.ts` and `mysqlPriceGroupRepository.ts` do, and the composition
+        // root refuses to compose under any other configured dialect. Terminality is preserved where
+        // the legacy put it - once, at startup [config/configORM.cfm:L1-L15] - rather than on every
+        // query.
+        //
+        // The environment is explicitly EMPTIED by the enclosing `beforeEach`, so this passes because
+        // no configuration is read, not because a machine happened to export some: with every `DB_*`
+        // variable deleted the read runs to completion - the aggregate first, then the ordered
+        // identifier statement - and the engine it targets is a fact about the adapter rather than
+        // about the machine the test runs on.
+        const executor = new RecordingExecutor([
+          [Object.freeze({ max: 4 })],
+          [Object.freeze({ skuID: 'aaa11111aaa11111aaa11111aaa11111' })],
+        ]);
 
-        await expect(
-          new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).getSortedProductSkusID(PRODUCT_ID),
-        ).rejects.toThrow();
+        const identifiers = await new MysqlSkuRepository(
+          executor,
+          TEST_AUDIT_ACTOR,
+        ).getSortedProductSkusID(PRODUCT_ID);
 
-        const statement = onlyStatement(executor.calls);
-        expect(statement.sql).toBe(EXPECTED_NEXT_OPTION_GROUP_SORT_ORDER_SQL);
-        expect(statement.params).toStrictEqual([]);
+        expect(identifiers).toStrictEqual(['aaa11111aaa11111aaa11111aaa11111']);
+        expect(executor.calls).toHaveLength(2);
+
+        const aggregate = statementAt(executor.calls, 0);
+        const ordered = statementAt(executor.calls, 1);
+
+        expect(aggregate.sql).toBe(EXPECTED_NEXT_OPTION_GROUP_SORT_ORDER_SQL);
+        expect(aggregate.params).toStrictEqual([]);
+
+        // The MySQL odometer term and the identical bind census, emitted with no environment read of
+        // any kind: byte-for-byte the statement the configured-dialect cases above assert.
+        expect(ordered.sql).toBe(EXPECTED_SORTED_PRODUCT_SKUS_SQL);
+        expect(ordered.sql).toContain(EXPECTED_ODOMETER_POWER_FRAGMENT);
+        expect(ordered.params).toStrictEqual([PRODUCT_ID, 5]);
       });
     });
   });
@@ -1901,14 +1969,8 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
   // C-6  the option-group odometer: memoized, never cleared, request-scoped
   // -------------------------------------------------------------------------
   describe('the option-group odometer is memoized per instance and never shared between them', () => {
-    beforeEach(() => {
-      applyConfiguredDialectEnvironment();
-    });
-
-    afterEach(() => {
-      revertConfiguredDialectEnvironment();
-    });
-
+    // No environment stubbing: every case here drives `getSortedProductSkusID`, whose statement builder
+    // now takes the dialect as an argument instead of reading `process.env`.
     it('issues the aggregate with an empty parameter array, because there is nothing to bind', async () => {
       const executor = new RecordingExecutor([[Object.freeze({ max: 4 })], NO_ROWS]);
 

@@ -206,7 +206,7 @@ import type {
 } from '../../domain/promotionEngine/rewardUsageTypes.js';
 import type { Money } from '../../domain/valueObjects/money.js';
 import type { OrderItemView } from '../../domain/views/orderItemView.js';
-import { structKeyExists } from '../../lib/cfml/struct.js';
+import { structGet, structKeyExists } from '../../lib/cfml/struct.js';
 import { isNullish } from '../../lib/cfml/truthiness.js';
 
 /**
@@ -503,11 +503,32 @@ export class RewardUsageLedger {
       // `PromotionRewardUsageDetail | undefined` regardless of what the guard
       // above proved, and `@typescript-eslint/no-non-null-assertion` is an error
       // across `src/**`, so the entry is NARROWED into a local and tested. The
-      // compiler then proves what the CFML merely assumed. The two tests can
-      // only disagree for a key differing in case - impossible for a persisted
-      // UUID identifier - and falling through to seed is the safe resolution if
-      // they ever did.
-      const existingUsage = this.ledger[promotionRewardID];
+      // compiler then proves what the CFML merely assumed.
+      //
+      // ★ THE READ FOLDS KEY CASE, EXACTLY AS THE GUARD ABOVE DOES, AND THIS
+      // PARAGRAPH RECORDS WHY IT MUST. A superseded revision read
+      // `this.ledger[promotionRewardID]` directly - a CASE-SENSITIVE lookup
+      // behind a CASE-INSENSITIVE guard - so an identifier differing only in
+      // case passed `structKeyExists`, read back `undefined`, and fell through
+      // to seed a SECOND ledger entry. That is not CFML behaviour: a CFML struct
+      // key is case-insensitive, so [model/service/PromotionService.cfc:L172]
+      // finds the existing entry and L189 leaves it untouched. The divergence
+      // was money-affecting in one direction - usage would split across two
+      // entries and `maximumUsePerOrder` would be UNDER-enforced, letting a
+      // reward apply more times than its own limit allows - and the previous
+      // note calling the fall-through "the safe resolution" had it backwards.
+      // Both halves now resolve through the same `findStoredKey` in
+      // `../../lib/cfml/struct.js`, so they cannot disagree at all: a
+      // case-differing identifier reuses the one entry with its accumulated
+      // `usedInOrder` and its FIRST-SEEN limits intact, which is what the
+      // "first-wins on the limits" case in this module's suite asserts for the
+      // exact-spelling path.
+      //
+      // The `!== undefined` test below therefore narrows a type rather than
+      // deciding behaviour: it can only fail for a key stored with a literally
+      // `undefined` value, and nothing in this module ever stores one - the seed
+      // below always constructs a complete entry.
+      const existingUsage = structGet(this.ledger, promotionRewardID);
 
       if (existingUsage !== undefined) {
         // [model/service/PromotionService.cfc:L189] the guard's closing brace:

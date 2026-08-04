@@ -17,7 +17,10 @@
 //
 // A pure, synchronous statement builder: it composes SQL text plus the positional values to bind to
 // it and returns both. It opens no connection, executes nothing, hydrates no entity, constructs no
-// `Money`, reads no clock and no `process.env`, and is not `async`. Execution, row hydration and the
+// `Money`, reads no clock, no configuration and no `process.env`, and is not `async`. THE DIALECT
+// ARRIVES ON THE INPUT for exactly that reason - see `SalePricePromotionRewardsInput.dialect`, where
+// the ambient read a superseded revision performed here is recorded along with the three
+// obligations it broke. Execution, row hydration and the
 // DECIMAL-string to `Money` conversion belong one tier out in
 // `src/repositories/mysql/mysqlPromotionRepository.ts`. That boundary is what lets
 // `tests/integration/repositories/*.test.ts` assert the emitted SQL text and the bound-parameter
@@ -44,7 +47,8 @@
 // whitespace, which the legacy itself writes inconsistently.
 // ---------------------------------------------------------------------------
 
-import { materializedIdPathLikePatternFragment, resolveConfiguredDialect } from '../dialect.js';
+import type { DatabaseDialect } from '../dialect.js';
+import { materializedIdPathLikePatternFragment } from '../dialect.js';
 import { listToArray } from '../../../lib/cfml/list.js';
 
 type BindValue = string | number | Date;
@@ -62,6 +66,47 @@ type BindValue = string | number | Date;
  */
 interface SalePricePromotionRewardsInput {
   readonly now: Date;
+
+  /**
+   * The ALREADY-RESOLVED database dialect, used for one purpose only: selecting the
+   * `productTypeIDPath` containment pattern through `materializedIdPathLikePatternFragment`
+   * [model/dao/PromotionDAO.cfc:L482-L488].
+   *
+   * IT ARRIVES AS A PARAMETER AND IS NEVER RESOLVED HERE, AND THAT IS THE WHOLE POINT. A superseded
+   * revision called `resolveConfiguredDialect()` inside the builder body, which reads
+   * `appConfig.load()` and therefore the process `DB_*` environment AT REQUEST TIME - so building a
+   * statement was a configuration read, and it demanded `DB_HOST`, `DB_USER`, `DB_PASSWORD`,
+   * `DB_TLS_MODE` and `DB_DIALECT` merely to COMPOSE A STRING, four of which it never used. Runtime
+   * testing showed what that costs: under the sanctioned credential-free composition
+   * (`bootstrapCompositionRoot({ environment, executor })`, which exists precisely because "a
+   * committed suite may not carry a host, an account name or an authentication value") the five
+   * no-default keys are absent from `process.env`, so the read THREW and the product feed,
+   * `getSalePriceDetailsForProductSkus` - an AAP must-preserve surface
+   * [model/service/PromotionService.cfc:L1022] - and sorted-SKU retrieval were all unreachable.
+   *
+   * That contradicted three things at once: AAP transformation rule T6, which replaces ambient scope
+   * with an explicit parameter passed down the call chain and states "No ambient state"; the purity
+   * this module claims in its own header, which is what lets a suite assert the emitted text and the
+   * bound parameter array with no live MySQL; and the EMPTY-ENVIRONMENT GUARANTEE in
+   * `tests/setup.ts`, which requires the whole suite to pass with no `.env` and no `DB_*` value set.
+   * AAP 0.4.3 separately requires the dialect-branching SQL sites to become DIALECT-PARAMETERIZED,
+   * which taking the value here rather than fetching it satisfies directly.
+   *
+   * The dialect is now supplied by `../mysqlPromotionRepository.js`, which states the engine its
+   * statements are written for once, as a module constant checked by `assertMySqlDialect`. That is
+   * the same arrangement the sibling `./accountSubscriptionPriceGroups.sql.ts` uses for its
+   * row-limiting arm and the same one `../mysqlProductRepository.ts`,
+   * `../mysqlProductTypeRepository.ts` and `../mysqlPriceGroupRepository.ts` use for theirs; this
+   * module and `./sortedProductSkus.sql.ts` were the two outliers, and they are outliers no longer.
+   * Resolving the CONFIGURED dialect stays the composition root's business, and the root refuses
+   * anything but MySQL before a repository is constructed at all, so the root and this statement
+   * cannot disagree about the engine.
+   *
+   * A non-MySQL value is still refused rather than approximated - `materializedIdPathLikePatternFragment`
+   * raises `UnsupportedDialectError` - so the legacy's terminal behaviour
+   * [config/configORM.cfm:L4-L7] survives, moved from an environment read to an argument.
+   */
+  readonly dialect: DatabaseDialect;
 
   /**
    * Optional product identifier narrowing every branch. Omit it for every product.
@@ -453,8 +498,9 @@ function discountBranchWhereClause(branch: DiscountBranch, includeProductID: boo
  *
  * A FUNCTION rather than a module-level constant, and deliberately so: the product-type branch's
  * join chain embeds the dialect-selected `LIKE` pattern [model/dao/PromotionDAO.cfc:L482-L488], and
- * the dialect is resolved inside the builder body rather than at module load, which keeps this
- * module free of load-time work.
+ * that pattern is composed per call from the dialect the CALLER supplied - so it cannot be baked
+ * into a constant, nothing about it happens at module load, and this module stays free of any
+ * configuration read.
  *
  * @param productTypePathPattern - the dialect-composed pattern the `productTypeIDPath` column is
  *   tested against, supplied by `../dialect.js`.
@@ -753,26 +799,39 @@ WHERE
  * contract even though the projection computing it has no `ELSE` arm - a consequence of the
  * legacy's shape, not a guard added here.
  *
- * Pure and synchronous: opens nothing, executes nothing, reads no clock and no configuration beyond
- * the dialect, and returns a frozen, inspectable pair. The placeholder count is a function of the
- * input alone - 18 when `productID` is absent (three in CTE 1, two in each of the six branches, and
- * three more for the reward types in the global branch) and 24 when it is present. `params` always
- * holds exactly one value per `?`, in the order the placeholders appear.
+ * Pure, synchronous AND TOTALLY INPUT-DETERMINED: it opens nothing, executes nothing, reads no
+ * clock, reads NO CONFIGURATION AND NO ENVIRONMENT - the dialect arrives as `input.dialect` - and
+ * returns a frozen, inspectable pair. Composing this statement requires no credential of any kind,
+ * which is what lets a committed suite assert the emitted text and the bound values with no
+ * database, no `.env` and no `DB_*` variable - the contract `tests/setup.ts` states. The placeholder
+ * count is a function of the input alone - 18 when `productID` is absent (three in CTE 1, two in
+ * each of the six branches, and three more for the reward types in the global branch) and 24 when it
+ * is present. `params` always holds exactly one value per `?`, in the order the placeholders appear.
+ * The dialect is NOT among the bound values and never reaches the SQL text as a value; it selects a
+ * fragment and nothing else.
  *
- * @param input - the instant every date predicate is compared against, and optionally a product
- *   identifier narrowing every branch.
+ * @param input - the instant every date predicate is compared against, the already-resolved
+ *   dialect, and optionally a product identifier narrowing every branch.
  * @returns the statement text and the values to bind to it, in placeholder order.
+ * @throws An error named `UnsupportedDialectError`, from `../dialect.js`, when `input.dialect` is
+ *   `MicrosoftSQLServer` or `Oracle10g`. Those arms exist in the legacy source at
+ *   [model/dao/PromotionDAO.cfc:L482-L488] and are therefore reproducible, but neither is
+ *   implemented by this port, and emitting the MySQL `concat()` text under another engine's name
+ *   would silently change which rewards match a product-type path.
  */
 export function buildSalePricePromotionRewardsStatement(
   input: SalePricePromotionRewardsInput,
 ): SalePricePromotionRewardsStatement {
   const productIDIsPresent = 'productID' in input;
 
-  // Resolved HERE rather than at module load, so importing this module does no work and reads no
-  // environment. `../dialect.js` owns the databaseType comparison and composes the pattern for the
-  // arm it selects.
+  // The fragment is composed HERE, inside the body, from the dialect the CALLER already decided and
+  // that ARRIVES on the input, so this builder reads no configuration and no environment at all -
+  // see `SalePricePromotionRewardsInput.dialect` for why that is a requirement rather than a
+  // preference. `../dialect.js` still owns the databaseType comparison and composes the pattern for
+  // the arm it selects; only the decision of WHICH dialect moved outward, never the composition of
+  // the fragment.
   const productTypePathPattern = materializedIdPathLikePatternFragment(
-    resolveConfiguredDialect(),
+    input.dialect,
     REWARD_PRODUCT_TYPE_ID_COLUMN,
   );
 

@@ -98,6 +98,16 @@ import type {
   PriceGroupService,
 } from '../../../src/services/priceGroupService.js';
 import type { PromotionService } from '../../../src/services/promotionService.js';
+// ★ THREE TYPE-ONLY IMPORTS FOR THE THIRD SUITE'S GUARD CASES. `SettingKey` and `UrlTitleTableName`
+// are the two CLOSED UNIONS whose runtime refusals that suite pins, and they are named as types so a
+// case can express the out-of-union input an untyped caller supplies without inventing a shape.
+// `UrlTitleGenerator` is the port the composition root wires; the concrete adapter is module-local to
+// the root and has no exported name.
+import type { SettingKey } from '../../../src/domain/ports/settingsProvider.js';
+import type {
+  UrlTitleGenerator,
+  UrlTitleTableName,
+} from '../../../src/domain/ports/urlTitleGenerator.js';
 import { makeOrderViewFixture } from '../../fixtures/orderViewFixtures.js';
 import { makePriceGroupFixtures } from '../../fixtures/priceGroupFixtures.js';
 import { Brand } from '../../../src/domain/entities/brand.js';
@@ -2252,38 +2262,41 @@ describe('updateOrderAmountsWithPriceGroupsThenPromotions', () => {
 
 describe('RequestScope.getSalePriceDetailsForProductSkus', () => {
   /**
-   * ★ A REACH-THROUGH THIS SUITE DOCUMENTS RATHER THAN HIDES.
+   * QUOTE-THEN-REVISE - THE REACH-THROUGH THIS BLOCK DOCUMENTED IS GONE.
    *
-   * The sale-price statement is dialect-parameterized - the legacy branches its
-   * `productTypeIDPath` concatenation by dialect [model/dao/PromotionDAO.cfc:L482-L488]
-   * - and the fragment builder resolves that dialect by calling
-   * `resolveConfiguredDialect()` [src/repositories/mysql/dialect.ts:L177], which
-   * reads `appConfig.load()` and therefore the PROCESS environment. It does not
-   * read the `environment` this suite hands to `bootstrapCompositionRoot`, and it
-   * does not read the dialect the composed root already resolved and published.
+   * A helper named `stubProcessEnvironmentForDialectFragments` used to stand here,
+   * populating five `DB_*` variables in `process.env` before the case below could
+   * run, under this rationale: "The sale-price statement is dialect-parameterized …
+   * and the fragment builder resolves that dialect by calling
+   * `resolveConfiguredDialect()`, which reads `appConfig.load()` and therefore the
+   * PROCESS environment. It does not read the `environment` this suite hands to
+   * `bootstrapCompositionRoot`, and it does not read the dialect the composed root
+   * already resolved and published. So the process environment has to be populated
+   * for this one case, and stating that plainly is the point: … the difference marks
+   * exactly where the composition root's configuration stops being the single source
+   * of it."
    *
-   * So the process environment has to be populated for this one case, and stating
-   * that plainly is the point: every OTHER case in this file proves its behaviour
-   * with `process.env` untouched, and the difference marks exactly where the
-   * composition root's configuration stops being the single source of it. No
-   * connection is opened either way - the executor is still the injected one, and
-   * the reach-through is a configuration read, not a query.
+   * The comment was accurate about the code and the behaviour it described was a
+   * MAJOR defect - QA testing recorded it as such, because the same read made 19
+   * cases in the per-SKU feed cascade below fail on a bare checkout, and left the
+   * product feed, this sale-price surface and sorted-SKU retrieval unreachable under
+   * the only composition a committed suite may use.
+   *
+   * THE STUB IS GONE BECAUSE THE READ IS GONE. The dialect is now an ARGUMENT that
+   * `MysqlPromotionRepository` and `MysqlSkuRepository` supply from their own
+   * `STATEMENT_DIALECT` constants, each checked by `assertMySqlDialect` at module
+   * load, so composing the statement needs no configuration and no credential and
+   * the composition root's configuration never stops being the single source of it.
+   * EVERY case in this file - with no exception left to declare - therefore proves
+   * its behaviour with `process.env` untouched, and the delegate below is the
+   * end-to-end evidence: it reaches the promotion service, the repository and the
+   * injected executor with an empty environment.
    */
-  function stubProcessEnvironmentForDialectFragments(): void {
-    vi.stubEnv('DB_HOST', `${UNUSED_PLACEHOLDER}.invalid`);
-    vi.stubEnv('DB_USER', UNUSED_PLACEHOLDER);
-    vi.stubEnv('DB_PASSWORD', UNUSED_PLACEHOLDER);
-    vi.stubEnv('DB_DIALECT', 'MySQL');
-    vi.stubEnv('DB_TLS_MODE', 'disabled');
-    appConfig.reset();
-  }
 
   it('forwards to the wired promotion service, which reaches the injected executor', async () => {
     const executor = makeExecutor();
     const root = await bootWith(executor);
     const scope = await root.createRequestScope();
-
-    stubProcessEnvironmentForDialectFragments();
 
     const details = await scope.getSalePriceDetailsForProductSkus('product-with-no-sale-prices');
 
@@ -4359,5 +4372,201 @@ describe('the per-SKU feed setting cascade (F10)', () => {
     expect(resolved[0]?.context).toStrictEqual({ rowCount: 1, resultCount: 1 });
     expect(JSON.stringify(resolved[0])).not.toContain('sku-one');
     expect(JSON.stringify(resolved[0])).not.toContain('12');
+  });
+});
+
+// ===========================================================================
+// THIRD SUITE IN THIS FILE: THE FIVE RUNTIME GUARDS QA TESTING ASKED FOR.
+//
+// Each case below pins a refusal that did not exist when this module was tested at runtime, and each
+// names the finding that produced it. They share the subject and the scaffolding of the two suites
+// above rather than splitting the module's coverage across a third file.
+//
+// The common shape of all five: a TYPE this module declares is not a guarantee at a boundary the
+// compiler cannot police - a closed string union arriving from an untyped caller, the return value of
+// an injected port, a `Date` that is an instance of `Date` and still not an instant, a struct key
+// spelled in another case, and a `readonly` member that erases at emit. Every one of them was found
+// by driving the shipped exports, not by reading the source.
+// ===========================================================================
+
+describe('the runtime guards behind this module type declarations', () => {
+  beforeEach(() => {
+    resetCompositionRoot();
+  });
+
+  afterEach(() => {
+    resetCompositionRoot();
+    vi.unstubAllEnvs();
+  });
+
+  /**
+   * The url-title generator this composition wired, reached through the service that holds it.
+   *
+   * ★ REACHED BY RUNTIME MEMBER READ, AND THE REASON IS THE SUBJECT ITSELF. `SqlUrlTitleGenerator`
+   * is module-local to the composition root and `BrandService.urlTitleGenerator` is `private`, so
+   * there is no exported name to import and no typed accessor to call - which is precisely the
+   * position an untyped caller is in, and the position the guard under test defends. The keyed view
+   * is the same narrow pattern the credential-escape walk at the top of this file uses.
+   */
+  function wiredUrlTitleGenerator(scope: RequestScope): UrlTitleGenerator {
+    const holder = scope.brandService as unknown as Record<string, unknown>;
+
+    return holder['urlTitleGenerator'] as UrlTitleGenerator;
+  }
+
+  it('refuses a url-title table outside the three-member union, issuing no statement', async () => {
+    // QA Issue 2, with its eight reproduction inputs verbatim. The read used to index a frozen
+    // three-key statement table with no membership test, so `executor.execute(undefined, [...])` was
+    // issued and the method RETURNED an unsuffixed `'nike'` - "this title is unique", with the
+    // database never consulted. Against the real pool the driver raised an opaque Buffer-type
+    // `TypeError` instead of a named refusal.
+    //
+    // NO INJECTION WAS EVER POSSIBLE and none is now: the name is not interpolated, the three
+    // statements are frozen literals and both values are bound. What is asserted is the silent wrong
+    // answer, and that nothing reaches the executor.
+    const executor = makeExecutor();
+    const scope = await (await bootWith(executor)).createRequestScope();
+    const generator = wiredUrlTitleGenerator(scope);
+    const readsBefore = executor.calls.length;
+
+    const rejected: readonly unknown[] = [
+      'SwSku',
+      'SwBrand; DROP TABLE SwBrand--',
+      'information_schema.tables',
+      '',
+      // Rejected in effect, where CFML identifier comparison was case-insensitive: the union spells
+      // the three physical tables exactly, and choosing a statement by a folded comparison is not
+      // something this port does anywhere.
+      'swbrand',
+      undefined,
+      null,
+      42,
+    ];
+
+    for (const candidate of rejected) {
+      const raised = await generator
+        .createUniqueURLTitle('Nike', candidate as UrlTitleTableName)
+        .then(
+          (answer: string) => ({ name: 'NO REFUSAL', answer }),
+          (error: unknown) => ({ name: (error as Error).name, answer: undefined }),
+        );
+
+      expect(raised.name).toBe('CompositionContractError');
+      expect(raised.answer).toBeUndefined();
+    }
+
+    expect(executor.calls).toHaveLength(readsBefore);
+  });
+
+  it('still answers for each of the three tables the union does declare', async () => {
+    const executor = makeExecutor();
+    const scope = await (await bootWith(executor)).createRequestScope();
+    const generator = wiredUrlTitleGenerator(scope);
+
+    for (const tableName of ['SwBrand', 'SwProduct', 'SwProductType'] as const) {
+      await expect(generator.createUniqueURLTitle('Nike', tableName)).resolves.toBe('nike');
+    }
+
+    expect(executor.calls.filter((call) => call.sql.includes('OR urlTitle LIKE ?'))).toHaveLength(
+      3,
+    );
+  });
+
+  it('refuses an invalid RequestScopeInput.now at both published entry points', async () => {
+    // QA Issue 6. An invalid `Date` was accepted, `scope.now.getTime()` was `NaN`, and the
+    // subscription price-group query bound `[null, 'a', null]` - because the repository's
+    // date-to-parameter conversion maps a non-finite instant to `null` BEFORE binding, so
+    // `connection.ts`'s own `SqlParameterError` guard never fired. Both date predicates of the
+    // eligibility window [model/dao/PriceGroupDAO.cfc:L65,L70] then compared against SQL NULL,
+    // which is never true, and the account silently lost its subscription price group.
+    const root = await bootWith(makeExecutor());
+
+    await expect(root.createRequestScope({ now: new Date('nonsense') })).rejects.toThrow(TypeError);
+    await expect(
+      root.createInspectableRequestScope({ now: new Date(Number.NaN), accountID: 'a' }),
+    ).rejects.toThrow(/RequestScopeInput\.now is an invalid Date/u);
+  });
+
+  it('binds real instants for a valid clock, so the eligibility window is a comparison', async () => {
+    const executor = makeExecutor();
+    const root = await bootWith(executor);
+    const { adapters } = await root.createInspectableRequestScope({
+      now: new Date('2026-03-04T05:06:07.000Z'),
+      accountID: 'a',
+    });
+    const readsBefore = executor.calls.length;
+
+    await adapters.priceGroupRepository.getAccountSubscriptionPriceGroups('a');
+
+    const bound = executor.calls[readsBefore]?.params ?? [];
+
+    expect(bound.filter((value) => value instanceof Date)).toHaveLength(2);
+    expect(bound).not.toContain(null);
+  });
+
+  it.each([null, 'not-an-array', 42])(
+    'refuses an injected executor whose execute answers %j',
+    async (answer) => {
+      // QA INFO-3. `PreparedStatementExecutor.execute` declares `Promise<readonly SqlRow[]>`, and a
+      // substituted implementation that broke it produced `Cannot read properties of null (reading
+      // 'map')` and `rows.map is not a function` from inside a tier-1 read - naming neither the port
+      // nor the statement.
+      const hostile: PreparedStatementExecutor = {
+        execute: (): Promise<readonly SqlRow[]> =>
+          Promise.resolve(answer as unknown as readonly SqlRow[]),
+        executeMutation: (): Promise<SqlMutationResult> =>
+          Promise.resolve({ affectedRows: 0, warningStatus: 0 }),
+        transaction: <T>(work: (tx: PreparedStatementExecutor) => Promise<T>): Promise<T> =>
+          work(hostile),
+      };
+
+      await expect(
+        bootstrapCompositionRoot({ executor: hostile, environment: BASE_ENVIRONMENT }),
+      ).rejects.toThrow(/is not an array/u);
+    },
+  );
+
+  it('resolves a setting name case-insensitively, as a CFML struct key was', async () => {
+    // QA INFO-4. The lookup was a plain index, so `setting('SKUCURRENCY')` answered `undefined` under
+    // a signature promising `string`. CFML matched struct keys without regard to case, and AAP 0.1.1
+    // requires every ported struct-keyed lookup to be audited rather than assumed. The union is NOT
+    // widened - no new name became askable - so each spelling below names a declared setting.
+    const provider = (await bootWith(makeExecutor())).settingsProvider;
+
+    for (const spelling of ['skuCurrency', 'SKUCURRENCY', 'skucurrency', 'SkuCurrency'] as const) {
+      expect(provider.setting(spelling as SettingKey)).toBe('USD');
+    }
+
+    expect(provider.setting('GLOBALURLKEYPRODUCT' as SettingKey)).toBe('sp');
+    expect(provider.setting('globalURLKeyProduct')).toBe('sp');
+  });
+
+  it('freezes the root, its diagnostics, the scope, its account context and the adapters', async () => {
+    // QA INFO-2. `appConfig`, `config.database`, the settings table, the pool executor and
+    // `UNATTRIBUTED_AUDIT_ACTOR` were all frozen while the request tier was not:
+    // `scope.currentAccountContext.accountID = 'HACK'` succeeded, with the compile-time `readonly` as
+    // the only boundary. There was no isolation impact - each request gets its own objects - and the
+    // point is that one rule now holds on both halves.
+    const root = await bootWith(makeExecutor());
+    const { scope, adapters } = await root.createInspectableRequestScope({ accountID: 'acct-1' });
+
+    for (const frozen of [
+      root,
+      root.diagnostics,
+      root.diagnostics.database,
+      root.diagnostics.tls,
+      scope,
+      scope.currentAccountContext,
+      adapters,
+    ]) {
+      expect(Object.isFrozen(frozen)).toBe(true);
+    }
+
+    const writeToScope = (): void => {
+      (scope.currentAccountContext as { accountID?: string }).accountID = 'HACK';
+    };
+
+    expect(writeToScope).toThrow(TypeError);
+    expect(scope.currentAccountContext.accountID).toBe('acct-1');
   });
 });

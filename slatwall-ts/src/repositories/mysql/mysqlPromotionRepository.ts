@@ -144,9 +144,53 @@ import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import { cfLen, isNullish } from '../../lib/cfml/truthiness.js';
 import type { PreparedStatementExecutor, SqlRow } from './connection.js';
 import { sqlPlaceholderList } from './connection.js';
+import type { DatabaseDialect } from './dialect.js';
+import { assertMySqlDialect } from './dialect.js';
 import type { UseCountStatement } from './sql/promotionUseCounts.sql.js';
 import { PROMOTION_USE_COUNT_STATEMENTS } from './sql/promotionUseCounts.sql.js';
 import { buildSalePricePromotionRewardsStatement } from './sql/salePricePromotionRewards.sql.js';
+
+// --- The dialect this adapter emits ------------------------------------------
+//
+// JUDGMENT CALL: the dialect is a MODULE CONSTANT and is deliberately NOT read from configuration.
+// This file is the MySQL adapter - its name, its folder and its statements are MySQL by
+// construction, not by environment - so the literal spelling is handed to the one statement builder
+// that needs it and `assertMySqlDialect` pins it here at module load, which is how a future dialect
+// widening fails loudly at this line rather than shipping MySQL syntax to another engine.
+// `mysqlProductRepository.ts`, `mysqlProductTypeRepository.ts` and `mysqlPriceGroupRepository.ts`
+// each decide the same way and for the same reason.
+//
+// IT REPLACES A REQUEST-TIME `resolveConfiguredDialect()` CALL INSIDE THE STATEMENT BUILDER, and
+// that call was a defect rather than a style choice. `./sql/salePricePromotionRewards.sql.ts` used
+// to resolve the dialect in its own body, reaching `appConfig.load()` and therefore the process
+// `DB_*` environment on EVERY invocation of `getSalePricePromotionRewardsQuery`. The superseded
+// reasoning was that the legacy read the engine at the query site itself through
+// `getApplicationValue("databaseType")` [model/dao/PromotionDAO.cfc:L482] and declared no dialect
+// argument; that observation is correct and the conclusion drawn from it was not, because
+// `getApplicationValue` read AMBIENT APPLICATION scope resolved once at startup
+// [config/configORM.cfm:L1-L15], not a per-query environment read, and AAP transformation rule T6
+// replaces ambient scope with an explicit parameter passed down the call chain - "No ambient state"
+// - rather than reproducing it.
+//
+// The cost was measured rather than theoretical. Because `resolveConfiguredDialect()` loads the
+// validated application configuration, COMPOSING A SQL STRING raised `ConfigurationError` demanding
+// `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_TLS_MODE` and `DB_DIALECT` - four of which the builder
+// never used - which broke the EMPTY-ENVIRONMENT GUARANTEE that `tests/setup.ts` states and that
+// every statement-shape assertion in this port depends on. Under the sanctioned credential-free
+// composition - `bootstrapCompositionRoot({ environment, executor })`, which exists so that a
+// committed suite need carry no host, account or authentication value - those five no-default
+// variables are absent, so the read threw and this method, the `getSalePriceDetailsForProductSkus`
+// surface above it [model/service/PromotionService.cfc:L1022] and the Google product feed were all
+// unreachable.
+//
+// AAP 0.4.3 asks for the dialect-branching SQL sites to be DIALECT-PARAMETERIZED, and both that and
+// T6 are satisfied by deciding the dialect here, once, and passing it. Resolving the CONFIGURED
+// dialect stays the composition root's business: `../../handlers/bootstrap.ts` makes that ONE
+// decision per composition and refuses any engine but MySQL before a repository is constructed, so
+// the root's decision and this constant cannot disagree.
+const STATEMENT_DIALECT: DatabaseDialect = 'MySQL';
+
+assertMySqlDialect(STATEMENT_DIALECT, 'the ported PromotionDAO statements');
 
 // ---------------------------------------------------------------------------
 // Collaborator contracts this adapter needs and cannot import
@@ -2713,7 +2757,10 @@ export class MysqlPromotionRepository implements PromotionRepository {
    * UNANCHORED substring `LIKE` - `concat('%', <idColumn>, '%')` - with no comma anchoring and no
    * `FIND_IN_SET`, the same idiom as `model/dao/PhysicalDAO.cfc:L121`. The statement module
    * composes it through the fragment accessor in `./dialect.js`, from there rather than from here
-   * so that one module owns both the statement and its fragment. NOTE THE MECHANISM DIVERGENCE FROM
+   * so that one module owns both the statement and its fragment - but the DIALECT that fragment is
+   * composed FOR travels from here as `STATEMENT_DIALECT` instead of being read from the process
+   * environment mid-request; see that constant for the runtime finding behind the change.
+   * NOTE THE MECHANISM DIVERGENCE FROM
    * `materializedIdPath.ts`, which does DELIMITER-AWARE membership in TypeScript: THEY ARE NOT
    * UNIFIED, because that module supplies computation only.
    *
@@ -2740,10 +2787,22 @@ export class MysqlPromotionRepository implements PromotionRepository {
     // so the two calls below are how "absent" and "present, possibly empty" stay distinguishable
     // across the boundary. One call with a spread would work and would hide the very distinction
     // the six preserved guards depend on.
+    //
+    // THE DIALECT IS SUPPLIED, NOT RESOLVED BY THE BUILDER. It selects the `productTypeIDPath`
+    // containment fragment [model/dao/PromotionDAO.cfc:L482-L488] and nothing else; it is never
+    // bound as a parameter and never concatenated into a value position. See `STATEMENT_DIALECT`
+    // above for why the builder must not reach for the configured dialect itself.
     const statement =
       productID === undefined
-        ? buildSalePricePromotionRewardsStatement({ now: capturedInstant })
-        : buildSalePricePromotionRewardsStatement({ now: capturedInstant, productID });
+        ? buildSalePricePromotionRewardsStatement({
+            now: capturedInstant,
+            dialect: STATEMENT_DIALECT,
+          })
+        : buildSalePricePromotionRewardsStatement({
+            now: capturedInstant,
+            dialect: STATEMENT_DIALECT,
+            productID,
+          });
 
     const rows = await this.executor.execute(statement.sql, statement.params);
 

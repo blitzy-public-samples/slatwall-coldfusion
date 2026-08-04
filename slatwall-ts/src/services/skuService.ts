@@ -2357,9 +2357,26 @@ export class SkuService {
    * [model/service/SkuService.cfc:L285-L287].
    *
    * CFML parity [model/service/SkuService.cfc:L286]: the method declares no
-   * parameters yet forwards `argumentCollection=arguments` - an empty struct - so the
-   * DAO receives neither of its two optional filters. Harmless in CFML and reproduced
-   * exactly by calling the port with no arguments.
+   * parameters yet forwards `argumentCollection=arguments` to the DAO. When a caller
+   * NAMES an argument, CFML's `arguments` scope still carries it and the DAO branches
+   * on the key it finds - `productID` from [model/entity/Product.cfc:L626], `skuID`
+   * from [model/entity/Sku.cfc:L594]. Reproduced exactly by calling the port with no
+   * arguments of this method's own.
+   *
+   * ★★★ QUOTE-THEN-REVISE - THE OLD SENTENCE WAS WRONG ABOUT THE EMPTY CASE. It read:
+   * "so the DAO receives neither of its two optional filters. Harmless in CFML and
+   * reproduced exactly by calling the port with no arguments." QA testing (INFO-8)
+   * flagged the word HARMLESS, and it is right: when the struct genuinely carries
+   * neither key, [model/dao/SkuDAO.cfc:L59-L63] takes its `<cfelse>` arm and runs
+   * `ormExecuteQuery(hql, {productID = arguments.productID})` with
+   * `arguments.productID` UNDEFINED, which RAISES in CFML. The legacy cannot serve
+   * that call at all.
+   *
+   * So the port's behaviour is CORRECT PARITY rather than a divergence:
+   * `MysqlSkuRepository.getTransactionExistsFlag` refuses a call carrying neither
+   * identifier with a named `SkuColumnError` instead of reproducing the CFML engine's
+   * message. Only this comment's characterisation of the legacy was inaccurate; no
+   * behaviour changed with the correction.
    */
   public async getTransactionExistsFlag(): Promise<boolean> {
     // [L286]

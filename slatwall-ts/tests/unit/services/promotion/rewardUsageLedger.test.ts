@@ -814,32 +814,49 @@ describe('RewardUsageLedger', () => {
       expect(Object.keys(ledger.promotionRewardUsageDetails)).toHaveLength(1);
     });
 
-    it('folds key case on the presence test but not on the read, so two keys survive', () => {
-      // LEGACY-NOTE [model/service/PromotionService.cfc:L172]: a CFML struct key
-      // is case-insensitive, so the ported guard delegates to the
-      // `structKeyExists` port, which folds case the way a struct does. The
-      // subsequent indexed read does NOT fold case, and the shipped module records
-      // the resolution: when the two tests disagree - which they can only do for a
-      // key differing in case, impossible for a persisted UUID - it falls through
-      // and seeds. The outcome is two independent entries, which is asserted here
-      // rather than assumed.
+    it('★ FOLDS KEY CASE ON BOTH THE PRESENCE TEST AND THE READ, so ONE key survives', () => {
+      // ★ THIS CASE ONCE ASSERTED THE OPPOSITE, AND THE ASSERTION WAS THE DEFECT.
+      // It read "folds key case on the presence test but not on the read, so two
+      // keys survive", and it passed - because `ensureRewardEntry` guarded with
+      // the case-INSENSITIVE `structKeyExists` and then read
+      // `this.ledger[promotionRewardID]` case-SENSITIVELY, so a case-differing
+      // identifier passed the guard, read back `undefined`, and fell through to
+      // seed a second entry.
+      //
+      // CFML parity [model/service/PromotionService.cfc:L172, L189]: a CFML struct
+      // key is case-insensitive, so the legacy guard FINDS the existing entry and
+      // the block does nothing at all - one entry, reused, with its accumulated
+      // usage and its first-seen limits intact. Two entries is not a harmless
+      // difference either: usage splits across them and `maximumUsePerOrder` is
+      // UNDER-enforced, so the reward can apply more times than its own limit
+      // allows. That is a money change, which is why the guard and the read now
+      // resolve through the same case-folding accessor.
       const upper = makeRewardWithID('REWARD-CASE', { maximumUsePerOrder: 4 });
       const lower = makeRewardWithID('reward-case', { maximumUsePerOrder: 7 });
 
       const upperUsage = ledger.ensureRewardEntry(upper);
+
+      // Accumulated state on the first entry, so the reuse below is proven to
+      // preserve it rather than merely to return an object of the right shape.
+      upperUsage.usedInOrder = 3;
+
       const lowerUsage = ledger.ensureRewardEntry(lower);
 
-      expect(lowerUsage).not.toBe(upperUsage);
-      expect(upperUsage.maximumUsePerOrder).toBe(4);
-      expect(lowerUsage.maximumUsePerOrder).toBe(7);
+      // THE SAME OBJECT, not an equal one.
+      expect(lowerUsage).toBe(upperUsage);
 
-      // Both keys are present. Their ORDER is not asserted: ledger key iteration
-      // order is unspecified and nothing in this suite depends on it.
+      // First-wins on the limits, exactly as it does for an identical spelling:
+      // the second reward's `maximumUsePerOrder` of 7 is ignored entirely.
+      expect(lowerUsage.maximumUsePerOrder).toBe(4);
+
+      // And the running total survives the second encounter untouched.
+      expect(lowerUsage.usedInOrder).toBe(3);
+
+      // Exactly one key, stored under the spelling that arrived FIRST. No second
+      // entry is added and the original key is not rewritten to the new casing.
       const keys = Object.keys(ledger.promotionRewardUsageDetails);
 
-      expect(keys).toHaveLength(2);
-      expect(keys).toContain('REWARD-CASE');
-      expect(keys).toContain('reward-case');
+      expect(keys).toStrictEqual(['REWARD-CASE']);
     });
 
     it('stores a reward identifier that collides with an Object.prototype name', () => {

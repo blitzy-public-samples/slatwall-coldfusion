@@ -65,9 +65,11 @@
 // component property [model/dao/SkuDAO.cfc:L51, L204-L220] is an INSTANCE field, request-scoped,
 // because on a warm container module state survives between UNRELATED requests.
 //
-// This file reads no environment value and no configuration (E6), which is why `./dialect.js` is
-// not imported even though the legacy branches on the database product at
-// [model/dao/SkuDAO.cfc:L194]: the statement needing that branch already owns it.
+// This file reads no environment value and no configuration (E6). It DOES import `./dialect.js`,
+// because the legacy branches on the database product at [model/dao/SkuDAO.cfc:L194] and the
+// statement that needs that branch now RECEIVES the dialect rather than resolving it - see
+// `STATEMENT_DIALECT` below. Importing the type and the assertion is not a configuration read; the
+// spelling is a literal in this file and `assertMySqlDialect` checks it at module load.
 // ---------------------------------------------------------------------------
 
 import { randomUUID } from 'node:crypto';
@@ -100,8 +102,46 @@ import {
   sqlTuplePlaceholderList,
   sqlUpdateAssignment,
 } from './connection.js';
+import type { DatabaseDialect } from './dialect.js';
+import { assertMySqlDialect } from './dialect.js';
 import { buildSkusBySelectedOptionsStatement } from './sql/skusBySelectedOptions.sql.js';
 import { buildSortedProductSkusStatement } from './sql/sortedProductSkus.sql.js';
+
+// --- The dialect this adapter emits ------------------------------------------
+//
+// JUDGMENT CALL: the dialect is a MODULE CONSTANT and is deliberately NOT read from configuration.
+// This file is the MySQL adapter - its name, its folder and its statements are MySQL by
+// construction, not by environment - so the literal spelling is handed to the one statement builder
+// that needs it, and `assertMySqlDialect` pins it here at module load so a future dialect widening
+// fails loudly at this line rather than shipping MySQL syntax to another engine.
+// `mysqlProductRepository.ts`, `mysqlProductTypeRepository.ts` and `mysqlPriceGroupRepository.ts`
+// each decide the same way and for the same reason.
+//
+// IT REPLACES A REQUEST-TIME `resolveConfiguredDialect()` CALL INSIDE THE STATEMENT BUILDER.
+// `./sql/sortedProductSkus.sql.ts` used to resolve the dialect in its own body, reaching
+// `appConfig.load()` and therefore the process `DB_*` environment on EVERY call to
+// `getSortedProductSkusID`. Under the sanctioned credential-free composition -
+// `bootstrapCompositionRoot({ environment, executor })`, which exists so that a committed suite need
+// carry no host, account or authentication value - those five no-default variables are absent, so
+// the read threw `ConfigurationError` and took `getSortedProductSkusID`,
+// `SkuService.getSortedProductSkus` and `SkuService.getProductSkus(sorted=true)` with it, on a
+// checkout that is otherwise fully testable. It also made COMPOSING A SQL STRING depend on five
+// values the builder never uses, breaking the EMPTY-ENVIRONMENT GUARANTEE stated in
+// `tests/setup.ts`.
+//
+// The superseded reasoning was that the legacy read the engine at the query site itself through
+// `getApplicationValue("databaseType")` [model/dao/SkuDAO.cfc:L194]. But that was AMBIENT
+// APPLICATION scope resolved once at startup [config/configORM.cfm:L1-L15], not a per-query
+// environment read, and AAP transformation rule T6 replaces ambient scope with an explicit
+// parameter passed down the call chain - "No ambient state" - rather than reproducing it. AAP 0.4.3
+// asks for the dialect-branching SQL sites to be DIALECT-PARAMETERIZED, and both are satisfied by
+// deciding the dialect here, once, and passing it. Resolving the CONFIGURED dialect stays the
+// composition root's business: `../../handlers/bootstrap.ts` makes that ONE decision per composition
+// and refuses any engine but MySQL before a repository is constructed, so the root's decision and
+// this constant cannot disagree.
+const STATEMENT_DIALECT: DatabaseDialect = 'MySQL';
+
+assertMySqlDialect(STATEMENT_DIALECT, 'the ported SkuDAO statements');
 
 // --- Failure reporting -------------------------------------------------------
 //
@@ -1932,11 +1972,14 @@ export class MysqlSkuRepository implements SkuRepository {
   // (B3); closing it is out of scope because the untested engines are exactly the ones this port
   // does not implement. `./sql/sortedProductSkus.sql.js` and `./dialect.js` each carry a copy.
   //
-  // JUDGMENT CALL: THE DIALECT DECISION IS DELEGATED RATHER THAN TAKEN HERE. The legacy branches at
-  // [model/dao/SkuDAO.cfc:L194] on `getApplicationValue("databaseType") eq "MicrosoftSQLServer"`;
-  // CFML's `eq` is case-insensitive and the source spells MySQL inconsistently across files, so
-  // `./dialect.js` owns both the case folding and the MySQL-only guard, which also keeps this file
-  // free of any configuration read (E6).
+  // JUDGMENT CALL: THE DIALECT COMPARISON IS DELEGATED, THE DIALECT VALUE IS SUPPLIED. The legacy
+  // branches at [model/dao/SkuDAO.cfc:L194] on
+  // `getApplicationValue("databaseType") eq "MicrosoftSQLServer"`; CFML's `eq` is case-insensitive
+  // and the source spells MySQL inconsistently across files, so `./dialect.js` owns both the case
+  // folding and the MySQL-only guard. What this adapter owns is only WHICH engine its statements are
+  // written for, stated once as `STATEMENT_DIALECT` above and passed to the builder, so neither this
+  // file nor the builder performs a configuration read (E6) and composing the statement needs no
+  // credential.
   //
   // JUDGMENT CALL: E4 DOES NOT REACH THE ODOMETER. `POWER(10, n)` returns a DOUBLE and the `SUM` is
   // a float sum, but it is an `ORDER BY` EXPRESSION EVALUATED BY THE DATABASE and not a monetary
@@ -1968,6 +2011,7 @@ export class MysqlSkuRepository implements SkuRepository {
     const statement = buildSortedProductSkusStatement(
       productID,
       await this.resolveNextOptionGroupSortOrder(),
+      STATEMENT_DIALECT,
     );
 
     const rows = await this.executor.execute(statement.sql, statement.params);

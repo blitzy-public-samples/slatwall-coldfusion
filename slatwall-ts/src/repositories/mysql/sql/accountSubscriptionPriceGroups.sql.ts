@@ -295,9 +295,14 @@ class EmptyPriceGroupIDSetError extends Error {
 // tests can assert a fixed params array with no live MySQL. No SQL NOW()/CURRENT_TIMESTAMP is emitted and
 // no clock abstraction is introduced.
 
-// JUDGMENT CALL: the dialect ARRIVES resolved rather than being resolved here, which is a deliberate
-// divergence from the sibling sortedProductSkus.sql.ts (which calls resolveConfiguredDialect() in its own
-// body). This module may not read configuration or the environment at all: a builder that did could not be
+// JUDGMENT CALL: the dialect ARRIVES resolved rather than being resolved here. This was once a
+// divergence from the two sibling builders - sortedProductSkus.sql.ts and
+// salePricePromotionRewards.sql.ts each called resolveConfiguredDialect() in its own body - and it is
+// now the settled rule for all three: both siblings were corrected to accept the dialect, because
+// loading the validated configuration to compose a string is ambient state (AAP transformation rule
+// T6) and it demanded five DB_* values, four of them unused, breaking the empty-environment guarantee
+// in tests/setup.ts.
+// This module may not read configuration or the environment at all: a builder that did could not be
 // asserted against a fixed params array without a live environment. Resolution therefore belongs to the
 // adapter, which is also what the port requires - priceGroupRepository.ts:L93-L102 states that the
 // row-limiting clause "must be COMPOSED by the adapter and must never concatenate a caller value", and it

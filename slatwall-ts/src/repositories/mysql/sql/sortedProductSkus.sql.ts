@@ -96,10 +96,12 @@
 //     * Row handling and entity hydration. This module never sees a row.
 //     * `Money` and the decimal library. See the arithmetic note on the
 //       ordering term below - there is no monetary value in this statement.
-//     * Any `process.env` read. Dialect selection is delegated in full to
-//       `src/repositories/mysql/dialect.ts`, which owns that decision, and it is
-//       invoked from inside the builder rather than at module load, so importing
-//       this module resolves no configuration and can fail for no reason.
+//     * Any `process.env` read, and any CONFIGURATION read. The dialect ARRIVES
+//       as the builder's third argument, and the per-engine fragment is composed
+//       by `src/repositories/mysql/dialect.ts`, which owns that comparison. A
+//       superseded revision resolved the CONFIGURED dialect inside the builder
+//       body instead, which made composing a string demand five `DB_*` values -
+//       four of them unused - and broke the guarantee stated just above.
 //     * A logging call. A builder that returns a string has nothing to report.
 //     * The aggregate that produces the place-value weight. See the note on
 //       where that resolution lives.
@@ -131,21 +133,22 @@
 //   clause, (b) there are exactly two bound parameters and they appear in
 //   emitted-text order, (c) the number of `?` placeholders in the text equals
 //   the number of bound parameters, (d) a non-MySQL dialect is refused rather
-//   than served the MySQL text, and (e) the builder is deterministic given the
-//   configured dialect - it opens no connection and executes nothing. The
-//   builder takes exactly the two arguments the legacy method declares, so a
-//   suite that exercises it sets `DB_DIALECT` in the test environment; the
+//   than served the MySQL text, and (e) the builder is a PURE FUNCTION of its
+//   three arguments - it opens no connection, executes nothing, and reads no
+//   configuration and no environment, so a suite exercises it with no `.env` and
+//   no `DB_*` variable at all, which is the contract `tests/setup.ts` states. The
 //   dialect fragment itself is separately reachable through
 //   `optionGroupOdometerPowerFragment` in `../dialect.ts`, which is where the
 //   per-engine assertions belong.
 // ---------------------------------------------------------------------------
 
-// The `DatabaseDialect` TYPE is deliberately not imported. The dialect never
-// appears in this module's surface - it is resolved inside the builder and
-// consumed immediately - so naming the type here would be an unused import under
-// `noUnusedLocals`, and re-exposing it would reopen the parameter this builder
-// does not take.
-import { optionGroupOdometerPowerFragment, resolveConfiguredDialect } from '../dialect.js';
+// The `DatabaseDialect` TYPE is imported because the dialect is now part of this
+// module's surface: it ARRIVES as the builder's third argument rather than being
+// read from the process environment mid-request. See the `@param dialect` note and
+// the builder's own comment for the runtime finding that forced the change and the
+// three obligations the superseded ambient read broke.
+import type { DatabaseDialect } from '../dialect.js';
+import { optionGroupOdometerPowerFragment } from '../dialect.js';
 
 /**
  * The option-group sort-order COLUMN of the place-value term, as a
@@ -231,40 +234,74 @@ interface SortedProductSkusStatement {
  * @param nextOptionGroupSortOrder - The next available option-group sort order,
  *   already resolved, which sets the place value of each odometer digit. Bound
  *   as the SECOND parameter.
+ * @param dialect - The ALREADY-RESOLVED database dialect, used for one purpose
+ *   only: selecting the odometer place-value term through
+ *   `optionGroupOdometerPowerFragment`. It is NOT bound as a parameter and never
+ *   reaches a value position in the emitted text. See the body for why it is an
+ *   argument.
  * @returns The statement text and the two values to bind to it, in order.
- * @throws An error named `UnsupportedDialectError` when the configured dialect
+ * @throws An error named `UnsupportedDialectError` when the supplied `dialect`
  *   is `MicrosoftSQLServer` or `Oracle10g`. That arm exists in the legacy source
  *   and is therefore reproducible, but it is not implemented by this port, and
  *   emitting the MySQL text under another engine's name would silently change
- *   the ordering. Resolution can also raise `ConfigurationError` when the
- *   environment contract is unsatisfied, or `UnrecognizedDialectError` for an
- *   unknown spelling; neither has a fallback, which is what preserves the legacy
- *   behaviour of failing outright rather than guessing at a dialect.
+ *   the ordering. There is no fallback and no default, which is what preserves
+ *   the legacy behaviour of failing outright rather than guessing at a dialect.
+ *   `ConfigurationError` and `UnrecognizedDialectError` are no longer reachable
+ *   from here at all - see the note in the body.
  *   `SqlFragmentInputError` is structurally unreachable from here, because the
  *   only fragment argument this module passes is the module-level constant above.
  */
 export function buildSortedProductSkusStatement(
   productID: string,
   nextOptionGroupSortOrder: number,
+  dialect: DatabaseDialect,
 ): SortedProductSkusStatement {
-  // THE BUILDER TAKES EXACTLY TWO ARGUMENTS - `productID` and
-  // `nextOptionGroupSortOrder` - and the dialect is NOT among them. This folder
-  // reshapes no signature, and the dialect was never an argument of the legacy
-  // method either: `model/dao/SkuDAO.cfc:L173` declares `required string
-  // productID` and nothing else, and the engine is read at the query site itself
-  // through `getApplicationValue("databaseType")` [model/dao/SkuDAO.cfc:L194].
-  // Resolving it here rather than accepting it is therefore the faithful shape,
-  // and it also removes the only way a caller could have asked for one engine's
-  // ordering while running against another.
+  // QUOTE-THEN-REVISE, AND THE OLD SENTENCE DEFENDED A DEFECT. This comment used
+  // to open: "THE BUILDER TAKES EXACTLY TWO ARGUMENTS - `productID` and
+  // `nextOptionGroupSortOrder` - and the dialect is NOT among them", and justified
+  // resolving it here with `resolveConfiguredDialect()` because "the engine is read
+  // at the query site itself through `getApplicationValue("databaseType")`
+  // [model/dao/SkuDAO.cfc:L194]" and "neither legacy method declared a dialect
+  // argument" [model/dao/SkuDAO.cfc:L173]. The CFML observation is correct and the
+  // conclusion drawn from it was not: `getApplicationValue` read APPLICATION scope,
+  // which the legacy resolved ONCE at startup [config/configORM.cfm:L1-L15],
+  // whereas `resolveConfiguredDialect()` reads `appConfig.load()` - and therefore
+  // the process `DB_*` environment - ON EVERY CALL, mid-request. That is ambient
+  // state, and AAP transformation rule T6 replaces ambient scope with an explicit
+  // parameter passed down the call chain - "No ambient state" - rather than
+  // reproducing it.
   //
-  // JUDGMENT CALL: resolution happens HERE, inside the body, and never at module
-  // load, so importing this module reads no configuration and cannot fail for no
-  // reason. `DB_DIALECT` has no default and its absence is a hard error by
-  // design, so a test that exercises this builder configures the environment -
-  // `resolveConfiguredDialect()` is the single owner of that decision and
-  // `optionGroupOdometerPowerFragment` can be exercised on its own for the
-  // fragment-level assertions.
-  const resolvedDialect = resolveConfiguredDialect();
+  // Runtime testing measured the cost, which was concrete rather than theoretical.
+  // Because `resolveConfiguredDialect()` loads the validated application
+  // configuration, COMPOSING A STRING demanded `DB_HOST`, `DB_USER`, `DB_PASSWORD`,
+  // `DB_TLS_MODE` and `DB_DIALECT` - four of which this builder never uses - which
+  // broke the EMPTY-ENVIRONMENT GUARANTEE stated in `tests/setup.ts`. Under the
+  // sanctioned credential-free composition (`bootstrapCompositionRoot({ environment,
+  // executor })`, which exists because "a committed suite may not carry a host, an
+  // account name or an authentication value") the five no-default keys are absent
+  // from `process.env`, so this read THREW `ConfigurationError` and took
+  // `MysqlSkuRepository.getSortedProductSkusID` - and with it
+  // `SkuService.getSortedProductSkus` and `getProductSkus(sorted=true)` - down with
+  // it, on a checkout that is otherwise fully testable.
+  //
+  // SO THE DIALECT IS A PARAMETER NOW, AND THAT IS AAP T6 APPLIED LITERALLY:
+  // ambient state replaced by an explicit argument passed down the call chain, with
+  // AAP 0.4.3 asking for exactly this - the dialect-branching SQL sites expressed as
+  // DIALECT-PARAMETERIZED fragments. The sibling
+  // `./accountSubscriptionPriceGroups.sql.ts` had already reached the opposite and
+  // correct conclusion for the same kind of fragment and named this module as the
+  // divergent one; the divergence is closed, and a statement builder may not read
+  // configuration or the environment at all.
+  //
+  // WHAT THAT DOES NOT CHANGE: `../mysqlSkuRepository.js` supplies the engine its
+  // statements are written for as a module constant pinned by `assertMySqlDialect`,
+  // which is what `../mysqlProductRepository.js`, `../mysqlProductTypeRepository.js`
+  // and `../mysqlPriceGroupRepository.js` already did, so no caller can ask for one
+  // engine's ordering while running against another - the property the superseded
+  // arrangement was trying to protect is protected by the constant instead - and the
+  // composition root still refuses any engine but MySQL before a repository exists.
+  // Nothing about module load changed either: this module read no configuration at
+  // import time before, and now reads none at call time either.
 
   // JUDGMENT CALL: the legacy dialect test at model/dao/SkuDAO.cfc:L194 is `databaseType eq
   // "MicrosoftSQLServer"`, so MySQL falls through to the <cfelse> arm at L197 - the plain, uncast
@@ -277,10 +314,7 @@ export function buildSortedProductSkusStatement(
   // and decimal.js are deliberately absent here. Reproduced exactly as
   // model/dao/SkuDAO.cfc:L197 writes it. Do not substitute a decimal type, a padded string
   // concatenation or a window-function ranking for the power term.
-  const odometerPowerTerm = optionGroupOdometerPowerFragment(
-    resolvedDialect,
-    ODOMETER_SORT_ORDER_COLUMN,
-  );
+  const odometerPowerTerm = optionGroupOdometerPowerFragment(dialect, ODOMETER_SORT_ORDER_COLUMN);
 
   // CFML parity [model/dao/SkuDAO.cfc:L179-L180]: the projection is exactly one column,
   // `SwSku.skuID`, and it stays one column.

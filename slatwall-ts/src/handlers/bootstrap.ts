@@ -173,7 +173,7 @@ import { randomUUID } from 'node:crypto';
 
 import { appConfig } from '../lib/config.js';
 import { logger } from '../lib/logger.js';
-import { cfEquals } from '../lib/cfml/struct.js';
+import { cfEquals, structGet } from '../lib/cfml/struct.js';
 import { listToArray } from '../lib/cfml/list.js';
 import { getPreparedStatementExecutor } from '../repositories/mysql/connection.js';
 import { assertMySqlDialect, resolveDialect } from '../repositories/mysql/dialect.js';
@@ -917,48 +917,67 @@ export interface InspectableRequestScope {
  * without a live database. Passing none is the production path.
  *
  * ★ CONFIGURATION IS DELIBERATELY NOT AMONG THESE OVERRIDES, AND THAT ABSENCE IS
- * THE GUARANTEE: ONE COMPOSITION READS EXACTLY ONE CONFIGURATION. Three
- * independent readers participate in a composition and all three read the SAME
- * memoized process configuration - `appConfig.load()`, which memoizes at
+ * THE GUARANTEE: ONE COMPOSITION READS EXACTLY ONE CONFIGURATION. Exactly TWO
+ * readers can participate in a composition, and both read the SAME memoized
+ * process configuration - `appConfig.load()`, which memoizes at
  * `src/lib/config.ts:L1116`:
  *
  *   1. this root, for its own configuration and its one dialect decision;
  *   2. the pool factory in `../repositories/mysql/connection.js`, when no
- *      `executor` override is supplied;
- *   3. the two dialect-dependent statement builders -
- *      `../repositories/mysql/sql/salePricePromotionRewards.sql.js` and
- *      `../repositories/mysql/sql/sortedProductSkus.sql.js` - each of which calls
- *      `resolveConfiguredDialect()` INSIDE its own body at request time, because
- *      the legacy read the engine at the query site itself through
- *      `getApplicationValue("databaseType")` [model/dao/PromotionDAO.cfc:L482,
- *      model/dao/SkuDAO.cfc:L194] and neither legacy method declared a dialect
- *      argument.
+ *      `executor` override is supplied.
  *
- * ★ AN EXPLICIT `environment` SOURCE IS ACCEPTED, AND THE GUARANTEE IS HELD BY TWO
- * ENFORCED GUARDS RATHER THAN BY ITS ABSENCE. The hazard is real and the mechanism
+ * QUOTE-THEN-REVISE - THERE WAS A THIRD READER, AND IT WAS A DEFECT. This list
+ * used to carry one more entry: "the two dialect-dependent statement builders -
+ * `../repositories/mysql/sql/salePricePromotionRewards.sql.js` and
+ * `../repositories/mysql/sql/sortedProductSkus.sql.js` - each of which calls
+ * `resolveConfiguredDialect()` INSIDE its own body at request time, because the
+ * legacy read the engine at the query site itself through
+ * `getApplicationValue("databaseType")` [model/dao/PromotionDAO.cfc:L482,
+ * model/dao/SkuDAO.cfc:L194] and neither legacy method declared a dialect
+ * argument." QA testing found what that cost, and it was not theoretical: loading
+ * the validated configuration made COMPOSING A SQL STRING demand the five `DB_*`
+ * values that have no default, so under the credential-free composition below -
+ * the only one a committed suite may use - those builders THREW
+ * `ConfigurationError` and took the product feed,
+ * `getSalePriceDetailsForProductSkus` [model/service/PromotionService.cfc:L1022],
+ * `skuRepository.getSortedProductSkusID` and 19 shipped tests with them, breaking
+ * the empty-environment contract in `tests/setup.ts`.
+ *
+ * The CFML citation did not support the design either. `getApplicationValue` read
+ * AMBIENT APPLICATION scope - a value `config/configORM.cfm:L1-L15` resolved ONCE
+ * at startup - not a fresh probe per query, and AAP transformation rule T6
+ * replaces ambient scope with an explicit parameter rather than reproducing it. So
+ * the dialect is now an ARGUMENT (AAP T6: an explicit parameter passed down the
+ * call chain; AAP 0.4.3: dialect-PARAMETERIZED SQL sites), supplied by each MySQL
+ * adapter's own `STATEMENT_DIALECT` constant, pinned by `assertMySqlDialect` at
+ * module load - which is what `mysqlProductRepository.ts`,
+ * `mysqlProductTypeRepository.ts` and `mysqlPriceGroupRepository.ts` already did.
+ * NO REQUEST-TIME PATH IN THIS SUBTREE READS CONFIGURATION ANY MORE.
+ *
+ * ★ AN EXPLICIT `environment` SOURCE IS ACCEPTED, AND THE GUARANTEE IS HELD BY AN
+ * ENFORCED GUARD RATHER THAN BY ITS ABSENCE. The hazard is real and the mechanism
  * is exact: `appConfig.load(source)` is validated fresh and NEVER memoized
  * [src/lib/config.ts:L1543-L1549], so a supplied source governs THIS root's
- * dialect decision while readers 2 and 3 go on reading `process.env`. One
- * composition could then assert one engine and emit another engine's SQL, or build
- * a pool from a configuration the root never saw. Deleting the member would remove
- * that divergence by construction - but it would also remove the only way to
- * compose this graph without a credential, and a committed suite may not carry a
- * host, an account name or an authentication value (see the `tests/setup.ts`
- * contract). The member therefore stays and each reader is closed explicitly:
+ * dialect decision while reader 2 would go on reading `process.env` - and a pool
+ * could then be built from a configuration the root never saw. Deleting the member
+ * would remove that divergence by construction - but it would also remove the only
+ * way to compose this graph without a credential, and a committed suite may not
+ * carry a host, an account name or an authentication value (see the
+ * `tests/setup.ts` contract). The member therefore stays and the one remaining
+ * reader is closed explicitly:
  *
  *   READER 2 - THE POOL FACTORY - is closed by requiring `executor` alongside
  *   `environment`. `assertSingleConfigurationAuthority` refuses the combination
  *   outright, so no pool is ever created from a configuration this root did not
  *   read, and the refusal is a thrown error rather than a comment.
  *
- *   READER 3 - THE TWO DIALECT-DEPENDENT STATEMENT BUILDERS - is closed by the one
- *   dialect decision this root already makes. It is taken over the SUPPLIED
- *   configuration and `assertMySqlDialect` admits nothing but MySQL, which is the
- *   only branch this migration targets and the only text those builders emit - so
- *   root and builders cannot disagree about the engine. Should a builder be reached
- *   under a supplied source, `appConfig.load()` with no argument validates
- *   `process.env` and THROWS on the five keys that have no defaults, so the failure
- *   is loud at the seam rather than a silently different statement.
+ * The retired reader 3 needs no guard, because it no longer reads anything. Its
+ * engine is a literal in the adapter that owns it, so a supplied source cannot make
+ * a composition assert one engine and emit another's SQL: this root's
+ * `assertMySqlDialect` admits nothing but MySQL, MySQL is the only text those
+ * adapters can emit, and a builder handed a non-MySQL dialect refuses with
+ * `UnsupportedDialectError` rather than emitting MySQL text under another engine's
+ * name.
  *
  * A suite that needs the real `process.env` path stubs the environment and calls
  * `appConfig.reset()` instead, which is what every integration suite here does.
@@ -1014,10 +1033,12 @@ function assertSingleConfigurationAuthority(overrides: CompositionOverrides): vo
     );
   }
 
-  // NO DIALECT CHECK HERE, DELIBERATELY. Reader 3 is closed by the tier-1 dialect
-  // assertion instead, which now reads the SUPPLIED source and refuses anything but
-  // MySQL from the one decision site - so there is exactly one refusal message naming
-  // one site, and a second assertion here would only duplicate it under a second name.
+  // NO DIALECT CHECK HERE, DELIBERATELY. The tier-1 dialect assertion is the one
+  // decision site: it reads the SUPPLIED source and refuses anything but MySQL - so
+  // there is exactly one refusal message naming one site, and a second assertion here
+  // would only duplicate it under a second name. The statement builders no longer
+  // resolve a dialect at all (they take one and refuse a non-MySQL value), so there
+  // is no second configuration reader left for a guard here to close.
 }
 
 // ===========================================================================
@@ -1402,6 +1423,76 @@ class CompositionWiringError extends Error {
     );
     this.name = 'CompositionWiringError';
   }
+}
+
+/**
+ * A runtime value violated a contract this module's TYPES declare, so nothing was attempted.
+ *
+ * ★ WHY A TYPED CONTRACT STILL NEEDS A RUNTIME REFUSAL. Every type in this file erases at emit, and
+ * two of them are reached across a boundary a compiler cannot police: a closed string union arriving
+ * from a caller that a bundler, a `JSON.parse` or an untyped consumer produced, and the return value
+ * of an INJECTED port implementation. QA testing found both, and in each case the failure was silent
+ * or opaque rather than named:
+ *
+ *   * `createUniqueURLTitle('Nike', <out-of-union table>)` indexed a frozen three-key statement table
+ *     with no membership test, so `executor.execute(undefined, ['nike','nike-%'])` was issued and the
+ *     method RETURNED `"nike"` - an unsuffixed "unique" answer with the database never consulted.
+ *     Against the real pool the driver raised an opaque `TypeError` about Buffer types instead. NO SQL
+ *     INJECTION WAS POSSIBLE and none is now: the table name is never interpolated, the three
+ *     statements are frozen literals, and this class exists for the silent wrong answer, not for an
+ *     injection.
+ *   * a `PreparedStatementExecutor` whose `execute` answered `null` or a non-array produced
+ *     `Cannot read properties of null (reading 'map')` and `rows.map is not a function` from inside a
+ *     tier-1 read, naming neither the port nor the statement.
+ *
+ * Module-local, following every sibling fault type in this section: the constructor is not exported,
+ * a caller identifies it by `name`, and the message names the CONTRACT and the site - never a value,
+ * a credential, a title, an identifier or a statement.
+ */
+class CompositionContractError extends Error {
+  public constructor(contract: string, site: string) {
+    super(
+      `The composition root refused to continue: ${contract}. The site was '${site}'. This is a ` +
+        'programming error at a boundary the compiler cannot police, not a data condition, so ' +
+        'nothing was read, nothing was written and no result may be read as an answer.',
+    );
+    this.name = 'CompositionContractError';
+  }
+}
+
+/**
+ * The rows a statement answered, or a named refusal.
+ *
+ * `PreparedStatementExecutor.execute` declares `Promise<readonly SqlRow[]>`, and every implementation
+ * in this repository honours it - but the port is an INJECTION POINT, so the one shape this root
+ * cannot verify at compile time is what a substituted implementation actually returns. QA testing
+ * (INFO-3) drove `null` and a non-array through it and got raw `TypeError`s from inside the row
+ * readers, which named neither the port nor the statement.
+ *
+ * Applied at the two TIER-1 reads, which are the reads that run before any request exists and whose
+ * failure would otherwise abort a composition with an unattributable message. The request-tier
+ * adapters consume the same port and are covered by their own column readers.
+ *
+ * @param rows whatever the injected executor answered.
+ * @param statementLabel the statement's own label, so a refusal is attributable.
+ * @returns the rows, unchanged, when the contract holds.
+ */
+function requireStatementRows(rows: readonly SqlRow[], statementLabel: string): readonly SqlRow[] {
+  // The predicate is captured as a BOOLEAN rather than used as a type guard, deliberately:
+  // `Array.isArray` narrows a `readonly T[]` to `any[]`, and returning that would launder an `any`
+  // through a function whose whole purpose is to defend a declared type. The parameter therefore keeps
+  // its declared type on both sides of the check, and nothing is cast or asserted.
+  const answeredAnArray: boolean = Array.isArray(rows);
+
+  if (!answeredAnArray) {
+    throw new CompositionContractError(
+      'the injected PreparedStatementExecutor answered a result set that is not an array, which its ' +
+        'own declared return type forbids',
+      statementLabel,
+    );
+  }
+
+  return rows;
 }
 
 /**
@@ -2319,8 +2410,31 @@ class BootstrapSettingsProvider implements SettingsProvider {
     });
   }
 
+  /**
+   * The declared value of one setting.
+   *
+   * ★ RESOLVED CASE-INSENSITIVELY, BECAUSE A CFML STRUCT KEY IS. The legacy reads are struct lookups -
+   * `setting('skuCurrency')` [model/entity/Sku.cfc:L360-L365] reaches
+   * `HibachiScope`'s settings struct, and CFML matches struct keys without regard to case - so
+   * `SKUCURRENCY` and `skucurrency` named the same setting there and answered the same value. This
+   * lookup used to be a plain index, which is case-SENSITIVE: QA testing (INFO-4) found
+   * `setting('SKUCURRENCY')` answering `undefined` under a signature that promises `string`.
+   *
+   * No runtime hazard was demonstrated - the closed `SettingKey` union is the compile-time guard and
+   * every in-repo call site passes a literal - but AAP 0.1.1 requires every ported struct-keyed lookup
+   * to be AUDITED rather than assumed, and this one was assumed. `structGet` from
+   * `../lib/cfml/struct.js` is the module that already owns CFML key semantics for this port, so the
+   * resolution goes through it rather than through a second case-folding rule invented here.
+   *
+   * THE UNION IS NOT WIDENED. The parameter type is unchanged, so no new setting name becomes
+   * askable; what changed is only that a legal name spelled in another case resolves the way CFML
+   * resolved it.
+   *
+   * @param settingName one of the seven names this composition declares.
+   * @returns the declared value.
+   */
   public setting(settingName: SettingKey): string {
-    return this.values[settingName];
+    return structGet(this.values, settingName) ?? this.values[settingName];
   }
 }
 
@@ -2542,7 +2656,10 @@ const NO_ADDRESS_ZONE_LOCATIONS: AddressZoneLocationIndex = new Map();
 async function readAddressZoneLocationIndex(
   executor: PreparedStatementExecutor,
 ): Promise<AddressZoneLocationIndex> {
-  const rows = await executor.execute(SELECT_ADDRESS_ZONE_LOCATIONS_SQL);
+  const rows = requireStatementRows(
+    await executor.execute(SELECT_ADDRESS_ZONE_LOCATIONS_SQL),
+    SELECT_ADDRESS_ZONE_LOCATIONS,
+  );
   const locationsByFoldedZoneID = new Map<string, AddressZoneLocationProjection[]>();
 
   for (const row of rows) {
@@ -2948,15 +3065,40 @@ class SqlUrlTitleGenerator implements UrlTitleGenerator {
     tableName: UrlTitleTableName,
     urlTitle: string,
   ): Promise<ReadonlySet<string>> {
+    // ★ THE TABLE IS RESOLVED BEFORE IT IS USED, AND AN UNKNOWN ONE IS REFUSED BY NAME. This read
+    // used to index `SELECT_URL_TITLE_FAMILY_SQL[tableName]` inline, trusting the closed
+    // `UrlTitleTableName` union - and a union erases at emit. QA testing drove eight out-of-union
+    // values through `createUniqueURLTitle` (`'SwSku'`, `'information_schema.tables'`, `''`,
+    // `'swbrand'`, `undefined`, `null`, `42`, and a `DROP TABLE` string) and recorded the outcome:
+    // `executor.execute(undefined, ['nike','nike-%'])` was issued and the method RETURNED `'nike'` -
+    // an unsuffixed answer that reads as "this title is unique" with the database never consulted.
+    // Against the real pool the driver raised an opaque Buffer-type `TypeError` instead.
+    //
+    // A SILENT WRONG ANSWER IS THE HAZARD, NOT INJECTION. The name is never interpolated: the three
+    // statements are frozen per-table literals and the values are bound. `'swbrand'` is refused too,
+    // where CFML's identifier comparison was case-insensitive - the union spells the three physical
+    // tables exactly, and admitting a folded spelling here would mean choosing a statement by a
+    // comparison this port does not perform anywhere else.
+    const familyStatement: string | undefined = SELECT_URL_TITLE_FAMILY_SQL[tableName];
+
+    if (familyStatement === undefined) {
+      throw new CompositionContractError(
+        'createUniqueURLTitle was given a table that is not one of the three the url-title union ' +
+          'declares (SwBrand, SwProduct, SwProductType), so no statement exists for it and no ' +
+          'title may be reported as available',
+        SELECT_URL_TITLE_FAMILY,
+      );
+    }
+
     // The bare slug, then the family prefix. The pattern needs no escaping - see
     // `SELECT_URL_TITLE_FAMILY_SQL` for why the sanitization above makes a metacharacter
     // impossible. An EMPTY slug is passed through exactly as the legacy passed it: the candidates
     // become `''`, `'-2'`, `'-3'`, … and the pattern `'-%'`, which is what
     // [model/service/DataService.cfc:L57-L60] produces for a title of `'!!!'`.
-    const rows = await this.executor.execute(SELECT_URL_TITLE_FAMILY_SQL[tableName], [
-      urlTitle,
-      `${urlTitle}-%`,
-    ]);
+    const rows = requireStatementRows(
+      await this.executor.execute(familyStatement, [urlTitle, `${urlTitle}-%`]),
+      SELECT_URL_TITLE_FAMILY,
+    );
 
     const takenTitles = new Set<string>();
 
@@ -4502,7 +4644,10 @@ class SqlPromotionFrameworkReads {
 async function readCurrencyRecords(
   executor: PreparedStatementExecutor,
 ): Promise<readonly CurrencyRecordProjection[]> {
-  const rows = await executor.execute(SELECT_CURRENCY_RECORDS_SQL);
+  const rows = requireStatementRows(
+    await executor.execute(SELECT_CURRENCY_RECORDS_SQL),
+    SELECT_CURRENCY_RECORDS,
+  );
 
   return rows.map((row: SqlRow): CurrencyRecordProjection => ({
     currencyCode: toCurrencyCode(readIdentifier(row, 'currencyCode', SELECT_CURRENCY_RECORDS)),
@@ -4645,10 +4790,12 @@ async function createModuleScopeGraph(overrides: CompositionOverrides): Promise<
   //
   // THE SINGLE-AUTHORITY GUARANTEE stated on `CompositionOverrides` is what makes
   // this one read the composition's only configuration: with no override this is
-  // the same memoized process configuration the pool factory and the two
-  // dialect-dependent statement builders read, and with a supplied source
-  // `assertSingleConfigurationAuthority` has already refused the two arrangements
-  // in which those readers could disagree with it.
+  // the same memoized process configuration the pool factory reads - the only other
+  // reader there is - and with a supplied source
+  // `assertSingleConfigurationAuthority` has already refused the arrangement in
+  // which that reader could disagree with it. The statement builders are not
+  // readers at all: each receives its dialect from the module constant its own
+  // MySQL adapter states.
   const config = appConfig.load(overrides.environment);
 
   // --- 2. The dialect decision -------------------------------------------
@@ -4670,15 +4817,29 @@ async function createModuleScopeGraph(overrides: CompositionOverrides): Promise<
   // three ways (`"MySQL"`, `"mySQL"`, `"mySql"`). `assertMySqlDialect` then
   // narrows to the MySQL branch, which is the only branch this migration targets.
   //
-  // THIS IS THE ONE DIALECT DECISION OF THE COMPOSITION, AND IT IS THE SAME VALUE
-  // ITS OWN SQL IS BUILT FROM. `resolveDialect(config.dialect)` reads the frozen
-  // configuration resolved immediately above, and the two builders that resolve a
+  // THIS IS THE ONE AND ONLY DIALECT DECISION OF THE COMPOSITION, AND IT IS THE SAME
+  // VALUE ITS OWN SQL IS BUILT FROM. `resolveDialect(config.dialect)` reads the frozen
+  // configuration resolved immediately above and this line refuses anything but MySQL,
+  // BEFORE any repository is constructed, before a pool exists and before a statement
+  // is built. Every MySQL adapter states the same dialect for itself as a
+  // `STATEMENT_DIALECT` module constant pinned by `assertMySqlDialect` at module load,
+  // so the assertion below is what makes the two agree: a composition that passes it is
+  // running against the engine those constants name, and one that would not is refused
+  // here. Removing this assertion would let a process configured for another engine
+  // wire up and then issue MySQL statements.
+  //
+  // QUOTE-THEN-REVISE. This paragraph used to end: "the two builders that resolve a
   // dialect at request time - `salePricePromotionRewards.sql.ts` and
   // `sortedProductSkus.sql.ts` - reach the same value through
-  // `resolveConfiguredDialect()`, which is `resolveDialect(appConfig.load().dialect)`
-  // over that same memo. Asserting here therefore asserts the engine the emitted
-  // statements will actually target, and a composition that passed this assertion
-  // cannot emit another engine's SQL.
+  // `resolveConfiguredDialect()`, which is `resolveDialect(appConfig.load().dialect)` over
+  // that same memo." The memo claim was only true when `process.env` was the source; with
+  // a supplied `environment` those builders read a DIFFERENT source - the process one -
+  // and on a credential-free checkout that read threw. Neither builder resolves a dialect
+  // now; each RECEIVES one, so the check here and the text those builders emit agree by
+  // construction rather than by both reading one memo. `resolveConfiguredDialect()`
+  // therefore has exactly ONE caller left in the subtree, `getConnectionPool()` in
+  // `../repositories/mysql/connection.js:L1360`, which an `executor` override bypasses
+  // outright.
   const dialect = resolveDialect(config.dialect);
 
   assertMySqlDialect(dialect, DIALECT_DECISION_SITE);
@@ -4850,28 +5011,37 @@ async function createModuleScopeGraph(overrides: CompositionOverrides): Promise<
  * `pool`, `feed` and `currency` are handed over as they stand. Each is already a frozen shape of
  * numbers, public hostnames and public reference data, and re-copying them would suggest a redaction
  * that is not happening.
+ *
+ * ★ THE PROJECTION AND ITS ONE REBUILT MEMBER ARE FROZEN. `appConfig` and `config.database` are
+ * frozen, so a projection of them that was not would be the one mutable step in the chain - QA
+ * testing (INFO-2) found exactly that, with `root.diagnostics.database = {}` succeeding. Freezing
+ * changes nothing a reader can observe and makes a write a `TypeError` rather than a silent
+ * substitution of a diagnostic surface another consumer holds.
  */
 function projectCompositionDiagnostics(config: AppConfig): CompositionDiagnostics {
-  return {
+  return Object.freeze({
     environment: config.environment,
     dialect: config.dialect,
-    database: config.database.toJSON(),
+    database: Object.freeze(config.database.toJSON()),
     pool: config.pool,
-    tls: {
+    tls: Object.freeze({
       mode: config.tls.mode,
       minimumVersion: config.tls.minimumVersion,
       certificateAuthorityConfigured: config.tls.certificateAuthority !== undefined,
-    },
+    }),
     feed: config.feed,
     currency: config.currency,
-  };
+  });
 }
 
 /** Wrap the tier-1 graph in the published accessor. */
 async function createCompositionRoot(overrides: CompositionOverrides): Promise<CompositionRoot> {
   const graph = await createModuleScopeGraph(overrides);
 
-  return {
+  // Frozen, for the reason recorded on `projectRequestScope`: this is a published object, every
+  // tier-1 object beside it is frozen, and QA testing (INFO-2) found the root and its diagnostics
+  // mutable while `appConfig` and the settings table were not.
+  return Object.freeze({
     // `graph.config` STAYS INSIDE THE CLOSURE. What crosses the boundary is the redacted projection,
     // so `AppConfig` - and with it the database credential - is unreachable from the returned root.
     diagnostics: projectCompositionDiagnostics(graph.config),
@@ -4882,7 +5052,7 @@ async function createCompositionRoot(overrides: CompositionOverrides): Promise<C
       createRequestScope(graph, input ?? {}),
     createInspectableRequestScope: (input?: RequestScopeInput): Promise<InspectableRequestScope> =>
       createInspectableRequestScope(graph, input ?? {}),
-  };
+  });
 }
 
 /**
@@ -5130,6 +5300,33 @@ function createRequestGraph(
   // promotions, sale prices and the feed evaluating against different instants
   // changes the amount a customer is charged.
   //
+  // ★ A NON-FINITE INSTANT IS REFUSED HERE, WHICH IS THE ONLY PLACE IT CAN BE REFUSED
+  // CHEAPLY. `new Date('nonsense').getTime()` is `NaN`, and QA testing followed one all
+  // the way to the database: the scope was created without complaint, and
+  // `MySqlPriceGroupRepository.getAccountSubscriptionPriceGroups` bound
+  // `[null, 'a', null]` - because the repository's date-to-parameter conversion maps a
+  // non-finite instant to `null` BEFORE binding, so `connection.ts`'s own
+  // `SqlParameterError` guard (which does reject a bound invalid `Date`) never fired.
+  // Both date predicates of the subscription-eligibility window
+  // [model/dao/PriceGroupDAO.cfc:L65,L70] then compared against SQL NULL, which is never
+  // true, and the account SILENTLY LOST ITS SUBSCRIPTION PRICE GROUP - a wrong price with
+  // no error anywhere.
+  //
+  // A `TypeError` rather than a named domain error, matching
+  // `assertSingleConfigurationAuthority` above: an invalid `Date` is a caller programming
+  // error at the handler seam, not a data condition and not a configuration condition. It
+  // is raised BEFORE the clock exists, so no adapter, no service and no statement is built
+  // from it, and the message names the member without echoing what was passed.
+  if (!Number.isFinite(requestEpochMilliseconds)) {
+    throw new TypeError(
+      'RequestScopeInput.now is an invalid Date: its time value is not finite. Every date-dependent ' +
+        'read of a request - the promotion-period window, the sale-price reduction, the ' +
+        'subscription-eligibility window and the feed build stamp - resolves to this instant, and a ' +
+        'non-finite one becomes SQL NULL rather than a comparison, which silently answers "no match" ' +
+        'and changes the price a customer is charged. Omit the member to use the wall clock.',
+    );
+  }
+
   // It reads no clock: it answers the instant already captured above. `PromotionPeriod`
   // hydration receives the same value through the adapter, which copies again before
   // handing it to an entity.
@@ -5153,8 +5350,17 @@ function createRequestGraph(
   // exactly the L265-L266 else arm. The type is honoured as
   // `src/domain/ports/priceGroupRepository.ts` declares it and is not extended.
   // It is constructed PER REQUEST and never read from `../lib/config.js`.
-  const currentAccountContext: CurrentAccountContext =
-    input.accountID === undefined ? {} : { accountID: input.accountID };
+  //
+  // ★ FROZEN, FOR CONSISTENCY WITH EVERY OTHER PUBLISHED OBJECT IN THIS FILE. `appConfig`,
+  // `config.database`, the settings table, the pool executor and `UNATTRIBUTED_AUDIT_ACTOR`
+  // are all `Object.freeze`d, and QA testing (INFO-2) recorded that the request tier was
+  // not: `scope.currentAccountContext.accountID = 'HACK'` succeeded, with the compile-time
+  // `readonly` as the only boundary. There is no isolation impact - every request gets its
+  // own context and no in-repo mutator exists - but freezing makes the two halves of one
+  // rule agree and turns a silent write into a `TypeError`.
+  const currentAccountContext: CurrentAccountContext = Object.freeze(
+    input.accountID === undefined ? {} : { accountID: input.accountID },
+  );
 
   // --- The audit actor, per request (T6 applied to the last holdout) -------
   // S-07. `HibachiEntity` stamped both account columns from ambient scope
@@ -5829,19 +6035,21 @@ async function createInspectableRequestScope(
 ): Promise<InspectableRequestScope> {
   const requestGraph = await assembleRequestGraph(graph, input);
 
-  return {
+  // Frozen at both levels, for the reason recorded on `projectRequestScope`: the two halves are
+  // published objects and every other published object in this file is frozen.
+  return Object.freeze({
     scope: projectRequestScope(requestGraph, input),
     // Copied out member by member rather than spread from the graph, so that a member added to
     // `RequestGraph` later cannot arrive on this surface without someone deciding it should.
-    adapters: {
+    adapters: Object.freeze({
       productRepository: requestGraph.productRepository,
       skuRepository: requestGraph.skuRepository,
       optionRepository: requestGraph.optionRepository,
       productTypeRepository: requestGraph.productTypeRepository,
       promotionRepository: requestGraph.promotionRepository,
       priceGroupRepository: requestGraph.priceGroupRepository,
-    },
-  };
+    }),
+  });
 }
 
 /**
@@ -5875,7 +6083,12 @@ async function assembleRequestGraph(
  * them out. They remain on the graph, where the services that need them already hold them.
  */
 function projectRequestScope(requestGraph: RequestGraph, input: RequestScopeInput): RequestScope {
-  return {
+  // ★ FROZEN, for the reason recorded on `currentAccountContext` in `createRequestGraph`: every
+  // tier-1 object this file publishes is frozen, QA testing (INFO-2) found the request tier mutable,
+  // and the compile-time `readonly` erases at emit. Freezing is shallow by design - the members are
+  // services and adapters whose own state is theirs to manage - so what this closes is the
+  // substitution of a whole member on a scope another consumer holds.
+  return Object.freeze({
     now: requestGraph.now,
     currentAccountContext: requestGraph.currentAccountContext,
     roundingRuleService: requestGraph.roundingRuleService,
@@ -5891,7 +6104,7 @@ function projectRequestScope(requestGraph: RequestGraph, input: RequestScopeInpu
     getSalePriceDetailsForProductSkus: requestGraph.getSalePriceDetailsForProductSkus,
     updateOrderAmountsWithPriceGroupsThenPromotions:
       requestGraph.updateOrderAmountsWithPriceGroupsThenPromotions,
-  };
+  });
 }
 
 /**

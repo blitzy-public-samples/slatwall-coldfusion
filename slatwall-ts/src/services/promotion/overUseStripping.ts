@@ -275,6 +275,26 @@ import type {
   PromotionRewardUsageDetails,
 } from '../../domain/promotionEngine/rewardUsageTypes.js';
 import type { Money } from '../../domain/valueObjects/money.js';
+import { cfEquals, structGet } from '../../lib/cfml/struct.js';
+
+// ★ CFML KEY AND COMPARISON SEMANTICS ARE FOLDED HERE, THE SAME WAY
+// `./promotionApplication.ts` FOLDS THEM. A superseded revision of this module read both structures
+// with plain bracket access and compared reward identifiers with `===`, while the application pass
+// immediately downstream read the SAME accumulator through `structKeyExists` + `structGet`. Two
+// modules therefore disagreed about the same structure: an `orderItemID` differing only in case
+// RESOLVED in the application pass and RAISED here, and a candidate whose `promotionRewardID`
+// differed only in case failed to match here and left an over-used discount in place. CFML treats
+// struct keys and `==` on strings as case-insensitive at BOTH sites
+// [model/service/PromotionService.cfc:L482-L483, L498-L499, L529], so the folding is parity rather
+// than leniency, and having one module fold while its neighbour does not is a defect in its own
+// right regardless of whether a case-differing identifier is reachable today.
+//
+// WHAT THIS DOES NOT CHANGE: a GENUINELY ABSENT key still raises from both resolvers below - folding
+// case does not invent an entry - so the legacy runtime failures at L472/L475-L477 and L482/L498 are
+// preserved exactly. `cfEquals` is total over the two `string` operands it is given here and cannot
+// raise; and because it agrees with `===` on equal spellings, a sale-price record's empty-string
+// `promotionRewardID` still matches no real reward ID, so sale-price discounts remain structurally
+// immune to use-limit stripping.
 
 /**
  * One accumulator entry located by a descending scan, paired with the array index it was found at.
@@ -307,8 +327,13 @@ function resolveLedgerEntry(
   promotionRewardUsageDetails: PromotionRewardUsageDetails,
   promotionRewardID: string,
 ): PromotionRewardUsageDetail {
-  const usageDetail: PromotionRewardUsageDetail | undefined =
-    promotionRewardUsageDetails[promotionRewardID];
+  // `structGet`, not a bracket read: the ledger is a CFML struct and its keys fold case, exactly as
+  // `./rewardUsageLedger.ts` seeds and finds them. An absent key still yields `undefined` and still
+  // raises below.
+  const usageDetail: PromotionRewardUsageDetail | undefined = structGet(
+    promotionRewardUsageDetails,
+    promotionRewardID,
+  );
 
   if (usageDetail === undefined) {
     throw new Error(
@@ -338,8 +363,13 @@ function resolveQualifiedDiscountsForOrderItem(
   orderItemQualifiedDiscounts: OrderItemQualifiedDiscounts,
   orderItemID: string,
 ): QualifiedDiscount[] {
-  const qualifiedDiscounts: QualifiedDiscount[] | undefined =
-    orderItemQualifiedDiscounts[orderItemID];
+  // `structGet`, not a bracket read: the accumulator is a CFML struct and `./promotionApplication.ts`
+  // already reads this same structure case-insensitively. An absent key still yields `undefined` and
+  // still raises below, which is the legacy behaviour at L482 and L498.
+  const qualifiedDiscounts: QualifiedDiscount[] | undefined = structGet(
+    orderItemQualifiedDiscounts,
+    orderItemID,
+  );
 
   if (qualifiedDiscounts === undefined) {
     throw new Error(
@@ -372,10 +402,18 @@ function resolveQualifiedDiscountsForOrderItem(
 // with this search.
 //
 // CFML parity [model/service/PromotionService.cfc:L483, L499]: the legacy tests use CFML `==`,
-// loose and case-insensitive on strings; the target uses strict `===`, safe here because BOTH
-// operands are `getPromotionRewardID()` values produced within a single invocation (the accumulator
-// entry's `promotionRewardID`, written at L275 and L289, against the ledger's own key, written at
-// L173), so there is no path by which their casing could diverge.
+// loose and case-insensitive on strings, so the target uses `cfEquals` from
+// `../../lib/cfml/struct.js` rather than `===`. A superseded revision used `===` and justified it on
+// the ground that BOTH operands are `getPromotionRewardID()` values produced within a single
+// invocation (the accumulator entry's `promotionRewardID`, written at L275 and L289, against the
+// ledger's own key, written at L173) so their casing could not diverge. That reachability argument
+// was sound and is unchanged - but it is an argument about the CALLERS, not about this predicate, and
+// it made this module the one place in the folder that compared identifiers case-sensitively while
+// its neighbour `./promotionApplication.ts` matched keys case-insensitively. Folding here is what
+// makes the predicate correct on its own terms: it agrees with `===` on every equal spelling, so no
+// current outcome moves, and it no longer silently leaves an over-used discount in place if an
+// identifier is ever re-derived upstream. The empty-string `promotionRewardID` a sale-price seed
+// carries [L156] still matches no real reward ID, so sale-price immunity is untouched.
 //
 // The `undefined` check inside the loop is a type narrowing, not a behavioural branch: `y` is
 // always within `[0, length)` and both buckets are dense, so the element can never be absent.
@@ -386,7 +424,7 @@ function findLastRewardDiscount(
   for (let y = qualifiedDiscounts.length - 1; y >= 0; y -= 1) {
     const candidate: QualifiedDiscount | undefined = qualifiedDiscounts[y];
 
-    if (candidate !== undefined && candidate.promotionRewardID === promotionRewardID) {
+    if (candidate !== undefined && cfEquals(candidate.promotionRewardID, promotionRewardID)) {
       return { index: y, discount: candidate };
     }
   }

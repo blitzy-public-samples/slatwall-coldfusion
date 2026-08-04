@@ -347,6 +347,26 @@ const REQUIRED_CONFIGURATION: readonly (readonly [string, string])[] = Object.fr
 
 const DIALECT_VARIABLE_NAME = 'DB_DIALECT';
 
+/**
+ * The dialect this suite builds statements FOR, supplied as an ARGUMENT.
+ *
+ * ★ IT IS A LITERAL HERE BECAUSE IT IS A LITERAL IN THE ADAPTER. `MysqlPromotionRepository` declares
+ * `STATEMENT_DIALECT` as a module constant pinned by `assertMySqlDialect` - the same shape
+ * `mysqlProductRepository.ts`, `mysqlProductTypeRepository.ts` and `mysqlPriceGroupRepository.ts`
+ * use - and hands it to `buildSalePricePromotionRewardsStatement`. The builder previously called
+ * `resolveConfiguredDialect()` in its own body, so a statement could not be built without the five
+ * no-default `DB_*` variables present in `process.env`; every statement-shape assertion below now
+ * runs with the process UNCONFIGURED, which is what `tests/setup.ts` requires of a committed suite.
+ *
+ * The configuration seam is still asserted, in `the dialect contract` describe below - but against
+ * the functions that genuinely own it (`resolveConfiguredDialect`, `resolveDialect`) and against the
+ * builder's refusal of a non-MySQL ARGUMENT, rather than against an environment read hidden inside a
+ * statement builder. `applyConfiguration()`/`applyMySqlConfiguration()` are therefore called only by
+ * the cases whose SUBJECT is configuration, never by a describe that merely asserts statement shape,
+ * and the "composes with no configuration at all" cases gate against the ambient read ever returning.
+ */
+const STATEMENT_DIALECT: DatabaseDialect = 'MySQL';
+
 function applyConfiguration(dialectSpelling: string | undefined): void {
   appConfig.reset();
 
@@ -2227,17 +2247,94 @@ const SALE_PRICE_CTE_NAMES: readonly string[] = Object.freeze([
   'skuPrice',
 ]);
 
-describe('salePricePromotionRewards - the six UNION branches', () => {
+describe('salePricePromotionRewards is a PURE builder that reads no configuration', () => {
+  // ★ THE GATE FOR THE AMBIENT-CONFIGURATION DEFECT. `buildSalePricePromotionRewardsStatement` once
+  // called `resolveConfiguredDialect()` inside its own body, so composing a SQL string loaded the
+  // validated application configuration and raised `ConfigurationError` unless `DB_HOST`, `DB_USER`,
+  // `DB_PASSWORD`, `DB_TLS_MODE` and `DB_DIALECT` were ALL set - four of which the statement never
+  // used. That is ambient state, which AAP transformation rule T6 forbids ("No ambient state"), and
+  // it broke the EMPTY-ENVIRONMENT GUARANTEE `tests/setup.ts` states for the whole suite. These cases
+  // establish the environment is genuinely EMPTY rather than merely unstubbed, so they cannot pass
+  // for the wrong reason on a developer machine that happens to export the variables.
   beforeEach(() => {
-    applyMySqlConfiguration();
+    applyConfiguration(undefined);
+
+    for (const [name] of REQUIRED_CONFIGURATION) {
+      vi.stubEnv(name, undefined);
+    }
   });
 
   afterEach(() => {
     revertConfiguration();
   });
 
+  it('composes every arity with EVERY DB_* variable deleted', () => {
+    // Every reachable input shape, so the guarantee covers the branch that binds `productID` as well
+    // as the one that omits it, and the empty-string case the six `structKeyExists` guards preserve.
+    const absent = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
+    const present = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+      productID: 'product-1',
+    });
+    const presentButEmpty = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+      productID: '',
+    });
+
+    expect(absent.params).toHaveLength(18);
+    expect(present.params).toHaveLength(24);
+    expect(presentButEmpty.params).toHaveLength(24);
+
+    // The MySQL fragment is emitted from the SUPPLIED dialect, with nothing read on its behalf.
+    expect(absent.sql).toContain(
+      materializedIdPathLikePatternFragment(
+        STATEMENT_DIALECT,
+        'SwPromoRewardProductType.productTypeID',
+      ),
+    );
+  });
+
+  it('is deterministic in the dialect it is handed, and refuses an unimplemented one', () => {
+    // The dialect decides a FRAGMENT, never a bound value: it must not appear among the parameters,
+    // and an engine this port does not implement is refused rather than served the MySQL text.
+    const statement = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
+
+    expect(statement.params).not.toContain(STATEMENT_DIALECT);
+
+    for (const dialect of NON_MYSQL_DIALECTS) {
+      expect(() =>
+        buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT, dialect }),
+      ).toThrow(/not implemented by this port/u);
+    }
+  });
+
+  it('drives the whole repository read with no configuration, through the injected executor', async () => {
+    // The adapter supplies the dialect from its own module constant, so the composed read needs no
+    // credential either - which is what makes the statement-shape tier assertable with no database.
+    const { executor, repository } = makeSubject([[salePriceRow()]]);
+
+    const rows = await repository.getSalePricePromotionRewardsQuery('product-1');
+
+    expect(rows).toHaveLength(1);
+    expect(requireOnlyCall(executor).params).toHaveLength(24);
+    expect(executor.mutationCalls).toHaveLength(0);
+  });
+});
+
+describe('salePricePromotionRewards - the six UNION branches', () => {
   it('emits all six branches, each projecting the same nine columns in the same order', () => {
-    const { sql } = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
+    const { sql } = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
 
     expect(SALE_PRICE_BRANCHES).toHaveLength(6);
 
@@ -2250,7 +2347,10 @@ describe('salePricePromotionRewards - the six UNION branches', () => {
   });
 
   it('preserves each branch-specific join chain', () => {
-    const { sql } = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
+    const { sql } = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
 
     expect(sql).toContain('SwPromoRewardSku on SwPromoRewardSku.skuID = SwSku.skuID');
     expect(sql).toContain(
@@ -2267,7 +2367,10 @@ describe('salePricePromotionRewards - the six UNION branches', () => {
   });
 
   it('binds the three global reward types rather than inlining them', () => {
-    const statement = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
+    const statement = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
 
     expect(statement.sql).toContain(`prGlobal.rewardType IN (${placeholderList(3)})`);
 
@@ -2284,7 +2387,10 @@ describe('salePricePromotionRewards - the six UNION branches', () => {
   });
 
   it('emits the whole reduction as one statement, never several separated by a semicolon', () => {
-    const { sql } = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
+    const { sql } = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
 
     expect(sql).not.toContain(';');
     expect(sql.startsWith('WITH ')).toBe(true);
@@ -2292,16 +2398,11 @@ describe('salePricePromotionRewards - the six UNION branches', () => {
 });
 
 describe('salePricePromotionRewards - the optional productID filter', () => {
-  beforeEach(() => {
-    applyMySqlConfiguration();
-  });
-
-  afterEach(() => {
-    revertConfiguration();
-  });
-
   it('omits both the clause and its bound value when no productID is supplied', () => {
-    const statement = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
+    const statement = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
 
     expect(statement.sql).not.toContain('SwSku.productID = ?');
     expect(statement.params).toHaveLength(18);
@@ -2331,6 +2432,7 @@ describe('salePricePromotionRewards - the optional productID filter', () => {
     // `MIN(salePrice)` reduction, so the two readings do not merely differ in shape.
     const statement = buildSalePricePromotionRewardsStatement({
       now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
       productID: 'product-1',
     });
 
@@ -2344,6 +2446,7 @@ describe('salePricePromotionRewards - the optional productID filter', () => {
   it('binds the productID after each branch own window predicates', () => {
     const statement = buildSalePricePromotionRewardsStatement({
       now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
       productID: 'product-1',
     });
     const productIndexes = statement.params
@@ -2360,6 +2463,7 @@ describe('salePricePromotionRewards - the optional productID filter', () => {
     // [model/dao/PromotionDAO.cfc:L538]. It is not intercepted and not silently dropped.
     const statement = buildSalePricePromotionRewardsStatement({
       now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
       productID: '',
     });
 
@@ -2370,16 +2474,11 @@ describe('salePricePromotionRewards - the optional productID filter', () => {
 });
 
 describe('salePricePromotionRewards - the query-of-queries steps rewritten as CTEs', () => {
-  beforeEach(() => {
-    applyMySqlConfiguration();
-  });
-
-  afterEach(() => {
-    revertConfiguration();
-  });
-
   it('names its four CTEs after the legacy query variables verbatim', () => {
-    const { sql } = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
+    const { sql } = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
 
     expect(sql).toContain(`WITH ${SALE_PRICE_CTE_NAMES[0] ?? ''} AS (`);
 
@@ -2392,7 +2491,10 @@ describe('salePricePromotionRewards - the query-of-queries steps rewritten as CT
     // CFML parity [model/dao/PromotionDAO.cfc:L544-L559]: the `SELECT DISTINCT` is LOAD-BEARING. The
     // UNION already de-duplicates within a branch, but the join against the gate set can re-multiply
     // rows, and without DISTINCT a SKU could contribute the same discount more than once.
-    const { sql } = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
+    const { sql } = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
 
     expect(sql).toContain(STEP_ONE_PROJECTION);
     expect(sql).toContain(
@@ -2407,7 +2509,10 @@ describe('salePricePromotionRewards - the query-of-queries steps rewritten as CT
   });
 
   it('reproduces step two - MIN(salePrice) grouped by skuID', () => {
-    const { sql } = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
+    const { sql } = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
 
     expect(sql).toContain('MIN(salePrice) as salePrice');
     expect(sql).toContain('    GROUP BY\n        skuID');
@@ -2417,7 +2522,10 @@ describe('salePricePromotionRewards - the query-of-queries steps rewritten as CT
   });
 
   it('reproduces step three - the eight-column join-back on both skuID and salePrice', () => {
-    const { sql } = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
+    const { sql } = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
 
     expect(sql).toContain(STEP_THREE_PROJECTION);
     expect(sql).toContain('    noQualifierDiscounts.skuID = skuPrice.skuID');
@@ -2432,20 +2540,15 @@ describe('salePricePromotionRewards - the query-of-queries steps rewritten as CT
 });
 
 describe('salePricePromotionRewards - ties survive, with no invented tiebreaker', () => {
-  beforeEach(() => {
-    applyMySqlConfiguration();
-  });
-
-  afterEach(() => {
-    revertConfiguration();
-  });
-
   it('adds no ORDER BY, no LIMIT and no secondary sort to the final projection', () => {
     // CFML parity [model/dao/PromotionDAO.cfc:L571-L588]: step three has no DISTINCT, no ORDER BY and
     // no LIMIT, so two rows sharing a SKU's minimum sale price BOTH survive. Adding `LIMIT 1`, a
     // secondary sort, a most-recent-wins rule or a reward-identifier ordering would pick a winner the
     // legacy never picked - and the winner decides the price shown.
-    const { sql } = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
+    const { sql } = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
     const finalProjection = sql.slice(sql.lastIndexOf(STEP_THREE_PROJECTION));
 
     expect(finalProjection).not.toMatch(/order\s+by/i);
@@ -2506,14 +2609,6 @@ describe('salePricePromotionRewards - ties survive, with no invented tiebreaker'
 });
 
 describe('salePricePromotionRewards - the captured instant', () => {
-  beforeEach(() => {
-    applyMySqlConfiguration();
-  });
-
-  afterEach(() => {
-    revertConfiguration();
-  });
-
   it('binds one instant into all fourteen timestamp placeholders and emits no SQL NOW()', () => {
     // CFML parity [model/dao/PromotionDAO.cfc:L306]: `timeNow = now()` is captured ONCE. ONE CAPTURED
     // INSTANT IS BOUND TO FOURTEEN TIMESTAMP PLACEHOLDERS ACROSS SEVEN WINDOWS - the gate's own start
@@ -2521,7 +2616,10 @@ describe('salePricePromotionRewards - the captured instant', () => {
     // start and an end bound in each of the six UNION branches. Emitting SQL `NOW()` instead would
     // let the database clock drift between the gate and the branches, and a period could then be
     // inside one window and outside another within a single statement.
-    const statement = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
+    const statement = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
     const instants = statement.params.filter((value): value is Date => value instanceof Date);
 
     expect(instants).toHaveLength(14);
@@ -2536,7 +2634,10 @@ describe('salePricePromotionRewards - the captured instant', () => {
   });
 
   it('accounts for every bound value as two gate windows, two per branch, the flag and three types', () => {
-    const statement = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
+    const statement = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
 
     // The whole eighteen-value bind array, derived rather than asserted as a bare number: the gate
     // contributes its start and end window, each of the six branches contributes its own start and end
@@ -2600,14 +2701,6 @@ describe('salePricePromotionRewards - the captured instant', () => {
 });
 
 describe('salePricePromotionRewards - the gate window and the activeFlag binding shape', () => {
-  beforeEach(() => {
-    applyMySqlConfiguration();
-  });
-
-  afterEach(() => {
-    revertConfiguration();
-  });
-
   it('makes the gate window INCLUSIVE at both ends', () => {
     // CFML parity: THREE DISTINCT DATE WINDOWS exist in the promotion slice and none of them may be
     // conflated with another.
@@ -2618,7 +2711,10 @@ describe('salePricePromotionRewards - the gate window and the activeFlag binding
     //   3. `PromotionPeriod.isCurrent()` [model/entity/PromotionPeriod.cfc:L78] - start-INCLUSIVE and
     //      end-EXCLUSIVE, owned by the entity's own unit suite.
     // A period whose start equals the captured instant passes this gate and fails window 2.
-    const { sql } = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
+    const { sql } = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
 
     expect(sql).toContain(
       '(SwPromotionPeriod.startDateTime is null or SwPromotionPeriod.startDateTime <= ?)',
@@ -2631,7 +2727,10 @@ describe('salePricePromotionRewards - the gate window and the activeFlag binding
   });
 
   it('makes every branch window inclusive too, and null-tolerant at both ends', () => {
-    const { sql } = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
+    const { sql } = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
 
     for (const { period } of SALE_PRICE_BRANCHES) {
       expect(sql).toContain(`(${period}.startDateTime is null or ${period}.startDateTime <= ?)`);
@@ -2646,7 +2745,10 @@ describe('salePricePromotionRewards - the gate window and the activeFlag binding
     // same value. TARGET NORMALIZATION, NOT PRESERVED PARITY: this port canonicalises both sites to
     // one numeric bind rather than reproducing the two shapes, which is an improvement over the
     // in-file inconsistency; what the assertion below pins is that neither site inlines the literal.
-    const statement = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
+    const statement = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
 
     expect(statement.sql).toContain('SwPromotion.activeFlag = ?');
     expect(statement.sql).not.toContain('SwPromotion.activeFlag = 1');
@@ -2660,7 +2762,10 @@ describe('salePricePromotionRewards - the gate window and the activeFlag binding
     // These two gates are the entire reason the set is called the NO-QUALIFIER set: a period with any
     // qualifier, or a promotion with any code, is excluded outright. Rewriting either as
     // `LEFT JOIN ... IS NULL` or as `NOT IN` changes NULL handling and therefore changes the row set.
-    const { sql } = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
+    const { sql } = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
 
     expect(sql).toContain(
       'NOT EXISTS(SELECT promotionPeriodID FROM SwPromoQual WHERE SwPromoQual.promotionPeriodID = SwPromotionPeriod.promotionPeriodID)',
@@ -2677,7 +2782,10 @@ describe('salePricePromotionRewards - the gate window and the activeFlag binding
     // carry a product, brand, option or product-type link, but NOT rewards that carry a SKU link, so a
     // SKU-scoped reward is also counted as global and competes for the MIN sale price.
     // Preserved deliberately; do not fix without a product decision.
-    const { sql } = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
+    const { sql } = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
     const globalBranch = sql.slice(sql.indexOf("'global' as discountLevel"));
 
     for (const table of [
@@ -2698,20 +2806,15 @@ describe('salePricePromotionRewards - the gate window and the activeFlag binding
 });
 
 describe('salePricePromotionRewards - the CASE with no ELSE arm', () => {
-  beforeEach(() => {
-    applyMySqlConfiguration();
-  });
-
-  afterEach(() => {
-    revertConfiguration();
-  });
-
   // LEGACY-DEFECT [model/dao/PromotionDAO.cfc:L338-L342]: the three-arm CASE has no ELSE, so an
   // unrecognized amountType yields NULL salePrice; MIN(salePrice) ignores NULLs and the step-3
   // equality join on salePrice can never match NULL, so those rows are silently dropped twice.
   // Preserved deliberately; do not fix without a product decision.
   it('emits three arms with no ELSE and no COALESCE, in every branch', () => {
-    const { sql } = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
+    const { sql } = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
 
     expect(sql).not.toMatch(/\bELSE\b/i);
     expect(sql).not.toMatch(/\bCOALESCE\b/i);
@@ -2728,7 +2831,10 @@ describe('salePricePromotionRewards - the CASE with no ELSE arm', () => {
     // untouched; the rounding happens at `model/service/PromotionService.cfc:L1025-L1026`, gated on an
     // EMPTY-STRING check, after the reduction has already chosen a winner. Rounding inside the SQL
     // would change which row wins the MIN.
-    const { sql } = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
+    const { sql } = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
 
     expect(sql).toContain('roundingRuleID as roundingRuleID,');
     expect(sql).not.toContain('SwRoundingRule');
@@ -2806,14 +2912,6 @@ describe('salePricePromotionRewards - the CASE with no ELSE arm', () => {
 });
 
 describe('salePricePromotionRewards - the eliminated dead locals and scope leak', () => {
-  beforeEach(() => {
-    applyMySqlConfiguration();
-  });
-
-  afterEach(() => {
-    revertConfiguration();
-  });
-
   // LEGACY-DEFECT [model/dao/PromotionDAO.cfc:L303] - IDENTIFIED, NOT REPRODUCED: dead locals sit
   // alongside an un-var'd `<cfquery name="...">` whose result set leaks into the component variables
   // scope [model/dao/PromotionDAO.cfc:L309].
@@ -2869,20 +2967,15 @@ describe('salePricePromotionRewards - the eliminated dead locals and scope leak'
 });
 
 describe('salePricePromotionRewards - the unanchored LIKE dialect site', () => {
-  beforeEach(() => {
-    applyMySqlConfiguration();
-  });
-
-  afterEach(() => {
-    revertConfiguration();
-  });
-
   it('emits the MySQL concat arm exactly, unanchored on both sides', () => {
     // CFML parity [model/dao/PromotionDAO.cfc:L482-L488]: an UNANCHORED substring LIKE over a
     // comma-delimited materialized path. There is no comma anchoring and no FIND_IN_SET, so a
     // productTypeID of "abc" matches a path containing "xxabcyy". That over-matching decides whether a
     // product-type reward applies, and therefore decides money - so it is reproduced, not improved.
-    const { sql } = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
+    const { sql } = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
 
     expect(sql).toContain(
       "SwPromoRewardProductType on SwProductType.productTypeIDPath LIKE concat('%', SwPromoRewardProductType.productTypeID, '%')",
@@ -2933,6 +3026,13 @@ describe('salePricePromotionRewards - the unanchored LIKE dialect site', () => {
   });
 
   it('resolves the configured dialect through the config surface rather than the environment', () => {
+    // ★ THIS IS THE ONE CASE IN THIS DESCRIBE THAT NEEDS CONFIGURATION, AND IT CONFIGURES ITSELF.
+    // Every other case here asserts EMITTED TEXT, which no longer depends on the environment at all -
+    // so the describe-level `beforeEach` that used to stub five `DB_*` variables for all of them is
+    // gone. This case exercises `resolveConfiguredDialect`, whose entire job is to read configuration,
+    // so it supplies one explicitly and the `afterEach` below reverts it.
+    applyMySqlConfiguration();
+
     // `src/lib/config.ts` SUPPLIES and `dialect.ts` INTERPRETS - and neither reads the environment on
     // this suite's behalf, because the configuration is stubbed explicitly above. The mixed-case
     // `mySql` spelling three legacy sites actually use is what is configured, and it normalizes at the
@@ -2941,6 +3041,14 @@ describe('salePricePromotionRewards - the unanchored LIKE dialect site', () => {
     expect(appConfig.load().dialect).toBe('MySQL');
     expect(resolveDialect('mySql')).toBe('MySQL');
     expect(resolveDialect(appConfig.load().dialect)).toBe(resolveConfiguredDialect());
+
+    // And the value the adapter builds statements from is the SAME dialect, which is what makes an
+    // argument safe where an environment read was not.
+    expect(resolveConfiguredDialect()).toBe(STATEMENT_DIALECT);
+  });
+
+  afterEach(() => {
+    revertConfiguration();
   });
 });
 
@@ -2964,40 +3072,81 @@ describe('the dialect contract - no fallback, no silent default', () => {
     revertConfiguration();
   });
 
-  it('raises when the dialect is unset, and issues no statement at all', async () => {
-    // CFML parity [config/configORM.cfm:L4-L7]: the legacy datasource probe sits inside a `<cftry>`
-    // whose catch includes `nodatasource.cfm` and then `<cfabort/>`. A probe failure is TERMINAL. The
-    // port reproduces that terminality: an unconfigured process gets an error, never a statement built
-    // against a guessed engine.
+  it('★ COMPOSES AND EXECUTES THE SALE-PRICE READ WITH NO CONFIGURATION AT ALL', async () => {
+    // QUOTE-THEN-REVISE: THIS CASE ONCE ASSERTED THE OPPOSITE, AND THE ASSERTION WAS THE DEFECT. It
+    // read "raises when the dialect is unset, and issues no statement at all", asserting that
+    // `getSalePricePromotionRewardsQuery()` REJECTED whenever the five no-default `DB_*` variables
+    // were absent - and it passed, because `buildSalePricePromotionRewardsStatement` called
+    // `resolveConfiguredDialect()` inside its own body, so COMPOSING A SQL STRING loaded the whole
+    // validated configuration and raised `ConfigurationError` naming five `DB_*` variables, four of
+    // which the statement never used. That is ambient state, which AAP transformation rule T6 forbids
+    // outright, and it broke the EMPTY-ENVIRONMENT GUARANTEE `tests/setup.ts` states for the whole
+    // suite. QA testing recorded that shipped behaviour as a MAJOR defect: under the sanctioned
+    // credential-free composition (`bootstrapCompositionRoot({ environment, executor })`) the read
+    // threw, and with it the product feed, `getSalePriceDetailsForProductSkus`
+    // [model/service/PromotionService.cfc:L1022] and 19 shipped tests in
+    // `tests/unit/handlers/bootstrap.test.ts`.
+    //
+    // The CFML parity claim the old case rested on does not support it either. The legacy probe
+    // [config/configORM.cfm:L4-L7] runs ONCE at application startup and aborts the request there;
+    // `getApplicationValue("databaseType")` [model/dao/PromotionDAO.cfc:L482] then reads APPLICATION
+    // scope, which is a resolved value and not a fresh probe. A per-query configuration read is
+    // therefore LESS faithful than an argument, not more.
+    //
+    // The terminality of a failed datasource probe is NOT lost by this change; it simply lives where
+    // the legacy actually put it. `resolveConfiguredDialect()` still raises on an unconfigured
+    // process - asserted immediately below and in the three cases after this one - the composition
+    // root calls it once, at startup, before any repository exists and refuses to compose under a
+    // non-MySQL dialect, and `connection.ts` refuses to build a pool. Both are asserted in
+    // `tests/unit/handlers/bootstrap.test.ts` and `tests/unit/repositories/connection.test.ts`. What
+    // no longer happens is a STRING BUILDER demanding a host, an account and a password.
     applyConfiguration(undefined);
 
     const { executor, repository } = makeSubject([[salePriceRow()]]);
 
-    await expect(repository.getSalePricePromotionRewardsQuery()).rejects.toThrow();
-    expect(executor.calls).toHaveLength(0);
+    await expect(repository.getSalePricePromotionRewardsQuery()).resolves.toHaveLength(1);
+    expect(executor.calls).toHaveLength(1);
     expect(executor.mutationCalls).toHaveLength(0);
+
+    // The statement is byte-identical to the one the configured-dialect describes assert, and its
+    // bind census is the documented eighteen.
+    const call = requireOnlyCall(executor);
+
+    expect(call.sql).toBe(
+      buildSalePricePromotionRewardsStatement({
+        now: EXPLICIT_UTC_INSTANT,
+        dialect: STATEMENT_DIALECT,
+      }).sql,
+    );
+    expect(call.params).toHaveLength(18);
+
+    // And the configured-dialect path, which is the composition root's business, still refuses an
+    // unconfigured process rather than guessing at an engine.
+    expect(messageRaisedBy(() => resolveConfiguredDialect())).toContain(DIALECT_VARIABLE_NAME);
   });
 
-  it('raises for a blank dialect exactly as it does for an absent one', () => {
+  it('raises when the CONFIGURED dialect is blank, exactly as it does for an absent one', () => {
+    // CFML parity [config/configORM.cfm:L4-L7]: the legacy datasource probe sits inside a `<cftry>`
+    // whose catch includes `nodatasource.cfm` and then `<cfabort/>`. A probe failure is TERMINAL, and
+    // `resolveConfiguredDialect` is the one function in this port that turns configuration into a
+    // dialect - so it is where that terminality belongs and where it is asserted. The statement
+    // builder is deliberately not exercised here: it takes the dialect as an argument and so has no
+    // configured value to reject.
     applyConfiguration('');
 
-    const message = messageRaisedBy(() =>
-      buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT }),
-    );
+    const message = messageRaisedBy(() => resolveConfiguredDialect());
 
     expect(message).toContain(DIALECT_VARIABLE_NAME);
     expect(message).toContain('required');
   });
 
-  it('raises for an unrecognized dialect, naming the variable and all three legal values', () => {
+  it('raises for an unrecognized configured dialect, naming the variable and all three legal values', () => {
     // CFML parity [config/configORM.cfm:L9-L15]: MySQL is tested FIRST and the chain ends with no
     // `<cfelse>`, so an unrecognized product never assigns a dialect and startup fails. THERE IS NO
     // FALLBACK DIALECT, and the port must not invent one.
     applyConfiguration('Postgres');
 
-    const message = messageRaisedBy(() =>
-      buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT }),
-    );
+    const message = messageRaisedBy(() => resolveConfiguredDialect());
 
     expect(message).toContain(DIALECT_VARIABLE_NAME);
     expect(message).toContain('Postgres');
@@ -3009,12 +3158,24 @@ describe('the dialect contract - no fallback, no silent default', () => {
   it('echoes no configured value into the failure message', () => {
     applyConfiguration('Postgres');
 
-    const message = messageRaisedBy(() =>
-      buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT }),
-    );
+    const message = messageRaisedBy(() => resolveConfiguredDialect());
 
     expect(message).not.toContain(UNUSED_PLACEHOLDER);
     expect(message).not.toContain(`${UNUSED_PLACEHOLDER}.invalid`);
+  });
+
+  it('refuses a non-MySQL dialect ARGUMENT rather than emitting the MySQL concatenation', () => {
+    // The builder's terminality, at the seam it now owns. A non-MySQL arm that emitted SOMETHING
+    // would be worse than an error: the statement would run and quietly match the wrong rewards,
+    // because `concat('%', c, '%')` is not portable to `||` or `+` semantics.
+    for (const dialect of NON_MYSQL_DIALECTS) {
+      const message = messageRaisedBy(() =>
+        buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT, dialect }),
+      );
+
+      expect(message).toContain('recognized but not implemented');
+      expect(message).toContain(dialect);
+    }
   });
 
   it('folds case for every MySQL spelling that appears in legacy source', () => {
@@ -3065,12 +3226,26 @@ describe('the dialect contract - no fallback, no silent default', () => {
     // computes. The DAO's `getApplicationValue("databaseType")` branches therefore read the very value
     // the ORM configuration produced - they are ONE value, not two - and collapsing them into a single
     // canonical dialect is correct rather than a simplification.
+    //
+    // ★ AND THIS IS ALSO WHERE THE ADAPTER'S CONSTANT AND THE CONFIGURED VALUE ARE PROVEN TO AGREE.
+    // `STATEMENT_DIALECT` is what the adapter hands the builder; `resolveConfiguredDialect()` is what
+    // the composition root resolves and asserts. They must be the same dialect, or the port would
+    // emit one engine's SQL while a pool was opened for another - so the equality below is a real
+    // assertion rather than a tautology, and it is the reason the builder needs no environment read of
+    // its own.
     applyMySqlConfiguration();
 
     const canonical = resolveConfiguredDialect();
-    const { sql } = buildSalePricePromotionRewardsStatement({ now: EXPLICIT_UTC_INSTANT });
+    const { sql } = buildSalePricePromotionRewardsStatement({
+      now: EXPLICIT_UTC_INSTANT,
+      dialect: STATEMENT_DIALECT,
+    });
 
+    // The canonical configured dialect and the dialect the MySQL adapter states are the SAME value,
+    // which is what makes supplying the adapter's constant equivalent to supplying the configured one
+    // - the composition root refuses any process where they could differ.
     expect(canonical).toBe('MySQL');
+    expect(canonical).toBe(STATEMENT_DIALECT);
     expect(sql).toContain(
       materializedIdPathLikePatternFragment(canonical, 'SwPromoRewardProductType.productTypeID'),
     );
@@ -3334,14 +3509,6 @@ function physicalTablesNamedBy(statements: readonly RecordedStatement[]): string
 }
 
 describe('schema continuity - the existing Sw* tables, read and never reshaped', () => {
-  beforeEach(() => {
-    applyMySqlConfiguration();
-  });
-
-  afterEach(() => {
-    revertConfiguration();
-  });
-
   it('names only physical Sw* tables that already exist', async () => {
     const statements = await collectEveryEmittedStatement();
     const named = physicalTablesNamedBy(statements);
@@ -3419,14 +3586,6 @@ describe('schema continuity - the existing Sw* tables, read and never reshaped',
 });
 
 describe('parameterized SQL exclusively - every supplied value is bound, never interpolated', () => {
-  beforeEach(() => {
-    applyMySqlConfiguration();
-  });
-
-  afterEach(() => {
-    revertConfiguration();
-  });
-
   it('binds one parameter per placeholder in every statement it emits', async () => {
     // Prepared statements are what preserves the injection-safety property `cfqueryparam` provided, and
     // an arity mismatch is the failure mode that quietly breaks it. Asserting the identity across the

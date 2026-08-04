@@ -1173,6 +1173,104 @@ describe('stripOverUsedRewardDiscounts - the ported over-use correction loop', (
       }).toThrow(/ledger has no entry/);
     });
 
+    it('★ RESOLVES AN ACCUMULATOR KEY THAT DIFFERS ONLY IN CASE, as a CFML struct does', () => {
+      // ★ THIS MODULE ONCE READ THE ACCUMULATOR CASE-SENSITIVELY WHILE ITS NEIGHBOUR READ IT
+      // CASE-INSENSITIVELY. `./promotionApplication.ts` ports L529 through `structKeyExists` +
+      // `structGet`, so an `orderItemID` differing only in case resolved there; the two scans here
+      // used plain bracket access, so the SAME identifier against the SAME structure raised "the
+      // accumulator has no bucket for orderItemID". CFML struct keys are case-insensitive at both
+      // sites [model/service/PromotionService.cfc:L482, L498, L529], so one module folding while its
+      // neighbour does not is a defect regardless of whether the input is reachable today.
+      //
+      // The unguarded-lookup contract above is untouched: a GENUINELY absent key still raises, which
+      // the two cases either side of this one assert. Folding case does not invent a bucket.
+      const ids = fixtures.opaqueOrderReferences;
+      const examinedID: string = fixtures.overusedRewardID;
+      const lowerCasedItemID = ids.orderItemID.toLowerCase();
+      const upperCasedItemID = ids.orderItemID.toUpperCase();
+
+      // The two spellings must genuinely differ, or the case would prove nothing.
+      expect(lowerCasedItemID).not.toBe(upperCasedItemID);
+
+      const ledger: PromotionRewardUsageDetails = {
+        // Over its per-order limit by one, and the usage names the LOWER-cased spelling.
+        [examinedID]: makeLedgerEntry(6, 5, [makeUsage(lowerCasedItemID, 4, '1.00')]),
+      };
+
+      // The accumulator stores the UPPER-cased spelling of the same identifier.
+      const accumulator: OrderItemQualifiedDiscounts = {
+        [upperCasedItemID]: [makeDiscount(examinedID, '8.00', fixtures.promotion)],
+      };
+
+      expect(() => {
+        stripOverUsedRewardDiscounts(ledger, accumulator, examinedID);
+      }).not.toThrow();
+
+      // The bucket was found and the discount was rewritten in place - the stripping actually
+      // happened rather than being skipped - and no second key was created under either spelling.
+      expect(Object.keys(accumulator)).toStrictEqual([upperCasedItemID]);
+
+      const described = describeAccumulator(accumulator);
+      const bucket = described[upperCasedItemID];
+
+      expect(bucket).toBeDefined();
+      expect(bucket).not.toStrictEqual([`${examinedID}@8.00`]);
+    });
+
+    it('★ MATCHES A CANDIDATE REWARD IDENTIFIER THAT DIFFERS ONLY IN CASE', () => {
+      // CFML parity [model/service/PromotionService.cfc:L483, L499]: both scans compare with CFML
+      // `==`, which is case-insensitive on strings. A superseded revision used `===` here, so a
+      // candidate whose `promotionRewardID` differed in case from the key being stripped matched
+      // NOTHING and the over-used discount survived at its full amount. `cfEquals` folds case exactly
+      // as `==` did, and it agrees with `===` on every equal spelling, so no existing outcome moves.
+      const ids = fixtures.opaqueOrderReferences;
+      const examinedID: string = fixtures.overusedRewardID;
+
+      const ledger: PromotionRewardUsageDetails = {
+        [examinedID]: makeLedgerEntry(6, 5, [makeUsage(ids.orderItemID, 4, '1.00')]),
+      };
+
+      // The accumulator record carries the same reward identifier in a different case.
+      const differentlyCasedRewardID = examinedID.toUpperCase();
+
+      expect(differentlyCasedRewardID).not.toBe(examinedID);
+
+      const accumulator: OrderItemQualifiedDiscounts = {
+        [ids.orderItemID]: [makeDiscount(differentlyCasedRewardID, '8.00', fixtures.promotion)],
+      };
+
+      stripOverUsedRewardDiscounts(ledger, accumulator, examinedID);
+
+      // Matched, and therefore stripped: the amount is no longer the 8.00 it was granted at.
+      expect(describeAccumulator(accumulator)).not.toStrictEqual({
+        [ids.orderItemID]: [`${differentlyCasedRewardID}@8.00`],
+      });
+    });
+
+    it('leaves a sale-price record alone even though the comparison now folds case', () => {
+      // The empty-string `promotionRewardID` a sale-price seed carries
+      // [model/service/PromotionService.cfc:L156] matches no real reward identifier under `cfEquals`
+      // any more than it did under `===`, so sale-price discounts remain structurally immune to
+      // use-limit stripping. `cfEquals` is asserted not to raise on an empty operand either - it
+      // raises only on null and undefined, neither of which this structure can hold.
+      const ids = fixtures.opaqueOrderReferences;
+      const examinedID: string = fixtures.overusedRewardID;
+
+      const ledger: PromotionRewardUsageDetails = {
+        [examinedID]: makeLedgerEntry(6, 5, [makeUsage(ids.orderItemID, 4, '1.00')]),
+      };
+
+      const accumulator: OrderItemQualifiedDiscounts = {
+        [ids.orderItemID]: [makeDiscount('', '45.00', fixtures.promotion)],
+      };
+
+      const before: Record<string, string[]> = describeAccumulator(accumulator);
+
+      stripOverUsedRewardDiscounts(ledger, accumulator, examinedID);
+
+      expect(describeAccumulator(accumulator)).toStrictEqual(before);
+    });
+
     it('completes silently on the same absent identifier when no key over-uses', () => {
       // The other half of the same statement: the raise above is a property of the LOOKUP'S
       // POSITION, not of the identifier being absent. With the examined key inside its limit the

@@ -1637,6 +1637,108 @@ describe('content sanitization still withholds what it was built to withhold', (
   });
 });
 
+describe('the message surface examines EVERY pair, and masks a forbidden value WHOLE', () => {
+  // ---------------------------------------------------------------------------
+  // Four QA findings against this surface, each with its reproduction verbatim.
+  //
+  // The CONTEXT surface was exemplary when tested - a fifty-seven value near-miss corpus leaked
+  // nothing, recursively, through nested objects and arrays - and the MESSAGE surface, which is the
+  // one that will carry caught driver errors once the handler tier logs them, was not. All four
+  // findings are shapes a real error message takes, so each is pinned here by the string that
+  // produced it.
+  // ---------------------------------------------------------------------------
+
+  it('redacts the bare `user` and `username` spellings, as the context surface already did', () => {
+    // QA Issue 3. `dbUser=root` was redacted, the CONTEXT key `user` was redacted, and `user=root` in
+    // a message was emitted in CLEARTEXT - two surfaces disagreeing about one forbidden name.
+    // `src/lib/config.ts` states "No value of DB_HOST, DB_USER or DB_PASSWORD is echoed above, by
+    // design", so the policy had already classified it.
+    expect(messageOf('user=root')).toBe(`user=${REDACTED}`);
+    expect(messageOf('username=root')).toBe(`username=${REDACTED}`);
+    expect(messageOf('dbUser=root')).toBe(`dbUser=${REDACTED}`);
+  });
+
+  it('keeps `userID` legible, so closing that gap cost no traceability', () => {
+    // The reason `user` is an EXACT entry rather than a fragment: `userID` is an opaque platform
+    // handle this policy publishes on purpose, exactly like `accountID` beside it.
+    expect(messageOf('userID=user-77 requestId=req-9')).toBe('userID=user-77 requestId=req-9');
+  });
+
+  it('is not defeated by a benign `word:` prefix in front of a forbidden pair', () => {
+    // QA Issue 4, reproduced exactly. The scanner used to consume a non-forbidden pair's VALUE along
+    // with the pair, so `error:` swallowed `password=hunter2` and the forbidden name was never
+    // examined. `<benign-word>: password=SECRET` is an extremely common error-message shape.
+    expect(messageOf('error: password=hunter2; user=root')).toBe(
+      `error: password=${REDACTED}; user=${REDACTED}`,
+    );
+    expect(messageOf('ER_ACCESS_DENIED: secret=s3cr3t, token=t0k3n, orderID=abc123')).toBe(
+      `ER_ACCESS_DENIED: secret=${REDACTED}, token=${REDACTED}, orderID=abc123`,
+    );
+  });
+
+  it('masks a two-token value whole instead of leaving the material half behind', () => {
+    // QA Issue 5. Masking stopped at the first whitespace, so `authorization=Bearer xyz` emitted
+    // `authorization=[REDACTED] xyz` - the bearer material survived - and `sql=SELECT 1` emitted
+    // `sql=[REDACTED] 1`. `AUTH_SCHEME_PATTERN` does not reach a short token, and
+    // `containsSqlStatement` deliberately does not claim a `SELECT` with no `FROM`.
+    expect(messageOf('authorization=Bearer xyz')).toBe(`authorization=${REDACTED}`);
+    expect(messageOf('sql=SELECT 1')).toBe(`sql=${REDACTED}`);
+  });
+
+  it('masks a connection string whole, with no stray bracket and no surviving authority', () => {
+    // QA Issue 5's second case emitted `connectionString=[REDACTED]]@h/db`: the URI rule replaced the
+    // userinfo first, and the assignment scan then stopped at the `]` of that marker. The scan runs
+    // FIRST now, which is why the whole value goes and the bracket does not survive.
+    expect(messageOf('connectionString=mysql://u:p@h/db')).toBe(`connectionString=${REDACTED}`);
+  });
+
+  it('stops a multi-token value at the next pair, so diagnostics beside it stay legible', () => {
+    expect(messageOf('token=Bearer abc requestID=xyz789')).toBe(
+      `token=${REDACTED} requestID=xyz789`,
+    );
+  });
+
+  it('keeps the sentence after an ordinary single-token value', () => {
+    // The counterweight to the case above: widening the span must not eat prose. A single-token value
+    // is the common case and stays a single token.
+    expect(messageOf('connect failed password=hunter2 for user')).toBe(
+      `connect failed password=${REDACTED} for user`,
+    );
+  });
+
+  it('withholds the account and the host of a driver authentication refusal', () => {
+    // QA Issue 5's fourth case. The canonical MySQL refusal is not an ASSIGNMENT, so the pair scanner
+    // never saw the account name; only the trailing `password: YES` was masked.
+    const emitted = messageOf(
+      "Access denied for user 'slatwall'@'localhost' (using password: YES)",
+    );
+
+    expect(emitted).not.toContain('slatwall');
+    expect(emitted).not.toContain('localhost');
+    expect(emitted).toBe(`Access denied for user ${REDACTED} (using password: ${REDACTED})`);
+  });
+
+  it('withholds the target of a driver connectivity failure, keeping the code', () => {
+    // QA INFO-1. `connection.ts` deliberately re-raises driver errors unchanged, so
+    // `connect ECONNREFUSED <host>:<port>` reaches whatever logs the error - disclosing the database
+    // host and port that `config.ts` and `CompositionDiagnostics` both refuse to echo. The CODE is the
+    // diagnostic and survives; the target does not.
+    expect(messageOf('connect ECONNREFUSED 127.0.0.1:3306')).toBe(
+      `connect ECONNREFUSED ${REDACTED}`,
+    );
+    expect(messageOf('getaddrinfo ENOTFOUND slatwall-db.internal')).not.toContain(
+      'slatwall-db.internal',
+    );
+    expect(messageOf('connect ETIMEDOUT 10.0.3.14:3306')).not.toContain('10.0.3.14');
+  });
+
+  it('is idempotent, so a re-sanitized line does not nest one marker inside another', () => {
+    // `[REDACTED]` ends in a `]`, which is a value terminator - masking it again would emit
+    // `password=[REDACTED]]`. An error's text is sanitized on the way in and again if it is re-logged.
+    expect(messageOf(`password=${REDACTED}`)).toBe(`password=${REDACTED}`);
+  });
+});
+
 describe('the two accepted consequences of anchoring these rules', () => {
   it('does not redact a projection that carries no value at all', () => {
     // Two schema identifiers and nothing else: no operator, literal, placeholder,
