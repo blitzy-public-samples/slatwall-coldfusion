@@ -48,6 +48,7 @@ import { createCatalogAggregateLoaders } from '../../src/adapters/mysql/QueryRun
 import { PRODUCT_FEED_JOINS } from '../../src/integrations/google/ProductFeedQuery';
 import { mergeSmartListJoins, translateSmartListInput } from '../../src/ports/SmartListQueryPort';
 import { createFanningSqlExecutorDouble } from '../support/inMemoryRepositories';
+import { GENEROUS_STATEMENT_COMPLEXITY_BUDGET } from '../support/inMemoryRepositories';
 import type { CompiledSmartListQuery } from '../../src/adapters/mysql/SmartListQueryBuilder';
 import type { CatalogAggregateLoader } from '../../src/adapters/mysql/QueryRunner';
 import type { ProductDefaultSkuDelegate } from '../../src/domain/product/Product';
@@ -195,7 +196,53 @@ function recording(...outcomes: readonly SqlExecutorOutcome[]): Recording {
   const double = createSqlExecutorDouble({ outcomes });
   const executor: SqlExecutor = double.executor;
 
-  return { repository: new MySqlOptionRepository(executor), double };
+  /*
+   * The complexity ceiling is generous here on purpose. Every case built through this factory is
+   * asserting statement TEXT or bind ORDER, and a ceiling tight enough to matter would refuse the very
+   * statement those cases exist to read. The cases that assert the ceiling itself build their own
+   * adapter with {@link recordingWithComplexityCeiling}.
+   */
+  return {
+    repository: new MySqlOptionRepository(executor, GENEROUS_STATEMENT_COMPLEXITY_BUDGET),
+    double,
+  };
+}
+
+/**
+ * Build the adapter over a recording double with an exact statement-complexity ceiling.
+ *
+ * @param maximumPredicatesPerQuery - the ceiling this case is asserting.
+ * @returns the adapter and the recording double.
+ */
+function recordingWithComplexityCeiling(maximumPredicatesPerQuery: number): Recording {
+  const double = createSqlExecutorDouble({ outcomes: [] });
+  const executor: SqlExecutor = double.executor;
+
+  return {
+    repository: new MySqlOptionRepository(
+      executor,
+      smartListBudgetWithComplexityCeiling(maximumPredicatesPerQuery),
+    ),
+    double,
+  };
+}
+
+/**
+ * Build the adapter over a recording double whose deployment stated NO complexity ceiling.
+ *
+ * @returns the adapter and the recording double, which must record nothing.
+ */
+function recordingWithoutComplexityCeiling(): Recording {
+  const double = createSqlExecutorDouble({ outcomes: [] });
+  const executor: SqlExecutor = double.executor;
+
+  return {
+    repository: new MySqlOptionRepository(
+      executor,
+      createSmartListMaterialisationBudget(1_000_000, undefined),
+    ),
+    double,
+  };
 }
 
 /**
@@ -208,7 +255,10 @@ function recordingWithResponder(respond: SqlExecutorResponder): Recording {
   const double = createSqlExecutorDouble({ respond });
   const executor: SqlExecutor = double.executor;
 
-  return { repository: new MySqlOptionRepository(executor), double };
+  return {
+    repository: new MySqlOptionRepository(executor, GENEROUS_STATEMENT_COMPLEXITY_BUDGET),
+    double,
+  };
 }
 
 /**
@@ -1440,6 +1490,165 @@ describe('MySqlOptionRepository.withExecutor — NET-NEW: re-binding, and its is
 
     expect(Object.keys(double)).not.toContain('withExecutor');
     expect(Object.keys(double)).toHaveLength(2);
+  });
+});
+
+/*
+ * The request-work bound on the two list-shaped statements (CWE-400 / CWE-770 / CWE-1284)
+ *
+ * Both members size a set-membership clause from `existingOptionGroupIDList`, and
+ * `splitOptionGroupIdList` never shortens its input, so before the bound existed a caller could grow
+ * the statement, its bind count and its server-side parse cost without limit by lengthening one query
+ * parameter. The cases below pin all four properties the fix has to have: it refuses rather than
+ * truncating, it refuses BEFORE any statement reaches the executor, it admits the at-limit request, and
+ * it fails closed when the deployment stated no figure at all.
+ */
+
+describe('MySqlOptionRepository — NET-NEW: the request-work bound on both list-shaped statements', () => {
+  /**
+   * Builds a comma-delimited option-group list of a given length, the shape a caller would send.
+   *
+   * @param count - how many identifiers the list should carry.
+   * @returns the delimited list.
+   */
+  const optionGroupList = (count: number): string =>
+    Array.from({ length: count }, (_unused, index) => `group-${String(index)}`).join(',');
+
+  /**
+   * Runs an operation and returns whatever it rejected with, so a case can assert on the value.
+   *
+   * @param operation - the call under test.
+   * @returns the rejection, or `undefined` when the call resolved.
+   */
+  const rejectionOf = async (operation: () => Promise<unknown>): Promise<unknown> =>
+    operation().then(
+      () => undefined,
+      (failure: unknown) => failure,
+    );
+
+  it('[NET-NEW] findUnusedOptions REFUSES an over-budget list before any statement is issued', async () => {
+    /*
+     * `N + 7` units: N group identifiers plus the product identifier, four sources — `SwOption`, the
+     * `SwOptionGroup` join and the two the `NOT EXISTS` carries — and two ordering terms. At a ceiling
+     * of 20 the largest admissible list is 13, so 14 must refuse.
+     */
+    const { repository, double } = recordingWithComplexityCeiling(20);
+
+    const rejection = await rejectionOf(() =>
+      repository.findUnusedOptions(PRODUCT_ID, optionGroupList(14)),
+    );
+
+    expect(rejection).toBeInstanceOf(RequestBudgetExhaustedError);
+    /* Before, not after: the executor was never reached, so no statement was parsed or planned. */
+    expect(double.calls).toHaveLength(0);
+  });
+
+  it('[NET-NEW] findUnusedOptions ADMITS the at-limit list, so the bound does not over-refuse', async () => {
+    /* 13 identifiers is exactly `13 + 7 = 20` units. The boundary is inclusive, and it is asserted. */
+    const { repository, double } = recordingWithComplexityCeiling(20);
+
+    await expect(
+      repository.findUnusedOptions(PRODUCT_ID, optionGroupList(13)),
+    ).resolves.toStrictEqual([]);
+    expect(double.calls).toHaveLength(1);
+    /* Every identifier bound, none dropped: refusing is the only behaviour, truncation is not. */
+    expect(callAt(double, 0).params).toHaveLength(14);
+  });
+
+  it('[NET-NEW] findUnusedOptionGroups REFUSES an over-budget list before any statement is issued', async () => {
+    /*
+     * `N + 2` units for this member: N markers in the negated clause, no product identifier, one source
+     * and one ordering term. At a ceiling of 20 the largest admissible list is 18, so 19 must refuse.
+     */
+    const { repository, double } = recordingWithComplexityCeiling(20);
+
+    const rejection = await rejectionOf(() =>
+      repository.findUnusedOptionGroups(optionGroupList(19)),
+    );
+
+    expect(rejection).toBeInstanceOf(RequestBudgetExhaustedError);
+    expect(double.calls).toHaveLength(0);
+  });
+
+  it('[NET-NEW] findUnusedOptionGroups ADMITS the at-limit list', async () => {
+    const { repository, double } = recordingWithComplexityCeiling(20);
+
+    await expect(repository.findUnusedOptionGroups(optionGroupList(18))).resolves.toStrictEqual([]);
+    expect(double.calls).toHaveLength(1);
+    expect(callAt(double, 0).params).toHaveLength(18);
+  });
+
+  it('[NET-NEW] the refusal tells the CALLER nothing about the ceiling, and the LOG everything', async () => {
+    /*
+     * The asymmetry is the point. A public message carrying either the ceiling or the count would let a
+     * caller bisect the figure out of the service in a handful of requests; an internal account that
+     * carried neither would leave an operator unable to tell an over-budget request from a
+     * mis-configured one. So the presentation is the same neutral pair every other budget refusal
+     * returns, and the diagnostic figures live in `context`.
+     */
+    const { repository } = recordingWithComplexityCeiling(20);
+
+    const rejection = await rejectionOf(() =>
+      repository.findUnusedOptions(PRODUCT_ID, optionGroupList(14)),
+    );
+
+    expect(rejection).toBeInstanceOf(RequestBudgetExhaustedError);
+    const failure = rejection as RequestBudgetExhaustedError;
+
+    expect(failure.getPublicError()).toStrictEqual({
+      code: PUBLIC_ERROR_CODE.CATALOG_REQUEST_REJECTED,
+      message: 'The request asks for more work than one operation may perform',
+    });
+    expect(failure.getPublicError().message).not.toMatch(/20|14|21/);
+    expect(failure.context).toMatchObject({
+      statement: 'findUnusedOptions',
+      complexityUnits: 21,
+      maximumPredicatesPerQuery: 20,
+      listLength: 14,
+      boundParameters: 15,
+      sources: 4,
+      orderingTerms: 2,
+    });
+  });
+
+  it('[NET-NEW] BOTH members FAIL CLOSED when the deployment stated no ceiling', async () => {
+    /*
+     * Absent is a refusal, never an unbounded default — the discipline `src/config/env.ts` applies to
+     * all six `CATALOG_*` figures. The refusal names the variable, because an operator reading a log
+     * needs to know which one to set, and it is a `ConfigurationError` rather than a budget refusal
+     * because the request was never the problem.
+     */
+    const groups = recordingWithoutComplexityCeiling();
+    const options = recordingWithoutComplexityCeiling();
+
+    await expect(options.repository.findUnusedOptions(PRODUCT_ID, 'group-a')).rejects.toThrow(
+      /CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY/,
+    );
+    await expect(groups.repository.findUnusedOptionGroups('group-a')).rejects.toThrow(
+      /CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY/,
+    );
+
+    expect(options.double.calls).toHaveLength(0);
+    expect(groups.double.calls).toHaveLength(0);
+  });
+
+  it('[NET-NEW] a re-bound instance applies the SAME ceiling, so a transaction is not a way past it', async () => {
+    /*
+     * `withExecutor` is how the write boundary rebuilds this adapter against its own connection. An
+     * implementation that dropped the budget there would leave every statement issued inside a
+     * transaction unbounded while the pooled path stayed bounded — the partial-wiring failure mode, and
+     * the one a reader is least likely to notice. `strict` makes the omission a compile error; this case
+     * makes the behaviour observable.
+     */
+    const { repository } = recordingWithComplexityCeiling(20);
+    const replacement = createSqlExecutorDouble({ outcomes: [] });
+
+    const rebound = repository.withExecutor(replacement.executor);
+
+    await expect(rebound.findUnusedOptionGroups(optionGroupList(19))).rejects.toBeInstanceOf(
+      RequestBudgetExhaustedError,
+    );
+    expect(replacement.calls).toHaveLength(0);
   });
 });
 

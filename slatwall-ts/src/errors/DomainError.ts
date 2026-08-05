@@ -32,6 +32,12 @@ export const PUBLIC_ERROR_CODE = Object.freeze({
   SERVICE_CONFIGURATION: 'SERVICE_CONFIGURATION',
   SERVICE_DATA: 'SERVICE_DATA',
   SERVICE_FAULT: 'SERVICE_FAULT',
+
+  /*
+   * The one code that says "ask again" — see {@link TRANSIENT_WRITE_CONFLICT_PRESENTATION} for why it
+   * had to be its own member rather than a field on an existing one.
+   */
+  TRANSIENT_WRITE_CONFLICT: 'TRANSIENT_WRITE_CONFLICT',
 } as const);
 
 /** One member of {@link PUBLIC_ERROR_CODE}. */
@@ -131,6 +137,62 @@ const DATA_TOO_LONG_PUBLIC_MESSAGE =
 const DATA_TOO_LONG_PRESENTATION: PublicErrorPresentation = Object.freeze({
   code: PUBLIC_ERROR_CODE.CATALOG_REQUEST_REJECTED,
   message: DATA_TOO_LONG_PUBLIC_MESSAGE,
+});
+
+/*
+ * NOT a request rejection, and that is the whole point of it existing (CWE-544).
+ *
+ * MySQL rolls a transaction back to break a deadlock (`errno 1213`), and times a lock wait out
+ * (`errno 1205`), and `../adapters/mysql/QueryRunner.ts` has classified both correctly as transient
+ * since the locking reads were introduced — it computes which of the two happened, records
+ * `retryable: true` in the internal context and writes a message saying the identical request may
+ * succeed if it is made again. What it then raised was {@link UniqueConstraintViolationError}, whose
+ * presentation is the neutral `CATALOG_REQUEST_REJECTED` above, so every one of those correct
+ * classifications reached the caller as `400 {"message":"A value in the request is already in use"}`.
+ *
+ * **Two legitimate concurrent writers of DIFFERENT values were therefore told one of their values was
+ * taken.** That answer is wrong in three separate ways, and each of them matters to a different party:
+ *
+ * * It is wrong to the CALLER, who is told a fact about its request that is false. The value is not in
+ * use; nothing was written at all. A caller acting on `400` correctly stops and changes the value —
+ * exactly the wrong response to a deadlock, where the correct response is to send the same request
+ * again.
+ * * It is wrong to the OPERATOR, because the two conditions became indistinguishable at the point where
+ * they are counted. `retryable` lived only in the error's `context`, which §7.1's redaction policy keeps
+ * out of both the response and the log record, and `failureClass` carried the same class name for both.
+ * A rising deadlock rate — the signal that says the port's own locking strategy is misfiring under
+ * concurrency — was reported as a rising rate of callers picking taken values.
+ * * It is wrong about WHOSE FAULT it is. `4xx` states a fact about the request; `5xx` states a fault in
+ * the service. A gap-lock deadlock between two writers who chose different values is neither party's
+ * doing: it is a property of the lock ranges this port's uniqueness reads take. The caller chose nothing
+ * that led to it and can choose nothing to avoid it, so no `4xx` can be the honest answer, and reusing
+ * the request-rejection presentation repeats the original mistake in a new spelling.
+ *
+ * So the transient pair gets its own code and its own status, and the closed-taxonomy discipline is
+ * kept: one more member, frozen, mapped once in `../handlers/httpResponse.ts`, disclosing no `errno`, no
+ * table, no constraint name and no driver text. The message states the two things a caller can act on —
+ * the write did not happen, and asking again is not futile — and nothing else. Which of the two
+ * conditions occurred, and its `errno`, stay in the internal context exactly as before.
+ *
+ * **`503` rather than `409`, and the choice is deliberate.** `409` would say the request conflicts with
+ * the resource's current state, which is what `1062` means and what `UNIQUE_CONSTRAINT_PRESENTATION`
+ * already answers; saying it for a deadlock would collapse the very distinction this code exists to
+ * draw. `503` says the service could not complete the work now and the condition is temporary, which is
+ * what a rolled-back transaction is, and it puts the deadlock rate into the 5xx series where an operator
+ * is already watching. No `Retry-After` is emitted with it: the port has no basis for a figure — how
+ * long to wait depends on the contending workload, not on anything this module knows — and AAP §0.8.3.5
+ * admits no invented one.
+ *
+ * **No retry is performed here, and that is unchanged.** Whether re-running is correct depends on what
+ * the caller was doing, and only the caller knows. This code makes the retryability *visible*; it does
+ * not act on it.
+ */
+const TRANSIENT_WRITE_CONFLICT_PUBLIC_MESSAGE =
+  'The write conflicted with another write in progress and was not applied; the request may be retried';
+
+const TRANSIENT_WRITE_CONFLICT_PRESENTATION: PublicErrorPresentation = Object.freeze({
+  code: PUBLIC_ERROR_CODE.TRANSIENT_WRITE_CONFLICT,
+  message: TRANSIENT_WRITE_CONFLICT_PUBLIC_MESSAGE,
 });
 
 /*
@@ -405,7 +467,14 @@ export class DatabaseStatementError extends DomainError {
   }
 }
 
-/** Raised when the database refuses a write because the value it carries is already held. */
+/**
+ * Raised when the database refuses a write because the value it carries is already held.
+ *
+ * Permanent by definition: the value is taken, so asking again gets the same answer. Its transient
+ * sibling is {@link TransientWriteConflictError}, and the two are separate classes rather than one class
+ * carrying a `retryable` flag — read the block beside {@link TRANSIENT_WRITE_CONFLICT_PRESENTATION}
+ * before merging them, because a flag on this class is exactly what produced the defect that split them.
+ */
 export class UniqueConstraintViolationError extends DomainError {
   /**
    * Reports a rejected request. Which constraint collided stays internal.
@@ -414,6 +483,39 @@ export class UniqueConstraintViolationError extends DomainError {
    */
   public override getPublicError(): PublicErrorPresentation {
     return UNIQUE_CONSTRAINT_PRESENTATION;
+  }
+}
+
+/**
+ * Raised when the database could not apply a write because of a transient lock conflict — a deadlock it
+ * rolled the transaction back to break, or a lock wait that timed out (CWE-544).
+ *
+ * The distinction from {@link UniqueConstraintViolationError} is not cosmetic and not internal: it
+ * changes the answer a caller receives from "your value is taken, change it" to "nothing was written,
+ * ask again", and it changes the status from `400` to `503`. See the long block beside
+ * {@link TRANSIENT_WRITE_CONFLICT_PRESENTATION} for the three separate ways the previous answer was
+ * wrong.
+ *
+ * @example
+ * ```ts
+ * throw new TransientWriteConflictError(
+ * 'The database rolled this transaction back to break a deadlock with another writer, so no part ' +
+ * 'of it was applied. The identical request may succeed if it is made again.',
+ * { cause, context: { parameterCount, errno: MYSQL_LOCK_DEADLOCK_ERRNO, retryable: true } },
+ * );
+ * ```
+ */
+export class TransientWriteConflictError extends DomainError {
+  /**
+   * Reports a temporary service condition, not a fault in the request.
+   *
+   * Which of the two lock conditions occurred, its `errno` and the failing statement's parameter count
+   * all stay in {@link DomainError.context}, where the throw site puts them.
+   *
+   * @returns the retryable transient-conflict presentation.
+   */
+  public override getPublicError(): PublicErrorPresentation {
+    return TRANSIENT_WRITE_CONFLICT_PRESENTATION;
   }
 }
 

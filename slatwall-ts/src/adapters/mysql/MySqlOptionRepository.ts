@@ -22,10 +22,14 @@
  */
 
 import { DataIntegrityError, DomainError } from '../../errors/DomainError';
-import { assertColumnName, assertTableName } from './QueryRunner';
+import {
+  assertColumnName,
+  assertStatementComplexityWithinBudget,
+  assertTableName,
+} from './QueryRunner';
 import { mapRows, mapUnusedOptionGroupRow, mapUnusedOptionRow } from './rowMappers';
 
-import type { SqlExecutor } from './QueryRunner';
+import type { SqlExecutor, StatementComplexityBudget } from './QueryRunner';
 import type { MySqlRow } from './rowMappers';
 import type {
   OptionRepository,
@@ -300,14 +304,23 @@ export class MySqlOptionRepository implements OptionRepository {
   /** The injected execution boundary. */
   private readonly executor: SqlExecutor;
 
+  /** The operator-stated ceiling on how complex either composed statement may be. */
+  private readonly statementComplexityBudget: StatementComplexityBudget;
+
   /**
    * @param executor - the statement executor, supplied by the composition root. It replaces the DI/1
    * property declared at `model/service/OptionService.cfc:L51` together with the accessor
    * fabricated for it, which resolved by name at run time (AAP §0.4.3.1 R1, AAP §0.4.3.2 R2). No
    * connection is built here and no connection setting is read here.
+   *
+   * @param statementComplexityBudget - the ceiling on query-complexity units one composed statement
+   * may carry. Required rather than optional: BOTH members of this class compose a set-membership
+   * clause whose marker count is the length of a caller-supplied list, so an instance that could be
+   * built without the ceiling would be an instance that could serve both members unbounded.
    */
-  public constructor(executor: SqlExecutor) {
+  public constructor(executor: SqlExecutor, statementComplexityBudget: StatementComplexityBudget) {
     this.executor = executor;
+    this.statementComplexityBudget = statementComplexityBudget;
   }
 
   /**
@@ -317,7 +330,13 @@ export class MySqlOptionRepository implements OptionRepository {
    * @returns a new instance identical in every other respect.
    */
   public withExecutor(executor: SqlExecutor): MySqlOptionRepository {
-    return new MySqlOptionRepository(executor);
+    /*
+     * The budget travels across the re-binding for the reason the executor does not: it is a
+     * deployment figure rather than a connection-bound one, and an instance re-bound to a
+     * transaction's executor must apply the same ceiling the pooled instance applied. `strict` makes
+     * that a compile-time guarantee — an omitted argument here would not type-check.
+     */
+    return new MySqlOptionRepository(executor, this.statementComplexityBudget);
   }
 
   /**
@@ -341,6 +360,30 @@ export class MySqlOptionRepository implements OptionRepository {
     existingOptionGroupIDList: string,
   ): Promise<UnusedOptionRow[]> {
     const optionGroupIds = splitOptionGroupIdList(existingOptionGroupIDList);
+
+    /*
+     * The work bound, applied before any marker text is generated (CWE-400 / CWE-770 / CWE-1284).
+     * `splitOptionGroupIdList` never shortens its input, so one caller-supplied token yields one bind
+     * marker, and the statement's size and bind count grow with the list the caller sends. The account
+     * uses the same three counts the smart list uses, derived from the split length rather than from
+     * the assembled text:
+     *
+     *   bound parameters = N option-group identifiers + the one product identifier   [`:L68`, `:L78`]
+     *   sources          = `SwOption` + the `SwOptionGroup` join + the two the `NOT EXISTS` carries
+     *   ordering terms   = two, the group name then the option name
+     *
+     * so the account is `N + 7` units. The refusal REJECTS rather than trimming the list: a trimmed
+     * list would answer about a different set of already-present groups and quietly offer an option the
+     * product already carries.
+     */
+    assertStatementComplexityWithinBudget(this.statementComplexityBudget, {
+      statement: 'findUnusedOptions',
+      boundParameters: optionGroupIds.length + 1,
+      sources: 4,
+      orderingTerms: 2,
+      listLength: optionGroupIds.length,
+    });
+
     const sql = composeUnusedOptionsStatement(toPlaceholderList(optionGroupIds));
 
     // Statement order, not signature order: the group list binds at `:L68`, the product identifier at
@@ -370,6 +413,22 @@ export class MySqlOptionRepository implements OptionRepository {
     existingOptionGroupIDList: string,
   ): Promise<UnusedOptionGroupRow[]> {
     const optionGroupIds = splitOptionGroupIdList(existingOptionGroupIDList);
+
+    /*
+     * The same bound as the sibling, with the counts this statement actually carries: N markers in the
+     * negated set-membership clause and no product identifier [`:L107`], one source, and one ordering
+     * term — `N + 2` units. Applied before the marker text is generated, and rejecting rather than
+     * trimming, because a trimmed list inverts to a WIDER `NOT IN` result and would offer option groups
+     * the product already has.
+     */
+    assertStatementComplexityWithinBudget(this.statementComplexityBudget, {
+      statement: 'findUnusedOptionGroups',
+      boundParameters: optionGroupIds.length,
+      sources: 1,
+      orderingTerms: 1,
+      listLength: optionGroupIds.length,
+    });
+
     const sql = composeUnusedOptionGroupsStatement(toPlaceholderList(optionGroupIds));
     const rows = await this.executor.execute(sql, optionGroupIds);
 

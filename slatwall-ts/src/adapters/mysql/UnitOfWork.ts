@@ -25,6 +25,7 @@ import { DataIntegrityError, DomainError } from '../../errors/DomainError';
 import type { RequestAuthorizationContext } from '../../ports/AccountContextPort';
 import type { TransactionalWriteRunner } from '../../ports/UniquePropertyPort';
 import {
+  acquireConnectionTranslatingDriverFailure,
   assertColumnName,
   assertTableName,
   readAffectedRows,
@@ -760,7 +761,24 @@ export class UnitOfWork {
     work: (scope: TransactionScope) => Promise<T>,
     hasErrors: () => boolean,
   ): Promise<T> {
-    const connection = await this.pool.getConnection();
+    /*
+     * Acquisition is translated, and it is the FIRST driver contact on the whole write path.
+     *
+     * `QueryRunner.runStatement` wraps its own `pool.execute` call, so a database this deployment cannot
+     * reach classifies on the read path as a `DatabaseStatementError` and answers a neutral `500`. This
+     * line is where the write path first touches the driver, and until it was wrapped the driver's raw
+     * `Error` escaped the handler as an unrecognised failure: the same closed port answered
+     * `500 {"message":"An unexpected error occurred"}` with `failureClass: "Error"` and no `code` in the
+     * log record at all, so nothing counting failures by code could see write-path unavailability.
+     * See `./QueryRunner.ts`'s {@link acquireConnectionTranslatingDriverFailure} for what is and is not
+     * read off the caught value.
+     *
+     * The wrap is deliberately outside the `try` below, because there is nothing to settle or dispose
+     * when no connection was ever handed over — `returnConnection` would have no argument to receive.
+     */
+    const connection = await acquireConnectionTranslatingDriverFailure(() =>
+      this.pool.getConnection(),
+    );
     const state: ConnectionState = { knownClean: true };
 
     try {
@@ -896,8 +914,16 @@ export class UnitOfWork {
        * introduces no concurrency for either.
        */
       for await (const item of items) {
-        // The first item pays for the checkout; every later item reuses it. See the note above.
-        connection ??= await this.pool.getConnection();
+        /*
+         * The first item pays for the checkout; every later item reuses it. See the note above.
+         * Translated for the reason the acquisition in {@link UnitOfWork.run} is: an unreachable
+         * database must classify identically whichever member of this class first touched the driver.
+         * Inside the `try` here rather than outside it, because the loop may already hold a connection
+         * from an earlier item, and the `finally` below is what returns it.
+         */
+        connection ??= await acquireConnectionTranslatingDriverFailure(() =>
+          this.pool.getConnection(),
+        );
 
         /*
          * Awaited inside the loop on purpose. This is the whole point of the member, and it is the one

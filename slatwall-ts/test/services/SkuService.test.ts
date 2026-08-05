@@ -129,6 +129,7 @@ import {
   GENEROUS_COMBINATION_BUDGET,
   UNSTATED_COMBINATION_BUDGET,
 } from '../support/inMemoryRepositories';
+import { GENEROUS_STATEMENT_COMPLEXITY_BUDGET } from '../support/inMemoryRepositories';
 import { MySqlTransactionalWriteRunner } from '../../src/adapters/mysql/UnitOfWork';
 import { manageEntity } from '../../src/domain/base/populate';
 import { SKU_ENTITY_METADATA } from '../../src/domain/sku/Sku';
@@ -1766,6 +1767,7 @@ describe('SkuService.createSkus â€” M6: the validation read-back contract (AAP Â
       harness.productTypeRoots.resolver,
       /* The unauthenticated case, which is what `org/Hibachi/HibachiObject.cfc:L74-L76` yields. */
       { getCurrentAccount: () => undefined },
+      GENEROUS_STATEMENT_COMPLEXITY_BUDGET,
     );
     const poolBoundChecker = new UniquePropertyChecker(poolExecutor);
 
@@ -1895,6 +1897,7 @@ describe('SkuService.createSkus â€” M6: the validation read-back contract (AAP Â
       createOptionGroupSortOrderMemo(),
       harness.productTypeRoots.resolver,
       { getCurrentAccount: () => undefined },
+      GENEROUS_STATEMENT_COMPLEXITY_BUDGET,
     );
 
     const rejection: unknown = await unitOfWork

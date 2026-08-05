@@ -161,20 +161,42 @@ The pinned runtime line is out of upstream support, and this is surfaced rather 
   <br>Note that **24 March 2026** appears in no column of the `20.x` row; settle any proposed correction by
   reading the schedule rather than by amending this line.
 - **The current control-plane gates are a single schedule**, from the AWS runtimes table as read on
-  **3 August 2026**: creating a new function on `nodejs20.x` is blocked from **1 February 2027**, and
-  updating an existing one from **3 March 2027**. Both are still ahead.
-- **Two earlier schedules are superseded, for two different reasons.** **1 June / 1 July 2026**, from the
-  first AWS bulletin, has elapsed and observably without effect. **31 August / 30 September 2026**, from the
-  standard 30-day/60-day cadence, has **not** elapsed — as of the read date above both dates are still
-  ahead, and what retires the pair is AWS's current table stating the later 2027 dates, not the calendar.
-  Re-check against the table, and do not read the arrival of 31 August 2026 as confirming or refuting
-  anything. AWS states it is delaying these dates for some runtimes in response to customer feedback, that
-  it will not begin blocking before the dates in its own tables, and that those dates are forecasts subject
-  to change — so **the schedule may be revised in either direction and only the table at the moment of
-  reading is authoritative**. This section is the single place these dates live in the subtree, and
-  everything else points here. **In every published schedule, functions already deployed continue to be
-  invocable**, because every gate is a control-plane gate on creating or updating a function rather than on
-  invoking one.
+  **5 August 2026**: creating a new function on `nodejs20.x` is blocked from **1 February 2027**, and
+  updating an existing one from **3 March 2027**. Both are still ahead. Neither date is derivable from the
+  deprecation date, and the next bullet explains why that matters.
+- **What the documented cadence yields, stated separately from what any table has ever said.** The AWS
+  Lambda runtimes page states the two intervals as **"At least 30 days after deprecation"** for
+  block-function-create and **"At least 60 days after deprecation"** for block-function-update. Applied to
+  the 30 April 2026 deprecation, that gives a **floor of 30 May 2026 and 29 June 2026** — and a floor is
+  all it gives, because "at least" states a minimum and not a schedule. Every published pair below is at or
+  beyond that floor, so the cadence can confirm no pair and contradict none; only a table can supply an
+  actual date.
+- **Two earlier schedules are superseded, and the arithmetic of each is worth recording because it is easy
+  to attribute a pair to the wrong source.**
+  - **1 June / 1 July 2026** sits at **32 and 62 days** after deprecation. That is the pair that actually
+    tracks the documented 30/60 cadence, to within a rounding to month boundaries. It has elapsed, and
+    observably without effect.
+  - **31 August / 30 September 2026** sits at **123 and 153 days**. It therefore cannot come from the
+    cadence at all — it is roughly four and five times the stated intervals, and an earlier revision of
+    this section wrongly credited it to them. It came from an earlier revision of the AWS table, and
+    exceeding the intervals is exactly what AWS's own note on that page describes: for some runtimes it is
+    **"delaying the block-function-create and block-function-update dates beyond the usual 30 and 60
+    days"**, in response to customer feedback, to give more time to upgrade. So the pair was already a
+    delay when it was published, and the 2027 pair now in the table is a further one — `provided.al2`
+    carries the identical **1 February / 3 March 2027** pair, which is what a table-wide extension looks
+    like rather than a runtime-specific forecast.
+  - Neither 2026 pair has been reached by the read date above, so **what retires them is the table stating
+    the later dates, not the calendar.** Re-check against the table, and do not read the arrival of
+    31 August 2026 as confirming or refuting anything.
+
+  AWS states it is delaying these dates for some runtimes in response to customer feedback, that it will
+  not begin blocking before the dates in its own tables, and that those dates are forecasts subject to
+  change — so **the schedule may be revised in either direction and only the table at the moment of reading
+  is authoritative**. This section is the single place these dates live in the subtree, and everything else
+  points here. **In every published schedule, functions already deployed continue to be invocable**,
+  because every gate is a control-plane gate on creating or updating a function rather than on invoking
+  one.
+
 - **The pin stands.** `nodejs20.x` and Node 20.x remain the stated target, because they are an express
   instruction (AAP §0.5.5, verbatim: "The pin stands."). Consistently, AAP §0.5.3.2 rejects a newer
   `@types/node` precisely so the type surface keeps matching the runtime rather than a later one.
@@ -877,8 +899,8 @@ feed address in the snippet applies **four** figures, and it checks them before 
 resolves an image path:
 
 ```sh
-export CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY=500     # every route — all reads go through the smart list
-export CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY=100  # every route — statement complexity
+export CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY=500     # every smart-list read — which is every read route
+export CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY=100  # every route — statement complexity, smart-list and not
 export CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD=10     # google:feed.product
 export CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES=10485760  # google:feed.product
 ```
@@ -962,15 +984,16 @@ consults the reader at all.
 
 ### 7.1 Response conventions
 
-| Status | Meaning                                                                                  |
-| ------ | ---------------------------------------------------------------------------------------- |
-| 200    | Success. Entities are **projected**, never serialised whole                              |
-| 400    | The **request** is at fault — nothing was addressed, or a body was absent or unparseable |
-| 401    | No principal could be established — see §7.2                                             |
-| 403    | A known principal is not permitted                                                       |
-| 404    | An unknown `slatAction`, **or** a well-formed request whose addressed resource is absent |
-| 500    | An unclassified service fault, with all detail withheld                                  |
-| 501    | A declared boundary port, or a member no request can satisfy, was reached — see below    |
+| Status | Meaning                                                                                                                                                                                                             |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 200    | Success. Entities are **projected**, never serialised whole                                                                                                                                                         |
+| 400    | The **request** is at fault — nothing was addressed, or a body was absent or unparseable                                                                                                                            |
+| 401    | No principal could be established — see §7.2                                                                                                                                                                        |
+| 403    | A known principal is not permitted                                                                                                                                                                                  |
+| 404    | An unknown `slatAction`, **or** a well-formed request whose addressed resource is absent                                                                                                                            |
+| 500    | An unclassified service fault, with all detail withheld                                                                                                                                                             |
+| 501    | A declared boundary port, or a member no request can satisfy, was reached — see below                                                                                                                               |
+| 503    | A transient lock conflict rolled a write back. **Nothing was applied and the identical request may be retried** — the one `5xx` that is not a fault, and the one status that asks the caller to try again. See §8.2 |
 
 A configuration failure is classified as a configuration failure rather than as a generic fault. Failure
 bodies carry a single `message` and nothing else: no stack frame, file path, SQL statement, table name, error
@@ -1165,26 +1188,26 @@ executing it; `.env.example` records why.
 
 _When_ that validation happens differs by artifact, deliberately — §6 records which and why.
 
-| Variable                                      | Required?                             | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| --------------------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DB_HOST`                                     | **yes**                               | a bare host: a registered name or IPv4 literal per RFC 3986 §3.2.2, or an IPv6 address bracketed or bare. A scheme, a `user:password@` prefix, a `:port` suffix, a path, whitespace, a control character, a non-ASCII character and a filesystem socket path are each refused with a message saying why                                                                                                                                                                                                                             |
-| `DB_PORT`                                     | **yes**                               | a plain base-ten TCP port, 1–65535                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `DB_NAME`                                     | **yes**                               | the schema holding the existing `Sw*` tables. This service reads and writes that schema and neither creates nor migrates it. **Not** the legacy datasource name — see the note below                                                                                                                                                                                                                                                                                                                                                |
-| `DB_USER`, `DB_PASSWORD`                      | **yes**                               | must be present; an empty string is permitted, reproducing the legacy framework defaults exactly. Nothing is committed anywhere                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `DB_TLS_MODE`                                 | no → `verified`                       | `verified` requires TLS and verifies chain and identity. `disabled` is accepted **only** for a loopback host. Absence encrypts; cleartext must be asked for by name                                                                                                                                                                                                                                                                                                                                                                 |
-| `DB_QUEUE_LIMIT`                              | no → `1`                              | the one bound not delegated to the driver: it reads `0` as "no limit" **and** `0` is its default, so omitting the option would select the unbounded queue this value exists to prevent                                                                                                                                                                                                                                                                                                                                              |
-| `DB_CONNECTION_LIMIT`                         | no → omitted                          | absent means the option is left off and the driver's own bounded default applies, so this port states no figure — AAP §0.4.1.3 records that pool sizing "is not carried over because the legacy application delegates pooling to the CF/Railo server and pins nothing in source"                                                                                                                                                                                                                                                    |
-| `DB_CONNECT_TIMEOUT_MS`                       | no → omitted                          | as above. It bounds connection setup only — not a statement, request or invocation timeout, and not a latency target                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `GOOGLE_FEED_HOST`                            | **yes**                               | the authority every absolute URL in the feed is composed from, replacing the legacy `CGI.HTTP_HOST` reads. Held to RFC 3986 §3.2.2 with §3.2.3's optional port. Its shape is checked; its **identity is not**, and that residual exposure stays documented rather than overclaimed                                                                                                                                                                                                                                                  |
-| `SETTING_APPLICATION_ROOT_MAPPING_PATH`       | no                                    | one of the three of eighteen setting values whose legacy default is **computed** rather than stored, so no static table can hold it. Consumed by `StaticSettingResolver` through the container                                                                                                                                                                                                                                                                                                                                      |
-| `SETTING_SKU_ELIGIBLE_CURRENCIES`             | no                                    | as above — the legacy computes it from the excluded `Currency*` family                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `SETTING_SKU_ELIGIBLE_FULFILLMENT_METHODS`    | no                                    | as above — the legacy computes it from the excluded `Fulfillment*` family                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY`    | no → **every read route refuses**     | the largest number of records **one** smart-list query may materialise. Applied by **both** execution members of the query builder by counting before hydrating and **refusing** an over-budget selection rather than truncating it — see §8.1                                                                                                                                                                                                                                                                                      |
-| `CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY` | no → **every read route refuses**     | the largest number of query-**complexity** units one compiled statement may carry — one bound parameter plus one `ORDER BY` term plus one join. Bounds keyword cardinality, `FI:`/`FIR:` list cardinality, `OrderBy` cardinality, join count **and statement size** together. Counts **units, not filter values**: the effective `FI:` ceiling on `product.getProductSmartList` is 96 at a bound of 100, because three joins plus the base source consume four. An over-budget request is a neutral `400`, never a `500` — see §8.1 |
-| `CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST`    | no → **`sku.createSkus` refuses**     | the largest number of SKU combinations one merchandise `createSkus` request may enumerate. Applied between the count and the first SKU allocation, so an over-budget request constructs, attaches and validates nothing                                                                                                                                                                                                                                                                                                             |
-| `CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION` | no → **the three save routes refuse** | the maximum number of uniqueness probes one URL-title derivation may issue. Bounds the **probe**, never the algorithm: the slug transformation and the `-2`-first suffix sequence are unchanged inside the budget                                                                                                                                                                                                                                                                                                                   |
-| `CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD`   | no → **the feed refuses**             | the largest number of `g:additional_image_link` elements one feed record may emit. Checked **before** the image loop, so an over-budget record resolves no path at all                                                                                                                                                                                                                                                                                                                                                              |
-| `CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES`      | no → **the feed refuses**             | the largest size in **bytes** the rendered feed document may reach. Measured on the finished document and **refused**, never truncated — a truncated RSS document is malformed, not smaller                                                                                                                                                                                                                                                                                                                                         |
+| Variable                                      | Required?                             | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| --------------------------------------------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DB_HOST`                                     | **yes**                               | a bare host: a registered name or IPv4 literal per RFC 3986 §3.2.2, or an IPv6 address bracketed or bare. A scheme, a `user:password@` prefix, a `:port` suffix, a path, whitespace, a control character, a non-ASCII character and a filesystem socket path are each refused with a message saying why                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `DB_PORT`                                     | **yes**                               | a plain base-ten TCP port, 1–65535                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `DB_NAME`                                     | **yes**                               | the schema holding the existing `Sw*` tables. This service reads and writes that schema and neither creates nor migrates it. **Not** the legacy datasource name — see the note below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `DB_USER`, `DB_PASSWORD`                      | **yes**                               | must be present; an empty string is permitted, reproducing the legacy framework defaults exactly. Nothing is committed anywhere                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `DB_TLS_MODE`                                 | no → `verified`                       | `verified` requires TLS and verifies chain and identity. `disabled` is accepted **only** for a loopback host. Absence encrypts; cleartext must be asked for by name                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `DB_QUEUE_LIMIT`                              | no → `1`                              | the one bound not delegated to the driver: it reads `0` as "no limit" **and** `0` is its default, so omitting the option would select the unbounded queue this value exists to prevent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `DB_CONNECTION_LIMIT`                         | no → omitted                          | absent means the option is left off and the driver's own bounded default applies, so this port states no figure — AAP §0.4.1.3 records that pool sizing "is not carried over because the legacy application delegates pooling to the CF/Railo server and pins nothing in source"                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `DB_CONNECT_TIMEOUT_MS`                       | no → omitted                          | as above. It bounds connection setup only — not a statement, request or invocation timeout, and not a latency target                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `GOOGLE_FEED_HOST`                            | **yes**                               | the authority every absolute URL in the feed is composed from, replacing the legacy `CGI.HTTP_HOST` reads. Held to RFC 3986 §3.2.2 with §3.2.3's optional port. Its shape is checked; its **identity is not**, and that residual exposure stays documented rather than overclaimed                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `SETTING_APPLICATION_ROOT_MAPPING_PATH`       | no                                    | one of the three of eighteen setting values whose legacy default is **computed** rather than stored, so no static table can hold it. Consumed by `StaticSettingResolver` through the container                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `SETTING_SKU_ELIGIBLE_CURRENCIES`             | no                                    | as above — the legacy computes it from the excluded `Currency*` family                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `SETTING_SKU_ELIGIBLE_FULFILLMENT_METHODS`    | no                                    | as above — the legacy computes it from the excluded `Fulfillment*` family                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY`    | no → **every read route refuses**     | the largest number of records **one** smart-list query may materialise. Applied by **both** execution members of the query builder by counting before hydrating and **refusing** an over-budget selection rather than truncating it. A **smart-list** gate specifically: the three direct statements of §8.1 apply the complexity figure below and no row ceiling, for the reason stated there — see §8.1                                                                                                                                                                                                                                                                                                             |
+| `CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY` | no → **every read route refuses**     | the largest number of query-**complexity** units one composed statement may carry — one bound parameter plus one `ORDER BY` term plus one query source. Bounds keyword cardinality, `FI:`/`FIR:` list cardinality, `OrderBy` cardinality, join count **and statement size** together, and bounds the **three list-shaped statements outside the smart list** on the same unit. Counts **units, not filter values**: the effective `FI:` ceiling on `product.getProductSmartList` is 96 at a bound of 100, because three joins plus the base source consume four, and the effective `selectedOptions` ceiling is 48 because each option costs two. An over-budget request is a neutral `400`, never a `500` — see §8.1 |
+| `CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST`    | no → **`sku.createSkus` refuses**     | the largest number of SKU combinations one merchandise `createSkus` request may enumerate. Applied between the count and the first SKU allocation, so an over-budget request constructs, attaches and validates nothing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION` | no → **the three save routes refuse** | the maximum number of uniqueness probes one URL-title derivation may issue. Bounds the **probe**, never the algorithm: the slug transformation and the `-2`-first suffix sequence are unchanged inside the budget                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD`   | no → **the feed refuses**             | the largest number of `g:additional_image_link` elements one feed record may emit. Checked **before** the image loop, so an over-budget record resolves no path at all                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES`      | no → **the feed refuses**             | the largest size in **bytes** the rendered feed document may reach. Measured on the finished document and **refused**, never truncated — a truncated RSS document is malformed, not smaller                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 **Nineteen names — six required and thirteen optional — read in exactly one file, documented in exactly one
 template, and the two lists agree in both directions.** Verify the split rather than taking it on trust:
@@ -1201,12 +1224,41 @@ any kind: a connection target, a schema and an identity cannot be guessed.
 
 ### 8.1 The six resource bounds — required to serve, never invented
 
-Three unbounded-work exposures (all CWE-400) meet here: SKU combination generation, which is potentially
+Four unbounded-work exposures (all CWE-400) meet here: SKU combination generation, which is potentially
 non-terminating; authenticated SmartList requests running with no materialisation budget, where large
 `keywords`, `FI:` lists and repeated `OrderBy` statements expand SQL before any row-count gate sees it, and
-where the anonymous feed buffers its whole document with no image-count or byte bound; and unbounded URL-title
-collision probing. All three are closed by applying an operator-stated ceiling at each point, and by making the
-ceiling required rather than optional.
+where the anonymous feed buffers its whole document with no image-count or byte bound; unbounded URL-title
+collision probing; and the **three statements composed from a caller-supplied list outside the smart list** —
+`findSkusBySelectedOptions`, which appends one correlated `EXISTS` per selected option, and the two
+unused-option statements, which append one placeholder per option-group identifier. All four are closed by
+applying an operator-stated ceiling at each point, and by making the ceiling required rather than optional.
+
+**The fourth was found late, and how it was missed is worth recording rather than tidying away.** The three
+statements sit in `MySqlSkuRepository` and `MySqlOptionRepository` and reach MySQL directly, not through
+`SmartListQueryBuilder`, so the complexity gate the smart list had applied since the second review never saw
+them: `?selectedOptions=` with 65,534 comma-separated identifiers answered `200` from a 5.7 MB statement
+carrying 65,535 correlated subqueries and 65,535 bound values. The bound they now apply is the smart list's
+own — the same `CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY`, the same
+`bound parameters + ORDER BY terms + query sources` unit, resolved through the same fail-closed resolver — and
+it is the same figure rather than a new variable because the operator who set it has already stated exactly
+what is being asked for and because AAP §0.8.3.5 admits no capacity figure this port authored. The counts are
+derived arithmetically from the list length before any text is composed, so an over-budget request assembles
+no statement at all; the effective ceiling per route is tabulated below.
+
+| Statement                   | Units                   | Effective list ceiling at a bound of `100` |
+| --------------------------- | ----------------------- | ------------------------------------------ |
+| `findSkusBySelectedOptions` | `2N + 3`, no `ORDER BY` | 48 selected options                        |
+| `findUnusedOptions`         | `N + 7`, four sources   | 93 option-group identifiers                |
+| `findUnusedOptionGroups`    | `N + 2`, one source     | 98 option-group identifiers                |
+
+**No row ceiling is applied to those three, and the omission is deliberate.** Their result cardinality is
+fixed by how many SKUs, options and option groups the catalogue holds — a caller cannot amplify it — and
+`findSkusBySelectedOptions` runs inside a save, from `Sku.hasUniqueOptions()`
+[`model/entity/Sku.cfc:L756-L769`] and `Product.getSkuBySelectedOptions()`
+[`model/entity/Product.cfc:L349-L364`]. A row ceiling there would make a product with more SKUs than the
+figure unsaveable, which is a functional regression rather than a bound. Only the list length is
+caller-amplifiable, and only the list length is bounded. `CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY` therefore
+remains a smart-list gate exactly as before.
 
 #### The shape of the contract, and what it costs
 
@@ -1285,9 +1337,10 @@ derived: `1→200 50→200 90→200 95→200 96→200 97→400 99→400 101→40
 member is `124` units and is refused for the same reason. An operator reading the bound as "100 filter values"
 will therefore see refusals four values early, which is why the figure is stated here in both currencies.
 
-**An over-budget request is a `400`, not a `500`.** All three gates — the complexity gate before any statement
-is planned, the record-count gate before any row is read, and the row-count gate before any row is hydrated —
-raise `RequestBudgetExhaustedError`, whose public presentation is the neutral
+**An over-budget request is a `400`, not a `500`.** Every gate — the smart list's complexity gate before any
+statement is planned, its record-count gate before any row is read, its row-count gate before any row is
+hydrated, and the three direct statements' complexity gates before any text is composed — raises
+`RequestBudgetExhaustedError`, whose public presentation is the neutral
 `400 {"message":"The request asks for more work than one operation may perform"}` that
 `SkuService.createSkus` already returns for an over-large combination request. The two situations are the same
 situation: the caller chose the option selection, or the `FI:` list, or the `OrderBy` length, and can choose
@@ -1449,12 +1502,51 @@ finishes. That is what makes the protection apply to the case that matters most 
 the first row with a given code — rather than only to rows that already exist.
 
 **Introducing locks introduces two new failure modes, and both are classified rather than left raw.**
-`src/adapters/mysql/QueryRunner.ts` now reports a deadlock (`errno 1213`) and a lock-wait timeout
-(`errno 1205`) as `UniqueConstraintViolationError` carrying `retryable: true`, alongside the duplicate key
-(`errno 1062`) it already reported, which carries `retryable: false`. **No retry is performed here.** The
-finding asks that conflicts be retry*able* "where semantics permit"; whether re-running is correct depends on
-what the caller was doing, and only the caller knows. Every other driver failure still passes through as the
-identical object.
+`src/adapters/mysql/QueryRunner.ts` reports a deadlock (`errno 1213`) and a lock-wait timeout (`errno 1205`)
+as `TransientWriteConflictError` carrying `retryable: true`, alongside the duplicate key (`errno 1062`) it
+already reported as `UniqueConstraintViolationError` carrying `retryable: false`. Every other driver failure
+still passes through as the identical object.
+
+**That transient pair used to be raised as `UniqueConstraintViolationError` too, and correcting it is worth
+recording rather than presenting as if it had always been so.** The classification was right from the start —
+which of the two conditions occurred, `retryable: true`, the retained driver `cause` — but it arrived in the
+wrong class, so its presentation was the duplicate key's: `400 {"message":"A value in the request is already
+in use"}`. **Two legitimate concurrent writers of _different_ values were therefore each told one of their
+values was taken.** Three things were wrong with that at once. The caller was told a false fact about its
+request and, acting on `400` correctly, would stop and change a value that nothing was wrong with — the
+opposite of the correct response to a rolled-back transaction. The operator lost the signal entirely, because
+`retryable` lived only in the error's `context`, which §7.1's redaction keeps out of both the response and the
+log record, and `failureClass` carried one token for a permanent collision and a temporary one alike; a rising
+deadlock rate, which is the signal that this port's own uniqueness-read lock ranges are contending, was
+counted as callers picking taken values. And the blame was misplaced: `4xx` states a fact about the request
+while `5xx` states a fault in the service, and a gap-lock deadlock between writers who chose different values
+is neither party's doing, so no `4xx` could be the honest answer.
+
+The transient pair therefore has its own code, `TRANSIENT_WRITE_CONFLICT`, and its own status, **`503`** —
+not `409`, which would say the request conflicts with the resource's current state and is precisely what
+`errno 1062` means, so saying it here would collapse the distinction the code exists to draw. The public
+message states the two things a caller can act on and nothing else: the write did not happen, and the request
+may be retried. No `errno`, table, constraint name or driver text reaches it, and **no `Retry-After`
+accompanies it** — how long to wait depends on the contending workload, which nothing in this subtree knows,
+and AAP §0.8.3.5 admits no invented figure.
+
+**No retry is performed here, and that has not changed.** The finding asks that conflicts be retry*able*
+"where semantics permit"; whether re-running is correct depends on what the caller was doing, and only the
+caller knows. What changed is that the caller can now tell that re-running is worth trying.
+
+**One classification gap on the same subject is closed alongside it.** `QueryRunner` wrapped its own
+`pool.execute` call, so a database this deployment cannot reach — a closed port, a refused connection, an
+exhausted queue — surfaced on every READ path as a `DatabaseStatementError` and a neutral `500 {"message":"The
+request could not be completed"}`. The WRITE path reached the driver somewhere else: `UnitOfWork` acquires its
+transaction's connection with `pool.getConnection()`, and that call sat outside any translation, so the
+driver's raw `Error` escaped the handler unclassified. The same closed port answered `500 {"message":"An
+unexpected error occurred"}` with `failureClass: "Error"` and **no `code` field in the log record at all**,
+because a value that is not a `DomainError` has no public code to read — so anything counting failures by code
+could not see write-path unavailability. Both acquisition sites are now translated through the same boundary,
+and a measured probe against a closed `DB_PORT` produces the byte-identical body and status from a read and a
+write. There was **no disclosure** on either path before or after, and none is claimed as newly closed:
+`ECONNREFUSED`, the driver's errno, the host and the port never reached a body or a log record, because
+neither path composes its message from the caught value.
 
 #### What the locks do not close
 
@@ -2250,13 +2342,13 @@ unreachable code would add behaviour the legacy system does not have.
 slice amounts to **two entity test files, eight issue regressions and one fixture helper. Everything else is
 net-new.** Every suite in `test/` labels itself, so the ratio is visible per file rather than only in
 aggregate: of the **17** suites, **3 carry TRACEABLE cases and 14 are wholly NET-NEW** — and inside those three
-the imbalance is sharper still, **20 traceable case declarations against 2,267 net-new ones**. The three are
+the imbalance is sharper still, **20 traceable case declarations against 2,290 net-new ones**. The three are
 `test/regression/issues.test.ts` (10), `test/domain/Product.test.ts` (6) and `test/domain/Brand.test.ts` (4).
 
 **Declarations and executed tests are two different counts, and this paragraph states declarations.** The
 figures above come from walking the TypeScript AST of all seventeen suites and counting `it` / `test`
-declarations: **2,287 in total, 20 TRACEABLE and 2,267 NET-NEW, with 0 unlabelled.** The runner reports a
-larger number — **2,552 at this checkpoint** — because an `it.each(table)` declaration expands into one
+declarations: **2,310 in total, 20 TRACEABLE and 2,290 NET-NEW, with 0 unlabelled.** The runner reports a
+larger number — **2,575 at this checkpoint** — because an `it.each(table)` declaration expands into one
 executed test per table row. Neither figure is frozen by anything: both grow when a case or a row is added, so
 re-measure rather than trusting a number in a document. `test/regression/issues.test.ts` asserts the
 declaration figures against a fresh walk of the suites on every run, so a drift between this paragraph and the

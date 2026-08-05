@@ -28,11 +28,17 @@ import type { Sku, SkuTransactionExistenceChecker } from '../../domain/sku/Sku';
 import { SKU_UNSAVED_ID_VALUE } from '../../domain/sku/Sku';
 import { DataIntegrityError, DomainError } from '../../errors/DomainError';
 import type { SkuRepository, SkuRow, SkuSearchRow } from '../../ports/repositories/SkuRepository';
-import type { PhysicalTableName, RegisteredTableName, SqlMutationExecutor } from './QueryRunner';
+import type {
+  PhysicalTableName,
+  RegisteredTableName,
+  SqlMutationExecutor,
+  StatementComplexityBudget,
+} from './QueryRunner';
 import {
   assertColumnName,
   assertRegisteredColumnName,
   assertRegisteredTableName,
+  assertStatementComplexityWithinBudget,
   assertTableName,
 } from './QueryRunner';
 import { attachFetchedSkuAssociations } from './SmartListQueryBuilder';
@@ -600,12 +606,19 @@ export class MySqlSkuRepository implements SkuRepository {
    * @param executor - Issues every statement this adapter composes.
    * @param optionGroupSortOrderMemo - The request-scoped sort-order memo, per M7.
    * @param productTypeRootResolver - Walks a product type to its root, for the base-type discriminator.
+   * @param accountContext - Supplies the acting account for the audit columns a write stamps.
+   * @param statementComplexityBudget - The operator-stated ceiling on how complex one composed
+   * statement may be. Required rather than optional, and injected rather than read from the
+   * environment here, because exactly one member of this class composes a statement whose shape the
+   * caller controls — {@link MySqlSkuRepository.findSkusBySelectedOptions} — and an adapter that could
+   * be constructed without the ceiling would be an adapter that could serve that member unbounded.
    */
   public constructor(
     private readonly executor: SkuStatementExecutor,
     private readonly optionGroupSortOrderMemo: OptionGroupSortOrderMemo,
     private readonly productTypeRootResolver: MySqlSkuRepositoryProductTypeRootResolver,
     private readonly accountContext: AccountContextPort,
+    private readonly statementComplexityBudget: StatementComplexityBudget,
   ) {}
 
   /**
@@ -621,12 +634,18 @@ export class MySqlSkuRepository implements SkuRepository {
      * order the same invocation had already resolved — and `model/dao/SkuDAO.cfc:L204-L220` memoises
      * exactly to avoid that. The product-type root resolver is stateless and travels for the same reason
      * the executor does not: nothing about it is connection-bound.
+     *
+     * The complexity budget travels for that reason too, and it has to: a re-binding that dropped it
+     * would produce an instance that could not be constructed at all under `strict`, which is the
+     * property that makes "the bound cannot be lost on the transaction path" a compile-time fact
+     * rather than a review note.
      */
     return new MySqlSkuRepository(
       executor,
       this.optionGroupSortOrderMemo,
       this.productTypeRootResolver,
       this.accountContext,
+      this.statementComplexityBudget,
     );
   }
 
@@ -756,6 +775,38 @@ export class MySqlSkuRepository implements SkuRepository {
     optionIds: string[],
     productId: string,
   ): Promise<SkuRow[]> {
+    /*
+     * The work bound, applied BEFORE anything is composed (CWE-400 / CWE-770 / CWE-1284).
+     *
+     * This is the one member of this class whose statement SHAPE the caller controls: T1 requires one
+     * correlated `EXISTS` per element of `optionIds`, duplicates included, so a caller who sends N
+     * identifiers gets N subqueries, N placeholders and N sources. The counts below are the same three
+     * the smart list counts, derived arithmetically from `optionIds.length` rather than by measuring
+     * assembled text, which is what lets the refusal precede assembly entirely:
+     *
+     *   bound parameters = N option identifiers + the one product identifier   (T2 always emits it)
+     *   sources          = the base `SwSku` + the option-bearing guard subquery + N match subqueries
+     *   ordering terms   = none; this statement carries no `ORDER BY`
+     *
+     * so the account is `2N + 3` units, and the effective ceiling on N is `(bound - 3) / 2`.
+     *
+     * No ROW ceiling is applied here, and that omission is deliberate rather than an oversight. The
+     * result cardinality of this statement is fixed by how many SKUs the product has in stored data —
+     * the caller cannot amplify it — and this member is reached from `Sku.hasUniqueOptions()`
+     * [`model/entity/Sku.cfc:L756-L769`] and from `Product.getSkuBySelectedOptions()`
+     * [`model/entity/Product.cfc:L349-L364`], both of which run during a save. A row ceiling would
+     * therefore make a product with more SKUs than the figure unsaveable, which is a functional
+     * regression rather than a bound. Only the list length is caller-amplifiable, and only the list
+     * length is bounded.
+     */
+    assertStatementComplexityWithinBudget(this.statementComplexityBudget, {
+      statement: 'findSkusBySelectedOptions',
+      boundParameters: optionIds.length + 1,
+      sources: optionIds.length + 2,
+      orderingTerms: 0,
+      listLength: optionIds.length,
+    });
+
     /*
      * The legacy seeds its predicate with a tautology [`model/dao/SkuDAO.cfc:L111`] so that every
      * subsequent fragment can be appended with a leading conjunction. That is a string-builder

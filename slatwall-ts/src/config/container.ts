@@ -30,7 +30,7 @@ import {
   createOptionGroupSortOrderMemo,
   createTransactionExistenceChecker,
 } from '../adapters/mysql/MySqlSkuRepository';
-import type { SqlExecutor } from '../adapters/mysql/QueryRunner';
+import type { SqlExecutor, StatementComplexityBudget } from '../adapters/mysql/QueryRunner';
 import { QueryRunner } from '../adapters/mysql/QueryRunner';
 import type {
   AnonymousMaterialisationGate,
@@ -876,6 +876,15 @@ export interface OptionSurfaceDependencies {
    */
   readonly smartListQueryPort: SmartListQueryPort;
 
+  /**
+   * The operator-stated ceiling on composed-statement complexity (CWE-400). Required, and required for
+   * the same reason the query port's copy is: both unused-option statements size a set-membership
+   * clause from a caller-supplied list, so an option surface built without the ceiling would serve
+   * both members unbounded. `SmartListMaterialisationBudget` extends the narrow contract the adapter
+   * asks for, so the caller passes the single budget object it has already built.
+   */
+  readonly statementComplexityBudget: StatementComplexityBudget;
+
   /** A caller-supplied repository, honoured in place of the MySQL adapter. */
   readonly optionRepository?: OptionRepository;
 }
@@ -891,7 +900,11 @@ export interface OptionSurfaceParts {
  */
 export function composeOptionSurface(dependencies: OptionSurfaceDependencies): OptionSurfaceParts {
   const optionRepository: OptionRepository =
-    dependencies.optionRepository ?? new MySqlOptionRepository(dependencies.statements.queryRunner);
+    dependencies.optionRepository ??
+    new MySqlOptionRepository(
+      dependencies.statements.queryRunner,
+      dependencies.statementComplexityBudget,
+    );
 
   return {
     optionRepository,
@@ -916,20 +929,26 @@ export function createOptionSurfaceGraph(): OptionSurfaceGraph {
   const boundaries = resolveCatalogBoundaries();
   const statements = createCatalogStatements();
 
+  /*
+   * Built once and handed to both consumers. Hoisting it out of the query-port argument is what lets
+   * the option repository receive the SAME figure the query port received: a budget wired into one
+   * entry and not another is the partial-wiring failure mode, and it is exactly as much of a gap when
+   * the unwired entry is the option repository's two list-shaped statements as when it is the smart
+   * list's.
+   */
+  const materialisationBudget = createSmartListMaterialisationBudget(
+    config.resourceBounds.smartListMaximumRecordsPerQuery,
+    config.resourceBounds.smartListMaximumPredicatesPerQuery,
+  );
+
   const { optionService } = composeOptionSurface({
     statements,
     smartListQueryPort: createSmartListQueryPort(
       statements.queryRunner,
       { bindDefaultSkuDelegate: createDefaultSkuDelegateBinder(boundaries.settings) },
-      /*
-       * — the narrow option artifact is bounded exactly as the aggregate is; a budget wired
-       * into one entry and not another is the partial-wiring failure mode.
-       */
-      createSmartListMaterialisationBudget(
-        config.resourceBounds.smartListMaximumRecordsPerQuery,
-        config.resourceBounds.smartListMaximumPredicatesPerQuery,
-      ),
+      materialisationBudget,
     ),
+    statementComplexityBudget: materialisationBudget,
   });
 
   return Object.freeze({
@@ -1212,9 +1231,17 @@ export function buildSkuBoundaryParts(
     optionGroupSortOrderMemo,
     boundaryProductTypeRoots,
     boundaries.accountContext,
+    /*
+     * The same budget object the query port above received. Both adapters apply the complexity ceiling
+     * to statements they compose from a caller-supplied list, and `SmartListMaterialisationBudget`
+     * extends the narrow `StatementComplexityBudget` those adapters ask for, so one operator figure
+     * governs the smart list and the three list-shaped statements alike — on the transaction path as
+     * well as the pooled one, which is the partial-wiring failure mode this line closes.
+     */
+    dependencies.materialisationBudget,
   );
   const boundaryOptionService = new OptionService(
-    new MySqlOptionRepository(executor),
+    new MySqlOptionRepository(executor, dependencies.materialisationBudget),
     boundarySmartList,
   );
 
@@ -1269,9 +1296,12 @@ export function composeSkuSurface(dependencies: SkuSurfaceDependencies): SkuSurf
       optionGroupSortOrderMemo,
       productTypeRootResolver,
       boundaries.accountContext,
+      /* The complexity ceiling — see the identical argument in {@link buildSkuBoundaryParts}. */
+      dependencies.materialisationBudget,
     );
   const optionRepository: OptionRepository =
-    dependencies.optionRepository ?? new MySqlOptionRepository(statements.queryRunner);
+    dependencies.optionRepository ??
+    new MySqlOptionRepository(statements.queryRunner, dependencies.materialisationBudget);
 
   const optionService =
     dependencies.optionService ?? new OptionService(optionRepository, smartListQueryPort);
@@ -3248,6 +3278,8 @@ export function createCatalogContainer(
   const optionParts = composeOptionSurface({
     statements,
     smartListQueryPort,
+    /* The one budget object, so the option statements and the smart list share one operator figure. */
+    statementComplexityBudget: materialisationBudget,
     ...(overrides.optionRepository === undefined
       ? {}
       : { optionRepository: overrides.optionRepository }),

@@ -71,6 +71,7 @@ import {
   GENEROUS_COMBINATION_BUDGET,
   GENEROUS_URL_TITLE_PROBE_BUDGET,
 } from '../support/inMemoryRepositories';
+import { GENEROUS_STATEMENT_COMPLEXITY_BUDGET } from '../support/inMemoryRepositories';
 import { SmartListQueryBuilder } from '../../src/adapters/mysql/SmartListQueryBuilder';
 import { createCatalogAggregateLoaders } from '../../src/adapters/mysql/SmartListQueryBuilder';
 import { populate } from '../../src/domain/base/populate';
@@ -126,6 +127,8 @@ import {
   BOUNDED_READ_LIMIT_PARAMETER,
   BOUNDED_READ_OFFSET_PARAMETER,
   HTTP_STATUS,
+  JSON_CONTENT_TYPE,
+  errorResponse,
   readBoundedReadWindow,
   readHeader,
   readJsonObjectBody,
@@ -133,6 +136,13 @@ import {
   readQueryStringParameter,
   readSmartListInput,
 } from '../../src/handlers/httpResponse';
+import { QueryRunner } from '../../src/adapters/mysql/QueryRunner';
+import { UnitOfWork } from '../../src/adapters/mysql/UnitOfWork';
+import {
+  DatabaseStatementError,
+  TransientWriteConflictError,
+  UniqueConstraintViolationError,
+} from '../../src/errors/DomainError';
 import {
   createBrandRoutes,
   handler as brandLambdaHandler,
@@ -3660,6 +3670,161 @@ describe('The shared response shaping every handler funnels through', () => {
 });
 
 /*
+ * The transient-write-conflict status, and the taxonomy boundary it sits on (CWE-544)
+ *
+ * `errorResponse` reads a `DomainError`'s presentation polymorphically and maps its code to one status,
+ * so a class's public account and the status it produces are one decision made in two files. These cases
+ * pin both halves for the code added in response to the review finding, and — more importantly — pin the
+ * DIFFERENCE from the duplicate-key code it used to share, since sharing it is exactly the defect.
+ */
+
+describe('errorResponse — NET-NEW: a transient write conflict is a retryable 503, not a 400', () => {
+  it('NET-NEW — a TransientWriteConflictError answers 503 with the retryable message and nothing else', () => {
+    const response = errorResponse(
+      new TransientWriteConflictError(
+        'The database rolled this transaction back to break a deadlock with another writer, so no ' +
+          'part of it was applied. The identical request may succeed if it is made again.',
+        { context: { parameterCount: 2, errno: 1213, retryable: true } },
+      ),
+    );
+
+    expect(response.statusCode).toBe(HTTP_STATUS.SERVICE_UNAVAILABLE);
+    expect(response.statusCode).toBe(503);
+    expect(JSON.parse(response.body) as unknown).toStrictEqual({
+      message:
+        'The write conflicted with another write in progress and was not applied; the request may be retried',
+    });
+  });
+
+  it('NET-NEW — the response discloses no errno, no table, no constraint and no internal message', () => {
+    /*
+     * The internal message names the deadlock and the rollback, because an operator reading a
+     * correlation-matched record needs to know which of the two conditions occurred. None of it may reach
+     * the wire, and the whole authored message is asserted absent rather than a token from it, because a
+     * partial leak is still a leak.
+     */
+    const internalMessage =
+      'The database could not acquire a lock another writer was holding before the wait timed out, ' +
+      'so the write did not happen. The identical request may succeed if it is made again.';
+    const response = errorResponse(
+      new TransientWriteConflictError(internalMessage, {
+        context: { parameterCount: 3, errno: 1205, retryable: true, constraintName: 'uq_SwBrand' },
+      }),
+    );
+
+    expect(response.body).not.toContain(internalMessage);
+    expect(response.body).not.toMatch(/1205|1213|uq_SwBrand|ER_LOCK|deadlock|retryable/iu);
+  });
+
+  it('NET-NEW — a DUPLICATE key still answers 400, so the two verdicts are genuinely separated', () => {
+    /*
+     * The control. Before the split both classes produced this response, which is why a caller could not
+     * tell "your value is taken, change it" from "nothing was written, ask again". A revision that
+     * mapped both codes to one status, or that reverted the transient arm to the duplicate class, would
+     * pass the first case above only if it also broke this one — or would break this one directly.
+     */
+    const duplicate = errorResponse(
+      new UniqueConstraintViolationError('overtaken', {
+        context: { parameterCount: 1, errno: 1062, retryable: false },
+      }),
+    );
+
+    expect(duplicate.statusCode).toBe(HTTP_STATUS.BAD_REQUEST);
+    expect(JSON.parse(duplicate.body) as unknown).toStrictEqual({
+      message: 'A value in the request is already in use',
+    });
+  });
+
+  it('NET-NEW — no Retry-After is emitted, because this port has no basis for a figure', () => {
+    /*
+     * A header would be the natural companion to a 503 and is deliberately absent: how long to wait
+     * depends on the contending workload, which nothing in this subtree knows, and AAP §0.8.3.5 admits no
+     * invented figure. The header set is asserted to be the ordinary JSON one, unchanged.
+     */
+    const response = errorResponse(
+      new TransientWriteConflictError('rolled back', { context: { retryable: true } }),
+    );
+    const headers = response.headers ?? {};
+
+    expect(Object.keys(headers)).not.toContain('Retry-After');
+    expect(Object.keys(headers)).not.toContain('retry-after');
+    expect(headers['Content-Type']).toBe(JSON_CONTENT_TYPE);
+  });
+
+  it('NET-NEW — an UNREACHABLE database classifies identically whichever path first touched the driver', async () => {
+    /*
+     * The second half of the finding pair: `QueryRunner` wrapped its own `pool.execute`, but
+     * `UnitOfWork` acquired its transaction's connection outside any translation, so a closed port
+     * answered a neutral classified 500 on a read and an UNRECOGNISED 500 on a write — same condition,
+     * two accounts, and the write half carrying no `code` for anything counting by code to see.
+     *
+     * Reproduced here with a pool whose acquisition rejects the way the driver rejects it, `errno` and
+     * `code` included, and asserted from the response rather than from the class, because "classifies as
+     * the read path does" is a claim about what a caller and a log receive.
+     */
+    const refusal = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:3306'), {
+      errno: -111,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 3306,
+    });
+    const unreachablePool = {
+      execute: () => Promise.reject(refusal),
+      getConnection: () => Promise.reject(refusal),
+    };
+
+    const readRejection: unknown = await new QueryRunner(unreachablePool as never)
+      .execute('SELECT ?', ['x'])
+      .then(
+        () => undefined,
+        (failure: unknown) => failure,
+      );
+    const writeRejection: unknown = await new UnitOfWork(unreachablePool as never)
+      .run(
+        async (scope) => scope.executor.execute('SELECT ?', ['x']),
+        () => false,
+      )
+      .then(
+        () => undefined,
+        (failure: unknown) => failure,
+      );
+
+    /* Both are the same classified failure, and the write one is no longer a bare `Error`. */
+    expect(readRejection).toBeInstanceOf(DatabaseStatementError);
+    expect(writeRejection).toBeInstanceOf(DatabaseStatementError);
+    expect((writeRejection as DatabaseStatementError).getPublicError()).toStrictEqual(
+      (readRejection as DatabaseStatementError).getPublicError(),
+    );
+
+    /* And both produce the identical response, byte for byte, at the identical status. */
+    const readResponse = errorResponse(readRejection);
+    const writeResponse = errorResponse(writeRejection);
+
+    expect(writeResponse.statusCode).toBe(readResponse.statusCode);
+    expect(writeResponse.statusCode).toBe(HTTP_STATUS.INTERNAL_SERVER_ERROR);
+    expect(writeResponse.body).toBe(readResponse.body);
+    expect(JSON.parse(writeResponse.body) as unknown).toStrictEqual({
+      message: 'The request could not be completed',
+    });
+
+    /*
+     * Nothing about the address reaches the wire from either. There was no disclosure before this fix
+     * either and none is claimed as newly closed; the assertion is here so a future revision that starts
+     * composing a message from the caught value fails immediately.
+     */
+    for (const body of [readResponse.body, writeResponse.body]) {
+      expect(body).not.toMatch(/ECONNREFUSED|127\.0\.0\.1|3306|111|connect/iu);
+    }
+
+    /* The acquisition wrap does not retain the driver error as a cause — see DatabaseStatementError. */
+    expect((writeRejection as DatabaseStatementError).cause).toBeUndefined();
+    /* No statement was attempted, so the honest parameter count is zero rather than a placeholder. */
+    expect((writeRejection as DatabaseStatementError).parameterCount).toBe(0);
+  });
+});
+
+/*
  * AAP §0.4.1.12 declares exactly seventeen executable suites, so this subject is covered
  * inside an approved suite rather than in one of its own.
  */
@@ -6539,7 +6704,10 @@ describe('The M5/M6/M7 write-boundary rebuild: every collaborator re-bound to th
     >('../../src/adapters/mysql/MySqlOptionRepository');
 
     return new OptionService(
-      new MySqlOptionRepository(dependencies.statements.queryRunner),
+      new MySqlOptionRepository(
+        dependencies.statements.queryRunner,
+        GENEROUS_STATEMENT_COMPLEXITY_BUDGET,
+      ),
       dependencies.smartListQueryPort,
     );
   }
@@ -7541,6 +7709,115 @@ describe('NET-NEW documentation consistency — the test provenance census', () 
     const readme = readFileSync(join(SUBTREE_ROOT, 'README.md'), 'utf8');
     expect(readme).toContain(
       `\`grep -rh '${bannerPrefix}' test/ | wc -l\` reports **${String(expected.length)}**`,
+    );
+  });
+});
+
+/*
+ * §2.2's runtime-lifecycle arithmetic, asserted rather than trusted (CWE-1059-adjacent: a disclosure that
+ * misattributes its own source is a disclosure a reader cannot audit).
+ *
+ * The review finding this closes was not a wrong DATE — every actionable date in §2.2 verified exactly
+ * against its owning body. It was a wrong PROVENANCE: the 31 August / 30 September 2026 pair was credited
+ * to AWS's documented "at least 30 days / at least 60 days" cadence, which cannot produce it, while the
+ * 1 June / 1 July 2026 pair — which does track that cadence — was credited to a bulletin instead. The two
+ * provenances were transposed, and a reader re-deriving the section's own claim would fail to reproduce it.
+ *
+ * A prose fix alone would leave nothing stopping the same transposition returning, so the arithmetic is
+ * pinned here the way the provenance census and the folded-body banners are: by reading the document and
+ * recomputing. Nothing in this suite asserts what AWS's table SAYS — that is a fact about a remote
+ * document, re-checkable only by reading it, and §2.2 says so. What is asserted is that the section's
+ * internal arithmetic is self-consistent and that the cadence is not credited with a pair it cannot yield.
+ */
+
+describe('NET-NEW documentation consistency — §2.2 runtime-lifecycle arithmetic', () => {
+  /** The deprecation date both §2.2 bullets are measured from, as the section states it. */
+  const DEPRECATION = Date.UTC(2026, 3, 30);
+
+  /** One whole day, for turning a date difference into the day count §2.2 quotes. */
+  const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
+
+  /**
+   * Days from the deprecation date to a UTC date, which is the figure §2.2 states for each pair.
+   *
+   * @param year - the calendar year.
+   * @param monthIndex - the zero-based month, as `Date.UTC` takes it.
+   * @param day - the day of the month.
+   * @returns whole days after 30 April 2026.
+   */
+  const daysAfterDeprecation = (year: number, monthIndex: number, day: number): number =>
+    (Date.UTC(year, monthIndex, day) - DEPRECATION) / MILLISECONDS_PER_DAY;
+
+  /** The document under test, read fresh so a stale copy cannot pass. */
+  const readme = (): string => readFileSync(join(SUBTREE_ROOT, 'README.md'), 'utf8');
+
+  it('[NET-NEW] states the cadence FLOOR that 30/60 days actually yields, not a published pair', () => {
+    /*
+     * 30 April 2026 + 30 days is 30 May 2026 and + 60 days is 29 June 2026. Both are recomputed here
+     * rather than written as literals only, so a future edit that changed the stated floor without
+     * changing the deprecation date would fail rather than read plausibly.
+     */
+    expect(daysAfterDeprecation(2026, 4, 30)).toBe(30);
+    expect(daysAfterDeprecation(2026, 5, 29)).toBe(60);
+    expect(readme()).toContain('floor of 30 May 2026 and 29 June 2026');
+  });
+
+  it('[NET-NEW] quotes the day count of every published pair, and each one recomputes', () => {
+    /*
+     * The table is the whole of the finding. The 32/62 pair is within a month-boundary rounding of the
+     * cadence; the 123/153 pair is four to five times it and therefore cannot come from it; the 277/307
+     * pair is the current table's, further out again. Each figure §2.2 prints is asserted against the
+     * arithmetic, so a transposition cannot be reintroduced silently.
+     */
+    const stated: readonly (readonly [
+      days: number,
+      year: number,
+      monthIndex: number,
+      day: number,
+    ])[] = [
+      [32, 2026, 5, 1],
+      [62, 2026, 6, 1],
+      [123, 2026, 7, 31],
+      [153, 2026, 8, 30],
+      [277, 2027, 1, 1],
+      [307, 2027, 2, 3],
+    ];
+
+    for (const [days, year, monthIndex, day] of stated) {
+      expect(daysAfterDeprecation(year, monthIndex, day)).toBe(days);
+    }
+
+    const document = readme();
+
+    expect(document).toContain('**1 June / 1 July 2026** sits at **32 and 62 days**');
+    expect(document).toContain('**31 August / 30 September 2026** sits at **123 and 153 days**');
+  });
+
+  it('[NET-NEW] does NOT credit the cadence with the pair it cannot produce', () => {
+    /*
+     * The negative assertion, and the one that catches a regression to the reviewed text. That text read
+     * "**31 August / 30 September 2026**, from the standard 30-day/60-day cadence", which is the exact
+     * claim the arithmetic above refutes. Matching on the substring rather than on a paraphrase is
+     * deliberate: a reworded reintroduction is a different defect and would be caught by the positive
+     * assertions above, whereas this guards the specific sentence a reader might restore from history.
+     */
+    const document = readme();
+
+    expect(document).not.toContain('from the\n  standard 30-day/60-day cadence');
+    expect(document).not.toContain('from the standard 30-day/60-day cadence');
+    /* And the delay is attributed to AWS's own note, quoted rather than characterised. */
+    expect(document).toContain('beyond the usual 30 and 60\n    days');
+  });
+
+  it('[NET-NEW] introduces no performance or service-level claim while stating all of this (IR-12)', () => {
+    /*
+     * §2.2 closes by declaring itself a lifecycle statement and not a performance claim, and that
+     * declaration has to stay true of the bullets above it. The day counts are calendar arithmetic about a
+     * deprecation schedule; none of them is a latency, a throughput, an availability figure or a capacity
+     * estimate, and this case pins the closing declaration itself so an edit cannot quietly drop it.
+     */
+    expect(readme()).toContain(
+      '**This is a lifecycle statement only. It is not a performance claim and it is not a service-level\ncommitment.**',
     );
   });
 });

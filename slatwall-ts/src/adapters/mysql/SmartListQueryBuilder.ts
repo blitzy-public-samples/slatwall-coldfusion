@@ -62,7 +62,12 @@ import {
   mapRows,
 } from './rowMappers';
 
-import type { CatalogAggregateLoader, PhysicalTableName, SqlExecutor } from './QueryRunner';
+import type {
+  CatalogAggregateLoader,
+  PhysicalTableName,
+  SqlExecutor,
+  StatementComplexityBudget,
+} from './QueryRunner';
 import type { MySqlRow } from './rowMappers';
 import type {
   SmartListEntityName,
@@ -1515,7 +1520,7 @@ export function describePropertyScopedSmartList(
  * The resource bound on smart-list materialisation — (CWE-400, uncontrolled resource
  * consumption).
  */
-export interface SmartListMaterialisationBudget {
+export interface SmartListMaterialisationBudget extends StatementComplexityBudget {
   /**
    * Answers the largest number of records one smart-list query may materialise.
    *
@@ -1525,15 +1530,16 @@ export interface SmartListMaterialisationBudget {
    */
   readonly resolveMaximumRecordsPerQuery: () => number;
 
-  /**
-   * Answers the largest number of query-complexity units one compiled statement may carry — review
-   * finding's second half.
-   *
-   * @returns the operator-stated ceiling, as a positive safe integer
-   * @throws {ConfigurationError} when this deployment stated no ceiling; the message names
-   * `CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY`
+  /*
+   * The complexity member is inherited from {@link StatementComplexityBudget} in
+   * `./QueryRunner.ts` rather than declared again here. It moved there so that the three statements
+   * composed from a caller-supplied list outside the smart list — the option resolver in
+   * `./MySqlSkuRepository.ts` and the two unused-option queries in `./MySqlOptionRepository.ts` —
+   * can apply the same operator-stated figure through the same seam, without either repository
+   * having to depend on this module and without the figure being duplicated or reinvented. One
+   * budget object still satisfies both consumers, so nothing about how the container builds it
+   * changes.
    */
-  readonly resolveMaximumPredicatesPerQuery: () => number;
 }
 
 /**
@@ -1580,12 +1586,18 @@ export function createSmartListMaterialisationBudget(
           'permits one smart-list query to hydrate',
         'A smart-list query refuses to materialise an unbounded selection.',
       ),
+    /*
+     * The wording says "one composed statement" rather than "one smart-list statement" because this
+     * one figure now governs the three list-shaped statements outside the smart list as well — see
+     * `./QueryRunner.ts`'s {@link StatementComplexityBudget}. Naming only the smart list here would
+     * send an operator diagnosing a refused option-resolver request looking in the wrong place.
+     */
     resolveMaximumPredicatesPerQuery: (): number =>
       resolve(
         maximumPredicatesPerQuery,
         'CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY to the largest number of predicate, ordering ' +
-          'and join units this deployment permits one smart-list statement to carry',
-        'A smart-list query refuses to compile a statement of unbounded complexity.',
+          'and join units this deployment permits one composed statement to carry',
+        'This deployment refuses to compile a statement of unbounded complexity.',
       ),
   });
 }

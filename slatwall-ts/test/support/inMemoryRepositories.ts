@@ -4095,6 +4095,19 @@ export function smartListBudgetWithComplexityCeiling(
   return createSmartListMaterialisationBudget(1_000_000, maximumPredicatesPerQuery);
 }
 
+/**
+ * A generous statement-complexity budget for the cases that are not asserting the bound.
+ *
+ * The MySQL SKU and option adapters take a `StatementComplexityBudget` as a required
+ * constructor argument, because the three statements they compose from a caller-supplied list would
+ * otherwise be unbounded. A case whose subject is the statement TEXT rather than the ceiling still has
+ * to supply one, and supplying a deliberately generous figure keeps that case asserting what it means
+ * to assert. A case whose subject IS the ceiling uses {@link smartListBudgetWithComplexityCeiling}
+ * instead, so the two intentions never look alike at the call site.
+ */
+export const GENEROUS_STATEMENT_COMPLEXITY_BUDGET: SmartListMaterialisationBudget =
+  createSmartListMaterialisationBudget(1_000_000, 1_000_000);
+
 /** A generous SKU combination budget that never cancels —. */
 export const GENEROUS_COMBINATION_BUDGET: SkuCombinationBudget =
   createSkuCombinationBudget(1_000_000);

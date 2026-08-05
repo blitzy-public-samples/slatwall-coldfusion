@@ -99,6 +99,7 @@ import type { BrandPropertyName } from '../../src/domain/product/Brand';
 import type { ManagedBrand } from '../../src/services/BrandService';
 import type { UniquePropertyEntity } from '../../src/ports/UniquePropertyPort';
 import type { SqlExecutorDouble, UniquePropertyValueSeed } from '../support/inMemoryRepositories';
+import { GENEROUS_STATEMENT_COMPLEXITY_BUDGET } from '../support/inMemoryRepositories';
 import type { Product } from '../../src/domain/product/Product';
 import type { Sku, SkusBySelectedOptionsLookup } from '../../src/domain/sku/Sku';
 import type { BrandValidationSubject } from '../../src/validation/rules/brand.rules';
@@ -4604,6 +4605,7 @@ describe('NET-NEW — the selected-options statement binds values and whitelists
       createOptionGroupSortOrderMemo(),
       createProductTypeRootResolverDouble().resolver,
       createAbsentAccountContextDouble().accountContext,
+      GENEROUS_STATEMENT_COMPLEXITY_BUDGET,
     );
     return { repository, sql };
   }

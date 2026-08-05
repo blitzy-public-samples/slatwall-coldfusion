@@ -159,6 +159,7 @@ import { MySqlBrandRepository } from '../../src/adapters/mysql/MySqlBrandReposit
 import { assertColumnName } from '../../src/adapters/mysql/QueryRunner';
 import type { BrandRepository } from '../../src/ports/repositories/BrandRepository';
 import { createManagedBrand } from '../support/inMemoryRepositories';
+import { GENEROUS_STATEMENT_COMPLEXITY_BUDGET } from '../support/inMemoryRepositories';
 
 /* The harness — assembled from the support doubles, not rebuilt. */
 
@@ -7159,6 +7160,8 @@ describe('the Product delete guard resolves against a live transaction-existence
       createOptionGroupSortOrderMemo(),
       (() => undefined) as never,
       createAccountContextDouble().accountContext,
+      /* Not this case's subject: the ceiling is generous so the write assertions below are unaffected. */
+      GENEROUS_STATEMENT_COMPLEXITY_BUDGET,
     );
 
     const persistence = new MySqlProductPersistence(

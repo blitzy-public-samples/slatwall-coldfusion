@@ -71,6 +71,13 @@ export const HTTP_STATUS = Object.freeze({
   INTERNAL_SERVER_ERROR: 500,
 
   NOT_IMPLEMENTED: 501,
+
+  /**
+   * A transient lock conflict rolled a write back. The condition is temporary and the identical request
+   * may succeed if it is made again — see `TransientWriteConflictError` for why this is a `5xx` rather
+   * than the `400` a duplicate key gets, and why no `Retry-After` accompanies it.
+   */
+  SERVICE_UNAVAILABLE: 503,
 });
 
 /** The media type used for every JSON response this module produces. */
@@ -340,6 +347,16 @@ function statusForPublicErrorCode(code: PublicErrorCode): number {
     case PUBLIC_ERROR_CODE.SERVICE_DATA:
     case PUBLIC_ERROR_CODE.SERVICE_FAULT:
       return HTTP_STATUS.INTERNAL_SERVER_ERROR;
+
+    /*
+     * The one `5xx` that is not a fault. It shares the series with the four above because a rolled-back
+     * transaction is the service failing to complete the work, not the request being wrong — but it is
+     * `503` rather than `500` because the condition is temporary and re-sending is the correct response.
+     * An operator watching the 5xx rate therefore sees deadlocks as their own status rather than mixed
+     * into either the generic-fault count or, as before, the request-rejection count.
+     */
+    case PUBLIC_ERROR_CODE.TRANSIENT_WRITE_CONFLICT:
+      return HTTP_STATUS.SERVICE_UNAVAILABLE;
   }
 }
 

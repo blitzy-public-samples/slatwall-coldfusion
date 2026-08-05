@@ -25,6 +25,8 @@ import {
   DatabaseStatementError,
   DataIntegrityError,
   DomainError,
+  RequestBudgetExhaustedError,
+  TransientWriteConflictError,
   UniqueConstraintViolationError,
   type DatabaseStatementFailureClass,
 } from '../../errors/DomainError';
@@ -1160,6 +1162,7 @@ export function describeDataTooLongColumn(cause: unknown): string | undefined {
  * record a count for the same reason: it is diagnostic without being disclosive.
  *
  * @returns never — the function always throws.
+ * @throws {TransientWriteConflictError} when the failure is a deadlock or a lock-wait timeout.
  * @throws {UniqueConstraintViolationError} when the failure is a duplicate-key rejection.
  * @throws {DatabaseStatementError} for every other non-transient driver rejection.
  */
@@ -1176,7 +1179,24 @@ export function rethrowTranslatingDuplicateEntry(cause: unknown, parameterCount:
       MYSQL_LOCK_DEADLOCK_CODE,
     );
 
-    throw new UniqueConstraintViolationError(
+    /*
+     * `TransientWriteConflictError`, not `UniqueConstraintViolationError`.
+     *
+     * The classification here — which of the two conditions occurred, `retryable: true`, the retained
+     * cause — was always correct; what was wrong was where it ARRIVED. Raising the duplicate-key class
+     * meant this arm's answer to a caller was `400 {"message":"A value in the request is already in
+     * use"}`, because that class's `getPublicError()` returns the request-rejection presentation. Two
+     * legitimate concurrent writers of different values were each told one of their values was taken,
+     * `retryable` never left the internal context, and `failureClass` in the log record was the same
+     * token for a permanent collision and a temporary one — so the deadlock rate, which is the signal
+     * that this port's own uniqueness-read lock ranges are contending, was invisible.
+     *
+     * The internal account below is deliberately unchanged, byte for byte: the same two messages, the
+     * same `cause`, the same three context members. Only the class differs, which is the whole of the
+     * fix. See the block beside `TRANSIENT_WRITE_CONFLICT_PRESENTATION` in `../../errors/DomainError.ts`
+     * for why `503` and not `409`, and for why no retry is performed here.
+     */
+    throw new TransientWriteConflictError(
       deadlocked
         ? 'The database rolled this transaction back to break a deadlock with another writer, so no ' +
             'part of it was applied. The identical request may succeed if it is made again.'
@@ -1190,7 +1210,10 @@ export function rethrowTranslatingDuplicateEntry(cause: unknown, parameterCount:
           /*
            * The classification, not a decision. `true` says "asking again is not futile", which is what
            * the server's own rollback establishes. Whether asking again is correct is the caller's
-           * question, and this module deliberately does not answer it.
+           * question, and this module deliberately does not answer it. It is retained now that the class
+           * itself carries the same verdict, because it is the field an internal caller branches on and
+           * because its counterpart `retryable: false` on the duplicate arm is what makes the pair
+           * readable as one taxonomy rather than two unrelated errors.
            */
           retryable: true,
         },
@@ -1242,6 +1265,56 @@ export function rethrowTranslatingDuplicateEntry(cause: unknown, parameterCount:
   );
 }
 
+/**
+ * Acquires a pooled connection, translating a driver rejection through the same boundary a statement
+ * failure passes through.
+ *
+ * **Why this exists, and why it is not merely defensive.** `QueryRunner.runStatement` wraps its
+ * `pool.execute` call, so a driver that cannot reach the server — a closed port, a refused TCP
+ * connection, an exhausted queue — surfaces on the READ path as a {@link DatabaseStatementError} with a
+ * bounded `failureClass`, a `SERVICE_FAULT` presentation and a `500` carrying no detail. The WRITE path
+ * reached the driver somewhere else: `./UnitOfWork.ts` calls `pool.getConnection()` to open its
+ * transaction, and that call sat outside any translation. The driver's own `Error` therefore escaped the
+ * handler unclassified, so the same underlying condition answered `500 {"message":"An unexpected error
+ * occurred"}` with `failureClass: "Error"` and — the part that matters operationally — **no `code` field
+ * in the log record at all**, because `readPublicErrorCode` finds none on a value that is not a
+ * `DomainError`. One condition, two accounts, and the write half of the pair invisible to anything
+ * counting by code.
+ *
+ * There is no disclosure to close here and none is claimed: `ECONNREFUSED`, the driver's errno, the host
+ * and the port never reached a response body or a log record on either path, because neither path's
+ * message is composed from the caught value. What is closed is the classification gap.
+ *
+ * The caught value is read exactly as far as {@link readStableDriverFailureMetadata} reads it — bounded
+ * scalar identifiers only, never the message, the statement text or the address — and it is deliberately
+ * not retained as `cause`, for the reason {@link DatabaseStatementError} states.
+ *
+ * @param acquire - the pool's own acquisition call, passed as a thunk so this module neither holds a
+ * pool nor decides which one is used.
+ *
+ * @typeParam TConnection - whatever the caller's pool hands back; this function inspects it not at all.
+ * @returns the acquired connection, unchanged.
+ * @throws {DatabaseStatementError} when acquisition is rejected. `parameterCount` is `0` because no
+ * statement was attempted, which is the honest figure rather than a placeholder.
+ */
+export async function acquireConnectionTranslatingDriverFailure<TConnection>(
+  acquire: () => Promise<TConnection>,
+): Promise<TConnection> {
+  try {
+    return await acquire();
+  } catch (cause: unknown) {
+    const metadata = readStableDriverFailureMetadata(cause);
+
+    throw new DatabaseStatementError({
+      failureClass: classifyDatabaseStatementFailure(metadata),
+      parameterCount: 0,
+      ...(metadata.code !== undefined ? { code: metadata.code } : {}),
+      ...(metadata.errno !== undefined ? { errno: metadata.errno } : {}),
+      ...(metadata.sqlState !== undefined ? { sqlState: metadata.sqlState } : {}),
+    });
+  }
+}
+
 /*
  * Row-COUNT binding — the one place a paging figure is turned into a bound value
  * `toRowCountBinding` is the whole of this section, and its one caller is the smart list's paged read
@@ -1266,6 +1339,112 @@ export function toRowCountBinding(value: number): string {
   }
 
   return String(value);
+}
+
+/*
+ * Statement COMPLEXITY bounding — the one arithmetic every statement whose shape a caller can grow
+ * shares (CWE-400 / CWE-770 / CWE-1284, uncontrolled resource consumption through unbounded request work).
+ *
+ * Three statements in this folder are composed from a caller-supplied LIST rather than from a fixed
+ * shape, so their text, their bind count and their join count all grow with the length of that list:
+ * `MySqlSkuRepository.findSkusBySelectedOptions` appends one correlated `EXISTS` per selected option
+ * (`model/dao/SkuDAO.cfc:L107-L128` builds the same conjunction in HQL), and
+ * `MySqlOptionRepository.findUnusedOptions` / `findUnusedOptionGroups` append one placeholder per
+ * option-group identifier (`model/dao/OptionDAO.cfc:L51-L91` and `:L93-L116`). The smart list has the
+ * same property and already answers it, so the seam declared here is the smart list's own budget
+ * narrowed to the one member the three direct statements need — reused rather than duplicated, and
+ * reused rather than replaced by a figure of this port's own, because AAP §0.8.3.5 admits no invented
+ * capacity number and the operator who set `CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY` has already
+ * stated exactly the figure being asked for: how many complexity units one statement may carry.
+ *
+ * The unit is the smart list's unit, unchanged — one bound parameter plus one `ORDER BY` term plus one
+ * query source — so one bound governs both paths and means the same thing on each. The count is derived
+ * ARITHMETICALLY from the list length, never by measuring composed text, which is what lets the refusal
+ * happen before any statement is assembled and before any value is bound.
+ */
+
+/**
+ * The narrow bound on how complex one composed statement may be.
+ *
+ * Declared here rather than in `./SmartListQueryBuilder.ts` because both repositories that apply it
+ * already depend on this module and neither depends on the query builder; declaring it there and
+ * importing it here would introduce the import cycle this folder does not have.
+ * `SmartListMaterialisationBudget` extends this interface, so the single budget object the
+ * container already builds satisfies both consumers and one deployment figure governs both paths.
+ */
+export interface StatementComplexityBudget {
+  /**
+   * Answers the largest number of query-complexity units one composed statement may carry.
+   *
+   * @returns the operator-stated ceiling, as a positive safe integer
+   * @throws {ConfigurationError} when this deployment stated no ceiling. Absent is a refusal, never an
+   * unbounded default: the message names `CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY`.
+   */
+  readonly resolveMaximumPredicatesPerQuery: () => number;
+}
+
+/** What one caller-shaped statement is about to cost, counted before any of it is composed. */
+export interface StatementComplexityAccount {
+  /** A fixed phrase naming the statement, for the server-side account only. */
+  readonly statement: string;
+
+  /** How many values the statement would bind. */
+  readonly boundParameters: number;
+
+  /** How many tables, subqueries and joined sources the statement would carry. */
+  readonly sources: number;
+
+  /** How many `ORDER BY` terms the statement would carry. */
+  readonly orderingTerms: number;
+
+  /** How many caller-supplied list elements produced the counts above. */
+  readonly listLength: number;
+}
+
+/**
+ * Refuses a statement whose complexity exceeds what this deployment permits one operation to carry.
+ *
+ * Called with counts derived from the caller's list length and BEFORE the statement is composed, so an
+ * over-budget request assembles no text, binds no value and reaches no driver.
+ *
+ * The refusal REJECTS; it never truncates. Silently shortening the list would answer a different
+ * question from the one asked — for the option resolver it would return SKUs matching a subset of the
+ * selected options, which is precisely the conjunction the legacy `AND EXISTS` chain exists to enforce
+ * (AAP §0.6.1.3 T1) — and a wrong answer at `200` is worse than a refusal.
+ *
+ * @param budget - the operator-stated ceiling, resolved here so an unconfigured deployment fails closed
+ * at the moment the statement would have been composed rather than serving unbounded work.
+ * @param account - the counts, and the fixed phrase naming the statement for the internal record.
+ * @throws {ConfigurationError} when no ceiling was stated, naming the variable to set.
+ * @throws {RequestBudgetExhaustedError} when the counted units exceed the ceiling. The public
+ * presentation carries neither the ceiling nor the count, so a caller cannot map the boundary by
+ * bisection; both, and the statement's name, stay in the server-side context.
+ */
+export function assertStatementComplexityWithinBudget(
+  budget: StatementComplexityBudget,
+  account: StatementComplexityAccount,
+): void {
+  const complexityUnits = account.boundParameters + account.orderingTerms + account.sources;
+  const maximumPredicatesPerQuery = budget.resolveMaximumPredicatesPerQuery();
+
+  if (complexityUnits > maximumPredicatesPerQuery) {
+    throw new RequestBudgetExhaustedError(
+      'A statement composed from a caller-supplied list would carry more query-complexity units ' +
+        'than this deployment permits one statement to carry, so it was refused before any ' +
+        'statement text was assembled and before any value was bound.',
+      {
+        context: {
+          statement: account.statement,
+          complexityUnits,
+          maximumPredicatesPerQuery,
+          listLength: account.listLength,
+          boundParameters: account.boundParameters,
+          orderingTerms: account.orderingTerms,
+          sources: account.sources,
+        },
+      },
+    );
+  }
 }
 
 /* The injectable seam and the execution boundary. */

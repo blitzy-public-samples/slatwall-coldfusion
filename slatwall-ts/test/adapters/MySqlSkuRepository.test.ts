@@ -67,6 +67,8 @@ import {
   DatabaseStatementError,
   DomainError,
   PUBLIC_ERROR_CODE,
+  RequestBudgetExhaustedError,
+  TransientWriteConflictError,
   UniqueConstraintViolationError,
 } from '../../src/errors/DomainError';
 import {
@@ -82,8 +84,14 @@ import {
 } from '../../src/adapters/mysql/QueryRunner';
 import { UnitOfWork } from '../../src/adapters/mysql/UnitOfWork';
 import { createUnitOfWorkDouble } from '../support/inMemoryRepositories';
+import {
+  GENEROUS_STATEMENT_COMPLEXITY_BUDGET,
+  smartListBudgetWithComplexityCeiling,
+} from '../support/inMemoryRepositories';
+import { createSmartListMaterialisationBudget } from '../../src/adapters/mysql/SmartListQueryBuilder';
 import type {
   BoundParameterValue,
+  StatementComplexityBudget,
   StatementPool,
   TransactionalStatementRunner,
 } from '../../src/adapters/mysql/QueryRunner';
@@ -251,6 +259,12 @@ interface HarnessOptions {
   readonly outcomes?: readonly SqlExecutorOutcome[];
   /** The request-scoped sort-order memo. */
   readonly memo?: OptionGroupSortOrderMemo;
+  /**
+   * The statement-complexity ceiling the option resolver applies. Omitted by every case whose subject
+   * is something other than the ceiling, which then gets a deliberately generous figure; the cases that
+   * ARE asserting the ceiling state it here.
+   */
+  readonly statementComplexityBudget?: StatementComplexityBudget;
 }
 
 interface Harness {
@@ -298,6 +312,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
        * is on the request. No case below depends on an actor.
        */
       createAbsentAccountContextDouble().accountContext,
+      options.statementComplexityBudget ?? GENEROUS_STATEMENT_COMPLEXITY_BUDGET,
     ),
   };
 }
@@ -911,6 +926,189 @@ describe('NET-NEW parameter order — option IDs in list order, then the product
      */
     expect(sql).toContain(`FROM ${assertTableName('SwSku')} s`);
     expect(sql).toContain(`s.${assertColumnName(assertTableName('SwSku'), 'productID')} = ?`);
+  });
+});
+
+/*
+ * The request-work bound on the option resolver (CWE-400 / CWE-770 / CWE-1284)
+ *
+ * T1 requires one correlated `EXISTS` per element of `optionIds`, duplicates included, so this member
+ * is the one place in this adapter where a caller decides the statement's SHAPE rather than only its
+ * values. Before the bound existed, `?selectedOptions=` with N comma-separated tokens produced N
+ * subqueries, N placeholders and N sources, and the route answered `200` at every N a caller cared to
+ * send. The cases below pin the four properties the fix has to have.
+ */
+
+describe('NET-NEW — the request-work bound on findSkusBySelectedOptions', () => {
+  /**
+   * Builds a selection of a given length, the shape `ProductService` hands the repository after it has
+   * split and filtered the query parameter.
+   *
+   * @param count - how many option identifiers the selection should carry.
+   * @returns the selection.
+   */
+  const selectionOf = (count: number): string[] =>
+    Array.from({ length: count }, (_unused, index) => `option-${String(index)}`);
+
+  /**
+   * A harness whose deployment stated an exact complexity ceiling.
+   *
+   * @param maximumPredicatesPerQuery - the ceiling this case is asserting.
+   * @returns the harness.
+   */
+  const harnessWithCeiling = (maximumPredicatesPerQuery: number): Harness =>
+    makeHarness({
+      statementComplexityBudget: smartListBudgetWithComplexityCeiling(maximumPredicatesPerQuery),
+    });
+
+  /**
+   * Runs an operation and returns whatever it rejected with.
+   *
+   * @param operation - the call under test.
+   * @returns the rejection, or `undefined` when the call resolved.
+   */
+  const rejectionOf = async (operation: () => Promise<unknown>): Promise<unknown> =>
+    operation().then(
+      () => undefined,
+      (failure: unknown) => failure,
+    );
+
+  it('NET-NEW — an over-budget selection is REFUSED before any statement reaches the executor', async () => {
+    /*
+     * `2N + 3` units: N option identifiers plus the product identifier bind, the base `SwSku` plus the
+     * option-bearing guard subquery plus N match subqueries are sources, and there is no `ORDER BY`. At a
+     * ceiling of 23 the largest admissible selection is 10, so 11 must refuse.
+     */
+    const harness = harnessWithCeiling(23);
+
+    const rejection = await rejectionOf(() =>
+      harness.repository.findSkusBySelectedOptions(selectionOf(11), PRODUCT_A),
+    );
+
+    expect(rejection).toBeInstanceOf(RequestBudgetExhaustedError);
+    /*
+     * Nothing composed and nothing issued. Refusing after composition would still have paid for the
+     * string concatenation the finding measured — 5.7 MB of statement text at 65,534 identifiers — so
+     * "before" is the assertion that matters, not merely "refused".
+     */
+    expect(harness.calls).toHaveLength(0);
+  });
+
+  it('NET-NEW — the AT-LIMIT selection still succeeds, so the bound does not over-refuse', async () => {
+    /* Ten identifiers is exactly `2 × 10 + 3 = 23` units. The boundary is inclusive. */
+    const harness = harnessWithCeiling(23);
+
+    await expect(
+      harness.repository.findSkusBySelectedOptions(selectionOf(10), PRODUCT_A),
+    ).resolves.toEqual([]);
+
+    const call = soleCall(harness.calls);
+    /*
+     * And every identifier was bound, none dropped. This is the anti-truncation assertion: a fix that
+     * quietly sliced the selection to fit would answer `200` with the SKUs matching a subset of the
+     * options, which is precisely the conjunction T1 exists to enforce.
+     */
+    expect(call.params).toEqual([...selectionOf(10), PRODUCT_A]);
+    expect(occurrences(norm(call.sql), 'EXISTS')).toBe(11);
+  });
+
+  it('NET-NEW — the empty selection is unaffected by the bound, so T5 still holds', async () => {
+    /*
+     * T5: an empty `selectedOptions` is a legal, meaningful input that degenerates to "every
+     * option-bearing SKU of this product", and both `Product.getSkuBySelectedOptions` and
+     * `Sku.hasUniqueOptions` depend on it. Three units at any admissible ceiling, so a bound of 3 — the
+     * smallest figure that admits the degenerate form — must still let it through.
+     */
+    const harness = harnessWithCeiling(3);
+
+    await expect(harness.repository.findSkusBySelectedOptions([], PRODUCT_A)).resolves.toEqual([]);
+    expect(harness.calls).toHaveLength(1);
+    expect(soleCall(harness.calls).params).toEqual([PRODUCT_A]);
+  });
+
+  it('NET-NEW — DUPLICATES count toward the bound, because T1 makes them cost', async () => {
+    /*
+     * The one arithmetic a reader might get wrong. T1 maps over the array rather than over its distinct
+     * values, so a repeated identifier yields a repeated subquery and a repeated placeholder — it costs
+     * exactly what a distinct one costs. Counting distinct values instead would let a caller send
+     * 65,534 copies of one identifier and pay for none of them.
+     */
+    const harness = harnessWithCeiling(23);
+    const repeated = Array.from({ length: 11 }, () => OPTION_RED);
+
+    const rejection = await rejectionOf(() =>
+      harness.repository.findSkusBySelectedOptions(repeated, PRODUCT_A),
+    );
+
+    expect(rejection).toBeInstanceOf(RequestBudgetExhaustedError);
+    expect((rejection as RequestBudgetExhaustedError).context).toMatchObject({
+      statement: 'findSkusBySelectedOptions',
+      listLength: 11,
+      complexityUnits: 25,
+    });
+    expect(harness.calls).toHaveLength(0);
+  });
+
+  it('NET-NEW — the refusal discloses no figure to the caller and every figure to the log', async () => {
+    const harness = harnessWithCeiling(23);
+
+    const rejection = await rejectionOf(() =>
+      harness.repository.findSkusBySelectedOptions(selectionOf(11), PRODUCT_A),
+    );
+
+    expect(rejection).toBeInstanceOf(RequestBudgetExhaustedError);
+    const failure = rejection as RequestBudgetExhaustedError;
+
+    /* The same neutral pair every other budget refusal in the subtree returns. */
+    expect(failure.getPublicError()).toStrictEqual({
+      code: PUBLIC_ERROR_CODE.CATALOG_REQUEST_REJECTED,
+      message: 'The request asks for more work than one operation may perform',
+    });
+    expect(failure.getPublicError().message).not.toMatch(/\d/);
+    expect(failure.context).toMatchObject({
+      statement: 'findSkusBySelectedOptions',
+      complexityUnits: 25,
+      maximumPredicatesPerQuery: 23,
+      listLength: 11,
+      boundParameters: 12,
+      sources: 13,
+      orderingTerms: 0,
+    });
+  });
+
+  it('NET-NEW — the resolver FAILS CLOSED when the deployment stated no ceiling', async () => {
+    /*
+     * Absent is a refusal, not an unbounded default — the discipline every `CATALOG_*` figure follows.
+     * A `ConfigurationError` rather than a budget refusal, because the request was never the problem,
+     * and it names the variable so an operator reading the log knows which one to set.
+     */
+    const harness = makeHarness({
+      statementComplexityBudget: createSmartListMaterialisationBudget(1_000_000, undefined),
+    });
+
+    await expect(
+      harness.repository.findSkusBySelectedOptions([OPTION_RED], PRODUCT_A),
+    ).rejects.toThrow(/CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY/);
+    expect(harness.calls).toHaveLength(0);
+  });
+
+  it('NET-NEW — a re-bound instance applies the SAME ceiling, so a transaction is no way past it', async () => {
+    /*
+     * `withExecutor` is how the SKU write boundary rebuilds this adapter against its own connection, and
+     * `Sku.hasUniqueOptions()` runs this very member inside that transaction. An implementation that
+     * dropped the budget on re-binding would leave the write path unbounded while the read path stayed
+     * bounded. `strict` makes the omission a compile error; this makes the behaviour observable.
+     */
+    const harness = harnessWithCeiling(23);
+    const replacement = createSqlExecutorDouble();
+
+    const rebound = harness.repository.withExecutor(replacement.executor);
+
+    await expect(
+      rebound.findSkusBySelectedOptions(selectionOf(11), PRODUCT_A),
+    ).rejects.toBeInstanceOf(RequestBudgetExhaustedError);
+    expect(replacement.calls).toHaveLength(0);
+    expect(harness.calls).toHaveLength(0);
   });
 });
 
@@ -3520,15 +3718,38 @@ describe('The transaction boundary the SKU write path runs inside', () => {
           (failure: unknown) => failure,
         );
 
-      expect(rejection).toBeInstanceOf(UniqueConstraintViolationError);
-      expect((rejection as UniqueConstraintViolationError).context).toMatchObject({
+      expect(rejection).toBeInstanceOf(TransientWriteConflictError);
+      /*
+       * And NOT the duplicate-key class, which is what this arm used to raise. The negative assertion is
+       * the one that catches a regression: `TransientWriteConflictError` and
+       * `UniqueConstraintViolationError` are siblings under `DomainError`, so an `instanceof` check
+       * against either would pass if someone made one extend the other to "share" the context shape.
+       */
+      expect(rejection).not.toBeInstanceOf(UniqueConstraintViolationError);
+      expect((rejection as TransientWriteConflictError).context).toMatchObject({
         errno: 1213,
         retryable: true,
       });
       /*
+       * The public account is what actually changed, and it is asserted here rather than only in a
+       * handler test, because the presentation is a property of the class this arm chooses. A caller told
+       * "a value in the request is already in use" at `400` stops and picks a different value — the
+       * precisely wrong response to a transaction the server rolled back on its own.
+       */
+      expect((rejection as TransientWriteConflictError).getPublicError()).toStrictEqual({
+        code: PUBLIC_ERROR_CODE.TRANSIENT_WRITE_CONFLICT,
+        message:
+          'The write conflicted with another write in progress and was not applied; the request may ' +
+          'be retried',
+      });
+      /* And it still discloses nothing: no errno, no table, no constraint, no driver text. */
+      expect((rejection as TransientWriteConflictError).getPublicError().message).not.toMatch(
+        /1213|deadlock|SwOption|ER_LOCK/iu,
+      );
+      /*
        * The driver's own error is retained as the cause, so nothing diagnostic is lost in translation.
        */
-      expect((rejection as UniqueConstraintViolationError).cause).toBe(deadlock);
+      expect((rejection as TransientWriteConflictError).cause).toBe(deadlock);
       /* One call: the classification did not silently retry. */
       expect(driver.calls).toHaveLength(1);
     });
@@ -3556,23 +3777,44 @@ describe('The transaction boundary the SKU write path runs inside', () => {
           (failure: unknown) => failure,
         );
 
-      expect(rejection).toBeInstanceOf(UniqueConstraintViolationError);
-      expect((rejection as UniqueConstraintViolationError).context).toMatchObject({
+      expect(rejection).toBeInstanceOf(TransientWriteConflictError);
+      expect(rejection).not.toBeInstanceOf(UniqueConstraintViolationError);
+      expect((rejection as TransientWriteConflictError).context).toMatchObject({
         errno: 1205,
         retryable: true,
       });
-      expect((rejection as UniqueConstraintViolationError).message).toMatch(/lock/i);
+      expect((rejection as TransientWriteConflictError).message).toMatch(/lock/i);
+      /*
+       * The two conditions share ONE public presentation and are distinguished only internally, by
+       * `errno`. That is the right split: a caller's correct action is identical for both — send the same
+       * request again — while an operator deciding whether to retry the statement or the whole
+       * transaction needs to know which happened, and reads `errno` to find out.
+       */
+      expect((rejection as TransientWriteConflictError).getPublicError().code).toBe(
+        PUBLIC_ERROR_CODE.TRANSIENT_WRITE_CONFLICT,
+      );
       expect(driver.calls).toHaveLength(1);
     });
 
     it('[NET-NEW] a DUPLICATE KEY is classified as NOT retryable, which is the opposite verdict', async () => {
       /*
-       * The asymmetry is the whole value of the classification. All three failures arrive as the same
-       * class — see the helper's docblock for why a new class per mode would widen `src/errors/**` for a
-       * distinction the context already draws — so `retryable` is the field that makes them actionable. For
-       * a duplicate key it is false: the value is taken, asking again gets the same answer, and the caller's
-       * own validation verdict is stale by now. A revision that classified everything as retryable, or that
-       * omitted the field, would pass the two cases above and fail here.
+       * The asymmetry is the whole value of the classification, and this case is the control for the two
+       * above.
+       *
+       * An earlier revision of this suite argued here that all three failures could share one class,
+       * because "`retryable` in the context already draws the distinction" and a class per mode would
+       * widen `src/errors/**` for nothing. That argument was wrong, and it is recorded rather than
+       * quietly deleted because it is a plausible piece of reasoning that a future reader might repeat.
+       * What it missed is that `context` is INTERNAL: §7.1's redaction policy keeps it out of the
+       * response body and out of the log record alike, so a distinction drawn only there is drawn only
+       * for a reader of a debugger. The caller saw one presentation for both — `400 {"message":"A value
+       * in the request is already in use"}` — and a caller cannot branch on a field it never receives.
+       * The distinction had to reach the PUBLIC surface, and in this port a presentation belongs to a
+       * class, so a second class is what reaching it costs.
+       *
+       * What stayed the same is this arm. A duplicate key IS a fact about the request: the value is
+       * taken, asking again gets the same answer, and the caller's own validation verdict is stale by
+       * now. `400` and `retryable: false` are both correct here and both unchanged.
        */
       const duplicate = Object.assign(
         new Error("Duplicate entry 'RED' for key 'uq_SwOption_optionCode'"),
