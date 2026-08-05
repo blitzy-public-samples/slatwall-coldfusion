@@ -593,6 +593,72 @@ function recordHydratedParentProductTypeID(productType: object, parentProductTyp
   hydratedParentProductTypeIds.set(productType, parentProductTypeID);
 }
 
+/*
+ * Rule 3d — a hydrated product's owned link-table load state.
+ *
+ * The product-side counterpart of rule 3c, and it exists for the same reason. `model/entity/Product.cfc:L81`
+ * declares `relatedProducts` as an owning many-to-many over `SwRelatedProduct`, so Hibernate's collection
+ * flush wrote and removed those rows whenever the in-memory collection changed. {@link mapProductRow}
+ * hydrates the collection empty, and `MySqlProductPersistence.saveProduct` reconciles the owner side by
+ * delete-then-insert — so without a load-state record, saving a product read without its links would
+ * delete every link row the product had, which is precisely the hazard rule 3c closed for the SKU.
+ *
+ * Only `relatedProducts` is tracked: it is the one owning collection of `Product` that this port writes.
+ * `listingPages` and `categories` are also owning many-to-manys at `:L79-L80`, and both reach excluded
+ * families (`Content*` and `Category`), so no statement here touches their tables at all.
+ */
+
+/**
+ * For each product hydrated from a row, the subset of its owned link collections that has been loaded.
+ */
+const hydratedProductLoadedOwnedLinks = new WeakMap<object, Set<ProductOwnedLinkCollection>>();
+
+/** The owning link collection of `model/entity/Product.cfc` that this port writes. */
+export const PRODUCT_OWNED_LINK_COLLECTIONS = Object.freeze(['relatedProducts'] as const);
+
+/** One of the owned link collection names of {@link PRODUCT_OWNED_LINK_COLLECTIONS}. */
+export type ProductOwnedLinkCollection = (typeof PRODUCT_OWNED_LINK_COLLECTIONS)[number];
+
+/**
+ * Records that a product came from a row, with none of its owned link collections loaded yet.
+ *
+ * @param product - The instance just hydrated from the row.
+ */
+function recordHydratedProductOwnedLinks(product: object): void {
+  hydratedProductLoadedOwnedLinks.set(product, new Set<ProductOwnedLinkCollection>());
+}
+
+/**
+ * Declares that one owned link collection of a hydrated product now holds what the database holds.
+ *
+ * @param product - A product, hydrated or not.
+ * @param collection - The collection whose rows were just read.
+ */
+export function markProductOwnedLinkLoaded(
+  product: object,
+  collection: ProductOwnedLinkCollection,
+): void {
+  hydratedProductLoadedOwnedLinks.get(product)?.add(collection);
+}
+
+/**
+ * Whether a product's owned link collection may be taken as the complete intended contents.
+ *
+ * @param product - A product, hydrated or not.
+ * @param collection - The collection being written.
+ * @returns `true` when the collection may be replaced — either because the product was never hydrated
+ * from a row, so its collection is whatever this request built, or because the rows were read. `false`
+ * when the stored rows must be preserved.
+ */
+export function isProductOwnedLinkAuthoritative(
+  product: object,
+  collection: ProductOwnedLinkCollection,
+): boolean {
+  const loaded = hydratedProductLoadedOwnedLinks.get(product);
+
+  return loaded === undefined || loaded.has(collection);
+}
+
 /**
  * The `parentProductTypeID` this product type was hydrated with, if it was hydrated from a row at all.
  *
@@ -784,6 +850,14 @@ export function readProductDefaultSkuId(defaultSku: object): string | undefined 
  */
 export function mapProductRow(row: MySqlRow): ManagedEntity<Product> {
   const product = manageEntity(new Product(), PRODUCT_ENTITY_METADATA);
+
+  /*
+   * Rule 3d — recorded before any field is read, so a product that came from a row is marked as
+   * carrying **no** loaded owned link collection. `markProductOwnedLinkLoaded` promotes one to loaded
+   * once its rows have been read; until then `MySqlProductPersistence.saveProduct` preserves the stored
+   * link rows rather than replacing them.
+   */
+  recordHydratedProductOwnedLinks(product);
 
   assignDefaulted(product, 'productID', readOptionalString(row, 'productID'));
   assignOptional(product, 'activeFlag', readOptionalBoolean(row, 'activeFlag'));

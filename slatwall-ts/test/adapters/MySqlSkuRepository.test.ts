@@ -66,6 +66,7 @@ import type {
 import {
   DatabaseStatementError,
   DomainError,
+  PUBLIC_ERROR_CODE,
   UniqueConstraintViolationError,
 } from '../../src/errors/DomainError';
 import {
@@ -74,8 +75,10 @@ import {
   QueryRunner,
   assertRegisteredColumnName,
   assertRegisteredTableName,
+  describeDataTooLongColumn,
   describeDuplicateEntryConstraint,
   isDuplicateEntryFailure,
+  rethrowTranslatingDuplicateEntry,
 } from '../../src/adapters/mysql/QueryRunner';
 import { UnitOfWork } from '../../src/adapters/mysql/UnitOfWork';
 import { createUnitOfWorkDouble } from '../support/inMemoryRepositories';
@@ -2964,6 +2967,17 @@ describe('The transaction boundary the SKU write path runs inside', () => {
     });
   }
 
+  /**
+   * MySQL's `Data too long for column '<name>' at row 1`, errno 1406 — the overflow the derived-value
+   * boundaries hit. Built here rather than reused from the duplicate-key helper because the anchor text,
+   * the error number and the SQLSTATE all differ.
+   */
+  function dataTooLongFailure(columnName: string): Error {
+    const failure = new Error(`Data too long for column '${columnName}' at row 1`);
+
+    return Object.assign(failure, { errno: 1406, code: 'ER_DATA_TOO_LONG', sqlState: '22001' });
+  }
+
   /** Narrow the first recorded call without an unchecked index read. */
   function firstCall(calls: readonly DriverCall[]): DriverCall {
     const call = calls[0];
@@ -3127,6 +3141,123 @@ describe('The transaction boundary the SKU write path runs inside', () => {
       // 96 retained characters plus the single ellipsis that marks the truncation.
       expect(described).toHaveLength(97);
       expect(described?.endsWith('…')).toBe(true);
+    });
+
+    it('NET-NEW — a data-too-long failure classifies as a REQUEST rejection, not as a service fault', () => {
+      /*
+       * A caller supplied text — or this port derived text from theirs — longer than the column that stores
+       * it. Only the caller can change that, so the answer is the neutral 400 the other request rejections
+       * use, not the 500 the base presentation reserves for a fault in this service. The condition was
+       * already classified precisely as `data-too-long` from errno 1406 and still answered 500, which
+       * reported a broken service for a request it had read and refused correctly.
+       */
+      const rejection = ((): unknown => {
+        try {
+          rethrowTranslatingDuplicateEntry(dataTooLongFailure('imageFile'), 3);
+
+          return undefined;
+        } catch (failure: unknown) {
+          return failure;
+        }
+      })();
+
+      expect(rejection).toBeInstanceOf(DatabaseStatementError);
+      const error = rejection as DatabaseStatementError;
+
+      expect(error.failureClass).toBe('data-too-long');
+      expect(error.getPublicError()).toStrictEqual({
+        code: PUBLIC_ERROR_CODE.CATALOG_REQUEST_REJECTED,
+        message:
+          'A value in the request, or a value derived from one, is longer than the field that stores it',
+      });
+
+      /*
+       * The column is on the internal account and NOT in the public message, and that separation is
+       * deliberate rather than incidental: the overflowing column is frequently a DERIVED one —
+       * `SwSku.imageFile` composed from a long `productCode`, for instance — so naming it would disclose a
+       * schema column AND point the caller at a field they never sent.
+       */
+      expect(error.columnName).toBe('imageFile');
+      expect(error.context).toMatchObject({
+        failureClass: 'data-too-long',
+        columnName: 'imageFile',
+      });
+      expect(error.getPublicError().message).not.toContain('imageFile');
+    });
+
+    it('NET-NEW — every OTHER statement failure class still answers as a service fault', () => {
+      /*
+       * The classification splits on one class and only one. `syntax`, `binding`, `unknown-column`,
+       * `unknown-table`, `permission-denied` and the catch-all `driver` each describe a statement this port
+       * composed or a grant this deployment holds — nothing a caller chose or can influence — so promoting
+       * any of them to a 400 would tell a caller to fix something they cannot reach, and would hide a real
+       * fault from the 5xx rate.
+       */
+      const classes: readonly (readonly [number, string])[] = [
+        [1054, 'unknown-column'],
+        [1146, 'unknown-table'],
+        [1142, 'permission-denied'],
+        [1064, 'syntax'],
+        [1210, 'binding'],
+        [9999, 'driver'],
+      ];
+
+      for (const [errno, expectedClass] of classes) {
+        const raised = ((): unknown => {
+          try {
+            rethrowTranslatingDuplicateEntry(
+              Object.assign(new Error('driver said so'), { errno }),
+              1,
+            );
+
+            return undefined;
+          } catch (failure: unknown) {
+            return failure;
+          }
+        })();
+
+        const error = raised as DatabaseStatementError;
+        expect(error.failureClass).toBe(expectedClass);
+        expect(error.getPublicError()).toStrictEqual({
+          code: PUBLIC_ERROR_CODE.SERVICE_FAULT,
+          message: 'The request could not be completed',
+        });
+        /* And no column is read for a class whose message carries none. */
+        expect(error.columnName).toBeUndefined();
+      }
+    });
+
+    it('NET-NEW — the overflowing COLUMN is extracted under the same bounded, charset-checked rules as the constraint name', () => {
+      expect(describeDataTooLongColumn(dataTooLongFailure('skuCode'))).toBe('skuCode');
+
+      /*
+       * Anchored and non-greedy, so a name crafted to contain the anchor cannot promote its own text.
+       *
+       * The guarantee here is STRONGER than the duplicate-key reader's, and the difference is structural
+       * rather than lucky. MySQL writes the colliding VALUE before the anchor in a duplicate-key message
+       * (`Duplicate entry '<value>' for key '<key>'`), so a value containing `for key '` creates an EARLIER
+       * anchor and the non-greedy match captures from it — which is why that reader's own case asserts the
+       * injected text is captured and the real key is not. Here the column name comes AFTER the only
+       * anchor, so the first `for column '` is always MySQL's own, and the capture stops at the first quote
+       * that follows. The crafted suffix therefore cannot be promoted at all: what is captured is the
+       * segment up to that quote, and never the text beyond it.
+       */
+      const crafted = describeDataTooLongColumn(dataTooLongFailure("evil for column 'INJECTED"));
+      expect(crafted).toBe('evil for column ');
+      expect(crafted).not.toContain('INJECTED');
+
+      /* CWE-117 — a control character in the column position yields no name at all. */
+      expect(
+        describeDataTooLongColumn(dataTooLongFailure('imageFile\n\u001b[31mFORGED')),
+      ).toBeUndefined();
+      expect(describeDataTooLongColumn(new Error('no column clause here'))).toBeUndefined();
+      expect(describeDataTooLongColumn({ message: 42 })).toBeUndefined();
+      expect(describeDataTooLongColumn(null)).toBeUndefined();
+
+      /* Bounded to the same 96 characters plus one ellipsis. */
+      const truncated = describeDataTooLongColumn(dataTooLongFailure('c'.repeat(400)));
+      expect(truncated).toHaveLength(97);
+      expect(truncated?.endsWith('…')).toBe(true);
     });
 
     it('NET-NEW — the POOL-BOUND route translates a duplicate key on a write', async () => {

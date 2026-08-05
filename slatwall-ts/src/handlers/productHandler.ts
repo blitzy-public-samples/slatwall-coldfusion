@@ -20,7 +20,7 @@ import type { Product } from '../domain/product/Product';
 /* Two error types are constructed in this file, and neither is mapped here. */
 import { NotImplementedError } from '../errors/DomainError';
 import { ValidationError } from '../errors/ValidationError';
-import type { ProductType } from '../domain/product/ProductType';
+import type { ParentProductTypeIdReader, ProductType } from '../domain/product/ProductType';
 import type { ProductAddOption } from '../domain/process/ProductAddOption';
 import type { ProductAddOptionGroup } from '../domain/process/ProductAddOptionGroup';
 import type { ProductUpdateSkus } from '../domain/process/ProductUpdateSkus';
@@ -846,18 +846,55 @@ function buildAddOptionProcessObject(
 }
 
 /**
+ * The two CFML numbers a JSON boolean coerces to. CFML has no distinct boolean storage: `true` IS `1`
+ * and `false` IS `0` in every numeric and conditional context, which is why the legacy `eq 1` test in
+ * `model/validation/Product_UpdateSkus.json` and the bare `if(…getUpdatePriceFlag())` at
+ * `model/service/ProductService.cfc:L222` both read the same value the same way.
+ */
+const PROCESS_FLAG_TRUE = 1;
+const PROCESS_FLAG_FALSE = 0;
+
+/**
+ * Reads one data property that the legacy declares as a yes/no flag.
+ *
+ * Distinct from {@link readProcessScalar}, and deliberately narrower in scope than widening that reader
+ * would have been. A JSON request body can carry `true` and `false`, which is the most natural encoding
+ * for a flag and the one a client will reach for first; a CFML request scope could not hold either, so
+ * the process-object slot is typed `string | number` after the legacy data key and stays that way. This
+ * reader therefore performs the coercion CFML itself performs — `true` to `1`, `false` to `0` — at the
+ * JSON boundary, so the value that enters the domain is one the legacy could have held.
+ *
+ * The change is strictly widening: every form {@link readProcessScalar} accepted is still accepted, with
+ * the identical value, so no request that worked before behaves differently. `""` and `null` are still
+ * dropped and still reach the unguarded legacy read, which is the declared parity behaviour — CFML places
+ * the flag directly in an `if` condition and raises for exactly those values.
+ *
+ * Applies to the two flags only. `price` and `listPrice` keep {@link readProcessScalar}: a boolean is not
+ * a price, and admitting one there would turn a nonsensical payload into a silent `1`.
+ */
+function readProcessFlag(data: Record<string, unknown>, key: string): string | number | undefined {
+  const value: unknown = data[key];
+
+  if (typeof value === 'boolean') {
+    return value ? PROCESS_FLAG_TRUE : PROCESS_FLAG_FALSE;
+  }
+
+  return readProcessScalar(data, key);
+}
+
+/**
  * Assembles the `updateSkus` process object.
  */
 function buildUpdateSkusProcessObject(
   product: Product,
   data: Record<string, unknown>,
 ): ProductUpdateSkus {
-  const updatePriceFlag: string | number | undefined = readProcessScalar(
+  const updatePriceFlag: string | number | undefined = readProcessFlag(
     data,
     UPDATE_PRICE_FLAG_DATA_KEY,
   );
   const price: string | number | undefined = readProcessScalar(data, PRICE_DATA_KEY);
-  const updateListPriceFlag: string | number | undefined = readProcessScalar(
+  const updateListPriceFlag: string | number | undefined = readProcessFlag(
     data,
     UPDATE_LIST_PRICE_FLAG_DATA_KEY,
   );
@@ -935,7 +972,32 @@ function toProductSmartListResponse(result: SmartListResult<Product>): ProductSm
 /**
  * Projects a product type onto the minimal representation a route returns.
  */
-function toProductTypeResponse(productType: ProductType): ProductTypeResponse {
+function toProductTypeResponse(
+  productType: ProductType,
+  readParentProductTypeID: ParentProductTypeIdReader,
+): ProductTypeResponse {
+  /*
+   * The parent identifier, taken from the association when one is populated and from rule 3b's
+   * provenance record otherwise.
+   *
+   * Both sources are needed, and neither alone is enough. A write that supplied `parentProductType` as a
+   * nested struct leaves the association populated, so the first arm answers and the response has always
+   * carried the identifier on that path. A product type READ back from a row does not: rule 3b in
+   * `../adapters/mysql/rowMappers.ts:L1016-L1023` deliberately records `parentProductTypeID` beside the
+   * instance instead of assigning it into `parentProductType`, because an identifier-only parent would
+   * empty `getSimpleRepresentation()` for anything that rendered from the association. So every read
+   * answered without the member while the column was populated in the database, which made the whole
+   * type hierarchy invisible to a client that had just written it.
+   *
+   * Reading the provenance record here closes that asymmetry WITHOUT weakening rule 3b: what is projected
+   * is the identifier string, never the association, so no render path gains a nameless parent to render
+   * from. The reader is injected as the domain-declared `ParentProductTypeIdReader` — the same function
+   * `../services/ProductService.ts` already receives — so this module keeps its rule of holding no runtime
+   * import from the adapter layer.
+   */
+  const parentProductTypeID: string | undefined =
+    productType.parentProductType?.productTypeID ?? readParentProductTypeID(productType);
+
   const response: ProductTypeResponse = {
     productTypeID: productType.productTypeID,
     ...(productType.productTypeIDPath !== undefined
@@ -953,9 +1015,7 @@ function toProductTypeResponse(productType: ProductType): ProductTypeResponse {
       ? { productTypeDescription: productType.productTypeDescription }
       : {}),
     ...(productType.systemCode !== undefined ? { systemCode: productType.systemCode } : {}),
-    ...(productType.parentProductType !== undefined
-      ? { parentProductTypeID: productType.parentProductType.productTypeID }
-      : {}),
+    ...(parentProductTypeID !== undefined ? { parentProductTypeID } : {}),
   };
 
   return response;
@@ -1009,6 +1069,7 @@ export function createProductHandler(
   productService: ProductHandlerService,
   resolveAuthorization: InvocationSecurityResolver,
   writeRunner: TransactionalWriteRunner<ProductWriteGraph>,
+  readParentProductTypeID: ParentProductTypeIdReader,
 ): ProductHandler {
   /**
    * Runs the gate `setupRequest()` [org/Hibachi/Hibachi.cfc:L188] ran, for one routed member.
@@ -1857,7 +1918,9 @@ export function createProductHandler(
           () => outcome !== null && outcome.hasErrors(),
         );
 
-      return saved === null ? notFoundResponse() : okResponse(toProductTypeResponse(saved));
+      return saved === null
+        ? notFoundResponse()
+        : okResponse(toProductTypeResponse(saved, readParentProductTypeID));
     } catch (error) {
       /*
        * The roll-back is translated into the product type's own findings — see
@@ -1981,7 +2044,7 @@ export function createProductHandler(
 
       return productType === null
         ? notFoundResponse()
-        : okResponse(toProductTypeResponse(productType));
+        : okResponse(toProductTypeResponse(productType, readParentProductTypeID));
     } catch (error) {
       return errorResponse(error);
     }
@@ -2079,13 +2142,17 @@ export type ProductRouteKey =
  * registered, the constant deny-all context otherwise, so the default remains fail-closed.
  */
 export function createProductHandlerFromContainer(
-  container: Pick<CatalogContainer, 'productService' | 'productWriteRunner'>,
+  container: Pick<
+    CatalogContainer,
+    'productService' | 'productWriteRunner' | 'parentProductTypeIdReader'
+  >,
   resolveAuthorization: InvocationSecurityResolver = resolveRequestAuthorization,
 ): ProductHandler {
   return createProductHandler(
     container.productService,
     resolveAuthorization,
     container.productWriteRunner,
+    container.parentProductTypeIdReader,
   );
 }
 

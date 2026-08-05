@@ -29,6 +29,7 @@ import type {
   RelatedEntityLoader,
   SubPropertyPopulator,
 } from '../base/populate';
+import { readIdentifierOrUnsaved, readsAsUnsavedIdentifier } from '../base/populate';
 import {
   DomainError,
   LegacyParityError,
@@ -561,9 +562,13 @@ export class Product implements AuditableEntity, AuditableManagedEntity {
    */
   declare unusedProductOptionGroups?: ProductSelectOption[];
 
-  /** Whether this product has never been persisted. */
+  /**
+   * Whether this product has never been persisted — `true` while `productID` still holds the unsaved
+   * value, and also when population has cleared the key outright (see
+   * {@link readsAsUnsavedIdentifier}).
+   */
   isNew(): boolean {
-    return this.productID === '';
+    return readsAsUnsavedIdentifier(this.productID);
   }
 
   /** The property whose value stands in for this entity in generic displays — `'productName'`. */
@@ -1297,7 +1302,7 @@ export class Product implements AuditableEntity, AuditableManagedEntity {
    * @returns The identifier, or `''` while unsaved.
    */
   getPrimaryIDValue(): string {
-    return this.productID;
+    return readIdentifierOrUnsaved(this.productID);
   }
 
   /**

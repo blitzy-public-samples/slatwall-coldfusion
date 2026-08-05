@@ -34,7 +34,7 @@ import { isAuditPropertyName } from './AuditableEntity';
  * module they could sensibly be lifted into, and four guards do not warrant inventing one.
  */
 
-type SimpleDataValue = string | number | boolean;
+export type SimpleDataValue = string | number | boolean;
 
 /**
  * Port of CFML `isSimpleValue`, narrowed to the three scalar shapes an HTTP request collection
@@ -88,6 +88,53 @@ export type ColumnValueType = 'string' | 'boolean' | 'integer' | 'bigDecimal' | 
 /** Message raised when a payload value cannot be represented in its property's declared type. */
 const AMBIGUOUS_POPULATED_VALUE_MESSAGE =
   'A populated value cannot be represented in the declared type of its property';
+
+/**
+ * One payload value that could not be represented in its property's declared type.
+ *
+ * Handed to {@link PopulateOptions.onUnrepresentableValue} so a caller can decide WHEN the failure
+ * surfaces. The legacy never failed at the assignment: [org/Hibachi/HibachiTransient.cfc:L207] pushed a
+ * trimmed string into every simple property whatever its `ormtype`, so `{"price":"abc"}` was assigned,
+ * then validated — where `model/validation/Product.json:L8` declares `price` `dataType="numeric"` and
+ * reports `validate.save.Product.price.dataType.numeric` — and only a value that no declared rule covered
+ * survived as far as the ORM flush, which is where the type failure actually happened. A port that raises
+ * at the assignment moves that failure ahead of validation and turns a keyed refusal into a service fault.
+ */
+export interface UnrepresentableValueFailure {
+  /** The entity or process object being populated, as its descriptor set names it. */
+  readonly entityName: string;
+
+  /** The declared property the payload key matched. */
+  readonly propertyName: string;
+
+  /** The property's declared legacy `ormtype`. */
+  readonly valueType: ColumnValueType;
+
+  /**
+   * The payload value as it arrived, untrimmed and uncoerced — what the legacy would have assigned, and
+   * therefore what a declared rule has to be given if it is to reach the same verdict.
+   */
+  readonly rawValue: SimpleDataValue;
+}
+
+/**
+ * The failure {@link populateWithSubProperties} raises when no collector was supplied.
+ *
+ * Published so a caller that DID collect can raise the identical failure at the point it chooses — the
+ * flush point, for a property no declared rule covers — rather than composing a second, divergent error.
+ *
+ * @param failure - The recorded failure.
+ * @returns The domain error, with the same message and context the uncollected path raises.
+ */
+export function unrepresentableValueError(failure: UnrepresentableValueFailure): DomainError {
+  return new DomainError(AMBIGUOUS_POPULATED_VALUE_MESSAGE, {
+    context: {
+      entityName: failure.entityName,
+      propertyName: failure.propertyName,
+      valueType: failure.valueType,
+    },
+  });
+}
 
 /** Matches an optionally signed integer with no decimal point and no exponent. */
 const INTEGER_TEXT_PATTERN = /^[+-]?\d+$/;
@@ -575,6 +622,22 @@ export interface PopulateOptions<TTarget> {
    * @param data - The incoming payload.
    */
   readonly afterPopulate?: (target: TTarget, data: Record<string, unknown>) => void;
+
+  /**
+   * Receives a payload value that could not be represented in its property's declared type, INSTEAD of
+   * that value raising where it was assigned.
+   *
+   * Supplying this seam relocates the failure to where the legacy actually had it. CFML assigned the
+   * value unconditionally [org/Hibachi/HibachiTransient.cfc:L207] and the type mismatch surfaced at the
+   * ORM flush — after `validate()` had run, so a property carrying a declared `dataType` rule was refused
+   * with its own key long before the flush was reached. A caller that collects can therefore give the raw
+   * value to the rule that covers it and re-raise {@link unrepresentableValueError} at its own flush point
+   * for a property no rule covers, reproducing both halves. Omitting the seam keeps the immediate raise,
+   * which is the right default for every caller that has no validation pass of its own to feed.
+   *
+   * @param failure - The property, its declared type and the value as it arrived.
+   */
+  readonly onUnrepresentableValue?: (failure: UnrepresentableValueFailure) => void;
 }
 
 /*
@@ -681,6 +744,49 @@ export function clearPropertyValue<TPropertyName extends string>(
   propertyName: TPropertyName,
 ): void {
   delete target[propertyName];
+}
+
+/**
+ * Whether a declared primary-identifier field currently carries no identifier at all.
+ *
+ * This exists because of {@link clearPropertyValue} and is the counterpart every `isNew()` needs. A
+ * primary-identifier property declares no `hb_populateEnabled="false"` in any in-scope entity, and the
+ * legacy populate loop at [org/Hibachi/HibachiTransient.cfc:L196-L198] therefore reaches it: a nested
+ * payload struct carrying `{"productTypeID":"","productTypeName":"Phantom"}` sends the blank value
+ * through branch 1, which deletes the key. The field's declaration still types it `string`, so a
+ * `=== undefined` test written inline would be rejected by the compiler as a comparison with no
+ * overlap; the widened read below is the same deliberate widening
+ * {@link populateWithSubProperties} performs on the whole target, and for the same reason — the state
+ * is genuinely reachable even though the declaration cannot express it.
+ *
+ * The legacy semantic being preserved is [org/Hibachi/HibachiEntity.cfc:L571-L576]: `getNewFlag()`
+ * compares `getPrimaryIDValue() == ""`, and CFML evaluates a null identifier as equal to the empty
+ * string, so a cleared identifier reads as unsaved rather than as a detached row.
+ *
+ * @param identifier - A primary-identifier field read straight off an entity.
+ * @returns `true` when the entity has never been assigned an identifier.
+ */
+export function readsAsUnsavedIdentifier(identifier: string): boolean {
+  const widenedIdentifier: string | undefined = identifier;
+
+  return widenedIdentifier === undefined || widenedIdentifier === '';
+}
+
+/**
+ * A primary-identifier field read as the string the legacy comparison saw.
+ *
+ * The companion of {@link readsAsUnsavedIdentifier}, for the members that must hand the identifier on
+ * rather than test it — `getPrimaryIDValue()` above all, whose declared return type is `string` and
+ * whose consumers (the uniqueness gate's self-exclusion term, the error keys, the link-row writes) all
+ * compare or bind it. A cleared key becomes `''`, which is exactly what CFML's own comparison produced.
+ *
+ * @param identifier - A primary-identifier field read straight off an entity.
+ * @returns The identifier, or `''` when the key has been cleared.
+ */
+export function readIdentifierOrUnsaved(identifier: string): string {
+  const widenedIdentifier: string | undefined = identifier;
+
+  return widenedIdentifier ?? '';
 }
 
 /**
@@ -903,14 +1009,26 @@ export function populateWithSubProperties<
       } else if (outcome.kind === 'assign') {
         assignPropertyValue(fields, propertyName, outcome.value);
       } else {
-        /* Ambiguous — the value cannot be represented in the property's declared type. */
-        throw new DomainError(AMBIGUOUS_POPULATED_VALUE_MESSAGE, {
-          context: {
-            entityName: descriptorSet.entityName,
-            propertyName,
-            valueType: descriptor.valueType,
-          },
-        });
+        /*
+         * Ambiguous — the value cannot be represented in the property's declared type. Reported to the
+         * collector when one was supplied, and raised here when none was; see
+         * {@link PopulateOptions.onUnrepresentableValue} for why the choice of moment belongs to the
+         * caller. Nothing is assigned and nothing is cleared on the collected path either, so the
+         * property keeps whatever it held — the entity never carries a value its declaration cannot
+         * express, which is the one thing this port cannot reproduce about the legacy assignment.
+         */
+        const failure: UnrepresentableValueFailure = {
+          entityName: descriptorSet.entityName,
+          propertyName,
+          valueType: descriptor.valueType,
+          rawValue,
+        };
+
+        if (options.onUnrepresentableValue === undefined) {
+          throw unrepresentableValueError(failure);
+        }
+
+        options.onUnrepresentableValue(failure);
       }
     } else if (
       isColumnDescriptor(descriptor) &&
@@ -1459,12 +1577,29 @@ export function manageEntity<
       }
 
       /*
-       * Unreachable for every entity in this slice — all six declare their primary key as a
-       * required `string` initialised to `''` — and surfaced rather than defaulted anyway, because
-       * the alternatives both diverge: substituting `''` would report an unsaved entity where the
-       * declaration is actually wrong, and a non-null assertion is forbidden outright (AAP §0.7.3). The
-       * message is diagnostic only and carries no client-safe classification, so
-       * `src/handlers/httpResponse.ts` withholds it from any response.
+       * The CLEARED-key arm. Branch 1 of this same module reaches a nested struct's primary-identifier
+       * property like any other column [org/Hibachi/HibachiTransient.cfc:L196-L206], and a blank value on
+       * a property with no `notNull` takes {@link clearPropertyValue} — so the key is genuinely absent
+       * after populating `{"productTypeID":"","productTypeName":"…"}`. CFML read that state as the empty
+       * string: `getNewFlag()` [org/Hibachi/HibachiEntity.cfc:L571-L576] decides "unsaved" by comparing
+       * `getPrimaryIDValue() == ""`, and it answers `true` for a freshly created entity whose key nothing
+       * has assigned. Answering `''` here is therefore the legacy reading, and it is the reading every
+       * caller of this member needs: the uniqueness gate's self-exclusion term
+       * [org/Hibachi/HibachiDAO.cfc:L137] binds it unconditionally, so throwing instead turned a
+       * validation pass into a service fault. See {@link readIdentifierOrUnsaved}, which is the same
+       * decision for the entity classes' own accessors.
+       */
+      if (value === undefined) {
+        return '';
+      }
+
+      /*
+       * A value that is neither a string nor absent means the declaration itself is wrong — all six
+       * in-scope entities declare their primary key as a required `string` — and that is surfaced rather
+       * than defaulted, because substituting `''` would report an unsaved entity where the declaration is
+       * actually broken, and a non-null assertion is forbidden outright (AAP §0.7.3). The message is
+       * diagnostic only and carries no client-safe classification, so `src/handlers/httpResponse.ts`
+       * withholds it from any response.
        */
       throw new DomainError(
         `${declaration.className}.${declaration.primaryIDPropertyName} did not hold a string primary identifier value`,

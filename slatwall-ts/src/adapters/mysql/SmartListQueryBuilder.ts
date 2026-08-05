@@ -44,7 +44,12 @@ import type { OptionGroup } from '../../domain/option/OptionGroup';
 import type { Product, ProductDefaultSkuDelegate } from '../../domain/product/Product';
 import type { ProductType } from '../../domain/product/ProductType';
 import type { Sku } from '../../domain/sku/Sku';
-import { ConfigurationError, DataIntegrityError, DomainError } from '../../errors/DomainError';
+import {
+  ConfigurationError,
+  DataIntegrityError,
+  DomainError,
+  RequestBudgetExhaustedError,
+} from '../../errors/DomainError';
 import { resolveSmartListPropertyIdentifier } from '../../ports/SmartListQueryPort';
 import { assertColumnName, assertTableName, toRowCountBinding } from './QueryRunner';
 import {
@@ -1700,7 +1705,20 @@ export class SmartListQueryBuilder implements SmartListQueryPort {
     const maximumPredicatesPerQuery = this.materialisationBudget.resolveMaximumPredicatesPerQuery();
 
     if (complexityUnits > maximumPredicatesPerQuery) {
-      throw new DomainError(
+      /*
+       * `RequestBudgetExhaustedError`, not the base class. The distinction is the whole point of the
+       * type: this refusal is a fact about the request — the caller chose how many `FI:` values and
+       * `OrderBy` terms to send, and can choose fewer — so it is answered with the neutral 400 that
+       * `../../errors/DomainError.ts` documents for exactly this family, and NOT with the 500 the base
+       * presentation reserves for a fault in this service. Classifying it as a service fault told every
+       * monitor watching the 5xx rate that the port had broken while it was working precisely as
+       * designed, and told the one party who could act — the caller — nothing actionable. It also
+       * disagreed with `../../services/SkuService.ts:L956`, which already answers the identical class of
+       * over-large request (a combination count beyond the SKU-generation budget) with this same type.
+       * The diagnostic message and context below are unchanged and still stay server-side: which budget
+       * was exhausted, and its figure, are never published.
+       */
+      throw new RequestBudgetExhaustedError(
         'A smart-list query composed more predicate, ordering and join units than the configured ' +
           'complexity budget admits, so it was refused before it could be executed rather than ' +
           'planned as an arbitrarily wide statement.',
@@ -2263,7 +2281,13 @@ export class SmartListQueryBuilder implements SmartListQueryPort {
     maximumRecordsPerQuery: number,
   ): void {
     if (recordsCount > maximumRecordsPerQuery) {
-      throw new DomainError(
+      /*
+       * `RequestBudgetExhaustedError` for the same reason as the complexity gate above: the caller's
+       * filter selection decided how many records this query matches, so a matched set wider than this
+       * deployment will materialise is a fact about the request and is answered with the neutral 400.
+       * The figures stay in the context, server-side.
+       */
+      throw new RequestBudgetExhaustedError(
         'A smart-list query matched more records than the configured materialisation budget admits, ' +
           'so it was refused before any row was read rather than answered with a silently shortened ' +
           'result.',
@@ -2289,7 +2313,14 @@ export class SmartListQueryBuilder implements SmartListQueryPort {
     maximumRecordsPerQuery: number,
   ): void {
     if (rowsRead > maximumRecordsPerQuery) {
-      throw new DomainError(
+      /*
+       * `RequestBudgetExhaustedError`, matching the two gates above. This is the defence-in-depth half
+       * of the same budget, so it must classify identically: a caller whose request is refused by the
+       * count gate and a caller whose request slips past it and is refused here have asked for the same
+       * thing and must receive the same answer, or the classification would depend on which of two
+       * statements observed the excess.
+       */
+      throw new RequestBudgetExhaustedError(
         'A smart-list statement returned more rows than the configured materialisation budget ' +
           'admits, so the result was refused before any row was hydrated rather than answered with a ' +
           'silently shortened result.',

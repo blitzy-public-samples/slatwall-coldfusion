@@ -57,13 +57,22 @@ import type {
   PropertyDescriptorSet,
   RelatedEntityLoader,
 } from '../domain/base/populate';
-import { populate } from '../domain/base/populate';
+import { manageEntity, populate } from '../domain/base/populate';
 import type { OptionPropertyName, SkuOptionOwner } from '../domain/option/Option';
-import { Option, createOptionPropertyDescriptors } from '../domain/option/Option';
+import {
+  OPTION_ENTITY_METADATA,
+  Option,
+  createOptionPropertyDescriptors,
+} from '../domain/option/Option';
 import type { OptionGroupPropertyName } from '../domain/option/OptionGroup';
-import { OptionGroup, createOptionGroupPropertyDescriptors } from '../domain/option/OptionGroup';
+import {
+  OPTION_GROUP_ENTITY_METADATA,
+  OptionGroup,
+  createOptionGroupPropertyDescriptors,
+} from '../domain/option/OptionGroup';
 import type { BrandPropertyName } from '../domain/product/Brand';
 import {
+  BRAND_ENTITY_METADATA,
   BRAND_PROPERTY_DESCRIPTORS,
   Brand,
   createBrandPropertyDescriptors,
@@ -76,6 +85,7 @@ import type {
   ProductSkuMember,
 } from '../domain/product/Product';
 import {
+  PRODUCT_ENTITY_METADATA,
   createProductPropertyDescriptors,
   /*
    * `product` is a value import here, not a type-only import, because the brand delete-subject
@@ -85,19 +95,24 @@ import {
   Product,
 } from '../domain/product/Product';
 import type {
+  ParentProductTypeIdReader,
   ProductTypeAttributeValueOwner,
   ProductTypePopulationCollaborators,
   ProductTypePropertyName,
   ProductTypeRootResolver,
 } from '../domain/product/ProductType';
-import { ProductType, createProductTypePropertyDescriptorSet } from '../domain/product/ProductType';
+import {
+  PRODUCT_TYPE_ENTITY_METADATA,
+  ProductType,
+  createProductTypePropertyDescriptorSet,
+} from '../domain/product/ProductType';
 import type {
   DefaultSkuIdReader,
   SkuPopulationCollaborators,
   SkuPropertyName,
 } from '../domain/sku/Sku';
-import { Sku, createSkuPropertyDescriptors } from '../domain/sku/Sku';
-import { DomainError, NotImplementedError } from '../errors/DomainError';
+import { SKU_ENTITY_METADATA, Sku, createSkuPropertyDescriptors } from '../domain/sku/Sku';
+import { DataIntegrityError, DomainError, NotImplementedError } from '../errors/DomainError';
 import { GoogleIntegration } from '../integrations/google/GoogleIntegration';
 import type {
   ProductFeedImage,
@@ -130,6 +145,7 @@ import type {
   DeleteSubjectResolver,
   EntityCommentCleanupPort,
   EntitySettingCleanupPort,
+  PopulatedSubPropertyWriters,
   PopulationPreparer,
 } from '../services/BaseService';
 import { BaseService } from '../services/BaseService';
@@ -141,10 +157,13 @@ import type { ProductWithErrorState, SkuCombinationBudget } from '../services/Sk
 import { SkuService, createSkuCombinationBudget } from '../services/SkuService';
 import type { UniqueValueProbe, UrlTitleProbeBudget } from '../util/urlTitle';
 import { createUrlTitleProbeBudget } from '../util/urlTitle';
+import { createSlatwallUUID } from '../util/uuid';
+import type { ValidationContext, ValidationRuleSet } from '../validation/Validator';
 import { Validator } from '../validation/Validator';
 import { brandValidationRules } from '../validation/rules/brand.rules';
 import { productValidationRuleSet } from '../validation/rules/product.rules';
 import { productTypeValidationRuleSet } from '../validation/rules/productType.rules';
+import { createSkuValidationRules, resolveSkuUniqueTarget } from '../validation/rules/sku.rules';
 import { pool } from './database';
 import type { AppConfig, ResourceBoundsConfig } from './env';
 import { config } from './env';
@@ -1437,10 +1456,24 @@ class InvocationRelatedEntityLoader<
 > implements PreparedRelatedEntityLoader<TEntity> {
   private readonly prepared = new Map<string, TEntity | null>();
 
+  /**
+   * @param relatedEntityName - The related entity's class name, used only in diagnostics.
+   * @param readExisting - The identifier read for this relationship.
+   *
+   * @param createTransient - Mints a brand-new related entity, and takes no identifier by design.
+   * `org/Hibachi/HibachiDAO.cfc:L6-L26` is the contract: `get(entityName, idOrFilter,
+   * isReturnNewOnNotFound)` guards its load with `isSimpleValue(idOrFilter) && len(idOrFilter)`, so a
+   * blank identifier never reaches `entityLoadByPK` at all, and the fallback at `:L23-L25` returns
+   * `new(entityName)` — `entityNew`, an entity whose key the `generator="uuid"` mapping assigns at
+   * insert. The caller's identifier is therefore never adopted as a primary key (IR-6), and the write
+   * path mints the 32-character value exactly as `MySqlBrandRepository.saveBrand` already does. The
+   * previous form assigned `relatedId` here, which is what let a caller-supplied `""` be stored as a
+   * foreign key pointing at no row.
+   */
   public constructor(
     private readonly relatedEntityName: string,
     private readonly readExisting: (relatedId: string) => Promise<TEntity | undefined>,
-    private readonly createTransient: (relatedId: string) => TEntity,
+    private readonly createTransient: () => TEntity,
   ) {}
 
   public async prepareExisting(relatedId: string): Promise<void> {
@@ -1458,12 +1491,12 @@ class InvocationRelatedEntityLoader<
     }
 
     if (prepared === null) {
-      this.prepared.set(relatedId, this.createTransient(relatedId));
+      this.prepared.set(relatedId, this.createTransient());
       return;
     }
 
     const existing = relatedId === '' ? undefined : await this.readExisting(relatedId);
-    this.prepared.set(relatedId, existing ?? this.createTransient(relatedId));
+    this.prepared.set(relatedId, existing ?? this.createTransient());
   }
 
   public loadExisting(relatedId: string): TEntity | undefined {
@@ -1666,6 +1699,40 @@ interface ProductPopulationCoordinator {
   readonly skuDescriptors: PropertyDescriptorSet<Sku, SkuPropertyName>;
   readonly prepareProduct: PopulationPreparer;
   readonly prepareProductType: PopulationPreparer;
+
+  /**
+   * Resolves the SKU behind a `defaultSku` delegate this coordinator produced.
+   *
+   * `product.defaultSku` holds a nine-member delegate rather than a `Sku` — see
+   * {@link createDefaultSkuDelegateBinder} — so the populated-sub-property writer for that relationship
+   * cannot narrow with `instanceof`. The coordinator already keeps the delegate-to-entity map its own
+   * sub-property populator uses, and this member publishes exactly that lookup.
+   *
+   * @param defaultSku - A delegate out of a product's `defaultSku` slot. Accepted as `object` because
+   * the caller holds an entry out of the populated-sub-property record, which is typed by the record and
+   * not by the relationship; a lookup miss is the answer for anything else.
+   *
+   * @returns The SKU it delegates to, or `undefined` when the delegate came from elsewhere.
+   */
+  readonly readDefaultSkuEntity: (defaultSku: object) => Sku | undefined;
+
+  /**
+   * Whether a related entity was minted by this request rather than read out of a row.
+   *
+   * `InvocationRelatedEntityLoader.loadOrCreate` mints when the identifier names no row, which is
+   * `org/Hibachi/HibachiDAO.cfc:L23-L25`'s `entityNew` fallback. The minted entity carries no
+   * identifier — and then the recursive population pass assigns whatever the payload's primary-ID key
+   * held [org/Hibachi/HibachiTransient.cfc:L196-L206], which for a non-blank unknown identifier makes
+   * `isNew()` read `false` on an entity that has no row. Hibernate met exactly that state and refused
+   * it: `saveOrUpdate` treats an assigned identifier as detached, issues an `UPDATE`, and raises
+   * `StaleStateException` on the zero row count. This membership test is the knowledge the port needs to
+   * refuse the same case, and it is asked rather than inferred from an affected-row count because MySQL
+   * reports zero changed rows for an `UPDATE` that matched a row without altering it.
+   *
+   * @param entity - A related entity or `defaultSku` delegate out of the populated-sub-property record.
+   * @returns `true` when this request created it.
+   */
+  readonly wasMintedForThisRequest: (entity: object) => boolean;
 }
 
 /**
@@ -1676,6 +1743,23 @@ function createProductPopulationCoordinator(
   populationAuthorization: PopulationAuthorizationPort,
   bindDefaultSkuDelegate: DefaultSkuDelegateBinder,
 ): ProductPopulationCoordinator {
+  /*
+   * Every entity this request minted rather than read, and the wrapper that records them. See
+   * {@link ProductPopulationCoordinator.wasMintedForThisRequest} for why the distinction has to be kept:
+   * population assigns the payload's primary-ID key onto a minted entity, so `isNew()` alone can no
+   * longer tell an entity with no row from one that has one. A `WeakSet` because membership is scoped to
+   * the entities this invocation is still holding and nothing else may retain them.
+   */
+  const mintedRelatedEntities = new WeakSet<object>();
+  const mintTransient =
+    <TEntity extends object>(create: () => TEntity): (() => TEntity) =>
+    () => {
+      const minted = create();
+      mintedRelatedEntities.add(minted);
+
+      return minted;
+    };
+
   const brandLoader = new InvocationRelatedEntityLoader(
     'Brand',
     async (brandID) => {
@@ -1685,12 +1769,7 @@ function createProductPopulationCoordinator(
 
       return records[0];
     },
-    (brandID) => {
-      const brand = new Brand();
-      brand.brandID = brandID;
-
-      return brand;
-    },
+    mintTransient(() => manageEntity(new Brand(), BRAND_ENTITY_METADATA)),
   );
   const optionLoader = new InvocationRelatedEntityLoader(
     'Option',
@@ -1701,12 +1780,7 @@ function createProductPopulationCoordinator(
 
       return records[0];
     },
-    (optionID) => {
-      const option = new Option();
-      option.optionID = optionID;
-
-      return option;
-    },
+    mintTransient(() => manageEntity(new Option(), OPTION_ENTITY_METADATA)),
   );
   const optionGroupLoader = new InvocationRelatedEntityLoader(
     'OptionGroup',
@@ -1717,12 +1791,7 @@ function createProductPopulationCoordinator(
 
       return records[0];
     },
-    (optionGroupID) => {
-      const optionGroup = new OptionGroup();
-      optionGroup.optionGroupID = optionGroupID;
-
-      return optionGroup;
-    },
+    mintTransient(() => manageEntity(new OptionGroup(), OPTION_GROUP_ENTITY_METADATA)),
   );
   const productLoader = new InvocationRelatedEntityLoader(
     'Product',
@@ -1733,12 +1802,7 @@ function createProductPopulationCoordinator(
 
       return records[0];
     },
-    (productID) => {
-      const product = new Product();
-      product.productID = productID;
-
-      return product;
-    },
+    mintTransient(() => manageEntity(new Product(), PRODUCT_ENTITY_METADATA)),
   );
   const productTypeLoader = new InvocationRelatedEntityLoader(
     'ProductType',
@@ -1749,12 +1813,7 @@ function createProductPopulationCoordinator(
 
       return records[0];
     },
-    (productTypeID) => {
-      const productType = new ProductType();
-      productType.productTypeID = productTypeID;
-
-      return productType;
-    },
+    mintTransient(() => manageEntity(new ProductType(), PRODUCT_TYPE_ENTITY_METADATA)),
   );
   const skuLoader = new InvocationRelatedEntityLoader(
     'Sku',
@@ -1765,14 +1824,15 @@ function createProductPopulationCoordinator(
 
       return records[0];
     },
-    (skuID) => {
-      const sku = new Sku();
-      sku.skuID = skuID;
-
-      return sku;
-    },
+    mintTransient(() => manageEntity(new Sku(), SKU_ENTITY_METADATA)),
   );
-  const defaultSkuEntities = new WeakMap<ProductDefaultSkuDelegate, Sku>();
+  /*
+   * Keyed by `object` rather than by the delegate type, because {@link readDefaultSkuEntity} publishes
+   * this lookup to a caller holding an entry out of the populated-sub-property record — typed by the
+   * record, not by the relationship. Every key this map receives is still a delegate; widening the key
+   * only lets a non-delegate ask and be told `undefined`.
+   */
+  const defaultSkuEntities = new WeakMap<object, Sku>();
   const defaultSkuLoader = new InvocationRelatedEntityLoader<ProductDefaultSkuDelegate>(
     'DefaultSku',
     async (skuID) => {
@@ -1789,14 +1849,19 @@ function createProductPopulationCoordinator(
 
       return delegate;
     },
-    (skuID) => {
-      const sku = new Sku();
-      sku.skuID = skuID;
+    mintTransient(() => {
+      const sku = manageEntity(new Sku(), SKU_ENTITY_METADATA);
       const delegate = bindDefaultSkuDelegate(sku);
       defaultSkuEntities.set(delegate, sku);
+      /*
+       * The SKU as well as the delegate, because the populated-sub-property record holds whichever of the
+       * two population assigned — the delegate for `defaultSku`, the SKU itself for `skus` — and the
+       * refusal below asks about the value it was handed.
+       */
+      mintedRelatedEntities.add(sku);
 
       return delegate;
-    },
+    }),
   );
 
   const loaders: readonly PreparedRelatedEntityLoader<object>[] = [
@@ -2133,6 +2198,8 @@ function createProductPopulationCoordinator(
     skuDescriptors,
     prepareProduct: prepareTopLevel(prepareProductData),
     prepareProductType: prepareTopLevel(prepareProductTypeData),
+    readDefaultSkuEntity: (defaultSku) => defaultSkuEntities.get(defaultSku),
+    wasMintedForThisRequest: (entity) => mintedRelatedEntities.has(entity),
   };
 }
 
@@ -2144,6 +2211,227 @@ function createProductPopulationCoordinator(
  * seam `ProductService` publishes is wired to the coordinator's set by default and no relationship row
  * is read twice for one save.
  */
+
+/**
+ * The context a populated sub-property is validated in.
+ *
+ * `HibachiValidationService.getPopulatedPropertyValidationContext`
+ * [org/Hibachi/HibachiValidationService.cfc:L133-L151] looks for a `populatedPropertyValidation` section
+ * in the related entity's validation document and falls through to the parent's own context when there is
+ * none. No in-scope catalog document declares that section — the eight that do are all `Account*`,
+ * `Order*`, `Vendor*` and `LocationAddress`, every one of them out of scope — so the fall-through is the
+ * only reachable arm and `'save'` is what it yields for a product save.
+ */
+const SUB_PROPERTY_SAVE_CONTEXT: ValidationContext = 'save';
+
+/**
+ * Builds the populated-sub-property writers for the Product relationships that can carry one.
+ *
+ * The composition root owns these because it is the only layer that holds all three ingredients at
+ * once: the rule set each related entity validates against, the write path bound to this graph's
+ * executor, and — for `defaultSku` — the delegate-to-entity map only the population coordinator has.
+ *
+ * Four of the five relationships that record populated sub-properties get a writer. `relatedProducts`
+ * deliberately gets none, and `ProductService.applyPopulatedSubPropertyValidation` documents why: the
+ * related product's own `save` rules read `price`, which resolves through a `defaultSku` reference the
+ * read path mints unresolved, so a keyed refusal is the honest answer rather than an unvalidated write.
+ *
+ * @param collaborators - The write paths and rule-set inputs for this graph.
+ * @returns The writers, keyed by Product property name.
+ */
+function createPopulatedSubPropertyWriters(collaborators: {
+  readonly validator: Validator;
+  readonly brandRepository: BrandRepository;
+  readonly persistence: ProductPersistence;
+  readonly skuRepository: Pick<SkuRepository, 'findSkusBySelectedOptions' | 'persistSku'>;
+  readonly readDefaultSkuEntity: (defaultSku: object) => Sku | undefined;
+  readonly wasMintedForThisRequest: (entity: object) => boolean;
+}): PopulatedSubPropertyWriters<ProductPropertyName> {
+  const { validator, brandRepository, persistence, skuRepository } = collaborators;
+
+  /**
+   * Refuses a related entity that this request minted and that then took an identifier naming no row.
+   *
+   * The port of the `StaleStateException` Hibernate raised for exactly this state — see
+   * {@link ProductPopulationCoordinator.wasMintedForThisRequest} for the mechanism that produces it. It
+   * is a refusal rather than an insert because the alternatives both break a stated rule: inserting under
+   * the caller's identifier would make a primary key caller-supplied (IR-6), and inserting under a minted
+   * one would silently ignore the identifier the caller named. It is a refusal rather than a validation
+   * finding because no legacy resource-bundle key describes it — the legacy failure is an ORM exception,
+   * not a rule — and this port invents no key.
+   *
+   * @param relationshipName - The Product property the entity arrived under, for the diagnostic.
+   * @param entity - The record entry as handed to the writer, which is what membership is asked about.
+   * @param identifier - The identifier the entity now carries.
+   * @param entityIsNew - Whether the entity still reads as unsaved.
+   */
+  const refuseUnresolvedRelatedIdentifier = (
+    relationshipName: string,
+    entity: object,
+    identifier: string,
+    entityIsNew: boolean,
+  ): void => {
+    if (entityIsNew || !collaborators.wasMintedForThisRequest(entity)) {
+      return;
+    }
+
+    throw new DataIntegrityError(
+      `The nested "${relationshipName}" struct named an identifier that matches no stored row, so the ` +
+        'related entity exists only in memory and no row can be updated for it.',
+      { context: { relationshipName, identifier } },
+    );
+  };
+
+  /*
+   * One narrowing helper per entity type, and each refuses rather than skipping. A record whose value is
+   * not the type its property declares would mean the population graph and these writers disagree, which
+   * is a wiring fault in this file and not a caller's input — so it is reported as a boundary refusal
+   * instead of silently writing nothing.
+   */
+  const requireBrandEntity = (entity: object): ManagedBrand =>
+    entity instanceof Brand
+      ? manageEntity(entity, BRAND_ENTITY_METADATA)
+      : refuseBoundary(
+          'PopulatedSubPropertyWriter.brand',
+          'the populated sub-property recorded for `brand` was not a Brand',
+        );
+
+  const requireProductTypeEntity = (entity: object): ManagedEntity<ProductType> =>
+    entity instanceof ProductType
+      ? manageEntity(entity, PRODUCT_TYPE_ENTITY_METADATA)
+      : refuseBoundary(
+          'PopulatedSubPropertyWriter.productType',
+          'the populated sub-property recorded for `productType` was not a ProductType',
+        );
+
+  const requireSkuEntity = (relationshipName: string, entity: object): ManagedEntity<Sku> => {
+    if (entity instanceof Sku) {
+      return manageEntity(entity, SKU_ENTITY_METADATA);
+    }
+
+    const delegated = collaborators.readDefaultSkuEntity(entity);
+    if (delegated !== undefined) {
+      return manageEntity(delegated, SKU_ENTITY_METADATA);
+    }
+
+    return refuseBoundary(
+      `PopulatedSubPropertyWriter.${relationshipName}`,
+      'the populated sub-property recorded for a SKU relationship resolved to no SKU entity',
+    );
+  };
+
+  /*
+   * The SKU rule set is rebuilt per entity because `hasUniqueOptions`
+   * [model/entity/Sku.cfc:L756-L769] resolves its siblings within one product, and
+   * `SkuService.buildSkuSaveRuleSet` binds that lookup the same way. The identifier read is the SKU's own
+   * `product` association, which `Product.addSku` sets for a `skus` member; a `defaultSku` member that
+   * names no product resolves to `''`, which is the empty selection semantic T5 already covers.
+   */
+  const buildSkuRuleSet = (sku: ManagedEntity<Sku>): ValidationRuleSet<ManagedEntity<Sku>> =>
+    createSkuValidationRules<ManagedEntity<Sku>>(resolveSkuUniqueTarget, {
+      getSkusBySelectedOptions: (selectedOptions: string) =>
+        skuRepository.findSkusBySelectedOptions(
+          /*
+           * CFML `listToArray` semantics: split on the comma and drop empty elements, which is what
+           * `SkuService` and `../ports/SmartListQueryPort.ts` each do for the same idiom. Written out
+           * here rather than imported because neither of those two publishes its private helper, and a
+           * fourth spelling of a one-line list split is not worth a new shared module.
+           */
+          selectedOptions.split(',').filter((candidate) => candidate.length > 0),
+          sku.product?.productID ?? '',
+        ),
+    });
+
+  const validateSku = async (relationshipName: string, entity: object): Promise<boolean> => {
+    const sku = requireSkuEntity(relationshipName, entity);
+    refuseUnresolvedRelatedIdentifier(relationshipName, entity, sku.skuID, sku.isNew());
+    const findings = await validator.validate(sku, buildSkuRuleSet(sku), SUB_PROPERTY_SAVE_CONTEXT);
+    if (findings.hasErrors()) {
+      sku.addErrors(findings.getErrors());
+
+      return true;
+    }
+
+    /*
+     * Minted after validation and before the parent's row is composed — the same ordering
+     * `SkuService.validateNewSku` states and for the same reason (IR-5's self-exclusion term must still
+     * see the unsaved sentinel), plus one this member adds: `SwProduct.defaultSkuID` is collected from
+     * this entity, so the identifier has to exist by then even though the SKU's own row is written in the
+     * `afterParent` phase.
+     */
+    if (sku.isNew()) {
+      sku.skuID = createSlatwallUUID();
+    }
+
+    return false;
+  };
+
+  const persistSkuEntity = async (relationshipName: string, entity: object): Promise<void> => {
+    await skuRepository.persistSku(requireSkuEntity(relationshipName, entity));
+  };
+
+  return Object.freeze({
+    brand: Object.freeze({
+      writePhase: 'beforeParent',
+      validate: async (entity: object): Promise<boolean> => {
+        const brand = requireBrandEntity(entity);
+        refuseUnresolvedRelatedIdentifier('brand', entity, brand.brandID, brand.isNew());
+        const findings = await validator.validate(
+          brand,
+          brandValidationRules,
+          SUB_PROPERTY_SAVE_CONTEXT,
+        );
+        if (findings.hasErrors()) {
+          brand.addErrors(findings.getErrors());
+
+          return true;
+        }
+
+        return false;
+      },
+      persist: async (entity: object): Promise<void> => {
+        await brandRepository.saveBrand(requireBrandEntity(entity));
+      },
+    }),
+    productType: Object.freeze({
+      writePhase: 'beforeParent',
+      validate: async (entity: object): Promise<boolean> => {
+        const productType = requireProductTypeEntity(entity);
+        refuseUnresolvedRelatedIdentifier(
+          'productType',
+          entity,
+          productType.productTypeID,
+          productType.isNew(),
+        );
+        const findings = await validator.validate(
+          productType,
+          productTypeValidationRuleSet,
+          SUB_PROPERTY_SAVE_CONTEXT,
+        );
+        if (findings.hasErrors()) {
+          productType.addErrors(findings.getErrors());
+
+          return true;
+        }
+
+        return false;
+      },
+      persist: async (entity: object): Promise<void> => {
+        await persistence.saveProductType(requireProductTypeEntity(entity));
+      },
+    }),
+    defaultSku: Object.freeze({
+      writePhase: 'afterParent',
+      validate: (entity: object): Promise<boolean> => validateSku('defaultSku', entity),
+      persist: (entity: object): Promise<void> => persistSkuEntity('defaultSku', entity),
+    }),
+    skus: Object.freeze({
+      writePhase: 'afterParent',
+      validate: (entity: object): Promise<boolean> => validateSku('skus', entity),
+      persist: (entity: object): Promise<void> => persistSkuEntity('skus', entity),
+    }),
+  });
+}
 
 /**
  * Builds the two product base services over one persistence adapter and one validator.
@@ -2280,6 +2568,13 @@ function assembleProductService(collaborators: {
   readonly productBaseService: BaseService<Product, ProductPropertyName>;
   readonly productTypeBaseService: BaseService<ManagedEntity<ProductType>, ProductTypePropertyName>;
   readonly urlTitleProbeBudget: UrlTitleProbeBudget;
+
+  /**
+   * The brand write path bound to this graph, needed only by the populated-sub-property writer for
+   * `Product.brand`. Bound to the same executor as every other write in the graph, so a nested brand
+   * write lands inside the product's transaction rather than beside it.
+   */
+  readonly brandRepository: BrandRepository;
 }): ProductService {
   const { boundaries } = collaborators;
 
@@ -2322,6 +2617,20 @@ function assembleProductService(collaborators: {
      * `defaultSkuIdReader` above, which is why both are wired identically in both graphs.
      */
     parentProductTypeIdReader: readHydratedParentProductTypeID,
+
+    /*
+     * The two cascade passes of `org/Hibachi/HibachiTransient.cfc:L407-L450` and
+     * `org/Hibachi/HibachiDAO.cfc:L48-L67`, wired from this graph's own collaborators so a nested write
+     * shares the product's transaction, its validator and its principal.
+     */
+    populatedSubPropertyWriters: createPopulatedSubPropertyWriters({
+      validator: collaborators.statements.validator,
+      brandRepository: collaborators.brandRepository,
+      persistence: collaborators.persistence,
+      skuRepository: collaborators.skuRepository,
+      readDefaultSkuEntity: collaborators.populationCoordinator.readDefaultSkuEntity,
+      wasMintedForThisRequest: collaborators.populationCoordinator.wasMintedForThisRequest,
+    }),
   });
 }
 
@@ -2373,6 +2682,13 @@ export function buildProductBoundaryGraph(
     /* The boundary repository, not the pool's — the read must run on `scope.executor` (M6). */
     boundarySku.skuRepository,
   );
+  /*
+   * The brand write path for this transaction, built on `scope.executor` and this invocation's principal
+   * for the same two reasons the product persistence above is: a nested brand write must be inside the
+   * product's transaction so it rolls back with it, and its audit columns must name the account the route
+   * gate authorised.
+   */
+  const boundaryBrandRepository = new MySqlBrandRepository(executor, boundaries.accountContext);
 
   return assembleProductService({
     /*
@@ -2398,6 +2714,7 @@ export function buildProductBoundaryGraph(
     optionService: boundarySku.optionService,
     productBaseService,
     productTypeBaseService,
+    brandRepository: boundaryBrandRepository,
   });
 }
 
@@ -2438,6 +2755,16 @@ export function composeProductSurface(
     boundaries.commentCleanup,
     skuParts.skuRepository,
   );
+  /*
+   * The pool tier's brand write path, for the `Product.brand` populated-sub-property writer. Wired from
+   * the same account context as every other write collaborator in this graph — which with no override is
+   * the fail-closed port — so a nested brand write attempted outside a boundary raises rather than
+   * stamping an anonymous audit column, exactly as the product persistence above does.
+   */
+  const brandRepository = new MySqlBrandRepository(
+    statements.queryRunner,
+    boundaries.accountContext,
+  );
 
   return {
     productRepository,
@@ -2465,6 +2792,7 @@ export function composeProductSurface(
       optionService: skuParts.optionService,
       productBaseService,
       productTypeBaseService,
+      brandRepository,
     }),
     productWriteRunner:
       dependencies.productWriteRunner ??
@@ -2478,6 +2806,14 @@ export function composeProductSurface(
 export interface ProductSurfaceGraph {
   readonly productService: ProductService;
   readonly productWriteRunner: TransactionalWriteRunner<ProductService>;
+
+  /**
+   * Rule 3b's provenance reader — see {@link CatalogContainer.parentProductTypeIdReader}. Present on the
+   * narrow graph as well as the aggregate one because a single-function deployment that mounts only
+   * `../handlers/productHandler.ts` reaches its container through this interface, and the product-type
+   * read path needs the reader on both.
+   */
+  readonly parentProductTypeIdReader: ParentProductTypeIdReader;
 
   /** Discards this surface's request-scoped derived state (M7). */
   readonly beginInvocation: () => void;
@@ -2530,6 +2866,7 @@ export function createProductSurfaceGraph(): ProductSurfaceGraph {
   return Object.freeze({
     productService,
     productWriteRunner,
+    parentProductTypeIdReader: readHydratedParentProductTypeID,
     beginInvocation: (): void => {
       optionGroupSortOrderMemo.value = undefined;
     },
@@ -2692,6 +3029,18 @@ export interface CatalogContainer {
 
   /** The reader behind `product.cfm:L24`'s `getProductImages()` traversal. */
   readonly productFeedImages: ProductFeedImageReader;
+
+  /**
+   * Reads the `parentProductTypeID` a product type was hydrated with — rule 3b's provenance record.
+   *
+   * Published on the container, not merely handed to `ProductService`, because the routing layer needs it
+   * too: `../handlers/productHandler.ts` projects `parentProductTypeID` onto a product-type response, and a
+   * product type read back from a row carries the key only in this record. Exposing the reader keeps that
+   * projection free of any runtime import from the adapter layer, which is the rule that layer boundary
+   * exists to enforce; the type it is declared with, `ParentProductTypeIdReader`, is a domain declaration
+   * at `../domain/product/ProductType.ts:L105`.
+   */
+  readonly parentProductTypeIdReader: ParentProductTypeIdReader;
 
   /**
    * Discards the one piece of request-scoped state the graph carries. The routing layer calls it
@@ -3028,6 +3377,12 @@ export function createCatalogContainer(
     productFeedQuery: feedParts.productFeedQuery,
     productFeedBuilder: feedParts.productFeedBuilder,
     productFeedImages: feedParts.productFeedImages,
+
+    /*
+     * The same function `composeProductSurface` hands to `ProductService`, published so the routing layer
+     * can project `parentProductTypeID` on a read. One declaration, two consumers — not a second reader.
+     */
+    parentProductTypeIdReader: readHydratedParentProductTypeID,
 
     beginInvocation: (): void => {
       optionGroupSortOrderMemo.value = undefined;

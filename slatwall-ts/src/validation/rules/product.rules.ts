@@ -58,8 +58,14 @@ export type ProductValidationSubject = ValidationSubject &
      * The price delegated to the default SKU — `property name="price" hb_formatType="currency"
      * persistent="false"` [`model/entity/Product.cfc:L118`]. See the `price` rule at
      * {@link priceRequiredConstraint}, including the boundary note about how it is resolved.
+     *
+     * `string` as well as {@link ExactDecimal}, because a payload value that no exact decimal can hold is
+     * what {@link priceDataTypeConstraint} exists to refuse. CFML assigned `"abc"` to the property
+     * [org/Hibachi/HibachiTransient.cfc:L207] and let `dataType="numeric"` reject it; a typed field cannot
+     * hold it, so whoever assembles the subject carries the raw text instead and this rule reaches the same
+     * verdict. Widening the SLOT rather than the entity keeps `Product.price` exact everywhere else.
      */
-    readonly price?: ExactDecimal;
+    readonly price?: ExactDecimal | string;
 
     /**
      * `property name="productName" ormtype="string" notnull="true";` [`model/entity/Product.cfc:L55`]

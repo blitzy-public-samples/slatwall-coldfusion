@@ -39,7 +39,11 @@ import {
   SmartListQueryBuilder,
   describePropertyScopedSmartList,
 } from '../../src/adapters/mysql/SmartListQueryBuilder';
-import { DomainError } from '../../src/errors/DomainError';
+import {
+  DomainError,
+  PUBLIC_ERROR_CODE,
+  RequestBudgetExhaustedError,
+} from '../../src/errors/DomainError';
 import { createCatalogAggregateLoaders } from '../../src/adapters/mysql/QueryRunner';
 import { PRODUCT_FEED_JOINS } from '../../src/integrations/google/ProductFeedQuery';
 import { mergeSmartListJoins, translateSmartListInput } from '../../src/ports/SmartListQueryPort';
@@ -2592,6 +2596,39 @@ describe('The smart-list query composer, its aggregate loaders and the materiali
       expect(calls).toHaveLength(1);
     });
 
+    it('[NET-NEW] the COUNT refusal classifies as a REQUEST rejection, matching the complexity gate', async () => {
+      /*
+       * The caller's filter selection decides how many records a query matches, so a matched set wider than
+       * this deployment will materialise is a fact about the request. All three budget gates must classify
+       * alike, or the answer a caller receives would depend on which of them observed the excess first.
+       */
+      const { executor } = createSqlExecutorDouble({
+        outcomes: [sqlRows([{ recordsCount: 9 }])],
+      });
+      const builder = new SmartListQueryBuilder(
+        executor,
+        makeAggregateLoaders(),
+        smartListBudgetWithRowCeiling(5),
+      );
+
+      const rejection: unknown = await builder.execute({ entityName: 'SlatwallBrand' }).then(
+        () => undefined,
+        (failure: unknown) => failure,
+      );
+
+      expect(rejection).toBeInstanceOf(RequestBudgetExhaustedError);
+      expect((rejection as RequestBudgetExhaustedError).getPublicError()).toStrictEqual({
+        code: PUBLIC_ERROR_CODE.CATALOG_REQUEST_REJECTED,
+        message: 'The request asks for more work than one operation may perform',
+      });
+      // The figures are diagnostic and stay off the presentation asserted above.
+      expect((rejection as RequestBudgetExhaustedError).context).toMatchObject({
+        entityName: 'SlatwallBrand',
+        recordsCount: 9,
+        maximumRecordsPerQuery: 5,
+      });
+    });
+
     it('[NET-NEW] a budget within reach does not interfere', async () => {
       const { executor, calls } = createSqlExecutorDouble({
         outcomes: [sqlRows([{ recordsCount: 2 }]), sqlRows(BRAND_ROWS)],
@@ -2771,6 +2808,40 @@ describe('The smart-list query composer, its aggregate loaders and the materiali
       expect(calls).toHaveLength(2);
     });
 
+    it('[NET-NEW] the ROW refusal classifies as a REQUEST rejection, so the defence-in-depth half agrees with the count', async () => {
+      /*
+       * The third and last of the three gates. A caller refused by the count and a caller whose request
+       * slipped past it and was refused here asked for the same thing, so they must receive the same answer
+       * — otherwise the classification would depend on which of two statements happened to observe the
+       * excess, which is a timing accident and not a fact about the request.
+       */
+      const { executor } = createSqlExecutorDouble({
+        outcomes: [
+          sqlRows([{ recordsCount: 2 }]),
+          sqlRows([
+            ...BRAND_ROWS,
+            { brandID: 'ee55ff6677889900aa11bb22cc33dd44', brandName: 'Gamma' },
+          ]),
+        ],
+      });
+      const builder = new SmartListQueryBuilder(
+        executor,
+        makeAggregateLoaders(),
+        smartListBudgetWithRowCeiling(2),
+      );
+
+      const rejection: unknown = await builder.executeRecords({ entityName: 'SlatwallBrand' }).then(
+        () => undefined,
+        (failure: unknown) => failure,
+      );
+
+      expect(rejection).toBeInstanceOf(RequestBudgetExhaustedError);
+      expect((rejection as RequestBudgetExhaustedError).getPublicError()).toStrictEqual({
+        code: PUBLIC_ERROR_CODE.CATALOG_REQUEST_REJECTED,
+        message: 'The request asks for more work than one operation may perform',
+      });
+    });
+
     it('[NET-NEW] with NO figure stated the read is REFUSED before any statement, naming the variable', async () => {
       const wideRows = Object.freeze(
         Array.from({ length: 25 }, (_unused, index) => ({
@@ -2849,6 +2920,39 @@ describe('The smart-list query composer, its aggregate loaders and the materiali
         boundParameters: 4,
         orderingTerms: 0,
         sources: 1,
+      });
+      expect(scenario.calls).toHaveLength(0);
+    });
+
+    it('[NET-NEW] the complexity refusal classifies as a REQUEST rejection, not as a service fault', () => {
+      /*
+       * The refusal was always deliberate and always pre-execution; what it reported was wrong. Raised as a
+       * bare `DomainError` it carried the base service-fault presentation, so a caller who sent two hundred
+       * `FI:` values — a thing only a caller can decide, and can decide differently — was told the service
+       * had broken, and every monitor watching the 5xx rate was told the same. It is now the same class
+       * `../../src/services/SkuService.ts` already raises for an over-large SKU-generation request, so the
+       * two identical situations answer identically. The figures stay in the context and out of the
+       * presentation, which is why the public message names no budget and no number.
+       */
+      const scenario = compileOnly(smartListBudgetWithComplexityCeiling(1));
+
+      const rejection = ((): unknown => {
+        try {
+          scenario.builder.build({
+            entityName: 'SlatwallBrand',
+            whereGroups: [{ filters: [{ propertyIdentifier: 'brandName', value: 'a' }] }],
+          });
+
+          return undefined;
+        } catch (failure: unknown) {
+          return failure;
+        }
+      })();
+
+      expect(rejection).toBeInstanceOf(RequestBudgetExhaustedError);
+      expect((rejection as RequestBudgetExhaustedError).getPublicError()).toStrictEqual({
+        code: PUBLIC_ERROR_CODE.CATALOG_REQUEST_REJECTED,
+        message: 'The request asks for more work than one operation may perform',
       });
       expect(scenario.calls).toHaveLength(0);
     });

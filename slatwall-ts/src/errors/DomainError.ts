@@ -107,6 +107,33 @@ const REQUEST_BUDGET_PRESENTATION: PublicErrorPresentation = Object.freeze({
 });
 
 /*
+ * The third request rejection, and it shares the reasoning of the two above. A value the caller supplied —
+ * or a value this port derived from one — being longer than the column that stores it is a fact about the
+ * request: the caller chose the text and can choose shorter text. `MySqlProductRepository` and
+ * `MySqlSkuRepository` already classify the condition precisely, as `data-too-long` from MySQL's errno
+ * 1406, and answering it with 500 reported a broken service for a request the service had read correctly
+ * and refused correctly.
+ *
+ * **The message names no column, and that is deliberate rather than an omission.** The overflow is very
+ * often on a DERIVED value rather than on the supplied one: a `productCode` of 47 characters overflows
+ * `SwSku.imageFile varchar(50)` through `<productCode>.jpg`, and one of 49 overflows `SwSku.skuCode
+ * varchar(50)` through `<productCode>-1`. Naming `imageFile` to a caller who sent `productCode` would
+ * disclose a schema column AND point at the wrong field. Naming the supplied property instead is not
+ * available: the throw happens inside the statement boundary, which by design retains no statement text
+ * and no driver message (see {@link DatabaseStatementError}). The message therefore states the condition —
+ * including that a derived value may be the one that overflowed, which is the part a caller cannot guess —
+ * and the column stays in the internal account, where {@link describeDataTooLongColumn} puts it under the
+ * same bounded, charset-checked echo the duplicate-key constraint name already uses.
+ */
+const DATA_TOO_LONG_PUBLIC_MESSAGE =
+  'A value in the request, or a value derived from one, is longer than the field that stores it';
+
+const DATA_TOO_LONG_PRESENTATION: PublicErrorPresentation = Object.freeze({
+  code: PUBLIC_ERROR_CODE.CATALOG_REQUEST_REJECTED,
+  message: DATA_TOO_LONG_PUBLIC_MESSAGE,
+});
+
+/*
  * There is no third request rejection, and an `ImportSourceRejectedError` in particular must not be
  * added. A dedicated class would exist to report a refusal this port does not author: no scheme, host or
  * address rule is stated anywhere in the subtree, because the legacy retrieval at
@@ -114,6 +141,78 @@ const REQUEST_BUDGET_PRESENTATION: PublicErrorPresentation = Object.freeze({
  * behavioural preservation (D18, the importer's parameterised SQL), with AAP §0.8.2 Guideline 4 admitting no
  * proportionality test.
  */
+
+/*
+ * The invalid-request presentation, and the one place in this module where a public message is composed
+ * per instance rather than frozen once.
+ *
+ * `REQUEST_INVALID` already existed in `PUBLIC_ERROR_CODE` and already mapped to 400 in
+ * `../handlers/httpResponse.ts`, but until now only that module used it, and only for a request whose
+ * shape it could reject before any domain code ran — an absent, malformed or non-object body. This is the
+ * first *thrown* failure to carry it, because it is the first refusal a caller can provoke from inside a
+ * domain call whose cause is the request's own text rather than its shape.
+ *
+ * This is emphatically NOT the third `CATALOG_REQUEST_REJECTED` the block above rules out. That block
+ * refuses a class whose *rule* the port would have had to invent; here the rule is the port's own
+ * pre-existing, compile-checked identifier whitelist in `../ports/SmartListQueryPort.ts`, which every
+ * property path has always had to satisfy before it could reach SQL. Nothing new is being decided about
+ * which paths are admissible. What changes is only the answer given to a path that is not: it was
+ * silently discarded, and is now reported.
+ *
+ * That change IS a declared divergence from the legacy, and it is declared here rather than made
+ * quietly. `org/Hibachi/HibachiSmartList.cfc:L308-L348` resolves a property identifier through
+ * `getAliasedProperty`, which returns an empty string for a path that names neither a property nor an
+ * attribute, and every consumer of it — `addFilter` at `:L363`, `addLikeFilter` at `:L394`, `addInFilter`
+ * at `:L419`, `addRange` at `:L445`, `addOrder` at `:L473`, `addKeywordProperty` at `:L485` and
+ * `addSelect` at `:L352` — guards with `if(len(aliasedProperty))` and then does nothing at all. The
+ * legacy therefore answers `F:notARealProperty=ABC` with the entire unfiltered selection. Preserving that
+ * exactly would mean preserving a request whose one stated constraint has been discarded, answered `200`,
+ * with rows the caller asked not to be given and no signal that anything was ignored. AAP §0.8.2
+ * Guideline 6 requires a technology-specific translation decision to be documented where the judgement is
+ * made, and this is that record: the divergence is confined to the *answer*, the admissible-path rule is
+ * unchanged, and the far larger half of the same finding — that a wrong-case path such as
+ * `F:productcode` must resolve, because CFML's struct-key lookup at
+ * `org/Hibachi/HibachiService.cfc:L750-L752` is case-insensitive and `:L347` emits the canonical name —
+ * is pure parity restoration and is implemented in `../ports/SmartListQueryPort.ts`.
+ */
+
+/** How much of a caller-supplied property path may appear in a public message. */
+const SMARTLIST_PROPERTY_ECHO_LIMIT = 64;
+
+/**
+ * The character set a property path must consist of to be quoted back to the caller. Deliberately
+ * narrower than anything a legal identifier needs: letters, digits, and the three punctuation marks a
+ * path can legitimately carry (the `.` sub-entity delimiter, plus `_` and `-`, which appear in stored
+ * codes). Anything else — a quote, an angle bracket, a semicolon, whitespace, a control character, a
+ * non-ASCII code point — makes the value unquotable, and the message then names no value at all rather
+ * than reflecting an unknown byte sequence into a response body.
+ */
+const SMARTLIST_PROPERTY_ECHO_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+const SMARTLIST_PROPERTY_UNRESOLVED_PUBLIC_MESSAGE =
+  'The request names a property path that the queried entity does not declare';
+
+/**
+ * Composes the public message for one unresolvable property path.
+ *
+ * The echo is bounded and charset-restricted for the reason
+ * `../adapters/mysql/QueryRunner.ts:L1079-L1107` bounds its constraint-name echo: a value that came from
+ * the caller may be any length and any bytes, and a response body is not the place to discover that.
+ * A path that survives both gates is quoted, because naming it is the entire point of the finding this
+ * class answers — a caller told only that "a" path was wrong, on a request carrying six of them, has been
+ * told nothing they can act on. A path that fails either gate is dropped from the message entirely; the
+ * unabridged value is still on the error's `context` for the log.
+ */
+function composeUnresolvedPropertyPublicMessage(propertyPath: string): string {
+  const echo =
+    propertyPath.length > SMARTLIST_PROPERTY_ECHO_LIMIT
+      ? propertyPath.slice(0, SMARTLIST_PROPERTY_ECHO_LIMIT)
+      : propertyPath;
+
+  return SMARTLIST_PROPERTY_ECHO_PATTERN.test(echo)
+    ? `${SMARTLIST_PROPERTY_UNRESOLVED_PUBLIC_MESSAGE}: "${echo}"`
+    : SMARTLIST_PROPERTY_UNRESOLVED_PUBLIC_MESSAGE;
+}
 
 /** Optional construction payload shared by {@link DomainError} and every subclass of it. */
 export interface DomainErrorOptions {
@@ -231,6 +330,13 @@ export interface DatabaseStatementErrorDetails {
   readonly code?: string;
   readonly errno?: number;
   readonly sqlState?: string;
+
+  /**
+   * The overflowing column, for a `data-too-long` failure only, already bounded and charset-checked by
+   * `../adapters/mysql/QueryRunner.ts`'s `describeDataTooLongColumn`. Diagnostic: it reaches this error's
+   * `context` and nothing a caller can observe. See the block beside `DATA_TOO_LONG_PRESENTATION`.
+   */
+  readonly columnName?: string;
 }
 
 /**
@@ -248,6 +354,9 @@ export class DatabaseStatementError extends DomainError {
   public readonly errno?: number;
   public readonly sqlState?: string;
 
+  /** See {@link DatabaseStatementErrorDetails.columnName}. Present only for a `data-too-long` failure. */
+  public readonly columnName?: string;
+
   public constructor(details: DatabaseStatementErrorDetails) {
     const context = {
       failureClass: details.failureClass,
@@ -255,6 +364,7 @@ export class DatabaseStatementError extends DomainError {
       ...(details.code !== undefined ? { code: details.code } : {}),
       ...(details.errno !== undefined ? { errno: details.errno } : {}),
       ...(details.sqlState !== undefined ? { sqlState: details.sqlState } : {}),
+      ...(details.columnName !== undefined ? { columnName: details.columnName } : {}),
     };
 
     super('A database statement could not be executed.', { context });
@@ -270,6 +380,28 @@ export class DatabaseStatementError extends DomainError {
     if (details.sqlState !== undefined) {
       this.sqlState = details.sqlState;
     }
+    if (details.columnName !== undefined) {
+      this.columnName = details.columnName;
+    }
+  }
+
+  /**
+   * Reports a statement failure, distinguishing the one class of it that is the caller's to fix.
+   *
+   * `data-too-long` is answered as a request rejection: the value supplied, or one derived from it, does
+   * not fit the field that stores it, and only the caller can change that. Every other class —
+   * `unknown-column`, `unknown-table`, `permission-denied`, `syntax`, `binding` and the catch-all
+   * `driver` — describes a statement this port composed or a grant this deployment holds, none of which a
+   * caller chose or can influence, so each keeps the neutral service-fault presentation. Neither message
+   * carries the column, the statement, the driver text or the figure; see the block beside
+   * {@link DATA_TOO_LONG_PRESENTATION} for why naming the column would be both disclosive and misleading.
+   *
+   * @returns the request-rejection presentation for an overflow, the service-fault presentation otherwise.
+   */
+  public override getPublicError(): PublicErrorPresentation {
+    return this.failureClass === 'data-too-long'
+      ? DATA_TOO_LONG_PRESENTATION
+      : SERVICE_FAULT_PRESENTATION;
   }
 }
 
@@ -304,6 +436,60 @@ export class RequestBudgetExhaustedError extends DomainError {
    */
   public override getPublicError(): PublicErrorPresentation {
     return REQUEST_BUDGET_PRESENTATION;
+  }
+}
+
+/**
+ * Raised when a smart-list request names a property path the queried entity's declared identifier set
+ * does not admit — a misspelling, a property of some other entity, or a path through a relationship the
+ * extracted Catalog graph does not carry.
+ *
+ * Read the long note beside {@link composeUnresolvedPropertyPublicMessage} before changing anything here:
+ * the refusal itself is a documented divergence from the legacy's silent discard, and the reasoning for
+ * it, the legacy locators, and the parity half of the same finding are all recorded there.
+ *
+ * @example
+ * ```ts
+ * throw new SmartListPropertyUnresolvedError('notARealProperty', {
+ * context: { entityName, dataKey: 'F:notARealProperty' },
+ * });
+ * ```
+ */
+export class SmartListPropertyUnresolvedError extends DomainError {
+  /** The path exactly as the caller supplied it, unbounded and unsanitised. Diagnostic only. */
+  public readonly propertyPath: string;
+
+  /** Composed once, in the constructor, so a later edit to {@link Error.message} cannot leak into it. */
+  private readonly presentation: PublicErrorPresentation;
+
+  /**
+   * @param propertyPath the path as supplied. Stored verbatim for the log; only a bounded,
+   * charset-checked form of it can ever reach a caller.
+   * @param options optional `cause` and `context`. Callers attach the entity name and the request key
+   * the path arrived on, both of which stay server-side.
+   */
+  public constructor(propertyPath: string, options?: DomainErrorOptions) {
+    super(
+      `A smart-list request named the property path ${JSON.stringify(propertyPath)}, which the queried ` +
+        "entity's declared identifier set does not admit, so the request was refused rather than " +
+        'answered with the predicate silently dropped and the selection silently widened.',
+      options,
+    );
+
+    this.propertyPath = propertyPath;
+    this.presentation = Object.freeze({
+      code: PUBLIC_ERROR_CODE.REQUEST_INVALID,
+      message: composeUnresolvedPropertyPublicMessage(propertyPath),
+    });
+  }
+
+  /**
+   * Reports the invalid request, naming the offending path when it is safe to quote.
+   *
+   * @returns the per-instance presentation composed in the constructor.
+   */
+  public override getPublicError(): PublicErrorPresentation {
+    return this.presentation;
   }
 }
 

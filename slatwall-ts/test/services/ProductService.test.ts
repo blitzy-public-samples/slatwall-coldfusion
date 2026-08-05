@@ -92,6 +92,7 @@ import {
   PRODUCT_TYPE_DECLARED_PROPERTIES,
   ProductType,
 } from '../../src/domain/product/ProductType';
+import type { ParentProductTypeIdReader } from '../../src/domain/product/ProductType';
 import { Sku } from '../../src/domain/sku/Sku';
 import { DomainError, NotImplementedError } from '../../src/errors/DomainError';
 import {
@@ -768,6 +769,14 @@ function buildHarness(options: HarnessOptions = {}): Harness {
      * on the `parentProductType` slot, which still wins ahead of any read.
      */
     parentProductTypeIdReader: readHydratedParentProductTypeID,
+    /*
+     * Empty by default, because both nested-struct payloads in this suite carry the identifier ALONE —
+     * `structCount == 1`, which [org/Hibachi/HibachiTransient.cfc:L250-L268] loads and assigns without
+     * recording a populated sub-property, so no writer is reachable from them. Empty rather than a
+     * throwing sentinel because an absent writer is itself a modelled outcome: `ProductService` refuses
+     * that relationship with a keyed `populate` finding rather than writing it unvalidated.
+     */
+    populatedSubPropertyWriters: {},
   };
 
   // Not wired, and each omission is evidenced rather than assumed.
@@ -3434,6 +3443,106 @@ describe('saveProduct — populate, title, validate, create, persist', () => {
     expect(product.productName).toBe('Prepared Product');
   });
 
+  it('NET-NEW: an UNREPRESENTABLE price is a keyed validation finding, not a raise from population', async () => {
+    /*
+     * The reported defect. CFML assigned `trim("abc")` to the property whatever its `ormtype` was
+     * [org/Hibachi/HibachiTransient.cfc:L207], so the value reached `validate()`, where
+     * `model/validation/Product.json:L8` declares `price` `required` AND `dataType="numeric"` and answered
+     * `validate.save.Product.price.dataType.numeric`. Raising at the assignment instead moved the failure
+     * ahead of validation and turned that keyed refusal into a service fault, which is what a caller saw.
+     */
+    const product = buildProduct({
+      productID: physicalID('p-save-price-unrepresentable'),
+      productType: buildMerchandiseProductType(),
+    });
+    const harness = buildHarness();
+
+    const answer = await harness.service.saveProduct(product, {
+      ...validPayload(),
+      urlTitle: 'price-unrepresentable',
+      price: 'abc',
+    });
+
+    expect(answer).toBe(product);
+    expect(product.getError('price')).toStrictEqual([
+      'validate.save.Product.price.dataType.numeric',
+    ]);
+    /* The gate held: nothing was persisted, and the property never took a value it cannot express. */
+    expect(harness.persistedProducts()).toEqual([]);
+    expect(product.price).toBeUndefined();
+  });
+
+  it('NET-NEW: a JSON boolean price reaches the same rule, because CFML rendered it as text too', async () => {
+    const product = buildProduct({
+      productID: physicalID('p-save-price-boolean'),
+      productType: buildMerchandiseProductType(),
+    });
+    const harness = buildHarness();
+
+    await harness.service.saveProduct(product, {
+      ...validPayload(),
+      urlTitle: 'price-boolean',
+      price: true,
+    });
+
+    expect(product.getError('price')).toStrictEqual([
+      'validate.save.Product.price.dataType.numeric',
+    ]);
+    expect(harness.persistedProducts()).toEqual([]);
+  });
+
+  it('NET-NEW: a property NO rule covers still fails at the flush point, exactly as the ORM did', async () => {
+    /*
+     * The other half of the relocation, and the reason it is a relocation rather than a repair. Nothing in
+     * `model/validation/Product.json` covers `activeFlag`, so in CFML the assigned string travelled all the
+     * way to the ORM flush and failed there. Validation finds nothing here, the gate opens, and the
+     * deferred failure is raised at the flush point — still a service fault, still writing no row.
+     */
+    const product = buildProduct({
+      productID: physicalID('p-save-flag-unrepresentable'),
+      productType: buildMerchandiseProductType(),
+    });
+    const harness = buildHarness();
+
+    await expect(
+      harness.service.saveProduct(product, {
+        ...validPayload(),
+        urlTitle: 'flag-unrepresentable',
+        price: '10.00',
+        activeFlag: 'abc',
+      }),
+    ).rejects.toThrow(DomainError);
+
+    expect(product.hasErrors()).toBe(false);
+    expect(harness.persistedProducts()).toEqual([]);
+  });
+
+  it('NET-NEW: a validation failure elsewhere still wins over the deferred flush failure', async () => {
+    /*
+     * `org/Hibachi/HibachiService.cfc:L154` gates the write on the error bag, so a refused save never
+     * reached the flush and never produced the ORM's own failure. A payload carrying BOTH an uncovered
+     * unrepresentable value and an ordinary rule failure must therefore answer the keyed refusal.
+     */
+    const product = buildProduct({
+      productID: physicalID('p-save-flag-and-finding'),
+      productType: buildMerchandiseProductType(),
+    });
+    const harness = buildHarness();
+
+    const answer = await harness.service.saveProduct(product, {
+      productCode: TEST_MERCHANDISE_PRODUCT_CODE,
+      urlTitle: 'flag-and-finding',
+      price: '10.00',
+      activeFlag: 'abc',
+    });
+
+    expect(answer).toBe(product);
+    expect(product.getError('productName')).toStrictEqual([
+      'validate.save.Product.productName.required',
+    ]);
+    expect(harness.persistedProducts()).toEqual([]);
+  });
+
   it('NET-NEW: populates the declared non-persistent price override before validation', async () => {
     const product = buildProduct({
       productID: physicalID('p-save-price-override'),
@@ -4427,10 +4536,13 @@ describe("The product surface's final wiring", () => {
   }
 
   /** A product type the two product-type routes can address. */
-  function makeProductType(): ProductTypeWithErrorState {
+  function makeProductType(parent?: ProductType): ProductTypeWithErrorState {
     const productType = new ProductType();
     productType.productTypeID = PRODUCT_TYPE_ID;
     productType.productTypeName = 'Merchandise';
+    if (parent !== undefined) {
+      productType.parentProductType = parent;
+    }
     return manageEntity(productType, PRODUCT_TYPE_ENTITY_METADATA);
   }
 
@@ -4464,6 +4576,16 @@ describe("The product surface's final wiring", () => {
     readonly deleteResult?: boolean;
     /** A failure `loadDataFromFile` rejects with instead of resolving. */
     readonly importFailure?: unknown;
+    /**
+     * Rule 3b's provenance reader, for the two product-type read paths. Omitted means the accurate default
+     * for this harness — an in-memory product type was never hydrated from a row, so nothing was recorded.
+     */
+    readonly parentProductTypeIdReader?: ParentProductTypeIdReader;
+    /**
+     * A parent to assign into the `parentProductType` association of what `getProductType` answers, so a
+     * case can model a populated association independently of the provenance record.
+     */
+    readonly productTypeParent?: ProductType;
   }
 
   /** What one invocation of the surface recorded. */
@@ -4622,7 +4744,7 @@ describe("The product surface's final wiring", () => {
         },
         getProductType: (productTypeID: string): Promise<ProductType | null> => {
           record('getProductType', [productTypeID]);
-          return Promise.resolve(makeProductType());
+          return Promise.resolve(makeProductType(options.productTypeParent));
         },
       };
     }
@@ -4724,7 +4846,19 @@ describe("The product surface's final wiring", () => {
       calls: surface.calls,
       decisions,
       securityContexts,
-      handler: createProductHandler(surface.service, resolve, runner),
+      /*
+       * The fourth argument is rule 3b's provenance reader. This harness builds its product types in
+       * memory rather than hydrating them from rows, so nothing is ever recorded in the provenance table
+       * and a reader that answers `undefined` is the accurate default: a case that expects a parent
+       * identifier either supplies it through the `parentProductType` association, which
+       * `toProductTypeResponse` reads first, or overrides the reader to model a hydrated read.
+       */
+      handler: createProductHandler(
+        surface.service,
+        resolve,
+        runner,
+        options.parentProductTypeIdReader ?? ((): undefined => undefined),
+      ),
     };
   }
 
@@ -5279,6 +5413,75 @@ describe("The product surface's final wiring", () => {
       expect(probe.decisions).toStrictEqual(['commit', 'commit', 'commit']);
     });
 
+    it('NET-NEW — JSON boolean update flags are ACCEPTED and reach the process object as CFML 1 and 0', async () => {
+      /*
+       * `true` and `false` are the natural encoding for a flag in a JSON body and the first thing a client
+       * reaches for, and both used to be dropped: the boundary reader accepted only `string` and `number`,
+       * so the flag arrived unset, and the unguarded legacy read — which places it directly in an `if`
+       * condition — then raised and surfaced as an opaque 500.
+       *
+       * The values are asserted as `1` and `0` rather than as booleans, and that is the point of the fix.
+       * CFML has no distinct boolean storage: `true` IS `1` in every numeric and conditional context, which
+       * is what both `model/validation/Product_UpdateSkus.json`'s `eq 1` test and
+       * `model/service/ProductService.cfc:L222`'s bare `if` read. Coercing at the JSON boundary keeps the
+       * process-object slot typed as the legacy data key was — a CFML request scope could not have held a
+       * JSON boolean at all — instead of widening the domain to accept a value the legacy never saw.
+       */
+      const probe = admitAll();
+
+      const result = await probe.handler.processProductUpdateSkus(
+        payloadEvent(
+          '{"updatePriceFlag":true,"price":10,"updateListPriceFlag":false,"listPrice":20}',
+        ),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(probe.decisions).toStrictEqual(['commit']);
+
+      const processCall = probe.calls.find((call) => call.member === 'processProductUpdateSkus');
+      expect(processCall?.args[1]).toMatchObject({
+        updatePriceFlag: 1,
+        updateListPriceFlag: 0,
+        price: 10,
+        listPrice: 20,
+      });
+    });
+
+    it('NET-NEW — the widening changes NO form that already worked, and leaves price a price', async () => {
+      /*
+       * Two claims, because the fix had two ways to go wrong. First, every previously accepted spelling must
+       * arrive byte-identical — a reader that normalised `"yes"` to `1` would silently change what the
+       * domain sees and what a validation rule keyed on `eq 1` decides. Second, the coercion is confined to
+       * the two flags: a boolean is not a price, and accepting one for `price` would turn a nonsensical
+       * payload into a silent `1`, which is exactly the class of silent success this whole pass exists to
+       * remove.
+       */
+      const probe = admitAll();
+
+      await probe.handler.processProductUpdateSkus(
+        payloadEvent('{"updatePriceFlag":"yes","price":"10.50","updateListPriceFlag":"0"}'),
+      );
+
+      expect(
+        probe.calls.find((call) => call.member === 'processProductUpdateSkus')?.args[1],
+      ).toMatchObject({
+        updatePriceFlag: 'yes',
+        updateListPriceFlag: '0',
+        price: '10.50',
+      });
+
+      const priceAsBoolean = admitAll();
+      await priceAsBoolean.handler.processProductUpdateSkus(
+        payloadEvent('{"updatePriceFlag":1,"price":true}'),
+      );
+
+      const processObject = priceAsBoolean.calls.find(
+        (call) => call.member === 'processProductUpdateSkus',
+      )?.args[1] as Record<string, unknown>;
+      expect(processObject).toMatchObject({ updatePriceFlag: 1 });
+      expect('price' in processObject).toBe(false);
+    });
+
     it('NET-NEW — AAP §0.6.6 M6 — the subject is READ through the transaction graph', async () => {
       const probe = admitAll();
 
@@ -5572,6 +5775,76 @@ describe("The product surface's final wiring", () => {
         'getProductType',
         'saveProductType',
       ]);
+    });
+
+    it('NET-NEW — getProductType PROJECTS parentProductTypeID from rule 3b provenance, so a read is symmetric with the write', async () => {
+      /*
+       * The read half of a write/read pair that had been asymmetric. `saveProductType` supplying a nested
+       * `parentProductType` leaves the association populated and has always returned the identifier; a
+       * product type READ back from a row does not, because rule 3b in
+       * `src/adapters/mysql/rowMappers.ts:L1016-L1023` records the foreign key beside the instance instead
+       * of assigning it into the association — an identifier-only parent would empty
+       * `getSimpleRepresentation()` for anything that rendered from it. The consequence was that the whole
+       * product-type hierarchy was invisible to every read while the column was populated in the database.
+       *
+       * The reader is overridden here rather than the association populated, because that is precisely the
+       * shape of a hydrated read: association ABSENT, provenance PRESENT. A projection that read only the
+       * association would fail this case, and one that assigned the association to satisfy it would
+       * reintroduce the nameless parent rule 3b exists to prevent.
+       */
+      const hydratedParentID = 'aaaa0000bbbb1111cccc2222dddd3333';
+      const probe = admitAll({ parentProductTypeIdReader: () => hydratedParentID });
+
+      const result = await probe.handler.getProductType(identifierEvent(PRODUCT_TYPE_ID));
+
+      expect(result.statusCode).toBe(200);
+      const body = JSON.parse(result.body) as {
+        readonly productTypeID: string;
+        readonly parentProductTypeID?: string;
+      };
+      expect(body.productTypeID).toBe(PRODUCT_TYPE_ID);
+      expect(body.parentProductTypeID).toBe(hydratedParentID);
+    });
+
+    it('NET-NEW — a ROOT product type still omits parentProductTypeID entirely, so nothing is invented', async () => {
+      /*
+       * The other side of the same projection. A null column records nothing in the provenance table, which
+       * is the ordinary state for a root, and the member must then be absent rather than present-and-empty:
+       * `exactOptionalPropertyTypes` makes the difference observable, and a client distinguishing "no
+       * parent" from "a parent whose id is the empty string" depends on it.
+       */
+      const probe = admitAll();
+
+      const result = await probe.handler.getProductType(identifierEvent(PRODUCT_TYPE_ID));
+
+      expect(result.statusCode).toBe(200);
+      expect(Object.keys(JSON.parse(result.body) as object)).not.toContain('parentProductTypeID');
+    });
+
+    it('NET-NEW — the association still WINS over the provenance record when both are present', async () => {
+      /*
+       * Order matters and is asserted rather than assumed. A read-modify-save reassigns the parent through
+       * the association while the provenance record still holds the value the row was hydrated with, so
+       * reading the record first would answer the OLD parent for a request that had just changed it.
+       */
+      const staleProvenanceID = '1111111111111111111111111111aaaa';
+      const reassignedParentID = '2222222222222222222222222222bbbb';
+
+      const parent = new ProductType();
+      parent.productTypeID = reassignedParentID;
+
+      const probe = admitAll({ parentProductTypeIdReader: () => staleProvenanceID });
+      const stored = await probe.handler.getProductType(identifierEvent(PRODUCT_TYPE_ID));
+      expect(JSON.parse(stored.body)).toMatchObject({ parentProductTypeID: staleProvenanceID });
+
+      const reassigned = await admitAll({
+        parentProductTypeIdReader: () => staleProvenanceID,
+        productTypeParent: parent,
+      }).handler.getProductType(identifierEvent(PRODUCT_TYPE_ID));
+
+      expect(JSON.parse(reassigned.body)).toMatchObject({
+        parentProductTypeID: reassignedParentID,
+      });
     });
 
     it('NET-NEW — saveProductType ROLLS BACK and refuses when the returned product type carries findings', async () => {

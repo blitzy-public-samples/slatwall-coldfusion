@@ -95,6 +95,83 @@ export type EntityRemover<TEntity> = (entity: TEntity) => Promise<void>;
 export type PopulationPreparer = (data: Record<string, unknown>) => Promise<void>;
 
 /**
+ * Validates and persists one related entity that population wrote through a nested payload struct.
+ *
+ * The port of the two cascade passes the legacy framework performed on `populatedSubProperties`, which
+ * `org/Hibachi/HibachiTransient.cfc:L248` and `:L305` record whenever a nested struct carried more than
+ * the related primary key:
+ *
+ * - `org/Hibachi/HibachiTransient.cfc:L407-L450` — the parent's own `validate()` validates every
+ * populated sub-property, in the context `HibachiValidationService.getPopulatedPropertyValidationContext`
+ * selects, and adds `getHibachiErrors().addError('populate', propertyName)` to the **parent** when the
+ * sub-property has findings. None of the seven in-scope validation documents declares a
+ * `populatedPropertyValidation` section, so that context is always the parent's original one.
+ * - `org/Hibachi/HibachiDAO.cfc:L48-L67` — `save(target)` calls `entitySave(target)` and then recurses
+ * into every populated sub-property ("Digg Deeper into any populatedSubProperties and save those as
+ * well"), which is what wrote the related row Hibernate's own cascade attributes would not have.
+ *
+ * A writer is deliberately two members rather than one save: the parent must know about a
+ * sub-property's findings **before** it decides to persist anything, exactly as the legacy ordering does
+ * (validate the whole graph, then gate the write on `hasErrors`).
+ *
+ * The entity arrives as `object` because one record carries several entity types at once — a brand, a
+ * product type, a SKU delegate — and each writer narrows to the type it owns. Narrowing lives with the
+ * writer, in the composition root that also owns the rule set and the write path for that type.
+ */
+export interface PopulatedSubPropertyWriter {
+  /**
+   * When this related entity's row is written relative to the parent's own row.
+   *
+   * Hibernate ordered the inserts a flush produced by their mapping dependencies; a parameterised
+   * statement carries no such ordering, so the direction of each relationship has to be stated. The
+   * two arms are the two directions the in-scope mappings take, and the schema has no foreign-key
+   * constraint of its own (measured: zero `FOREIGN KEY` constraints in the `Sw*` schema), so the
+   * ordering exists to make the **values** right rather than to satisfy the database.
+   */
+  readonly writePhase: PopulatedSubPropertyWritePhase;
+
+  /**
+   * Validates one populated related entity under the parent's save context.
+   *
+   * @param entity - The related entity population wrote into.
+   * @returns `true` when the entity has findings, which the parent records as `populate` ->
+   * `propertyName`.
+   */
+  validate(entity: object): Promise<boolean>;
+
+  /**
+   * Persists one populated related entity inside the parent's transaction.
+   *
+   * @param entity - The related entity population wrote into, already validated.
+   */
+  persist(entity: object): Promise<void>;
+}
+
+/**
+ * Which side of the parent's own row a populated sub-property's write belongs on.
+ *
+ * - `'beforeParent'` — the **parent** holds the foreign key, so the related row has to carry its minted
+ * identifier before the parent's columns are collected. `Product.brand` [model/entity/Product.cfc:L68]
+ * and `Product.productType` [`:L69`] are this arm.
+ * - `'afterParent'` — the **related** row holds the parent's foreign key, so the parent's identifier has
+ * to exist first. `Product.skus` [`:L73`] is this arm, and `Product.defaultSku` [`:L70`] joins it because
+ * its row also carries `productID`; the parent's own `defaultSkuID` column is satisfied by the mint,
+ * which happens during validation, exactly as `SkuService.validateNewSku` mints before it persists.
+ */
+export type PopulatedSubPropertyWritePhase = 'beforeParent' | 'afterParent';
+
+/**
+ * The populated-sub-property writers one entity's relationships resolve to, keyed by the property name
+ * the parent declares. A property with no writer is refused rather than written; see
+ * `src/services/ProductService.ts` for the one relationship that takes that arm and why.
+ *
+ * @typeParam TPropertyName - The parent entity's declared property-name union.
+ */
+export type PopulatedSubPropertyWriters<TPropertyName extends string> = Readonly<
+  Partial<Record<TPropertyName, PopulatedSubPropertyWriter>>
+>;
+
+/**
  * The two setting-side effects the local override reaches out of scope for, declared as one port.
  *
  * TODO(boundary): the implementation belongs to the SettingService port family under AAP §0.2.2.7 and

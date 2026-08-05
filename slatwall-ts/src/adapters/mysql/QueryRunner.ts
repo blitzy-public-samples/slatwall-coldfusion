@@ -36,7 +36,9 @@ import {
   mapProductRow,
   mapProductTypeRow,
   mapSkuRow,
+  markProductOwnedLinkLoaded,
   markSkuOwnedLinkLoaded,
+  productReference,
   toRows,
 } from './rowMappers';
 
@@ -1107,6 +1109,49 @@ export function describeDuplicateEntryConstraint(cause: unknown): string | undef
 }
 
 /**
+ * Extracts the overflowing column from a data-too-long failure, discarding the offending value.
+ *
+ * The direct analogue of {@link describeDuplicateEntryConstraint}, written the same way for the same
+ * reasons, and used for the same purpose: the column reaches the error's internal `context` so an engineer
+ * holding a correlation ID can see which field overflowed, and it reaches nothing a caller can observe.
+ * That split matters more here than for the duplicate key, because the overflowing column is frequently a
+ * DERIVED one — `SwSku.imageFile` or `SwSku.skuCode` composed from a long `productCode` — so it names a
+ * field the caller never sent.
+ *
+ * @param cause - the caught value, already known to be a statement rejection.
+ * @returns the column name, truncated to {@link CONSTRAINT_NAME_ECHO_LIMIT}, or undefined when the
+ * message does not carry one in the documented shape.
+ */
+export function describeDataTooLongColumn(cause: unknown): string | undefined {
+  if (typeof cause !== 'object' || cause === null) {
+    return undefined;
+  }
+
+  const { message } = cause as { readonly message?: unknown };
+
+  if (typeof message !== 'string') {
+    return undefined;
+  }
+
+  /*
+   * Anchored on the literal `for column '` that MySQL emits in `Data too long for column 'x' at row 1`,
+   * and matching to the next quote rather than greedily to the last one. Admits only printable ASCII other
+   * than a quote, which excludes the control characters a log-injection payload would need — the identical
+   * class and the identical character range as the duplicate-key reader above.
+   */
+  const matched = /for column '([\x20-\x26\x28-\x7e]*)'/.exec(message);
+  const columnName = matched?.[1];
+
+  if (columnName === undefined || columnName.length === 0) {
+    return undefined;
+  }
+
+  return columnName.length > CONSTRAINT_NAME_ECHO_LIMIT
+    ? `${columnName.slice(0, CONSTRAINT_NAME_ECHO_LIMIT)}…`
+    : columnName;
+}
+
+/**
  * Re-raises a caught driver failure through one disclosure-safe translation boundary.
  *
  * @param cause - the caught value, of unknown type.
@@ -1155,13 +1200,23 @@ export function rethrowTranslatingDuplicateEntry(cause: unknown, parameterCount:
 
   if (!isDuplicateEntryFailure(cause)) {
     const metadata = readStableDriverFailureMetadata(cause);
+    const failureClass = classifyDatabaseStatementFailure(metadata);
+
+    /*
+     * The column is read for the overflow class only. Every other class either has no column in its
+     * message or names one this port composed, and in both cases reading it would add nothing an engineer
+     * could act on while widening what the message-parsing surface touches.
+     */
+    const columnName =
+      failureClass === 'data-too-long' ? describeDataTooLongColumn(cause) : undefined;
 
     throw new DatabaseStatementError({
-      failureClass: classifyDatabaseStatementFailure(metadata),
+      failureClass,
       parameterCount,
       ...(metadata.code !== undefined ? { code: metadata.code } : {}),
       ...(metadata.errno !== undefined ? { errno: metadata.errno } : {}),
       ...(metadata.sqlState !== undefined ? { sqlState: metadata.sqlState } : {}),
+      ...(columnName !== undefined ? { columnName } : {}),
     });
   }
 
@@ -1502,6 +1557,7 @@ const SKU_OPTION_TABLE: PhysicalTableName = assertTableName('SwSkuOption');
 const OPTION_TABLE: PhysicalTableName = assertTableName('SwOption');
 const SKU_ACCESS_CONTENT_TABLE: PhysicalTableName = assertTableName('SwSkuAccessContent');
 const SKU_SUBSCRIPTION_BENEFIT_TABLE: PhysicalTableName = assertTableName('SwSkuSubsBenefit');
+const RELATED_PRODUCT_TABLE: PhysicalTableName = assertTableName('SwRelatedProduct');
 
 /** The identifier and foreign-key columns each loader reads or filters on. */
 const COLUMN = Object.freeze({
@@ -1522,6 +1578,8 @@ const COLUMN = Object.freeze({
   accessContentContentID: assertColumnName(SKU_ACCESS_CONTENT_TABLE, 'contentID'),
   subscriptionBenefitSkuID: assertColumnName(SKU_SUBSCRIPTION_BENEFIT_TABLE, 'skuID'),
   subscriptionBenefitID: assertColumnName(SKU_SUBSCRIPTION_BENEFIT_TABLE, 'subscriptionBenefitID'),
+  relatedProductOwnerID: assertColumnName(RELATED_PRODUCT_TABLE, 'productID'),
+  relatedProductFarID: assertColumnName(RELATED_PRODUCT_TABLE, 'relatedProductID'),
 });
 
 /** Builds an explicit, table-qualified projection for one table. */
@@ -1945,7 +2003,81 @@ const createProductAggregateLoader =
     if (hydratedSkus.length > 0) {
       await attachSkuOptions(request.executor, hydratedSkus);
     }
+
+    /*
+     * The owning `relatedProducts` link rows, for the same reason the SKU pass above exists: the
+     * collection is what `MySqlProductPersistence.saveProduct` reconciles, and Hibernate resolved it
+     * lazily from `SwRelatedProduct` whenever a caller touched it. Reading it here is what lets the
+     * write replace the stored rows rather than preserve them (rule 3d in `./rowMappers.ts`), and it is
+     * what gives the many-to-many identifier-list arm of `org/Hibachi/HibachiTransient.cfc:L310-L340`
+     * the existing collection its reconciliation compares against.
+     */
+    await attachProductRelatedProducts(request.executor, products);
   };
+
+/**
+ * Attaches each product's owning `relatedProducts` collection as identifier-only references.
+ *
+ * References rather than full rows: nothing in the slice renders a related product — no response
+ * projection carries the member — and the one consumer that exists, the link-row reconciliation in
+ * `MySqlProductRepository.MySqlProductPersistence`, binds `productID` alone. Reading the far rows would
+ * cost a second statement per batch for values no caller can observe.
+ *
+ * @param executor - The caller's executor, so the read shares its transaction (M6).
+ * @param products - The products whose links are wanted; mutated in place, then marked loaded.
+ */
+async function attachProductRelatedProducts(
+  executor: SqlExecutor,
+  products: readonly Product[],
+): Promise<void> {
+  const productIdentifiers = [
+    ...new Set(products.map((product) => product.productID).filter((id) => id.length > 0)),
+  ];
+
+  if (productIdentifiers.length === 0) {
+    return;
+  }
+
+  const placeholders = productIdentifiers.map(() => '?').join(', ');
+  const rows = await executor.execute(
+    `SELECT ${RELATED_PRODUCT_TABLE}.${COLUMN.relatedProductOwnerID}, ` +
+      `${RELATED_PRODUCT_TABLE}.${COLUMN.relatedProductFarID} ` +
+      `FROM ${RELATED_PRODUCT_TABLE} ` +
+      `WHERE ${RELATED_PRODUCT_TABLE}.${COLUMN.relatedProductOwnerID} IN (${placeholders})`,
+    [...productIdentifiers],
+  );
+
+  const farIdentifiersByOwner = new Map<string, string[]>();
+  for (const row of rows) {
+    const ownerID = readForeignKey(row, COLUMN.relatedProductOwnerID);
+    const farID = readForeignKey(row, COLUMN.relatedProductFarID);
+    if (ownerID === undefined || farID === undefined) {
+      continue;
+    }
+
+    let bucket = farIdentifiersByOwner.get(ownerID);
+    if (bucket === undefined) {
+      bucket = [];
+      farIdentifiersByOwner.set(ownerID, bucket);
+    }
+    bucket.push(farID);
+  }
+
+  for (const product of products) {
+    const farIdentifiers = farIdentifiersByOwner.get(product.productID) ?? [];
+    /*
+     * Replaced rather than appended to, so a loader that ran twice over one instance — the identity map
+     * makes that possible for a product reached as both a root and an association — cannot double the
+     * collection and therefore cannot double the link rows the write emits.
+     */
+    product.relatedProducts.length = 0;
+    for (const farIdentifier of farIdentifiers) {
+      product.relatedProducts.push(productReference(farIdentifier));
+    }
+
+    markProductOwnedLinkLoaded(product, 'relatedProducts');
+  }
+}
 
 /** Builds every root's loader, or `undefined` where the root has nothing to resolve. */
 export function createCatalogAggregateLoaders(

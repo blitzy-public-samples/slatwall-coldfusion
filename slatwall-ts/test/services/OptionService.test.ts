@@ -17,6 +17,7 @@ import { SmartListQueryBuilder } from '../../src/adapters/mysql/SmartListQueryBu
 import { createCatalogAggregateLoaders } from '../../src/adapters/mysql/SmartListQueryBuilder';
 import { Option } from '../../src/domain/option/Option';
 import { OptionGroup } from '../../src/domain/option/OptionGroup';
+import { PUBLIC_ERROR_CODE, SmartListPropertyUnresolvedError } from '../../src/errors/DomainError';
 import {
   OptionService,
   findProductOptionGroups,
@@ -908,23 +909,98 @@ describe('OptionService.getOptionSmartList', () => {
    * path against its entity whitelist rather than accepting an open `string`, and
    * `src/ports/SmartListQueryPort.ts:268` carries the entity schema those closed identifiers are
    * derived from. The pair of cases below is that closure, observed through the only surface this
-   * suite may touch: a path that does not resolve for the root is absent from the emitted query,
-   * silently, exactly as the legacy dropped it.
+   * suite may touch: a path that does not resolve for the root cannot reach the emitted query.
+   *
+   * These cases previously asserted that such a path was dropped SILENTLY and that the query was
+   * emitted without it, on the reasoning that raising "would turn a silently ignored request key into a
+   * failed request". That reasoning was incomplete, and the QA pass that followed measured what it had
+   * missed: the request the caller actually sent asked for a filtered selection, and dropping its one
+   * predicate answers `200` with the ENTIRE table — rows the caller explicitly asked not to be given,
+   * with nothing in the response indicating that anything was ignored. The refusal is now the asserted
+   * behaviour, and it is a declared divergence from the legacy's discard, recorded in full beside
+   * `composeUnresolvedPropertyPublicMessage` in `src/errors/DomainError.ts`.
    */
-  it('NET-NEW — an option-GROUP property is DROPPED from an OPTION smart list, silently, exactly as the legacy dropped an unresolvable path', async () => {
+  it('NET-NEW — an option-GROUP property REFUSES an OPTION smart list rather than being dropped, so the request cannot be answered with the whole table', async () => {
     const { service, smartList } = harness();
-
-    await service.getOptionSmartList({ 'F:optionGroupName': 'Size' });
 
     /*
      * `optionGroupName` is not a property of `SwOption`; reaching it from this root requires the
-     * relationship hop asserted in the next case. An unresolvable path yielded a query with the entry
-     * missing and no error anywhere in the legacy, so raising here would turn a silently ignored
-     * request key into a failed request — a behaviour change in the opposite direction. The two roots
-     * genuinely use different property sets, and resolving one against the other would compile, would
-     * not throw, and would silently admit the wrong identifiers.
+     * relationship hop asserted in the next case. The two roots genuinely use different property sets,
+     * and resolving one against the other would compile, would not throw, and would silently admit the
+     * wrong identifiers — so the closure itself is unchanged. Only the answer given to a path outside it
+     * has changed, from a discard to a report.
      */
-    expect(smartList.lastQuery()).toStrictEqual({ entityName: 'SlatwallOption' });
+    await expect(service.getOptionSmartList({ 'F:optionGroupName': 'Size' })).rejects.toThrow(
+      SmartListPropertyUnresolvedError,
+    );
+
+    // Refused before composition: no query was ever handed to the builder, so nothing was selected.
+    expect(smartList.lastQuery()).toBeUndefined();
+  });
+
+  it('NET-NEW — the refusal names the offending path publicly and classifies as an invalid request, so a caller can act on it', async () => {
+    const { service } = harness();
+
+    const raised = await service.getOptionSmartList({ 'F:optionGroupName': 'Size' }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(raised).toBeInstanceOf(SmartListPropertyUnresolvedError);
+    const error = raised as SmartListPropertyUnresolvedError;
+
+    // The path is quoted back, because a caller told only that "a" path was wrong has been told nothing
+    // actionable. The request key it arrived on stays in the context, server-side.
+    expect(error.getPublicError()).toStrictEqual({
+      code: PUBLIC_ERROR_CODE.REQUEST_INVALID,
+      message:
+        'The request names a property path that the queried entity does not declare: ' +
+        '"optionGroupName"',
+    });
+    expect(error.propertyPath).toBe('optionGroupName');
+    expect(error.context).toStrictEqual({
+      entityName: 'SlatwallOption',
+      dataKey: 'F:optionGroupName',
+    });
+  });
+
+  it('NET-NEW — a path spelled in the wrong case RESOLVES, because the legacy folded case and emitted the declared spelling', async () => {
+    const { service, smartList } = harness();
+
+    /*
+     * The parity half of the same finding, and the larger half in practice. CFML admitted a path by
+     * `structKeyExists` — case-insensitive — at `org/Hibachi/HibachiService.cfc:L750-L752`, then emitted
+     * `entityProperties[ … ].name` at `org/Hibachi/HibachiSmartList.cfc:L347`, which is the DECLARED
+     * spelling. So this filter reached Hibernate as `optionName` and filtered correctly. The port had
+     * matched case-sensitively, which turned it into an unresolvable path and therefore, before the fix
+     * above, into an unfiltered answer.
+     */
+    await service.getOptionSmartList({ 'F:OPTIONNAME': 'Large', OrderBy: 'SORTORDER|DESC' });
+
+    expect(smartList.lastQuery()).toStrictEqual({
+      entityName: 'SlatwallOption',
+      whereGroups: [{ filters: [{ propertyIdentifier: 'optionName', value: 'Large' }] }],
+      orders: [{ propertyIdentifier: 'sortOrder', direction: 'DESC' }],
+    });
+  });
+
+  it('NET-NEW — a wrong-case RELATIONSHIP segment resolves too, and the emitted path carries the declared spelling of every segment', async () => {
+    const { service, smartList } = harness();
+
+    await service.getOptionSmartList({ 'F:OptionGroup.OPTIONGROUPNAME': 'Size' });
+
+    /*
+     * Both segments are rewritten, not merely admitted: the value that reaches the adapter is composed
+     * entirely of schema-declared identifiers, which is a stronger guarantee than validating the
+     * caller's string and then forwarding that. `joinRelatedProperty` folded intermediate segments the
+     * same way at `org/Hibachi/HibachiSmartList.cfc:L239` and `:L273-L290`.
+     */
+    expect(smartList.lastQuery()).toStrictEqual({
+      entityName: 'SlatwallOption',
+      whereGroups: [
+        { filters: [{ propertyIdentifier: 'optionGroup.optionGroupName', value: 'Size' }] },
+      ],
+    });
   });
 
   it('NET-NEW — the same group property SURVIVES when reached through the relationship hop, so the drop above is closure and not breakage', async () => {
@@ -940,14 +1016,34 @@ describe('OptionService.getOptionSmartList', () => {
     });
   });
 
-  it('NET-NEW — an unresolvable OrderBy term is dropped while a legal companion term is kept, and the direction token is honoured', async () => {
+  it('NET-NEW — an unresolvable OrderBy term refuses the whole request rather than being dropped beside a legal companion term', async () => {
     const { service, smartList } = harness();
 
-    await service.getOptionSmartList({ OrderBy: 'optionGroupName|ASC,sortOrder|DESC' });
+    /*
+     * The ordering family is refused for the same reason as the filter families, and refusing the whole
+     * request rather than the one term is the deliberate choice: a caller who asked for two orderings and
+     * silently received one has been given a differently sorted page than the one they asked for, and a
+     * page is the unit they consume. `OrderBy` is one request key carrying a list, so one refusal answers
+     * it.
+     */
+    await expect(
+      service.getOptionSmartList({ OrderBy: 'optionGroupName|ASC,sortOrder|DESC' }),
+    ).rejects.toThrow(SmartListPropertyUnresolvedError);
+
+    expect(smartList.lastQuery()).toBeUndefined();
+  });
+
+  it('NET-NEW — a legal OrderBy list still reaches the query with every term and its direction, so the refusal above is closure and not breakage', async () => {
+    const { service, smartList } = harness();
+
+    await service.getOptionSmartList({ OrderBy: 'optionName|ASC,sortOrder|DESC' });
 
     expect(smartList.lastQuery()).toStrictEqual({
       entityName: 'SlatwallOption',
-      orders: [{ propertyIdentifier: 'sortOrder', direction: 'DESC' }],
+      orders: [
+        { propertyIdentifier: 'optionName', direction: 'ASC' },
+        { propertyIdentifier: 'sortOrder', direction: 'DESC' },
+      ],
     });
   });
 
@@ -1075,18 +1171,21 @@ describe('OptionService.getOptionGroupSmartList', () => {
     });
   });
 
-  it('NET-NEW — an OPTION property is DROPPED from an OPTION-GROUP smart list, which is the mirror image of the option-root case', async () => {
+  it('NET-NEW — an OPTION property REFUSES an OPTION-GROUP smart list, which is the mirror image of the option-root case', async () => {
     const { service, smartList } = harness();
-
-    await service.getOptionGroupSmartList({ 'F:optionName': 'Large' });
 
     /*
      * Asserted in both directions on purpose. This service is the only one in the slice that roots a
      * smart list at either of two entities, so a whitelist applied to the wrong root would compile,
      * would not throw, and would silently admit or discard the wrong identifiers — precisely the
-     * class of failure that has to be pinned by a test rather than argued about.
+     * class of failure that has to be pinned by a test rather than argued about. The root-specific
+     * closure is unchanged; what this case now pins is that crossing it is reported.
      */
-    expect(smartList.lastQuery()).toStrictEqual({ entityName: 'SlatwallOptionGroup' });
+    await expect(service.getOptionGroupSmartList({ 'F:optionName': 'Large' })).rejects.toThrow(
+      SmartListPropertyUnresolvedError,
+    );
+
+    expect(smartList.lastQuery()).toBeUndefined();
   });
 
   it('NET-NEW — the same option property SURVIVES through the group\u2019s own collection hop', async () => {

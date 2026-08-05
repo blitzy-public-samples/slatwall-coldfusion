@@ -45,6 +45,7 @@ import type {
   RelatedEntityLoader,
   SubPropertyPopulator,
 } from '../base/populate';
+import { readIdentifierOrUnsaved, readsAsUnsavedIdentifier } from '../base/populate';
 import type { BaseProductType } from '../BaseProductType';
 import { resolveBaseProductType } from '../BaseProductType';
 import type { Option } from '../option/Option';
@@ -519,10 +520,13 @@ export class Sku implements AuditableEntity, AuditableManagedEntity {
   /**
    * Whether this SKU has never been persisted.
    *
-   * @returns `true` while `skuID` is still {@link SKU_UNSAVED_ID_VALUE}.
+   * @returns `true` while `skuID` is still {@link SKU_UNSAVED_ID_VALUE}, and also when population has
+   * cleared the key outright — {@link readsAsUnsavedIdentifier} records why that state is reachable and
+   * why the legacy read it as unsaved too. {@link SKU_UNSAVED_ID_VALUE} is `''`, so the helper's own
+   * empty-string arm is the sentinel test rather than a second, looser one.
    */
   isNew(): boolean {
-    return this.skuID === SKU_UNSAVED_ID_VALUE;
+    return readsAsUnsavedIdentifier(this.skuID);
   }
 
   /**
@@ -1699,7 +1703,7 @@ export class Sku implements AuditableEntity, AuditableManagedEntity {
    * @returns The identifier, or `''` while unsaved.
    */
   getPrimaryIDValue(): string {
-    return this.skuID;
+    return readIdentifierOrUnsaved(this.skuID);
   }
 
   /**

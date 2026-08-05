@@ -1668,12 +1668,31 @@ export class SkuService {
     if (!sorted || skus.length <= 1 || firstSku === undefined) {
       return skus;
     }
-    if (firstSku.getOptions().length === 0) {
+
+    /*
+     * [:L226] — the named-argument call, hoisted ABOVE the third conjunct of the gate rather than left
+     * below it, because the third conjunct cannot be answered from the returned entities alone.
+     *
+     * `arrayLen(skus[1].getOptions())` [:L224] reads a LAZY Hibernate collection. `fetchOptions` selects
+     * an `inner join fetch` [model/dao/SkuDAO.cfc:L150-L163] — an eager PRE-load, not a permission — so in
+     * the legacy the read saw the stored `SwSkuOption` rows either way and the flag never decided whether
+     * the reorder happened. This port hydrates `options` only when the flag is raised
+     * (`MySqlSkuRepository.findByProduct`), so testing the collection alone made `sorted=true` a no-op for
+     * every caller that did not also ask for options — the ordering silently depended on an unrelated
+     * argument.
+     *
+     * The sorted-identifier query answers the same question from the same rows: it is an inner join
+     * through `SwSkuOption` [model/dao/SkuDAO.cfc:L172-L204], so an identifier appears in its result
+     * exactly when that SKU has at least one stored option. Membership is therefore the lazy read's
+     * verdict, obtained without a second port member and without hydrating a collection the caller did
+     * not ask for. The hydrated read stays first so a raised flag still answers from memory.
+     */
+    const sortedSkuIds = await this.skuRepository.findSortedSkuIdsByProduct(product.productID);
+
+    if (firstSku.getOptions().length === 0 && !sortedSkuIds.includes(firstSku.skuID)) {
       return skus;
     }
 
-    // [:L226] — the named-argument call.
-    const sortedSkuIds = await this.skuRepository.findSortedSkuIdsByProduct(product.productID);
     return reorderBySortedSkuIds(skus, sortedSkuIds, 'model/service/SkuService.cfc:L237');
   }
 

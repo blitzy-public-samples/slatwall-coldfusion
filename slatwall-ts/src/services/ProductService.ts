@@ -42,11 +42,17 @@ import {
   clearPropertyValue,
   manageEntity,
   populate,
+  populateWithSubProperties,
+  unrepresentableValueError,
 } from '../domain/base/populate';
 import type {
   ColumnPropertyDescriptor,
   ManagedEntity,
+  PopulatedSubPropertyRecord,
+  PopulatedSubPropertyValue,
   PropertyDescriptorSet,
+  SimpleDataValue,
+  UnrepresentableValueFailure,
 } from '../domain/base/populate';
 import type { Option } from '../domain/option/Option';
 import type { OptionGroup } from '../domain/option/OptionGroup';
@@ -73,7 +79,11 @@ import { Sku } from '../domain/sku/Sku';
 import type { ParentProductTypeIdReader } from '../domain/product/ProductType';
 import type { DefaultSkuIdReader, SkuSettingResolver } from '../domain/sku/Sku';
 import { DomainError, NotImplementedError } from '../errors/DomainError';
-import { FILE_UPLOAD_RBKEY, PROCESS_OBJECTS_ERROR_KEY } from '../errors/ValidationError';
+import {
+  FILE_UPLOAD_RBKEY,
+  POPULATED_SUB_PROPERTY_ERROR_KEY,
+  PROCESS_OBJECTS_ERROR_KEY,
+} from '../errors/ValidationError';
 import type { AccountContextPort, AccountReference } from '../ports/AccountContextPort';
 import type { PopulationAuthorizationPort } from '../ports/AccountContextPort';
 import type { ProductRepository } from '../ports/repositories/ProductRepository';
@@ -110,6 +120,9 @@ import type {
   BaseService,
   BaseServiceEntity,
   EntityPersister,
+  PopulatedSubPropertyWritePhase,
+  PopulatedSubPropertyWriter,
+  PopulatedSubPropertyWriters,
   PopulationPreparer,
 } from './BaseService';
 import { createProductOptionFinders } from './OptionService';
@@ -559,6 +572,14 @@ export interface ProductServiceCollaborators {
 
   /** Reads the `parentProductTypeID` a product type was hydrated with. */
   readonly parentProductTypeIdReader: ParentProductTypeIdReader;
+
+  /**
+   * The validate-and-persist pass for each related entity a nested payload struct populated —
+   * `org/Hibachi/HibachiTransient.cfc:L407-L450` and `org/Hibachi/HibachiDAO.cfc:L48-L67`. Keyed by the
+   * Product property the nested struct arrived under. See {@link PopulatedSubPropertyWriters}, and
+   * {@link ProductService.applyPopulatedSubPropertyValidation} for what an absent key means.
+   */
+  readonly populatedSubPropertyWriters: PopulatedSubPropertyWriters<ProductPropertyName>;
 }
 
 /* Section 6 — CFML value semantics. */
@@ -813,10 +834,87 @@ function buildProductValidationSubject(
   };
 }
 
+/**
+ * Reads one recorded populated sub-property as the list of entities to validate and persist.
+ *
+ * `org/Hibachi/HibachiTransient.cfc:L426` makes the same distinction with `isArray`: a many-to-one
+ * member records one entity, a one-to-many or many-to-many member records an array of them.
+ *
+ * @param populated - One value out of the populated-sub-property record.
+ * @returns The entities it names, always as a list.
+ */
+function readPopulatedSubPropertyEntities(populated: PopulatedSubPropertyValue): readonly object[] {
+  return isRelatedEntityList(populated) ? populated : [populated];
+}
+
+/**
+ * Whether one recorded populated sub-property holds a list of entities rather than a single entity.
+ *
+ * A declared predicate rather than an inline `Array.isArray`, because `Array.isArray` narrows a
+ * `readonly T[]` member of a union to the mutable `any[]` its own signature declares, which reintroduces
+ * `any` into a file that admits none. The predicate states the narrowing the union already expresses.
+ *
+ * @param populated - One value out of the populated-sub-property record.
+ * @returns `true` for the one-to-many and many-to-many arm.
+ */
+function isRelatedEntityList(populated: PopulatedSubPropertyValue): populated is readonly object[] {
+  return Array.isArray(populated);
+}
+
+/**
+ * Renders a collected unrepresentable payload value as the text a declared rule should judge.
+ *
+ * CFML pushed `trim(value)` into the property [org/Hibachi/HibachiTransient.cfc:L207] whatever the
+ * declared `ormtype` was, so the value a rule read was always the trimmed rendering — including for a
+ * boolean or a number that had arrived as JSON. This reproduces that one line, and nothing more: no
+ * coercion is attempted, because failing to coerce is precisely what brought the value here.
+ *
+ * @param rawValue - The payload value as it arrived.
+ * @returns Its trimmed rendering.
+ */
+function renderUnrepresentableValue(rawValue: SimpleDataValue): string {
+  return String(rawValue).trim();
+}
+
+/**
+ * The first collected unrepresentable value that no declared rule reported against.
+ *
+ * The legacy's flush failed on the first offending column the ORM reached, and reported nothing about the
+ * others; a property whose rule already refused the save never reached the flush at all. Both facts are
+ * expressed here: the scan stops at the first uncovered property, in the declaration order population
+ * visited, and a property carrying a finding is skipped.
+ *
+ * @param failures - Every collected failure, keyed by property name.
+ * @param product - The product whose error bag says which properties a rule already refused.
+ * @returns The failure to raise, or `undefined` when every collected value was reported.
+ */
+function readFirstUnreportedUnrepresentableValue(
+  failures: ReadonlyMap<string, UnrepresentableValueFailure>,
+  product: Product,
+): UnrepresentableValueFailure | undefined {
+  for (const [propertyName, failure] of failures) {
+    if (!product.hasError(propertyName)) {
+      return failure;
+    }
+  }
+
+  return undefined;
+}
+
 /** The values {@link buildProductValidationSubject} cannot read straight off the entity. */
 interface ProductDerivedValidationValues {
   readonly baseProductType?: string | undefined;
-  readonly price?: ExactDecimal | undefined;
+
+  /**
+   * The price the `price` rule reads.
+   *
+   * `string` as well as {@link ExactDecimal}, because a payload value that no exact decimal can represent
+   * is exactly what the rule exists to refuse. CFML assigned `"abc"` to the property and let
+   * `model/validation/Product.json:L8`'s `dataType="numeric"` reject it; this port cannot assign it to a
+   * typed field, so the raw text is carried into the subject instead and the same rule reaches the same
+   * verdict. See {@link ProductService.saveProduct} step 3.
+   */
+  readonly price?: ExactDecimal | string | undefined;
   readonly unusedProductOptions?: readonly unknown[] | undefined;
   readonly unusedProductOptionGroups?: readonly unknown[] | undefined;
   readonly unusedProductSubscriptionTerms?: readonly unknown[] | undefined;
@@ -895,6 +993,9 @@ export class ProductService {
   /** See {@link ProductServiceCollaborators.parentProductTypeIdReader}. */
   private readonly parentProductTypeIdReader: ParentProductTypeIdReader;
 
+  /** See {@link ProductServiceCollaborators.populatedSubPropertyWriters}. */
+  private readonly populatedSubPropertyWriters: PopulatedSubPropertyWriters<ProductPropertyName>;
+
   /**
    * Wires the graph the retired DI/1 container used to wire by name.
    *
@@ -914,6 +1015,7 @@ export class ProductService {
     this.subscriptionTermPort = collaborators.subscriptionTermPort;
     this.productTypeRootResolver = collaborators.productTypeRootResolver;
     this.parentProductTypeIdReader = collaborators.parentProductTypeIdReader;
+    this.populatedSubPropertyWriters = collaborators.populatedSubPropertyWriters;
     this.productOptionFinders = createProductOptionFinders(collaborators.smartListQueryPort);
     this.productPropertyDescriptors = collaborators.productPropertyDescriptors;
     this.resolveProductPropertyDescriptors =
@@ -1944,7 +2046,43 @@ export class ProductService {
     await this.prepareProductPopulation(data);
 
     const propertyDescriptors = await this.resolveProductPropertyDescriptors(data);
-    populate(product, data, propertyDescriptors, this.populationAuthorization);
+    /*
+     * `populateWithSubProperties` rather than `populate`, because the record it returns is half the
+     * legacy contract and discarding it was a defect: `org/Hibachi/HibachiTransient.cfc:L248` and
+     * `:L305` record every related entity a nested struct populated, and the framework then validates
+     * (`:L407-L450`) and saves (`org/Hibachi/HibachiDAO.cfc:L48-L67`) each one. Without those two passes
+     * a nested `{"brandID":"…","brandName":"new name"}` was populated in memory and never written, and a
+     * nested struct naming no existing row left the parent holding an unpersisted related entity whose
+     * blank key was then stored as a foreign key. Both passes are applied below.
+     */
+    /*
+     * The unrepresentable-value collector, shared by both population passes below.
+     *
+     * Without it, population raises where it assigns — ahead of the validation pass — so a payload of
+     * `{"price":"abc"}` answered a service fault where the legacy answered
+     * `validate.save.Product.price.dataType.numeric`. CFML assigned the value
+     * [org/Hibachi/HibachiTransient.cfc:L207] and the type failure surfaced at the ORM FLUSH, which is
+     * after `validate()` — so a property with a declared rule never reached it, and a property without one
+     * failed there. Step 3 feeds a collected value to the rule that covers it; step 4e re-raises for the
+     * rest, at the flush point. Insertion order is preserved by `Map`, so the first failure is reported
+     * first, as the declaration-order loop encountered it.
+     */
+    const unrepresentableValues = new Map<string, UnrepresentableValueFailure>();
+    const populateOptions = {
+      onUnrepresentableValue: (failure: UnrepresentableValueFailure): void => {
+        if (!unrepresentableValues.has(failure.propertyName)) {
+          unrepresentableValues.set(failure.propertyName, failure);
+        }
+      },
+    };
+
+    const { populatedSubProperties } = populateWithSubProperties(
+      product,
+      data,
+      propertyDescriptors,
+      this.populationAuthorization,
+      populateOptions,
+    );
 
     /*
      * A substituted descriptor resolver may return the persistent-only set, which excludes `price`;
@@ -1956,6 +2094,7 @@ export class ProductService {
       data,
       PRODUCT_SAVE_TRANSIENT_PROPERTY_DESCRIPTORS,
       this.populationAuthorization,
+      populateOptions,
     );
 
     /* Step 2 — `:L268-L270`. Null only; `getTitle()`, not the product name; set on the entity. */
@@ -1968,18 +2107,57 @@ export class ProductService {
      * the delegating accessor is what the required-and-numeric rule must see; the rule set's own
      * boundary note assigns that resolution to whoever assembles the subject, which is this member.
      */
+    /*
+     * The `price` the rule sees is the collected raw value when population could not represent it, and the
+     * delegating accessor otherwise. This is the whole of the relocation: `required` and
+     * `dataType="numeric"` are declared on the same property [model/validation/Product.json:L8], so
+     * handing them the text the caller sent produces the legacy's own key rather than a service fault,
+     * and handing them the accessor's value on every other path leaves this rule exactly as it was.
+     */
+    const unrepresentablePrice = unrepresentableValues.get(PRICE_DATA_KEY);
+    const priceForValidation: ExactDecimal | string | undefined =
+      unrepresentablePrice === undefined
+        ? product.getPrice()
+        : renderUnrepresentableValue(unrepresentablePrice.rawValue);
+
     const errors = await this.validator.validate(
-      buildProductValidationSubject(product, { price: product.getPrice() }),
+      buildProductValidationSubject(product, { price: priceForValidation }),
       productValidationRuleSet,
       'save',
     );
     product.addErrors(errors.getErrors());
 
     /*
+     * Step 3b — the second half of `org/Hibachi/HibachiTransient.cfc:L409-L450`: the parent's validation
+     * does not end with its own rule set. Every related entity a nested struct populated is validated in
+     * turn, and one carrying findings is reported against the parent under the `populate` key. It runs
+     * here, between the parent's own validation and the `hasErrors` gate below, because that is where the
+     * legacy runs it — inside `validate()`, which `:L273` calls — and because everything after this line
+     * is gated on the verdict. `createSkus` in particular reads
+     * `product.getProductType().getBaseProductType()`, so a product type that fails its own rules is
+     * refused here rather than dereferenced there.
+     */
+    await this.applyPopulatedSubPropertyValidation(product, populatedSubProperties);
+
+    /*
      * `isNew()` is read once, here, and never again in this member. The mint below invalidates it; see
      * the identifier note in the doc block for why re-reading it would skip SKU creation entirely.
      */
     const productIsNew = product.isNew();
+
+    /*
+     * Step 3c — `org/Hibachi/HibachiDAO.cfc:L52-L64`'s "Digg Deeper", hoisted above the parent's own
+     * write rather than placed after it. The legacy could save the parent first because Hibernate ordered
+     * the resulting inserts by dependency at flush; a parameterised statement has no such ordering, and
+     * `MySqlProductPersistence.collectProductValues` reads `brand.brandID` / `productType.productTypeID`
+     * straight off the associations. A related entity that this request created therefore has to hold its
+     * minted 32-character identifier (IR-6) before the product row is composed, or the foreign key stores
+     * whatever the unsaved entity carried. Gated on the same verdict as every other write in this member,
+     * so a refused save writes nothing at all.
+     */
+    if (!product.hasErrors()) {
+      await this.applyPopulatedSubPropertyPersistence(populatedSubProperties, 'beforeParent');
+    }
 
     /*
      * Step 4 — `:L276-L283`. Both conjuncts, in the legacy's order, and the first one reads the local
@@ -2007,6 +2185,31 @@ export class ProductService {
     }
 
     /*
+     * Step 4d — the other half of step 3c's cascade. A populated `defaultSku` or `skus` member carries
+     * `SwSku.productID`, so its row cannot be written until the product's own identifier exists: for a
+     * new product that is step 4a above, and for an existing one it was a previous request. Both arms
+     * arrive here with a persisted parent, which is why one call serves both.
+     */
+    if (!product.hasErrors()) {
+      await this.applyPopulatedSubPropertyPersistence(populatedSubProperties, 'afterParent');
+    }
+
+    /*
+     * Step 4e — the FLUSH POINT, and the other half of the relocation above. A collected value that no
+     * declared rule covered reached the ORM in the legacy and failed there; nothing in
+     * `model/validation/Product.json` covers `activeFlag`, `publishedFlag` or `sortOrder`, so
+     * `{"activeFlag":"abc"}` still fails, still as a service fault, and still without writing a row. The
+     * gate matters as much as the raise: when validation already refused the save there is no flush to
+     * fail at, so a keyed 400 wins over this fault exactly as it did in CFML.
+     */
+    if (!product.hasErrors()) {
+      const uncovered = readFirstUnreportedUnrepresentableValue(unrepresentableValues, product);
+      if (uncovered !== undefined) {
+        throw unrepresentableValueError(uncovered);
+      }
+    }
+
+    /*
      * Step 5 — `:L286-L288`. Re-read, because step 4 can record findings on the product. For a product
      * that came through step 4a this is the UPDATE that writes `defaultSkuID`; for an existing product it
      * is the only write.
@@ -2017,6 +2220,113 @@ export class ProductService {
 
     /* `:L291`. */
     return product;
+  }
+
+  /**
+   * Validates every related entity a nested payload struct populated, reporting a failing one against
+   * the product under the legacy `populate` key.
+   *
+   * The port of `org/Hibachi/HibachiTransient.cfc:L412-L450`. Three details of that block are carried
+   * deliberately:
+   *
+   * - the error is recorded on the **parent**, keyed `populate`, with the **property name** as the
+   * message [`:L436`, `:L448`] — not on the related entity, and not as a resource-bundle key;
+   * - an array-valued member reports once per failing element [`:L429-L437`], so two failing SKUs in one
+   * `skus` payload produce two entries under the same key, exactly as the legacy loop does;
+   * - the context is the parent's own, because
+   * `HibachiValidationService.getPopulatedPropertyValidationContext` [`:L133-L151`] falls through to
+   * `originalContext` for every in-scope entity — none of the seven catalog validation documents
+   * declares a `populatedPropertyValidation` section.
+   *
+   * A relationship with no writer is **refused** rather than silently dropped, which is the one place
+   * this pass departs from the legacy block, and the departure is a declared boundary rather than a
+   * choice: `relatedProducts` is the only such relationship, and validating a related Product under the
+   * `save` context reads `price` [model/validation/Product.json:L8], which resolves through the related
+   * product's `defaultSku` — a reference the read path mints unresolved, whose members refuse by
+   * construction. Refusing the sub-property write names the property to the caller instead of writing an
+   * unvalidated row or discarding the input. A single-key `relatedProducts` item is unaffected: it
+   * records no populated sub-property at all, and its link row is written by
+   * `MySqlProductPersistence.saveProduct`.
+   *
+   * @param product - The parent product, which receives any findings.
+   * @param populatedSubProperties - What population recorded, keyed by Product property name.
+   */
+  private async applyPopulatedSubPropertyValidation(
+    product: Product,
+    populatedSubProperties: PopulatedSubPropertyRecord<ProductPropertyName>,
+  ): Promise<void> {
+    for (const [propertyName, populated] of Object.entries(populatedSubProperties)) {
+      if (populated === undefined) {
+        continue;
+      }
+
+      const writer = this.resolvePopulatedSubPropertyWriter(propertyName);
+      if (writer === undefined) {
+        product.addError(POPULATED_SUB_PROPERTY_ERROR_KEY, propertyName);
+        continue;
+      }
+
+      for (const relatedEntity of readPopulatedSubPropertyEntities(populated)) {
+        const hasFindings = await writer.validate(relatedEntity);
+        if (hasFindings) {
+          product.addError(POPULATED_SUB_PROPERTY_ERROR_KEY, propertyName);
+        }
+      }
+    }
+  }
+
+  /**
+   * Persists the populated related entities belonging to one write phase.
+   *
+   * The port of `org/Hibachi/HibachiDAO.cfc:L52-L64`'s recursive descent, split across the parent's own
+   * write by {@link PopulatedSubPropertyWritePhase}. A relationship with no writer is skipped here
+   * because {@link ProductService.applyPopulatedSubPropertyValidation} has already refused it, so this
+   * member is never reached with findings outstanding.
+   *
+   * @param populatedSubProperties - What population recorded, keyed by Product property name.
+   * @param writePhase - Which side of the parent's row to write.
+   */
+  private async applyPopulatedSubPropertyPersistence(
+    populatedSubProperties: PopulatedSubPropertyRecord<ProductPropertyName>,
+    writePhase: PopulatedSubPropertyWritePhase,
+  ): Promise<void> {
+    for (const [propertyName, populated] of Object.entries(populatedSubProperties)) {
+      if (populated === undefined) {
+        continue;
+      }
+
+      const writer = this.resolvePopulatedSubPropertyWriter(propertyName);
+      if (writer === undefined || writer.writePhase !== writePhase) {
+        continue;
+      }
+
+      for (const relatedEntity of readPopulatedSubPropertyEntities(populated)) {
+        await writer.persist(relatedEntity);
+      }
+    }
+  }
+
+  /**
+   * Resolves the writer for one Product property name.
+   *
+   * The scan is written out rather than expressed as an index read: `populatedSubPropertyWriters` is a
+   * partial record keyed by the declared property-name union, and indexing it with the `string` that
+   * `object.entries` yields would need a type assertion this port does not use. It runs over at most the
+   * five relationships the coordinator wires.
+   *
+   * @param propertyName - The property name population recorded the entity under.
+   * @returns The writer, or `undefined` when this relationship has none.
+   */
+  private resolvePopulatedSubPropertyWriter(
+    propertyName: string,
+  ): PopulatedSubPropertyWriter | undefined {
+    for (const [writerPropertyName, writer] of Object.entries(this.populatedSubPropertyWriters)) {
+      if (writerPropertyName === propertyName) {
+        return writer;
+      }
+    }
+
+    return undefined;
   }
 
   /* Declared member 13 of 15 — `model/service/ProductService.cfc:L294` */
@@ -2198,7 +2508,17 @@ export class ProductService {
    * @param _currentURL - Accepted for signature parity and unused; see Discrepancy 1 above.
    * @returns The paginated product result, produced by the adapter behind the port.
    */
-  public getProductSmartList(
+  /*
+   * `async` although the body is a single `return`, and the keyword is load-bearing rather than
+   * decorative. `translateSmartListInput` can now refuse the request — an unresolvable property path
+   * raises `SmartListPropertyUnresolvedError`, see the divergence record on
+   * `SmartListPropertyIdentifier` — and that raise happens while the argument is being evaluated, before
+   * any promise exists. Without `async` it would leave this member as a SYNCHRONOUS throw from a member
+   * whose declared type is `Promise`, so a caller writing `getProductSmartList(data).catch(handle)` would
+   * never reach its handler. The declared name, arity and return type are unchanged, so nothing about the
+   * preserved contract (TR-1) moves.
+   */
+  public async getProductSmartList(
     data?: SmartListInput,
     _currentURL?: string,
   ): Promise<SmartListResult<Product>> {

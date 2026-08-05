@@ -34,7 +34,13 @@ import type { ProductType } from '../../domain/product/ProductType';
 import { PRODUCT_TYPE_CLASS_NAME } from '../../domain/product/ProductType';
 import type { DefaultSkuIdReader } from '../../domain/sku/Sku';
 import { applyPreInsertAudit, applyPreUpdateAudit } from '../../domain/base/AuditableEntity';
-import { mapProductSearchRow, mapRows, readHydratedParentProductTypeID } from './rowMappers';
+import { readsAsUnsavedIdentifier } from '../../domain/base/populate';
+import {
+  isProductOwnedLinkAuthoritative,
+  mapProductSearchRow,
+  mapRows,
+  readHydratedParentProductTypeID,
+} from './rowMappers';
 /*
  * The only cross-family adapter import in this file, and the reason it is here rather than injected. `DEPRECATED_SETTING_DEFAULTS` is the settings module's table of source-backed
  * defaults for legacy names the port's closed union deliberately excludes; reading it keeps every
@@ -3027,6 +3033,12 @@ const PRODUCT_TYPE_COLUMN = Object.freeze({
 /** `SwRelatedProduct.productID` — the owner-side column, `model/entity/Product.cfc:L81`. */
 const RELATED_PRODUCT_OWNER_COLUMN = assertColumnName(RELATED_PRODUCT_TABLE, 'productID');
 
+/**
+ * `SwRelatedProduct.relatedProductID` — the far-side column, the `inversejoincolumn` of
+ * `model/entity/Product.cfc:L81`.
+ */
+const RELATED_PRODUCT_FAR_COLUMN = assertColumnName(RELATED_PRODUCT_TABLE, 'relatedProductID');
+
 /** The `SwProductType` counterpart of {@link PRODUCT_WRITABLE_COLUMNS}, on the same terms. */
 const PRODUCT_TYPE_WRITABLE_COLUMNS: readonly string[] = Object.freeze([
   PRODUCT_TYPE_COLUMN.productTypeIDPath,
@@ -3166,6 +3178,8 @@ export class MySqlProductPersistence {
         [product.productID, ...writableValues],
       );
 
+      await this.replaceRelatedProductLinks(product, false);
+
       return product;
     }
 
@@ -3179,7 +3193,115 @@ export class MySqlProductPersistence {
       [...writableValues, product.productID],
     );
 
+    await this.replaceRelatedProductLinks(product, true);
+
     return product;
+  }
+
+  /**
+   * Reconciles the owner side of `SwRelatedProduct` with the product's `relatedProducts` collection.
+   *
+   * `model/entity/Product.cfc:L81` declares `relatedProducts` as an **owning** many-to-many —
+   * `linktable="SwRelatedProduct"`, `fkcolumn="productID"`, `inversejoincolumn="relatedProductID"`, and
+   * no `inverse="true"` — so Hibernate's collection flush wrote and removed those rows as the in-memory
+   * collection changed. That flush had no counterpart here: the only statement in this file that named the
+   * table was the `DELETE` in {@link MySqlProductPersistence.deleteProduct}, so a caller could add a
+   * related product, receive a `200`, and find `SwRelatedProduct` still empty. `populate` honours two
+   * payload shapes for this member and both now reach the database:
+   * `[{"productID":"…"}]` through `org/Hibachi/HibachiTransient.cfc:L272-L308`, and a comma-delimited
+   * identifier list through the many-to-many arm at `:L310-L340`, which reconciles against the stored
+   * collection.
+   *
+   * The delete-then-insert shape is `MySqlSkuRepository.replaceSkuLinkRows`', including its load-state
+   * guard: rule 3d in `./rowMappers.ts` records whether a hydrated product's link rows were read, and an
+   * unread collection preserves the stored rows instead of replacing them with an empty in-memory array.
+   * Only the owner side is touched, matching the `DELETE` in the removal path, and the far side of a
+   * mutual relationship is left to whichever product owns it.
+   *
+   * @param product - The product whose row was just written.
+   * @param productRowAlreadyExisted - `true` for an update, when stored link rows may exist.
+   */
+  private async replaceRelatedProductLinks(
+    product: Product,
+    productRowAlreadyExisted: boolean,
+  ): Promise<void> {
+    const relatedProductIdentifiers = product.relatedProducts.map(
+      (relatedProduct) => relatedProduct.productID,
+    );
+
+    if (!isProductOwnedLinkAuthoritative(product, 'relatedProducts')) {
+      if (relatedProductIdentifiers.length > 0) {
+        throw new DataIntegrityError(
+          "The product's relatedProducts collection was modified without having been loaded, so its " +
+            'stored link rows cannot be replaced without discarding rows this save never read.',
+          {
+            context: {
+              productID: product.productID,
+              table: RELATED_PRODUCT_TABLE,
+              entryCount: relatedProductIdentifiers.length,
+            },
+          },
+        );
+      }
+
+      /*
+       * Never read and still empty: the stored rows are the truth and this save has nothing to say about
+       * them, so no statement is emitted — exactly what an unloaded lazy collection produced.
+       */
+      return;
+    }
+
+    if (productRowAlreadyExisted) {
+      await this.executor.executeMutation(
+        `DELETE FROM ${RELATED_PRODUCT_TABLE} ` +
+          `WHERE ${RELATED_PRODUCT_OWNER_COLUMN} = ${BIND_PLACEHOLDER}`,
+        [product.productID],
+      );
+    }
+
+    if (relatedProductIdentifiers.length === 0) {
+      return;
+    }
+
+    /*
+     * Branch 4 of population adds every element that names the related primary-ID key, whatever that
+     * identifier turns out to be [org/Hibachi/HibachiTransient.cfc:L294], and `loadOrCreate` answers an
+     * unsaved entity when the identifier names no row — so a payload naming a product that does not
+     * exist puts a keyless Product in this collection. Hibernate met the same state at flush and raised
+     * `TransientObjectException` rather than writing the row; writing it here would store the blank
+     * link this whole member exists to stop. The refusal is the port of that failure, and it names the
+     * count rather than the payload.
+     */
+    const unsavedEntryCount = relatedProductIdentifiers.filter((relatedProductID) =>
+      readsAsUnsavedIdentifier(relatedProductID),
+    ).length;
+    if (unsavedEntryCount > 0) {
+      throw new DataIntegrityError(
+        "The product's relatedProducts collection holds an entity that has never been persisted, so " +
+          'its link row would name no product.',
+        {
+          context: {
+            productID: product.productID,
+            table: RELATED_PRODUCT_TABLE,
+            unsavedEntryCount,
+          },
+        },
+      );
+    }
+
+    const rowPlaceholders = relatedProductIdentifiers
+      .map(() => `(${BIND_PLACEHOLDER}, ${BIND_PLACEHOLDER})`)
+      .join(CLAUSE_JOINER);
+    const values: unknown[] = [];
+    for (const relatedProductID of relatedProductIdentifiers) {
+      values.push(product.productID, relatedProductID);
+    }
+
+    await this.executor.executeMutation(
+      `INSERT INTO ${RELATED_PRODUCT_TABLE} ` +
+        `(${RELATED_PRODUCT_OWNER_COLUMN}, ${RELATED_PRODUCT_FAR_COLUMN}) VALUES ${rowPlaceholders}`,
+      values,
+    );
   }
 
   /**

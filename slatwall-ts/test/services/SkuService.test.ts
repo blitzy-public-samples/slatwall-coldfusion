@@ -25,6 +25,7 @@ import {
   LegacyParityError,
   NotImplementedError,
   RequestBudgetExhaustedError,
+  SmartListPropertyUnresolvedError,
   UNEXPECTED_ERROR_CREATING_PRODUCT_MESSAGE,
 } from '../../src/errors/DomainError';
 import {
@@ -35,7 +36,10 @@ import {
 } from '../../src/errors/ValidationError';
 import { IMAGE_UPLOAD_ALLOWED_EXTENSIONS } from '../../src/ports/ImagePathPort';
 import type { SmartListJoin, SmartListResult } from '../../src/ports/SmartListQueryPort';
-import { resolveSmartListPropertyIdentifier } from '../../src/ports/SmartListQueryPort';
+import {
+  SMARTLIST_ENTITY_SCHEMA,
+  resolveSmartListPropertyIdentifier,
+} from '../../src/ports/SmartListQueryPort';
 import type { SkuRepository, SkuSearchRow } from '../../src/ports/repositories/SkuRepository';
 /*
  * No bounded-read type is imported here: neither `skuService` nor `skuRepository` offers a windowed
@@ -487,6 +491,37 @@ function buildHarness(options: HarnessOptions = {}): Harness {
     productTypeRoots,
     defaultSkuBindings,
   };
+}
+
+/**
+ * Builds a real {@link SkuService} over a caller-supplied repository, with the harness's own doubles
+ * behind every other collaborator.
+ *
+ * {@link buildHarness} always wires {@link createInMemorySkuRepository}, whose `findByProduct` hands back
+ * the very entities a case seeded — so it cannot express a read that hydrated no `options`, which is what
+ * `MySqlSkuRepository.findByProduct` does whenever `fetchOptions` is lowered. One case needs exactly that
+ * shape, and this is the seam it substitutes through.
+ *
+ * @param skuRepository - The repository the service should run against.
+ * @returns The service, wired for the read path.
+ */
+function buildServiceOverRepository(skuRepository: SkuRepository): SkuService {
+  const optionRepository = createInMemoryOptionRepository();
+  const optionQueries = createSmartListQueryDouble({});
+  const productTypeRoots = createProductTypeRootResolverDouble();
+
+  return new SkuService(
+    skuRepository,
+    new OptionService(optionRepository.repository, optionQueries.smartList),
+    createSubscriptionTermDouble({}).subscriptionTerms,
+    createAccessContentDouble({}).accessContents,
+    createImagePathDouble({}).imagePaths,
+    createSmartListQueryDouble({}).smartList,
+    createValidatorHarness([]).validator,
+    productTypeRoots.resolver,
+    (sku: Sku) => createDefaultSkuDelegate(sku),
+    GENEROUS_COMBINATION_BUDGET,
+  );
 }
 
 /*
@@ -2783,13 +2818,105 @@ describe('SkuService.getProductSkus', () => {
 
     /*
      * First SKU option-less — sorting is silently skipped even though the second SKU has options.
+     *
+     * The ordering query IS issued here, where it once was not, and the outcome is unchanged. `[:L224]`'s
+     * third conjunct reads a LAZY collection, so it sees stored options whether or not `fetchOptions`
+     * asked for an eager fetch; this port hydrates only on request, so the conjunct is answered from the
+     * ordering query's own membership instead — that query is an inner join through `SwSkuOption`
+     * [model/dao/SkuDAO.cfc:L172-L204], so an identifier appears in it exactly when the SKU has a stored
+     * option. Answering the conjunct therefore costs the read, and the option-less first SKU is absent
+     * from the result, so the collection is returned untouched exactly as before.
      */
     const firstOptionLess = buildHarness({ storedSkus: [optionLess, optionBearing] });
     const skipped = await firstOptionLess.service.getProductSkus(product, true);
     expect(skipped.map((sku) => sku.skuID)).toEqual([ID.optionlessSku, ID.existingSku]);
     expect(firstOptionLess.skuRepository.calls.map((call) => call.member)).toEqual([
       'findByProduct',
+      'findSortedSkuIdsByProduct',
     ]);
+  });
+
+  it('NET-NEW sorts on STORED options, so `sorted` no longer depends on `fetchOptions`', async () => {
+    /*
+     * The reported defect, pinned at the seam the shared double cannot model. `MySqlSkuRepository.
+     * findByProduct` hydrates `options` only when `fetchOptions` is raised, while the in-memory double
+     * hands back the very entities a case seeded — options and all — so the failure was invisible to
+     * every case above. This stub answers the way the adapter does: SKUs with an EMPTY `options`
+     * collection, and an ordering query that still names them, which is what `SwSkuOption` holds.
+     *
+     * The legacy read `arrayLen(skus[1].getOptions())` against a lazy collection
+     * [model/service/SkuService.cfc:L223], so `sorted=true` reordered whatever `fetchOptions` said. A
+     * port that tested the hydrated collection alone made the ordering silently conditional on an
+     * unrelated argument — the whole finding.
+     */
+    const product = buildEmptyProduct(
+      buildSeededProductType(
+        MERCHANDISE_PRODUCT_TYPE.systemCode,
+        MERCHANDISE_PRODUCT_TYPE.productTypeID,
+      ),
+    );
+    const unhydratedRed = buildSku({
+      skuID: ID.existingSku,
+      skuCode: 'UNHYDRATED-RED',
+      price: 10,
+      options: [],
+      product,
+    });
+    const unhydratedBlue = buildSku({
+      skuID: ID.secondExistingSku,
+      skuCode: 'UNHYDRATED-BLUE',
+      price: 10,
+      options: [],
+      product,
+    });
+    expect(unhydratedRed.getOptions()).toHaveLength(0);
+
+    const calls: string[] = [];
+    const unreached = (member: string) => (): never => {
+      throw new Error(`${member} is not reached by this case.`);
+    };
+    /*
+     * A whole `SkuRepository`, written out rather than cast: the two members this case drives answer, and
+     * the other six refuse loudly, so a fix that reached for a different member would fail here rather
+     * than pass quietly. Stored blue-first; the ordering names red first.
+     */
+    const repository: SkuRepository = {
+      findByProduct: (askedProduct: Product, fetchOptions: boolean): Promise<Sku[]> => {
+        calls.push(`findByProduct:${askedProduct.productID}:${String(fetchOptions)}`);
+
+        return Promise.resolve([unhydratedBlue, unhydratedRed]);
+      },
+      findSortedSkuIdsByProduct: (productID: string): Promise<string[]> => {
+        calls.push(`findSortedSkuIdsByProduct:${productID}`);
+
+        return Promise.resolve([ID.existingSku, ID.secondExistingSku]);
+      },
+      transactionExists: unreached('transactionExists'),
+      findBySkuCode: unreached('findBySkuCode'),
+      findSkusBySelectedOptions: unreached('findSkusBySelectedOptions'),
+      searchByProductType: unreached('searchByProductType'),
+      clearOptionGroupSortOrderCache: unreached('clearOptionGroupSortOrderCache'),
+      persistSku: unreached('persistSku'),
+    };
+    const service = buildServiceOverRepository(repository);
+
+    const sorted = await service.getProductSkus(product, true);
+
+    expect(sorted.map((sku) => sku.skuID)).toEqual([ID.existingSku, ID.secondExistingSku]);
+    expect(calls).toEqual([
+      `findByProduct:${ID.product}:false`,
+      `findSortedSkuIdsByProduct:${ID.product}`,
+    ]);
+
+    /* And a raised flag still reorders, so the fix did not trade one conditional for another. */
+    const withFetch = buildServiceOverRepository(repository);
+    const fetched = await withFetch.getProductSkus(product, true, true);
+    expect(fetched.map((sku) => sku.skuID)).toEqual([ID.existingSku, ID.secondExistingSku]);
+
+    /* `sorted=false` still returns the read's own order, untouched. */
+    const unsortedService = buildServiceOverRepository(repository);
+    const unsorted = await unsortedService.getProductSkus(product, false);
+    expect(unsorted.map((sku) => sku.skuID)).toEqual([ID.secondExistingSku, ID.existingSku]);
   });
 
   it('NET-NEW reorders by the sorted-identifier query when the guard passes', async () => {
@@ -4662,6 +4789,64 @@ describe('resolveSmartListPropertyIdentifier — the closed identifier set', () 
     expect(resolveSmartListPropertyIdentifier('SlatwallSku', 'product.nope')).toBeUndefined();
   });
 
+  it('NET-NEW resolves the two audit timestamps on EVERY entity, as the legacy CFCs declare them', () => {
+    /*
+     * The legacy carries the audit block on each concrete entity CFC — model/entity/Product.cfc:L95-L99,
+     * model/entity/Sku.cfc:L93, model/entity/Brand.cfc:L77 — so
+     * getEntityHasPropertyByEntityName('Product','createdDateTime')
+     * [org/Hibachi/HibachiService.cfc:L750-L752] is true and addOrder
+     * [org/Hibachi/HibachiSmartList.cfc:L473] orders by it. `OrderBy=createdDateTime` is therefore an
+     * ordinary resolvable request, and refusing it would be a divergence, not a hardening.
+     *
+     * This guards a specific regression: these names appear in no `ownProperties` tuple, because those
+     * tuples enumerate what the row mappers project. While an unresolvable path was silently dropped the
+     * omission merely lost the ordering; once refusal became keyed it would have rejected the request
+     * outright.
+     */
+    for (const entityName of [
+      'SlatwallSku',
+      'SlatwallProduct',
+      'SlatwallProductType',
+      'SlatwallBrand',
+      'SlatwallOption',
+      'SlatwallOptionGroup',
+    ] as const) {
+      expect(resolveSmartListPropertyIdentifier(entityName, 'createdDateTime')).toBe(
+        'createdDateTime',
+      );
+      expect(resolveSmartListPropertyIdentifier(entityName, 'modifiedDateTime')).toBe(
+        'modifiedDateTime',
+      );
+    }
+
+    /* Reachable across a relationship as well, and case-folded like any other segment. */
+    expect(resolveSmartListPropertyIdentifier('SlatwallSku', 'product.createdDateTime')).toBe(
+      'product.createdDateTime',
+    );
+    expect(resolveSmartListPropertyIdentifier('SlatwallProduct', 'CREATEDDATETIME')).toBe(
+      'createdDateTime',
+    );
+  });
+
+  it('NET-NEW keeps the two audit ACCOUNT members unresolvable, because Account is out of scope', () => {
+    /*
+     * `createdByAccount` and `modifiedByAccount` are many-to-one associations to Account with
+     * fkcolumn="createdByAccountID" / "modifiedByAccountID", and Account is excluded wholesale
+     * (AAP §0.2.2.1). Their property name is not their column name and there is no schema entry to
+     * traverse into, so admitting either would name a column that does not exist. The FK column spellings
+     * are not properties in the legacy either, so they are refused too.
+     */
+    for (const candidate of [
+      'createdByAccount',
+      'modifiedByAccount',
+      'createdByAccountID',
+      'modifiedByAccountID',
+    ]) {
+      expect(resolveSmartListPropertyIdentifier('SlatwallProduct', candidate)).toBeUndefined();
+      expect(resolveSmartListPropertyIdentifier('SlatwallSku', candidate)).toBeUndefined();
+    }
+  });
+
   it('NET-NEW does not resolve a property of a DIFFERENT entity against this root', () => {
     /*
      * The cross-entity confusion an open string permitted: `brandName` is real, but it is not a property
@@ -4705,53 +4890,126 @@ describe('resolveSmartListPropertyIdentifier — the closed identifier set', () 
       ),
     ).toBe('product.productType.parentProductType.parentProductType.productTypeName');
   });
+
+  it('NET-NEW matches every segment case-insensitively and rewrites it to the DECLARED spelling', () => {
+    /*
+     * The parity claim, asserted directly on the resolver. `org/Hibachi/HibachiService.cfc:L750-L752`
+     * admits a path with `structKeyExists`, which folds case, and `HibachiSmartList.cfc:L347` then emits
+     * `entityProperties[ … ].name` — the declared spelling — so a wrong-case path resolved in the legacy
+     * AND reached case-sensitive HQL correctly spelled. The returned value here is therefore the schema's
+     * spelling and not the caller's, which is also what keeps every identifier that reaches SQL composed
+     * entirely of whitelisted names.
+     */
+    expect(resolveSmartListPropertyIdentifier('SlatwallSku', 'SKUCODE')).toBe('skuCode');
+    expect(resolveSmartListPropertyIdentifier('SlatwallSku', 'skucode')).toBe('skuCode');
+    expect(resolveSmartListPropertyIdentifier('SlatwallSku', 'SkUcOdE')).toBe('skuCode');
+    expect(resolveSmartListPropertyIdentifier('SlatwallProduct', 'productcode')).toBe(
+      'productCode',
+    );
+
+    /* Intermediate relationship segments fold too — `joinRelatedProperty` at `:L239`, `:L273-L290`. */
+    expect(resolveSmartListPropertyIdentifier('SlatwallSku', 'PRODUCT.PRODUCTNAME')).toBe(
+      'product.productName',
+    );
+    expect(
+      resolveSmartListPropertyIdentifier('SlatwallSku', 'Product.ProductType.ProductTypeName'),
+    ).toBe('product.productType.productTypeName');
+  });
+
+  it('NET-NEW still refuses a path that is unresolvable AFTER the fold, so folding widens nothing', () => {
+    /*
+     * Case-insensitivity restores parity; it must not admit anything the whitelist does not declare. Each
+     * of these differs from a real identifier by more than case.
+     */
+    for (const candidate of ['SKUCOD', 'PASSWORD', 'product.NOPE', 'skuid) OR 1=1 --']) {
+      expect(resolveSmartListPropertyIdentifier('SlatwallSku', candidate)).toBeUndefined();
+    }
+
+    /* And the root-specific closure is unaffected by folding: `brandName` is not a `Sku` property. */
+    expect(resolveSmartListPropertyIdentifier('SlatwallSku', 'BRANDNAME')).toBeUndefined();
+  });
+
+  it('NET-NEW the schema declares no two names differing only in case, so the fold is lossless', () => {
+    /*
+     * The drift guard the case-folded index's first-wins rule is documented against. A schema that
+     * declared both `productID` and `productId` would make one of them unreachable through the folded
+     * index, silently. It cannot happen while this passes — and it could not have happened in the legacy
+     * either, because the CFML property metadata this whitelist transcribes is a struct and a struct
+     * cannot hold two such keys at once. Asserted rather than argued, because the schema is hand-written
+     * here and the legacy's was generated.
+     */
+    for (const [entityName, schema] of Object.entries(SMARTLIST_ENTITY_SCHEMA)) {
+      const foldedOwn = schema.ownProperties.map((property) => property.toLowerCase());
+      expect(new Set(foldedOwn).size).toBe(foldedOwn.length);
+
+      const foldedRelationships = Object.keys(schema.relationships).map((name) =>
+        name.toLowerCase(),
+      );
+      expect(new Set(foldedRelationships).size).toBe(foldedRelationships.length);
+
+      /* Named in the failure output, so a breakage says which entity drifted. */
+      expect(entityName).toBe(entityName);
+    }
+  });
 });
 
-describe('SkuService.getSkuSmartList — unresolvable caller keys are dropped silently', () => {
-  it('NET-NEW collapses a where group whose every entry was unresolvable', async () => {
+describe('SkuService.getSkuSmartList — an unresolvable caller key refuses the request', () => {
+  /*
+   * These four cases previously asserted the opposite — that an unresolvable key was dropped SILENTLY and
+   * the remaining query composed and executed. The closure they were written to pin has not changed: the
+   * identifier whitelist in `src/ports/SmartListQueryPort.ts` is the same set, and none of the hostile
+   * strings below has ever been able to reach SQL. What changed is the answer given to one of them, and
+   * the QA pass that forced the change measured why the old answer was wrong: a request carrying one
+   * filter, whose filter is discarded, is answered `200` with the entire table. On this root that is every
+   * SKU in the catalogue. The refusal is a declared divergence from the legacy discard, argued in full
+   * beside `composeUnresolvedPropertyPublicMessage` in `src/errors/DomainError.ts`.
+   */
+
+  it('NET-NEW refuses a request whose every entry was unresolvable, rather than composing a query with none of them', async () => {
     const harness = buildHarness();
 
-    await harness.service.getSkuSmartList({
-      'F:skuID) OR 1=1 --': 'x',
-      'FI:1=1': 'y',
-      'FK:skuCode; DROP TABLE SwSku': 'z',
-      'R:skuID) OR 1=1 --': '1^',
-    });
+    await expect(
+      harness.service.getSkuSmartList({
+        'F:skuID) OR 1=1 --': 'x',
+        'FI:1=1': 'y',
+        'FK:skuCode; DROP TABLE SwSku': 'z',
+        'R:skuID) OR 1=1 --': '1^',
+      }),
+    ).rejects.toThrow(SmartListPropertyUnresolvedError);
 
-    const query = harness.skuQueries.lastQuery();
-    if (query === undefined) {
-      throw new Error('The smart-list port was expected to receive one composed query.');
-    }
     /*
-     * Not merely absent from the filters — the whole where group collapses, because every entry in it
-     * was unresolvable and therefore dropped. And nothing raised: the legacy accumulators simply skip.
+     * Refused during translation, so no query was composed and no statement was planned. Previously this
+     * request produced a query with an empty where group, which the builder then executed as an
+     * unfiltered selection of the whole table.
      */
-    expect(query.whereGroups ?? []).toEqual([]);
+    expect(harness.skuQueries.lastQuery()).toBeUndefined();
   });
 
-  it('NET-NEW keeps the legal entry and drops only the hostile companion', async () => {
+  it('NET-NEW refuses a legal entry carrying a hostile companion, rather than answering the part of the request it could read', async () => {
     /*
-     * The realistic shape of an attack is a valid filter carrying a hostile companion. Dropping the whole
-     * request would be a behavior change; dropping only the unresolvable entry is the legacy's own
-     * behavior.
+     * The realistic shape of the mistake — and of an attack — is a valid filter carrying a companion the
+     * port cannot resolve. Silently honouring the half it understood is what has to stop: the caller
+     * cannot tell whether their second constraint was applied, and on a request whose only unresolvable
+     * key IS the narrowing one, the answer is wider than what was asked for.
      */
     const harness = buildHarness();
 
-    await harness.service.getSkuSmartList({
-      'F:skuCode': 'ABC-1',
-      'F:skuID) OR 1=1 --': 'x',
-    });
+    await expect(
+      harness.service.getSkuSmartList({
+        'F:skuCode': 'ABC-1',
+        'F:skuID) OR 1=1 --': 'x',
+      }),
+    ).rejects.toThrow(SmartListPropertyUnresolvedError);
 
-    const query = harness.skuQueries.lastQuery();
-    expect(query?.whereGroups?.[0]?.filters).toEqual([
-      { propertyIdentifier: 'skuCode', value: 'ABC-1' },
-    ]);
+    expect(harness.skuQueries.lastQuery()).toBeUndefined();
   });
 
-  it('NET-NEW drops an injected ordering term while keeping a legal one', async () => {
+  it('NET-NEW refuses an injected ordering term while a legal one still composes', async () => {
     const injected = buildHarness();
-    await injected.service.getSkuSmartList({ OrderBy: 'skuCode; DROP TABLE SwSku|DESC' });
-    expect(injected.skuQueries.lastQuery()?.orders ?? []).toEqual([]);
+    await expect(
+      injected.service.getSkuSmartList({ OrderBy: 'skuCode; DROP TABLE SwSku|DESC' }),
+    ).rejects.toThrow(SmartListPropertyUnresolvedError);
+    expect(injected.skuQueries.lastQuery()).toBeUndefined();
 
     const legal = buildHarness();
     await legal.service.getSkuSmartList({ OrderBy: 'skuCode|DESC' });
@@ -4764,11 +5022,13 @@ describe('SkuService.getSkuSmartList — unresolvable caller keys are dropped si
     /*
      * [:L314-L321] are compile-time literals, so the closure had to leave every one of them still
      * expressible. A set that rejected them would not compile — but pinning them here also proves the
-     * pairing, and that an unresolvable caller key does not disturb them.
+     * pairing. The request that carried an unresolvable caller key is now refused, so this case makes the
+     * point with a resolvable one: the service's own structural declarations are untouched by anything the
+     * caller sends.
      */
     const harness = buildHarness();
 
-    await harness.service.getSkuSmartList({ 'F:skuID) OR 1=1 --': 'x' });
+    await harness.service.getSkuSmartList({ 'F:skuCode': 'ABC-1' });
 
     const query = harness.skuQueries.lastQuery();
     expect(query?.joins).toHaveLength(3);
@@ -4779,6 +5039,56 @@ describe('SkuService.getSkuSmartList — unresolvable caller keys are dropped si
       'product.productType.productTypeName',
       'alternateSkuCodes.alternateSkuCode',
     ]);
+  });
+
+  it('NET-NEW resolves a wrong-case path and a wrong-case relationship hop, which is the parity half of the same finding', async () => {
+    /*
+     * `org/Hibachi/HibachiService.cfc:L750-L752` admits a path with `structKeyExists`, which folds case,
+     * and `org/Hibachi/HibachiSmartList.cfc:L347` then emits `entityProperties[ … ].name` — the DECLARED
+     * spelling. So all four of these reached Hibernate correctly spelled and filtered correctly. This port
+     * had matched case-sensitively, which turned each of them into an unresolvable path and therefore into
+     * an unfiltered answer.
+     */
+    const harness = buildHarness();
+
+    await harness.service.getSkuSmartList({
+      'F:SKUCODE': 'ABC-1',
+      'FK:Product.ProductName': 'shirt',
+      'R:PRODUCT.calculatedqats': '1^',
+      OrderBy: 'product.PRODUCTCODE|DESC',
+    });
+
+    const query = harness.skuQueries.lastQuery();
+    expect(query?.whereGroups?.[0]?.filters).toEqual([
+      { propertyIdentifier: 'skuCode', value: 'ABC-1' },
+    ]);
+    expect(query?.whereGroups?.[0]?.likeFilters).toEqual([
+      { propertyIdentifier: 'product.productName', value: '%shirt%' },
+    ]);
+    /*
+     * No `upperBound` member at all rather than an empty one: `1^` is the open-ended upper form the feed
+     * itself sends, and the translator omits the absent bound instead of carrying an empty string — which
+     * is what `exactOptionalPropertyTypes` makes observable in the emitted shape.
+     */
+    expect(query?.whereGroups?.[0]?.ranges).toEqual([
+      { propertyIdentifier: 'product.calculatedQATS', lowerBound: '1' },
+    ]);
+    expect(query?.orders).toEqual([
+      { propertyIdentifier: 'product.productCode', direction: 'DESC' },
+    ]);
+  });
+
+  it('NET-NEW cancels a filter through a wrong-case removal key, because the legacy structDelete folded case too', async () => {
+    /*
+     * `removeFilter` at `org/Hibachi/HibachiSmartList.cfc:L376-L381` resolves through
+     * `getAliasedProperty` before deleting, and the `structDelete` that follows is itself
+     * case-insensitive — so a removal cancelled a filter added under any spelling of the same property.
+     */
+    const harness = buildHarness();
+
+    await harness.service.getSkuSmartList({ 'F:skuCode': 'ABC-1', 'FR:SKUCODE': true });
+
+    expect(harness.skuQueries.lastQuery()?.whereGroups ?? []).toEqual([]);
   });
 });
 

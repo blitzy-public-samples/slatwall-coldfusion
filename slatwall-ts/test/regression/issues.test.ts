@@ -185,7 +185,7 @@ import type {
   CatalogContainerOverrides,
   ProductPersistence,
 } from '../../src/config/container';
-import { NotImplementedError } from '../../src/errors/DomainError';
+import { DataIntegrityError, NotImplementedError } from '../../src/errors/DomainError';
 import { toImageWebPath } from '../../src/ports/ImagePathPort';
 import type { CatalogAuthorizationResolver } from '../../src/handlers/httpResponse';
 import type { AccountReference } from '../../src/ports/AccountContextPort';
@@ -581,6 +581,14 @@ function buildHarness(options: HarnessOptions = {}): Harness {
      * answers `undefined` and the `:L306-L308` inheritance branch is skipped, exactly as before.
      */
     parentProductTypeIdReader: readHydratedParentProductTypeID,
+    /*
+     * Empty on purpose. A populated sub-property is only recorded for a nested struct that carries more
+     * than the identifier [org/Hibachi/HibachiTransient.cfc:L236-L249], and the product-type descriptor
+     * above throws if one ever arrives — no regression in this block supplies one, so no writer can be
+     * reached. The boundary-graph block further down wires the composition root's real writer set and
+     * asserts against that.
+     */
+    populatedSubPropertyWriters: {},
   };
 
   return {
@@ -876,12 +884,17 @@ describe('meta/tests/unit/IssuesTest.cfc — catalog issue regressions', () => {
     expect(pageStatement(pageTwoRun.fanning)?.params).toStrictEqual(['1', '1']);
 
     // Neither run replayed anything: each issued its own count, its own unpaged read, its own page read
-    // and its own aggregate load. A cached first page would show as a missing statement here, and it is
-    // the failure mode the legacy `getPageRecords(true)` refresh flag exists to avoid.
+    // and its own two aggregate loads — the SKU collection and the owning `relatedProducts` link rows.
+    // A cached first page would show as a missing statement here, and it is the failure mode the legacy
+    // `getPageRecords(true)` refresh flag exists to avoid. The fifth statement is the link read
+    // `MySqlProductPersistence.saveProduct`'s reconciliation depends on (rule 3d): it is what makes the
+    // in-memory collection authoritative, so a product saved after being read replaces its stored link
+    // rows rather than preserving them.
     for (const run of [pageOneRun, pageTwoRun]) {
-      expect(run.fanning.calls).toHaveLength(4);
+      expect(run.fanning.calls).toHaveLength(5);
       expect(run.fanning.calls[0]?.sql).toContain('COUNT(DISTINCT aslatwallproduct.productID)');
       expect(pageStatement(run.fanning)).toBeDefined();
+      expect(requireAt(run.fanning.statements(), 4)).toContain('FROM SwRelatedProduct');
     }
 
     // The three joins reach the emitted statement, and none of them eliminates a row: a product with no
@@ -5675,6 +5688,15 @@ describe('The production composition root: the two delete-subject resolvers and 
         deleteProductType: () => Promise.resolve(),
       };
 
+      /*
+       * The SKU write path is substituted for the same reason the product persistence above is: the
+       * nested `skus` item below carries more than its identifier, which makes it a **populated
+       * sub-property**, and `org/Hibachi/HibachiDAO.cfc:L52-L64` recurses into those and saves them. So
+       * the save now reaches a SKU write, and with the MySQL adapter left in place it would reach a
+       * statement instead of a double.
+       */
+      const skuRepository = createInMemorySkuRepository({});
+
       const container = loaded.createCatalogContainer({
         settings: createSettingResolverDouble({ fallback: '' }).resolver,
         accountContext: createAccountContextDouble().accountContext,
@@ -5682,6 +5704,7 @@ describe('The production composition root: the two delete-subject resolvers and 
         uniqueProperty: createUniquePropertyDouble().uniqueProperty,
         smartListQueryPort: smartList.smartList,
         productPersistence: persistence,
+        skuRepository: skuRepository.repository,
       });
 
       const product = new productModule.Product();
@@ -5696,6 +5719,15 @@ describe('The production composition root: the two delete-subject resolvers and 
         skus: [
           {
             skuID,
+            /*
+             * `price` and `skuCode` are supplied because the populated sub-property is now validated
+             * against `model/validation/Sku.json` in the parent's own context
+             * (`org/Hibachi/HibachiTransient.cfc:L412-L450`), and both are `required` there. A SKU read
+             * from the database carries them; this one comes from a smart-list double that mints a bare
+             * entity, so the payload states them.
+             */
+            skuCode: 'PREFETCH-PRODUCT-1',
+            price: '42.50',
             options: [{ optionID, optionGroup: { optionGroupID } }],
           },
         ],
@@ -5712,6 +5744,13 @@ describe('The production composition root: the two delete-subject resolvers and 
       expect(sku.getOptions()).toContain(option);
       expect(option.optionGroup).toBe(optionGroup);
       expect(persistedProducts).toEqual([product]);
+      /*
+       * The cascade itself, asserted rather than assumed: the nested SKU was written, and it was written
+       * with the values the nested struct populated. Before the two passes existed this collection was
+       * populated in memory and then discarded — a `200` for a write that never happened.
+       */
+      expect(skuRepository.persisted).toContain(sku);
+      expect(sku.skuCode).toBe('PREFETCH-PRODUCT-1');
       expect(smartList.queries.map((query) => query.entityName)).toEqual([
         'SlatwallBrand',
         'SlatwallProductType',
@@ -6060,6 +6099,106 @@ describe('The M5/M6/M7 write-boundary rebuild: every collaborator re-bound to th
    * @param rows the rows to answer, in order; the last is repeated once exhausted
    * @returns the executor plus its recording.
    */
+  /**
+   * The seeded merchandise discriminator as a stored row — `config/dbdata/SlatwallProductType.xml.cfm:L13`.
+   *
+   * A row rather than a hand-built entity, because the case that uses it needs the relationship loader to
+   * RESOLVE: a nested struct naming an identifier that matches no row leaves the related entity in memory
+   * only, and `saveOrUpdate` on an entity carrying an assigned identifier issued an `UPDATE` that matched
+   * nothing — Hibernate's `StaleStateException`, which the composition root now refuses in kind. Answering
+   * the read is what makes that case the resolvable one it is written to exercise.
+   */
+  const MERCHANDISE_PRODUCT_TYPE_ROW: MySqlRow = Object.freeze({
+    productTypeID: '444df2f7ea9c87e60051f3cd87b435a1',
+    productTypeIDPath: '444df2f7ea9c87e60051f3cd87b435a1',
+    productTypeName: 'Merchandise',
+    urlTitle: 'merchandise',
+    systemCode: 'merchandise',
+    activeFlag: 1,
+  });
+
+  /** A brand as a stored row, so a nested brand struct naming it RESOLVES rather than being minted. */
+  const STORED_BRAND_ROW: MySqlRow = Object.freeze({
+    brandID: 'bbbbbbbb0000000000000000000000a1',
+    brandName: 'Stored Brand',
+    urlTitle: 'stored-brand',
+    activeFlag: 1,
+  });
+
+  /** The rows a {@link createRelationshipResolvingExecutor} recorder is willing to resolve. */
+  interface ResolvableRelationshipRows {
+    readonly productType?: MySqlRow;
+    readonly brand?: MySqlRow;
+  }
+
+  /**
+   * A recorder that resolves a relationship read only when the statement BINDS that row's identifier.
+   *
+   * Binding-sensitive on purpose. `InvocationRelatedEntityLoader.loadOrCreate` mints when the read answers
+   * nothing, which is `org/Hibachi/HibachiDAO.cfc:L23-L25`'s `entityNew` fallback, so a recorder that
+   * answered every read would make the minted arm unreachable and a recorder that answered none would make
+   * the resolved arm unreachable. Three statement shapes are told apart, and each answer is the one
+   * production gives: the count half of a smart-list read answers `1` only for a bound identifier this
+   * recorder holds; a `SELECT 1 …` is a uniqueness probe
+   * [`src/adapters/mysql/UniquePropertyChecker.ts:L149`] and answers "nothing conflicts"; and the records
+   * half answers the row itself.
+   *
+   * @param rows - The rows this recorder holds, by relationship.
+   * @returns The executor plus its recording.
+   */
+  function createRelationshipResolvingExecutor(
+    rows: ResolvableRelationshipRows,
+  ): RecordingExecutor {
+    const statements: RecordedStatement[] = [];
+    const resolvable: readonly {
+      readonly table: string;
+      readonly idColumn: string;
+      readonly row: MySqlRow | undefined;
+    }[] = [
+      { table: 'SwProductType', idColumn: 'productTypeID', row: rows.productType },
+      { table: 'SwBrand', idColumn: 'brandID', row: rows.brand },
+    ];
+
+    const matchingRow = (sql: string, params: readonly unknown[]): MySqlRow | undefined => {
+      for (const candidate of resolvable) {
+        if (candidate.row === undefined || !sql.includes(`FROM ${candidate.table}`)) {
+          continue;
+        }
+        const identifier: unknown = candidate.row[candidate.idColumn];
+        if (params.some((param) => param === identifier)) {
+          return candidate.row;
+        }
+      }
+
+      return undefined;
+    };
+
+    return {
+      statements,
+      execute: (sql: string, params: readonly unknown[]): Promise<MySqlRow[]> => {
+        statements.push({ sql, params });
+
+        if (sql.includes('AS recordsCount')) {
+          return Promise.resolve([
+            { recordsCount: matchingRow(sql, params) === undefined ? 0 : 1 },
+          ]);
+        }
+        if (sql.startsWith('SELECT 1 ')) {
+          return Promise.resolve([]);
+        }
+
+        const row = matchingRow(sql, params);
+
+        return Promise.resolve(row === undefined ? [] : [row]);
+      },
+      executeMutation: (sql: string, params: readonly unknown[]): Promise<number> => {
+        statements.push({ sql, params });
+
+        return Promise.resolve(1);
+      },
+    };
+  }
+
   function createRecordingExecutor(rows: readonly MySqlRow[][] = []): RecordingExecutor {
     const statements: RecordedStatement[] = [];
     let call = 0;
@@ -6837,7 +6976,9 @@ describe('The M5/M6/M7 write-boundary rebuild: every collaborator re-bound to th
         transientDefaultSku.skuID = 'cccccccc0000000000000000000000f7';
         expect(liveDefaultSku.skuID).toBe('cccccccc0000000000000000000000f7');
 
-        const executor = createRecordingExecutor();
+        const executor = createRelationshipResolvingExecutor({
+          productType: MERCHANDISE_PRODUCT_TYPE_ROW,
+        });
         const productService = buildProductBoundaryGraph(
           productDependencies(dependencies),
           { executor },
@@ -6861,13 +7002,22 @@ describe('The M5/M6/M7 write-boundary rebuild: every collaborator re-bound to th
           urlTitle: 'invocation-populated-product',
           price: 3.21,
           /*
-           * More than one key deliberately takes `loadOrCreate`: the recorder answers no row, so the
-           * pre-resolved synchronous loader must create the identifier-bearing ProductType and the
-           * recursive descriptor pass must populate its name.
+           * More than one key deliberately takes `loadOrCreate`: the pre-resolved synchronous loader must
+           * answer the type the recorder holds, and the recursive descriptor pass must populate its name.
+           *
+           * `urlTitle` is here because more than one key also makes this a POPULATED SUB-PROPERTY
+           * [org/Hibachi/HibachiTransient.cfc:L236-L249], which the parent's own `validate` then checks in
+           * the parent's context [org/Hibachi/HibachiTransient.cfc:L413-L452], and
+           * `model/validation/ProductType.json` requires `productTypeName` AND `urlTitle` on `save`. The
+           * struct therefore has to carry everything that context needs, and the recorder answers the
+           * identifier read, so this is the RESOLVABLE arm: an existing type whose name and title the
+           * nested struct re-states. The two cases below take the other two arms — a nested struct that
+           * fails the related entity's own rules, and one naming an identifier that matches no row.
            */
           productType: {
             productTypeID: '444df2f7ea9c87e60051f3cd87b435a1',
             productTypeName: 'Merchandise',
+            urlTitle: 'merchandise',
           },
         });
 
@@ -6891,6 +7041,241 @@ describe('The M5/M6/M7 write-boundary rebuild: every collaborator re-bound to th
         );
         expect(boundColumnValue(update, 'productTypeID')).toBe('444df2f7ea9c87e60051f3cd87b435a1');
         expect(boundColumnValue(update, 'modifiedByAccountID')).toBe(INVOCATION_ACCOUNT_ID);
+      });
+    }, 20000);
+
+    /*
+     * The populated-sub-property cascade, through the same production seam. `populate` records every
+     * related entity a nested struct with MORE than the identifier wrote into
+     * [org/Hibachi/HibachiTransient.cfc:L248, :L305], `validate` then checks each one and reports a
+     * failing one against the parent under `populate` [`:L413-L452`], and `save` descends into each one
+     * [org/Hibachi/HibachiDAO.cfc:L52-L64]. All three passes were absent: the record was discarded at the
+     * populate call, so a nested struct was applied in memory and never written, and a nested struct
+     * naming no stored row left the parent holding a keyless related entity whose blank identifier was
+     * then bound into a foreign-key column. The four cases below are the four arms.
+     */
+
+    /** The payload members `model/validation/Product.json` requires on `save`, minus the relationships. */
+    const requiredProductPayload = (productCode: string): Readonly<Record<string, unknown>> => ({
+      productName: `Product ${productCode}`,
+      productCode,
+      urlTitle: productCode.toLowerCase(),
+      price: 3.21,
+    });
+
+    /** A persisted product, so the parent write is an UPDATE and its identifier is already available. */
+    const persistedProduct = (productID: string): Product => {
+      const product = new Product();
+      product.productID = productID;
+      product.createdDateTime = new Date('2020-01-02T03:04:05.000Z');
+      product.createdByAccount = OTHER_ACCOUNT_ID;
+
+      return product;
+    };
+
+    it('[NET-NEW] a nested BRAND that fails its OWN rules refuses the whole save under the `populate` key', async () => {
+      await withPoisonedPool(async ({ buildProductBoundaryGraph, dependencies }) => {
+        const executor = createRelationshipResolvingExecutor({
+          productType: MERCHANDISE_PRODUCT_TYPE_ROW,
+        });
+        const productService = buildProductBoundaryGraph(
+          productDependencies(dependencies),
+          { executor },
+          securityContext({
+            account: { accountID: INVOCATION_ACCOUNT_ID, newFlag: false, adminAccountFlag: true },
+            populationAuthorization: WIRING_ALLOW_POPULATION,
+          }),
+        );
+
+        /*
+         * The reported reproduction, verbatim: a nested brand carrying a BLANK identifier plus one more
+         * key. The blank sends the load past `entityLoadByPK` [org/Hibachi/HibachiDAO.cfc:L18] into
+         * `entityNew`, and the recursive populate then clears the key it arrived with, so this is a
+         * genuinely new brand carrying only `brandName` — and `model/validation/Brand.json:L5` requires
+         * `urlTitle` as well. The legacy answer is a finding on the PARENT keyed `populate`, whose message
+         * is the property name.
+         */
+        const saved = await productService.saveProduct(
+          persistedProduct('dddddddd0000000000000000000000b1'),
+          {
+            ...requiredProductPayload('DANGLING-BRAND'),
+            productType: { productTypeID: '444df2f7ea9c87e60051f3cd87b435a1' },
+            brand: { brandID: '', brandName: 'Dangling Brand' },
+          },
+        );
+
+        expect(saved.hasErrors()).toBe(true);
+        expect(saved.getError('populate')).toStrictEqual(['brand']);
+
+        /*
+         * And nothing was written — not the brand the payload described, and not the product row whose
+         * `brandID` column would otherwise have taken the blank identifier.
+         */
+        const written = executor.statements.map((statement) => statement.sql);
+        expect(written.some((sql) => sql.startsWith('INSERT INTO SwBrand'))).toBe(false);
+        expect(written.some((sql) => sql.startsWith('UPDATE SwBrand SET'))).toBe(false);
+        expect(written.some((sql) => sql.startsWith('UPDATE SwProduct SET'))).toBe(false);
+      });
+    }, 20000);
+
+    it('[NET-NEW] a nested BRAND that passes its own rules is INSERTED, and the product names the minted key', async () => {
+      await withPoisonedPool(async ({ buildProductBoundaryGraph, dependencies }) => {
+        const executor = createRelationshipResolvingExecutor({
+          productType: MERCHANDISE_PRODUCT_TYPE_ROW,
+        });
+        const productService = buildProductBoundaryGraph(
+          productDependencies(dependencies),
+          { executor },
+          securityContext({
+            account: { accountID: INVOCATION_ACCOUNT_ID, newFlag: false, adminAccountFlag: true },
+            populationAuthorization: WIRING_ALLOW_POPULATION,
+          }),
+        );
+
+        const saved = await productService.saveProduct(
+          persistedProduct('dddddddd0000000000000000000000b2'),
+          {
+            ...requiredProductPayload('MINTED-BRAND'),
+            productType: { productTypeID: '444df2f7ea9c87e60051f3cd87b435a1' },
+            brand: { brandID: '', brandName: 'Minted Brand', urlTitle: 'minted-brand' },
+          },
+        );
+
+        expect(saved.hasErrors()).toBe(false);
+
+        /* The brand's own row, written BEFORE the parent's — the `beforeParent` phase. */
+        const brandInsert = executor.statements.find((statement) =>
+          statement.sql.startsWith('INSERT INTO SwBrand'),
+        );
+        const productUpdate = executor.statements.find((statement) =>
+          statement.sql.startsWith('UPDATE SwProduct SET'),
+        );
+        expect(brandInsert).toBeDefined();
+        expect(productUpdate).toBeDefined();
+        expect(executor.statements.indexOf(brandInsert!)).toBeLessThan(
+          executor.statements.indexOf(productUpdate!),
+        );
+        expect(boundColumnValue(brandInsert, 'brandName')).toBe('Minted Brand');
+
+        /*
+         * IR-6: a 32-character hex identifier generated by the application, never the caller's blank.
+         * The product's foreign key names exactly that row, which is the whole point of the finding.
+         */
+        const mintedBrandID = boundColumnValue(brandInsert, 'brandID');
+        expect(mintedBrandID).toMatch(/^[0-9a-f]{32}$/);
+        expect(boundColumnValue(productUpdate, 'brandID')).toBe(mintedBrandID);
+        expect(saved.brand?.brandID).toBe(mintedBrandID);
+      });
+    }, 20000);
+
+    it('[NET-NEW] a nested BRAND naming a STORED row is UPDATED with what the struct changed', async () => {
+      await withPoisonedPool(async ({ buildProductBoundaryGraph, dependencies }) => {
+        const executor = createRelationshipResolvingExecutor({
+          productType: MERCHANDISE_PRODUCT_TYPE_ROW,
+          brand: STORED_BRAND_ROW,
+        });
+        const productService = buildProductBoundaryGraph(
+          productDependencies(dependencies),
+          { executor },
+          securityContext({
+            account: { accountID: INVOCATION_ACCOUNT_ID, newFlag: false, adminAccountFlag: true },
+            populationAuthorization: WIRING_ALLOW_POPULATION,
+          }),
+        );
+
+        const saved = await productService.saveProduct(
+          persistedProduct('dddddddd0000000000000000000000b3'),
+          {
+            ...requiredProductPayload('RENAMED-BRAND'),
+            productType: { productTypeID: '444df2f7ea9c87e60051f3cd87b435a1' },
+            brand: { brandID: 'bbbbbbbb0000000000000000000000a1', brandName: 'Renamed Brand' },
+          },
+        );
+
+        expect(saved.hasErrors()).toBe(false);
+
+        /*
+         * The reported second reproduction: the response was a `200` and the stored `brandName` never
+         * changed. The write is an UPDATE rather than an insert because the read resolved, and the value
+         * it carries is the one the nested struct supplied.
+         */
+        const brandUpdate = executor.statements.find((statement) =>
+          statement.sql.startsWith('UPDATE SwBrand SET'),
+        );
+        expect(boundColumnValue(brandUpdate, 'brandName')).toBe('Renamed Brand');
+        /* Untouched by the struct, so it keeps the stored value rather than being nulled. */
+        expect(boundColumnValue(brandUpdate, 'urlTitle')).toBe('stored-brand');
+        expect(boundColumnValue(brandUpdate, 'modifiedByAccountID')).toBe(INVOCATION_ACCOUNT_ID);
+        expect(
+          boundColumnValue(
+            executor.statements.find((statement) =>
+              statement.sql.startsWith('UPDATE SwProduct SET'),
+            ),
+            'brandID',
+          ),
+        ).toBe('bbbbbbbb0000000000000000000000a1');
+      });
+    }, 20000);
+
+    it('[NET-NEW] a nested struct naming an identifier that matches NO row is refused, not written', async () => {
+      await withPoisonedPool(async ({ buildProductBoundaryGraph, dependencies }) => {
+        const executor = createRelationshipResolvingExecutor({
+          productType: MERCHANDISE_PRODUCT_TYPE_ROW,
+        });
+        const productService = buildProductBoundaryGraph(
+          productDependencies(dependencies),
+          { executor },
+          securityContext({
+            account: { accountID: INVOCATION_ACCOUNT_ID, newFlag: false, adminAccountFlag: true },
+            populationAuthorization: WIRING_ALLOW_POPULATION,
+          }),
+        );
+
+        /*
+         * The third arm, and the one with no resource-bundle key of its own. The identifier is non-blank,
+         * so the read runs and answers nothing, `entityNew` mints, and the recursive populate then assigns
+         * the caller's identifier — leaving an entity that reads as persisted and has no row. Hibernate met
+         * that exact state, issued an `UPDATE`, and raised `StaleStateException` on the zero row count.
+         * Inserting instead would either make a primary key caller-supplied (IR-6) or silently discard the
+         * identifier the caller named, so the refusal is carried across rather than replaced.
+         */
+        await expect(
+          productService.saveProduct(persistedProduct('dddddddd0000000000000000000000b4'), {
+            ...requiredProductPayload('GHOST-TYPE'),
+            productType: {
+              productTypeID: 'eeeeeeee0000000000000000000000c9',
+              productTypeName: 'Ghost',
+              urlTitle: 'ghost',
+            },
+          }),
+        ).rejects.toThrow(/matches no stored row/);
+
+        /*
+         * By class NAME rather than by `toBeInstanceOf`: `withPoisonedPool` loads the composition modules
+         * through `jest.requireActual` under a fresh registry, so the `DataIntegrityError` the refusal
+         * raises is a different class OBJECT from the one this file imported even though it is the same
+         * declaration. Comparing the names asserts the classification without asserting module identity.
+         */
+        const refusal = await productService
+          .saveProduct(persistedProduct('dddddddd0000000000000000000000b5'), {
+            ...requiredProductPayload('GHOST-TYPE-2'),
+            productType: {
+              productTypeID: 'eeeeeeee0000000000000000000000c9',
+              productTypeName: 'Ghost',
+              urlTitle: 'ghost',
+            },
+          })
+          .then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+        expect(refusal).toBeInstanceOf(Error);
+        expect((refusal as Error).constructor.name).toBe(DataIntegrityError.name);
+
+        const written = executor.statements.map((statement) => statement.sql);
+        expect(written.some((sql) => sql.startsWith('UPDATE SwProductType SET'))).toBe(false);
+        expect(written.some((sql) => sql.startsWith('INSERT INTO SwProductType'))).toBe(false);
+        expect(written.some((sql) => sql.startsWith('UPDATE SwProduct SET'))).toBe(false);
       });
     }, 20000);
 

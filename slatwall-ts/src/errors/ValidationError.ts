@@ -52,6 +52,17 @@ export const FILE_UPLOAD_RBKEY = 'validate.fileUpload';
 export const PROCESS_OBJECTS_ERROR_KEY = 'processObjects';
 
 /**
+ * The error key an entity records against itself when a related entity that a nested payload struct
+ * populated carries findings — `org/Hibachi/HibachiTransient.cfc:L436` and `:L448`, both of which call
+ * `getHibachiErrors().addError('populate', propertyName)`.
+ *
+ * The message recorded under this key is the **property name**, not a resource-bundle key: the legacy
+ * passes `propertyName` as the second argument, so a nested brand that fails its own rules reports
+ * `{"populate":["brand"]}`. That shape is the observable contract and is reproduced exactly.
+ */
+export const POPULATED_SUB_PROPERTY_ERROR_KEY = 'populate';
+
+/**
  * The error bag: a map from property identifier to the ordered list of resource-bundle keys
  * reported against it.
  */

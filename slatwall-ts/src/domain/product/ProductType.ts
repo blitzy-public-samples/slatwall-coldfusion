@@ -42,6 +42,7 @@ import type {
   RelatedEntityLoader,
   SubPropertyPopulator,
 } from '../base/populate';
+import { readIdentifierOrUnsaved, readsAsUnsavedIdentifier } from '../base/populate';
 /*
  * `src/errors/DomainError.ts` is a permitted import for a `domain/` module. Hexagonal separation
  * (AAP §0.7.3) forbids `domain/` →
@@ -343,10 +344,12 @@ export class ProductType implements AuditableEntity {
 
   /**
    * Whether this instance has never been persisted: exactly when {@link ProductType.productTypeID}
-   * is the empty string, which is the legacy `unsavedvalue=""` [`:L52`].
+   * is the empty string, which is the legacy `unsavedvalue=""` [`:L52`], or when population has
+   * cleared the key outright — see {@link readsAsUnsavedIdentifier}, which is the state a nested
+   * `{"productTypeID":"","productTypeName":"…"}` payload struct produces.
    */
   isNew(): boolean {
-    return this.productTypeID === '';
+    return readsAsUnsavedIdentifier(this.productTypeID);
   }
 
   /* Collection accessors — the live-array contract. */
@@ -712,9 +715,19 @@ function buildProductTypeIDPathList(startingProductType: ProductType): string {
   return idPathList;
 }
 
-/** Reproduces CFML's `listPrepend(list, value)` for the comma-delimited identifier path. */
+/**
+ * Reproduces CFML's `listPrepend(list, value)` for the comma-delimited identifier path.
+ *
+ * The identifier is read through {@link readIdentifierOrUnsaved} rather than used directly, because a
+ * product type whose key population cleared carries no identifier at all: the previous form returned
+ * that absent value unchanged whenever the accumulated list was still empty, and the caller's
+ * `listFirst` equivalent then dereferenced it. CFML's own `listPrepend` drops an empty element, so
+ * `''` — not the absent value — is what the legacy accumulated for an unsaved entity.
+ */
 function listPrependIdentifier(idPathList: string, identifier: string): string {
-  return idPathList === '' ? identifier : `${identifier},${idPathList}`;
+  const element = readIdentifierOrUnsaved(identifier);
+
+  return idPathList === '' ? element : `${element},${idPathList}`;
 }
 
 /**

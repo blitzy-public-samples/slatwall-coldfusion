@@ -41,6 +41,7 @@ import type {
   RelatedEntityLoader,
   SubPropertyPopulator,
 } from '../base/populate';
+import { readIdentifierOrUnsaved, readsAsUnsavedIdentifier } from '../base/populate';
 
 /* Translation decision: `import type`, and why the mutual cycle is harmless. */
 import type { Product } from './Product';
@@ -332,10 +333,11 @@ export class Brand implements AuditableEntity, AuditableManagedEntity {
   /**
    * Whether this brand has never been persisted.
    *
-   * @returns `true` while `brandID` still holds the unsaved value.
+   * @returns `true` while `brandID` still holds the unsaved value, and also when population has
+   * cleared the key outright — see {@link readsAsUnsavedIdentifier} for why that state is reachable.
    */
   isNew(): boolean {
-    return this.brandID === '';
+    return readsAsUnsavedIdentifier(this.brandID);
   }
 
   /*
@@ -386,7 +388,7 @@ export class Brand implements AuditableEntity, AuditableManagedEntity {
    * @returns The identifier, or `''` while unsaved.
    */
   getPrimaryIDValue(): string {
-    return this.brandID;
+    return readIdentifierOrUnsaved(this.brandID);
   }
 
   /**

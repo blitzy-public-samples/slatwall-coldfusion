@@ -26,12 +26,14 @@
 
 /* Omission record — AAP §0.7.3 ("flag mismatches rather than assume them away"). */
 
+import type { AuditPropertyName } from '../domain/base/AuditableEntity';
 import type { Option, OptionPropertyName } from '../domain/option/Option';
 import type { OptionGroup, OptionGroupPropertyName } from '../domain/option/OptionGroup';
 import type { Brand, BrandPropertyName } from '../domain/product/Brand';
 import type { Product, ProductPropertyName } from '../domain/product/Product';
 import type { ProductType, ProductTypePropertyName } from '../domain/product/ProductType';
 import type { Sku, SkuPropertyName } from '../domain/sku/Sku';
+import { SmartListPropertyUnresolvedError } from '../errors/DomainError';
 
 /** The sub-entity path delimiter, declared at org/Hibachi/HibachiSmartList.cfc:L32. */
 const SMARTLIST_SUB_ENTITY_DELIMITER = '.';
@@ -39,14 +41,35 @@ const SMARTLIST_SUB_ENTITY_DELIMITER = '.';
 /**
  * A logical property path, exactly as the legacy members accept it.
  *
- * TODO(parity): an unresolvable path is silently discarded rather than reported. Every legacy
- * accumulator is wrapped in a length test on the resolved property — filters at
+ * ## The unresolvable path — a declared divergence, replacing the silent discard
+ *
+ * Every legacy accumulator wraps its append in a length test on the resolved property — filters at
  * org/Hibachi/HibachiSmartList.cfc:L369, like filters at org/Hibachi/HibachiSmartList.cfc:L396, in
  * filters at org/Hibachi/HibachiSmartList.cfc:L422, ranges at
  * org/Hibachi/HibachiSmartList.cfc:L449, orders at org/Hibachi/HibachiSmartList.cfc:L480 and
- * keyword properties at org/Hibachi/HibachiSmartList.cfc:L487 — so a mistyped path yields a query
- * with the entry missing instead of an error. Carried, not repaired: the adapter drops the entry
- * silently, and this interface deliberately provides no channel for reporting that it did.
+ * keyword properties at org/Hibachi/HibachiSmartList.cfc:L487 — so a path the legacy could not resolve
+ * yields a query with that entry missing and no error. This port carried that discard, and carrying it
+ * turned out to have a consequence the parity note did not state: a request whose one stated constraint
+ * was discarded is answered `200` with the entire unfiltered selection, and the caller is given rows it
+ * asked not to be given with no signal that anything was ignored.
+ *
+ * Two separate changes were made, and only the second is a divergence:
+ *
+ * 1. **Parity restoration.** A path is now matched case-insensitively and rewritten to the schema's own
+ * spelling, because that is what the legacy did — see {@link resolveSmartListPropertyIdentifier} for the
+ * two CFML struct reads that prove it. Most paths this port used to discard were never unresolvable at
+ * all; they were merely spelled in a case the legacy accepted.
+ * 2. **Declared divergence.** A path that is genuinely unresolvable after that fold is now reported, by
+ * raising {@link SmartListPropertyUnresolvedError} from the `rc` translation layer, rather than dropped.
+ * The rule deciding which paths are admissible is unchanged — it is still this module's whitelist,
+ * unchanged and still compile-checked — so the divergence is confined to the answer given to a path
+ * outside it. The reasoning, and why this is not one of the departures AAP §0.6.7.7 forbids, is recorded
+ * once beside `composeUnresolvedPropertyPublicMessage` in `../errors/DomainError.ts`.
+ *
+ * The interface now does have a channel for reporting the condition, and it is a throw rather than a
+ * return, deliberately: {@link resolveSmartListPropertyIdentifier} is also the membership test the MySQL
+ * adapter uses on paths it composed itself, where `undefined` must stay a value it can branch on. Only
+ * the caller-facing `rc` translation converts that `undefined` into a refusal.
  */
 export type SmartListPropertyIdentifier<TEntity extends SmartListEntityName = SmartListEntityName> =
   SmartListPropertyPath<TEntity> | ResolvedSmartListProperty<TEntity>;
@@ -383,16 +406,173 @@ const SMARTLIST_WHITELIST_GUARDS: readonly [
 ] = [true, true, true, true, true, true, true];
 void SMARTLIST_WHITELIST_GUARDS;
 
+/* The case-folded view of the whitelist above, and why one is needed. */
+
 /**
- * Resolves a caller-supplied property path against the declared whitelist, or reports that it does
- * not resolve.
+ * One entity's whitelist indexed by case-folded name, so a path segment can be matched the way CFML
+ * matched it and rewritten to the name the schema declares.
+ */
+interface SmartListCanonicalIndexEntry {
+  /** Folded own-property name to the declared spelling. */
+  readonly ownProperties: ReadonlyMap<string, string>;
+  /** Folded relationship name to the declared spelling and the entity it reaches. */
+  readonly relationships: ReadonlyMap<
+    string,
+    { readonly name: string; readonly entity: SmartListEntityName }
+  >;
+}
+
+/** Folds one identifier for comparison. ASCII-only, exactly as a CFML struct key folds. */
+function foldSmartListSegment(segment: string): string {
+  return segment.toLowerCase();
+}
+
+/**
+ * Derives {@link SMARTLIST_CANONICAL_INDEX} from {@link SMARTLIST_ENTITY_SCHEMA}.
+ *
+ * Derived rather than declared, so the two can never disagree: adding a property to the schema — which
+ * the compile-time drift guards above already force to happen whenever an entity gains a filterable
+ * field — extends this index in the same edit, with no second list to remember.
+ *
+ * On a folded collision, the first declaration wins. This is unreachable for the schema as it stands
+ * (`test/services/SkuService.test.ts` asserts that no entity declares two names differing only in case)
+ * and it is unreachable for any schema the legacy could have had, because the CFML property metadata this
+ * whitelist transcribes is itself a struct and a struct cannot hold two such keys at once. First-wins is
+ * stated only so the behaviour is defined rather than incidental; it is deliberately not a throw, because
+ * a throw here would run at module load and fail every invocation on the container, including the
+ * thirty-three addresses that never touch a smart list.
+ */
+/**
+ * The two audit properties every in-scope entity declares that are addressable as smart-list paths.
+ *
+ * ## Why these are admitted even though no `ownProperties` tuple lists them
+ *
+ * The legacy declares the audit block on each concrete entity CFC, not only on a shared base —
+ * `model/entity/Product.cfc:L95-L99`, `model/entity/Sku.cfc:L93` and `model/entity/Brand.cfc:L77` each
+ * carry it verbatim under an explicit `// Audit Properties` comment. So
+ * `getEntityHasPropertyByEntityName('Product', 'createdDateTime')`
+ * [org/Hibachi/HibachiService.cfc:L750-L752] is `true`, `getAliasedProperty`
+ * [org/Hibachi/HibachiSmartList.cfc:L347] returns `_product.createdDateTime`, and `addOrder`
+ * [org/Hibachi/HibachiSmartList.cfc:L473] therefore orders by it. `OrderBy=createdDateTime` is a
+ * resolvable request against the legacy, and the most ordinary one a caller makes.
+ *
+ * These names are absent from every `ownProperties` tuple because those tuples enumerate the properties
+ * the port's row mappers project, and the audit block is written by
+ * `src/domain/base/AuditableEntity.ts` rather than mapped as part of an entity's own surface. That
+ * omission was invisible while an unresolvable path was silently dropped: the predicate simply
+ * disappeared. Once `requireSmartListPropertyIdentifier` began refusing what it cannot resolve, the same
+ * omission became an outright refusal of a path the legacy honours — so admitting them here is what keeps
+ * that refusal a parity improvement rather than a new divergence.
+ *
+ * ## Why the two account members are deliberately NOT admitted
+ *
+ * `createdByAccount` and `modifiedByAccount` are declared in the legacy as `many-to-one` associations to
+ * `Account` with `fkcolumn="createdByAccountID"` / `fkcolumn="modifiedByAccountID"`, and `Account` is
+ * excluded from this extraction wholesale (AAP §0.2.2.1). Their property name is therefore not their
+ * column name, and no schema entry exists to traverse into, so admitting them would either name a column
+ * that does not exist or pull an out-of-scope entity into the graph. They stay unresolvable, and a request
+ * naming one receives the same keyed refusal as any other undeclared path.
+ *
+ * Both admitted names are identical to their columns on all six `Sw*` tables and are registered in
+ * `TABLE_COLUMN_LOOKUP` in `src/adapters/mysql/QueryRunner.ts`, so `assertColumnName` resolves them and no
+ * unwhitelisted identifier can reach SQL by this route.
+ */
+const SMARTLIST_ADDRESSABLE_AUDIT_PROPERTY_NAMES = Object.freeze([
+  'createdDateTime',
+  'modifiedDateTime',
+] as const satisfies readonly AuditPropertyName[]);
+
+function buildSmartListCanonicalIndex(): Readonly<
+  Record<SmartListEntityName, SmartListCanonicalIndexEntry>
+> {
+  const index = {} as Record<SmartListEntityName, SmartListCanonicalIndexEntry>;
+
+  for (const entityName of Object.keys(SMARTLIST_ENTITY_SCHEMA) as SmartListEntityName[]) {
+    const schema = SMARTLIST_ENTITY_SCHEMA[entityName];
+
+    const ownProperties = new Map<string, string>();
+    for (const property of schema.ownProperties) {
+      const folded = foldSmartListSegment(property);
+      if (!ownProperties.has(folded)) {
+        ownProperties.set(folded, property);
+      }
+    }
+
+    /*
+     * Seeded after the declared tuple, so an entity that ever does list an audit name explicitly keeps its
+     * own spelling — first-wins, exactly as the collision rule for the declared properties above.
+     */
+    for (const auditProperty of SMARTLIST_ADDRESSABLE_AUDIT_PROPERTY_NAMES) {
+      const folded = foldSmartListSegment(auditProperty);
+      if (!ownProperties.has(folded)) {
+        ownProperties.set(folded, auditProperty);
+      }
+    }
+
+    const relationships = new Map<
+      string,
+      { readonly name: string; readonly entity: SmartListEntityName }
+    >();
+    for (const [name, entity] of Object.entries(schema.relationships)) {
+      if (entity === undefined) {
+        continue;
+      }
+      const folded = foldSmartListSegment(name);
+      if (!relationships.has(folded)) {
+        relationships.set(folded, Object.freeze({ name, entity }));
+      }
+    }
+
+    index[entityName] = Object.freeze({ ownProperties, relationships });
+  }
+
+  return Object.freeze(index);
+}
+
+/**
+ * The case-folded whitelist {@link resolveSmartListPropertyIdentifier} consults.
+ *
+ * Module-scope, built once, and frozen — so it is shared across every invocation on a warm container
+ * without being the mutable module-scope state M7 rules out. It holds nothing request-derived.
+ */
+const SMARTLIST_CANONICAL_INDEX = buildSmartListCanonicalIndex();
+
+/**
+ * Resolves a caller-supplied property path against the declared whitelist, rewriting each segment to the
+ * spelling the schema declares, or reports that it does not resolve.
+ *
+ * ## Why the match is case-insensitive
+ *
+ * Because the legacy's was, and because the legacy emitted the canonical spelling. Both halves are
+ * needed to state it precisely:
+ *
+ * - `org/Hibachi/HibachiSmartList.cfc:L312` admits a path by asking
+ * `hibachiService.getHasPropertyByEntityNameAndPropertyIdentifier`, which reduces at
+ * `org/Hibachi/HibachiService.cfc:L750-L752` to `structKeyExists(propertiesStruct, propertyName)` — and a
+ * CFML struct-key test folds case. `hasProperty('Product', 'productcode')` is therefore `true`.
+ * - Having admitted it, `:L347` returns
+ * `"#entityAlias#.#entityProperties[ listLast(propertyIdentifier, subEntityDelimiters) ].name#"`. That is
+ * a second case-insensitive struct read, and it takes `.name` — the *declared* spelling from the entity
+ * metadata. So `F:productcode` reached Hibernate as `_product.productCode`, and HQL, which is
+ * case-sensitive about property references, received a name it could resolve.
+ * - Intermediate segments behave identically: `joinRelatedProperty` indexes
+ * `entityProperties[ arguments.relatedProperty ]` at `:L239` and `:L273-L290`, again case-insensitively,
+ * and derives its alias with `lcase()`.
+ *
+ * This function had matched the last segment with a case-*sensitive* `includes`, which silently made
+ * `F:productcode=ABC` unresolvable where the legacy resolved it. The consequence was not a wrong column
+ * but a dropped predicate and therefore an unfiltered answer, which is why restoring the fold is a parity
+ * fix and not a convenience. It also removes the asymmetry that made the defect so easy to miss: the
+ * request *keys* around these paths were already matched case-insensitively, so `F:productcode` looked
+ * like it would work.
  *
  * @param entityName - The entity the path is rooted at.
- * @param candidate - The raw path, as supplied. Never mutated, trimmed or rewritten: this function
- * decides membership and nothing else, so the value the adapter receives is the value that was
- * validated.
+ * @param candidate - The raw path, as supplied. Matched case-insensitively segment by segment.
  *
- * @returns The same string, branded as resolved, or `undefined` when any segment fails to resolve.
+ * @returns The path rebuilt from the declared spelling of every segment and branded as resolved, or
+ * `undefined` when any segment fails to resolve. The returned string, not the caller's, is what reaches
+ * the adapter — so the value that is emitted is composed entirely of schema-declared identifiers, which
+ * is a stronger guarantee than validating the caller's string and then passing that along.
  */
 export function resolveSmartListPropertyIdentifier<TEntity extends SmartListEntityName>(
   entityName: TEntity,
@@ -401,6 +581,9 @@ export function resolveSmartListPropertyIdentifier<TEntity extends SmartListEnti
   const segments = candidate.split(SMARTLIST_SUB_ENTITY_DELIMITER);
   let cursor: SmartListEntityName = entityName;
 
+  /* The declared spelling of each resolved segment, joined into the returned path. */
+  const canonical: string[] = [];
+
   for (let index = 0; index < segments.length; index++) {
     const segment = segments[index];
     // A leading, trailing or doubled delimiter yields an empty segment, which names nothing.
@@ -408,19 +591,24 @@ export function resolveSmartListPropertyIdentifier<TEntity extends SmartListEnti
       return undefined;
     }
 
-    const schema = SMARTLIST_ENTITY_SCHEMA[cursor];
+    const schema = SMARTLIST_CANONICAL_INDEX[cursor];
+    const folded = foldSmartListSegment(segment);
 
     if (index === segments.length - 1) {
-      return schema.ownProperties.includes(segment)
-        ? (candidate as ResolvedSmartListProperty<TEntity>)
-        : undefined;
+      const ownProperty = schema.ownProperties.get(folded);
+      if (ownProperty === undefined) {
+        return undefined;
+      }
+      canonical.push(ownProperty);
+      return canonical.join(SMARTLIST_SUB_ENTITY_DELIMITER) as ResolvedSmartListProperty<TEntity>;
     }
 
-    const nextEntityName = schema.relationships[segment];
-    if (nextEntityName === undefined) {
+    const relationship = schema.relationships.get(folded);
+    if (relationship === undefined) {
       return undefined;
     }
-    cursor = nextEntityName;
+    canonical.push(relationship.name);
+    cursor = relationship.entity;
   }
 
   // Unreachable for any string: `split` always yields at least one segment, and the loop returns on
@@ -744,8 +932,20 @@ export interface SmartListInput {
    * exactly.
    *
    * TODO(parity): the interpreter clears the accumulated ordering terms inside its own loop, at
-   * org/Hibachi/HibachiSmartList.cfc:L120, so a multi-term statement retains only its final term
-   * and ordering registered earlier is discarded as well. Carried, not repaired.
+   * org/Hibachi/HibachiSmartList.cfc:L120 — `variables.orders = []` sits inside the `for` over the
+   * statement's terms — so the legacy retains only a multi-term statement's FINAL term, and discards any
+   * ordering a service had registered before `applyData` ran as well.
+   *
+   * This port retains EVERY term, and the claim previously made here — "carried, not repaired" — was
+   * simply untrue of the code beneath it: {@link applyOrderByEntry} appends each parsed term and clears
+   * nothing. The divergence is left standing rather than corrected, for a reason that is worth recording
+   * because it is not merely inertia. The retained terms are what the request-complexity budget in
+   * `../adapters/mysql/SmartListQueryBuilder.ts` counts, and a QA pass measured a 120-term `OrderBy`
+   * being refused by that budget with `orderingTerms: 120` in its context. Reinstating the legacy clear
+   * would silently reduce every such statement to one term, which would remove that refusal, remove the
+   * only ordering-driven path into the complexity gate, and make an over-large ordering request succeed
+   * where it is currently rejected. No finding asks for the clear, and adopting it would weaken a control
+   * a finding does depend on.
    */
   readonly OrderBy?: string;
 
@@ -1159,30 +1359,40 @@ function buildPatternFilterValue(raw: string): string {
  */
 function parseRangeValue(
   entityName: SmartListEntityName,
+  dataKey: string,
   rawProperty: string,
   raw: string,
 ): SmartListRange | undefined {
-  const propertyIdentifier = resolveSmartListPropertyIdentifier(entityName, rawProperty);
-  if (propertyIdentifier === undefined) {
-    return undefined;
-  }
+  /*
+   * The property is required; the *value* is not. `:L446` wraps the whole of `addRange` in an
+   * acceptability test on the value, so a range whose bounds are neither numeric nor dates contributes
+   * nothing and reports nothing — that discard is legacy behaviour about the value and is preserved by
+   * returning `undefined` from `translateSmartListRange` below. The refusal here is only about the
+   * property path, which is the separate condition.
+   */
+  const propertyIdentifier = requireSmartListPropertyIdentifier(entityName, dataKey, rawProperty);
+
   return translateSmartListRange(propertyIdentifier, raw);
 }
 
 /** `HibachiSmartList.cfc:L473-L482` — property identifier, direction, and the `len()` guard. */
 function parseOrderStatement(
   entityName: SmartListEntityName,
+  dataKey: string,
   statement: string,
 ): SmartListOrder | undefined {
   const parts = cfmlListToArray(statement, ORDER_DIRECTION_DELIMITER);
   const rawProperty = parts[0];
   if (rawProperty === undefined || rawProperty.length === 0) {
+    /*
+     * An empty statement names nothing to refuse. `cfmlListToArray` drops empty list elements exactly as
+     * CFML's `listToArray` does, so a trailing comma in `OrderBy=productCode|A,` produces one statement
+     * and not two, and this arm is reached only for a value that is entirely separators — which the
+     * legacy `listFirst` would also have reduced to nothing.
+     */
     return undefined;
   }
-  const propertyIdentifier = resolveSmartListPropertyIdentifier(entityName, rawProperty);
-  if (propertyIdentifier === undefined) {
-    return undefined;
-  }
+  const propertyIdentifier = requireSmartListPropertyIdentifier(entityName, dataKey, rawProperty);
   const lastPart = parts[parts.length - 1];
   const descending =
     parts.length > 1 &&
@@ -1209,7 +1419,48 @@ function readAcceptablePageValue(value: string | number | boolean): number | und
   return numeric > 0 && numeric <= PAGE_RECORDS_SHOW_ALL ? numeric : undefined;
 }
 
-/** `removeFilter` and friends drop every entry for the property, not merely the first. */
+/**
+ * Resolves one property path from the `rc`, refusing the request when it does not resolve.
+ *
+ * The single point at which an unresolvable caller-supplied path becomes a reported failure. Every `rc`
+ * family routes through it — `F:`, `FR:`, `FI:`, `FIR:`, `FK:`, `FKR:`, `R:` and `OrderBy` — so all eight
+ * answer identically, which is the property the finding this replaces was really about: the port had
+ * checked property paths in some places and not others, and a caller could not tell which.
+ *
+ * @param entityName - the entity the path is rooted at.
+ * @param dataKey - the `rc` key the path arrived on, e.g. `F:productCode`. Diagnostic only: it is
+ * attached to the raised error's context and never published, because the path itself is the actionable
+ * half and it is published on its own terms.
+ * @param rawProperty - the path as supplied.
+ *
+ * @returns the resolved, canonically spelled path.
+ * @throws SmartListPropertyUnresolvedError when no such path exists on the entity.
+ */
+function requireSmartListPropertyIdentifier(
+  entityName: SmartListEntityName,
+  dataKey: string,
+  rawProperty: string,
+): SmartListPropertyIdentifier {
+  const propertyIdentifier = resolveSmartListPropertyIdentifier(entityName, rawProperty);
+
+  if (propertyIdentifier === undefined) {
+    throw new SmartListPropertyUnresolvedError(rawProperty, {
+      context: { entityName, dataKey },
+    });
+  }
+
+  return propertyIdentifier;
+}
+
+/**
+ * `removeFilter` and friends drop every entry for the property, not merely the first.
+ *
+ * The identifier is the resolved, canonically spelled one, so a removal matches an entry that was added
+ * under a different spelling of the same property. The legacy behaves the same way for two compounding
+ * reasons: `removeFilter` at `org/Hibachi/HibachiSmartList.cfc:L376-L381` resolves through
+ * `getAliasedProperty` before deleting, and the `structDelete` it then performs is itself a
+ * case-insensitive key operation.
+ */
 function removeEntriesForProperty(entries: SmartListFilter[], propertyIdentifier: string): void {
   for (let index = entries.length - 1; index >= 0; index--) {
     if (entries[index]?.propertyIdentifier === propertyIdentifier) {
@@ -1237,10 +1488,11 @@ interface SmartListQueryDraft {
 function applyOrderByEntry(
   entityName: SmartListEntityName,
   draft: SmartListQueryDraft,
+  dataKey: string,
   raw: string,
 ): void {
   for (const statement of cfmlListToArray(raw, CFML_LIST_DELIMITER)) {
-    const order = parseOrderStatement(entityName, statement);
+    const order = parseOrderStatement(entityName, dataKey, statement);
     if (order !== undefined) {
       draft.orders.push(order);
     }
@@ -1266,26 +1518,29 @@ function applyInputEntry(
   key: string,
   value: string | number | boolean,
 ): void {
-  /* — every property path that reaches a draft is resolved against the entity schema first. */
-  const resolve = (raw: string): SmartListPropertyIdentifier | undefined =>
-    resolveSmartListPropertyIdentifier(entityName, raw);
+  /*
+   * Every property path that reaches a draft is resolved against the entity schema first, and an
+   * unresolvable one refuses the request rather than dropping the entry — see
+   * {@link requireSmartListPropertyIdentifier} and the divergence record on
+   * {@link SmartListPropertyIdentifier}. The removal families resolve too, so `FR:productcode` cancels a
+   * filter added as `productCode`, exactly as the legacy's case-insensitive `structDelete` does.
+   */
+  const resolve = (raw: string): SmartListPropertyIdentifier =>
+    requireSmartListPropertyIdentifier(entityName, key, raw);
 
   if (key.startsWith(FILTER_PREFIX)) {
-    const propertyIdentifier = resolve(key.slice(FILTER_PREFIX.length));
-    if (propertyIdentifier !== undefined) {
-      draft.filters.push({ propertyIdentifier, value });
-    }
+    draft.filters.push({ propertyIdentifier: resolve(key.slice(FILTER_PREFIX.length)), value });
     return;
   }
   if (key.startsWith(FILTER_REMOVAL_PREFIX) && readsAsCfmlBoolean(value) && toCfmlBoolean(value)) {
-    removeEntriesForProperty(draft.filters, key.slice(FILTER_REMOVAL_PREFIX.length));
+    removeEntriesForProperty(draft.filters, resolve(key.slice(FILTER_REMOVAL_PREFIX.length)));
     return;
   }
   if (key.startsWith(IN_FILTER_PREFIX)) {
-    const propertyIdentifier = resolve(key.slice(IN_FILTER_PREFIX.length));
-    if (propertyIdentifier !== undefined) {
-      draft.inFilters.push({ propertyIdentifier, value });
-    }
+    draft.inFilters.push({
+      propertyIdentifier: resolve(key.slice(IN_FILTER_PREFIX.length)),
+      value,
+    });
     return;
   }
   if (
@@ -1293,17 +1548,14 @@ function applyInputEntry(
     readsAsCfmlBoolean(value) &&
     toCfmlBoolean(value)
   ) {
-    removeEntriesForProperty(draft.inFilters, key.slice(IN_FILTER_REMOVAL_PREFIX.length));
+    removeEntriesForProperty(draft.inFilters, resolve(key.slice(IN_FILTER_REMOVAL_PREFIX.length)));
     return;
   }
   if (key.startsWith(LIKE_FILTER_PREFIX)) {
-    const propertyIdentifier = resolve(key.slice(LIKE_FILTER_PREFIX.length));
-    if (propertyIdentifier !== undefined) {
-      draft.likeFilters.push({
-        propertyIdentifier,
-        value: buildPatternFilterValue(String(value)),
-      });
-    }
+    draft.likeFilters.push({
+      propertyIdentifier: resolve(key.slice(LIKE_FILTER_PREFIX.length)),
+      value: buildPatternFilterValue(String(value)),
+    });
     return;
   }
   if (
@@ -1311,18 +1563,21 @@ function applyInputEntry(
     readsAsCfmlBoolean(value) &&
     toCfmlBoolean(value)
   ) {
-    removeEntriesForProperty(draft.likeFilters, key.slice(LIKE_FILTER_REMOVAL_PREFIX.length));
+    removeEntriesForProperty(
+      draft.likeFilters,
+      resolve(key.slice(LIKE_FILTER_REMOVAL_PREFIX.length)),
+    );
     return;
   }
   if (key.startsWith(RANGE_PREFIX)) {
-    const range = parseRangeValue(entityName, key.slice(RANGE_PREFIX.length), String(value));
+    const range = parseRangeValue(entityName, key, key.slice(RANGE_PREFIX.length), String(value));
     if (range !== undefined) {
       draft.ranges.push(range);
     }
     return;
   }
   if (key === ORDER_BY_KEY) {
-    applyOrderByEntry(entityName, draft, String(value));
+    applyOrderByEntry(entityName, draft, key, String(value));
     return;
   }
   if (key === PAGE_SHOW_KEY) {

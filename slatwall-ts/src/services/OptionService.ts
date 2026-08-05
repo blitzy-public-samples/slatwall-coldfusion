@@ -182,7 +182,13 @@ export class OptionService {
    *
    * @returns The records, the current page, and the count and paging figures derived from them.
    */
-  public getOptionSmartList(input?: SmartListInput): Promise<SmartListResult<Option>> {
+  /*
+   * `async` for the reason given on `../services/ProductService.ts` `getProductSmartList`:
+   * `translateSmartListInput` can refuse the request while the argument is being evaluated, and without
+   * the keyword that refusal would be a synchronous throw from a `Promise`-returning member, which a
+   * `.catch()` caller could not observe.
+   */
+  public async getOptionSmartList(input?: SmartListInput): Promise<SmartListResult<Option>> {
     return this.smartListQueryPort.execute(
       translateSmartListInput({ entityName: OPTION_ENTITY_NAME, input }),
     );
@@ -196,7 +202,10 @@ export class OptionService {
    *
    * @returns The records, the current page, and the count and paging figures derived from them.
    */
-  public getOptionGroupSmartList(input?: SmartListInput): Promise<SmartListResult<OptionGroup>> {
+  /* `async` for the same reason as {@link OptionService.getOptionSmartList} above. */
+  public async getOptionGroupSmartList(
+    input?: SmartListInput,
+  ): Promise<SmartListResult<OptionGroup>> {
     return this.smartListQueryPort.execute(
       translateSmartListInput({ entityName: OPTION_GROUP_ENTITY_NAME, input }),
     );

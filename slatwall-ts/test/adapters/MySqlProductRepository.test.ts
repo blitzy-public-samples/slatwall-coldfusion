@@ -6486,6 +6486,120 @@ describe('MySqlProductPersistence — the SwProduct write path (DATA-03)', () =>
     expect(insert?.params).not.toContain(undefined);
   });
 
+  /*
+   * The owning `relatedProducts` link table. `model/entity/Product.cfc:L81` declares
+   * `linktable="SwRelatedProduct"` with `fkcolumn="productID"`, `inversejoincolumn="relatedProductID"` and
+   * no `inverse="true"`, so this side owned the rows and Hibernate's collection flush wrote and removed
+   * them as the in-memory collection changed. This adapter named the table in exactly one statement — the
+   * `DELETE` on the removal path — so a caller could add a related product, receive a `200`, and find the
+   * table still empty. The four cases below are the four states the reconciliation has to answer.
+   */
+
+  /** A related product as a reference: the identifier alone, which is all a link row carries. */
+  function relatedProductReference(productID: string): Product {
+    const relatedProduct = new Product();
+    relatedProduct.productID = productID;
+
+    return relatedProduct;
+  }
+
+  it('NET-NEW — an INSERTED product writes one SwRelatedProduct row per related product, and no DELETE', async () => {
+    const { adapter, journal } = makeAdapter();
+    const product = new Product();
+    product.productName = 'Related Owner';
+    product.relatedProducts.push(
+      relatedProductReference(PERSISTENCE_ID.otherProduct),
+      relatedProductReference(PERSISTENCE_ID.productType),
+    );
+
+    await adapter.saveProduct(product);
+
+    /* No stored rows can exist for a row this statement is creating, so no removal is issued. */
+    expect(persistenceMatching(journal, /^DELETE FROM SwRelatedProduct/)).toHaveLength(0);
+
+    const inserts = persistenceMatching(journal, /^INSERT INTO SwRelatedProduct/);
+    expect(inserts).toHaveLength(1);
+    expect(collapse(inserts[0]?.sql ?? '')).toBe(
+      'INSERT INTO SwRelatedProduct (productID, relatedProductID) VALUES (?, ?), (?, ?)',
+    );
+    /* Owner first in each pair, and the owner is the identifier the insert just minted. */
+    expect(inserts[0]?.params).toStrictEqual([
+      product.productID,
+      PERSISTENCE_ID.otherProduct,
+      product.productID,
+      PERSISTENCE_ID.productType,
+    ]);
+  });
+
+  it('NET-NEW — an UPDATED product RECONCILES: the owner side is deleted, then re-inserted', async () => {
+    const { adapter, journal } = makeAdapter();
+    const product = savedProduct();
+    product.relatedProducts.push(relatedProductReference(PERSISTENCE_ID.otherProduct));
+
+    await adapter.saveProduct(product);
+
+    const deletes = persistenceMatching(journal, /^DELETE FROM SwRelatedProduct/);
+    const inserts = persistenceMatching(journal, /^INSERT INTO SwRelatedProduct/);
+
+    expect(collapse(deletes[0]?.sql ?? '')).toBe(
+      'DELETE FROM SwRelatedProduct WHERE productID = ?',
+    );
+    expect(deletes[0]?.params).toStrictEqual([PERSISTENCE_ID.product]);
+    expect(inserts[0]?.params).toStrictEqual([PERSISTENCE_ID.product, PERSISTENCE_ID.otherProduct]);
+    /*
+     * Delete before insert, and only the owner column is matched on — the same shape and the same
+     * one-sidedness as the `DELETE` on the removal path, so the far side of a mutual relationship is left
+     * to whichever product owns it.
+     */
+    expect(journal.statements.indexOf(deletes[0]!)).toBeLessThan(
+      journal.statements.indexOf(inserts[0]!),
+    );
+  });
+
+  it('NET-NEW — an UPDATED product with an EMPTY collection deletes the stored rows and inserts none', async () => {
+    const { adapter, journal } = makeAdapter();
+
+    await adapter.saveProduct(savedProduct());
+
+    expect(persistenceMatching(journal, /^DELETE FROM SwRelatedProduct/)).toHaveLength(1);
+    expect(persistenceMatching(journal, /^INSERT INTO SwRelatedProduct/)).toHaveLength(0);
+  });
+
+  it('NET-NEW — a product hydrated WITHOUT its link rows preserves them rather than deleting them', async () => {
+    /*
+     * Rule 3d of `./rowMappers.ts`, and the hazard it closes. `mapProductRow` hydrates the collection
+     * empty because the rows have not been read; treating that emptiness as intent would delete every
+     * link row the product had. An unread collection therefore emits no statement at all, which is
+     * exactly what an unloaded lazy collection produced.
+     */
+    const { adapter, journal } = makeAdapter();
+    const hydrated = mapProductRow({
+      productID: PERSISTENCE_ID.product,
+      productName: 'Hydrated Owner',
+      productCode: 'HO-1',
+    });
+
+    await adapter.saveProduct(hydrated);
+
+    expect(persistenceMatching(journal, /SwRelatedProduct/)).toHaveLength(0);
+  });
+
+  it('NET-NEW — a collection holding an UNSAVED product is refused, so no link row names nothing', async () => {
+    /*
+     * Branch 4 of population adds every element naming the related primary-ID key, whatever the identifier
+     * turns out to be [org/Hibachi/HibachiTransient.cfc:L294], and `loadOrCreate` answers an unsaved entity
+     * when the identifier matches no row — so a payload naming a product that does not exist puts a keyless
+     * Product here. Hibernate met the same state at flush and raised `TransientObjectException` rather than
+     * writing the row.
+     */
+    const { adapter, journal } = makeAdapter();
+    const product = savedProduct();
+    product.relatedProducts.push(new Product());
+
+    await expect(adapter.saveProduct(product)).rejects.toBeInstanceOf(DataIntegrityError);
+    expect(persistenceMatching(journal, /^INSERT INTO SwRelatedProduct/)).toHaveLength(0);
+  });
+
   it('NET-NEW — no value is ever interpolated into statement text', async () => {
     // The structural reason the D18 class of flaw cannot occur here: the statement text is a function
     // of the whitelist alone.
@@ -7274,6 +7388,12 @@ describe('the four ProductService seams the adapter fills (DATA-03)', () => {
        * hydrates its product type through `mapProductTypeRow` so the reader answers a real key.
        */
       parentProductTypeIdReader: readHydratedParentProductTypeID,
+      /*
+       * No case in this file supplies a multi-key nested relationship struct, so
+       * `org/Hibachi/HibachiTransient.cfc:L236-L249` records no populated sub-property and this seam is
+       * never read. The file's `UNREACHED_COLLABORATOR` discipline says so out loud.
+       */
+      populatedSubPropertyWriters: UNREACHED_COLLABORATOR,
     });
   }
 
@@ -7451,6 +7571,8 @@ describe('a hydrated product type inherits its parent’s products', () => {
       },
       /* The real reader — the whole point of these cases. */
       parentProductTypeIdReader: readHydratedParentProductTypeID,
+      /* Unreached: no case here populates a multi-key nested struct. */
+      populatedSubPropertyWriters: UNREACHED_COLLABORATOR,
     });
 
     return { service, savedProducts, queries };
@@ -7723,6 +7845,8 @@ describe('ProductService.getProduct returns a materialised aggregate (DATA-03)',
        * hydrates its product type through `mapProductTypeRow` so the reader answers a real key.
        */
       parentProductTypeIdReader: readHydratedParentProductTypeID,
+      /* Unreached: no case here populates a multi-key nested struct. */
+      populatedSubPropertyWriters: UNREACHED_COLLABORATOR,
     });
   }
 
