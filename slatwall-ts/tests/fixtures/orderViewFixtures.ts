@@ -1478,20 +1478,39 @@ export function makeOrderViewFixture(overrides?: OrderViewFixtureOverrides): Ord
   });
 
   // --- SKUs, one per item, each with its own product -----------------------
+  //
+  // ★★ EACH PRODUCT CARRIES A PERSISTED IDENTIFIER, AND IT USED TO CARRY NONE. `makeProductFixture`
+  // defaults `productID` to `''` DELIBERATELY, so that `Product.isNew()` - which reproduces the
+  // framework's identifier test - answers honestly for a DRAFT. But an order references PERSISTED
+  // products: an order item that named a draft could not have been placed. The distinction became
+  // load-bearing when a code review made `src/handlers/promotionApplicationHandler.ts` accept a
+  // serialisable order document that names its SKU by `productID` + `skuID` and RESOLVES the pair
+  // through read-only lookups - an empty identifier names no row, and the boundary refuses one. Naming
+  // the identifier here is therefore a correction to the fixture's realism, not an accommodation of the
+  // subject: every other consumer of this graph is unaffected, because none reads `productID` at all.
   const skuNoPriceGroup: Sku = makeSkuFixture({
     idPrefix: `${idPrefix}sku-a-`,
     price: Money.fromDecimalString(ITEM_1_PRICE),
-    product: makeProductFixture({ idPrefix: `${idPrefix}prod-a-` }),
+    product: makeProductFixture({
+      idPrefix: `${idPrefix}prod-a-`,
+      productID: `${idPrefix}prod-a-product`,
+    }),
   });
   const skuPriceGroupAccepted: Sku = makeSkuFixture({
     idPrefix: `${idPrefix}sku-b-`,
     price: Money.fromDecimalString(ITEM_2_SKU_PRICE),
-    product: makeProductFixture({ idPrefix: `${idPrefix}prod-b-` }),
+    product: makeProductFixture({
+      idPrefix: `${idPrefix}prod-b-`,
+      productID: `${idPrefix}prod-b-product`,
+    }),
   });
   const skuPriceGroupRejected: Sku = makeSkuFixture({
     idPrefix: `${idPrefix}sku-c-`,
     price: Money.fromDecimalString(ITEM_3_SKU_PRICE),
-    product: makeProductFixture({ idPrefix: `${idPrefix}prod-c-` }),
+    product: makeProductFixture({
+      idPrefix: `${idPrefix}prod-c-`,
+      productID: `${idPrefix}prod-c-product`,
+    }),
   });
 
   // --- The three items, one per arm of the L241 discriminator --------------

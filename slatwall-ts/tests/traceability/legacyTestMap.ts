@@ -80,23 +80,49 @@
 //
 // ★ THIS FILE IS 100% NET-NEW COVERAGE and must never be presented as parity. Its
 // legacy antecedent is a component that could not run; what is carried forward is
-// its INTENT, recorded at `meta/tests/readme.txt:L14` - a minimal level of testing
-// whenever a new component is added.
+// its INTENT, stated verbatim at `meta/tests/readme.txt:L14`:
+//
+//     "/Coverage - This is a series of tests that are designed to make sure there is
+//      at least a minimal level of testing in place when new components / files get
+//      added to the project"
+//
+// That sentence is the whole specification for this module, and it is quoted rather
+// than paraphrased because it is the one place the legacy tree says out loud what the
+// floor was FOR. The assertions below are its mechanical form: a new module added to
+// `src/` without a suite is exactly the "new component / file" that sentence
+// anticipates, and this file is what makes its arrival fail the run instead of passing
+// unnoticed. An assertion further down reads that line out of the legacy tree and
+// requires it to still say this, so the quotation cannot drift from its source.
 //
 // PLANNED VERSUS ACTUAL, recorded because the difference is material and a reader
-// will otherwise trip over it. The layout in AAP 0.3.1 implies eight handler
-// modules; THREE exist - `bootstrap.ts`, `router.ts` and `errorMapper.ts` - the five
-// capability handlers not having been delivered at this checkpoint. One module
-// exists beyond that layout, `src/integrations/europeanCentralBankCurrencyConverter.ts`.
-// Coverage runs BOTH ways against that plan. It exceeds it in three places:
-// `lib/logger.ts`, `repositories/mysql/connection.ts` and
-// `sql/skusBySelectedOptions.sql.ts` each own a dedicated suite that the planned
-// layout did not budget for. It falls short of the planned eight handler suites,
-// because only three handler modules exist at all - two of them own a suite, and
-// the third, `router.ts`, is in the pending register below with its planned path
-// named. Because the assertions derive their census from disk, none of that drift
-// needs to be reconciled by hand; it is recorded here so the drift itself is
-// visible.
+// will otherwise trip over it. The layout in AAP 0.3.1 implies eight handler modules
+// and ALL EIGHT now exist: `bootstrap.ts`, `router.ts`, `errorMapper.ts` and the five
+// capability entrypoints, each of those five owning a suite named after it. One module
+// exists beyond that layout, `src/integrations/europeanCentralBankCurrencyConverter.ts`,
+// and it owns a suite too - which is why the source census below is NINETY modules
+// where the plan's own enumeration adds to eighty-nine.
+//
+// Coverage runs BOTH ways against that plan. It EXCEEDS it in seven places, each owning
+// a dedicated suite that the plan either budgeted as exempt or never listed at all:
+// `lib/config.ts`, `lib/logger.ts`, `repositories/mysql/connection.ts`,
+// `sql/skusBySelectedOptions.sql.ts`, `handlers/bootstrap.ts`, `handlers/errorMapper.ts`
+// and that currency-converter adapter. It FALLS SHORT in exactly one: `router.ts` has no
+// suite of its own and sits in the pending register below with its planned path named.
+//
+// That reconciles exactly, and the arithmetic is worth spelling out step by step because
+// a reviewer holding the plan will otherwise read a discrepancy where there is none. The
+// plan projects eighty-nine modules as fifty-seven covered plus thirty-two exempt. Six of
+// the seven above are modules the plan listed as EXEMPT that have since earned suites, so
+// they move across: sixty-three covered, twenty-six exempt. `router.ts` then moves the
+// other way, from exempt to pending: twenty-five exempt, one pending. The seventh is the
+// currency-converter adapter, which the plan never listed at all - it adds one to the
+// census AND owns a suite, so it lands directly in covered: sixty-four covered,
+// twenty-five exempt, one pending, ninety modules. Which is what is on disk.
+//
+// Because every assertion below derives its census from the working tree rather than
+// from those numbers, none of this drift has to be reconciled by hand: it is recorded
+// here so the drift itself is visible, and it is asserted from disk so a reader never
+// has to trust this paragraph.
 //
 // The composition root's own promotion is the worked example of how this register is
 // meant to move. `src/handlers/bootstrap.ts` sat in `pendingModules` with
@@ -160,8 +186,14 @@ requireAnchor(path.join(REPOSITORY_ROOT, 'model', 'entity'), 'the legacy entity 
 
 // --- Readers ---------------------------------------------------------------
 //
-// Node built-ins only: no glob dependency is added, and the fourteen pinned packages
-// are untouched. Every reader raises on absence.
+// Node built-ins only: no glob dependency is added, and the pinned package set is
+// untouched. Every reader raises on absence.
+//
+// The pin COUNT is deliberately not written down here. The plan says fourteen and then
+// enumerates thirteen; the manifest ships those thirteen, every one an exact version with
+// no range. Recording either number as prose would be a claim this file cannot keep, so
+// the assertion further down reads the manifest and checks that each pin is EXACT instead
+// of counting them.
 
 function listTypeScriptFiles(relativeDirectory: string): string[] {
   const absolute = path.join(SUBTREE_ROOT, relativeDirectory);
@@ -379,6 +411,37 @@ interface HarnessTraitNotCarried {
   readonly whyNotCarried: string;
 }
 
+/**
+ * A legacy identifier whose spelling is carried into the target UNCHANGED, misspelling
+ * and all, because the spelling is part of a contract rather than a private choice.
+ *
+ * `legacyLine` is asserted against the frozen legacy tree: the gate reads that line and
+ * requires the identifier to still be on it. `owningModule` is asserted by TEXT, never by
+ * line, because the target tree is live.
+ */
+interface VerbatimIdentifier {
+  readonly identifier: string;
+  readonly legacyFile: string;
+  readonly legacyLine: number;
+  readonly owningModule: string;
+  readonly contract: 'structKey' | 'metadataAttribute' | 'argumentName' | 'methodName';
+  readonly note: string;
+}
+
+/**
+ * A locator the plan states one way and the source states another, verified against the
+ * source at authoring time. Recorded so the correction is auditable instead of silently
+ * applied, and asserted so it cannot rot: the gate reads `verifiedLine` from the frozen
+ * legacy tree and requires `evidence` to be on it.
+ */
+interface LocatorCorrection {
+  readonly legacyFile: string;
+  readonly verifiedLine: number;
+  readonly evidence: string;
+  readonly asPlanned: string;
+  readonly note: string;
+}
+
 // --- Shared justifications -------------------------------------------------
 //
 // Three reasons are shared verbatim by groups of rows below. They are hoisted so the
@@ -420,6 +483,8 @@ export const LEGACY_TEST_MAP: {
   readonly signatureReshapings: readonly ParityEntry[];
   readonly entityLayerWidenings: readonly ParityEntry[];
   readonly deliberateDivergences: readonly DivergenceEntry[];
+  readonly verbatimIdentifiers: readonly VerbatimIdentifier[];
+  readonly locatorCorrections: readonly LocatorCorrection[];
   readonly requiredDefectCitations: readonly RequiredCitation[];
   readonly acknowledgedGaps: readonly AcknowledgedGap[];
   readonly harnessTraitsNotCarried: readonly HarnessTraitNotCarried[];
@@ -748,9 +813,16 @@ export const LEGACY_TEST_MAP: {
   // `kind` recorded on each row is re-derived from the module's own source text below,
   // so mislabelling a module that does carry runtime code fails the gate.
   //
-  // The six runtime modules are exempt only because each is exercised THROUGH a suite
+  // The five runtime modules are exempt only because each is exercised THROUGH a suite
   // that owns something else, and each names at least one path plus the text that
   // proves it. An exemption with no proof is an unbacked claim, so the gate rejects it.
+  //
+  // The count is five rather than six because `sql/skusBySelectedOptions.sql.ts` earned a
+  // dedicated suite and moved into `coveredModules` - under `namingExceptions`, since the
+  // suite drops the `.sql` infix from the module's name. Neither number is written down as
+  // a literal anywhere in the assertions: the type-only-versus-runtime split is
+  // RE-DERIVED from each module's own source text, so a module that grows runtime code
+  // while still claiming exemption fails the gate rather than resting on this comment.
   exemptModules: [
     {
       module: 'src/domain/ports/addressZoneEvaluator.ts',
@@ -1495,6 +1567,149 @@ export const LEGACY_TEST_MAP: {
     },
   ],
 
+  // --- Verbatim naming ------------------------------------------------------
+  //
+  // Interface parity is the acceptance contract, so a legacy method name is carried into
+  // the target in its CFML camelCase spelling - `getProductSkusBySelectedOptions`, never a
+  // renamed idiomatic equivalent. That much the interface-parity rows above already pin,
+  // symbol by symbol.
+  //
+  // These five rows pin the harder half of the same rule: identifiers the source
+  // MISSPELLS. Each is carried through unchanged, because in every one of these five the
+  // spelling is part of a contract that something outside the ported code depends on - a
+  // struct key an algorithm indexes, a permission attribute the legacy administration
+  // resolves, an association name the mapper reads - and "fixing" the spelling would break
+  // the contract while looking like tidying.
+  //
+  // CFML parity [model/service/PromotionService.cfc:L142]: a struct key is matched
+  // case-insensitively by the engine but exactly by TypeScript, so a key's spelling stops
+  // being cosmetic the moment it crosses into the target.
+  //
+  // JUDGMENT CALL: recorded here as a LEDGER, not re-asserted as behaviour. The gate
+  // checks that each identifier is still spelled the legacy way in the module that owns it
+  // and that the cited legacy line still carries it. It deliberately does not test what
+  // the identifier DOES - that belongs to the suite that owns the module, and duplicating
+  // it here would make this file a second copy of the behavioural tier.
+  verbatimIdentifiers: [
+    {
+      identifier: 'orderItemQulifiedDiscounts',
+      legacyFile: 'model/service/PromotionService.cfc',
+      legacyLine: 142,
+      owningModule: 'src/domain/promotionEngine/qualifiedDiscountTypes.ts',
+      contract: 'structKey',
+      note:
+        'The qualified-discount accumulator, missing its first "a". It is the key the ' +
+        'engine indexes while insert-sorting candidate discounts descending and then ' +
+        'applying only the largest, so the spelling is load-bearing for the must-preserve ' +
+        'discount math. The target records the original spelling alongside the symbol it ' +
+        'uses rather than pretending the source spelled it correctly.',
+    },
+    {
+      identifier: 'promtionRewards',
+      legacyFile: 'model/entity/PromotionReward.cfc',
+      legacyLine: 57,
+      owningModule: 'src/domain/entities/promotionReward.ts',
+      contract: 'metadataAttribute',
+      note:
+        'A permission attribute on the component declaration, missing its "o". The legacy ' +
+        'administration resolves permissions by this exact string, so it is a data ' +
+        'contract with something outside the ported slice and is preserved letter for ' +
+        'letter. Note the locator: this sits on L57, not on the L49 the plan cites.',
+    },
+    {
+      identifier: 'singlularname',
+      legacyFile: 'model/entity/Product.cfc',
+      legacyLine: 76,
+      owningModule: 'src/domain/entities/product.ts',
+      contract: 'metadataAttribute',
+      note:
+        'The singular-name attribute on the product-review association, with an extra ' +
+        '"l". Because the mapper reads the attribute by name, the misspelling means the ' +
+        'declared singular name is silently NOT applied - so reproducing the spelling is ' +
+        'what reproduces the behaviour. The association itself belongs to a review feature ' +
+        'outside this slice, which is why only the spelling is carried.',
+    },
+    {
+      identifier: 'subsciptionUsageBenefit',
+      legacyFile: 'model/entity/PriceGroup.cfc',
+      legacyLine: 168,
+      owningModule: 'src/domain/entities/priceGroup.ts',
+      contract: 'argumentName',
+      note:
+        'The argument name on the add-side of a bidirectional helper, missing its "r". ' +
+        'CFML resolves named arguments by this string, so a caller passing the correctly ' +
+        'spelled name would not bind. Carried verbatim for that reason.',
+    },
+    {
+      identifier: 'getSalePricExpirationDateTime',
+      legacyFile: 'model/entity/Product.cfc',
+      legacyLine: 618,
+      owningModule: 'src/domain/entities/product.ts',
+      contract: 'methodName',
+      note:
+        'The sharpest of the five, and verified rather than assumed: this misspelled name ' +
+        'is CALLED on the default SKU but is DECLARED nowhere - the correctly spelled ' +
+        'accessor two lines above is a method on the product, and the SKU entity has no ' +
+        'such member under either spelling. So the branch throws whenever a default SKU is ' +
+        'present, in the same way the promotion-priced accessor does. It is preserved as a ' +
+        'throwing path, not quietly bound to the correctly spelled neighbour.',
+    },
+  ],
+
+  // --- Locator corrections --------------------------------------------------
+  //
+  // Where the plan and the source disagree about WHERE something is, the source wins and
+  // the disagreement is recorded rather than silently corrected - otherwise the next
+  // reader re-derives it from scratch, or worse, trusts the plan. Each row was checked
+  // against the frozen legacy tree at authoring time, and each is asserted: the gate reads
+  // `verifiedLine` and requires `evidence` to be on it, so a row cannot decay into a claim
+  // about a line that no longer says what it said.
+  //
+  // These are corrections to a PLAN, not defects in the source. No legacy file is touched.
+  locatorCorrections: [
+    {
+      legacyFile: 'model/service/PromotionService.cfc',
+      verifiedLine: 1006,
+      evidence: 'precisionEvaluate',
+      asPlanned: 'omitted from the plan\u2019s list of precision-guarded sites',
+      note:
+        'Inside the discount calculation the precision guard is applied at five sites, not ' +
+        'four: this one wraps the subtraction handed to the rounding rule. Missing it would ' +
+        'understate how much of that method is precision-guarded, and it is precisely the ' +
+        'site that feeds the rounding step.',
+    },
+    {
+      legacyFile: 'model/service/PromotionService.cfc',
+      verifiedLine: 252,
+      evidence: 'precisionEvaluate',
+      asPlanned: 'cited four lines earlier in the plan',
+      note:
+        'The price-group correction term for an eligible order item. This is the site that ' +
+        'makes the promotion pass depend on the price-group pass having already run, so its ' +
+        'locator matters more than most.',
+    },
+    {
+      legacyFile: 'model/entity/PromotionReward.cfc',
+      verifiedLine: 57,
+      evidence: 'promtionRewards',
+      asPlanned: 'cited eight lines earlier in the plan',
+      note:
+        'The component declaration carrying both the physical table name and the ' +
+        'misspelled permission attribute. Its sibling qualifier component IS declared on ' +
+        'the line the plan cites, which is likely how the two came to be conflated.',
+    },
+    {
+      legacyFile: 'model/entity/Sku.cfc',
+      verifiedLine: 569,
+      evidence: 'getSkuStocksDeletableFlag',
+      asPlanned: 'cited one line earlier in the plan',
+      note:
+        'The locator-service call behind the stock-deletability memo. Recorded because the ' +
+        'call is one of the service-locator sites the port injection replaces, and an ' +
+        'off-by-one there sends a reader to the wrong statement.',
+    },
+  ],
+
   // A curated floor under the preserved-defect register. The register itself is
   // derived open-endedly from the source tree - these are the citations whose removal
   // would mean a must-preserve behaviour had been quietly repaired.
@@ -1548,6 +1763,17 @@ export const LEGACY_TEST_MAP: {
 
   // Coverage this migration does NOT have. Stated so that no reader can mistake the
   // shape of the suite for parity with a legacy suite that never existed.
+  //
+  // JUDGMENT CALL: `src/lib/config.ts` and `src/lib/logger.ts` are deliberately NOT listed
+  // here, and a reviewer holding the plan should expect to find them. The plan treats both
+  // as untested - exempt because they are exercised indirectly, and simultaneously flagged
+  // as gaps - on the stated premise that `tests/unit/lib/` has no direct children. That
+  // premise is false in this tree: `tests/unit/lib/config.test.ts` and
+  // `tests/unit/lib/logger.test.ts` both exist, so both modules sit in `coveredModules`
+  // above. Recording them here as contributing ZERO coverage would understate coverage
+  // that demonstrably exists, which is the same species of dishonesty as overstating it -
+  // and the assertions, which read the suite tree rather than the plan, would fail on the
+  // contradiction. Honesty runs in both directions or it is not honesty.
   acknowledgedGaps: [
     {
       subject: 'meta/tests/functional/admin/entity/ProductTest.cfc',
@@ -1558,11 +1784,15 @@ export const LEGACY_TEST_MAP: {
         'antecedent to carry forward and none is claimed.',
     },
     {
-      subject: 'the eight runtime modules in the pending register',
+      subject: 'the runtime modules in the pending register',
       coverageContribution: 0,
       note:
-        'Each is exercised indirectly, and none has a dedicated suite. They are listed as ' +
-        'owed rather than as exempt precisely so this gap cannot be read as parity.',
+        'One module is owed a suite of its own: the request router. It IS exercised ' +
+        'indirectly - every capability entrypoint suite drives a route through it - but no ' +
+        'suite owns it, so it is listed as owed rather than as exempt, precisely so this ' +
+        'gap cannot be read as parity. The register was eight modules deep when the ' +
+        'capability boundary was undelivered; seven have since earned suites and been ' +
+        'promoted, which is the register working as intended rather than being relaxed.',
     },
     {
       subject: 'legacy service, data-access and integration suites for this slice',
@@ -1727,6 +1957,29 @@ describe('A0 anti-vacuity: the map is anchored, populated, and loud on absence',
     );
     expect(existsSync(path.join(REPOSITORY_ROOT, 'com', 'entity'))).toBe(false);
     expect(existsSync(path.join(REPOSITORY_ROOT, 'model', 'entity'))).toBe(true);
+  });
+
+  it('carries the legacy tier\u2019s stated purpose forward verbatim, not paraphrased', () => {
+    // The one sentence in the legacy tree that says out loud what the coverage tier was
+    // FOR. It is quoted in this file's header, so both the source line and the quotation
+    // are checked: if the source is ever reworded, or the header quietly drifts into a
+    // paraphrase, this fails rather than leaving a misquotation in place.
+    const stated =
+      '/Coverage - This is a series of tests that are designed to make sure there is at ' +
+      'least a minimal level of testing in place when new components / files get added to ' +
+      'the project';
+    expect(repositoryLine('meta/tests/readme.txt', 14).trim()).toBe(stated);
+
+    // The header wraps the quotation across three comment lines, so the comparison strips
+    // leading comment markers and collapses runs of whitespace: the WORDS have to match,
+    // the line breaks need not. This cannot be satisfied by the string literal directly
+    // above - that one is assembled from three concatenated pieces, so the quoted text is
+    // never contiguous in it, and only the header's prose form matches.
+    const collapse = (text: string): string =>
+      text.replace(/^[ \t]*\/\/ ?/gm, '').replace(/\s+/g, ' ');
+    expect(collapse(readSubtreeFile('tests/traceability/legacyTestMap.ts'))).toContain(
+      collapse(stated),
+    );
   });
 
   it('enumerates a census large enough to be real', () => {
@@ -2274,6 +2527,126 @@ describe('A12 interface parity: three fixed budgets, checked by declaration text
   });
 });
 
+// --- A12b: verbatim naming, and the locators the plan got wrong -------------
+
+describe('A12b verbatim naming: misspelled legacy identifiers are carried, not corrected', () => {
+  it('records every identifier whose legacy spelling is part of a contract', () => {
+    // Five, and the count is asserted so that quietly dropping one - which is what
+    // "correcting" a spelling looks like in a diff - fails here rather than passing as
+    // tidying.
+    expect(LEGACY_TEST_MAP.verbatimIdentifiers.length).toBe(5);
+    const misspelled = LEGACY_TEST_MAP.verbatimIdentifiers.map((entry) => entry.identifier).sort();
+    expect(misspelled).toEqual([
+      'getSalePricExpirationDateTime',
+      'orderItemQulifiedDiscounts',
+      'promtionRewards',
+      'singlularname',
+      'subsciptionUsageBenefit',
+    ]);
+  });
+
+  it('and each one is still spelled that way on the legacy line it cites', () => {
+    const offenders: string[] = [];
+    for (const entry of LEGACY_TEST_MAP.verbatimIdentifiers) {
+      if (!existsSync(path.join(REPOSITORY_ROOT, entry.legacyFile))) {
+        offenders.push(`${entry.identifier}: ${entry.legacyFile} is missing`);
+        continue;
+      }
+      if (!repositoryLine(entry.legacyFile, entry.legacyLine).includes(entry.identifier)) {
+        offenders.push(
+          `${entry.identifier}: not on ${entry.legacyFile}:L${String(entry.legacyLine)}, so the ` +
+            'cited locator has drifted',
+        );
+      }
+    }
+    expect(offenders.sort()).toEqual([]);
+  });
+
+  it('and the target module that owns it still spells it the legacy way', () => {
+    const offenders: string[] = [];
+    for (const entry of LEGACY_TEST_MAP.verbatimIdentifiers) {
+      if (!subtreeFileExists(entry.owningModule)) {
+        offenders.push(`${entry.identifier}: ${entry.owningModule} is missing`);
+        continue;
+      }
+      if (!mentions(readSubtreeFile(entry.owningModule), entry.identifier)) {
+        offenders.push(
+          `${entry.identifier}: no longer recorded in ${entry.owningModule}, which would mean a ` +
+            'contract spelling had been silently corrected',
+        );
+      }
+      if (entry.note.trim().length < 40) {
+        offenders.push(`${entry.identifier}: carried without a stated reason`);
+      }
+    }
+    expect(offenders.sort()).toEqual([]);
+  });
+
+  it('and correctly spelled legacy method names are carried verbatim too', () => {
+    // The other half of the same rule, spot-checked on the method the plan names as the
+    // acceptance example: the CFML camelCase name survives into the target rather than
+    // being renamed to an idiomatic equivalent.
+    const verbatimMethodName = 'getProductSkusBySelectedOptions';
+    expect(readRepositoryFile('model/service/ProductService.cfc')).toContain(verbatimMethodName);
+    const carriers = SOURCE_MODULES_ON_DISK.filter((module) =>
+      mentions(readSubtreeFile(module), verbatimMethodName),
+    );
+    expect(carriers.length).toBeGreaterThan(0);
+  });
+});
+
+describe('A12c locator corrections: the source wins, and the correction is auditable', () => {
+  it('records each place the plan and the source disagree about a locator', () => {
+    expect(LEGACY_TEST_MAP.locatorCorrections.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('and every corrected locator really carries its evidence in the frozen legacy tree', () => {
+    const offenders: string[] = [];
+    for (const correction of LEGACY_TEST_MAP.locatorCorrections) {
+      if (!existsSync(path.join(REPOSITORY_ROOT, correction.legacyFile))) {
+        offenders.push(`${correction.legacyFile}: missing`);
+        continue;
+      }
+      const cited = repositoryLine(correction.legacyFile, correction.verifiedLine);
+      if (!cited.includes(correction.evidence)) {
+        offenders.push(
+          `${correction.legacyFile}:L${String(correction.verifiedLine)}: does not carry ` +
+            `"${correction.evidence}", so the correction is itself wrong`,
+        );
+      }
+      if (correction.asPlanned.trim().length === 0 || correction.note.trim().length < 40) {
+        offenders.push(
+          `${correction.legacyFile}:L${String(correction.verifiedLine)}: recorded without ` +
+            'stating what the plan said or why the difference matters',
+        );
+      }
+    }
+    expect(offenders.sort()).toEqual([]);
+  });
+
+  it('and the precision guard really is applied at five sites in the discount calculation', () => {
+    // The correction that matters most, because it is a COUNT rather than an offset: the
+    // plan lists four precision-guarded sites inside the discount calculation and the
+    // source has five. Derived here rather than restated, so the claim is checked.
+    const contents = readRepositoryFile('model/service/PromotionService.cfc');
+    const lines = contents.split(/\r?\n/);
+    const guarded: number[] = [];
+    for (const [index, line] of lines.entries()) {
+      if (line.includes('precisionEvaluate')) {
+        guarded.push(index + 1);
+      }
+    }
+    const withinDiscountCalculation = guarded.filter((line) => line >= 987 && line <= 1018);
+    expect(withinDiscountCalculation).toEqual([990, 995, 1001, 1006, 1007]);
+
+    // And the fixed-amount branch between them is the one site with NO guard, which is the
+    // second of the three deliberate divergences.
+    expect(repositoryLine('model/service/PromotionService.cfc', 998)).not.toContain(
+      'precisionEvaluate',
+    );
+  });
+});
+
 // --- A13: the preserved-defect register, derived rather than declared ------
 
 describe('A13 preserved-defect register: derived from the source tree', () => {
@@ -2459,7 +2832,7 @@ describe('A13b deliberate-divergence budget: derived from the source tree', () =
     // citation-derived census. It is therefore banned outright: a divergence declares
     // itself with a citation or it does not declare itself at all. Note that the
     // three-star glyph on its own is ordinary emphasis, used widely for security and
-    // atomicity boundaries, so only this two-token combination is forbidden.
+    // atomicity boundaries, so only this exact two-word pairing is forbidden.
     const offenders = SOURCE_MODULES_ON_DISK.filter((module) =>
       readSubtreeFile(module).includes('\u2605\u2605\u2605 DELIBERATE DIVERGENCE'),
     ).map((module) => `${module} uses the uncitable three-star divergence banner`);
