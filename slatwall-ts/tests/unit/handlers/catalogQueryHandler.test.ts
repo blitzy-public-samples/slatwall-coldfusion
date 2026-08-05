@@ -1453,11 +1453,14 @@ describe('catalogQueryHandler', () => {
     it('emits no authentication challenge because no scheme is declared', async () => {
       const response = await bed.invoke({ authorizer: null });
 
+      // ★ THREE HEADERS, STILL CLOSED. `x-content-type-options: nosniff` was added to the shared
+      // response set for QA-I4; what this case asserts is unchanged - no `www-authenticate`, because
+      // this route declares no challenge scheme.
       expect(
         Object.keys(response.headers ?? {})
           .map((name): string => name.toLowerCase())
           .sort(),
-      ).toEqual(['cache-control', 'content-type']);
+      ).toEqual(['cache-control', 'content-type', 'x-content-type-options']);
     });
 
     it('logs only the closed refusal category and no caller-authored claim text', async () => {
@@ -2372,9 +2375,11 @@ describe('catalogQueryHandler', () => {
       const response = await bed.invoke({ query: queryFor('findProducts', { keyword: 'jorden' }) });
 
       expect(response.statusCode).toBe(200);
+      // ★ THE THIRD IS THE `nosniff` ADDED FOR QA-I4. Still an EXACT set, so an invented fourth fails.
       expect(response.headers).toEqual({
         'content-type': 'application/json; charset=utf-8',
         'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
       });
     });
 
@@ -2808,6 +2813,7 @@ describe('catalogQueryHandler', () => {
         expect(Object.keys(response.headers ?? {}).sort()).toEqual([
           'cache-control',
           'content-type',
+          'x-content-type-options',
         ]);
       }
     });

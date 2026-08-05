@@ -279,10 +279,25 @@ const STATUS_BY_CATEGORY: Readonly<Record<MappedErrorCategory, number>> = Object
  * Headers on every response this module builds. `content-type` is declared explicitly because the
  * body is always a JSON document; `cache-control: no-store` keeps an intermediary from serving a
  * stored failure to a later, unrelated request.
+ *
+ * ★ `x-content-type-options: nosniff` IS NOW THE THIRD, AND THIS RECORDS WHY IT WAS ADDED. QA testing
+ * noted its absence and observed - correctly - that neither the AAP nor this module prescribes it and
+ * that it is conventionally set at the API Gateway edge. It is set HERE ANYWAY, for one reason: this
+ * module already declares `content-type` explicitly rather than leaving it to the edge, so it has
+ * already taken ownership of what the client is told about the body's type. `nosniff` is the half of
+ * that statement which says "and do not second-guess it". Leaving the two halves in different places
+ * is what lets a deployment satisfy one and not the other.
+ *
+ * ⚠ WHAT IT IS *NOT*. It is not a security posture, and no wider header set is invented alongside it -
+ * no `strict-transport-security`, no `content-security-policy`, no `x-frame-options`. Those govern how
+ * a BROWSER treats a DOCUMENT, this service answers machine callers with JSON, and inventing them here
+ * would be inventing a non-functional requirement the AAP explicitly forbids (0.8.1). One header, for
+ * the one claim this module already makes.
  */
 const JSON_RESPONSE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   'content-type': 'application/json; charset=utf-8',
   'cache-control': 'no-store',
+  'x-content-type-options': 'nosniff',
 });
 
 /**
@@ -822,6 +837,99 @@ function describeThrownShape(thrown: unknown): string {
 }
 
 /**
+ * The V8 marker prefixing an awaited frame, which is not part of the function's name.
+ *
+ * `at async ProductService.saveProduct (…)` names the same function as `at ProductService.saveProduct
+ * (…)`; without stripping this, every asynchronous frame would fail the classifier shape on the space
+ * alone and the most interesting frames in an async service would be exactly the ones dropped.
+ */
+const STACK_FRAME_ASYNC_PREFIX = 'async ';
+
+/** Where a V8 stack frame's location begins, and therefore where the function's name ends. */
+const STACK_FRAME_LOCATION_MARKER = ' (';
+
+/** The prefix V8 puts on every frame line. */
+const STACK_FRAME_PREFIX = 'at ';
+
+/**
+ * Name the FUNCTION a failure was thrown from, and nothing else about it.
+ *
+ * ---------------------------------------------------------------------------
+ * ★★ WHY THIS EXISTS: A REAL DIAGNOSIS FAILURE, NOT A HYPOTHETICAL ONE
+ * ---------------------------------------------------------------------------
+ * QA testing found a CRITICAL wiring defect - a hydrated `ProductType` reaching
+ * `getBaseProductType()` without the repository port it needs - and reported that the defect was
+ * UNDIAGNOSABLE FROM THE LOGS. The reason is precise and worth stating: the thrown value was a plain
+ * `Error`, so {@link describeThrownShape} truthfully reported `thrownShape: 'Error'`, and
+ * {@link readSafeErrorCode} found no `code`. A composition failure and a driver failure therefore
+ * produced IDENTICAL log lines. The deliberate refusal to emit the message - which is correct and is
+ * unchanged - left nothing else to go on.
+ *
+ * The first stack frame's function name is the missing piece, and it is the RIGHT missing piece:
+ * `ProductType.getBaseProductType` identifies the defect immediately, while a driver failure names a
+ * driver function instead. It is what a reader would have looked at first if the stack had been
+ * available.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY IT IS SAFE, WHICH IS THE ONLY REASON IT IS PERMITTED
+ * ---------------------------------------------------------------------------
+ * A function name in a stack frame is CODE-AUTHORED. It is a symbol from this repository or from a
+ * dependency; a caller cannot supply one, because nothing here ever installs a method under a
+ * caller-chosen key. That is what distinguishes it from the message, which routinely quotes a
+ * rejected value, a statement fragment or a connection detail, and which is why the message stays
+ * unemitted.
+ *
+ * Three further properties are enforced rather than assumed:
+ *
+ *   - ONLY THE FIRST FRAME. A full stack is a map of this service's internals; one frame is the
+ *     classifier, and every deeper frame is dropped.
+ *   - NO FILESYSTEM PATH, STRUCTURALLY. The name is taken from BEFORE the ` (` that opens the frame's
+ *     location, so the location is never read. Even if it were, it could not pass:
+ *     {@link SAFE_ERROR_TOKEN_PATTERN} admits no `/`, no `:` and no whitespace, so a path, a URL and a
+ *     line-and-column reference each fail it.
+ *   - FAIL CLOSED. Anything that is not a plain classifier token yields `undefined` and the field is
+ *     omitted from the line entirely. An anonymous frame (`Object.<anonymous>`), a constructor frame
+ *     (`new ProductType`), an `eval` frame, a location-only frame and a 65-character name are all
+ *     dropped rather than trimmed or substituted, because a diagnostic worth having is worth having
+ *     unambiguously.
+ *
+ * ★ IT GOES TO THE LOG ONLY. It is never placed in a response body. The body stays
+ * {@link GENERIC_FAILURE_MESSAGE}, correlated to the line by `requestId` - the central guarantee of
+ * this module, which this addition does not touch.
+ *
+ * @param thrown the value that reached the unrecognized arm.
+ * @returns the throwing function's name when it is shaped like a classifier, `undefined` otherwise.
+ */
+function describeThrowSite(thrown: unknown): string | undefined {
+  if (!(thrown instanceof Error) || typeof thrown.stack !== 'string') {
+    return undefined;
+  }
+
+  for (const rawLine of thrown.stack.split('\n')) {
+    const line = rawLine.trim();
+
+    // The first line of a V8 stack is `Name: message`, which must never be read. Frame lines are the
+    // ones beginning `at `, and only the FIRST of those is considered - the loop exists to find it,
+    // not to walk past it.
+    if (!line.startsWith(STACK_FRAME_PREFIX)) {
+      continue;
+    }
+
+    const frame = line.slice(STACK_FRAME_PREFIX.length);
+    const locationAt = frame.indexOf(STACK_FRAME_LOCATION_MARKER);
+    // A frame with no ` (` is location-only (`at /srv/app/x.js:1:2`), so there is no name to take.
+    const named = locationAt === -1 ? '' : frame.slice(0, locationAt);
+    const withoutAsync = named.startsWith(STACK_FRAME_ASYNC_PREFIX)
+      ? named.slice(STACK_FRAME_ASYNC_PREFIX.length)
+      : named;
+
+    return SAFE_ERROR_TOKEN_PATTERN.test(withoutAsync) ? withoutAsync : undefined;
+  }
+
+  return undefined;
+}
+
+/**
  * How much of a route diagnostic is kept. The bound exists because the value is CALLER-SUPPLIED: a
  * request may name any path at all, and an unbounded copy of it on the log stream is work a caller
  * can ask for. Matches the echo bounds used for the same reason in `src/lib/config.ts` and
@@ -1216,10 +1324,19 @@ export function mapErrorToApiGatewayResponse(
   // thrown value need not be an `Error` at all: a thrown string, or a plain object carrying a
   // `message` member, is a structure the logger's key-based policy would traverse and emit
   // verbatim. Classifying at the call site closes that case at its source.
+  //
+  // ★ `thrownAt` IS THE THIRD CLASSIFIER, AND IT WAS ADDED BECAUSE THE FIRST TWO WERE NOT ENOUGH. QA
+  // testing reported a CRITICAL wiring defect as undiagnosable from this line: the thrown value was a
+  // plain `Error`, so `thrownShape` was truthfully `'Error'` and `errorCode` was absent, making a
+  // composition failure indistinguishable from a driver failure. `thrownAt` names the FUNCTION the
+  // failure came from - code-authored, held to the classifier shape, never a path, omitted entirely
+  // when it is anything else. See {@link describeThrowSite}. The response body is unchanged and still
+  // carries nothing but the generic message and the `requestId` that correlates it to this line.
   sink.error('unrecognized failure mapped to a generic response', {
     ...baseLogContext('unrecognized', context),
     thrownShape: describeThrownShape(thrown),
     errorCode: readSafeErrorCode(thrown),
+    thrownAt: describeThrowSite(thrown),
   });
   return buildResponse('unrecognized', GENERIC_FAILURE_MESSAGE, context.requestId, undefined);
 }

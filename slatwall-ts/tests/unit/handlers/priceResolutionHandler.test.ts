@@ -1292,6 +1292,44 @@ describe('the request contract, and what it refuses (concern 1)', () => {
     }
   });
 
+  it('★★ refuses a `__proto__` own key with a member path, at the root and nested alike (QA-I3)', async () => {
+    // ★★ THE ONE UNRECOGNIZED KEY `z.strictObject` DOES NOT REFUSE. This endpoint is where QA testing
+    // submitted it, and measured both halves: zod ACCEPTS an own `__proto__` and silently drops it at
+    // every nesting level, while rejecting a `constructor` key in the same position - and
+    // `Object.prototype` is left unmodified either way. The inconsistency is what is closed here, plus
+    // defence in depth if a merge-style consumer is ever added downstream.
+    //
+    // ⚠ RAW JSON TEXT, NOT AN OBJECT LITERAL, and that is not a style choice. `{ __proto__: {} }`
+    // invokes the prototype SETTER and creates no own property, so a literal fixture would contain
+    // nothing to detect and this case would pass against a guard that did nothing. `JSON.parse` - which
+    // is what the handler runs on the body API Gateway delivers - makes it an own data property.
+    const bodies: readonly { readonly body: string; readonly path: string }[] = [
+      {
+        body: '{"operation":"calculateSkuPriceBasedOnPriceGroup","__proto__":{"p":1}}',
+        path: '__proto__',
+      },
+      {
+        body: '{"operation":"calculateSkuPriceBasedOnPriceGroup","sku":{"skuID":"s-1","__proto__":{"p":1}}}',
+        path: 'sku.__proto__',
+      },
+    ];
+
+    for (const { body, path } of bodies) {
+      const response = await handler(makeProxyEvent({ body }), makeLambdaContext());
+      const envelope = readErrorEnvelope(response);
+
+      expect(response.statusCode).toBe(400);
+      expect(envelope.category).toBe('invalidRequest');
+      expect(envelope.message).toBe(INVALID_BODY_MESSAGES.unusableRequestInput);
+      // The path names the KEY the caller sent. No value is echoed - the invariant every refusal on
+      // this endpoint holds to.
+      expect(envelope.raw).toContain(path);
+    }
+
+    // The finding's own central observation, re-asserted rather than taken on trust.
+    expect(Object.prototype).not.toHaveProperty('p');
+  });
+
   it('refuses an operation outside the closed union, publishing paths and never values', async () => {
     const response = await handler(
       makeProxyEvent({
@@ -4056,11 +4094,17 @@ describe('response shaping (concern 3)', () => {
   it('answers a mapped failure with a JSON document and no-store caching', async () => {
     // `no-store` is not a performance decision and carries no target of any kind: a resolved price is
     // account-scoped, so a shared cache must not be permitted to serve one account's price to another.
+    //
+    // ★ `x-content-type-options: nosniff` IS THE THIRD, ADDED FOR QA-I4 - the shared builder already
+    // declares the content type explicitly, and this is the half of that statement which says a
+    // recipient must not sniff past it. The set is still asserted EXACTLY, so a fourth invented
+    // header still fails this case.
     const response = await handler(makeProxyEvent(), makeLambdaContext());
 
     expect(response.headers).toStrictEqual({
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
     });
   });
 
@@ -4126,7 +4170,8 @@ describe('response shaping (concern 3)', () => {
     const served = jsonSuccessResponse(REQUEST_ID, route.capability, route.action, document);
 
     expect(served.statusCode).toBe(200);
-    // The SAME header pair a mapped failure carries, including the account-scoped `no-store`.
+    // The SAME header set a mapped failure carries, including the account-scoped `no-store` and the
+    // `nosniff` added for QA-I4.
     expect(served.headers).toStrictEqual(REQUIRED_SUCCESS_RESPONSE_HEADERS);
 
     const body: SuccessResponseBody<PriceResolutionResultDocument> = JSON.parse(
@@ -4985,10 +5030,12 @@ describe('the Lambda entrypoint, through its dependency seam (F3)', () => {
     ).toHaveLength(1);
     expect(envelope.operation).toBe('calculateSkuPriceBasedOnAccount');
     expect(envelope.result['outcome']).toBe('price');
-    // The response is shaped by the two frozen headers and nothing else.
+    // The response is shaped by the three frozen headers and nothing else - the third being the
+    // `nosniff` added for QA-I4.
     expect(response.headers).toStrictEqual({
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
     });
     // A parseable instant, and the CONTEXT's correlation identifier rather than the event's.
     expect(Number.isNaN(Date.parse(envelope.resolvedAt))).toBe(false);

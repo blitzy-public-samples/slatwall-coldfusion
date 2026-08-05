@@ -141,6 +141,7 @@ import type {
   ProductSavePayload,
   ProductSearchMatches,
 } from '../../domain/ports/productRepository.js';
+import type { ProductTypeRepository } from '../../domain/ports/productTypeRepository.js';
 import type { SalePriceDetail } from '../../domain/ports/promotionRepository.js';
 import { Money } from '../../domain/valueObjects/money.js';
 import { listToArray } from '../../lib/cfml/list.js';
@@ -160,6 +161,13 @@ import {
 } from './connection.js';
 import type { DatabaseDialect } from './dialect.js';
 import { assertMySqlDialect } from './dialect.js';
+// The DEFAULT for the `productTypeRepository` collaborator, imported as a VALUE because it is
+// constructed here when the composition root supplied none. Same layer, so no boundary is crossed -
+// `eslint.config.mjs` forbids `src/domain/**` from importing outward and says nothing about one
+// adapter holding another, which this file already does through `ProductSkuCascadeWriter`. The edge
+// is one-directional: `./mysqlProductTypeRepository.js` imports nothing from this module, so no
+// cycle is closed. See {@link ProductHydrationCollaborators} for why the default exists at all.
+import { MysqlProductTypeRepository } from './mysqlProductTypeRepository.js';
 
 // ---------------------------------------------------------------------------
 // Dialect
@@ -1892,6 +1900,44 @@ type ProductHydrationCollaborators = Readonly<
    * {@link ProductSalePriceResolver} for why it is a resolver here and a resolved MAP on the entity.
    */
   readonly salePriceResolver?: ProductSalePriceResolver;
+
+  /**
+   * The product-type load-by-identifier port forwarded into every `ProductType` this adapter
+   * hydrates.
+   *
+   * ★★★ ADDED IN RESPONSE TO A RUNTIME FINDING, AND THE FINDING IS WHY IT IS DOCUMENTED AT LENGTH.
+   * QA testing drove `POST /promotions/application` with ordinary catalogue data and received a
+   * 500. The trace was
+   *   `loadDocumentSkus` -> `SkuRepository.getProductSkus(product, /*fetchOptions*\/ true)`
+   *   -> `Product.getBaseProductType()` -> `ProductType.getBaseProductType()`,
+   * and the last of those RAISES when the product type carries no `systemCode` and no
+   * `productTypeRepository` was supplied at hydration. Only a BASE product type carries a system
+   * code [model/entity/ProductType.cfc:L110-L115], so an empty one is the NORMAL shape for a leaf,
+   * which made the failure the normal case rather than an edge case. The entity is right to raise -
+   * see the "ABSENT OR EMPTY RETURN IS A LEGITIMATE ANSWER" note on that method, and AAP 0.6.3 on
+   * why a fabricated fallback would flow into the `baseProductType` `inList` gate in
+   * [model/validation/Product.json] and turn a hard failure into a WRONG ANSWER. The defect was
+   * that the port never arrived, so the port is what is fixed.
+   *
+   * ★ IT IS OPTIONAL ON THE BAG AND YET NEVER ABSENT ON A HYDRATED ENTITY. Every other member here
+   * is optional because a SQL-shape suite constructs this class with a capturing executor alone, and
+   * this one keeps that property. What it does NOT keep is the consequence of absence:
+   * {@link MysqlProductRepository} resolves it ONCE in its constructor and falls back to a
+   * `MysqlProductTypeRepository` over ITS OWN executor and audit actor, so a product type this
+   * adapter builds always carries a working port. That is deliberate and is not a service locator:
+   * the fallback is a DEFAULT for one constructor argument, over the same seam this instance was
+   * handed, and the composition root still supplies the instance it wired (T1). Nothing is resolved
+   * by name, nothing is scanned, and no module-scope singleton is reached.
+   *
+   * WHY A DEFAULT RATHER THAN A REQUIRED PARAMETER. Making the bag member required would be the
+   * stricter choice and is the wrong one here: it would leave the 123 construction sites in
+   * `tests/integration/repositories/mysqlProductRepository.test.ts` unable to build the subject, and
+   * the alternative to "no port" is not "a better port" - it is a hundred suites that can no longer
+   * assert emitted SQL. A default over the executor already in hand gives the guarantee without the
+   * cost, and it cannot diverge from the wired instance in any way a caller can observe: both read
+   * the same rows through the same executor and neither holds state.
+   */
+  readonly productTypeRepository?: ProductTypeRepository;
 };
 
 /**
@@ -2481,17 +2527,37 @@ function toBrandFromGraphRow(row: SqlRow, statementLabel: string): Brand {
  * ⚠ `products` [model/entity/ProductType.cfc:L66] declares `lazy="extra"` and is NOT materialized - see
  * {@link PRODUCT_GRAPH_PROJECTION}. `parentProductType` is likewise not materialized: walking the parent
  * chain from a product read would issue an unbounded number of statements up an arbitrarily deep tree,
- * and the ONE consumer that needs the chain, `Product.getBaseProductType()`, goes through
- * `settingsProvider` and the product-type repository rather than through this association. The
- * materialized `productTypeIDPath` is the whole ancestry as a value, so the path-based consumers need no
- * traversal at all.
+ * and the ONE consumer that needs the chain, `Product.getBaseProductType()`, resolves it through the
+ * INJECTED `productTypeRepository` below rather than through this association. The materialized
+ * `productTypeIDPath` is the whole ancestry as a value, so the path-based consumers need no traversal
+ * at all.
+ *
+ * ★★★ QUOTE-THEN-REVISE, AND THE QUOTED CLAIM WAS FALSE AT RUNTIME. The paragraph above used to end:
+ * "the ONE consumer that needs the chain, `Product.getBaseProductType()`, goes through
+ * `settingsProvider` and the product-type repository rather than through this association". The first
+ * half was simply wrong - `getBaseProductType()` reaches no setting - and the second half described a
+ * port THIS FUNCTION DID NOT PASS, so the sentence read as an assurance while the assurance was not
+ * being kept. QA testing then found the consequence: every `POST /promotions/application` whose order
+ * item named a product with a system-code-less product type answered 500, because
+ * [model/entity/ProductType.cfc:L112] loads the ROOT of `productTypeIDPath` and the entity had nothing
+ * to load it with. The port is now supplied, and it is supplied HERE, at the construction site,
+ * because that is where transformation rule T2 puts a collaborator an entity used to fetch by name.
  *
  * @param row one product graph row.
  * @param statementLabel the statement that produced it.
+ * @param productTypeRepository the load-by-identifier port every hydrated product type carries, so
+ *   that `getBaseProductType()` can resolve the root of `productTypeIDPath`
+ *   [model/entity/ProductType.cfc:L112]. REQUIRED here even though the entity's own slot is optional:
+ *   this adapter always has one to give - see {@link ProductHydrationCollaborators} - and making the
+ *   parameter mandatory is what stops a future hydration site from re-introducing the 500.
  * @returns the product type.
  * @throws An error named `ProductColumnError` when a projected column is missing or malformed.
  */
-function toProductTypeFromGraphRow(row: SqlRow, statementLabel: string): ProductType {
+function toProductTypeFromGraphRow(
+  row: SqlRow,
+  statementLabel: string,
+  productTypeRepository: ProductTypeRepository,
+): ProductType {
   return new ProductType({
     productTypeID: readIdentifier(row, 'pt_productTypeID', statementLabel),
     productTypeIDPath: readOptionalText(row, 'pt_productTypeIDPath', statementLabel),
@@ -2507,6 +2573,7 @@ function toProductTypeFromGraphRow(row: SqlRow, statementLabel: string): Product
     createdByAccountID: readOptionalText(row, 'pt_createdByAccountID', statementLabel),
     modifiedDateTime: readTimestamp(row, 'pt_modifiedDateTime', statementLabel),
     modifiedByAccountID: readOptionalText(row, 'pt_modifiedByAccountID', statementLabel),
+    productTypeRepository,
   });
 }
 
@@ -3015,7 +3082,28 @@ export class MysqlProductRepository implements ProductRepository {
     private readonly auditActor: AuditActorContext,
     private readonly collaborators: ProductHydrationCollaborators = {},
     private readonly skuCascadeWriter?: ProductSkuCascadeWriter,
-  ) {}
+  ) {
+    this.productTypeRepository =
+      collaborators.productTypeRepository ?? new MysqlProductTypeRepository(executor, auditActor);
+  }
+
+  /**
+   * The port every `ProductType` this adapter hydrates is constructed with.
+   *
+   * Resolved ONCE, in the constructor, from the collaborators bag when the composition root wired one
+   * and from a sibling adapter over THIS instance's executor and audit actor otherwise. It is a
+   * `readonly` field rather than a lazily-memoised getter because construction reads nothing, issues
+   * no statement and touches no executor - the suites that assert "constructing the adapter must not
+   * touch the executor at all" stay true - so there is nothing to defer.
+   *
+   * NOT A CACHE. It holds no row and no answer; it is a collaborator reference, and the adapter it
+   * points at holds no state either. Request scoping is unaffected: this instance is built per
+   * request in `src/handlers/bootstrap.ts` and discarded with it.
+   *
+   * See {@link ProductHydrationCollaborators} for the runtime finding that made this field necessary
+   * and for why the bag member is optional while this field is not.
+   */
+  private readonly productTypeRepository: ProductTypeRepository;
 
   // =========================================================================
   // Port method 1 of 7 - getAttributeSets [model/dao/ProductDAO.cfc:L52-L71]
@@ -3461,11 +3549,24 @@ export class MysqlProductRepository implements ProductRepository {
    * column was NULL" from a `boolean` is not possible and inventing a nullable side channel would change
    * the entity's published contract.
    *
-   * NO ROW COUNT IS INSPECTED ON THE UPDATE. MySQL reports CHANGED rows rather than MATCHED rows unless
-   * the connection asks otherwise, so an update storing values identical to those already present
-   * reports zero - and treating that as a fault would raise on a legitimate no-op save. The legacy's
-   * staleness detection came from the Hibernate session, which is gone; inventing a replacement out of a
-   * driver counter that does not mean what it appears to mean would be worse than having none.
+   * ★★★ THE UPDATE'S ROW COUNT IS NOW INSPECTED, AND THIS IS THE RECORD OF THAT CHANGE. This paragraph
+   * used to read: "NO ROW COUNT IS INSPECTED ON THE UPDATE. MySQL reports CHANGED rows rather than
+   * MATCHED rows unless the connection asks otherwise, so an update storing values identical to those
+   * already present reports zero - and treating that as a fault would raise on a legitimate no-op save.
+   * The legacy's staleness detection came from the Hibernate session, which is gone; inventing a
+   * replacement out of a driver counter that does not mean what it appears to mean would be worse than
+   * having none."
+   *
+   * ITS "UNLESS THE CONNECTION ASKS OTHERWISE" CLAUSE IS THE ANSWER: this connection DOES ask. `mysql2`'s
+   * default client flag set includes `FOUND_ROWS`
+   * [node_modules/mysql2/lib/connection_config.js: `getDefaultFlags`] and `./connection.js`
+   * `buildPoolOptions()` overrides no `flags`, so the server reports rows MATCHED. Measured against the
+   * live schema: a no-change update answers `affectedRows: 1` with `Rows matched: 1  Changed: 0`, and a
+   * no-match update answers `0`. The counter therefore means exactly what it appears to mean here, the
+   * legitimate no-op save is not at risk, and a zero is unambiguously "the row this key names is gone" -
+   * which is the `StaleObjectStateException` the Hibernate session raised. QA testing found the
+   * consequence of the old silence on the sibling SKU update: a save whose key named no row reported
+   * SUCCESS and answered the entity carrying that key.
    *
    * WHAT THE FOUR ASSOCIATIONS DO AND DO NOT DO. The three foreign keys are written FROM the associations
    * - `brandID` from `getBrand()`, `productTypeID` from `getProductType()`, `defaultSkuID` from
@@ -4211,7 +4312,15 @@ export class MysqlProductRepository implements ProductRepository {
         throw new ProductAssociationError('productType', 'SwProductType', PRODUCT_GRAPH_LABEL);
       }
 
-      draft.productType = toProductTypeFromGraphRow(row, PRODUCT_GRAPH_LABEL);
+      // The port travels with the entity, so a product type reached through a PRODUCT read can
+      // resolve the root of its own `productTypeIDPath` exactly as one reached through
+      // `mysqlProductTypeRepository` can. Before this argument existed the two disagreed, and the
+      // disagreement was a 500 on the promotion-application journey.
+      draft.productType = toProductTypeFromGraphRow(
+        row,
+        PRODUCT_GRAPH_LABEL,
+        this.productTypeRepository,
+      );
     }
 
     const defaultSkuID = readOptionalText(row, 'p_defaultSkuID', PRODUCT_GRAPH_LABEL);
@@ -4413,10 +4522,23 @@ export class MysqlProductRepository implements ProductRepository {
       return { skus, defaultSku: designated };
     }
 
-    await plan.tx.executeMutation(UPDATE_PRODUCT_DEFAULT_SKU_SQL, [
+    const designation = await plan.tx.executeMutation(UPDATE_PRODUCT_DEFAULT_SKU_SQL, [
       persistedDefault.getSkuID(),
       productID,
     ]);
+
+    // ★★ THE DEFERRED FOREIGN KEY IS THE LAST OF THE THREE WRITES AND THE EASIEST TO LOSE SILENTLY.
+    // It runs inside the transaction that has just written the product row, so a zero here means that
+    // row is not where this statement looked - and answering `defaultSku: persistedDefault` on that
+    // evidence would report a designation the row does not hold. Refusing rolls the whole unit back,
+    // which is the outcome the deferral exists to make possible. See the SKU adapter's update guard for
+    // why `affectedRows` counts rows MATCHED on this pool.
+    if (designation.affectedRows === 0) {
+      throw new ProductPersistenceError(
+        'the deferred defaultSkuID update matched no SwProduct row, so the designation the cascade ' +
+          'just persisted could not be recorded',
+      );
+    }
 
     return { skus, defaultSku: persistedDefault };
   }
@@ -4589,11 +4711,24 @@ export class MysqlProductRepository implements ProductRepository {
       resolveAuditActorAccountID(this.auditActor),
     );
 
-    await executor.executeMutation(UPDATE_PRODUCT_SQL, [
+    const update = await executor.executeMutation(UPDATE_PRODUCT_SQL, [
       ...toBoundParameters(record, PRODUCT_UPDATED_COLUMNS, PRODUCT_UPDATE_LABEL),
       // THE KEY IS BOUND LAST, matching the statement's `WHERE productID = ?`.
       product.getProductID(),
     ]);
+
+    // ★★ REFUSED WHEN NO ROW MATCHED, the same guard the SKU adapter's update carries and for the same
+    // reason: QA testing found an update against a non-existent key reporting SUCCESS on the sibling
+    // path, and Hibernate raised there rather than reporting success. `affectedRows` counts rows MATCHED
+    // rather than rows CHANGED here - `mysql2`'s default client flags include `FOUND_ROWS` and
+    // `./connection.js` overrides none - so a no-op update whose values already matched is NOT mistaken
+    // for a missed one, and a zero genuinely means the key named nothing.
+    if (update.affectedRows === 0) {
+      throw new ProductPersistenceError(
+        'the update matched no SwProduct row, so the key it carries names nothing and the entity ' +
+          'cannot be reported as persisted',
+      );
+    }
 
     const cascade =
       plan === undefined

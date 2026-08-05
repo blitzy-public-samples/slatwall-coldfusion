@@ -77,6 +77,7 @@ import type { OrderView } from '../../../src/domain/views/orderView.js';
 // the class is retired. The cases that named it are inverted in the walk's own describe block below.
 import {
   bootstrapCompositionRoot,
+  OrderViewDocumentDataError,
   resetCompositionRoot,
   UntrustedFeedHostError,
 } from '../../../src/handlers/bootstrap.js';
@@ -363,6 +364,42 @@ async function rejectionOf(run: () => Promise<unknown>): Promise<Error> {
   }
 
   throw new Error('the suite expected the call to reject, and it resolved');
+}
+
+/**
+ * Narrow a caught `Error` to the one refusal class this module DOES export.
+ *
+ * ★ WHY THIS ONE IS `instanceof`-ABLE WHEN THE FIVE IN THE NOTE ABOVE ARE NOT.
+ * `OrderViewDocumentDataError` is exported deliberately, because a primary adapter has to RECOGNISE
+ * it to report a caller-shaped 400 with its member paths - that recognition is the whole point of the
+ * class, and a class nobody can name cannot be recognised. So here the strongest assertion is
+ * available and it is used: the type, and then its `fields` exactly.
+ */
+function requireDocumentDataError(raised: Error): OrderViewDocumentDataError {
+  if (!(raised instanceof OrderViewDocumentDataError)) {
+    throw new Error(
+      `the suite expected an OrderViewDocumentDataError and the call raised ${raised.name}`,
+    );
+  }
+
+  return raised;
+}
+
+/**
+ * Everything a refusal could put in front of a caller or an operator, as one string.
+ *
+ * The no-echo assertions have to cover BOTH channels, because they fail differently: a published
+ * `fields` entry reaches the response body, and the `Error` message reaches the log stream. Joining
+ * the two means one `not.toContain` covers the pair, so a value that migrated from one to the other
+ * would still be caught.
+ */
+function publishedTextOf(raised: Error): string {
+  const fields =
+    raised instanceof OrderViewDocumentDataError
+      ? raised.fields.map((field) => `${field.path} ${field.message}`).join(' ')
+      : '';
+
+  return `${raised.message} ${fields}`;
 }
 
 /**
@@ -2975,7 +3012,18 @@ describe('RequestScope.materializeOrderView', () => {
     expect(fulfillment.address).toBeUndefined();
   });
 
-  it('REFUSES an order item whose product cannot be loaded, naming both identifiers', async () => {
+  // ★★★ THE THREE CASES BELOW WERE INVERTED BY A RUNTIME FINDING, AND WHAT CHANGED IS WORTH STATING.
+  // Each used to assert `raised.name === 'CompositionDataError'` AND that the failing IDENTIFIER
+  // appeared in the message. QA testing found the consequence of the first half: `CompositionDataError`
+  // is unexported and lands on the mapper's generic arm, so a document naming an unknown product
+  // answered `500 unrecognized` with no `fields` - a caller-fixable mistake reported as a service
+  // fault, inflating the 5xx signal. The refusal is now an exported, caller-shaped
+  // `OrderViewDocumentDataError` carrying MEMBER PATHS, and the second half of each old assertion is
+  // inverted with it: the identifier must now be ABSENT from everything publishable, because a path
+  // says which member to fix without repeating what was sent. Both halves are asserted, so neither the
+  // classification nor the no-echo rule can regress unnoticed.
+
+  it('REFUSES an order item whose product cannot be loaded, naming the member path', async () => {
     const { scope, skuReads } = await openHydration({ products: new Map<string, Product>() });
 
     const raised = await rejectionOf(() => scope.materializeOrderView(orderDocument()));
@@ -2983,14 +3031,22 @@ describe('RequestScope.materializeOrderView', () => {
     // Refused, never skipped: an item whose product cannot be loaded is an item whose product-type
     // ancestry, brand and option list are unknown - and those are exactly what reward and qualifier
     // membership is decided by, so pricing it would be pricing against an unknown catalogue.
-    expect(raised.name).toBe('CompositionDataError');
-    expect(raised.message).toContain(DOCUMENT_PRODUCT_ID);
-    expect(raised.message).toContain(DOCUMENT_ITEM_ID);
+    expect(raised).toBeInstanceOf(OrderViewDocumentDataError);
+    expect(requireDocumentDataError(raised).fields).toEqual([
+      {
+        path: 'order.orderItems.0.productID',
+        message: 'does not name a product this request can price',
+      },
+    ]);
+    // NOTHING SUBMITTED IS ECHOED - not in the published fields and not in the message a log line
+    // would carry either.
+    expect(publishedTextOf(raised)).not.toContain(DOCUMENT_PRODUCT_ID);
+    expect(publishedTextOf(raised)).not.toContain(DOCUMENT_ITEM_ID);
     // And it refused BEFORE reaching for SKUs.
     expect(skuReads).toEqual([]);
   });
 
-  it('REFUSES a SKU the named product does not carry, naming the pair', async () => {
+  it('REFUSES a SKU the named product does not carry, naming both member paths', async () => {
     const product = documentProduct(DOCUMENT_PRODUCT_ID);
     const stranger = documentSku(DOCUMENT_SECOND_SKU_ID, product);
     const { scope } = await openHydration({
@@ -3001,11 +3057,15 @@ describe('RequestScope.materializeOrderView', () => {
 
     const raised = await rejectionOf(() => scope.materializeOrderView(orderDocument()));
 
-    // The two identifiers disagree about the catalogue. Both are named so the caller can fix the
-    // pair rather than guess which half was wrong.
-    expect(raised.name).toBe('CompositionDataError');
-    expect(raised.message).toContain(DOCUMENT_SKU_ID);
-    expect(raised.message).toContain(DOCUMENT_PRODUCT_ID);
+    // The two identifiers disagree about the catalogue. BOTH MEMBERS are named - which of the pair is
+    // wrong is exactly what the caller has to decide - and neither value is repeated back.
+    expect(raised).toBeInstanceOf(OrderViewDocumentDataError);
+    expect(requireDocumentDataError(raised).fields.map((field) => field.path)).toEqual([
+      'order.orderItems.0.skuID',
+      'order.orderItems.0.productID',
+    ]);
+    expect(publishedTextOf(raised)).not.toContain(DOCUMENT_SKU_ID);
+    expect(publishedTextOf(raised)).not.toContain(DOCUMENT_PRODUCT_ID);
   });
 
   it('REFUSES a price group that cannot be resolved rather than dropping it', async () => {
@@ -3026,8 +3086,14 @@ describe('RequestScope.materializeOrderView', () => {
     // ★ DROPPING IT WOULD CHANGE THE MONEY, not merely lose a reference: an item with no applied
     // price group takes the FIRST arm of the [model/service/PromotionService.cfc:L241] discriminator,
     // which computes the discount from a different base price.
-    expect(raised.name).toBe('CompositionDataError');
-    expect(raised.message).toContain('pg-missing-0001');
+    expect(raised).toBeInstanceOf(OrderViewDocumentDataError);
+    expect(requireDocumentDataError(raised).fields).toEqual([
+      {
+        path: 'order.orderItems.0.appliedPriceGroupID',
+        message: 'does not name a price group this request can price against',
+      },
+    ]);
+    expect(publishedTextOf(raised)).not.toContain('pg-missing-0001');
   });
 
   it('REFUSES a monetary member that is not a plain decimal numeral', async () => {
@@ -3083,7 +3149,7 @@ describe('RequestScope.materializeOrderView', () => {
     // stops one invocation's catalogue - and therefore one customer's price - reaching another's.
     expect(itemAt(view, 0).sku).toBe(sku);
     expect(secondProductReads).toEqual([DOCUMENT_PRODUCT_ID]);
-    expect(raised.name).toBe('CompositionDataError');
+    expect(raised).toBeInstanceOf(OrderViewDocumentDataError);
     // Two DISTINCT scopes, which is what "one per request" means: the root hands back a new one each
     // time rather than a memoized singleton, so nothing either hydrated can be reached from the other.
     expect(second).not.toBe(first);
@@ -3397,6 +3463,13 @@ class StubExecutor implements PreparedStatementExecutor {
    * not `1`, transcribing Hibernate's own `StaleObjectStateException` on a zero-match flush.
    * A case that means to drive one of those to completion has to be able to say the row
    * matched, and forcing it to say so is better than having the writers skip the check.
+   *
+   * ★ AND THAT IS NO LONGER ONLY THE FRAMEWORK COLLABORATORS. The five MySQL adapters' UPDATE
+   * paths now refuse a zero-count mutation for the same reason: the pool runs with mysql2's
+   * default `FOUND_ROWS` client flag, so `affectedRows` on an UPDATE reports rows MATCHED
+   * rather than rows CHANGED, and a `0` therefore means the row the caller believes it holds
+   * is gone. Any case here that drives an adapter's update to completion - rather than
+   * asserting the refusal - must pass `1`.
    *
    * ★ AND WHY `answer` NOW RECEIVES THE PARAMETERS TOO. A double that models a column rather
    * than a fixed answer has to see what was asked. Widening the callback is backwards
@@ -4253,8 +4326,18 @@ describe('bootstrapCompositionRoot', () => {
     // The actor is deliberately NOT published on `RequestScope`, so it is observed the
     // only honest way available: a write is issued through one of the repositories the
     // scope does publish, and the bound values are read back. `savePriceGroup` on a
-    // PERSISTED price group is chosen because its update path inspects no row count, so
-    // the stub's `affectedRows: 0` is not mistaken for a failure.
+    // PERSISTED price group is chosen because it is the shortest route from a request
+    // scope to a bound `modifiedByAccountID`.
+    //
+    // ★ THIS NOTE PREVIOUSLY READ: "`savePriceGroup` on a PERSISTED price group is chosen
+    // because its update path inspects no row count, so the stub's `affectedRows: 0` is not
+    // mistaken for a failure." THAT PREMISE NO LONGER HOLDS, and it was never safe to rely
+    // on. `MysqlPriceGroupRepository`'s update path now refuses a mutation that matched no
+    // row, because the pool runs with mysql2's default `FOUND_ROWS` flag and therefore
+    // reports rows MATCHED - so `affectedRows: 0` means the row is gone, which is exactly
+    // the `StaleObjectStateException` the legacy flush raised. These cases are about WHICH
+    // ACCOUNT reaches the bound position, not about a lost update, so `saveThrough` now says
+    // the row matched (`affectedRows: 1`) and the bound values are read back unchanged.
 
     /** Position of `modifiedByAccountID` in the price-group update's bound values. */
     const UPDATE_MODIFIED_BY_POSITION = 6;
@@ -4285,7 +4368,9 @@ describe('bootstrapCompositionRoot', () => {
     async function saveThrough(
       input: { accountID?: string; adminAccountFlag?: boolean } = {},
     ): Promise<StubExecutor> {
-      const executor = new StubExecutor();
+      // `affectedRows: 1` says the update matched its row - see the note above. Without it the
+      // adapter refuses before these cases can read the bound account back.
+      const executor = new StubExecutor(() => [], 1);
       // ★ THE ADAPTER COMES FROM THE INSPECTION HOOK NOW. This case is about what the ADAPTER
       // stamps into the audit columns, so it has to call `savePriceGroup` on the adapter itself -
       // there is no service member that wraps it, because the legacy `savePriceGroup` was

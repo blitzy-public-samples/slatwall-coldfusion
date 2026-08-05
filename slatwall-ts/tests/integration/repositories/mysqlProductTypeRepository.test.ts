@@ -155,13 +155,26 @@ interface RecordedStatement {
 const NO_ROWS: readonly SqlRow[] = [];
 
 /**
- * What a write reports back.
+ * What a write reports back by default.
  *
- * `affectedRows: 1` is the ordinary outcome of a single-row insert or update. The adapter
- * deliberately does NOT inspect it, because MySQL reports CHANGED rather than MATCHED rows and a
- * no-op save legitimately reports zero.
+ * `affectedRows: 1` is the ordinary outcome of a single-row insert or update.
+ *
+ * ★★★ QUOTE-THEN-REVISE, AND THE QUOTED PREMISE IS FALSE ON THIS POOL. This note used to close
+ * with: "The adapter deliberately does NOT inspect it, because MySQL reports CHANGED rather than
+ * MATCHED rows and a no-op save legitimately reports zero." The adapter's update path NOW inspects
+ * it, and the reason the old note gave for not inspecting it was wrong. `mysql2`'s default client
+ * flag set includes `FOUND_ROWS`
+ * [node_modules/mysql2/lib/connection_config.js: `getDefaultFlags`] and
+ * `src/repositories/mysql/connection.ts` `buildPoolOptions()` overrides no `flags`, so the server
+ * reports rows MATCHED. Measured against the live schema: a NO-CHANGE update answers
+ * `affectedRows: 1` with `Rows matched: 1  Changed: 0`; only a NO-MATCH update answers 0. The
+ * idempotent save the old note was protecting was never at risk, and the silence it licensed let a
+ * `saveProductType` whose key named nothing report the entity as persisted.
  */
 const WRITE_RESULT: SqlMutationResult = Object.freeze({ affectedRows: 1, warningStatus: 0 });
+
+/** What a write reports when it matched NO row, which is the update refusal's ground. */
+const NO_ROWS_AFFECTED: SqlMutationResult = Object.freeze({ affectedRows: 0, warningStatus: 0 });
 
 // JUDGMENT CALL: the double is HAND-WRITTEN AND INLINE rather than produced by a
 // mocking utility or shared from a helper module. Three reasons, all of which
@@ -204,13 +217,23 @@ class RecordingExecutor implements PreparedStatementExecutor {
 
   private answeredResultSets = 0;
 
+  /** What every `executeMutation` call reports back. */
+  private readonly mutationResult: SqlMutationResult;
+
   /**
    * @param cannedResultSets one result set per expected `execute` call, in order.
    *   Pass `[]` for a statement that matched nothing. A call beyond the end of the
    *   sequence is answered with the empty result set.
+   * @param mutationResult what each write reports; defaults to one affected row, so every
+   *   existing call site is unchanged. Settable because the update path now REFUSES a mutation
+   *   that matched no row, and a case asserting that refusal has to be able to say so.
    */
-  constructor(cannedResultSets: readonly (readonly SqlRow[])[]) {
+  constructor(
+    cannedResultSets: readonly (readonly SqlRow[])[],
+    mutationResult: SqlMutationResult = WRITE_RESULT,
+  ) {
     this.cannedResultSets = cannedResultSets;
+    this.mutationResult = mutationResult;
   }
 
   /**
@@ -230,7 +253,7 @@ class RecordingExecutor implements PreparedStatementExecutor {
   }
 
   /**
-   * Record the write and report a single affected row.
+   * Record the write and report the configured outcome, one affected row by default.
    *
    * Unlike the read-only option adapter, this one legitimately writes: the port declares
    * `saveProductType`, so a recorded mutation is expected rather than a fault. What is asserted is
@@ -244,7 +267,7 @@ class RecordingExecutor implements PreparedStatementExecutor {
       inTransaction: this.transactionDepth > 0,
     });
 
-    return Promise.resolve(WRITE_RESULT);
+    return Promise.resolve(this.mutationResult);
   }
 
   /**
@@ -2136,6 +2159,46 @@ describe('MysqlProductTypeRepository - net-new coverage with no legacy anteceden
       expect(parameterAt(params, UPDATE_KEY_POSITION)).toBe(CHILD_PRODUCT_TYPE_ID);
       expect(sql.endsWith('WHERE SwProductType.productTypeID = ?')).toBe(true);
       expect(sql).not.toContain(CHILD_PRODUCT_TYPE_ID);
+    });
+
+    it('★★ REFUSES an update that matched NO row rather than reporting the entity as persisted', async () => {
+      // QA testing found the sibling of this on `saveSku`: an entity whose key named no row
+      // RESOLVED, answered the entity carrying that key, and wrote nothing - so a caller could not
+      // tell a completed save from a lost one. Every update path in this tier now carries the same
+      // guard. See the {@link WRITE_RESULT} note for the measurement that makes it exact: the pool
+      // runs with `FOUND_ROWS`, so `affectedRows` counts rows MATCHED and an idempotent save still
+      // answers 1.
+      //
+      // ⚠ WHY IT MATTERS MORE HERE THAN THE MESSAGE SUGGESTS. This statement is what stores the
+      // MAINTAINED `productTypeIDPath`. The promotion engine's membership tests walk that path
+      // [model/service/PromotionService.cfc:L858-L870] and the price-group cascade climbs it, so a
+      // silently-lost update leaves a materialized path that no longer describes the tree - and the
+      // consequence surfaces later, as a discount qualifying against the wrong product type.
+      //
+      // The existence read still reports the row present. That is the window between the two
+      // statements, and the refusal is made on the SERVER's answer to the write.
+      const executor = new RecordingExecutor(
+        [[hydrationRow(CHILD_PRODUCT_TYPE_ID, ROOT_PRODUCT_TYPE_ID, CHILD_PATH)]],
+        NO_ROWS_AFFECTED,
+      );
+      const repository = new MysqlProductTypeRepository(executor, TEST_AUDIT_ACTOR);
+
+      const error = await rejectionOf(
+        repository.saveProductType(
+          new ProductType({
+            productTypeID: CHILD_PRODUCT_TYPE_ID,
+            productTypeIDPath: CHILD_PATH,
+            createdDateTime: EXISTING_CREATION_INSTANT,
+          }),
+          NO_POPULATED_MEMBERS,
+        ),
+      );
+
+      expect(error.name).toBe('ProductTypePersistenceError');
+      expect(error.message).toContain('matched no SwProductType row');
+
+      // The statement WAS issued, and it was the update rather than an insert.
+      expect(onlyStatement(executor.mutationCalls).sql).toBe(EXPECTED_UPDATE_STATEMENT);
     });
 
     it('rebuilds the path on the update route and leaves the creation provenance alone', async () => {

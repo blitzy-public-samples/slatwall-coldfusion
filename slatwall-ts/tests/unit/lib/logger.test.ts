@@ -2024,3 +2024,202 @@ describe('the redaction record cannot be written through a prototype accessor', 
     expect(Object.keys(context).sort()).toStrictEqual(['__proto__', 'issueCount', 'password']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// ★★ An unrecognized LOG_LEVEL is REPORTED rather than silently coerced (QA-I7)
+//
+// QA testing observed that `LOG_LEVEL=bogus` is silently coerced to `info` while every other
+// malformed configuration key fails closed with a `ConfigurationError` from `src/lib/config.ts`.
+//
+// ⚠ THE OBVIOUS FIX WOULD BE A REGRESSION, AND THESE CASES PIN BOTH HALVES OF WHY. Making this key
+// fail closed too would contradict a structural requirement, not a preference: `config.ts` must abort
+// on an unset or unrecognized dialect, and it REPORTS that abort THROUGH this module. A logger that
+// threw on its own misconfiguration could not report anybody else's. So what was fixed is the
+// SILENCE, and the cases below assert that the service still serves - the fallback is intact, every
+// ordinary line still comes out - while the coercion now announces itself once.
+//
+// ★ THIS IS THE ONE BLOCK IN THE FILE THAT PATCHES `process.env`, AND THE HEADER'S CLAIM THAT NO CASE
+// DOES SO IS AMENDED HERE RATHER THAN LEFT STANDING. It has to: the behaviour under test IS the
+// reading of an environment variable, and `withLevel()` - the seam every other case uses - deliberately
+// suppresses the report, because a pinned threshold means `LOG_LEVEL` is not in force and there is
+// nothing to report. Every case restores the previous value in a `finally`, and each uses a DISTINCT
+// bogus value so that the module's once-per-value suppression cannot make one case depend on another
+// having run. That per-value keying is what keeps this block order-independent like the rest.
+// ---------------------------------------------------------------------------
+
+describe('an unrecognized LOG_LEVEL', () => {
+  /**
+   * Run `work` with `LOG_LEVEL` set to `value`, or deleted when `value` is `undefined`, and restore
+   * whatever was there before - including its absence.
+   */
+  function withLogLevel<T>(value: string | undefined, work: () => T): T {
+    const previous = process.env['LOG_LEVEL'];
+
+    if (value === undefined) {
+      delete process.env['LOG_LEVEL'];
+    } else {
+      process.env['LOG_LEVEL'] = value;
+    }
+
+    try {
+      return work();
+    } finally {
+      if (previous === undefined) {
+        delete process.env['LOG_LEVEL'];
+      } else {
+        process.env['LOG_LEVEL'] = previous;
+      }
+    }
+  }
+
+  /** Emit one `error` entry with NO pinned level, so `LOG_LEVEL` is actually consulted. */
+  function emitUnpinned(level: string | undefined, message = 'operation failed'): string[] {
+    return withLogLevel(level, (): string[] => {
+      const lines: string[] = [];
+      logger.withSink((line) => lines.push(line)).error(message);
+      return lines;
+    });
+  }
+
+  /** Parse a captured line into the record its consumer sees. */
+  function parseLine(line: string): Record<string, unknown> {
+    const parsed: unknown = JSON.parse(line);
+
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error('the emitted line is not a JSON object');
+    }
+
+    return parsed as Record<string, unknown>;
+  }
+
+  it('★★★ ANNOUNCES the coercion, and still emits the entry that discovered it', () => {
+    const lines = emitUnpinned('bogus-qa-i7-announce');
+
+    // Two lines: the report, then the ordinary entry. The report comes FIRST because it is issued
+    // before the severity filter, so it is emitted even when the entry that triggered it is dropped.
+    expect(lines).toHaveLength(2);
+
+    const report = parseLine(lines[0] ?? '');
+
+    expect(report['level']).toBe('warn');
+    expect(String(report['message'])).toContain('LOG_LEVEL');
+    // The recognized vocabulary is named, so the report is actionable without a second lookup.
+    expect(String(report['message'])).toContain('debug, info, warn, error');
+    expect(report['context']).toStrictEqual({
+      configuredLogLevel: 'bogus-qa-i7-announce',
+      thresholdInForce: 'info',
+    });
+
+    // ★ AND THE SERVICE STILL SERVES. The entry that was being emitted came out unchanged - the
+    // fallback is intact, and reporting the misconfiguration did not become the misconfiguration.
+    expect(parseLine(lines[1] ?? '')['message']).toBe('operation failed');
+  });
+
+  it('★★ reports ONCE per process, not once per emission', () => {
+    const lines = withLogLevel('bogus-qa-i7-once', (): string[] => {
+      const captured: string[] = [];
+      const subject = logger.withSink((line) => captured.push(line));
+
+      subject.error('first');
+      subject.error('second');
+      subject.error('third');
+
+      return captured;
+    });
+
+    // Four, not six: one report plus three entries. Resolving the threshold happens on EVERY
+    // emission, so reporting on every emission would bury the stream this is meant to make readable.
+    expect(lines).toHaveLength(4);
+    expect(lines.filter((line) => line.includes('does not recognize'))).toHaveLength(1);
+    expect(lines.slice(1).map((line) => parseLine(line)['message'])).toStrictEqual([
+      'first',
+      'second',
+      'third',
+    ]);
+  });
+
+  it('★★ reports even when the emission that discovered it is FILTERED OUT', () => {
+    // `debug` is below the `info` fallback, so this entry is dropped - and the report must not be,
+    // because a misconfiguration discovered by a suppressed line is still a misconfiguration.
+    const lines = withLogLevel('bogus-qa-i7-filtered', (): string[] => {
+      const captured: string[] = [];
+      logger.withSink((line) => captured.push(line)).debug('a filtered entry');
+      return captured;
+    });
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('does not recognize');
+    expect(lines[0]).not.toContain('a filtered entry');
+  });
+
+  it('holds the echoed value to a shape, substituting anything that is not a level name', () => {
+    // The value is operator-supplied, and this module holds every value it emits to a policy rather
+    // than trusting its provenance. A newline would forge a second log record; a quote would break the
+    // document; a sentence would put free text on the stream through a diagnostic.
+    const lines = emitUnpinned(`verbose"\n{"level":"error","message":"forged ${PLANTED_SECRET}"}`);
+    const report = parseLine(lines[0] ?? '');
+
+    expect(report['context']).toStrictEqual({
+      configuredLogLevel: 'unsafeValue',
+      thresholdInForce: 'info',
+    });
+    expect(lines[0]).not.toContain(PLANTED_SECRET);
+    expect(lines[0]).not.toContain('forged');
+  });
+
+  it('says NOTHING for a recognized value, whatever its casing or padding', () => {
+    // `parseLogLevel` trims and folds case, so these are all recognized and none is a
+    // misconfiguration. A report here would be a false alarm on a correctly configured service.
+    for (const recognized of ['debug', 'INFO', ' warn ', 'Error']) {
+      const lines = emitUnpinned(recognized, 'operation failed');
+
+      expect(lines.filter((line) => line.includes('does not recognize'))).toHaveLength(0);
+    }
+  });
+
+  it('says NOTHING when LOG_LEVEL is absent or blank, because neither is a misconfiguration', () => {
+    // Leaving the variable unset is the documented way to accept the default, and exporting it empty
+    // is how a shell spells the same thing. Only a value that was actually WRITTEN and is not a level
+    // name is reported.
+    for (const quiet of [undefined, '', '   ']) {
+      const lines = emitUnpinned(quiet);
+
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).not.toContain('does not recognize');
+    }
+  });
+
+  it('says nothing when a level was PINNED, because LOG_LEVEL is then not in force', () => {
+    // `withLevel()` overrides the environment entirely, so there is no coercion happening and nothing
+    // to report. This is also what keeps every other case in this file silent.
+    const lines = withLogLevel('bogus-qa-i7-pinned', (): string[] => {
+      const captured: string[] = [];
+      logger
+        .withSink((line) => captured.push(line))
+        .withLevel('debug')
+        .error('operation failed');
+      return captured;
+    });
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toContain('does not recognize');
+  });
+
+  it('★★ cannot become the failure it was added to describe, even with a throwing sink', () => {
+    // The report goes through the same guarded emission path an ordinary line does, so a sink that
+    // throws is absorbed rather than propagated. A logger that raised while reporting a
+    // misconfiguration would break exactly the cold start this whole fallback exists to protect.
+    const failing = vi.fn((): never => {
+      throw new Error('the sink is broken');
+    });
+
+    expect(() =>
+      withLogLevel('bogus-qa-i7-throwing', () => {
+        logger.withSink(failing).error('operation failed');
+      }),
+    ).not.toThrow();
+
+    // Both the report and the entry were attempted.
+    expect(failing).toHaveBeenCalledTimes(2);
+  });
+});

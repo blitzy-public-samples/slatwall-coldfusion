@@ -2781,6 +2781,14 @@ export class MysqlSkuRepository implements SkuRepository {
    * The created stamp is carried over from the entity rather than re-captured - an update must not
    * rewrite when a row was created - and the key is bound LAST, after the assignment list, matching
    * where it appears in {@link UPDATE_SKU_SQL}.
+   *
+   * ★★★ IT REFUSES AN UPDATE THAT MATCHED NO ROW, AND THAT GUARD IS A RUNTIME FINDING. QA testing
+   * called `saveSku` with a SKU whose `isNew()` was false and whose key named nothing, and the method
+   * RESOLVED: it answered an entity carrying the caller's key, no row was written, and a follow-up read
+   * found nothing. Hibernate raised on an update to a non-existent row rather than reporting success,
+   * and the sibling {@link MysqlSkuRepository.insertSku} on this very class already refused an insert
+   * that reported no inserted row - so this path was the only one in which a lost write was
+   * indistinguishable from a completed one.
    */
   private async updateSku(
     sku: Sku,
@@ -2819,7 +2827,22 @@ export class MysqlSkuRepository implements SkuRepository {
 
     boundValues.push(skuID);
 
-    await tx.executeMutation(UPDATE_SKU_SQL, boundValues);
+    const update = await tx.executeMutation(UPDATE_SKU_SQL, boundValues);
+
+    // ★ `affectedRows === 0` MEANS "NO ROW MATCHED" HERE, NOT "NOTHING CHANGED", AND THE DIFFERENCE IS
+    // WHAT MAKES THE GUARD EXACT RATHER THAN OVER-EAGER. MySQL's protocol reports CHANGED rows for an
+    // UPDATE by default, which would make a no-op update - one whose new values equal the stored ones -
+    // indistinguishable from a missed one. The driver's default client flag set includes `FOUND_ROWS`
+    // [node_modules/mysql2/lib/connection_config.js: `getDefaultFlags`], and `./connection.js`
+    // `buildPoolOptions()` sets no `flags` of its own, so the server reports rows MATCHED instead. A
+    // zero therefore says the key named nothing, which is the one condition worth refusing.
+    if (update.affectedRows === 0) {
+      throw new SkuPersistenceError(
+        'The SKU update matched no row, so the entity cannot be reported as persisted. The key it ' +
+          'carries names no SwSku row: Hibernate raised on an update to a non-existent row rather ' +
+          'than reporting success, and reporting success here would hide a lost write.',
+      );
+    }
 
     return this.rehydrateSavedSku(sku, skuID, stamps);
   }

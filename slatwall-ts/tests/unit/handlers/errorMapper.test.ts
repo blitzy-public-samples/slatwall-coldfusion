@@ -357,6 +357,167 @@ describe('an unrecognized failure', () => {
     expect(contextOf(emission)['thrownShape']).toBe('unsafeName');
   });
 
+  // -------------------------------------------------------------------------
+  // ★★ `thrownAt` - the third classifier, added because the first two were not enough (QA-I2)
+  //
+  // QA testing found a CRITICAL wiring defect and reported it as UNDIAGNOSABLE FROM THIS LINE. The
+  // reason is worth restating precisely, because it is what these cases are protecting: the thrown
+  // value was a PLAIN `Error`, so `thrownShape` was truthfully `'Error'` and `errorCode` was absent -
+  // making a composition failure and a driver failure produce identical log lines. The deliberate
+  // refusal to emit the message is correct and unchanged; what was missing was any way to tell WHERE
+  // the failure came from.
+  //
+  // The bar these cases hold it to is the same bar every other emitted value here meets: it is
+  // code-authored, it is shape-policed, it never carries a path or a message, and it FAILS CLOSED.
+  // -------------------------------------------------------------------------
+
+  it('★★★ names the FUNCTION a failure was thrown from, which is what makes a wiring bug diagnosable', () => {
+    const { logger, emissions } = createRecordingLogger();
+
+    // Named exactly as the class-and-method frame the real defect produced
+    // (`ProductType.getBaseProductType`), so this case exercises the shape that actually occurred
+    // rather than a bare function name that would be easier to match.
+    const productType = {
+      getBaseProductType(): never {
+        throw new Error(`requires a productTypeRepository, host=${PLANTED_SECRET}`);
+      },
+    };
+
+    let thrown: unknown;
+    try {
+      productType.getBaseProductType();
+    } catch (caught) {
+      thrown = caught;
+    }
+
+    const response = mapErrorToApiGatewayResponse(thrown, contextWith(logger));
+    const emission = soleEmission(emissions);
+
+    expect(contextOf(emission)['thrownAt']).toBe('Object.getBaseProductType');
+    // ★ AND THE MESSAGE IS STILL WITHHELD, from the line as well as the body. The whole value of this
+    // field is that it buys diagnosability WITHOUT relaxing that.
+    expect(emission.serialized).not.toContain(PLANTED_SECRET);
+    expect(response.body).not.toContain(PLANTED_SECRET);
+    expect(response.body).not.toContain('getBaseProductType');
+  });
+
+  it('★★ emits NO filesystem path, no line number and no deeper frame', () => {
+    const { logger, emissions } = createRecordingLogger();
+    const failure = new Error('boom');
+    // A hand-built stack, so the assertion is about what this module EXTRACTS rather than about what
+    // V8 happened to produce on this machine. Three frames, two of them plainly private.
+    failure.stack = [
+      'Error: boom',
+      '    at MysqlSkuRepository.saveSku (/srv/secret-app/src/repositories/mysql/mysqlSkuRepository.ts:2822:13)',
+      '    at ProductService.saveProduct (/srv/secret-app/src/services/productService.ts:3513:9)',
+      '    at /srv/secret-app/dist/router.cjs:1:1',
+    ].join('\n');
+
+    mapErrorToApiGatewayResponse(failure, contextWith(logger));
+    const emission = soleEmission(emissions);
+
+    expect(contextOf(emission)['thrownAt']).toBe('MysqlSkuRepository.saveSku');
+    // Only the FIRST frame is a classifier; every deeper one is a map of this service's internals.
+    expect(emission.serialized).not.toContain('saveProduct');
+    // No path, no line, no column - and structurally so, because the name is taken from BEFORE the
+    // ` (` that opens the location and the classifier pattern admits neither `/` nor `:`.
+    expect(emission.serialized).not.toContain('/srv/secret-app');
+    expect(emission.serialized).not.toContain('2822');
+    expect(emission.serialized).not.toContain('.ts');
+  });
+
+  it('names an AWAITED frame, stripping the marker that is not part of the name', () => {
+    const { logger, emissions } = createRecordingLogger();
+    const failure = new Error('boom');
+    failure.stack = [
+      'Error: boom',
+      '    at async MysqlProductRepository.saveProduct (/srv/app/x.ts:1:1)',
+    ].join('\n');
+
+    mapErrorToApiGatewayResponse(failure, contextWith(logger));
+
+    // Without stripping `async `, every asynchronous frame would fail the classifier shape on the
+    // space alone - which in a service that is asynchronous throughout would drop exactly the frames
+    // worth having.
+    expect(contextOf(soleEmission(emissions))['thrownAt']).toBe(
+      'MysqlProductRepository.saveProduct',
+    );
+  });
+
+  it('★★ FAILS CLOSED, omitting the field entirely for every frame it cannot classify', () => {
+    const { logger, emissions } = createRecordingLogger();
+
+    const unclassifiable: readonly string[] = [
+      // Location-only: there is no name to take, and the location must never be emitted.
+      ['Error: boom', '    at /srv/secret-app/dist/router.cjs:1:1'].join('\n'),
+      // Anonymous, constructor and eval frames each carry a character the classifier refuses.
+      ['Error: boom', '    at Object.<anonymous> (/srv/app/x.ts:1:1)'].join('\n'),
+      ['Error: boom', '    at new ProductType (/srv/app/x.ts:1:1)'].join('\n'),
+      // A 65-character name is one over the cap: dropped rather than truncated, because a truncated
+      // classifier is a guess.
+      ['Error: boom', `    at ${'n'.repeat(65)} (/srv/app/x.ts:1:1)`].join('\n'),
+      // A stack with no frame at all.
+      'Error: boom',
+      // A stack whose "frame" is prose carrying a secret - the case the shape policy exists for.
+      ['Error: boom', `    at password=${PLANTED_SECRET} is wrong (/srv/app/x.ts:1:1)`].join('\n'),
+    ];
+
+    for (const stack of unclassifiable) {
+      const failure = new Error('boom');
+      failure.stack = stack;
+      mapErrorToApiGatewayResponse(failure, contextWith(logger));
+    }
+
+    expect(emissions).toHaveLength(unclassifiable.length);
+    for (const emission of emissions) {
+      // `undefined` on the context and ABSENT from the serialized line - the same two-level shape the
+      // `errorCode` cases above assert, because `JSON.stringify` omits an undefined member. The
+      // serialized assertion is the one that matters: it is what an operator actually reads.
+      expect(contextOf(emission)['thrownAt']).toBeUndefined();
+      expect(emission.serialized).not.toContain('thrownAt');
+      expect(emission.serialized).not.toContain(PLANTED_SECRET);
+      expect(emission.serialized).not.toContain('/srv/');
+    }
+  });
+
+  it('classifies an `eval` frame as `eval`, still without its location', () => {
+    // ★ NOT IN THE FAIL-CLOSED LIST ABOVE, AND THIS RECORDS THE JUDGMENT. `eval` is a REAL function
+    // name - code-authored, three characters, no path - so it passes the classifier shape honestly and
+    // there is no reason to invent an exception for it. What must not travel is the LOCATION, and an
+    // eval frame carries a doubly-nested one; the name is taken from before the FIRST ` (`, so the
+    // whole `eval at <anonymous> (…)` tail is never read.
+    const { logger, emissions } = createRecordingLogger();
+    const failure = new Error('boom');
+    failure.stack = [
+      'Error: boom',
+      '    at eval (eval at <anonymous> (/srv/secret-app/x.ts:1:1))',
+    ].join('\n');
+
+    mapErrorToApiGatewayResponse(failure, contextWith(logger));
+    const emission = soleEmission(emissions);
+
+    expect(contextOf(emission)['thrownAt']).toBe('eval');
+    expect(emission.serialized).not.toContain('/srv/secret-app');
+    expect(emission.serialized).not.toContain('<anonymous>');
+  });
+
+  it('omits the field for a thrown value that is not an Error, and for one with no stack', () => {
+    const { logger, emissions } = createRecordingLogger();
+    const stackless = new Error('boom');
+    // `stack` is an ordinary own property and a caller-reachable one, so a non-string must not fault.
+    Object.defineProperty(stackless, 'stack', { value: 42, configurable: true });
+
+    mapErrorToApiGatewayResponse('a thrown string', contextWith(logger));
+    mapErrorToApiGatewayResponse({ message: 'a thrown object' }, contextWith(logger));
+    mapErrorToApiGatewayResponse(stackless, contextWith(logger));
+
+    expect(emissions).toHaveLength(3);
+    for (const emission of emissions) {
+      expect(contextOf(emission)['thrownAt']).toBeUndefined();
+      expect(emission.serialized).not.toContain('thrownAt');
+    }
+  });
+
   it('reports a machine code, which is what tells one infrastructure failure from another', () => {
     const { logger, emissions } = createRecordingLogger();
     const failure: Error & { code?: string } = new Error('connect ECONNREFUSED 127.0.0.1:3306');
@@ -871,11 +1032,18 @@ describe('a refusal to serve a caller', () => {
     const { logger } = createRecordingLogger();
     const headers = unauthenticatedResponse(contextWith(logger)).headers ?? {};
 
+    // ★ THE SET IS THREE NOW, AND IT IS STILL CLOSED. `x-content-type-options: nosniff` joined
+    // `JSON_RESPONSE_HEADERS` for QA-I4 - the module already declares `content-type` explicitly, and
+    // this is the half of that statement which says "do not second-guess it". What this case is
+    // really about has not changed: NO `www-authenticate` accompanies a 401, because naming a scheme
+    // would publish an authentication mechanism this migration was never given. An exact key set is
+    // how that stays enforced rather than hoped for - a fourth header fails this.
     expect(
       Object.keys(headers)
         .map((name): string => name.toLowerCase())
         .sort(),
-    ).toEqual(['cache-control', 'content-type']);
+    ).toEqual(['cache-control', 'content-type', 'x-content-type-options']);
+    expect(headers['x-content-type-options']).toBe('nosniff');
   });
 
   it('is never produced by the thrown-value mapping funnel', () => {

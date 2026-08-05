@@ -126,16 +126,34 @@ const FEED_RESPONSE_STATUS = 200;
  * this file does not otherwise touch - not a change to the document, and not the invention of an
  * HTTP semantic the source lacked.
  *
- * Nothing else is added, deliberately: no `etag`, no `last-modified`, no `cache-control`, no
- * content negotiation, no compression negotiation, no pagination link and no conditional-request
- * handling. `./errorMapper.js` sets `cache-control: no-store` on its own failure responses, which
- * is that module's decision about a failure envelope and is not extended to a served document here.
+ * ★★ ONE HEADER JOINED IT - `x-content-type-options: nosniff` - AND THIS RECORDS WHY THE JUDGMENT CALL
+ * ABOVE STILL HOLDS. That paragraph once opened "The only header a served feed carries" and continued
+ * "Nothing else is added, deliberately". The list that followed is the reason the exception is narrow:
+ * `etag`, `last-modified`, `cache-control`, content and compression negotiation, pagination and
+ * conditional requests are all HTTP SEMANTICS THE SOURCE LACKED, and inventing any of them here would
+ * be inventing a non-functional requirement (AAP 0.8.1). None of them is added.
  *
- * The key is lower-case, matching the convention `./errorMapper.js` already established; HTTP
+ * `nosniff` is not in that category. It is the second half of the statement this file ALREADY makes:
+ * having decided to "declare the document as what it is" rather than inherit an engine default,
+ * declaring also that a recipient must not second-guess that declaration is the same decision carried
+ * to its conclusion. QA testing noted the header's absence across every response, and leaving the feed
+ * out while `./errorMapper.js` sets it on every JSON response is exactly the kind of split that lets a
+ * deployment satisfy one surface and not the other. An RSS body is XML, and XML is the content type
+ * sniffing most readily re-interprets - so of the two surfaces, this is the one where it earns its
+ * place, even though the intended consumer is Google Merchant Center rather than a browser.
+ *
+ * Still nothing about the DOCUMENT changes: this is a transport-level statement about a body this file
+ * does not otherwise touch.
+ *
+ * `./errorMapper.js` sets `cache-control: no-store` on its own failure responses, which is that
+ * module's decision about a failure envelope and is not extended to a served document here.
+ *
+ * The keys are lower-case, matching the convention `./errorMapper.js` already established; HTTP
  * header names are case-insensitive, so the casing is a consistency choice rather than a contract.
  */
 const FEED_RESPONSE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   'content-type': 'application/rss+xml; charset=utf-8',
+  'x-content-type-options': 'nosniff',
 });
 
 /**

@@ -625,6 +625,113 @@ export class ProductPagingCriteriaError extends Error {
 }
 
 /**
+ * One rule of a declarative validation file that a save did not satisfy.
+ *
+ * `propertyIdentifier` is the property the rule is declared on and `errorMessage` states the rule.
+ * Both are SERVER-AUTHORED - transcribed from [model/validation/Product.json] and
+ * [model/validation/ProductType.json] - and NEITHER EVER CARRIES THE SUBMITTED VALUE. That is the
+ * same discipline `src/handlers/errorMapper.ts` enforces on every published field report, and it is
+ * why a primary adapter may forward these verbatim.
+ *
+ * The member names are the legacy's own: `addError(propertyIdentifier, errorMessage)` is the
+ * `HibachiEntity` signature the CFML services call, so a reviewer diffing the two surfaces reads the
+ * same two words.
+ */
+export interface ProductSaveContextError {
+  /** The property the failed rule is declared on. */
+  readonly propertyIdentifier: string;
+  /** The rule that failed. Never the value that failed it. */
+  readonly errorMessage: string;
+}
+
+/**
+ * A product save was REFUSED, and no row was written.
+ *
+ * ★★★ THIS CLASS EXISTS BECAUSE OF A RUNTIME FINDING, AND THE FINDING WAS SILENCE. QA testing called
+ * `saveProduct` with a payload that fails the ported [model/validation/Product.json] save rules and
+ * observed: the method RETURNED the entity, the database was UNCHANGED, and the returned entity
+ * published neither `hasErrors` nor `getErrors` - so there was no signal of any kind. The errors were
+ * computed and then discarded. Worse, the sibling `saveBrand` in `src/services/brandService.ts`
+ * ALREADY THREW `BrandValidationError` for the same class of refusal, so one ported tier carried two
+ * contradictory refusal protocols and a caller could not know which to expect.
+ *
+ * ★★ WHY A THROW RATHER THAN ERRORS ON THE ENTITY, WHICH IS THE OTHER CANDIDATE AND IS WHAT THE
+ * LEGACY DID. [model/service/ProductService.cfc:L286-L291] answers the entity either way and every
+ * legacy caller then asks `arguments.product.hasErrors()`. Reproducing THAT would mean publishing
+ * `hasErrors()`/`getErrors()` on `src/domain/entities/product.ts` - and both halves of that are
+ * wrong here: the ported entities deliberately carry no `HibachiEntity` validation affordance (the
+ * judgment call is recorded on `collectProductSaveContextErrors` below), and the AAP's interface
+ * mapping table publishes no such members, so adding them would widen a locked surface. A thrown,
+ * named error changes NO published signature - `saveProduct` still answers `Promise<Product>` - and
+ * makes the refusal impossible to miss, which is the property the legacy's channel had and the
+ * silent return did not.
+ *
+ * ★ WHAT IS PRESERVED EXACTLY. Which rules are checked, in which order, and the fact that NOTHING IS
+ * WRITTEN when any of them fails. The legacy skips the save [L286] and so does this; the difference is
+ * only that the refusal is now reportable. `errors` carries every failed rule rather than the first,
+ * because `validate()` accumulated them all and a caller fixing one at a time is a worse experience
+ * than the legacy's.
+ */
+export class ProductValidationError extends Error {
+  /** Every save-context rule the product failed, in declaration order. */
+  readonly errors: readonly ProductSaveContextError[];
+
+  constructor(errors: readonly ProductSaveContextError[]) {
+    super(
+      `saveProduct refused: ${describeSaveContextErrors(errors)} ` +
+        '(model/validation/Product.json, save context). No row was written.',
+    );
+    this.name = 'ProductValidationError';
+    this.errors = errors;
+  }
+}
+
+/**
+ * A product-type save was REFUSED, and no row was written.
+ *
+ * The sibling of {@link ProductValidationError}, for the same reason and with the same reasoning - see
+ * that class. The rules are the two save-context rules of [model/validation/ProductType.json], and the
+ * step this refusal replaces is the framework's own gate:
+ * `if(!arguments.entity.hasErrors()) { ... }` [org/Hibachi/HibachiService.cfc:L153-L155], which
+ * `saveProductType` unrolls.
+ *
+ * ★ IT ALSO GUARDS THE STEP AFTER THE SAVE. [model/service/ProductService.cfc:L306] gates parent-product
+ * inheritance on `!hasErrors()`, so a refused product type must not inherit its parent's product
+ * collection either. Throwing satisfies that term structurally: the statement is never reached.
+ */
+export class ProductTypeValidationError extends Error {
+  /** Every save-context rule the product type failed, in declaration order. */
+  readonly errors: readonly ProductSaveContextError[];
+
+  constructor(errors: readonly ProductSaveContextError[]) {
+    super(
+      `saveProductType refused: ${describeSaveContextErrors(errors)} ` +
+        '(model/validation/ProductType.json, save context). No row was written.',
+    );
+    this.name = 'ProductTypeValidationError';
+    this.errors = errors;
+  }
+}
+
+/**
+ * Render an accumulated rule set as one sentence fragment.
+ *
+ * Shared by the two classes above so their messages cannot drift apart. It reads the SERVER-AUTHORED
+ * `errorMessage` of each rule and nothing else - no property value, no payload key, no identifier -
+ * which is what keeps the message safe for `src/handlers/errorMapper.ts` to publish and safe for a log
+ * line to carry.
+ *
+ * The empty case cannot occur - neither error is constructed without at least one failed rule - and it
+ * is still handled, because a message reading "refused: ." would be worse than a stated fallback and
+ * `noUncheckedIndexedAccess` makes the guard free.
+ */
+function describeSaveContextErrors(errors: readonly ProductSaveContextError[]): string {
+  return errors.length === 0
+    ? 'the save context reported a failure with no rule attached'
+    : errors.map((error) => error.errorMessage).join('; ');
+}
+
+/**
  * Reject a supplied paging bound that is not a non-negative safe integer.
  *
  * `undefined` passes untouched, because absence is a meaning rather than a missing value
@@ -3407,8 +3514,20 @@ export class ProductService {
    * @param data - The save payload, READ ONLY BY THIS METHOD. It is not written to;
    *   contrast `saveProductType`, whose [L297] and [L299] assign into it and where that
    *   asymmetry is reproduced rather than smoothed away.
-   * @returns The persisted product when it validated, or the unpersisted product
-   *   carrying its errors otherwise - the legacy answers the entity either way.
+   * @returns The persisted product. A refusal is THROWN rather than returned - see
+   *   {@link ProductValidationError}.
+   * @throws {@link ProductValidationError} when the ported save-context rules of
+   *   [model/validation/Product.json] are not satisfied, or when SKU creation refused. Nothing is
+   *   written in either case.
+   *
+   *   ★★ QUOTE-THEN-REVISE, AND THE QUOTED CONTRACT WAS NEVER KEPT. This tag used to read: "The
+   *   persisted product when it validated, or the unpersisted product **carrying its errors**
+   *   otherwise - the legacy answers the entity either way." The first clause was true and the second
+   *   was not: the errors were computed by `collectProductSaveContextErrors`, used to gate the save,
+   *   and then DROPPED, and the returned entity publishes no `hasErrors` and no `getErrors` for them
+   *   to be carried on. QA testing measured the result - the entity came back, the database was
+   *   unchanged, and there was no signal of any kind - while the sibling `saveBrand` threw for the
+   *   same class of refusal. The documented channel is now the one that exists, and it is the sibling's.
    */
   async saveProduct(product: Product, data: ProductSaveInput): Promise<Product> {
     // CFML parity [model/service/ProductService.cfc:L266]: populate, APPLIED TO THE
@@ -3517,7 +3636,15 @@ export class ProductService {
     // the product must be new AND already free of errors. `isNew()` IS published by the
     // ported entity, so no service-local new-or-existing determination is needed;
     // `hasErrors()` is not, and is reproduced by the accumulator above.
-    if (product.isNew() && !hasErrors) {
+    //
+    // ★ BOUND TO A NAME RATHER THAN TESTED INLINE, because the refusal report below has to know
+    // WHETHER SKU CREATION RAN AT ALL. The zero-SKU signal it reads is only meaningful for a product
+    // whose creation branch actually executed: a NEW product that failed validation never enters the
+    // branch, so it also ends with zero SKUs - and reporting a SKU-creation refusal for it would state
+    // a second failure that never happened.
+    const skuCreationRan = product.isNew() && !hasErrors;
+
+    if (skuCreationRan) {
       // LEGACY-NOTE [model/service/ProductService.cfc:L279]: the second of the two
       // sites where `createSkus`'s declared boolean return IS DISCARDED - the first is
       // [L150]. Nothing branches on it and nothing throws on `false`; the method
@@ -3558,44 +3685,75 @@ export class ProductService {
     // `createSkus`'s constant-`true` return [model/service/SkuService.cfc:L207] is left
     // exactly as the source wrote it: the information the legacy carried on the entity is
     // recoverable from the entity, in the one state that matters.
-    const skuCreationWasRefused = product.isNew() && product.getSkus().length === 0;
+    //
+    // ★ THE `isNew()` TERM BECOMES `skuCreationRan`, WHICH IS THE SAME TEST PLUS THE ONE THAT MAKES IT
+    // MEANINGFUL. `product.isNew() && getSkus().length === 0` is true of a new product that never
+    // entered the creation branch as well as one whose creation refused, and the outcome was
+    // indistinguishable while both merely skipped the save. Now that the two are REPORTED, they have to
+    // be told apart. The gate's effect is unchanged in every case: a product with errors is refused on
+    // that ground, a clean new product with no SKUs on this one, and a clean existing product is saved.
+    const skuCreationWasRefused = skuCreationRan && product.getSkus().length === 0;
 
-    if (!hasErrors && !skuCreationWasRefused) {
-      // ★ LEGACY-NOTE [model/service/ProductService.cfc:L287]: this line is
-      // `getHibachiDAO().save(target=arguments.product)` - a KEYWORD call to the DAO,
-      // NOT `super.save`, and therefore NOT the framework service-level save that
-      // `saveProductType` uses at [L303]. That is why populate and validate had to be
-      // done by hand above: this path deliberately skips the framework's own
-      // populate-validate-save sequence. The two flows are reproduced as two flows.
-      //
-      // THE ENTITY AND THE PAYLOAD BOTH CARRY THE POPULATE RESULT, AND THAT IS DELIBERATE.
-      // The url title was written onto the entity above, because [L269]
-      // `arguments.product.setURLTitle(...)` writes it there and a caller reading
-      // `getProductURL()` [model/entity/Product.cfc:L207] afterwards must see it. The
-      // payload states the same value plus `productName`, because the adapter populates
-      // the row from the payload when a key is present and falls back to the entity when it
-      // is not - so the two tiers cannot disagree about what was submitted. `urlTitle` is
-      // read back off the entity here rather than from a local for exactly that reason:
-      // whatever populate and generation left on the entity is what the row is written with.
-      //
-      // ★★ THE ORM CASCADE THIS ONE STATEMENT CARRIED IS NOT EXPANDED HERE, IT IS EXPANDED
-      // IN THE ADAPTER. `Product.skus` declares `cascade="all-delete-orphan"`
-      // [model/entity/Product.cfc:L73], so the SKUs `createSkus` just attached are INSERTED
-      // BY THIS SAVE in the legacy - the collaborator itself persists nothing, which is why
-      // its own return is a constant `true` [model/service/SkuService.cfc:L207]. Without an
-      // ORM the cascade has to be written out, and its ORDER is forced by the schema rather
-      // than chosen: `SwSku.productID` references `SwProduct` and `SwProduct.defaultSkuID`
-      // references `SwSku`, so the owning row goes first, the children second, and the
-      // deferred foreign key last. That sequence is issued by
-      // `src/repositories/mysql/mysqlProductRepository.ts` inside ONE transaction, which is
-      // the tier that owns statement order against the datastore and the only tier that can
-      // make the three writes atomic the way Hibernate's flush was. This service therefore
-      // hands over the aggregate and does not sequence its rows.
-      product = await this.productRepository.saveProduct(product, {
-        urlTitle: product.getUrlTitle(),
-        productName: effectiveProductName,
-      });
+    // ★★★ THE REFUSAL IS NOW REPORTED, AND THIS IS THE ONE PLACE IT IS DECIDED. Both grounds are
+    // gathered here so a caller cannot tell "the rules failed" apart from "SKU creation failed" by
+    // which arm silently returned - it gets both, named. The gate below is unchanged in effect:
+    // nothing is written when either ground holds, exactly as [L286] writes nothing.
+    //
+    // ★ THE SKU-CREATION GROUND IS REPORTED AGAINST `skus`, WHICH IS WHERE THE LEGACY PUT IT. The
+    // errors `createSkus` records are added to the PRODUCT at
+    // [model/service/SkuService.cfc:L142, L148, L177], not to a SKU, so the property identifier is the
+    // product's own collection; the message states the rule the collaborator enforces rather than
+    // guessing which of its three branches refused, because this tier cannot observe that and
+    // inventing a reason would be worse than stating the outcome. See the paragraph above for why
+    // "new product, zero SKUs attached" IS the refusal signal rather than a proxy for it.
+    if (hasErrors || skuCreationWasRefused) {
+      const refusals: ProductSaveContextError[] = [...errors];
+
+      if (skuCreationWasRefused) {
+        refusals.push({
+          propertyIdentifier: 'skus',
+          errorMessage:
+            'sku creation attached no sku to this new product, so the product was not persisted',
+        });
+      }
+
+      throw new ProductValidationError(refusals);
     }
+
+    // ★ LEGACY-NOTE [model/service/ProductService.cfc:L287]: this line is
+    // `getHibachiDAO().save(target=arguments.product)` - a KEYWORD call to the DAO,
+    // NOT `super.save`, and therefore NOT the framework service-level save that
+    // `saveProductType` uses at [L303]. That is why populate and validate had to be
+    // done by hand above: this path deliberately skips the framework's own
+    // populate-validate-save sequence. The two flows are reproduced as two flows.
+    //
+    // THE ENTITY AND THE PAYLOAD BOTH CARRY THE POPULATE RESULT, AND THAT IS DELIBERATE.
+    // The url title was written onto the entity above, because [L269]
+    // `arguments.product.setURLTitle(...)` writes it there and a caller reading
+    // `getProductURL()` [model/entity/Product.cfc:L207] afterwards must see it. The
+    // payload states the same value plus `productName`, because the adapter populates
+    // the row from the payload when a key is present and falls back to the entity when it
+    // is not - so the two tiers cannot disagree about what was submitted. `urlTitle` is
+    // read back off the entity here rather than from a local for exactly that reason:
+    // whatever populate and generation left on the entity is what the row is written with.
+    //
+    // ★★ THE ORM CASCADE THIS ONE STATEMENT CARRIED IS NOT EXPANDED HERE, IT IS EXPANDED
+    // IN THE ADAPTER. `Product.skus` declares `cascade="all-delete-orphan"`
+    // [model/entity/Product.cfc:L73], so the SKUs `createSkus` just attached are INSERTED
+    // BY THIS SAVE in the legacy - the collaborator itself persists nothing, which is why
+    // its own return is a constant `true` [model/service/SkuService.cfc:L207]. Without an
+    // ORM the cascade has to be written out, and its ORDER is forced by the schema rather
+    // than chosen: `SwSku.productID` references `SwProduct` and `SwProduct.defaultSkuID`
+    // references `SwSku`, so the owning row goes first, the children second, and the
+    // deferred foreign key last. That sequence is issued by
+    // `src/repositories/mysql/mysqlProductRepository.ts` inside ONE transaction, which is
+    // the tier that owns statement order against the datastore and the only tier that can
+    // make the three writes atomic the way Hibernate's flush was. This service therefore
+    // hands over the aggregate and does not sequence its rows.
+    product = await this.productRepository.saveProduct(product, {
+      urlTitle: product.getUrlTitle(),
+      productName: effectiveProductName,
+    });
 
     return product;
   }
@@ -3635,9 +3793,20 @@ export class ProductService {
    *   matching the legacy.
    * @param data - The save payload, MUTATED IN PLACE when generation fires - see the
    *   JUDGMENT CALL below.
-   * @returns The persisted product type when it validated, or the UNPERSISTED product type
-   *   carrying its errors otherwise - `super.save` answers the entity either way
-   *   [org/Hibachi/HibachiService.cfc:L167] and never raises for a refused save.
+   * @returns The persisted product type. A refusal is THROWN rather than returned - see
+   *   {@link ProductTypeValidationError}.
+   * @throws {@link ProductTypeValidationError} when the two save-context rules of
+   *   [model/validation/ProductType.json] are not satisfied. Nothing is written, and the
+   *   parent-product inheritance at [model/service/ProductService.cfc:L306] is not reached.
+   *
+   *   ★★ QUOTE-THEN-REVISE, AND THE QUOTED CONTRACT WAS NEVER KEPT. This tag used to read: "The
+   *   persisted product type when it validated, or the UNPERSISTED product type **carrying its
+   *   errors** otherwise - `super.save` answers the entity either way
+   *   [org/Hibachi/HibachiService.cfc:L167] and never raises for a refused save." The CFML statement
+   *   is accurate; the PORT could not honour it, because the framework left those errors on the
+   *   entity and the ported `ProductType` publishes nothing to leave them on. What a caller actually
+   *   received was an entity with an empty `productTypeID`, an unchanged datastore and no signal. See
+   *   the STEP 3 note in the body for the full record.
    */
   async saveProductType(
     productType: ProductType,
@@ -3755,22 +3924,32 @@ export class ProductService {
 
     // STEP 3 - save, ONLY WHEN CLEAN [org/Hibachi/HibachiService.cfc:L153-L155]:
     // `if(!arguments.entity.hasErrors()) { arguments.entity = getHibachiDAO().save(...); }`.
-    // The framework returns the entity either way [L167], so an invalid product type comes
-    // back UNPERSISTED rather than raising - which is what the caller at [L306] then reads.
+    //
+    // ★★★ QUOTE-THEN-REVISE, AND THE REVISION IS A RUNTIME FINDING. This note used to continue: "The
+    // framework returns the entity either way [L167], so an invalid product type comes back
+    // UNPERSISTED rather than raising - which is what the caller at [L306] then reads." The CFML
+    // reading is right and the port could not keep it: the framework left its errors ON THE ENTITY for
+    // [L306] to read, and the ported `ProductType` publishes no `hasErrors()` for them to be left on -
+    // so what actually came back was an entity with an EMPTY `productTypeID`, nothing written, and no
+    // signal at all. QA testing found exactly that, and found the sibling `saveBrand` throwing for the
+    // same class of refusal in the same tier. The refusal is now REPORTED, by the same protocol.
+    // Nothing about WHICH rules are checked or WHEN the write happens changes.
     //
     // The payload carries the two columns populate could address. `urlTitle` is read back
     // off the entity, which the populate step above and the generation gate have both had
     // their say over; `productTypeName` is read from the struct with the entity as the
     // fallback, which is populate leaving a column alone when the key is absent.
-    if (!hasErrors) {
-      productType = await this.productTypeRepository.saveProductType(productType, {
-        urlTitle: productType.getUrlTitle(),
-        productTypeName:
-          typeof populatedProductTypeName === 'string'
-            ? populatedProductTypeName
-            : productType.getProductTypeName(),
-      });
+    if (hasErrors) {
+      throw new ProductTypeValidationError(errors);
     }
+
+    productType = await this.productTypeRepository.saveProductType(productType, {
+      urlTitle: productType.getUrlTitle(),
+      productTypeName:
+        typeof populatedProductTypeName === 'string'
+          ? populatedProductTypeName
+          : productType.getProductTypeName(),
+    });
 
     // CFML parity [model/service/ProductService.cfc:L306]: the legacy condition is
     // `!hasErrors() && !isNull(getParentProductType()) and arrayLen(...getProducts())`.
@@ -3781,21 +3960,22 @@ export class ProductService {
     //     here, which the narrowing requires and which cannot change the outcome: the
     //     accessor is a pure field read on an entity nothing has mutated in between.
     //
-    // ★ THE `!hasErrors()` TERM IS THE FIRST OF THE THREE AND IT IS A REAL TEST, NOT A
-    // FORMALITY. It reads the SAME error state STEP 2 computed and STEP 3 gated on - which
-    // is precisely how the legacy reads it, since `super.save` left its errors on the
-    // entity for this line to see. An earlier revision recorded the term as having no
-    // ported counterpart and "discharged by control flow" on the grounds that reaching
-    // this line implied the save succeeded; with the save now gated, reaching this line
-    // implies nothing of the sort, and inheriting a parent's entire product collection
-    // onto a product type that was REFUSED PERSISTENCE is the outcome that note allowed.
+    // ★ THE `!hasErrors()` TERM IS THE FIRST OF THE THREE AND IT IS DISCHARGED STRUCTURALLY NOW, WHICH
+    // IS STRONGER THAN TESTING IT. STEP 3 throws when the rules failed, so this line is reachable ONLY
+    // on the clean path and inheriting a parent's entire product collection onto a product type that
+    // was refused persistence has become unreachable rather than merely guarded. The term is therefore
+    // omitted from the condition rather than left as a test that can no longer be false - keeping it
+    // would be dead code `noUnusedLocals` cannot see and a reader would have to reason about.
+    //
+    // ★★ THIS IS THE THIRD READING OF THIS TERM AND THE OTHER TWO ARE RECORDED SO THE PATH IS
+    // CHECKABLE. The first revision called it "discharged by control flow" while the save was
+    // UNGATED - which was wrong, because reaching this line then implied nothing. The second gated
+    // the save and tested the term here - which was right for a gate that merely skipped. The third
+    // replaces the skip with a throw, and the term goes back to being discharged by control flow -
+    // this time truly, because the only path here is the one where the save happened.
     const parentProductType = productType.getParentProductType();
 
-    if (
-      !hasErrors &&
-      parentProductType !== undefined &&
-      parentProductType.getProducts().length > 0
-    ) {
+    if (parentProductType !== undefined && parentProductType.getProducts().length > 0) {
       // LEGACY-DEFECT [model/service/ProductService.cfc:L307]: the parent's product
       // collection is assigned directly to the child, replacing rather than merging the
       // child's own products, and because entity accessors return the live array both

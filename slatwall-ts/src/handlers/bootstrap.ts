@@ -1873,6 +1873,94 @@ class CompositionDataError extends Error {
 }
 
 /**
+ * One member of a caller's own document that this tier could not use, reduced to what is safe to
+ * publish.
+ *
+ * DECLARED LOCALLY AND STRUCTURALLY IDENTICAL TO `MappedFieldIssue` in `./errorMapper.ts`, which is
+ * the type a primary adapter hands to `invalidRequestResponse`. The local declaration follows the
+ * house pattern this file already uses for `ProductSalePriceResolver` in
+ * `../repositories/mysql/mysqlProductRepository.ts`: a one-shape contract consumed structurally needs
+ * no imported name, and the compiler still checks the shape at the handler that passes it on, so a
+ * member renamed on either side is a build failure rather than a runtime surprise.
+ *
+ * `path` is a DOTTED MEMBER PATH INTO THE SUBMITTED DOCUMENT and `message` describes the constraint
+ * that failed. NEITHER EVER CARRIES A SUBMITTED VALUE - no identifier, no price, no account - because
+ * a refusal is not a place to echo input back. That is the same rule `mapZodErrorFields` follows and
+ * the same one `../handlers/errorMapper.ts` enforces for every published `fields` array.
+ */
+export interface OrderViewDocumentFieldIssue {
+  /** Dotted path to the offending member of the submitted order document. */
+  readonly path: string;
+  /** What the member had to satisfy and did not. Never the value it held. */
+  readonly message: string;
+}
+
+/**
+ * A wire order document named a catalogue row this request cannot price.
+ *
+ * ★★★ WHY THIS IS A SEPARATE CLASS FROM {@link CompositionDataError}, AND WHY IT IS EXPORTED. The two
+ * describe genuinely different faults and belong on different sides of the 4xx/5xx line.
+ * `CompositionDataError` says THIS SERVICE read something the schema forbids - a malformed row, a
+ * broken internal invariant - and that is the service's own problem, so it stays unexported and lands
+ * on the generic 500 arm. This one says THE CALLER'S OWN DOCUMENT names a product, a SKU or a price
+ * group that cannot be resolved into the aggregate it asked to have priced, which is a request the
+ * caller can fix.
+ *
+ * QA testing found both halves of the cost of conflating them. An order item naming an unknown
+ * `productID`, and one naming a SKU the named product does not carry, both answered
+ * `500 unrecognized` with no `fields` - so a caller was told the service had failed when the caller
+ * had, and an operator's 5xx alarm counted client mistakes as service faults. The report's own
+ * summary of the consequence: client errors must not inflate the 5xx signal.
+ *
+ * ★★ QUOTE-THEN-REVISE, BECAUSE THE PREVIOUS BEHAVIOUR WAS ARGUED FOR RATHER THAN OVERLOOKED.
+ * `admitOrderDocument` in `./promotionApplicationHandler.ts` documented it as: "A hydration refusal is
+ * NOT wrapped: `./bootstrap.js` raises its own error naming the identifier that could not be resolved,
+ * and `./errorMapper.js` classifies it - re-labelling it as a client-shaped refusal here would tell a
+ * caller that a row exists or does not, which is a disclosure this boundary has no reason to make."
+ * The DISCLOSURE half of that is worth keeping and is kept: nothing published names an identifier, and
+ * the refusal is expressed as a MEMBER PATH plus a constraint sentence, exactly like every schema
+ * rejection this boundary already publishes. What does not survive is the inference from it - that the
+ * whole refusal must therefore be reported as a server failure. The route is authenticated before any
+ * database work happens, and the catalogue reads this same service publishes (`GET /catalog/products`,
+ * `GET /catalog/skus`) already answer existence questions to that same principal, so the marginal
+ * disclosure of "the member you sent did not resolve" is nil while the cost of mislabelling it is a
+ * caller that cannot tell a typo from an outage.
+ *
+ * `fields` is READONLY and the class carries nothing else: no identifier, no row, no statement, no
+ * count of matching rows. The message on the `Error` itself is FIXED and names no member either,
+ * because `./errorMapper.ts` owns the sentence a caller sees and this text only ever reaches a log.
+ */
+export class OrderViewDocumentDataError extends Error {
+  /** The member paths that could not be resolved, and the constraint each failed. */
+  public readonly fields: readonly OrderViewDocumentFieldIssue[];
+
+  public constructor(fields: readonly OrderViewDocumentFieldIssue[]) {
+    super(
+      'The order document names catalogue data this request cannot price, so no order view was ' +
+        'materialized and neither pass was run.',
+    );
+    this.name = 'OrderViewDocumentDataError';
+    this.fields = fields;
+  }
+}
+
+/**
+ * The dotted path to the submitted order document's item array.
+ *
+ * ★ IT INCLUDES THE `order.` PREFIX ON PURPOSE, so a member path this tier publishes is
+ * INDISTINGUISHABLE IN SHAPE from one the schema publishes for the same member. The primary adapter
+ * validates the document with `mapZodErrorFields(error, 'order')`, which prefixes every schema issue
+ * with `order.` - so a caller that has already learned to read `order.orderItems.0.price` from a
+ * schema rejection reads `order.orderItems.0.productID` from a hydration refusal without being told
+ * about a second path convention.
+ *
+ * SERVER-AUTHORED, like the prefix it mirrors: it is a frozen literal, never composed from anything
+ * a caller sent. Only the numeric ARRAY INDEX is caller-influenced, and an index is a position rather
+ * than a value.
+ */
+const ORDER_ITEMS_DOCUMENT_PATH = 'order.orderItems';
+
+/**
  * A collaborator was reached before the wiring that binds it had completed.
  *
  * Unreachable through any published entry point: all THREE late bindings are closed
@@ -6230,6 +6318,22 @@ function createRequestGraph(
   // `getService("promotionService")`. Every product this adapter hydrates carries it,
   // so `Product.getSalePriceDetailsForSkus()` resolves through the port on first use
   // rather than refusing.
+  //
+  // ★★★ `productTypeRepository` IS THE SIXTH, AND IT IS HERE BECAUSE OF A RUNTIME
+  // FINDING. QA testing drove `POST /promotions/application` with ordinary catalogue
+  // data and received a 500: `loadDocumentSkus` below asks
+  // `getProductSkus(product, /*fetchOptions*/ true)`, which awaits
+  // `Product.getBaseProductType()`, which delegates to `ProductType` - and
+  // [model/entity/ProductType.cfc:L112] loads the ROOT of `productTypeIDPath` to read
+  // its system code whenever the product type carries none of its own. Only a BASE
+  // product type carries a system code, so a system-code-less leaf is the NORMAL shape
+  // and the failure was the normal case. The entity is right to raise rather than
+  // fabricate an answer (AAP 0.6.3 - the value feeds the `baseProductType` `inList`
+  // gate in [model/validation/Product.json]), so what is fixed is the WIRING: the port
+  // it needs is now supplied at the construction site, which is exactly where T1 puts
+  // a collaborator. THE SAME INSTANCE constructed twenty lines above is passed, so a
+  // product type reached through a product read and one reached through the
+  // product-type adapter answer identically within a request.
   const productRepository: ProductRepository = new MysqlProductRepository(
     graph.executor,
     auditActor,
@@ -6239,6 +6343,7 @@ function createRequestGraph(
       optionRepository,
       subscriptionTermProvider: graph.subscriptionTermProvider,
       salePriceResolver,
+      productTypeRepository,
     },
     mysqlSkuRepository,
   );
@@ -6978,7 +7083,9 @@ async function toCreateSkusInput(
  * reads that product once, and the SKUs that hang off it once, which is what keeps a
  * hydration from degenerating into an N+1 walk.
  *
- * @throws `CompositionDataError` naming the first product the schema does not carry.
+ * @throws {@link OrderViewDocumentDataError} naming the MEMBER PATH of the first order item whose
+ *   product the catalogue does not carry. A caller-shaped refusal, not a server fault - see that
+ *   class for why the two are separated and why no identifier is published.
  */
 async function loadDocumentProducts(
   document: OrderViewDocument,
@@ -6986,7 +7093,10 @@ async function loadDocumentProducts(
 ): Promise<ReadonlyMap<string, Product>> {
   const productsByFoldedID = new Map<string, Product>();
 
-  for (const item of document.orderItems) {
+  // INDEXED, so a refusal can name `order.orderItems.<i>.productID` rather than merely saying that
+  // some product did not resolve. The index is the caller's own array position, which is what makes
+  // the report actionable without echoing the identifier that failed.
+  for (const [itemIndex, item] of document.orderItems.entries()) {
     const foldedProductID = foldIdentifier(item.productID);
 
     if (productsByFoldedID.has(foldedProductID)) {
@@ -7000,10 +7110,12 @@ async function loadDocumentProducts(
       // item whose product-type ancestry, brand and option list are unknown - and those are
       // precisely what reward and qualifier membership is decided by, so pricing it would be
       // pricing against an unknown catalogue.
-      throw new CompositionDataError(
-        `product "${item.productID}" named by order item "${item.orderItemID}" could not be ` +
-          'loaded, so the order view cannot be materialized',
-      );
+      throw new OrderViewDocumentDataError([
+        {
+          path: `${ORDER_ITEMS_DOCUMENT_PATH}.${String(itemIndex)}.productID`,
+          message: 'does not name a product this request can price',
+        },
+      ]);
     }
 
     productsByFoldedID.set(foldedProductID, product);
@@ -7025,7 +7137,8 @@ async function loadDocumentProducts(
  * [model/service/PromotionService.cfc:L808-L818]; the flag is the legacy's own eager-fetch
  * decision [model/dao/SkuDAO.cfc:L152-L163] and not an invention.
  *
- * @throws `CompositionDataError` naming the first SKU the named product does not carry.
+ * @throws {@link OrderViewDocumentDataError} naming the MEMBER PATH of the first order item whose SKU
+ *   the named product does not carry. Caller-shaped, and no identifier is published.
  */
 async function loadDocumentSkus(
   document: OrderViewDocument,
@@ -7042,18 +7155,26 @@ async function loadDocumentSkus(
 
   const resolved = new Map<string, Sku>();
 
-  for (const item of document.orderItems) {
+  for (const [itemIndex, item] of document.orderItems.entries()) {
     const sku = skusByFoldedID.get(foldIdentifier(item.skuID));
 
     if (sku === undefined) {
       // The SKU is not among the SKUs of the product the caller named it under. That is a
       // broken invariant rather than a data variation - the two identifiers disagree about
-      // the catalogue - and it is refused with both of them named so the caller can fix the
-      // pair rather than guess which half was wrong.
-      throw new CompositionDataError(
-        `sku "${item.skuID}" is not carried by product "${item.productID}" named on order item ` +
-          `"${item.orderItemID}", so the order view cannot be materialized`,
-      );
+      // the catalogue - and it is refused with THE PAIR OF MEMBER PATHS so the caller can fix
+      // the pair rather than guess which half was wrong. Two paths and no values: which of the
+      // two identifiers is wrong is exactly what the caller has to decide, and naming both
+      // members says so without repeating either one back.
+      throw new OrderViewDocumentDataError([
+        {
+          path: `${ORDER_ITEMS_DOCUMENT_PATH}.${String(itemIndex)}.skuID`,
+          message: 'does not name a sku carried by the product named on the same order item',
+        },
+        {
+          path: `${ORDER_ITEMS_DOCUMENT_PATH}.${String(itemIndex)}.productID`,
+          message: 'names a product that does not carry the sku named on the same order item',
+        },
+      ]);
     }
 
     resolved.set(foldIdentifier(item.skuID), sku);
@@ -7071,7 +7192,8 @@ async function loadDocumentSkus(
  * way for both. An item stating `null` is not part of the request at all: that is the
  * `isNull(...)` arm, and no price group is invented for it.
  *
- * @throws `CompositionDataError` naming the first price group the schema does not carry.
+ * @throws {@link OrderViewDocumentDataError} naming the MEMBER PATH of every order item whose applied
+ *   price group the schema does not carry. Caller-shaped, and no identifier is published.
  */
 async function loadDocumentPriceGroups(
   document: OrderViewDocument,
@@ -7091,18 +7213,33 @@ async function loadDocumentPriceGroups(
 
   const priceGroupsByFoldedID = await priceGroupSetLoader.getPriceGroupsByID(requested);
 
-  for (const priceGroupID of requested) {
-    if (priceGroupsByFoldedID.has(foldIdentifier(priceGroupID))) {
+  const unresolvedFields: OrderViewDocumentFieldIssue[] = [];
+
+  // ★ THE PATHS ARE RECOVERED FROM THE DOCUMENT RATHER THAN FROM `requested`, because `requested` is
+  // a DE-DUPLICATED set and a caller needs the array positions it actually sent. Two items naming one
+  // unresolvable group therefore produce two member paths, which is the report that matches what was
+  // submitted.
+  for (const [itemIndex, item] of document.orderItems.entries()) {
+    const appliedPriceGroupID = item.appliedPriceGroupID;
+
+    if (
+      appliedPriceGroupID === null ||
+      priceGroupsByFoldedID.has(foldIdentifier(appliedPriceGroupID))
+    ) {
       continue;
     }
 
     // Refused rather than dropped, for the reason `projectPriceGroupIntents` states about
     // its own identical refusal: dropping it would move the L241 discriminator to the other
     // arm and change the discount.
-    throw new CompositionDataError(
-      `price group "${priceGroupID}" named by an order item could not be loaded, so the order ` +
-        'view cannot be materialized',
-    );
+    unresolvedFields.push({
+      path: `${ORDER_ITEMS_DOCUMENT_PATH}.${String(itemIndex)}.appliedPriceGroupID`,
+      message: 'does not name a price group this request can price against',
+    });
+  }
+
+  if (unresolvedFields.length > 0) {
+    throw new OrderViewDocumentDataError(unresolvedFields);
   }
 
   return priceGroupsByFoldedID;

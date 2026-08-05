@@ -179,14 +179,23 @@ const NO_ROWS: readonly SqlRow[] = [];
  * What a write reports back.
  *
  * `affectedRows: 1` is the ordinary outcome of a single-row insert, update or delete. The adapter
- * inspects it on exactly two paths: an insert treats zero as a failure because no generated key
- * could then be returned, and `deletePriceGroup` reports `affectedRows > 0` as its boolean. The
- * update paths inspect nothing, because MySQL reports rows CHANGED rather than rows MATCHED and an
- * idempotent save legitimately reports zero.
+ * inspects it on EVERY write path: an insert treats zero as a failure because no generated key could
+ * then be returned, `deletePriceGroup` reports `affectedRows > 0` as its boolean, and both update
+ * paths now refuse a zero.
+ *
+ * ★★★ QUOTE-THEN-REVISE. That last clause used to read: "The update paths inspect nothing, because
+ * MySQL reports rows CHANGED rather than rows MATCHED and an idempotent save legitimately reports
+ * zero." The premise is true of the protocol's DEFAULT and false of the connection this adapter is
+ * handed: `mysql2`'s default client flags include `FOUND_ROWS`
+ * [node_modules/mysql2/lib/connection_config.js: `getDefaultFlags`] and
+ * `src/repositories/mysql/connection.ts` `buildPoolOptions()` overrides no `flags`, so the server
+ * reports rows MATCHED. Measured against the live schema: a NO-CHANGE update answers
+ * `affectedRows: 1` with `Rows matched: 1  Changed: 0`; only a NO-MATCH update answers 0. The
+ * idempotent save was never at risk.
  */
 const WRITE_RESULT: SqlMutationResult = Object.freeze({ affectedRows: 1, warningStatus: 0 });
 
-/** A write that matched no row, for the one case that turns on the distinction. */
+/** A write that matched no row, for the cases that turn on the distinction. */
 const NO_ROW_WRITE_RESULT: SqlMutationResult = Object.freeze({
   affectedRows: 0,
   warningStatus: 0,
@@ -2939,6 +2948,38 @@ describe('materialized-path maintenance - the preInsert and preUpdate replacemen
 
     expect(executor.mutationCalls).toHaveLength(1);
   });
+
+  it('★★ REFUSES an UPDATE that matched no row, symmetrically with the insert above', async () => {
+    // ★★★ QUOTE-THEN-REVISE, AND THE QUOTED PREMISE WAS FALSE ON THIS POOL. The adapter's update
+    // path carried: "NO ROW COUNT IS INSPECTED. MySQL reports rows CHANGED rather than rows
+    // MATCHED" - so an update whose key named nothing resolved and answered a rebuilt entity. That
+    // is true of the protocol's DEFAULT and false of the connection this adapter is handed:
+    // `mysql2`'s default client flags include `FOUND_ROWS`
+    // [node_modules/mysql2/lib/connection_config.js: `getDefaultFlags`] and `connection.ts`
+    // `buildPoolOptions()` overrides no `flags`. Measured against the live schema: a NO-CHANGE
+    // update answers `affectedRows: 1` with `Rows matched: 1  Changed: 0`; only a NO-MATCH update
+    // answers 0. The idempotent save the old note protected was never at risk.
+    //
+    // ⚠ AND THIS IS THE PATH THAT STORES THE MATERIALIZED `priceGroupIDPath`. A silently-lost
+    // update leaves a stored path that no longer describes the tree the entity reports, and the
+    // cascade climbs that path to choose a rate [model/service/PriceGroupService.cfc:L140-L181] -
+    // so the consequence is a WRONG PRICE, discovered later and nowhere near here.
+    const { repository, executor } = makeSubject([], [NO_ROW_WRITE_RESULT]);
+
+    await expect(
+      repository.savePriceGroup(
+        makePersistedPriceGroup({
+          priceGroupID: CANNED_PRICE_GROUP_ID,
+          priceGroupIDPath: CANNED_PRICE_GROUP_ID,
+          parentPriceGroup: undefined,
+        }),
+      ),
+    ).rejects.toThrow(/matched no row/u);
+
+    // The statement WAS issued - the refusal is on the server's own answer - and it was the update.
+    expect(executor.mutationCalls).toHaveLength(1);
+    expect(onlyStatement(executor.mutationCalls).sql).toBe(EXPECTED_UPDATE_PRICE_GROUP_SQL);
+  });
 });
 
 // --- Fetch shape ----------------------------------------------------------------
@@ -4715,6 +4756,28 @@ describe('money, flags, and the rate write paths', () => {
 
     expect(parameterAt(statement.params, RATE_UPDATE_BOUND.globalFlag)).toBe(false);
     expect(parameterAt(statement.params, RATE_UPDATE_BOUND.amountType)).toBe('percentageOff');
+  });
+
+  it('★★ REFUSES a rate UPDATE that matched no row, BEFORE reconciling any link table', async () => {
+    // A RATE IS A MONEY ROW - `amount` and `amountType` are what the cascade multiplies a SKU price
+    // by [model/service/PriceGroupService.cfc:L316-L340] - so an update that silently matched
+    // nothing means the caller believes a price changed when it did not. Guarded on the same
+    // measured `FOUND_ROWS` semantics as the price-group update; see the note there.
+    //
+    // ★ AND THE ORDER OF THE REFUSAL IS THE SECOND THING ASSERTED. The scalar row is written FIRST
+    // and the six link reconciliations follow it, so refusing on the scalar count is what stops a
+    // rate whose row is GONE from having its membership rewritten anyway - which would leave link
+    // rows pointing at a rate that no longer exists. Exactly ONE statement is issued.
+    const { repository, executor } = makeSubject([], [NO_ROW_WRITE_RESULT]);
+
+    await expect(
+      repository.savePriceGroupRate(
+        makePersistedPriceGroupRate({ amount: Money.fromDecimalString(STORED_AMOUNT_TEXT) }),
+      ),
+    ).rejects.toThrow(/matched no row/u);
+
+    expect(executor.mutationCalls).toHaveLength(1);
+    expect(onlyStatement(executor.mutationCalls).sql).toBe(EXPECTED_UPDATE_PRICE_GROUP_RATE_SQL);
   });
 
   // -------------------------------------------------------------------------

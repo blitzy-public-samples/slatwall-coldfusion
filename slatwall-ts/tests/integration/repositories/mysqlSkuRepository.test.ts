@@ -172,6 +172,13 @@ import {
   resolveConfiguredDialect,
   resolveDialect,
 } from '../../../src/repositories/mysql/dialect.js';
+// Imported for EXACTLY ONE case, and the reason is a runtime finding rather than convenience.
+// `getProductSkus(product, true)` awaits `product.getBaseProductType()`, and every other case in this
+// file supplies a `Product` subclass that overrides that method - so the combination that failed in
+// production (a REALLY hydrated product whose product type carries no `systemCode`) was covered by
+// nothing. The case named "★ branches correctly for a product hydrated by the REAL product adapter"
+// closes that gap and is the only consumer of this import.
+import { MysqlProductRepository } from '../../../src/repositories/mysql/mysqlProductRepository.js';
 import { MysqlSkuRepository } from '../../../src/repositories/mysql/mysqlSkuRepository.js';
 // Imported for exactly one read-totality case: the proof that neither the adapter nor the
 // contractually total builder beneath it counts the elements of a selected-option list.
@@ -422,6 +429,78 @@ interface RecordedStatement {
 
 const NO_ROWS: readonly SqlRow[] = Object.freeze([]);
 
+// ---------------------------------------------------------------------------
+// Canned rows for the ONE case that hydrates through the real product adapter
+//
+// These belong to `MysqlProductRepository`'s projection, not to this adapter's, which is why they are
+// named apart and kept together: `p_`, `b_` and `pt_` prefixes for the forty-five-label product graph,
+// and the sibling product-type adapter's fourteen UNPREFIXED columns for the root read.
+//
+// ★ `pt_systemCode: null` IS THE WHOLE POINT. Only a BASE product type carries a system code
+// [model/entity/ProductType.cfc:L110-L115], so a leaf type has none and `getBaseProductType()` must
+// load the ROOT named by `productTypeIDPath` to answer. That is the branch the runtime failure was on,
+// and a fixture with a populated system code would never reach it.
+// ---------------------------------------------------------------------------
+
+const REAL_LEAF_PRODUCT_TYPE_ID = '4f2c8b1e9d7a44f0a3c6e5b8d1907f24';
+
+const REAL_ROOT_PRODUCT_TYPE_ID = 'a91d7c3f5e264b8d90f1a2c4b6e83d57';
+
+const REAL_PRODUCT_GRAPH_ROW_WITH_LEAF_TYPE: SqlRow = Object.freeze({
+  p_productID: PRODUCT_ID,
+  p_activeFlag: 1,
+  p_urlTitle: 'nike-air-jorden',
+  p_productName: 'Nike Air Jorden',
+  p_productCode: 'NIKEAIRJORDEN',
+  p_productDescription: null,
+  p_publishedFlag: 1,
+  p_sortOrder: null,
+  p_calculatedSalePrice: null,
+  p_calculatedQATS: null,
+  p_calculatedAllowBackorderFlag: 0,
+  p_calculatedTitle: null,
+  p_brandID: null,
+  p_productTypeID: REAL_LEAF_PRODUCT_TYPE_ID,
+  p_defaultSkuID: null,
+  p_remoteID: null,
+  p_createdDateTime: null,
+  p_createdByAccountID: null,
+  p_modifiedDateTime: null,
+  p_modifiedByAccountID: null,
+  b_brandID: null,
+  pt_productTypeID: REAL_LEAF_PRODUCT_TYPE_ID,
+  pt_productTypeIDPath: `${REAL_ROOT_PRODUCT_TYPE_ID},${REAL_LEAF_PRODUCT_TYPE_ID}`,
+  pt_activeFlag: 1,
+  pt_publishedFlag: 1,
+  pt_urlTitle: 'shoes',
+  pt_productTypeName: 'Shoes',
+  pt_productTypeDescription: null,
+  pt_systemCode: null,
+  pt_parentProductTypeID: REAL_ROOT_PRODUCT_TYPE_ID,
+  pt_remoteID: null,
+  pt_createdDateTime: null,
+  pt_createdByAccountID: null,
+  pt_modifiedDateTime: null,
+  pt_modifiedByAccountID: null,
+});
+
+const REAL_ROOT_PRODUCT_TYPE_ROW: SqlRow = Object.freeze({
+  productTypeID: REAL_ROOT_PRODUCT_TYPE_ID,
+  productTypeIDPath: REAL_ROOT_PRODUCT_TYPE_ID,
+  activeFlag: 1,
+  publishedFlag: 1,
+  urlTitle: 'merchandise',
+  productTypeName: 'Merchandise',
+  productTypeDescription: null,
+  systemCode: 'merchandise',
+  parentProductTypeID: null,
+  remoteID: null,
+  createdDateTime: null,
+  createdByAccountID: null,
+  modifiedDateTime: null,
+  modifiedByAccountID: null,
+});
+
 const ONE_ROW_WRITTEN: SqlMutationResult = Object.freeze({ affectedRows: 1, warningStatus: 0 });
 
 const NO_ROWS_WRITTEN: SqlMutationResult = Object.freeze({ affectedRows: 0, warningStatus: 0 });
@@ -632,6 +711,18 @@ function prototypeMethodOf(methodName: keyof SkuRepository): { name: string; ari
 // The override is intentionally NOT declared `async`. It returns the same `Promise<string | undefined>`
 // the base method returns, which is a legal override and avoids an `async` function with nothing to
 // await. `noImplicitOverride` is satisfied by the explicit `override` keyword.
+//
+// ★★★ QUOTE-THEN-REVISE, AND THE REVISION IS A RUNTIME FINDING. The paragraph above claimed "the only
+// other seam would be constructing a `ProductType` — a module this suite is not wired to and has no
+// business reaching into". That reasoning is sound for reaching the four SQL SHAPES and it is kept. What
+// it missed is that the double also overrides away THE ONLY QUESTION this adapter asks a real product,
+// so no case here exercised a genuinely hydrated one — and QA testing found the consequence: the product
+// adapter was building `ProductType` with no `productTypeRepository`, so `getBaseProductType()` raised
+// for the normal system-code-less leaf type and `POST /promotions/application` answered 500 while every
+// case in this file passed. A THIRD seam did exist and was not considered: hydrating the product through
+// `MysqlProductRepository` itself, which needs no entity module and no fixture. The case named
+// "★ branches correctly for a product hydrated by the REAL product adapter" now does exactly that. The
+// double remains the right tool for the shape matrix; it is no longer the ONLY tool in this block.
 // ---------------------------------------------------------------------------
 
 class StubbedBaseTypeProduct extends Product {
@@ -1509,6 +1600,69 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
     // is NO `sorted` argument on it. The `sorted` flag belongs to
     // `SkuService.getProductSkus` [model/service/SkuService.cfc:L220], which decides afterwards whether
     // to consult `getSortedProductSkusID`.
+
+    // =======================================================================
+    // ★★★ THE ONE CASE THAT USES NO DOUBLE, AND WHY IT HAD TO BE ADDED
+    //
+    // Every other case in this block hands `getProductSkus` a
+    // `StubbedBaseTypeProduct`, which overrides `getBaseProductType()` — the exact
+    // method this adapter branches on. That double is the right tool for reaching the
+    // four SQL shapes, and it has ONE blind spot which QA testing then walked straight
+    // into: it also overrides away the ONLY question this adapter asks a REAL product.
+    //
+    // The finding: `POST /promotions/application` answered `500 unrecognized` for
+    // ordinary catalogue data, because `MysqlProductRepository` hydrated the product's
+    // `ProductType` with no `productTypeRepository`, and
+    // [model/entity/ProductType.cfc:L112] cannot resolve a base type without one when
+    // the type carries no `systemCode` of its own — the normal shape for a leaf type.
+    // 5 934 tests passed while that stood, because no suite paired the REAL hydration
+    // with this REAL call. This case is that pairing, and it is deliberately placed
+    // beside the double whose blind spot it closes.
+    //
+    // It reaches for `MysqlProductRepository` — a module this suite otherwise has no
+    // business in — for exactly that reason, and for nothing else: no other case here
+    // constructs one, and no other assertion depends on it.
+    // =======================================================================
+
+    it('★ branches correctly for a product hydrated by the REAL product adapter, with NO double', async () => {
+      // The product adapter's own executor, answering its documented fetch shape: the
+      // product graph carrying a product type whose `systemCode` is NULL, then the SKU
+      // read (no rows, so the option read is correctly skipped), then the ROOT
+      // product-type read the entity issues through its injected port.
+      const productExecutor = new RecordingExecutor([
+        [REAL_PRODUCT_GRAPH_ROW_WITH_LEAF_TYPE],
+        NO_ROWS,
+        [REAL_ROOT_PRODUCT_TYPE_ROW],
+      ]);
+      const product = await new MysqlProductRepository(
+        productExecutor,
+        TEST_AUDIT_ACTOR,
+      ).getProductByProductID(PRODUCT_ID);
+
+      if (product === undefined) {
+        throw new Error('the suite expected the product adapter to hydrate a product');
+      }
+
+      // And now the call that failed at runtime, on that very instance.
+      const executor = new RecordingExecutor([NO_ROWS]);
+
+      await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).getProductSkus(product, true);
+
+      // ★ IT RESOLVED THE BASE TYPE AND BRANCHED ON IT. `merchandise` is what the root
+      // row carries, so the merchandise fetch join is the shape that must be emitted -
+      // and reaching this assertion at all means `getBaseProductType()` answered rather
+      // than raising.
+      const statement = onlyStatement(executor.calls);
+
+      expect(statement.sql).toBe(EXPECTED_MERCHANDISE_PRODUCT_SKUS_SQL);
+      expect(statement.params).toStrictEqual([PRODUCT_ID]);
+
+      // The root product type was read through the PRODUCT adapter's executor, by bound
+      // identifier - so the resolution really did go to the datastore rather than being
+      // satisfied by a stubbed answer.
+      expect(productExecutor.calls).toHaveLength(3);
+      expect(productExecutor.calls[2]?.params).toStrictEqual([REAL_ROOT_PRODUCT_TYPE_ID]);
+    });
 
     it('emits the bare statement when fetchOptions is falsy', async () => {
       const executor = new RecordingExecutor([NO_ROWS]);
@@ -2528,7 +2682,12 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
       // the pair, because Hibernate flushed the whole dirty entity - so the column is assigned on
       // every update and the only thing standing between a forged value and the row is what gets
       // bound. Nothing does: the statement's `COALESCE` supplies the stored value instead.
-      const executor = new RecordingExecutor([], NO_ROWS_WRITTEN);
+      //
+      // ★ ONE ROW WRITTEN, not zero. The update path now REFUSES a statement that matched no row (see
+      // the dedicated case below for the measurement behind that), and this case asserts the BOUND
+      // PARAMETERS - so the double has to report a matched row or the subject is refused before there is
+      // anything to read. The mutation result is incidental to what this case pins.
+      const executor = new RecordingExecutor([], ONE_ROW_WRITTEN);
       const sku = makeSkuFixture();
       const callerCreated = sku.getCreatedByAccountID();
 
@@ -2547,7 +2706,9 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
     });
 
     it('★★ PRESERVES A STORED ATTRIBUTION when the gate refuses, rather than erasing it', async () => {
-      const executor = new RecordingExecutor([], NO_ROWS_WRITTEN);
+      // One row written, for the same reason as the case above: this one pins bound parameters, and a
+      // refused update would never reach them.
+      const executor = new RecordingExecutor([], ONE_ROW_WRITTEN);
       const sku = makeSkuFixture();
 
       const saved = await new MysqlSkuRepository(executor, NON_ADMIN_AUDIT_ACTOR).saveSku(sku);
@@ -2564,11 +2725,11 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
       expect(saved.getModifiedByAccountID()).toBe(sku.getModifiedByAccountID());
     });
 
-    it('binds the key LAST on the update path and does not treat a zero-row update as a failure', async () => {
+    it('binds the key LAST on the update path', async () => {
       // The update names the fifteen non-key columns and carries the key in the WHERE clause, so the
       // identifier is the final bound value rather than the first. Read at index 0 for the same
       // reason as the insert case above.
-      const executor = new RecordingExecutor([], NO_ROWS_WRITTEN);
+      const executor = new RecordingExecutor([], ONE_ROW_WRITTEN);
 
       const saved = await new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).saveSku(
         makeSkuFixture(),
@@ -2579,11 +2740,43 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
       expect(mutation.params).toHaveLength(16);
       expect(mutation.params[15]).toBe(saved.getSkuID());
       expect(mutation.sql).not.toContain(saved.getSkuID());
-
-      // CFML parity: `super.save()` reported nothing about affected rows, and a persisted entity whose
-      // column values already match produces zero of them in MySQL. Zero is therefore not an error here,
-      // and this suite pins the adapter's silence rather than inventing a failure mode for it.
       expect(saved.getSkuID()).toBe(makeSkuFixture().getSkuID());
+    });
+
+    it('★★ REFUSES an update that matched NO row rather than reporting the entity as persisted', async () => {
+      // ★★★ QUOTE-THEN-REVISE, AND THE QUOTED PREMISE IS FALSE ON THIS POOL. The case above used to be
+      // titled "binds the key LAST on the update path AND DOES NOT TREAT A ZERO-ROW UPDATE AS A
+      // FAILURE", closing with: "CFML parity: `super.save()` reported nothing about affected rows, and
+      // a persisted entity whose column values already match produces zero of them in MySQL. Zero is
+      // therefore not an error here, and this suite pins the adapter's silence rather than inventing a
+      // failure mode for it."
+      //
+      // The MySQL claim is true of the protocol's DEFAULT and false of the connection this adapter is
+      // handed: `mysql2`'s default client flag set includes `FOUND_ROWS`
+      // [node_modules/mysql2/lib/connection_config.js: `getDefaultFlags`] and
+      // `src/repositories/mysql/connection.ts` `buildPoolOptions()` overrides no `flags`, so the server
+      // reports rows MATCHED. Measured against the live schema: a no-change update answers
+      // `affectedRows: 1` with `Rows matched: 1  Changed: 0`; a no-match update answers 0. The
+      // idempotent save the old note protected was never at risk.
+      //
+      // And the CFML parity claim pointed the wrong way. `super.save()` reported nothing because
+      // HIBERNATE RAISED instead - an update to a non-existent row is a failure there, not a silent
+      // no-op. QA testing found the consequence of the port's silence: `saveSku` on a SKU whose
+      // `isNew()` was false and whose key named nothing RESOLVED, answered the entity carrying that
+      // key, wrote no row, and a follow-up `getSkuBySkuCode` found nothing. The sibling `insertSku` on
+      // this very class already refused the equivalent insert.
+      const executor = new RecordingExecutor([], NO_ROWS_WRITTEN);
+
+      const rejected = new MysqlSkuRepository(executor, TEST_AUDIT_ACTOR).saveSku(
+        makeSkuFixture({ skuID: 'names-no-row-000', isNew: false }),
+      );
+
+      await expect(rejected).rejects.toThrow(/matched no row/);
+
+      // The statement WAS issued - this is a refusal made on the server's own answer, not a guess made
+      // before trying - and nothing was hydrated from it.
+      expect(executor.mutationCalls).toHaveLength(1);
+      expect(statementAt(executor.mutationCalls, 0).sql).toBe(EXPECTED_UPDATE_SKU_SQL);
     });
   });
 

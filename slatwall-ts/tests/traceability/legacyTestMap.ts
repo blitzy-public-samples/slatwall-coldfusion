@@ -617,6 +617,10 @@ export const LEGACY_TEST_MAP: {
     { module: 'src/lib/cfml/precision.ts', test: 'tests/unit/lib/cfml/precision.test.ts' },
     { module: 'src/lib/cfml/struct.ts', test: 'tests/unit/lib/cfml/struct.test.ts' },
     { module: 'src/lib/cfml/truthiness.ts', test: 'tests/unit/lib/cfml/truthiness.test.ts' },
+    {
+      module: 'src/lib/jsonDocumentKeys.ts',
+      test: 'tests/unit/lib/jsonDocumentKeys.test.ts',
+    },
     { module: 'src/lib/logger.ts', test: 'tests/unit/lib/logger.test.ts' },
     {
       module: 'src/repositories/mysql/connection.ts',

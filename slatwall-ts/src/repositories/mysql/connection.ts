@@ -1431,6 +1431,33 @@ export function getConnectionPool(): Pool {
  * `transaction`, whose test implementation is a one-liner that invokes the work
  * function with an executor recording onto the same log.
  *
+ * ---------------------------------------------------------------------------
+ * ⚠ NO RETRY IS ATTEMPTED HERE, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT (QA-I6)
+ * ---------------------------------------------------------------------------
+ * QA testing killed a pooled connection from the DATABASE side mid-life and recorded exactly what
+ * follows: the request holding that connection fails once with `PROTOCOL_CONNECTION_LOST` - mapped to a
+ * generic 500 by `../../handlers/errorMapper.js` - and the pool then self-heals, so every subsequent
+ * request succeeds. It rated the behaviour informational and noted that no retry layer exists and that
+ * the AAP specifies none.
+ *
+ * NO RETRY LAYER IS ADDED, and the reason is a constraint rather than a preference. AAP 0.8.1 forbids
+ * inventing non-functional requirements: no formal SLA, latency target, throughput figure or
+ * availability number exists for the legacy system, and the plan states outright that none may be
+ * fabricated. A retry policy IS a non-functional requirement - it is a choice of attempt count, backoff
+ * curve and deadline, and every one of those numbers would have to be invented here.
+ *
+ * ★ AND IT WOULD NOT BE A SAFE ONE TO INVENT AT THIS LAYER. This function cannot tell a read from a
+ * write: `executeMutation` reaches it too, and a connection lost mid-statement leaves the outcome of a
+ * write UNKNOWN rather than known-failed. Retrying such a statement is how a single order acquires two
+ * discount rows. A correct retry needs the idempotency reasoning AAP 0.6.5 requires of the bulk paths -
+ * "explicit batch limits, idempotency on retry, and a documented compensation story" - which is a
+ * product decision about those specific operations, not a driver-level default.
+ *
+ * What the port does instead is CORRECT AND SUFFICIENT: it fails the one request honestly, reports it
+ * with a correlation identifier, and holds no broken connection - the pool's own liveness handling
+ * discards it. A caller that needs at-least-once delivery retries at its own layer, where it knows
+ * whether its operation is safe to repeat.
+ *
  * @param pool - The pool every statement will be sent through. In production this
  *   is always `getConnectionPool()`; the parameter exists so that this function
  *   itself holds no reference to the singleton.

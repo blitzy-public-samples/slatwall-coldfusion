@@ -146,6 +146,12 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Product } from '../../../src/domain/entities/product.js';
+// A VALUE import, and the only entity module this file constructs from directly. The
+// product-type-port cases below need a substitute port that ANSWERS with a product type, and a
+// hand-rolled object cannot satisfy `Promise<ProductType | undefined>` - the return type names the
+// class. The three cases that hydrate through the adapter's own factory still do so; this is used
+// only where the WIRED port's answer has to be distinguishable from the adapter's own default.
+import { ProductType } from '../../../src/domain/entities/productType.js';
 // Type-only: the cascade contract names `Sku` in its signature, and the recording writer below
 // restates that signature so the compiler checks the shape on every build.
 import type { Sku } from '../../../src/domain/entities/sku.js';
@@ -1410,6 +1416,78 @@ const PRODUCT_GRAPH_ROW_WITH_BRAND: SqlRow = Object.freeze({
   b_createdByAccountID: null,
   b_modifiedDateTime: null,
   b_modifiedByAccountID: null,
+});
+
+/**
+ * The graph row with a MATERIALIZED product type WHOSE `systemCode` IS NULL.
+ *
+ * ★★★ THIS FIXTURE EXISTS BECAUSE OF A RUNTIME FINDING, AND THE NULL IS THE WHOLE POINT. Until QA
+ * testing drove the packaged promotion journey, NO case in this file materialized a product type at
+ * all - `PRODUCT_GRAPH_ROW` sets both `p_productTypeID` and `pt_productTypeID` to NULL, so the
+ * hydration factory's product-type arm was never entered and the port it forwards was never observed.
+ * The consequence was a 500 on every `POST /promotions/application` whose order item named a product
+ * with a system-code-less product type, which is the NORMAL shape: only a BASE product type carries a
+ * system code [model/entity/ProductType.cfc:L110-L115], so a leaf type has none and
+ * `getBaseProductType()` has to load the ROOT of `productTypeIDPath` to answer at all.
+ *
+ * `pt_systemCode: null` is therefore not incidental - it is the ONE column value that reaches the
+ * branch, and a fixture with a populated system code would pass while the defect stood.
+ *
+ * Both `p_productTypeID` and `pt_productTypeID` carry the identifier for the same reason
+ * {@link PRODUCT_GRAPH_ROW_WITH_BRAND} sets both halves of the brand: the adapter treats a set
+ * `p_productTypeID` with a NULL `pt_productTypeID` as a dangling key and refuses it. All fourteen
+ * projected `pt_` labels are present, because once the sentinel is non-NULL the factory reads the
+ * whole row and a missing label is a named column error rather than a half-built entity.
+ */
+const LEAF_PRODUCT_TYPE_ID = '4f2c8b1e9d7a44f0a3c6e5b8d1907f24';
+const ROOT_PRODUCT_TYPE_ID = 'a91d7c3f5e264b8d90f1a2c4b6e83d57';
+const ROOT_PRODUCT_TYPE_SYSTEM_CODE = 'merchandise';
+
+const PRODUCT_GRAPH_ROW_WITH_LEAF_PRODUCT_TYPE: SqlRow = Object.freeze({
+  ...PRODUCT_GRAPH_ROW,
+  p_productTypeID: LEAF_PRODUCT_TYPE_ID,
+  pt_productTypeID: LEAF_PRODUCT_TYPE_ID,
+  // The stored path names the ROOT first, which is the element [model/entity/ProductType.cfc:L112]
+  // reads with `listFirst()`.
+  pt_productTypeIDPath: `${ROOT_PRODUCT_TYPE_ID},${LEAF_PRODUCT_TYPE_ID}`,
+  pt_activeFlag: 1,
+  pt_publishedFlag: 1,
+  pt_urlTitle: 'shoes',
+  pt_productTypeName: 'Shoes',
+  pt_productTypeDescription: null,
+  // ★ NULL - the branch this fixture exists to reach.
+  pt_systemCode: null,
+  pt_parentProductTypeID: ROOT_PRODUCT_TYPE_ID,
+  pt_remoteID: null,
+  pt_createdDateTime: null,
+  pt_createdByAccountID: null,
+  pt_modifiedDateTime: null,
+  pt_modifiedByAccountID: null,
+});
+
+/**
+ * The ROOT product-type row, as `SELECT_PRODUCT_TYPE_BY_ID_SQL` in
+ * `src/repositories/mysql/mysqlProductTypeRepository.ts` projects it.
+ *
+ * Fourteen UNPREFIXED columns - this is the sibling adapter's own projection, not the product graph's
+ * aliased one - and `parentProductTypeID` is NULL so the ancestry walk terminates in one hop. It is
+ * the row `getBaseProductType()` has to be able to reach for the answer to exist.
+ */
+const ROOT_PRODUCT_TYPE_ROW: SqlRow = Object.freeze({
+  productTypeID: ROOT_PRODUCT_TYPE_ID,
+  productTypeIDPath: ROOT_PRODUCT_TYPE_ID,
+  activeFlag: 1,
+  publishedFlag: 1,
+  urlTitle: 'merchandise',
+  productTypeName: 'Merchandise',
+  productTypeDescription: null,
+  systemCode: ROOT_PRODUCT_TYPE_SYSTEM_CODE,
+  parentProductTypeID: null,
+  remoteID: null,
+  createdDateTime: null,
+  createdByAccountID: null,
+  modifiedDateTime: null,
+  modifiedByAccountID: null,
 });
 
 /**
@@ -2897,6 +2975,116 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       expect(product.getDefaultSku()?.getSkuID()).toBe(PERSISTED_SKU_ID);
     });
 
+    // =====================================================================
+    // ★★★ THE PRODUCT-TYPE PORT, AND WHY THESE THREE CASES EXIST
+    //
+    // A RUNTIME FINDING, NOT A SPECULATIVE ONE. QA testing drove
+    // `POST /promotions/application` with ordinary catalogue data and received
+    // `500 unrecognized`. The trace was
+    //   bootstrap `loadDocumentSkus`
+    //     -> `SkuRepository.getProductSkus(product, /*fetchOptions*/ true)`
+    //     -> `Product.getBaseProductType()`
+    //     -> `ProductType.getBaseProductType()`  ← raised
+    // because THIS adapter's product-type factory constructed the entity with no
+    // `productTypeRepository`, and [model/entity/ProductType.cfc:L112] cannot answer
+    // without one when the type carries no `systemCode` of its own.
+    //
+    // ★ WHY 5 934 GREEN TESTS DID NOT CATCH IT, which is the part worth fixing
+    // permanently. No case in this file materialized a product type AT ALL - the shared
+    // `PRODUCT_GRAPH_ROW` leaves both product-type columns NULL - and the one case in
+    // `mysqlSkuRepository.test.ts` that reaches `getProductSkus(product, true)`
+    // substitutes a `Product` subclass overriding the very method that failed. So the
+    // failing combination existed in no suite. These cases pair the REAL hydration with
+    // the REAL accessor, which is the pairing the report asked for.
+    // =====================================================================
+
+    it('★ hydrates a product type that CAN answer getBaseProductType() when its systemCode is NULL', async () => {
+      // The product read costs TWO statements here - the graph, then the SKU read, which
+      // matches nothing, so the option read is correctly skipped. The THIRD canned set is
+      // therefore the ROOT product-type read the entity issues through the injected port.
+      // Without the port the entity raises before reaching the executor at all, so the
+      // presence of that third statement is itself the proof that the port arrived.
+      const executor = new RecordingExecutor([
+        [PRODUCT_GRAPH_ROW_WITH_LEAF_PRODUCT_TYPE],
+        [],
+        [ROOT_PRODUCT_TYPE_ROW],
+      ]);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
+
+      const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
+
+      expect(executor.calls).toHaveLength(2);
+
+      // ANSWERS rather than raising, and answers the ROOT's system code - which is what
+      // [model/entity/ProductType.cfc:L110-L115] resolves through
+      // `getProductType(listFirst(getProductTypeIDPath())).getSystemCode()`.
+      await expect(product.getBaseProductType()).resolves.toBe(ROOT_PRODUCT_TYPE_SYSTEM_CODE);
+
+      // The root was read BY IDENTIFIER, bound, never interpolated - and it is the first
+      // element of the STORED PATH, not a parent pointer walked in memory.
+      expect(executor.calls).toHaveLength(3);
+      const rootRead = statementAt(executor.calls, 2);
+      expect(rootRead.params).toStrictEqual([ROOT_PRODUCT_TYPE_ID]);
+      expect(rootRead.sql).toContain('FROM SwProductType');
+      expect(rootRead.sql).not.toContain(ROOT_PRODUCT_TYPE_ID);
+    });
+
+    it('★ costs NO extra statement for a product type that carries its own systemCode', async () => {
+      // The complement, and it is not redundant: it proves the port is a FALLBACK PATH
+      // rather than an unconditional extra read. A base product type answers from its own
+      // column and no product-type statement is issued at all.
+      const executor = new RecordingExecutor([
+        [
+          {
+            ...PRODUCT_GRAPH_ROW_WITH_LEAF_PRODUCT_TYPE,
+            pt_systemCode: ROOT_PRODUCT_TYPE_SYSTEM_CODE,
+          },
+        ],
+        [],
+      ]);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
+
+      const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
+
+      await expect(product.getBaseProductType()).resolves.toBe(ROOT_PRODUCT_TYPE_SYSTEM_CODE);
+      expect(executor.calls).toHaveLength(2);
+    });
+
+    it('★ prefers the WIRED product-type port over its own default when the bag supplies one', async () => {
+      // The composition root wires the same `MysqlProductTypeRepository` instance it built
+      // for every other consumer (T1), and the default inside this adapter exists only so
+      // that a construction site which supplies no bag still hydrates a usable entity. This
+      // case proves the wired one WINS: the substitute answers without touching the
+      // executor, so no third statement ever appears.
+      const executor = new RecordingExecutor([[PRODUCT_GRAPH_ROW_WITH_LEAF_PRODUCT_TYPE], []]);
+      const wiredReads: string[] = [];
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR, {
+        productTypeRepository: {
+          getProductTypeQuery: () => Promise.resolve([]),
+          getProductTypesByProductTypeIDPath: () => Promise.resolve([]),
+          getProductTypeByProductTypeID: (productTypeID: string) => {
+            wiredReads.push(productTypeID);
+
+            return Promise.resolve(
+              new ProductType({
+                productTypeID,
+                systemCode: ROOT_PRODUCT_TYPE_SYSTEM_CODE,
+              }),
+            );
+          },
+          saveProductType: () => {
+            throw new Error('the wired product-type port must not be asked to write here');
+          },
+        },
+      });
+
+      const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
+
+      await expect(product.getBaseProductType()).resolves.toBe(ROOT_PRODUCT_TYPE_SYSTEM_CODE);
+      expect(wiredReads).toStrictEqual([ROOT_PRODUCT_TYPE_ID]);
+      expect(executor.calls).toHaveLength(2);
+    });
+
     it('materializes the option groups a product reaches through its SKUs, ordered by sortOrder', async () => {
       // ★ THE SMART-LIST SUBSTITUTION, ASSERTED END TO END.
       // `Product.getOptionGroups()` [model/entity/Product.cfc:L251-L261] resolved this
@@ -3411,6 +3599,38 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // attribution would itself DESTROY attribution on every non-admin save.
       expect(parameterAt(update.params, UPDATE_MODIFIED_BY_POSITION)).toBeNull();
       expect(update.sql).toContain('modifiedByAccountID = COALESCE(?, modifiedByAccountID)');
+    });
+
+    it('★★ REFUSES an update that matched NO row rather than reporting the entity as persisted', async () => {
+      // QA testing found the sibling of this on `saveSku`: an entity whose `isNew()` is false and
+      // whose key names no row RESOLVED, answered the entity carrying that key, and wrote nothing.
+      // Every update path in this tier now carries the same guard, and the guard is exact because
+      // `mysql2`'s default client flags include `FOUND_ROWS`
+      // [node_modules/mysql2/lib/connection_config.js: `getDefaultFlags`] and `connection.ts`
+      // `buildPoolOptions()` overrides no `flags` - so `affectedRows` reports rows MATCHED, not rows
+      // CHANGED. Measured against the live schema: a NO-CHANGE update answers `affectedRows: 1`
+      // with `Rows matched: 1  Changed: 0`; only a NO-MATCH update answers 0. An idempotent save is
+      // therefore never mistaken for a lost one.
+      //
+      // Parity: Hibernate raised `StaleObjectStateException` on a zero-match flush rather than
+      // returning quietly, so refusing here is what `super.save()` did.
+      //
+      // ⚠ THE EXISTENCE READ STILL SAYS THE ROW IS THERE. That is the point - the read and the
+      // write are two statements, and this is the window between them. The refusal is made on the
+      // SERVER's answer to the write, not on a guess made before issuing it.
+      const executor = new RecordingExecutor([[PRODUCT_EXISTS_ROW]], NO_ROWS_AFFECTED);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
+
+      const rejection = await captureRejection(() =>
+        repository.saveProduct(makeWritableProduct(PERSISTED_PRODUCT_ID), NO_POPULATED_MEMBERS),
+      );
+
+      expect(rejection.name).toBe('ProductPersistenceError');
+      expect(rejection.message).toContain('matched no SwProduct row');
+
+      // The statement WAS issued, and it was the update rather than an insert.
+      expect(executor.mutationCalls).toHaveLength(1);
+      expect(statementAt(executor.mutationCalls, 0).sql).toContain('UPDATE SwProduct');
     });
 
     it('binds a monetary column as a decimal STRING, never as a float', async () => {
@@ -3984,6 +4204,37 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       expect(rejection.message).toContain('is not among the skus held on the product');
       expect(executor.mutationCalls).toStrictEqual([]);
       expect(writer.calls).toStrictEqual([]);
+    });
+
+    it('★★ REFUSES when the DEFERRED defaultSkuID update matches no row', async () => {
+      // The deferred designation is the second statement of a two-statement sequence, and it is the
+      // one that records WHICH variant a shopper is shown by default. If it silently matched
+      // nothing, this method would answer a product reporting a default SKU that no row carries -
+      // and the SKU rows the cascade wrote would already be committed, so the loss would be
+      // permanent and invisible. It is guarded on the same measured `FOUND_ROWS` semantics as the
+      // ordinary update path above.
+      //
+      // The INSERT reporting zero here is not what trips the guard: an insert that did not throw
+      // wrote its row, so no insert path in this tier inspects the count. The executor answers one
+      // result for every write, so this is simply how the deferred update is made to report a miss.
+      const executor = new RecordingExecutor([], NO_ROWS_AFFECTED);
+      const writer = new RecordingCascadeWriter();
+      const draft = aTransientSku('draft-1');
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR, {}, writer);
+
+      const rejection = await captureRejection(() =>
+        repository.saveProduct(aProductWithSkus(undefined, [draft], draft), {}),
+      );
+
+      expect(rejection.name).toBe('ProductPersistenceError');
+      expect(rejection.message).toContain('deferred defaultSkuID update matched no SwProduct row');
+
+      // Both statements were issued - the insert, then the designation it defers - and the refusal
+      // is on the second. The whole sequence runs inside one unit of work, so raising here rolls
+      // the product row and the cascaded SKU rows back together.
+      expect(executor.mutationCalls).toHaveLength(2);
+      expect(statementAt(executor.mutationCalls, 1).sql).toBe(EXPECTED_PRODUCT_DEFAULT_SKU_UPDATE);
+      expect(executor.transactionCount).toBe(1);
     });
 
     it('emits no SwSku text of its own, delegating the table it does not own', async () => {

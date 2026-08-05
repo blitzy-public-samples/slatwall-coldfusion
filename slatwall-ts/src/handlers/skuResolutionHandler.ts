@@ -568,16 +568,36 @@ const getProductSkusBySelectedOptionsSchema = z.object({
 /**
  * `getSkuBySkuCode` [model/service/SkuService.cfc:L289-L291].
  *
- * `skuCode` is OPTIONAL because `SkuService.getSkuBySkuCode(skuCode?)` declares it optional. Absence
- * is forwarded as absence rather than narrowed into a different transport contract; the service and
- * repository tiers retain responsibility for the legacy raise reached by an absent DAO argument.
+ * ★★★ `skuCode` IS REQUIRED AT THIS TRANSPORT BOUNDARY, AND THIS IS THE RECORD OF THAT CHANGE. This
+ * note used to read: "`skuCode` is OPTIONAL because `SkuService.getSkuBySkuCode(skuCode?)` declares
+ * it optional. Absence is forwarded as absence rather than narrowed into a different transport
+ * contract; the service and repository tiers retain responsibility for the legacy raise reached by
+ * an absent DAO argument."
  *
- * An EMPTY `skuCode` is still admitted, per the section rule: the legacy would bind `''` and match
- * nothing, and this handler must not decide otherwise.
+ * QA testing exercised exactly that: a WELL-FORMED request omitting `skuCode` reached the service,
+ * hit the reproduced raise, and came back as an opaque **500**. Nothing about that response is
+ * useful - the caller cannot tell a mistake they can fix from a service fault they cannot, and every
+ * such request inflates the 5xx signal that error-rate alarms watch. A request missing a parameter
+ * the operation needs is the definition of a 400.
+ *
+ * ★ WHAT DID NOT CHANGE, AND WHY THAT MATTERS MORE THAN WHAT DID. The SERVICE still declares
+ * `getSkuBySkuCode(skuCode?: string)` and still raises on absence - the legacy forwards an empty
+ * `argumentCollection` into [model/dao/SkuDAO.cfc:L102], whose `required string skuCode` raises, and
+ * that parity is the acceptance contract (AAP 0.4.2, 0.9.2). It is preserved untouched for every
+ * in-process caller. What moved is only WHERE a ROUTED caller's omission is answered: this schema
+ * refuses it before dispatch, so the raise is now unreachable from HTTP rather than reachable and
+ * mishandled. The refusal carries the field path `skuCode` through
+ * `./errorMapper.js`'s validation arm, which publishes paths and constraint descriptions and NEVER
+ * the submitted value.
+ *
+ * An EMPTY `skuCode` is STILL ADMITTED, unchanged, per the section rule: `z.string()` accepts `''`,
+ * the legacy would bind `''` and match nothing, and this handler must not decide otherwise. The
+ * distinction this schema now draws is PRESENT-BUT-EMPTY (admitted, matches nothing) versus ABSENT
+ * (refused), which is precisely the distinction the legacy signature draws.
  */
 const getSkuBySkuCodeSchema = z.object({
   operation: z.literal('getSkuBySkuCode'),
-  skuCode: z.string().optional(),
+  skuCode: z.string(),
 });
 
 /** The closed parameter set for each surviving routed operation. */

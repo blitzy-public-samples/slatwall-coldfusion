@@ -237,7 +237,7 @@
 
 import { z } from 'zod';
 
-import { bootstrapCompositionRoot } from './bootstrap.js';
+import { bootstrapCompositionRoot, OrderViewDocumentDataError } from './bootstrap.js';
 import {
   invalidRequestResponse,
   jsonSuccessResponse,
@@ -256,6 +256,7 @@ import { logger as defaultLogger } from '../lib/logger.js';
 // publishes the refusal an unidentified outcome earns.
 import { cfEquals } from '../lib/cfml/struct.js';
 import { toDecimalString } from '../lib/cfml/numberFormat.js';
+import { findPrototypeKeyPath } from '../lib/jsonDocumentKeys.js';
 
 import type { APIGatewayProxyEvent, APIGatewayProxyResult, Context } from 'aws-lambda';
 import type {
@@ -1599,10 +1600,20 @@ export function admitMaterializedOrderView(request: ApplyPromotionsRequest): Pro
  *      a brand, an option or an eligibility that would decide a discount in its favour.
  *
  * @throws {@link OrderViewAdmissionError} with member paths when the document is absent or does not
- *   validate. A hydration refusal is NOT wrapped: `./bootstrap.js` raises its own error naming the
- *   identifier that could not be resolved, and `./errorMapper.js` classifies it - re-labelling it as
- *   a client-shaped refusal here would tell a caller that a row exists or does not, which is a
- *   disclosure this boundary has no reason to make.
+ *   validate. A hydration refusal is still NOT WRAPPED HERE - it propagates as the
+ *   `OrderViewDocumentDataError` `./bootstrap.js` raises, which the handler's own catch chain
+ *   recognises and reports as a 400 with the member paths that error carries.
+ *
+ *   ★★ QUOTE-THEN-REVISE. This paragraph used to continue: "`./bootstrap.js` raises its own error
+ *   naming the identifier that could not be resolved, and `./errorMapper.js` classifies it -
+ *   re-labelling it as a client-shaped refusal here would tell a caller that a row exists or does not,
+ *   which is a disclosure this boundary has no reason to make." Its PREMISE has been removed rather
+ *   than argued with: the hydration no longer names an identifier in anything publishable, so there is
+ *   no longer a disclosure to trade against. What the earlier text got wrong was the CONCLUSION it
+ *   drew - that the refusal therefore had to be reported as a server failure. QA testing measured the
+ *   cost of that: a document naming an unknown product answered `500 unrecognized` with no `fields`,
+ *   so a caller was told the service had failed when the caller had, and an operator's 5xx alarm
+ *   counted client mistakes as service faults. The classification moved; the no-echo rule did not.
  */
 async function admitOrderDocument(
   request: ApplyPromotionsRequest,
@@ -2086,6 +2097,29 @@ function decodeRequestEnvelope(
     return { ok: false, reason: 'unsupportedBodyShape' };
   }
 
+  // ★ THE ONE UNRECOGNIZED KEY `z.strictObject` DOES NOT REFUSE, REFUSED HERE INSTEAD. Every schema
+  // below is strict, so an unrecognized member is a 400 naming it - except `__proto__`, which zod
+  // accepts and silently drops at every nesting level. QA testing submitted it and confirmed both
+  // halves: the key is admitted, and `Object.prototype` is left unmodified. This closes the
+  // INCONSISTENCY - the caller is now told about that key exactly as it is told about any other - and
+  // it would also close the vulnerability if a merge-style consumer were ever added downstream. The
+  // reasoning, the measurements and the reason the walk is deep and iterative are all recorded on
+  // `../lib/jsonDocumentKeys.js`.
+  //
+  // It runs BEFORE the schema, so an offending key is reported as itself rather than as whatever
+  // downstream shape error it happens to coincide with. The path is a KEY THE CALLER SENT, never a
+  // value: nothing the caller submitted is echoed, which is the invariant the whole error surface
+  // holds to.
+  const prototypeKeyPath = findPrototypeKeyPath(document);
+
+  if (prototypeKeyPath !== undefined) {
+    return {
+      ok: false,
+      reason: 'unusableRequestInput',
+      fields: [{ path: prototypeKeyPath, message: 'is not a member this request accepts' }],
+    };
+  }
+
   const envelope = REQUEST_ENVELOPE_SCHEMA.parse(document);
 
   if (!accountAgrees(envelope.accountID, authenticatedAccountID)) {
@@ -2432,6 +2466,25 @@ export function createPromotionApplicationHandler(
       // and a schema failure and reduces anything else to a fixed sentence.
       if (thrown instanceof OrderViewAdmissionError) {
         return invalidRequestResponse(thrown.reason, mappingContext, thrown.fields);
+      }
+
+      // ★★★ THE SECOND CLIENT-SHAPED ARM, ADDED IN RESPONSE TO A RUNTIME FINDING. QA testing sent a
+      // well-formed document whose order item named an unknown `productID`, and again one naming a SKU
+      // the named product does not carry, and both answered `500 unrecognized` with no `fields`: the
+      // document PASSED the schema, so the refusal came from the hydration inside
+      // `RequestScope.materializeOrderView` and only `OrderViewAdmissionError` was recognised here.
+      // Both are caller-fixable mistakes, so both are now reported as 400 with member paths.
+      //
+      // `unusableRequestInput` is the reason, deliberately: the document's SHAPE was fine - it is the
+      // CONTENT that names nothing this request can price - and `./errorMapper.js` maps that reason to
+      // the same fixed sentence its schema-rejection arm publishes, so choosing it withholds detail
+      // rather than inventing any. The detail a caller can act on travels in `fields`, which
+      // `OrderViewDocumentDataError` constructs from server-authored paths and constraint sentences
+      // alone: no identifier, no price, no account, no row count and no statement. See that class in
+      // `./bootstrap.js` for the disclosure argument, including why the earlier decision to report
+      // this as a server failure has been reversed rather than merely changed.
+      if (thrown instanceof OrderViewDocumentDataError) {
+        return invalidRequestResponse('unusableRequestInput', mappingContext, thrown.fields);
       }
 
       return mapErrorToApiGatewayResponse(thrown, mappingContext);

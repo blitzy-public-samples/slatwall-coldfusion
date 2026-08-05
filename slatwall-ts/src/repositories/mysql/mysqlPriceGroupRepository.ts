@@ -2875,11 +2875,32 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
     // declares it.
     boundValues.push(priceGroup.getPriceGroupID());
 
-    // NO ROW COUNT IS INSPECTED. MySQL reports rows CHANGED rather than rows MATCHED for an UPDATE,
-    // so a save storing exactly what was already stored reports zero and treating that as a failure
-    // would reject an idempotent save. A missing row is a caller error this statement cannot
-    // distinguish.
-    await this.executor.executeMutation(UPDATE_PRICE_GROUP_SQL, boundValues);
+    // ★★★ QUOTE-THEN-REVISE, AND THE QUOTED PREMISE IS FALSE ON THIS POOL. This block used to read:
+    // "NO ROW COUNT IS INSPECTED. MySQL reports rows CHANGED rather than rows MATCHED for an UPDATE, so
+    // a save storing exactly what was already stored reports zero and treating that as a failure would
+    // reject an idempotent save. A missing row is a caller error this statement cannot distinguish."
+    // The FIRST sentence is true of the MySQL protocol's DEFAULT and is not true of the connection this
+    // adapter is handed: `mysql2`'s default client flag set includes `FOUND_ROWS`
+    // [node_modules/mysql2/lib/connection_config.js: `getDefaultFlags`] and `./connection.js`
+    // `buildPoolOptions()` overrides no `flags`, so the server reports rows MATCHED. Measured against
+    // the live schema: a no-change update answers `affectedRows: 1` with `Rows matched: 1  Changed: 0`,
+    // and a no-match update answers `affectedRows: 0`. So the two ARE distinguishable, the idempotent
+    // save is not at risk, and the last sentence's conclusion no longer follows from its premise.
+    //
+    // ★★ WHY IT IS WORTH REFUSING. QA testing found the sibling SKU update reporting SUCCESS for a key
+    // that named no row - the entity came back carrying that key and a follow-up read found nothing -
+    // and Hibernate raised in that situation rather than reporting success. A lost update that reads as
+    // a completed one is the one outcome a money-adjacent persistence tier must not have, so every
+    // update path in this tier now carries the same guard.
+    const update = await this.executor.executeMutation(UPDATE_PRICE_GROUP_SQL, boundValues);
+
+    if (update.affectedRows === 0) {
+      throw new PriceGroupPersistenceError(
+        'The price-group update matched no row, so the key it carries names no SwPriceGroup row and ' +
+          'the entity cannot be reported as persisted. The materialized priceGroupIDPath this save ' +
+          'computed was therefore not stored either.',
+      );
+    }
 
     return new PriceGroup({
       priceGroupID: priceGroup.getPriceGroupID(),
@@ -2950,7 +2971,18 @@ export class MySqlPriceGroupRepository implements PriceGroupRepository {
 
     boundValues.push(priceGroupRateID);
 
-    await tx.executeMutation(UPDATE_PRICE_GROUP_RATE_SQL, boundValues);
+    const update = await tx.executeMutation(UPDATE_PRICE_GROUP_RATE_SQL, boundValues);
+
+    // The same guard the price-group update above carries, for the same measured reason - see the
+    // QUOTE-THEN-REVISE note there for why `affectedRows` counts rows MATCHED on this pool and why a
+    // silent no-match update is the outcome being closed. A rate is a MONEY row, so a lost update here
+    // changes what a customer is charged.
+    if (update.affectedRows === 0) {
+      throw new PriceGroupPersistenceError(
+        'The price-group-rate update matched no row, so the key it carries names no SwPriceGroupRate ' +
+          'row and the entity cannot be reported as persisted.',
+      );
+    }
 
     return this.rehydrateSavedPriceGroupRate(priceGroupRate, priceGroupRateID, stamps);
   }

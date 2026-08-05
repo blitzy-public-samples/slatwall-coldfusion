@@ -80,7 +80,7 @@ import {
   routeNotFoundResponse,
   unauthenticatedResponse,
 } from './errorMapper.js';
-import type { ErrorMappingContext, InvalidRequestReason } from './errorMapper.js';
+import type { ErrorMappingContext, InvalidRequestReason, MappedFieldIssue } from './errorMapper.js';
 import { resolveRouteForCapability, routeRequestFromEvent } from './router.js';
 import type { RouteAction } from './router.js';
 import type { CurrencyConverter } from '../domain/ports/currencyConverter.js';
@@ -88,6 +88,7 @@ import type { CurrentAccountContext } from '../domain/ports/priceGroupRepository
 import { toCurrencyCode } from '../domain/valueObjects/currencyCode.js';
 import { Money } from '../domain/valueObjects/money.js';
 import { cfEquals } from '../lib/cfml/struct.js';
+import { findPrototypeKeyPath } from '../lib/jsonDocumentKeys.js';
 import type { Logger } from '../lib/logger.js';
 import { logger as processLogger } from '../lib/logger.js';
 
@@ -1629,12 +1630,31 @@ const IMPLEMENTED_ROUTE_ACTION: RouteAction = 'resolvePrices';
 export const REQUIRED_SUCCESS_RESPONSE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   'content-type': 'application/json; charset=utf-8',
   'cache-control': 'no-store',
+  // ★ THE THIRD, TRACKING `JSON_RESPONSE_HEADERS` (QA-I4). It is listed here for the same reason the
+  // other two are - this constant is the assertion this capability makes about what the shared builder
+  // owes it - but the REASONING for this one belongs to the shared builder rather than to this
+  // capability, and is recorded there: having declared `content-type` explicitly, `nosniff` is the half
+  // of that statement which says a recipient must not second-guess the declaration.
+  'x-content-type-options': 'nosniff',
 });
 
-/** A decoded request document, or the mapper's own reason for refusing to decode one. */
+/**
+ * A decoded request document, or the mapper's own reason for refusing to decode one.
+ *
+ * ★ THE REFUSAL ARM CARRIES OPTIONAL `fields`. Most reasons here are about the body AS A WHOLE - it
+ * was missing, it did not parse, it was an array - and no member path exists to name, which is why
+ * the member is optional rather than required. The prototype-key refusal is the one that CAN name a
+ * member, and naming it is what turns "your body was rejected" into something the caller can fix.
+ * `undefined` is forwarded to `invalidRequestResponse` unchanged, which publishes an empty field list
+ * for it exactly as before.
+ */
 type RequestDocumentReading =
   | { readonly decoded: true; readonly document: object }
-  | { readonly decoded: false; readonly reason: InvalidRequestReason };
+  | {
+      readonly decoded: false;
+      readonly reason: InvalidRequestReason;
+      readonly fields?: readonly MappedFieldIssue[] | undefined;
+    };
 
 /** Maximum decoded request document admitted by this compact operation grammar. */
 const MAXIMUM_REQUEST_DOCUMENT_BYTES = 8 * 1024;
@@ -1683,6 +1703,26 @@ function readRequestDocument(event: APIGatewayProxyEvent): RequestDocumentReadin
   // schema would reject them, but naming the shape here produces the more precise reason.
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     return { decoded: false, reason: 'unsupportedBodyShape' };
+  }
+
+  // ★ THE ONE UNRECOGNIZED KEY `z.strictObject` DOES NOT REFUSE, REFUSED HERE INSTEAD. Every schema
+  // this handler validates against is strict, so an unrecognized member comes back as a 400 naming
+  // it - except `__proto__`, which zod accepts and silently drops at every nesting level. QA testing
+  // submitted it here and confirmed both halves: admitted, and `Object.prototype` unmodified. The
+  // measurements and the reason the walk is deep and iterative are recorded on
+  // `../lib/jsonDocumentKeys.js`; this is the inconsistency being closed, plus defence in depth
+  // against a future merge-style consumer.
+  //
+  // The reported path is a KEY THE CALLER SENT, never a value - the invariant this handler's whole
+  // error surface holds to.
+  const prototypeKeyPath = findPrototypeKeyPath(parsed);
+
+  if (prototypeKeyPath !== undefined) {
+    return {
+      decoded: false,
+      reason: 'unusableRequestInput',
+      fields: [{ path: prototypeKeyPath, message: 'is not a member this request accepts' }],
+    };
   }
 
   return { decoded: true, document: parsed };
@@ -1782,7 +1822,9 @@ export function createPriceResolutionHandler(
     const reading = readRequestDocument(event);
 
     if (!reading.decoded) {
-      return invalidRequestResponse(reading.reason, mappingContext);
+      // `fields` is forwarded when the refusal could name a member and omitted otherwise, so a
+      // whole-body refusal publishes exactly the empty field list it always did.
+      return invalidRequestResponse(reading.reason, mappingContext, reading.fields);
     }
 
     try {

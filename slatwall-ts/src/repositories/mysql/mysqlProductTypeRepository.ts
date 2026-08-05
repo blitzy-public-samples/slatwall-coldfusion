@@ -1578,9 +1578,22 @@ export class MysqlProductTypeRepository implements ProductTypeRepository {
    * the caller hydrated and are never stamped - recorded because a silently unstamped audit column
    * is indistinguishable from a bug.
    *
-   * NO ROW COUNT IS INSPECTED. MySQL reports CHANGED rows rather than MATCHED rows unless the
-   * connection asks otherwise, so an update storing values identical to the ones already there
-   * reports zero, and treating that as a fault would raise on a legitimate no-op save.
+   * ★★★ THE UPDATE'S ROW COUNT IS NOW INSPECTED, AND THIS IS THE RECORD OF THAT CHANGE. This
+   * paragraph used to read: "NO ROW COUNT IS INSPECTED. MySQL reports CHANGED rows rather than
+   * MATCHED rows unless the connection asks otherwise, so an update storing values identical to the
+   * ones already there reports zero, and treating that as a fault would raise on a legitimate no-op
+   * save."
+   *
+   * ITS "UNLESS THE CONNECTION ASKS OTHERWISE" CLAUSE IS THE ANSWER: this connection DOES ask.
+   * `mysql2`'s default client flag set includes `FOUND_ROWS`
+   * [node_modules/mysql2/lib/connection_config.js: `getDefaultFlags`] and `./connection.js`
+   * `buildPoolOptions()` overrides no `flags`, so the server reports rows MATCHED. Measured against
+   * the live schema: a no-change update answers `affectedRows: 1` with `Rows matched: 1  Changed: 0`,
+   * and a no-match update answers `0`. The no-op save is therefore not at risk and a zero means the
+   * row is gone - so the update now refuses rather than reporting the entity as persisted. It
+   * matters especially on this aggregate, because this statement is what stores the MAINTAINED
+   * `productTypeIDPath` that the promotion membership tests walk
+   * [model/service/PromotionService.cfc:L858-L870].
    *
    * ★★ THE PAYLOAD IS NOT A CONVENIENCE ON THIS AGGREGATE - IT IS THE LEGACY'S OWN
    * CHANNEL, AND THE ONE-ARGUMENT FORM COULD NOT EXPRESS THE BEHAVIOUR AT ALL. The
@@ -1819,7 +1832,21 @@ export class MysqlProductTypeRepository implements ProductTypeRepository {
       productType.getProductTypeID(),
     ];
 
-    await this.executor.executeMutation(UPDATE_PRODUCT_TYPE_SQL, parameters);
+    const update = await this.executor.executeMutation(UPDATE_PRODUCT_TYPE_SQL, parameters);
+
+    // ★★ REFUSED WHEN NO ROW MATCHED. QA testing found the sibling SKU update reporting SUCCESS for a
+    // key that named no row, where Hibernate raised - so every update path in this persistence tier now
+    // carries this guard. `affectedRows` counts rows MATCHED rather than rows CHANGED on this pool
+    // (`mysql2`'s default client flags include `FOUND_ROWS` and `./connection.js` overrides none;
+    // measured against the live schema, a no-change update answers 1 and a no-match update answers 0),
+    // so an idempotent save is NOT mistaken for a lost one. The materialized `productTypeIDPath` this
+    // save maintained would otherwise be reported as stored when it was not.
+    if (update.affectedRows === 0) {
+      throw new ProductTypePersistenceError(
+        'the update matched no SwProductType row, so the key it carries names nothing and the ' +
+          'maintained productTypeIDPath was not stored',
+      );
+    }
 
     const populateOverrodeNothing =
       urlTitle === productType.getUrlTitle() &&

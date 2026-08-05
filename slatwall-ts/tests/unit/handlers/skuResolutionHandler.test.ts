@@ -1404,16 +1404,49 @@ describe('the SKU resolution Lambda entry point', () => {
       expect(populated.calls[0]?.args).toEqual(['', PRODUCT_ID]);
     });
 
-    it('forwards an absent skuCode as absent, matching the service signature', async () => {
-      // `SkuService.getSkuBySkuCode(skuCode?)` is the authoritative contract. The repository may
-      // reproduce the legacy required-argument raise, but this transport must not narrow the service
-      // signature by manufacturing a boundary-only requiredness rule.
+    it('\u2605\u2605\u2605 REFUSES an absent skuCode with 400 instead of forwarding it into a 500 (QA-I1)', async () => {
+      // \u2605\u2605\u2605 THIS ASSERTION IS INVERTED, AND THE INVERSION IS THE FIX. It used to read
+      // `toBe(200)` and assert `args` of `[undefined]`, under the comment: "`SkuService
+      // .getSkuBySkuCode(skuCode?)` is the authoritative contract. The repository may reproduce the
+      // legacy required-argument raise, but this transport must not narrow the service signature by
+      // manufacturing a boundary-only requiredness rule."
+      //
+      // QA testing exercised what that produced END TO END, which the old case could not see because
+      // its harness stubs the service: the omission reached the real `SkuService`, hit the reproduced
+      // raise from [model/dao/SkuDAO.cfc:L102], and came back to the caller as an opaque **500**. A
+      // well-formed HTTP request must not be able to do that - the caller cannot tell a mistake it can
+      // fix from a fault it cannot, and every such request inflates the 5xx rate operators alarm on.
+      //
+      // \u2605 THE SERVICE SIGNATURE IS NOT NARROWED, WHICH IS WHY THE OLD REASONING STILL DESERVES
+      // ANSWERING RATHER THAN DELETING. `SkuService.getSkuBySkuCode(skuCode?: string)` still declares
+      // the parameter optional and still raises on absence for every IN-PROCESS caller; that parity is
+      // the acceptance contract and the service suite still pins it. What changed is only that a
+      // ROUTED caller's omission is answered HERE, so the raise is unreachable from HTTP rather than
+      // reachable and mishandled. A transport refusing a request that cannot be served is the
+      // boundary doing its job, not the boundary inventing a rule.
       const missingSkuCode = createHarness();
       const response = await missingSkuCode.invoke(requestFor('getSkuBySkuCode'));
 
+      expect(response.statusCode).toBe(400);
+      expect(fieldPathsOf(response)).toContain('skuCode');
+      // \u2605 AND THE SERVICE WAS NEVER REACHED. The refusal happens before any wiring, so the request
+      // opens no composition root, no request scope and no connection.
+      expect(missingSkuCode.calls).toHaveLength(0);
+    });
+
+    it('\u2605\u2605 still ADMITS an EMPTY skuCode, because the legacy binds it and matches nothing', async () => {
+      // The distinction the schema draws is PRESENT-BUT-EMPTY versus ABSENT, which is exactly the
+      // distinction the legacy signature draws: `string skuCode` with no `required` attribute admits
+      // `''` and binds it, and [model/dao/SkuDAO.cfc:L102] raises only when the argument is not passed
+      // at all. Refusing `''` here would narrow the service signature - the thing the previous case's
+      // original reasoning was rightly worried about - so it is admitted, forwarded verbatim, and
+      // matches nothing.
+      const empty = createHarness();
+      const response = await empty.invoke(requestFor('getSkuBySkuCode', { skuCode: '' }));
+
       expect(response.statusCode).toBe(200);
-      expect(missingSkuCode.calls).toHaveLength(1);
-      expect(missingSkuCode.calls[0]?.args).toEqual([undefined]);
+      expect(empty.calls).toHaveLength(1);
+      expect(empty.calls[0]?.args).toEqual(['']);
     });
 
     it('★★★ REFUSES an unrecognised query parameter instead of silently dropping it', async () => {
@@ -1445,8 +1478,18 @@ describe('the SKU resolution Lambda entry point', () => {
         apiGatewayEvent({ query: { operation: 'getSkuBySkuCode', skucode: SERVABLE_SKU_CODE } }),
       );
 
+      // \u2605 THE STATUS IS UNCHANGED AND THE FIELD PATH MOVED, BECAUSE `skuCode` IS NOW REQUIRED
+      // (QA-I1). `validateInvocation` runs ahead of the closed-parameter-set check, so a lower-cased
+      // `skucode` is now caught as the ABSENCE of `skuCode` rather than as the PRESENCE of an
+      // unpublished key. Both are 400, and the new path is the more actionable of the two: it names
+      // the parameter the caller meant to send. The unpublished-key path is still asserted by the case
+      // above, which supplies a VALID `skuCode` alongside its unexpected key and therefore reaches the
+      // closed-set check.
+      //
+      // What this case is really about is UNCHANGED and still asserted: the caller's own misspelling is
+      // not echoed back, and no correction is guessed at.
       expect(response.statusCode).toBe(400);
-      expect(fieldPathsOf(response)).toContain('queryStringParameters');
+      expect(fieldPathsOf(response)).toContain('skuCode');
       expect(response.body).not.toContain('skucode');
     });
 
@@ -1708,9 +1751,12 @@ describe('the SKU resolution Lambda entry point', () => {
       const response = await createHarness().invoke(servableRequest());
 
       expect(response.statusCode).toBe(200);
+      // ★ AND A THIRD JOINED THEM FOR QA-I4 - `nosniff`, declared once in the shared builder alongside
+      // the content type it qualifies. Still an EXACT set.
       expect(response.headers).toEqual({
         'content-type': 'application/json; charset=utf-8',
         'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
       });
     });
 
@@ -2275,7 +2321,7 @@ describe('the SKU resolution Lambda entry point', () => {
       expect(response.body).not.toContain('.ts:');
     });
 
-    it('produces only the closed status set, and no header beyond the two declared', async () => {
+    it('produces only the closed status set, and no header beyond the three declared', async () => {
       // ★ CLIENT-SHAPED, UNAUTHENTICATED, SERVER-SHAPED, ROUTE-NOT-FOUND, AND SUCCESS.
       // No 403, 409, 422 or 429 is reachable because this route has no administrative
       // operation, conflict tier, semantic-validation tier or rate limiter. No
@@ -2297,6 +2343,7 @@ describe('the SKU resolution Lambda entry point', () => {
         expect(Object.keys(response.headers ?? {}).sort()).toEqual([
           'cache-control',
           'content-type',
+          'x-content-type-options',
         ]);
       }
 
@@ -2732,6 +2779,7 @@ describe('the admission gate (NET-NEW)', () => {
     expect(Object.keys(response.headers ?? {}).map((name) => name.toLowerCase())).toEqual([
       'content-type',
       'cache-control',
+      'x-content-type-options',
     ]);
   });
 

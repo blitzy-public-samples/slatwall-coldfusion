@@ -530,8 +530,32 @@ const LEGIBLE_DIAGNOSTIC_KEYS: ReadonlySet<string> = new Set([
   'classname',
   'thrownshape',
   'errorcode',
+  'thrownat',
   'publishedissuecount',
   'issuecount',
+  // ★★ THIS MODULE'S OWN TWO, ADDED FOR QA-I7, AND EACH ADMITTED ON THE TEST THIS SET APPLIES TO
+  // EVERYTHING ELSE - that its VALUE CANNOT BE CUSTOMER DATA BY NATURE.
+  //
+  //   * `thresholdinforce` is a CLOSED LITERAL from the compile-time `LogLevel` union - one of
+  //     `debug`, `info`, `warn`, `error` - which is the same ground the capability handlers' closed
+  //     literals below are admitted on.
+  //   * `configuredloglevel` needs the sharper argument, because its value ORIGINATES OUTSIDE this
+  //     process. It is admitted because THIS MODULE POLICES THE VALUE BEFORE IT IS WRITTEN: the only
+  //     two things that ever appear under it are a token matching `[A-Za-z0-9_.-]{1,32}` or the
+  //     literal `unsafeValue` - see `reportUnrecognizedLogLevel`. That shape admits no whitespace,
+  //     quote, separator or newline, so it cannot carry a name, an address, a credential, a monetary
+  //     amount, a document or a statement, and it cannot forge a second log record.
+  //
+  //     ⚠ AND THAT IS PRECISELY WHY IT IS NOT THE SAME CASE AS `idempotencykey`, WHICH THIS SET
+  //     REFUSES. An idempotency key is a caller-chosen FREE string with no shape at all; this is an
+  //     OPERATOR-set configuration value, reduced to a classifier before it reaches the record. The
+  //     distinction is the shape policy, not the provenance, and without that policy this name would
+  //     belong under rule 5 with the rest.
+  //
+  //   * `thrownat` above joined them on the same terms: a stack frame's function name, code-authored
+  //     and held to the same classifier shape by `src/handlers/errorMapper.ts` before it is emitted.
+  'configuredloglevel',
+  'thresholdinforce',
   // ★★★ THE CAPABILITY HANDLERS' OWN DIAGNOSTICS, ADMITTED AFTER A MEASURED
   // FAILURE. Security review (finding F7) found that the five Lambda entrypoints
   // publish operation and outcome fields under names no allow-list carried, so
@@ -1974,6 +1998,119 @@ function resolveThreshold(pinnedLevel: LogLevel | undefined): LogLevel {
   return parseLogLevel(process.env[LOG_LEVEL_ENV_VAR]) ?? DEFAULT_LOG_LEVEL;
 }
 
+// ---------------------------------------------------------------------------
+// Reporting an unrecognized threshold - QA-I7
+//
+// ★★ THE FALLBACK STAYS; ITS SILENCE DOES NOT. QA testing observed that `LOG_LEVEL=bogus` is
+// silently coerced to `info` while every other malformed configuration key fails closed with a
+// `ConfigurationError` from `./config.ts`, and rated the inconsistency cosmetic.
+//
+// ⚠ THE OBVIOUS FIX IS THE WRONG ONE. Making this key fail closed too would contradict the invariant
+// stated in the section header above, which is not a preference but a structural requirement:
+// `config.ts` must abort on an unset or unrecognized dialect, and it REPORTS that abort through this
+// module. A logger that threw on its own misconfiguration could not report anybody else's - the two
+// are deliberately mutually independent, and `logging must never be the thing that breaks a cold
+// start` is what makes that independence safe. Failing closed here would trade a cosmetic
+// inconsistency for a service that cannot start AND cannot say why.
+//
+// So what is fixed is the SILENCE, not the fallback: the coercion now announces itself once, and the
+// service serves exactly as before.
+// ---------------------------------------------------------------------------
+
+/**
+ * The shape an echoed `LOG_LEVEL` value must have to be emitted verbatim.
+ *
+ * The value is OPERATOR-SUPPLIED, and this module holds every value it emits to a policy rather than
+ * trusting its provenance. Letters, digits, `_`, `.` and `-` up to 32 characters describe every
+ * plausible typo of a level name - `INFO `, `Infos`, `verbose`, `warning` - while admitting no
+ * whitespace, quote or punctuation, so a sentence, a path or an injected line break cannot ride along
+ * on a diagnostic. Deliberately a local constant: this module imports nothing, which is the property
+ * that lets `./config.ts` depend on it.
+ */
+const ECHOABLE_LOG_LEVEL_PATTERN = /^[A-Za-z0-9_.-]{1,32}$/;
+
+/** Substituted for a value that is not shaped like a level name. */
+const UNECHOABLE_LOG_LEVEL = 'unsafeValue';
+
+/**
+ * Raw values already reported, so the report is made ONCE PER DISTINCT VALUE PER PROCESS.
+ *
+ * Keyed by value rather than by a single boolean because `process.env` is mutable: a suite that sets
+ * one bad value, asserts the report, then sets another must see the second one too. Bounded in
+ * practice by the number of distinct values a process is configured with, which is one outside a test.
+ *
+ * ★ THIS IS THE MODULE'S ONE PIECE OF MUTABLE STATE, AND IT IS DELIBERATE. The section header above
+ * explains why the THRESHOLD is not cached - a per-container cache would freeze one suite's value for
+ * every later suite. That reasoning does not apply here, because this set does not decide behaviour:
+ * whatever it contains, the threshold resolves identically and every line is emitted identically. All
+ * it suppresses is a repeat of one diagnostic, which is the entire point - resolving the threshold
+ * happens on EVERY emission, and reporting on every emission would bury the log stream it is trying
+ * to make readable.
+ */
+const reportedUnrecognizedLevels = new Set<string>();
+
+/**
+ * Announce, once, that `LOG_LEVEL` holds a value this module does not recognize.
+ *
+ * ★ IT DOES NOT GO THROUGH `emit`, AND THAT IS WHAT MAKES IT NON-RECURSIVE. `emit` resolves the
+ * threshold, which is where this check is reached from; routing the report back through `emit` would
+ * re-enter that path. The line is serialized and handed to the sink directly instead, so the call
+ * graph is a straight line with no cycle in it - the suppression set is not what prevents recursion,
+ * it only prevents repetition.
+ *
+ * ★ IT IS NOT LEVEL-FILTERED EITHER. A report about a threshold must not be suppressible by the very
+ * threshold it is reporting on. In practice an unrecognized value resolves to `info`, which admits a
+ * `warn` anyway - but relying on that coincidence would make the guarantee accidental.
+ *
+ * ★ IT CANNOT THROW. Serialization is total and the sink invocation is guarded by
+ * {@link emitThroughSink}, which is the same pair of properties `emit` relies on. A diagnostic added
+ * for observability must not become the failure it was added to describe.
+ *
+ * @param sink where the line goes - the logger's own sink, so a suite that substituted one sees the
+ *   report on it rather than on stdout.
+ * @param pinnedLevel the override in force, if any. When a level was pinned through `withLevel`,
+ *   `LOG_LEVEL` IS NOT CONSULTED AT ALL, so there is nothing to report and nothing is emitted.
+ */
+function reportUnrecognizedLogLevel(sink: LogSink, pinnedLevel: LogLevel | undefined): void {
+  if (pinnedLevel !== undefined) {
+    return;
+  }
+
+  const raw = process.env[LOG_LEVEL_ENV_VAR];
+
+  // An ABSENT or blank value is not a misconfiguration. Leaving the variable unset is the documented
+  // way to accept the default, and exporting it empty is how a shell spells the same thing - so
+  // neither is reported, and only a value that was actually WRITTEN and is not a level name is.
+  if (raw === undefined || raw.trim() === '') {
+    return;
+  }
+
+  if (parseLogLevel(raw) !== undefined) {
+    return;
+  }
+
+  if (reportedUnrecognizedLevels.has(raw)) {
+    return;
+  }
+
+  // Recorded BEFORE the emission, so that even a sink which somehow re-enters this function finds the
+  // value already present and stops. Belt and braces around the non-recursive call graph above.
+  reportedUnrecognizedLevels.add(raw);
+
+  const echoed = ECHOABLE_LOG_LEVEL_PATTERN.test(raw) ? raw : UNECHOABLE_LOG_LEVEL;
+
+  emitThroughSink(
+    sink,
+    serializeEntry(
+      new Date().toISOString(),
+      'warn',
+      `${LOG_LEVEL_ENV_VAR} is set to a value this service does not recognize, so the default ` +
+        `threshold '${DEFAULT_LOG_LEVEL}' is in force; recognized values are debug, info, warn, error`,
+      { configuredLogLevel: echoed, thresholdInForce: DEFAULT_LOG_LEVEL },
+    ),
+  );
+}
+
 /**
  * One emitted record. `context` is optional in the exact sense `exactOptionalPropertyTypes`
  * requires: an entry without a context OMITS the key rather than setting it to `undefined`.
@@ -2225,6 +2362,11 @@ function emitThroughSink(sink: LogSink, line: string): void {
  */
 function createLogger(pinnedLevel: LogLevel | undefined, sink: LogSink): Logger {
   const emit = (level: LogLevel, message: string, context: LogContext | undefined): void => {
+    // QA-I7. Announced BEFORE the filter, so an unrecognized `LOG_LEVEL` is reported even when the
+    // emission that discovered it is itself filtered out. At most one line per distinct bad value per
+    // process, and a no-op in the ordinary case where the variable is unset or holds a level name.
+    reportUnrecognizedLogLevel(sink, pinnedLevel);
+
     // Filtering is one comparison against the ordered severity map.
     if (LEVEL_SEVERITY[level] < LEVEL_SEVERITY[resolveThreshold(pinnedLevel)]) {
       return;

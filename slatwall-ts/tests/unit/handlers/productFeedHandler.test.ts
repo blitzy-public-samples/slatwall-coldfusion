@@ -1439,7 +1439,13 @@ describe('the served response', () => {
     const response = await invoke(feedRequestEvent(), lambdaContext());
 
     expect(response.statusCode).toBe(200);
-    expect(response.headers).toStrictEqual({ 'content-type': FEED_CONTENT_TYPE });
+    // ★ TWO HEADERS NOW: the RSS content type, and the `nosniff` added for QA-I4 that says a recipient
+    // must not sniff past it. See the case below for why that is a declaration rather than an
+    // invented HTTP semantic.
+    expect(response.headers).toStrictEqual({
+      'content-type': FEED_CONTENT_TYPE,
+      'x-content-type-options': 'nosniff',
+    });
   });
 
   it('invents no HTTP semantic the source never had', async () => {
@@ -1454,7 +1460,16 @@ describe('the served response', () => {
     const response = await invoke(feedRequestEvent(), lambdaContext());
     const headerNames = Object.keys(response.headers ?? {}).map((name) => name.toLowerCase());
 
-    expect(headerNames).toStrictEqual(['content-type']);
+    // ★★ `x-content-type-options: nosniff` JOINED THE SET (QA-I4), AND THE LIST BELOW IS WHY THAT IS
+    // NOT A CONTRADICTION OF THIS CASE. Everything enumerated below - `etag`, `last-modified`,
+    // `cache-control`, `vary` and the rest - is an HTTP SEMANTIC THE SOURCE LACKED, and the case exists
+    // to prove none was invented. `nosniff` is not one of those: it adds no caching behaviour, no
+    // negotiation, no conditional request and no state. It is the second half of the `content-type`
+    // this file ALREADY declares - "and do not second-guess it" - so it belongs with the declaration
+    // rather than with the inventions. The exact set is still asserted, so anything ELSE appearing
+    // still fails here.
+    expect(headerNames).toStrictEqual(['content-type', 'x-content-type-options']);
+    expect(response.headers?.['x-content-type-options']).toBe('nosniff');
     for (const absent of [
       'etag',
       'last-modified',
@@ -1897,7 +1912,10 @@ describe('the public, unauthenticated endpoint', () => {
     expect(authorized.statusCode).toBe(anonymous.statusCode);
     expect(authorized.body).toBe(anonymous.body);
     expect(authorized.body).not.toContain('Bearer');
-    expect(Object.keys(authorized.headers ?? {})).toStrictEqual(['content-type']);
+    expect(Object.keys(authorized.headers ?? {})).toStrictEqual([
+      'content-type',
+      'x-content-type-options',
+    ]);
   });
 
   it('does not advertise itself as secured', async () => {
@@ -1909,7 +1927,9 @@ describe('the public, unauthenticated endpoint', () => {
 
     expect(headerNames).not.toContain('www-authenticate');
     expect(headerNames).not.toContain('authorization');
-    expect(headerNames).toStrictEqual(['content-type']);
+    // The set gained `nosniff` for QA-I4; what this case asserts - that no challenge and no
+    // authorization header is advertised on a PUBLIC endpoint - is unchanged.
+    expect(headerNames).toStrictEqual(['content-type', 'x-content-type-options']);
   });
 
   it('reaches no network while serving the feed', async () => {
@@ -2583,7 +2603,7 @@ describe('closed dispatch, capability-scoped assembly and the whole-feed tradeof
     // relation, and not as a body member - the body is the document and nothing wraps it.
     const headerNames = Object.keys(response.headers ?? {}).map((name) => name.toLowerCase());
 
-    expect(headerNames).toStrictEqual(['content-type']);
+    expect(headerNames).toStrictEqual(['content-type', 'x-content-type-options']);
     expect(headerNames).not.toContain('link');
     for (const paging of ['rel="next"', 'nextPageToken', 'nextCursor', 'hasMore', 'totalPages']) {
       expect(response.body).not.toContain(paging);

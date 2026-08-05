@@ -233,6 +233,12 @@ import { CfmlBooleanConversionError } from '../../../src/lib/cfml/truthiness.js'
 import {
   ProductPagingCriteriaError,
   ProductService,
+  // The two refusal classes this tier now throws for a validation-refused save, unified with
+  // `BrandValidationError` in `src/services/brandService.ts`. Imported so the cases narrow with
+  // `instanceof` rather than by name: the refusal is what a caller branches on, so an imitation
+  // would prove nothing.
+  ProductTypeValidationError,
+  ProductValidationError,
 } from '../../../src/services/productService.js';
 import { makeProductFixture } from '../../fixtures/productFixtures.js';
 import { makeSkuFixture } from '../../fixtures/skuFixtures.js';
@@ -1285,6 +1291,60 @@ function rbKeyPropertyIdentifier(rbKey: string): string {
   const terminal = segments[segments.length - 1];
 
   return terminal ?? rbKey;
+}
+
+// ---------------------------------------------------------------------------
+// The save-refusal readers
+//
+// ★★★ THEY EXIST BECAUSE THE REFUSAL PROTOCOL CHANGED, AND THE CHANGE WAS A RUNTIME FINDING. QA
+// testing called `saveProduct` and `saveProductType` with payloads that fail the ported save-context
+// rules and found the methods RETURNING the entity with the datastore unchanged and NO error channel
+// of any kind - while `saveBrand`, in the same ported tier, threw `BrandValidationError` for the same
+// class of refusal. Two contradictory protocols in one tier, and the silent one is the protocol a
+// write-capable handler would have been built on. Both now throw, and these readers are what let a
+// case assert the refusal precisely rather than merely asserting that nothing was written.
+// ---------------------------------------------------------------------------
+
+/**
+ * Run a save that must be refused and hand back the `Error` it refused with.
+ *
+ * Fails loudly when the call RESOLVES, because "the save was refused" is the whole assertion and a
+ * resolving call would otherwise slip past as a passing case with nothing checked.
+ */
+async function refusalOf(run: () => Promise<unknown>): Promise<Error> {
+  try {
+    await run();
+  } catch (thrown: unknown) {
+    if (thrown instanceof Error) {
+      return thrown;
+    }
+
+    throw new Error(`the suite expected an Error and the save raised a ${typeof thrown}`);
+  }
+
+  throw new Error('the suite expected the save to be REFUSED, and it resolved');
+}
+
+/** Narrow a refusal to a product save refusal, so its accumulated rules can be read. */
+function requireProductRefusal(refusal: Error): ProductValidationError {
+  if (!(refusal instanceof ProductValidationError)) {
+    throw new Error(
+      `the suite expected a ProductValidationError and the save raised ${refusal.name}`,
+    );
+  }
+
+  return refusal;
+}
+
+/** Narrow a refusal to a product-type save refusal, so its accumulated rules can be read. */
+function requireProductTypeRefusal(refusal: Error): ProductTypeValidationError {
+  if (!(refusal instanceof ProductTypeValidationError)) {
+    throw new Error(
+      `the suite expected a ProductTypeValidationError and the save raised ${refusal.name}`,
+    );
+  }
+
+  return refusal;
 }
 
 // --- Suite -----
@@ -4711,7 +4771,10 @@ describe('ProductService', () => {
       const product = makeProductFixture({ urlTitle: 'fixture-title' });
       const data: ProductSaveInput = { urlTitle: '' };
 
-      await service.saveProduct(product, data);
+      // ★★ THE REFUSAL IS NOW THROWN RATHER THAN RETURNED, so the populate assertions are made after
+      // catching it. Everything they assert is unchanged - populate ran, the guard declined, the
+      // payload was not written to - and the refusal itself is asserted at the foot of the case.
+      const refusal = await refusalOf(() => service.saveProduct(product, data));
 
       expect(product.getUrlTitle()).toBe('');
       expect(urlTitleGenerator.requests).toStrictEqual([]);
@@ -4742,6 +4805,15 @@ describe('ProductService', () => {
       // end state from an empty title already on the entity.
       expect(productRepository.saves).toStrictEqual([]);
       expect(productRepository.savePayloads).toStrictEqual([]);
+
+      // ★★★ AND THE REFUSAL IS DETECTABLE, WHICH IS THE SECOND REVISION OF THIS CASE. It previously
+      // asserted only that nothing was persisted - a state a caller had no way to observe, because the
+      // method returned the entity and the entity publishes no error channel. QA testing found that
+      // silence in this exact shape, so the refusal now names the rule that failed.
+      expect(refusal).toBeInstanceOf(ProductValidationError);
+      expect(requireProductRefusal(refusal).errors).toStrictEqual([
+        { propertyIdentifier: 'urlTitle', errorMessage: 'urlTitle is required' },
+      ]);
     });
 
     it('★ POPULATES a non-empty payload title over the entity\u2019s own', async () => {
@@ -4766,7 +4838,7 @@ describe('ProductService', () => {
       const product = makeProductFixture({ urlTitle: '' });
       const data: ProductSaveInput = {};
 
-      const answered = await service.saveProduct(product, data);
+      const refusal = await refusalOf(() => service.saveProduct(product, data));
 
       // LEGACY-NOTE [model/service/ProductService.cfc:L268]: THE GUARD HERE IS ONE CLAUSE -
       // `isNull(arguments.product.getURLTitle())` and nothing else. `isNull('')` is FALSE, so an
@@ -4782,8 +4854,12 @@ describe('ProductService', () => {
       expect(skuCreation.requests).toStrictEqual([]);
       expect(productRepository.saves).toStrictEqual([]);
 
-      expect(answered).toBe(product);
-      expect(answered.getUrlTitle()).toBe('');
+      // The entity is left exactly as populate and the guard left it - the refusal mutates nothing on
+      // the way out - and the refusal names the rule the empty title failed.
+      expect(product.getUrlTitle()).toBe('');
+      expect(requireProductRefusal(refusal).errors).toStrictEqual([
+        { propertyIdentifier: 'urlTitle', errorMessage: 'urlTitle is required' },
+      ]);
     });
 
     it('skips SKU creation for a product that is NOT new, yet still saves it', async () => {
@@ -4806,13 +4882,13 @@ describe('ProductService', () => {
       expect(answered).toBe(persistedProduct);
     });
 
-    it('neither creates SKUs nor saves an invalid product, and answers the entity', async () => {
+    it('neither creates SKUs nor saves an invalid product, and REFUSES detectably', async () => {
       const product = makeProductFixture({ productName: undefined });
       const data: ProductSaveInput = {};
 
       const dispatchSpy = vi.spyOn(service, 'processProduct_updateDefaultImageFileNames');
 
-      const answered = await service.saveProduct(product, data);
+      const refusal = await refusalOf(() => service.saveProduct(product, data));
 
       // LEGACY-NOTE [model/validation/Product.json]: the `save` context declares exactly five rules
       // - `price`, `productName`, `productCode`, `productType` and `urlTitle`. This case falsifies
@@ -4826,17 +4902,32 @@ describe('ProductService', () => {
       expect(dispatchSpy).not.toHaveBeenCalled();
       expect(productRepository.saves).toStrictEqual([]);
 
-      // CFML parity [model/service/ProductService.cfc:L291]: the legacy returns `arguments.product`
-      // unconditionally, so an invalid product comes back as itself - the caller inspects it,
-      // nothing is thrown, and nothing is null.
-      expect(answered).toBe(product);
+      // ★★★ QUOTE-THEN-REVISE, AND THIS IS THE CASE THE RUNTIME FINDING WAS MADE ON. It used to close
+      // with: "CFML parity [model/service/ProductService.cfc:L291]: the legacy returns
+      // `arguments.product` unconditionally, so an invalid product comes back as itself - the caller
+      // inspects it, nothing is thrown, and nothing is null", asserting `answered).toBe(product)`.
+      // The CFML reading is right and the parity claim was hollow: the legacy caller "inspects it" by
+      // asking `hasErrors()` [L286], and the ported entity publishes no such member - so what a caller
+      // actually got was an entity indistinguishable from a persisted one. QA testing confirmed both
+      // halves: the database was unchanged and `typeof saved.hasErrors === 'undefined'`.
+      //
+      // The tier's OWN sibling already threw for this class of refusal (`saveBrand` ->
+      // `BrandValidationError`), so the protocol is unified rather than invented.
+      expect(refusal).toBeInstanceOf(ProductValidationError);
+      expect(requireProductRefusal(refusal).errors).toStrictEqual([
+        { propertyIdentifier: 'productName', errorMessage: 'productName is required' },
+      ]);
+      // The message states the rule and NOT the value that failed it - the same discipline the
+      // published field reports follow, so a primary adapter may forward it.
+      expect(refusal.message).toContain('productName is required');
+      expect(refusal.message).toContain('No row was written.');
     });
 
     it('rejects a product code holding an unsupported character', async () => {
       const product = makeProductFixture({ productCode: 'not a valid code' });
       const data: ProductSaveInput = {};
 
-      const answered = await service.saveProduct(product, data);
+      const refusal = await refusalOf(() => service.saveProduct(product, data));
 
       // The save-context rule is
       //   "productCode": [{"contexts":"save","required":true,
@@ -4845,7 +4936,15 @@ describe('ProductService', () => {
       // this separately from the missing-`productName` case is what proves the regex half of the
       // rule is enforced, not only the `required` half.
       expect(productRepository.saves).toStrictEqual([]);
-      expect(answered).toBe(product);
+      expect(requireProductRefusal(refusal).errors).toStrictEqual([
+        {
+          propertyIdentifier: 'productCode',
+          errorMessage: 'productCode contains an unsupported character',
+        },
+      ]);
+      // ★ THE OFFENDING CODE IS NOT IN THE REFUSAL. It is caller-submitted data, and a refusal that
+      // echoed it would be unsafe for `src/handlers/errorMapper.ts` to publish.
+      expect(refusal.message).not.toContain('not a valid code');
     });
 
     // =======================================================================
@@ -4905,6 +5004,41 @@ describe('ProductService', () => {
       // The designated SKU is still TRANSIENT when persistence receives it, which is the
       // state the adapter reads to defer the `defaultSkuID` write.
       expect(product.getDefaultSku()?.isNew()).toBe(true);
+    });
+
+    it('★ REFUSES on the sku-creation ground when a VALID new product ends with no skus', async () => {
+      // ★★ THE SECOND REFUSAL GROUND, WHICH IS THE LEGACY'S SECOND `hasErrors()` ASK
+      // [model/service/ProductService.cfc:L286]. `createSkus` records its errors ON THE PRODUCT
+      // [model/service/SkuService.cfc:L142, L148, L177] and gates every creation loop on
+      // `!product.hasErrors()` [L152, L180], so recording an error and attaching zero SKUs are the
+      // SAME EVENT - which is why "valid new product, zero SKUs after creation" is the signal rather
+      // than a proxy for it.
+      //
+      // The double's attachment is overridden to attach NOTHING, which is exactly the state the note on
+      // `RecordingSkuCreation` says the real collaborator reaches only by recording an error - so this
+      // is the case that note reserves for "modelling the error arm by attaching nothing", stated
+      // explicitly rather than inherited from a default.
+      const product = makeProductFixture({});
+      skuCreation.attachment = (): void => {
+        // Records the call through the collaborator itself and attaches no SKU.
+      };
+
+      const refusal = await refusalOf(() => service.saveProduct(product, {}));
+
+      // Creation DID run - which is what separates this ground from a validation refusal, where the
+      // branch is never entered and the zero-SKU state means nothing.
+      expect(skuCreation.requests).toHaveLength(1);
+      expect(product.getSkus()).toStrictEqual([]);
+      expect(productRepository.saves).toStrictEqual([]);
+
+      // ONE ground, reported against the collection the legacy attached its errors to.
+      expect(requireProductRefusal(refusal).errors).toStrictEqual([
+        {
+          propertyIdentifier: 'skus',
+          errorMessage:
+            'sku creation attached no sku to this new product, so the product was not persisted',
+        },
+      ]);
     });
 
     it('★ hands the port a product with NO skus when creation is skipped', async () => {
@@ -5012,7 +5146,7 @@ describe('ProductService', () => {
       const productType = new ProductType({ productTypeID: 'product-type-with-no-name' });
       const data: ProductTypeSaveInput = {};
 
-      const answered = await service.saveProductType(productType, data);
+      const refusal = await refusalOf(() => service.saveProductType(productType, data));
 
       // CFML parity [model/service/ProductService.cfc:L296-L300]: THERE IS NO `else`. When neither
       // the payload nor the entity yields a usable name the URL title is simply NEVER SET - no
@@ -5040,9 +5174,19 @@ describe('ProductService', () => {
       // it is a whole-table constraint, and no port member answers it.
       expect(productTypeRepository.saves).toStrictEqual([]);
 
-      // The entity is still ANSWERED, carrying its errors, because
-      // [org/Hibachi/HibachiService.cfc:L167] returns the entity either way.
-      expect(answered).toBe(productType);
+      // ★★★ QUOTE-THEN-REVISE, ON THE SAME RUNTIME FINDING AS ITS `saveProduct` SIBLING. This used to
+      // close with: "The entity is still ANSWERED, carrying its errors, because
+      // [org/Hibachi/HibachiService.cfc:L167] returns the entity either way", asserting
+      // `answered).toBe(productType)`. The framework statement is accurate about CFML and the port
+      // could not honour the "carrying its errors" half - `ProductType` publishes no error channel -
+      // so a caller received an entity with an empty identifier and no way to tell it apart from a
+      // persisted one. QA testing observed exactly that. BOTH failed rules are reported, not just the
+      // first, because `validate()` accumulated them all.
+      expect(requireProductTypeRefusal(refusal).errors).toStrictEqual([
+        { propertyIdentifier: 'productTypeName', errorMessage: 'productTypeName is required' },
+        { propertyIdentifier: 'urlTitle', errorMessage: 'urlTitle is required' },
+      ]);
+      expect(refusal.message).toContain('No row was written.');
     });
 
     it('does not generate when the PAYLOAD already supplies a usable urlTitle', async () => {
@@ -5165,8 +5309,13 @@ describe('ProductService', () => {
       const childProduct = makeProductFixture({ productID: 'product-owned-by-the-child' });
 
       const emptyParent = new ProductType({ productTypeID: 'parent-without-products' });
+      // ★ BOTH SAVE-CONTEXT RULES ARE SATISFIED on the two subjects below - `productTypeName` as well
+      // as `urlTitle` - because this case is about the INHERITANCE branch and a refusal would now stop
+      // execution before reaching it. Adding the name is what keeps the case testing what it says it
+      // tests; asserting the refusal belongs to the case that exists for it.
       const withEmptyParent = new ProductType({
         productTypeID: 'child-of-empty-parent',
+        productTypeName: 'Child Of Empty Parent',
         urlTitle: 'child-title',
         parentProductType: emptyParent,
       });
@@ -5183,6 +5332,7 @@ describe('ProductService', () => {
       const orphanProduct = makeProductFixture({ productID: 'product-owned-by-the-orphan' });
       const withoutParent = new ProductType({
         productTypeID: 'child-without-parent',
+        productTypeName: 'Child Without Parent',
         urlTitle: 'orphan-title',
       });
       withoutParent.addProduct(orphanProduct);
@@ -5306,11 +5456,15 @@ describe('ProductService', () => {
       // leave a recorded payload with no recorded save beside it.
       const product = makeProductFixture({ productName: undefined });
 
-      const answered = await service.saveProduct(product, {});
+      const refusal = await refusalOf(() => service.saveProduct(product, {}));
 
       expect(productRepository.saves).toStrictEqual([]);
       expect(productRepository.savePayloads).toStrictEqual([]);
-      expect(answered).toBe(product);
+      // The refusal is DETECTABLE, so "no payload was handed over" is something a caller learns rather
+      // than something only a test can see.
+      expect(requireProductRefusal(refusal).errors).toStrictEqual([
+        { propertyIdentifier: 'productName', errorMessage: 'productName is required' },
+      ]);
     });
 
     it('saveProductType hands the resolved title to the repository, from the PAYLOAD name', async () => {
@@ -5393,7 +5547,7 @@ describe('ProductService', () => {
       const productType = new ProductType({ productTypeID: 'product-type-with-no-name' });
       const data: ProductTypeSaveInput = {};
 
-      const answered = await service.saveProductType(productType, data);
+      const refusal = await refusalOf(() => service.saveProductType(productType, data));
 
       expect(urlTitleGenerator.requests).toStrictEqual([]);
 
@@ -5402,12 +5556,18 @@ describe('ProductService', () => {
       expect(data).toStrictEqual({});
       expect(productType.getUrlTitle()).toBeUndefined();
 
-      // And the refusal is a refusal, not a throw: the framework answers the entity either
-      // way [org/Hibachi/HibachiService.cfc:L167], so the caller gets its own unpersisted
-      // product type back.
+      // ★★★ QUOTE-THEN-REVISE. This used to close with "And the refusal is a refusal, not a throw: the
+      // framework answers the entity either way [org/Hibachi/HibachiService.cfc:L167], so the caller
+      // gets its own unpersisted product type back", asserting `answered).toBe(productType)`. The
+      // framework fact is accurate and the port could not reproduce the half that made it usable - the
+      // errors CFML left on the entity have nowhere to live on the ported one - so the caller got an
+      // entity with an empty identifier and no signal. QA testing observed it; the refusal is now
+      // thrown, by the same protocol `saveBrand` in this tier already used.
       expect(productTypeRepository.saves).toStrictEqual([]);
       expect(productTypeRepository.savePayloads).toStrictEqual([]);
-      expect(answered).toBe(productType);
+      expect(
+        requireProductTypeRefusal(refusal).errors.map((error) => error.propertyIdentifier),
+      ).toStrictEqual(['productTypeName', 'urlTitle']);
     });
 
     it('saveProductType passes a caller-supplied title through untouched', async () => {

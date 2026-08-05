@@ -104,6 +104,10 @@ import {
 // A namespace import alongside the named ones, for the single assertion a named import cannot
 // express: that the module's runtime export set is exactly what it publishes and carries no default.
 import * as promotionApplicationHandlerModule from '../../../src/handlers/promotionApplicationHandler.js';
+// The caller-shaped hydration refusal the composition root raises, and the SECOND class this
+// handler's catch chain recognizes. Imported so the cases below construct the shipped error rather
+// than imitating it - the recognition is `instanceof`, so an imitation would prove nothing.
+import { OrderViewDocumentDataError } from '../../../src/handlers/bootstrap.js';
 import { ROUTE_TABLE } from '../../../src/handlers/router.js';
 import { Money } from '../../../src/domain/valueObjects/money.js';
 import { listLen } from '../../../src/lib/cfml/list.js';
@@ -1438,12 +1442,13 @@ describe('the wire order document (NET-NEW)', () => {
     expect(harness.recorder.materializedDocuments).toHaveLength(0);
   });
 
-  it('lets a HYDRATION refusal reach the mapper rather than relabelling it as the caller mistake', async () => {
+  it('lets an UNRECOGNIZED hydration failure reach the mapper, publishing none of its detail', async () => {
     const { order } = makeGoldenOrder();
     const harness = makeHarness({
       materialize: order,
-      // The shape `src/handlers/bootstrap.ts` raises when a named row cannot be loaded. Its message
-      // names an identifier, and republishing that would tell a caller whether a row exists.
+      // NOT the caller-shaped document error - an arbitrary failure from inside the hydration tier,
+      // whose message happens to carry identifiers. It must land on the generic arm: this handler
+      // recognizes exactly two client-shaped classes and reduces everything else to a fixed sentence.
       materializationFailure: new Error(
         'sku "sku-does-not-exist" is not carried by product "prod-golden-0001"',
       ),
@@ -1458,6 +1463,77 @@ describe('the wire order document (NET-NEW)', () => {
     // The detail reaches the log stream under the same correlation identifier instead.
     expect(harness.emitted.lines.join('\n')).toContain(PLATFORM_REQUEST_ID);
     expect(harness.recorder.composedInputs).toHaveLength(0);
+  });
+
+  // =========================================================================
+  // ★★★ THE CALLER-SHAPED HYDRATION REFUSAL - A RUNTIME FINDING, INVERTED
+  //
+  // The case above used to be titled "lets a HYDRATION refusal reach the mapper rather than
+  // relabelling it as the caller mistake", and its comment argued that republishing the refusal
+  // "would tell a caller whether a row exists". The DISCLOSURE half of that argument survives and is
+  // asserted below; the CLASSIFICATION half was wrong, and QA testing measured the cost: an order
+  // item naming an unknown `productID`, and one naming a SKU its named product does not carry, both
+  // answered `500 unrecognized` with no `fields`. A caller was told the service had failed when the
+  // caller had, and an operator's 5xx alarm counted client mistakes as service faults.
+  //
+  // `src/handlers/bootstrap.ts` now raises `OrderViewDocumentDataError` for exactly those two
+  // conditions, carrying MEMBER PATHS and no identifiers, and this handler reports it as a 400. Both
+  // halves are asserted here so neither the classification nor the no-echo rule can regress.
+  // =========================================================================
+
+  it('★ reports a caller-shaped document-data refusal as 400 with member paths', async () => {
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({
+      materialize: order,
+      materializationFailure: new OrderViewDocumentDataError([
+        {
+          path: 'order.orderItems.0.productID',
+          message: 'does not name a product this request can price',
+        },
+      ]),
+    });
+
+    const result = await harness.invoke(postWireOrder(order));
+
+    expect(result.statusCode).toBe(400);
+    expect(errorBodyOf(result).category).toBe('invalidRequest');
+    expect(fieldPathsOf(result)).toStrictEqual(['order.orderItems.0.productID']);
+    // ★ THE SENTENCE IS THE MAPPER'S FIXED ONE, so choosing `unusableRequestInput` withheld detail
+    // rather than inventing any.
+    expect(errorBodyOf(result).message).toBe('The request input is not valid.');
+    // Neither pass ran, so nothing was priced against a catalogue that could not be resolved.
+    expect(harness.recorder.composedInputs).toHaveLength(0);
+  });
+
+  it('★ publishes no submitted identifier when it refuses a document-data mistake', async () => {
+    const { order } = makeGoldenOrder();
+    // The two paths `loadDocumentSkus` emits for the sku/product disagreement, which is the condition
+    // whose old 500 named BOTH identifiers in its message.
+    const harness = makeHarness({
+      materialize: order,
+      materializationFailure: new OrderViewDocumentDataError([
+        {
+          path: 'order.orderItems.0.skuID',
+          message: 'does not name a sku carried by the product named on the same order item',
+        },
+        {
+          path: 'order.orderItems.0.productID',
+          message: 'names a product that does not carry the sku named on the same order item',
+        },
+      ]),
+    });
+
+    const result = await harness.invoke(postWireOrder(order));
+
+    expect(result.statusCode).toBe(400);
+    expect(fieldPathsOf(result)).toStrictEqual([
+      'order.orderItems.0.skuID',
+      'order.orderItems.0.productID',
+    ]);
+    // The golden order's own identifiers are what a real refusal would have been tempted to echo.
+    const firstItem = itemAt(order, 0);
+    expect(result.body).not.toContain(firstItem.sku.getSkuID());
+    expect(result.body).not.toContain(PRODUCT_ID);
   });
 });
 
@@ -1917,7 +1993,7 @@ describe('the authenticated admission gate (NET-NEW)', () => {
     expect(result.body).not.toContain('noAuthorizerContext');
     expect(result.body).not.toContain('authoriz');
     expect(errorBodyOf(result)).not.toHaveProperty('fields');
-    expect(headerNames).toEqual(['cache-control', 'content-type']);
+    expect(headerNames).toEqual(['cache-control', 'content-type', 'x-content-type-options']);
     expect(headerNames).not.toContain('www-authenticate');
   });
 });
@@ -2508,9 +2584,12 @@ function expectSafeResponseEnvelope(result: APIGatewayProxyResult): void {
   // `no-store`, because a priced order belongs to one account at one instant and an intermediary
   // caching it would serve one customer's discount to another.
   expect(headers['cache-control']).toBe('no-store');
+  // ★ THE THIRD, ADDED FOR QA-I4: having declared the content type explicitly, the shared builder now
+  // also says a recipient must not sniff past that declaration.
+  expect(headers['x-content-type-options']).toBe('nosniff');
 
   const headerNames = Object.keys(headers).map((name): string => name.toLowerCase());
-  expect(headerNames).toEqual(['content-type', 'cache-control']);
+  expect(headerNames).toEqual(['content-type', 'cache-control', 'x-content-type-options']);
   for (const forbidden of FORBIDDEN_HEADER_NAMES) {
     expect(headerNames).not.toContain(forbidden);
   }
@@ -2742,6 +2821,48 @@ describe('response shaping and safe error mapping (NET-NEW)', () => {
       expect(errorBodyOf(result).message).toBe(UNSUPPORTED_SHAPE_SENTENCE);
       expect(harness.recorder.log).toEqual([]);
     }
+  });
+
+  it('★★ answers 400 for a `__proto__` own key, at the ROOT and NESTED alike (QA-I3)', async () => {
+    // ★★ THE ONE UNRECOGNIZED KEY `z.strictObject` DOES NOT REFUSE. QA testing submitted it and
+    // measured both halves: zod ACCEPTS an own `__proto__` and silently drops it, at every nesting
+    // level, while rejecting a `constructor` key in the same position - and `Object.prototype` is left
+    // unmodified either way. So this is an INCONSISTENCY being closed rather than an active
+    // vulnerability: a caller sending a member this request does not accept is now told so, exactly as
+    // it is told about every other unrecognized member.
+    //
+    // ⚠ EVERY FIXTURE HERE IS RAW JSON TEXT, WHICH IS THE ONLY CONSTRUCTION THAT REPRODUCES THE INPUT.
+    // An object literal `{ __proto__: {} }` invokes the prototype SETTER and creates no own property,
+    // so a fixture built that way would contain nothing to detect and this case would pass while the
+    // guard did nothing. API Gateway delivers text; `JSON.parse` makes it an own data property.
+    const bodies: readonly { readonly body: string; readonly path: string }[] = [
+      {
+        body: '{"operation":"updateOrderAmountsWithPromotions","__proto__":{"p":1}}',
+        path: '__proto__',
+      },
+      {
+        body: '{"operation":"updateOrderAmountsWithPromotions","order":{"orderID":"o-1","__proto__":{"p":1}}}',
+        path: 'order.__proto__',
+      },
+    ];
+
+    for (const { body, path } of bodies) {
+      const harness = makeHarness();
+      const result = await harness.invoke(makeProxyEvent({ body }));
+
+      expectSafeResponseEnvelope(result);
+      expect(result.statusCode).toBe(400);
+      expect(errorBodyOf(result).category).toBe('invalidRequest');
+      // The path names the KEY the caller sent - never a value, which is the invariant this whole
+      // error surface holds to.
+      expect(fieldPathsOf(result)).toContain(path);
+      // ★ AND THE REFUSAL IS TOTAL: no composition root was opened, so nothing was priced and no
+      // connection was taken from the pool.
+      expect(harness.recorder.log).toEqual([]);
+    }
+
+    // The finding's own central observation, re-asserted rather than taken on trust.
+    expect(Object.prototype).not.toHaveProperty('p');
   });
 
   it('honours a base64-encoded body, because the platform sets that flag', async () => {
