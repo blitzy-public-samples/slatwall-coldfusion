@@ -879,6 +879,40 @@ export const LEGACY_TEST_MAP: {
     // model/service/PriceGroupService.cfc:L364-L375 writes]. This is the shrink
     // direction the register was designed to permit; the entry is not restorable
     // while that suite is on disk, because A9 would then fail.
+    // Registered when the module landed, which is the only way this register stays
+    // honest: A2 partitions the module census against DISK, so a new runtime module
+    // that declares itself nowhere fails the gate rather than passing unnoticed. It is
+    // entered as PENDING and not as an exemption because coverage really is OWED - the
+    // AAP names `tests/unit/handlers/productFeedHandler.test.ts` explicitly, and calling
+    // this module "exercised through something else" would be the false-parity claim
+    // AAP 0.9.4 forbids. The entry deletes itself in the shrink direction the register
+    // was designed for: the moment that suite is authored, the planned-path assertion
+    // fails until the module moves up into `coveredModules`.
+    {
+      module: 'src/handlers/productFeedHandler.ts',
+      owningBoundary: 'src/handlers/productFeedHandler.ts',
+      reason:
+        'The product-feed Lambda entrypoint, and the one handler that ports a legacy method ' +
+        'body [integrationServices/google/controllers/feed.cfc:L58] rather than exposing an ' +
+        'already-ported service surface. It composes nothing and decides nothing about the ' +
+        'feed, but it does capture the observed host and the request instant that the feed ' +
+        'port closes over, and it does map every failure onto a response - both are behaviour.',
+      plannedCoverage: ['tests/unit/handlers/productFeedHandler.test.ts'],
+    },
+    {
+      module: 'src/handlers/catalogQueryHandler.ts',
+      owningBoundary: 'src/handlers/catalogQueryHandler.ts',
+      reason:
+        'The first of the five capability Lambda entrypoints, and NET-NEW coverage in full: ' +
+        'meta/tests/ contains nothing for the handler tier, so nothing here traces to a legacy ' +
+        'antecedent and none of it may be reported as parity. It carries no business logic, but ' +
+        'it does carry transport decisions that are behaviour - route admission for its own ' +
+        'capability, the closed operation vocabulary named verbatim after the ported service ' +
+        'methods, the closed criteria shape that replaces the framework smart list, the ' +
+        'one-operation-per-invocation bound and the idempotent-replay ledger that AAP 0.6.5 ' +
+        'requires in place of the ambient transaction Lambda does not have.',
+      plannedCoverage: ['tests/unit/handlers/catalogQueryHandler.test.ts'],
+    },
     {
       module: 'src/handlers/router.ts',
       owningBoundary: 'src/handlers/router.ts',
@@ -887,6 +921,58 @@ export const LEGACY_TEST_MAP: {
         'It carries no business logic, but it does carry dispatch decisions, and dispatch ' +
         'decisions are behaviour.',
       plannedCoverage: ['tests/unit/handlers/router.test.ts'],
+    },
+    {
+      module: 'src/handlers/skuResolutionHandler.ts',
+      owningBoundary: 'src/handlers/skuResolutionHandler.ts',
+      reason:
+        'The Lambda entrypoint for the SKU resolution capability, and the one handler that fronts ' +
+        'a must-preserve behaviour: it publishes `getProductSkusBySelectedOptions` ' +
+        '[model/service/ProductService.cfc:L104] under its verbatim CFML name and forwards both ' +
+        'arguments untouched, with `selectedOptions` still the comma-delimited string the ' +
+        'AND-of-EXISTS matching at [model/dao/SkuDAO.cfc:L107-L128] consumes. It holds no business ' +
+        'logic, but three of its decisions ARE behaviour and none of them is observable from any ' +
+        'other module: that the result collection is neither filtered nor reordered in transit; ' +
+        'that a `getSkuBySkuCode` miss is published as an ABSENT member rather than as 0, null or ' +
+        'an empty object, the encoding that keeps [model/entity/Sku.cfc:L269-L273] from selling ' +
+        'product for free; and that no schema on the surface carries a minimum length, because ' +
+        'CFML `required string` admits an empty value and a length check would narrow the ' +
+        'must-preserve path. Its coverage is NET-NEW in full - no legacy test component reaches ' +
+        'the handler tier - and it is declared here rather than claimed, because the debt is real ' +
+        'until the suite exists.',
+      plannedCoverage: ['tests/unit/handlers/skuResolutionHandler.test.ts'],
+    },
+    {
+      module: 'src/handlers/priceResolutionHandler.ts',
+      owningBoundary: 'src/handlers/priceResolutionHandler.ts',
+      reason:
+        'The net-new Lambda entrypoint over the price-group and currency resolution surface. It ' +
+        'carries no pricing logic - every decision stays in `src/services/priceGroupService.ts` ' +
+        'and the entities it reads - but it does carry a request contract, a payload-driven ' +
+        'dispatch, the T6 account context assembled from the request, and the serialisation of a ' +
+        'LOAD-BEARING absence: an unpriced currency [model/entity/Sku.cfc:L269-L285] must survive ' +
+        'the wire as an absence rather than as a zero. Its coverage is NET-NEW in full - no ' +
+        'legacy test component touches a handler - and the suite is owed by the boundary that ' +
+        'authors the handler tier, so it is declared here rather than presented as parity.',
+      plannedCoverage: ['tests/unit/handlers/priceResolutionHandler.test.ts'],
+    },
+    {
+      module: 'src/handlers/promotionApplicationHandler.ts',
+      owningBoundary: 'src/handlers/promotionApplicationHandler.ts',
+      reason:
+        'The promotion-application entrypoint. It carries no business logic - no qualification, ' +
+        'no discount arithmetic, no ledger and no sorting - but it does carry the CROSS-SERVICE ' +
+        'EXECUTION ORDERING, which is behaviour and which decides money: the promotion pass reads ' +
+        '`getAppliedPriceGroup()` in a branch CONDITION [model/service/PromotionService.cfc:L241] ' +
+        'that the price-group pass writes [model/service/PriceGroupService.cfc:L370-L371], and in ' +
+        'the legacy the sequence held only because `model/service/OrderService.cfc` happened to ' +
+        'call the two adjacent collaborators [:L60-L61] in order. It also carries the ' +
+        'anti-corruption seam itself - a read-only order view in, opaque-keyed applied-promotion ' +
+        'intents out - and the structural admission that refuses a document it cannot vouch for ' +
+        'rather than fabricating a member. Coverage for it is NET-NEW in full: no legacy test ' +
+        'under meta/tests/ touches a handler, an order-shaped input or a routing surface, so ' +
+        'nothing owed here may ever be presented as carried-forward parity.',
+      plannedCoverage: ['tests/unit/handlers/promotionApplicationHandler.test.ts'],
     },
   ],
 
