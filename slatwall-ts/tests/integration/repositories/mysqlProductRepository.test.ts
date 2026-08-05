@@ -163,7 +163,10 @@ import type {
   SqlMutationResult,
   SqlRow,
 } from '../../../src/repositories/mysql/connection.js';
-import { SQL_TUPLE_ROW_LIMIT } from '../../../src/repositories/mysql/connection.js';
+import {
+  MAX_PLACEHOLDER_COUNT,
+  SQL_TUPLE_ROW_LIMIT,
+} from '../../../src/repositories/mysql/connection.js';
 
 /**
  * S-07. The audit actor every construction in this file supplies: an ADMIN, PERSISTED
@@ -2227,11 +2230,12 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
     it('projects both legacy columns, including the productName the adapter never reads', async () => {
       // C2.7. The legacy projects `productID, productName` and reduces each row to a
       // two-key autocomplete structure keyed `"id"` and `"value"`
-      // [model/dao/ProductDAO.cfc:L431-L434]. The SHIPPED port returns `Product[]`
-      // instead, so those two keys survive nowhere on this port and asserting them
-      // as a returned shape would contradict the signature. What IS preserved is the
-      // statement's projection, carried over unchanged rather than trimmed to what
-      // this adapter happens to consume - and that is what is pinned.
+      // [model/dao/ProductDAO.cfc:L431-L434]. The SHIPPED port returns
+      // `ProductSearchMatches`, whose `records` are product graphs and whose
+      // `matchedCount` is numeric, so those two keys survive nowhere on this port and
+      // asserting them as a returned shape would contradict the signature. What IS
+      // preserved is the statement's projection, carried over unchanged rather than
+      // trimmed to what this adapter happens to consume - and that is what is pinned.
       const executor = new RecordingExecutor([[PRODUCT_SEARCH_ROW], [PRODUCT_GRAPH_ROW], []]);
       const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
 
@@ -2240,9 +2244,12 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       const statement = statementAt(executor.calls, 0);
       expect(statement.sql).toContain('select productID,productName');
 
-      // The port's declared return type, honoured: entities, not autocomplete pairs.
-      expect(products).toHaveLength(1);
-      expect(productAt(products, 0).getProductID()).toBe(PERSISTED_PRODUCT_ID);
+      // The port's declared return type, honoured: entities, not autocomplete pairs. The result is
+      // a two-member object rather than a bare array because a WINDOWED search has to report both
+      // what it returned and how much matched - see the widening note on the port member.
+      expect(products.records).toHaveLength(1);
+      expect(products.matchedCount).toBe(1);
+      expect(productAt(products.records, 0).getProductID()).toBe(PERSISTED_PRODUCT_ID);
     });
   });
 
@@ -2525,6 +2532,180 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
         MERCHANDISE_PRODUCT_TYPE_ID,
         SUBSCRIPTION_PRODUCT_TYPE_ID,
       ]);
+    });
+  });
+
+  // ===========================================================================
+  // C-3b  searchProductsByProductType - THE COMPLETE-STATEMENT PLACEHOLDER CEILING
+  // ===========================================================================
+
+  describe('searchProductsByProductType - the complete-statement placeholder ceiling', () => {
+    /** A comma-list with exactly `count` product-type identifiers. */
+    function productTypeList(count: number): string {
+      return Array.from({ length: count }, (_unused, index) => `type-${String(index)}`).join(',');
+    }
+
+    it('accepts one fewer product type plus the unconditional term bind at the ceiling', async () => {
+      const executor = new RecordingExecutor([[]]);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
+
+      const result = await repository.searchProductsByProductType(
+        SEARCH_TERM,
+        productTypeList(MAX_PLACEHOLDER_COUNT - 1),
+      );
+
+      expect(executor.calls).toHaveLength(1);
+      expect(statementAt(executor.calls, 0).params).toHaveLength(MAX_PLACEHOLDER_COUNT);
+      expect(result).toStrictEqual({ records: [], matchedCount: 0 });
+    });
+
+    it('refuses a list at the raw ceiling because the term makes the complete statement one wider', async () => {
+      const executor = new RecordingExecutor([]);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
+
+      await expect(
+        repository.searchProductsByProductType(SEARCH_TERM, productTypeList(MAX_PLACEHOLDER_COUNT)),
+      ).rejects.toThrow(/complete product search would carry 65536 placeholders/);
+
+      // Refusal happens before the placeholder body or any statement is allocated.
+      expect(executor.calls).toStrictEqual([]);
+    });
+  });
+
+  // ===========================================================================
+  // C-3c  searchProductsByProductType - THE MATERIALIZATION WINDOW
+  //
+  // NET-NEW. No legacy antecedent: the CFML DAO had no window at all, because the
+  // framework smart list windowed the ROWS the ORM had already loaded.
+  //
+  // A security review raised a MAJOR finding (CWE-400): the service's paging window was
+  // applied to a FULLY MATERIALIZED product array, so a two-record page still paid for
+  // every matched product graph. The window is now a third parameter on this member, and
+  // the adapter applies it to the MATCHED IDENTIFIER LIST - after the projection, before
+  // any graph read. These cases pin all three properties that makes it a real fix:
+  //
+  //   1. The window bounds the WORK, not just the answer: the graph statement binds only
+  //      the windowed identifiers.
+  //   2. `matchedCount` stays the TRUE PRE-WINDOW total, so a caller can still report
+  //      "3 of 40" without a second COUNT(*).
+  //   3. The PORTED STATEMENT TEXT IS UNCHANGED - no LIMIT, no OFFSET, no ORDER BY is
+  //      grafted onto [model/dao/ProductDAO.cfc:L420-L427]. That is deliberate: the legacy
+  //      statement carries NO ordering, so a SQL LIMIT would select an arbitrary subset
+  //      and silently change which products a page contains.
+  // ===========================================================================
+
+  describe('searchProductsByProductType - the materialization window', () => {
+    /** Three matched identifiers, so a one-record window has something on both sides of it. */
+    const SECOND_MATCH_ID = 'product-search-second';
+    const THIRD_MATCH_ID = 'product-search-third';
+
+    /** The projection the legacy statement returns: identifier plus name, three rows. */
+    const THREE_MATCHES: readonly SqlRow[] = [
+      PRODUCT_SEARCH_ROW,
+      { ...PRODUCT_SEARCH_ROW, productID: SECOND_MATCH_ID },
+      { ...PRODUCT_SEARCH_ROW, productID: THIRD_MATCH_ID },
+    ];
+
+    it('materializes ONLY the windowed identifiers and reports the pre-window total', async () => {
+      // The window is `{ start: 1, count: 1 }` - the MIDDLE match - so a passing assertion
+      // cannot be explained by a truncation at either end.
+      const executor = new RecordingExecutor([
+        [...THREE_MATCHES],
+        [{ ...PRODUCT_GRAPH_ROW, p_productID: SECOND_MATCH_ID }],
+        [],
+      ]);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
+
+      const products = await repository.searchProductsByProductType(SEARCH_TERM, undefined, {
+        start: 1,
+        count: 1,
+      });
+
+      // Property 1: the WORK is bounded. The graph statement binds exactly one identifier,
+      // and it is the windowed one - not the first match, and not all three.
+      const graphStatement = statementAt(executor.calls, 1);
+      expect(graphStatement.params).toStrictEqual([SECOND_MATCH_ID]);
+
+      expect(products.records).toHaveLength(1);
+      expect(productAt(products.records, 0).getProductID()).toBe(SECOND_MATCH_ID);
+
+      // Property 2: the count is the PROJECTION's size, independent of how many graphs were
+      // read. This is what lets a caller keep reporting the true total for free.
+      expect(products.matchedCount).toBe(3);
+    });
+
+    it('leaves the ported statement text free of LIMIT, OFFSET and ORDER BY', async () => {
+      // Property 3, and the reason the window is applied to the identifier list rather than
+      // pushed into SQL. [model/dao/ProductDAO.cfc:L420-L427] carries no ordering whatsoever,
+      // so `LIMIT 1 OFFSET 1` over an unordered result is a request for AN arbitrary row, not
+      // THE second row. Adding an ORDER BY to make LIMIT meaningful would change the emitted
+      // statement, which is exactly what the port forbids.
+      const executor = new RecordingExecutor([
+        [...THREE_MATCHES],
+        [{ ...PRODUCT_GRAPH_ROW, p_productID: SECOND_MATCH_ID }],
+        [],
+      ]);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
+
+      await repository.searchProductsByProductType(SEARCH_TERM, undefined, { start: 1, count: 1 });
+
+      const searchStatement = statementAt(executor.calls, 0);
+      const lowered = searchStatement.sql.toLowerCase();
+      expect(lowered).not.toContain('limit');
+      expect(lowered).not.toContain('offset');
+      expect(lowered).not.toContain('order by');
+
+      // And the bound values are still ONLY the search term - the window is nowhere near the
+      // parameter list.
+      expect(searchStatement.params).toStrictEqual(['%' + SEARCH_TERM + '%']);
+    });
+
+    it('sends NO graph statement at all when the window selects nothing', async () => {
+      // A window past the end of the match list is not an error and not an empty-window
+      // special case - it simply materializes nothing. The interesting property is that the
+      // adapter STOPS: with no identifiers to read, no graph statement is sent, so a caller
+      // paging past the end costs one statement rather than a full materialization.
+      const executor = new RecordingExecutor([[...THREE_MATCHES]]);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
+
+      const products = await repository.searchProductsByProductType(SEARCH_TERM, undefined, {
+        start: 99,
+        count: 10,
+      });
+
+      expect(executor.calls).toHaveLength(1);
+      expect(products.records).toStrictEqual([]);
+
+      // The total is STILL reported, which is the whole reason it is a separate member: a
+      // caller that overshot needs to learn how far it overshot by.
+      expect(products.matchedCount).toBe(3);
+    });
+
+    it('materializes every match when no window is supplied', async () => {
+      // The parameter is OPTIONAL, and omitting it must mean "all of them" - not "an
+      // implicit default page". Every existing caller and every case above this block relies
+      // on that, and the legacy DAO had no window, so an implicit one would be an invented
+      // behaviour.
+      const executor = new RecordingExecutor([
+        [...THREE_MATCHES],
+        [
+          PRODUCT_GRAPH_ROW,
+          { ...PRODUCT_GRAPH_ROW, p_productID: SECOND_MATCH_ID },
+          { ...PRODUCT_GRAPH_ROW, p_productID: THIRD_MATCH_ID },
+        ],
+        [],
+      ]);
+      const repository = new MysqlProductRepository(executor, TEST_AUDIT_ACTOR);
+
+      const products = await repository.searchProductsByProductType(SEARCH_TERM);
+
+      expect(statementAt(executor.calls, 1).params).toStrictEqual([
+        PERSISTED_PRODUCT_ID,
+        SECOND_MATCH_ID,
+        THIRD_MATCH_ID,
+      ]);
+      expect(products.records).toHaveLength(3);
+      expect(products.matchedCount).toBe(3);
     });
   });
 
@@ -2974,10 +3155,11 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // matched product. TWO matched products still cost FOUR statements, which is the
       // whole point: hydration is per row, collection loads stay per call.
       expect(executor.calls).toHaveLength(4);
-      expect(products).toHaveLength(2);
+      expect(products.records).toHaveLength(2);
+      expect(products.matchedCount).toBe(2);
 
-      const first = productAt(products, 0);
-      const second = productAt(products, 1);
+      const first = productAt(products.records, 0);
+      const second = productAt(products.records, 1);
       expect(first).not.toBe(second);
       expect(first.getProductID()).toBe(PERSISTED_PRODUCT_ID);
       expect(second.getProductID()).toBe(secondProductID);
@@ -5026,7 +5208,8 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
 
       const products = await repository.searchProductsByProductType(SEARCH_TERM);
 
-      expect(products).toHaveLength(3);
+      expect(products.records).toHaveLength(3);
+      expect(products.matchedCount).toBe(3);
       expect([...resolver.calls].sort()).toStrictEqual(
         [PERSISTED_PRODUCT_ID, secondProductID].sort(),
       );

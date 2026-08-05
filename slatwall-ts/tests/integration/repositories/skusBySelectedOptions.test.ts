@@ -95,6 +95,7 @@
 
 import { describe, expect, it } from 'vitest';
 
+import { MAX_PLACEHOLDER_COUNT } from '../../../src/repositories/mysql/connection.js';
 import { buildSkusBySelectedOptionsStatement } from '../../../src/repositories/mysql/sql/skusBySelectedOptions.sql.js';
 
 /**
@@ -616,5 +617,95 @@ describe('buildSkusBySelectedOptionsStatement - totality: it never throws', () =
       // The invariant that holds for every one of them: one bind per placeholder.
       expect(statement.params).toHaveLength(placeholderCount(statement.sql));
     }
+  });
+});
+
+describe('buildSkusBySelectedOptionsStatement - the protocol placeholder ceiling', () => {
+  // ---------------------------------------------------------------------------
+  // SECURITY FINDING F17, AND THE DISTINCTION THAT MAKES ITS ANSWER ADMISSIBLE HERE.
+  //
+  // The block above pins that this builder carries NO POLICY CAP: an earlier revision
+  // capped the count at 64, and that cap turned "no SKU matches" into a request failure
+  // for inputs [model/dao/SkuDAO.cfc:L107-L128] answered. Every one of those cases still
+  // passes and must keep passing.
+  //
+  // What F17 added is categorically different. `COM_STMT_PREPARE_OK` reports a prepared
+  // statement's placeholder count in a TWO-BYTE field, so MySQL cannot prepare a statement
+  // carrying more than 65535 placeholders however it is sent - the only possible outcome
+  // above the ceiling is a refusal at the server, and the only question was whether this
+  // process first parsed the list, allocated one fragment per element and joined them into
+  // a multi-megabyte string. So this bound rejects nothing the legacy could have answered,
+  // and it is a FEASIBILITY test rather than a throughput or capacity target.
+  //
+  // The two cases that matter are therefore: AT the ceiling is accepted, and ONE PAST it is
+  // refused - on the COUNT alone, with no element altered.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * A list of `count` single-character elements.
+   *
+   * Deliberately not `listOfWellFormedIDs`, whose 32-character identifiers would make a
+   * ceiling-sized list two megabytes of test input for no gain: what is under test is the
+   * ELEMENT COUNT, and a one-character element counts exactly as much as a well-formed one.
+   */
+  function listOfCountedElements(count: number): string {
+    return new Array<string>(count).fill('x').join(',');
+  }
+
+  it('accepts a list EXACTLY at the ceiling, because the server accepts one', () => {
+    const atCeiling = buildSkusBySelectedOptionsStatement(
+      listOfCountedElements(MAX_PLACEHOLDER_COUNT),
+    );
+
+    expect(atCeiling.params).toHaveLength(MAX_PLACEHOLDER_COUNT);
+    expect(occurrences(atCeiling.sql, EXPECTED_OPTION_EXISTS)).toBe(MAX_PLACEHOLDER_COUNT);
+  });
+
+  it('refuses ONE PAST the ceiling, naming the count and never the list', () => {
+    const oneTooMany = listOfCountedElements(MAX_PLACEHOLDER_COUNT + 1);
+
+    expect(() => buildSkusBySelectedOptionsStatement(oneTooMany)).toThrow(
+      /cannot prepare more than 65535/,
+    );
+
+    // The refusal reproduces no element of the submitted list: an error raised on the
+    // request path can reach the shared error mapper and from there a log stream.
+    try {
+      buildSkusBySelectedOptionsStatement(oneTooMany);
+      expect.unreachable('the builder accepted a statement the server cannot prepare');
+    } catch (thrown: unknown) {
+      expect(thrown).toBeInstanceOf(Error);
+      const { name, message } = thrown as Error;
+      expect(name).toBe('SkusBySelectedOptionsPlaceholderCountError');
+      expect(message).toContain(String(MAX_PLACEHOLDER_COUNT + 1));
+      expect(message).not.toContain('x,x');
+    }
+  });
+
+  it("counts the optional productID bind, because the ceiling is the STATEMENT's", () => {
+    // A list exactly at the ceiling plus a `productID` is one placeholder too many. Testing
+    // the list in isolation would have missed it.
+    const atCeiling = listOfCountedElements(MAX_PLACEHOLDER_COUNT);
+
+    expect(() => buildSkusBySelectedOptionsStatement(atCeiling, 'product-1')).toThrow(
+      /SkusBySelectedOptionsPlaceholderCountError|cannot prepare more than 65535/,
+    );
+
+    // And one BELOW the ceiling plus the product bind lands exactly on it, so it is accepted.
+    const justUnder = buildSkusBySelectedOptionsStatement(
+      listOfCountedElements(MAX_PLACEHOLDER_COUNT - 1),
+      'product-1',
+    );
+
+    expect(justUnder.params).toHaveLength(MAX_PLACEHOLDER_COUNT);
+  });
+
+  it('LEAVES THE 64- AND 200-ELEMENT TOTALITY CASES UNTOUCHED, which is the point', () => {
+    // Restated here as a guard rather than duplicated coverage: the ceiling is nine hundred
+    // times the largest list any other case uses, so a policy cap could not hide behind it.
+    expect(buildSkusBySelectedOptionsStatement(listOfCountedElements(64)).params).toHaveLength(64);
+    expect(buildSkusBySelectedOptionsStatement(listOfCountedElements(200)).params).toHaveLength(
+      200,
+    );
   });
 });

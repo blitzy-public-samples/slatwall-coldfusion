@@ -1,36 +1,62 @@
 // ---------------------------------------------------------------------------
-// slatwall-ts - unit suite for the SKU resolution Lambda entry point
+// The SKU resolution Lambda entrypoint, under test.
 //
-// WHAT THIS PINS
-//   src/handlers/skuResolutionHandler.ts - the primary adapter that fronts a
-//   MUST-PRESERVE behaviour of the Slatwall 3.1.39 catalog slice: product / SKU /
-//   option-to-SKU resolution, entered at
-//   `getProductSkusBySelectedOptions(selectedOptions, productID)`
-//   [model/service/ProductService.cfc:L104].
+// NET-NEW COVERAGE, never presented as parity: no legacy test file reaches the handler tier. The two
+// legacy-extended suites in this subtree are the brand and product entity suites, and neither is this
+// one. What IS legacy here is the BEHAVIOUR each case pins - every locator cited below was read in the
+// source.
 //
-//   A handler is a PRIMARY ADAPTER AND NOTHING ELSE, so every case below serves
-//   exactly one of four concerns:
+// A handler is a primary adapter, so every case serves exactly one of four concerns: routing and
+// request validation, delegation to an already-ported service method, API Gateway response shaping,
+// and domain/error mapping. There is no fifth, because a fifth concern in a handler would be business
+// logic - and that is asserted rather than claimed: every collaborator the route is not entitled to
+// touch is a getter that THROWS ON FIRST TOUCH.
 //
-//     1. routing and request validation,
-//     2. delegation to an already-ported service method,
-//     3. API Gateway response shaping,
-//     4. domain and error mapping.
+// THE SQL BOUNDARY IS THE MOST IMPORTANT NON-ASSERTION IN THIS FILE. The must-preserve AND-of-EXISTS
+// semantics at [model/dao/SkuDAO.cfc:L107-L128] - one `and exists (...)` clause per selected option,
+// an intersection over all of them, executed with positional parameters - are owned by
+// `tests/integration/repositories`. This suite asserts only that the caller's criteria reach the
+// service VERBATIM and that the collection the service answers is published UNMODIFIED, so no
+// recording pool or statement-executor double appears below.
 //
-//   There is no fifth concern, because a fifth concern in a handler would be
-//   business logic. What the module must NOT do is asserted as directly as what it
-//   must: the doubles below make every collaborator the route is not entitled to
-//   THROW ON FIRST TOUCH, so "this adapter holds no logic" is a failing test
-//   rather than a claim in a comment.
+// The subject is driven through `createSkuResolutionHandler({ bootstrap, logger })`, the seam the
+// module publishes on {@link SkuResolutionHandlerDependencies}. No composition root is built and no
+// connection pool is created, nothing reads `process.env`, and every collaborator is a hand-written,
+// fully typed, in-memory double - no mocking library, no database, no network, no filesystem, no
+// credential and no mutable module state. The suite passes with a completely empty environment.
 //
 // ---------------------------------------------------------------------------
-// THE ROUTED SURFACE IS FIVE OPERATIONS, WHICH IS FEWER THAN A READER MIGHT EXPECT
+// THE ROUTED SURFACE IS TWO OPERATIONS, WHICH IS FEWER THAN A READER MIGHT EXPECT
 // ---------------------------------------------------------------------------
 //   JUDGMENT CALL: this suite asserts the surface the module ACTUALLY SHIPS rather than
 //   the wider surface the two ported services declare, and the difference is worth
 //   stating up front because it looks like an omission and is not one.
 //
-//   The published set is exactly `getProductSkusBySelectedOptions`, `getSkuBySkuCode`,
-//   `searchSkusByProductType`, `getTransactionExistsFlag` and `findSkus`. Absent from it
+//   ★★★ IT WAS FIVE AND IS NOW TWO. Three operations were WITHDRAWN from the Lambda
+//   surface by review, and this suite was rewritten around the narrower surface rather
+//   than kept pointing at actions that no longer exist:
+//
+//     * `getTransactionExistsFlag` - FINDING F18. The route advertised a boolean it could
+//       never return. `SkuService.getTransactionExistsFlag()` forwards no arguments
+//       [model/service/SkuService.cfc:L285-L287] and `MysqlSkuRepository` raises a named
+//       `SkuColumnError` when neither identifier is supplied - correct parity, because
+//       [model/dao/SkuDAO.cfc:L59-L63] executes with an UNDEFINED `arguments.productID`
+//       and the legacy cannot serve that call either. THIS SUITE WAS PART OF THE EVIDENCE:
+//       its scripted double returned a configured boolean and it asserted HTTP 200, so it
+//       could not see the real composition's throw. A double that answers where production
+//       raises does not prove the route works; it proves the double does. The route is gone
+//       and the cases that drove it through the double are gone with it.
+//     * `searchSkusByProductType` and `findSkus` - FINDING F10. Both return complete,
+//       unpaged collections and neither signature can be bounded without a reshaping this
+//       tier may not allocate; `SkuQueryCriteria` declares no paging members at all.
+//
+//   Every withdrawal is asserted from the OTHER DIRECTION in the final `describe`: naming
+//   one now earns the same client-shaped rejection as naming a nonsense string, and each
+//   appears in `NON_EXPOSED_SURFACE_NOTES` with its reason. Nothing was reshaped to achieve
+//   it - all three service members still exist, unchanged, with their own service-tier
+//   coverage.
+//
+//   The published set is exactly `getProductSkusBySelectedOptions` and `getSkuBySkuCode`. Also absent
 //   are `getProductSkus` [model/service/SkuService.cfc:L220], `getSortedProductSkus`
 //   [L246], `processImageUpload` [L210], `createSkus` [L58] and the two entity-level
 //   resolvers `Product.getSkuBySelectedOptions` [model/entity/Product.cfc:L349] and
@@ -127,23 +153,6 @@
 //   UNMODIFIED. The omission is recorded so a reviewer does not read it as a gap,
 //   and no recording pool or statement-executor double appears below.
 //
-// ---------------------------------------------------------------------------
-// NO USER RULES WERE PROVIDED
-// ---------------------------------------------------------------------------
-//   The project rules source returns exactly `No user rules provided.`, on an
-//   unbounded read and again on a whole-document read, and the plan records the
-//   same. No rule is invented here and no assertion below is attributed to one:
-//   each traces to the plan, to a cited legacy locator, or to the subject module's
-//   own published contract. Their absence lowers nothing.
-//
-//   Equally, NOTHING BELOW ASSERTS A NON-FUNCTIONAL REQUIREMENT. No duration, rate,
-//   capacity figure, availability figure or benchmark appears in this file. The platform's
-//   invocation and gateway limits are platform facts, not service levels, and the
-//   legacy engine's sixty-second, forty-five-second and thirty-second lock timeouts
-//   are noted by the plan and deliberately not implemented, so there is nothing here
-//   to time.
-// ---------------------------------------------------------------------------
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
@@ -153,18 +162,17 @@ import type {
   RequestScope,
   RequestScopeInput,
 } from '../../../src/handlers/bootstrap.js';
-import type { ErrorResponseBody } from '../../../src/handlers/errorMapper.js';
+import type { ErrorResponseBody, SuccessResponseBody } from '../../../src/handlers/errorMapper.js';
 import { ROUTE_TABLE } from '../../../src/handlers/router.js';
 import type {
   SkuResolutionOperation,
   SkuResolutionOutcome,
-  SkuResolutionResponseBody,
+  SkuResolutionResultDocument,
 } from '../../../src/handlers/skuResolutionHandler.js';
 import {
   createSkuResolutionHandler,
   handler,
   NON_EXPOSED_SURFACE_NOTES,
-  SKU_CREATION_SAFETY_ENVELOPE,
 } from '../../../src/handlers/skuResolutionHandler.js';
 // The branded decimal-string type and the by-VALUE comparison helper. Imported rather
 // than restated: redeclaring the brand would produce a second type that looks identical
@@ -181,9 +189,26 @@ import { cfNumericEquals } from '../../../src/lib/cfml/numberFormat.js';
 // all. No other entity member is touched here and no entity behaviour is re-implemented.
 import { Sku } from '../../../src/domain/entities/sku.js';
 import type { LogContext, Logger, LogLevel, LogSink } from '../../../src/lib/logger.js';
+// ★ THE PRODUCTION LOGGER, IMPORTED FOR ONE PURPOSE. Finding F7 was invisible to this suite's
+// recording logger, which captures a context object as given and therefore cannot see the real
+// logger's key-based redaction policy - under which `capability` and `operation` were REDACTED. One
+// case drives the handler through this instance with stdout captured, which is the only way to
+// observe what an operator would actually receive.
+import { logger as productionLogger } from '../../../src/lib/logger.js';
 import type { SkuPage, SkuQueryCriteria } from '../../../src/services/skuService.js';
 import { SkuService } from '../../../src/services/skuService.js';
 import { ProductService } from '../../../src/services/productService.js';
+// ★ THE REAL WRITING ADAPTER, IMPORTED FOR ONE CASE. Review named this suite's scripted
+// `SkuService` as the reason finding F18 went unnoticed - it ANSWERED where production RAISES. One
+// case therefore builds the real `SkuService` over the real `MysqlSkuRepository` and drives the
+// withdrawn call, proving the refusal with no double standing in for it. It needs no connection: the
+// repository refuses before it would issue a statement, and the case asserts exactly that.
+import { MysqlSkuRepository } from '../../../src/repositories/mysql/mysqlSkuRepository.js';
+import type {
+  PreparedStatementExecutor,
+  SqlMutationResult,
+  SqlRow,
+} from '../../../src/repositories/mysql/connection.js';
 import { Money } from '../../../src/domain/valueObjects/money.js';
 import { makeProductFixture } from '../../fixtures/productFixtures.js';
 import { makeSkuFixture } from '../../fixtures/skuFixtures.js';
@@ -224,11 +249,16 @@ const GATEWAY_REQUEST_ID = 'a1b2c3d4-0000-4444-8888-aaaabbbbcccc';
 const INVOCATION_REQUEST_ID = 'f0f0f0f0-1111-4444-8888-ddddeeeeffff';
 
 /**
- * The fixed marker the module publishes when there is nothing to correlate with.
- * Restated here rather than imported because the subject does not export it, and a
- * silent change to it is exactly what this suite should catch.
+ * The fixed marker published when there is nothing to correlate with.
+ *
+ * ★★ THE VALUE MOVED WITH THE RESOLVER. It used to be this module's own `'uncorrelated'`;
+ * finding F8 collapsed five correlation policies into `resolveServerRequestId` in
+ * `../../../src/handlers/errorMapper.js`, whose token is `'unattributed'`. Restated here
+ * rather than imported because the shared module keeps it module-private - a test that
+ * imported it could not detect the constant being changed to an empty string, which is
+ * exactly the regression this catches.
  */
-const UNCORRELATED_REQUEST_ID = 'uncorrelated';
+const UNATTRIBUTED_REQUEST_ID = 'unattributed';
 
 /**
  * One instant, spelled as an explicit UTC ISO-8601 literal.
@@ -247,6 +277,20 @@ const REQUEST_INSTANT_EPOCH = new Date(REQUEST_INSTANT).getTime();
 const PRODUCT_ID = 'catalog-product-0001';
 const OPTION_ID_SMALL = 'option-size-small';
 const OPTION_ID_RED = 'option-colour-red';
+
+/**
+ * A SKU code used wherever a case needs a request the module WILL serve but is not about
+ * what the request asks for - routing, correlation, scope discipline, logging.
+ *
+ * ★ `getSkuBySkuCode` IS THE RIGHT VEHICLE FOR THOSE CASES AND `getTransactionExistsFlag`
+ * WAS THE WRONG ONE. The withdrawn operation was convenient because it took no arguments,
+ * which is precisely why it was misleading: it also could not be served by the real
+ * composition (finding F18), so every case that used it as scaffolding was standing on a
+ * route that only worked because a double answered. A SKU-code MISS needs no script either
+ * - the double answers `undefined` and the module serves a 200 with the member omitted -
+ * and it is a path production can actually take.
+ */
+const SERVABLE_SKU_CODE = 'TESTSKU-SERVABLE-0001';
 
 /**
  * A planted value used to prove a failure's detail never reaches a response body.
@@ -315,7 +359,8 @@ type ProductServiceCollaborators = ConstructorParameters<typeof ProductService>;
  *
  * Seven, not eight: `getSkuStocksDeletableFlag` is deliberately absent from the port.
  *
- * LEGACY-DEFECT [model/service/SkuService.cfc:L281]: getSkuStocksDeletableFlag delegates at [L282] to a SkuDAO member that does not exist, so the legacy raises on every call.
+ * LEGACY-DEFECT [model/service/SkuService.cfc:L281]: `getSkuStocksDeletableFlag` delegates at [L282]
+ * to a SkuDAO member that does not exist, so the legacy raises on every call.
  * Preserved deliberately; do not fix without a product decision.
  *
  * Verified four ways rather than assumed: `model/dao/SkuDAO.cfc` declares no such
@@ -446,14 +491,10 @@ interface ServiceScript {
   /** The answer to `SkuService.getSkuBySkuCode`; absent means a MISS. */
   readonly skuBySkuCode?: ResolvedSku | undefined;
 
-  /** The answer to `SkuService.searchSkusByProductType`. */
-  readonly skusByProductType?: readonly ResolvedSku[] | undefined;
-
-  /** The answer to `SkuService.getTransactionExistsFlag`. */
-  readonly transactionExistsFlag?: boolean | undefined;
-
-  /** The answer to `SkuService.findSkus`. */
-  readonly skuPage?: SkuPage | undefined;
+  // ★ NO MEMBER FOR `searchSkusByProductType`, `getTransactionExistsFlag` OR `findSkus`. All three
+  // were withdrawn from the routed surface (findings F10 and F18), and their overrides on
+  // {@link RecordingSkuService} now REJECT rather than answer - so there is nothing left to script,
+  // and a case that tried to script one would not compile.
 
   /** When present, the scripted member fails instead of answering. */
   readonly failure?: ScriptedFailure | undefined;
@@ -567,7 +608,7 @@ class RecordingProductService extends ProductService {
   }
 }
 
-/** `SkuService`, with the four members this route reaches recorded. */
+/** `SkuService`, with the one member this route reaches recorded and three tripwires. */
 class RecordingSkuService extends SkuService {
   public constructor(
     private readonly script: ServiceScript,
@@ -593,65 +634,63 @@ class RecordingSkuService extends SkuService {
     return Promise.resolve(this.script.skuBySkuCode);
   }
 
-  /**
-   * `searchSkusByProductType` [model/service/SkuService.cfc:L271].
-   *
-   * ⚠️ `productTypeID` IS SINGULAR, and the product-side sibling
-   * `searchProductsByProductType(term?, productTypeIDs?)` is PLURAL. Both spellings
-   * are legacy names, both are preserved verbatim, and neither is normalised towards
-   * the other - in either direction.
-   */
+  // -------------------------------------------------------------------------
+  // ★★★ THE THREE WITHDRAWN MEMBERS ARE TRIPWIRES NOW, NOT SCRIPTED ANSWERS.
+  //
+  // Each of the three used to be a recording override that ANSWERED from a script, and the
+  // `getTransactionExistsFlag` one was named by review as evidence for finding F18: it returned a
+  // configured boolean while the real `MysqlSkuRepository` raises `SkuColumnError` on the same call,
+  // so the suite asserted HTTP 200 for a route production could never serve. A double that answers
+  // where production raises does not prove the route works - it proves the double does.
+  //
+  // The overrides are kept rather than deleted, and inverted: reaching one now FAILS. The routed
+  // surface publishes only two operations, so any of these being invoked means a withdrawn action was
+  // reintroduced, and this is the loudest place for that to surface. Neither service signature is
+  // touched - each override matches its parent exactly.
+  // -------------------------------------------------------------------------
+
+  /** WITHDRAWN by finding F10. Reaching this means the route came back. */
   public override searchSkusByProductType(
     term?: string,
     productTypeID?: string,
   ): Promise<ResolvedSku[]> {
-    recordAndMaybeFail(
-      this.calls,
-      'SkuService.searchSkusByProductType',
-      [term, productTypeID],
-      this.script.failure,
+    this.calls.push({ member: 'SkuService.searchSkusByProductType', args: [term, productTypeID] });
+
+    return Promise.reject(
+      new Error(
+        'SkuService.searchSkusByProductType was invoked. It was WITHDRAWN from the routed surface ' +
+          'by finding F10 because it returns a complete, unpaged collection that no member of its ' +
+          'signature can bound. Reaching it means the action was reintroduced.',
+      ),
     );
-
-    if (this.script.failure?.kind === 'reject') {
-      return Promise.reject(this.script.failure.reason);
-    }
-
-    return Promise.resolve([
-      ...scripted('SkuService.searchSkusByProductType', this.script.skusByProductType),
-    ]);
   }
 
-  /** `getTransactionExistsFlag` [model/service/SkuService.cfc:L285], which declares no arguments. */
+  /** WITHDRAWN by finding F18. Reaching this means the unservable route came back. */
   public override getTransactionExistsFlag(): Promise<boolean> {
-    recordAndMaybeFail(this.calls, 'SkuService.getTransactionExistsFlag', [], this.script.failure);
+    this.calls.push({ member: 'SkuService.getTransactionExistsFlag', args: [] });
 
-    if (this.script.failure?.kind === 'reject') {
-      return Promise.reject(this.script.failure.reason);
-    }
-
-    return Promise.resolve(
-      scripted('SkuService.getTransactionExistsFlag', this.script.transactionExistsFlag),
+    return Promise.reject(
+      new Error(
+        'SkuService.getTransactionExistsFlag was invoked. It was WITHDRAWN from the routed surface ' +
+          'by finding F18 because the real service forwards NO arguments and ' +
+          'MysqlSkuRepository.getTransactionExistsFlag then raises SkuColumnError - correct parity ' +
+          'with [model/dao/SkuDAO.cfc:L59-L63], which executes with an UNDEFINED arguments.productID. ' +
+          'Answering here from a script is precisely the defect the finding named.',
+      ),
     );
   }
 
-  /**
-   * `findSkus`, the typed query the plan substitutes for `getSkuSmartList`
-   * [model/service/SkuService.cfc:L309].
-   *
-   * ★ THAT RESHAPING IS ONE OF THE PLAN'S THREE PERMITTED INTERFACE RESHAPINGS AND IT
-   * WAS ALLOCATED TO THE SERVICES TIER. The budget is exhausted, so this suite
-   * consumes the typed criteria and asserts they are FORWARDED - it does not
-   * reproduce, extend or re-derive any generic smart-list behaviour, and it
-   * introduces no fourth reshaping.
-   */
+  /** WITHDRAWN by finding F10. Reaching this means the route came back. */
   public override findSkus(criteria: SkuQueryCriteria): Promise<SkuPage> {
-    recordAndMaybeFail(this.calls, 'SkuService.findSkus', [criteria], this.script.failure);
+    this.calls.push({ member: 'SkuService.findSkus', args: [criteria] });
 
-    if (this.script.failure?.kind === 'reject') {
-      return Promise.reject(this.script.failure.reason);
-    }
-
-    return Promise.resolve(scripted('SkuService.findSkus', this.script.skuPage));
+    return Promise.reject(
+      new Error(
+        'SkuService.findSkus was invoked. It was WITHDRAWN from the routed surface by finding F10 ' +
+          'because SkuQueryCriteria declares no paging members, so a routed contract has nothing to ' +
+          'bound. Reaching it means the action was reintroduced.',
+      ),
+    );
   }
 }
 
@@ -780,6 +819,14 @@ function createScopeDouble(script: ServiceScript, calls: RecordedCall[]): Reques
       );
     },
 
+    get entityLoaders(): RequestScope['entityLoaders'] {
+      throw new Error(
+        'RequestScope.entityLoaders was read. Every operation on this route binds its service ' +
+          'arguments from the query string directly - `selectedOptions` and `productID` are ' +
+          'strings and `skuCode` is a string - so no identifier here has to become an entity.',
+      );
+    },
+
     get roundingRuleService(): RequestScope['roundingRuleService'] {
       throw new Error('RequestScope.roundingRuleService was read; this route rounds nothing.');
     },
@@ -827,9 +874,17 @@ function createScopeDouble(script: ServiceScript, calls: RecordedCall[]): Reques
       'RequestScope.getSalePriceDetailsForProductSkus',
     ),
 
+    // Wire-document hydration belongs to the promotion-application capability, which is the one
+    // entrypoint that accepts an order. SKU resolution names a product and a SKU and prices
+    // neither, so reading this member here would mean this entrypoint had grown an order-shaped
+    // input it has no business holding.
+    materializeOrderView: unreachable('RequestScope.materializeOrderView'),
+
     updateOrderAmountsWithPriceGroupsThenPromotions: unreachable(
       'RequestScope.updateOrderAmountsWithPriceGroupsThenPromotions',
     ),
+
+    prepareAddressZoneEvaluation: unreachable('RequestScope.prepareAddressZoneEvaluation'),
   };
 }
 
@@ -845,12 +900,21 @@ function createScopeDouble(script: ServiceScript, calls: RecordedCall[]): Reques
  * @param rootFailure - a scripted failure of the composed graph itself, when a case
  *   exercises one: `bootstrap` rejects for `'bootstrap'`, and `createRequestScope`
  *   rejects for `'scope'`.
+ * @param loggerOverride - a logger to use INSTEAD of the recording one. Supplied by the single case
+ *   that must observe the PRODUCTION logger's redaction policy (finding F7); every other case leaves
+ *   it absent and interrogates `emissions`. When it is supplied, `emissions` stays empty - which is
+ *   correct, because the substituted logger reports nowhere this suite can read structurally.
  * @returns the harness.
  */
-function createHarness(script: ServiceScript = {}, rootFailure?: 'bootstrap' | 'scope'): Harness {
+function createHarness(
+  script: ServiceScript = {},
+  rootFailure?: 'bootstrap' | 'scope',
+  loggerOverride?: Logger,
+): Harness {
   const calls: RecordedCall[] = [];
   const scopeOpenings: ScopeOpening[] = [];
-  const { logger, emissions } = createRecordingLogger();
+  const { logger: recordingLogger, emissions } = createRecordingLogger();
+  const logger = loggerOverride ?? recordingLogger;
 
   let bootstrapCalls = 0;
 
@@ -943,18 +1007,20 @@ interface EventOptions {
 
   /** The repeated-parameter map, which the subject documents that it IGNORES. */
   readonly multiValueQuery?: Readonly<Record<string, string[] | undefined>> | null;
+
+  /** Omitted means the ordinary authenticated caller; `null` means anonymous. */
+  readonly authorizer?: Readonly<Record<string, unknown>> | null;
 }
+
+/** The opaque account identifier the default authorizer context establishes. */
+const AUTHENTICATED_ACCOUNT_ID = 'account-sku-resolution-0001';
 
 /**
  * Build an API Gateway proxy event.
  *
- * ★ `requestContext.identity` IS A GETTER THAT THROWS, and that is the single most
- * deliberate line in this builder. The subject states that deriving a caller identity
- * from an event would be inventing an authorization tier it has no authority to
- * create, so the suite makes the attempt fail rather than trusting the claim. It has a
- * second effect worth stating: the identity shape's members include an API-key and an
- * access-key field, and standing the whole object in with one throwing getter keeps
- * every credential-shaped identifier out of this file.
+ * ★ `requestContext.identity` IS A GETTER THAT THROWS. Authentication comes from
+ * `requestContext.authorizer`; reaching the legacy identity block would be a
+ * regression to a different trust source.
  *
  * Nothing else in the event is interesting on purpose. No body, no headers, no path
  * parameters and no stage variables: none of the five operations reads any of them.
@@ -982,14 +1048,17 @@ function apiGatewayEvent(options: EventOptions = {}): APIGatewayProxyEvent {
     requestContext: {
       accountId: '',
       apiId: 'sku-resolution-suite',
-      authorizer: undefined,
+      authorizer:
+        options.authorizer === undefined
+          ? { accountID: AUTHENTICATED_ACCOUNT_ID }
+          : options.authorizer,
       protocol: 'HTTP/1.1',
       httpMethod: method,
 
       get identity(): APIGatewayProxyEvent['requestContext']['identity'] {
         throw new Error(
-          'event.requestContext.identity was read. This route performs no authentication, no ' +
-            'permission check and no rate limiting, and derives no caller identity from the event.',
+          'event.requestContext.identity was read. This route resolves its principal from the ' +
+            'authorizer context and must not derive identity from the legacy identity block.',
         );
       },
 
@@ -1017,29 +1086,56 @@ function requestFor(
   return apiGatewayEvent({ query: { operation, ...parameters } });
 }
 
+/**
+ * A request the module WILL serve, for cases whose subject is not the request.
+ *
+ * A `getSkuBySkuCode` lookup that MISSES: it needs no script, it reaches exactly one service
+ * member, and it answers 200 with the `sku` member omitted. See {@link SERVABLE_SKU_CODE} for
+ * why this replaced the withdrawn no-argument operation these cases used to lean on.
+ */
+function servableRequest(): APIGatewayProxyEvent {
+  return requestFor('getSkuBySkuCode', { skuCode: SERVABLE_SKU_CODE });
+}
+
 // ===========================================================================
 // SECTION 9 - READING THE RESPONSE
 //
-// The subject publishes `SkuResolutionResponseBody` and the error mapper publishes
-// `ErrorResponseBody` precisely so this tier can parse a document without restating
-// its shape. Each reader below checks the envelope structurally and only then narrows
-// to the published type, which is the idiom the sibling suite for the error mapper
-// already established.
+// The error mapper publishes `ErrorResponseBody` and `SuccessResponseBody`, and the
+// subject publishes `SkuResolutionResultDocument` for the payload inside the latter,
+// precisely so this tier can parse a document without restating its shape. Each reader
+// below checks the envelope structurally and only then narrows to the published type,
+// which is the idiom the sibling suite for the error mapper already established.
+//
+// ★★ THE SUCCESS ENVELOPE MOVED, AND THIS SECTION MOVED WITH IT. The subject used to
+// publish a whole-document `SkuResolutionResponseBody` of `{requestId, outcome}`.
+// Finding F13 found four JSON entrypoints each publishing a differently-shaped success -
+// this one nesting its payload under `outcome`, its siblings under `result`, two of them
+// with no correlation identifier at all - so the OUTER document is now the shared
+// `{requestId, capability, action, result}` and the capability payload travels inside
+// `result`. The readers below therefore descend one extra level.
 // ===========================================================================
 
+/** The shared success envelope, with this capability's payload inside it. */
+type ServedEnvelope = SuccessResponseBody<SkuResolutionResultDocument>;
+
 /** Parse a success document. */
-function successBodyOf(response: APIGatewayProxyResult): SkuResolutionResponseBody {
+function successBodyOf(response: APIGatewayProxyResult): ServedEnvelope {
   const parsed: unknown = JSON.parse(response.body);
 
   if (typeof parsed !== 'object' || parsed === null) {
     throw new Error('the success response body is not a JSON object');
   }
 
-  if (!('requestId' in parsed) || !('outcome' in parsed)) {
-    throw new Error('the success response body is not the published envelope');
+  if (
+    !('requestId' in parsed) ||
+    !('capability' in parsed) ||
+    !('action' in parsed) ||
+    !('result' in parsed)
+  ) {
+    throw new Error('the success response body is not the shared envelope');
   }
 
-  return parsed as SkuResolutionResponseBody;
+  return parsed as ServedEnvelope;
 }
 
 /**
@@ -1053,7 +1149,7 @@ function outcomeFor<TOperation extends SkuResolutionOperation>(
   response: APIGatewayProxyResult,
   operation: TOperation,
 ): Extract<SkuResolutionOutcome, { readonly operation: TOperation }> {
-  const { outcome } = successBodyOf(response);
+  const { outcome } = successBodyOf(response).result;
 
   if (outcome.operation !== operation) {
     throw new Error(
@@ -1182,9 +1278,7 @@ describe('the SKU resolution Lambda entry point', () => {
   // =========================================================================
   describe('routing and request validation', () => {
     it('resolves a request on its own canonical route', async () => {
-      const populated = createHarness({ transactionExistsFlag: true });
-
-      const response = await populated.invoke(requestFor('getTransactionExistsFlag'));
+      const response = await createHarness().invoke(servableRequest());
 
       expect(response.statusCode).toBe(200);
     });
@@ -1193,12 +1287,10 @@ describe('the SKU resolution Lambda entry point', () => {
       // CFML parity [Application.cfc:L133]: subsystem membership is `listFindNoCase` over
       // a comma-delimited literal and path comparison is `eq`, both case-insensitive. The
       // casing in the route table is therefore a readability choice, not a contract.
-      const populated = createHarness({ transactionExistsFlag: false });
-
-      const response = await populated.invoke(
+      const response = await createHarness().invoke(
         apiGatewayEvent({
           path: '/CATALOG/SKUS',
-          query: { operation: 'getTransactionExistsFlag' },
+          query: { operation: 'getSkuBySkuCode', skuCode: SERVABLE_SKU_CODE },
         }),
       );
 
@@ -1312,42 +1404,96 @@ describe('the SKU resolution Lambda entry point', () => {
       expect(populated.calls[0]?.args).toEqual(['', PRODUCT_ID]);
     });
 
-    it('requires skuCode, term and keyword on the routes that bind them unconditionally', async () => {
-      const missingSkuCode = await createHarness().invoke(requestFor('getSkuBySkuCode'));
-      const missingTerm = await createHarness().invoke(requestFor('searchSkusByProductType'));
-      const missingKeyword = await createHarness().invoke(requestFor('findSkus'));
-
-      expect(missingSkuCode.statusCode).toBe(400);
-      expect(fieldPathsOf(missingSkuCode)).toContain('skuCode');
-      expect(missingTerm.statusCode).toBe(400);
-      expect(fieldPathsOf(missingTerm)).toContain('term');
-      expect(missingKeyword.statusCode).toBe(400);
-      expect(fieldPathsOf(missingKeyword)).toContain('keyword');
-    });
-
-    it('strips an unrecognised query parameter rather than refusing the request', async () => {
-      // Refusing one would invent a strictness the source never expressed.
-      const populated = createHarness({ transactionExistsFlag: true });
-
-      const response = await populated.invoke(
-        requestFor('getTransactionExistsFlag', { unexpectedParameter: 'ignored' }),
-      );
+    it('forwards an absent skuCode as absent, matching the service signature', async () => {
+      // `SkuService.getSkuBySkuCode(skuCode?)` is the authoritative contract. The repository may
+      // reproduce the legacy required-argument raise, but this transport must not narrow the service
+      // signature by manufacturing a boundary-only requiredness rule.
+      const missingSkuCode = createHarness();
+      const response = await missingSkuCode.invoke(requestFor('getSkuBySkuCode'));
 
       expect(response.statusCode).toBe(200);
+      expect(missingSkuCode.calls).toHaveLength(1);
+      expect(missingSkuCode.calls[0]?.args).toEqual([undefined]);
     });
 
-    it('ignores the repeated-parameter map entirely', async () => {
-      // A repeated parameter has no meaning in any of the five operations, and giving one
-      // a meaning would be inventing a request grammar the source never had.
+    it('★★★ REFUSES an unrecognised query parameter instead of silently dropping it', async () => {
+      // ★★★ THIS ASSERTION IS INVERTED, AND THE INVERSION IS THE FIX. It used to read
+      // `toBe(200)` under the comment "Refusing one would invent a strictness the source
+      // never expressed." Request-binding review (finding F11) established that the analogy
+      // runs the other way: a CFML `cffunction` REJECTS an unknown named argument at
+      // invocation, so silently DROPPING one is not the permissive legacy behaviour - it is a
+      // new behaviour with no legacy counterpart, and it turns a caller's typo into a
+      // different question answered with a confident 200.
       const response = await createHarness().invoke(
-        apiGatewayEvent({
-          query: null,
-          multiValueQuery: { operation: ['getTransactionExistsFlag', 'findSkus'] },
+        requestFor('getSkuBySkuCode', {
+          skuCode: SERVABLE_SKU_CODE,
+          // A unique planted value. It is deliberately NOT a word that appears in the mapper's own
+          // sentence, so the "never echoed" assertion below cannot pass or fail by coincidence.
+          unexpectedParameter: PLANTED_INTERNAL_DETAIL,
         }),
       );
 
       expect(response.statusCode).toBe(400);
-      expect(errorBodyOf(response).message).toBe('A required query parameter is missing.');
+      expect(fieldPathsOf(response)).toContain('queryStringParameters');
+      // Neither the caller-authored key nor its value is reflected by the fixed refusal.
+      expect(response.body).not.toContain('unexpectedParameter');
+      expect(response.body).not.toContain(PLANTED_INTERNAL_DETAIL);
+    });
+
+    it('refuses a misspelled parameter without guessing or reflecting its name', async () => {
+      const response = await createHarness().invoke(
+        apiGatewayEvent({ query: { operation: 'getSkuBySkuCode', skucode: SERVABLE_SKU_CODE } }),
+      );
+
+      expect(response.statusCode).toBe(400);
+      expect(fieldPathsOf(response)).toContain('queryStringParameters');
+      expect(response.body).not.toContain('skucode');
+    });
+
+    it('★★★ REFUSES a repeated query parameter rather than resolving it silently', async () => {
+      // ★★★ ALSO INVERTED, AND FOR THE SHARPER HALF OF FINDING F11. The previous case was
+      // titled "ignores the repeated-parameter map entirely" and rested on the reasoning that
+      // a repeated parameter "has no meaning". That is true and is exactly why it must be
+      // REFUSED: ignoring the multi-value map means the single-valued map has already
+      // discarded one of the caller's two values, so the module answers ONE of two questions
+      // and never says which. No schema can notice, because by the time a schema runs the
+      // other value is gone.
+      const response = await createHarness().invoke(
+        apiGatewayEvent({
+          query: { operation: 'getSkuBySkuCode', skuCode: SERVABLE_SKU_CODE },
+          multiValueQuery: { skuCode: [SERVABLE_SKU_CODE, 'A-DIFFERENT-CODE'] },
+        }),
+      );
+
+      expect(response.statusCode).toBe(400);
+      expect(fieldPathsOf(response)).toContain('multiValueQueryStringParameters');
+      // Neither submitted value reaches the caller.
+      expect(response.body).not.toContain('A-DIFFERENT-CODE');
+    });
+
+    it('refuses a repeated operation selector before reading either value', async () => {
+      const response = await createHarness().invoke(
+        apiGatewayEvent({
+          query: null,
+          multiValueQuery: { operation: ['getSkuBySkuCode', 'getProductSkusBySelectedOptions'] },
+        }),
+      );
+
+      expect(response.statusCode).toBe(400);
+      expect(fieldPathsOf(response)).toContain('multiValueQueryStringParameters');
+    });
+
+    it('admits a parameter supplied exactly once through the multi-value map alone', async () => {
+      // The refusal is on REPETITION, not on the map's presence: a single-element multi-value
+      // entry is a well-formed request and must still be served.
+      const response = await createHarness().invoke(
+        apiGatewayEvent({
+          query: { operation: 'getSkuBySkuCode', skuCode: SERVABLE_SKU_CODE },
+          multiValueQuery: { skuCode: [SERVABLE_SKU_CODE] },
+        }),
+      );
+
+      expect(response.statusCode).toBe(200);
     });
 
     it('opens no connection and no request scope for any unusable request', async () => {
@@ -1361,9 +1507,17 @@ describe('the SKU resolution Lambda entry point', () => {
         apiGatewayEvent({ query: { operation: '' } }),
         apiGatewayEvent({ query: { operation: 'getSkuStocksDeletableFlag' } }),
         requestFor('getProductSkusBySelectedOptions', { selectedOptions: OPTION_ID_RED }),
-        requestFor('getSkuBySkuCode'),
-        requestFor('searchSkusByProductType'),
-        requestFor('findSkus'),
+        // The three withdrawn actions (findings F10 and F18) are refused as unrecognized
+        // operations, and they open nothing either.
+        apiGatewayEvent({ query: { operation: 'searchSkusByProductType', term: 'TESTSKU' } }),
+        apiGatewayEvent({ query: { operation: 'findSkus', keyword: 'TESTSKU' } }),
+        apiGatewayEvent({ query: { operation: 'getTransactionExistsFlag' } }),
+        // A misspelled and a repeated parameter are refused at admission too (finding F11).
+        requestFor('getSkuBySkuCode', { skuCode: SERVABLE_SKU_CODE, notAParameter: 'x' }),
+        apiGatewayEvent({
+          query: { operation: 'getSkuBySkuCode', skuCode: SERVABLE_SKU_CODE },
+          multiValueQuery: { skuCode: [SERVABLE_SKU_CODE, 'OTHER'] },
+        }),
       ];
 
       for (const event of rejections) {
@@ -1480,87 +1634,45 @@ describe('the SKU resolution Lambda entry point', () => {
       expect(harness.calls[0]?.args).toEqual([alternate]);
     });
 
-    it('keeps productTypeID SINGULAR and forwards an omitted one as ABSENT', async () => {
-      // ⚠️ `searchSkusByProductType(term?, productTypeID?)`
-      // [model/service/SkuService.cfc:L271] is SINGULAR; its product-side sibling
-      // `searchProductsByProductType(term?, productTypeIDs?)` is PLURAL. Both are legacy
-      // names, both are preserved verbatim, and neither is normalised towards the other.
-      //
-      // CFML parity [model/dao/SkuDAO.cfc:L134]: the restriction is gated on
-      // `structKeyExists(arguments,"productTypeID") && trim(...) != ""`, so an ABSENT
-      // value and an EMPTY one are NOT the same request. Absence is forwarded as absence.
-      const term = 'TESTSKU';
-      const populated = createHarness({ skusByProductType: [] });
-
-      await populated.invoke(requestFor('searchSkusByProductType', { term }));
-
-      expect(populated.calls[0]?.member).toBe('SkuService.searchSkusByProductType');
-      expect(populated.calls[0]?.args).toEqual([term, undefined]);
-    });
-
-    it('forwards an EMPTY productTypeID as an empty string rather than as absence', async () => {
-      const term = 'TESTSKU';
-      const populated = createHarness({ skusByProductType: [] });
-
-      await populated.invoke(requestFor('searchSkusByProductType', { term, productTypeID: '' }));
-
-      expect(populated.calls[0]?.args).toEqual([term, '']);
-    });
-
-    it('invokes the transaction-exists flag with no arguments at all', async () => {
-      // [model/service/SkuService.cfc:L285] declares none, so none is invented.
-      const populated = createHarness({ transactionExistsFlag: true });
-
-      await populated.invoke(requestFor('getTransactionExistsFlag'));
-
-      expect(populated.calls[0]?.member).toBe('SkuService.getTransactionExistsFlag');
-      expect(populated.calls[0]?.args).toEqual([]);
-    });
-
-    it('forwards findSkus criteria as ONE typed object and adds no criterion of its own', async () => {
-      // The typed query replaces `getSkuSmartList(struct data={}, currentURL="")`
-      // [model/service/SkuService.cfc:L309]. That reshaping is one of the plan's three
-      // permitted ones and it was ALLOCATED TO THE SERVICES TIER: this module consumes it,
-      // and no filter, join or keyword property is re-derived, added or extended here.
-      const populated = createHarness({
-        skuPage: {
-          skus: [],
-          keyword: 'TESTSKU',
-          keywordProperties: [{ propertyIdentifier: 'skuCode', weight: 1 }],
-          joins: [],
-        },
-      });
-
-      await populated.invoke(
-        requestFor('findSkus', { keyword: 'TESTSKU', productTypeID: 'productType-0001' }),
-      );
-
-      expect(populated.calls[0]?.member).toBe('SkuService.findSkus');
-      expect(populated.calls[0]?.args).toEqual([
-        { keyword: 'TESTSKU', productTypeID: 'productType-0001' },
-      ]);
-    });
+    // ★★ FOUR DELEGATION CASES USED TO SIT HERE AND WENT WITH THEIR OPERATIONS. They covered
+    // `searchSkusByProductType`'s singular-versus-plural `productTypeID` and its absent-versus-empty
+    // distinction, `getTransactionExistsFlag`'s no-argument call, and `findSkus`' single typed
+    // criteria object. All three operations were withdrawn from this routed surface by findings F10
+    // and F18, so there is no forwarding left here to assert.
+    //
+    // ★★★ AND THE `getTransactionExistsFlag` CASE IS THE ONE WORTH NAMING. It read "invokes the
+    // transaction-exists flag with no arguments at all" and asserted `args` was `[]` - which was
+    // TRUE of the double and true of the service, and was precisely the defect: the service forwards
+    // no arguments, so `MysqlSkuRepository.getTransactionExistsFlag` receives neither identifier and
+    // raises `SkuColumnError`. The case passed because a scripted double answered where production
+    // throws. That is the shape of test that hides an integration gap rather than closing it, and it
+    // is recorded here so the same case is not reintroduced.
+    //
+    // The three service members are unchanged and each keeps its own service-tier coverage: the
+    // singular/plural asymmetry [model/dao/SkuDAO.cfc:L130] versus [model/dao/ProductDAO.cfc], the
+    // `structKeyExists`-plus-non-blank gate [model/dao/SkuDAO.cfc:L134], and the smart-list
+    // substitution [model/service/SkuService.cfc:L309] all live where the signatures do.
 
     it('invokes EXACTLY ONE service member and opens EXACTLY ONE request scope', async () => {
-      const populated = createHarness({ transactionExistsFlag: false });
+      const populated = createHarness();
 
-      await populated.invoke(requestFor('getTransactionExistsFlag'));
+      await populated.invoke(servableRequest());
 
       expect(populated.bootstrapCount()).toBe(1);
       expect(populated.scopeOpenings).toHaveLength(1);
       expect(populated.calls).toHaveLength(1);
     });
 
-    it('opens the request scope with NO input, fabricating no request state', async () => {
-      // None of the five operations reads an account-scoped price, a date-dependent window
-      // or a feed host, so supplying `accountID`, `adminAccountFlag`, `now` or `feedHost`
-      // would be FABRICATING inputs - and an absent `accountID` IS the logged-out arm at
-      // [model/service/PriceGroupService.cfc:L265-L266] rather than a missing value.
-      const populated = createHarness({ transactionExistsFlag: true });
+    it('opens the request scope with the authenticated account and no fabricated route state', async () => {
+      // The admission gate establishes the one request-scoped value this route owns. It
+      // still fabricates no date, feed host, administrative flag or address-zone request.
+      const populated = createHarness();
 
-      await populated.invoke(requestFor('getTransactionExistsFlag'));
+      await populated.invoke(servableRequest());
 
-      expect(populated.scopeOpenings[0]?.input).toBeUndefined();
+      expect(populated.scopeOpenings[0]?.input).toEqual({
+        accountID: AUTHENTICATED_ACCOUNT_ID,
+      });
     });
 
     it('opens a FRESH scope per invocation and holds none between them', async () => {
@@ -1568,10 +1680,10 @@ describe('the SKU resolution Lambda entry point', () => {
       // a currency map, a rounding-rule memo, the option-group sort-order memo whose
       // legacy clear at [model/dao/SkuDAO.cfc:L222-L226] can never fire - into another
       // caller's request on a warm container.
-      const populated = createHarness({ transactionExistsFlag: true });
+      const populated = createHarness();
 
-      await populated.invoke(requestFor('getTransactionExistsFlag'));
-      await populated.invoke(requestFor('getTransactionExistsFlag'));
+      await populated.invoke(servableRequest());
+      await populated.invoke(servableRequest());
 
       expect(populated.scopeOpenings).toHaveLength(2);
       expect(populated.bootstrapCount()).toBe(2);
@@ -1588,9 +1700,12 @@ describe('the SKU resolution Lambda entry point', () => {
       // no caching semantics for any of these reads, and choosing a freshness lifetime
       // would invent one - a decision with product consequences for a price-bearing
       // document. It is not a performance setting and nothing here asserts one.
-      const populated = createHarness({ transactionExistsFlag: true });
-
-      const response = await populated.invoke(requestFor('getTransactionExistsFlag'));
+      //
+      // ★ THE HEADER SET IS NOW THE SHARED ONE (finding F13). The values are identical to the
+      // ones this module used to declare for itself; what changed is that they are declared
+      // once, in `../../../src/handlers/errorMapper.js`, for the success and failure halves of
+      // the same contract. The `no-store` reasoning above travelled with them verbatim.
+      const response = await createHarness().invoke(servableRequest());
 
       expect(response.statusCode).toBe(200);
       expect(response.headers).toEqual({
@@ -1599,25 +1714,58 @@ describe('the SKU resolution Lambda entry point', () => {
       });
     });
 
-    it('echoes the gateway correlation identifier, then the invocation one, then a synthetic one', async () => {
-      const populated = createHarness({ transactionExistsFlag: true });
+    it('publishes the SHARED success envelope, with the outcome inside it', async () => {
+      // ★★★ FINDING F13. The envelope used to be `{requestId, outcome}` - this module's own -
+      // and its three siblings each had a different one, two of them with no correlation
+      // identifier at all. The outer document is now `{requestId, capability, action, result}`
+      // for every capability, and the capability payload travels inside `result`. Both key sets
+      // are pinned exactly so an added member fails here rather than widening silently.
+      const response = await createHarness().invoke(servableRequest());
+      const body = successBodyOf(response);
 
-      const fromGateway = await populated.invoke(requestFor('getTransactionExistsFlag'));
-      const fromInvocation = await populated.invoke(
-        apiGatewayEvent({ requestId: '', query: { operation: 'getTransactionExistsFlag' } }),
+      expect(Object.keys(body).sort()).toEqual(['action', 'capability', 'requestId', 'result']);
+      expect(body.capability).toBe('skuResolution');
+      expect(body.action).toBe('resolveSkus');
+      expect(Object.keys(body.result)).toEqual(['outcome']);
+      expect(body.result.outcome.operation).toBe('getSkuBySkuCode');
+    });
+
+    it('★★★ prefers the INVOCATION correlation identifier over the gateway one', async () => {
+      // ★★★ THIS PRECEDENCE IS REVERSED, AND THIS MODULE WAS THE OUTLIER. It used to prefer
+      // `event.requestContext.requestId` on the reasoning that "that is the value a caller sees
+      // and can quote", and it was the only one of the five entrypoints in that order.
+      // Correlation review (finding F8) settled it on a concrete argument rather than on
+      // uniformity: the runtime's `awsRequestId` is the identifier the platform's own
+      // START/END/REPORT lines carry for THIS execution, so an operator joining a response to a
+      // log stream lands on the right invocation even when the gateway retried and produced TWO
+      // executions under ONE gateway identifier - the exact case the old order resolved wrongly.
+      const populated = createHarness();
+
+      const bothPresent = await populated.invoke(servableRequest(), {
+        awsRequestId: INVOCATION_REQUEST_ID,
+      });
+      const gatewayOnly = await populated.invoke(servableRequest());
+      const invocationOnly = await populated.invoke(
+        apiGatewayEvent({
+          requestId: '',
+          query: { operation: 'getSkuBySkuCode', skuCode: SERVABLE_SKU_CODE },
+        }),
         { awsRequestId: INVOCATION_REQUEST_ID },
       );
-      const fromNeither = await populated.invoke(
-        apiGatewayEvent({ requestId: '', query: { operation: 'getTransactionExistsFlag' } }),
+      const neither = await populated.invoke(
+        apiGatewayEvent({
+          requestId: '',
+          query: { operation: 'getSkuBySkuCode', skuCode: SERVABLE_SKU_CODE },
+        }),
       );
 
-      expect(successBodyOf(fromGateway).requestId).toBe(GATEWAY_REQUEST_ID);
-      expect(successBodyOf(fromInvocation).requestId).toBe(INVOCATION_REQUEST_ID);
-
+      expect(successBodyOf(bothPresent).requestId).toBe(INVOCATION_REQUEST_ID);
+      expect(successBodyOf(gatewayOnly).requestId).toBe(GATEWAY_REQUEST_ID);
+      expect(successBodyOf(invocationOnly).requestId).toBe(INVOCATION_REQUEST_ID);
       // A fixed, obviously-synthetic marker is the honest value for "there was nothing to
       // correlate with"; a fabricated random identifier would look real and correlate with
-      // nothing.
-      expect(successBodyOf(fromNeither).requestId).toBe(UNCORRELATED_REQUEST_ID);
+      // nothing. The token moved to the shared resolver with the precedence.
+      expect(successBodyOf(neither).requestId).toBe(UNATTRIBUTED_REQUEST_ID);
     });
 
     it('publishes the collection in the order the service returned it, unmodified', async () => {
@@ -1655,13 +1803,21 @@ describe('the SKU resolution Lambda entry point', () => {
     });
 
     it('publishes an empty collection as an empty array rather than as an absent member', async () => {
-      const populated = createHarness({ skusByProductType: [] });
+      // Moved onto `getProductSkusBySelectedOptions` when `searchSkusByProductType` was withdrawn
+      // (finding F10). The behaviour asserted is unchanged and belongs to whichever collection
+      // operation survives: a NO-MATCH is an empty array, present, and NOT an omitted member.
+      // Omission is reserved for the single-SKU miss, where it means "the service answered
+      // `undefined`"; using it for an empty collection would conflate two different answers.
+      const populated = createHarness({ productSkusBySelectedOptions: [] });
 
       const response = await populated.invoke(
-        requestFor('searchSkusByProductType', { term: 'NO-SUCH-CODE' }),
+        requestFor('getProductSkusBySelectedOptions', {
+          selectedOptions: 'no-such-option',
+          productID: PRODUCT_ID,
+        }),
       );
 
-      const outcome = outcomeFor(response, 'searchSkusByProductType');
+      const outcome = outcomeFor(response, 'getProductSkusBySelectedOptions');
 
       expect(outcome.skus).toEqual([]);
       expect('skus' in outcome).toBe(true);
@@ -1887,29 +2043,13 @@ describe('the SKU resolution Lambda entry point', () => {
       expect(Object.keys(details).sort()).toEqual(['EUR', 'USD']);
     });
 
-    it('publishes the typed page exactly as the service built it', async () => {
-      // `keywordProperties` and `joins` DESCRIBE THE EXECUTED STATEMENT - `skuCode like`
-      // against one table [model/dao/SkuDAO.cfc:L132], and no joins because the
-      // product-type restriction at [L135] is an `IN` SUBQUERY, not a join. That narrowing
-      // belongs to the service tier, which owns and documents it; nothing is added here.
-      const populated = createHarness({
-        skuPage: {
-          skus: [],
-          keyword: 'TESTSKU',
-          keywordProperties: [{ propertyIdentifier: 'skuCode', weight: 1 }],
-          joins: [],
-        },
-      });
-
-      const response = await populated.invoke(requestFor('findSkus', { keyword: 'TESTSKU' }));
-
-      const { page } = outcomeFor(response, 'findSkus');
-
-      expect(page.keyword).toBe('TESTSKU');
-      expect(page.keywordProperties).toEqual([{ propertyIdentifier: 'skuCode', weight: 1 }]);
-      expect(page.joins).toEqual([]);
-      expect(page.skus).toEqual([]);
-    });
+    // ★★ THE TYPED-PAGE CASE WENT WITH `findSkus` (finding F10). It asserted that the page's
+    // `keywordProperties` and `joins` were published exactly as the service built them -
+    // `skuCode like` against one table [model/dao/SkuDAO.cfc:L132] and NO joins, because the
+    // product-type restriction at [L135] is an `IN` SUBQUERY rather than a join. That narrowing
+    // always belonged to the service tier, which owns, documents and covers it; this suite only
+    // ever asserted that nothing was added on the way out. With the operation withdrawn there is
+    // no page to publish, and `SkuPageProjection` was removed from the module's exports with it.
 
     it('emits ONE structured line carrying a count, and no measurement of any kind', async () => {
       const skuA = makeSkuFixture({ andOfExistsMember: 'A' });
@@ -1931,26 +2071,36 @@ describe('the SKU resolution Lambda entry point', () => {
       // ★ THE KEY SET IS ASSERTED EXHAUSTIVELY, which is what rules out a duration, a
       // rate, a size or any other measurement having been added: a count is legible and
       // carries nothing confidential, and nothing in this port asserts a service level.
+      //
+      // ★★ `route` IS NEW AND IS THE FIFTH KEY. Finding F8 found the route absent from this
+      // module's success AND failure lines, so an operator could not group either by endpoint.
+      // It is built from the matched route row's own frozen members - never from
+      // `event.httpMethod`, which the caller controls and which the router matches
+      // case-insensitively - so it is one of a CLOSED set of five labels.
       expect(Object.keys(emission.context ?? {}).sort()).toEqual([
         'capability',
         'operation',
         'requestId',
         'resultCount',
+        'route',
       ]);
       expect(emission.context?.capability).toBe('skuResolution');
       expect(emission.context?.operation).toBe('getProductSkusBySelectedOptions');
       expect(emission.context?.requestId).toBe(GATEWAY_REQUEST_ID);
       expect(emission.context?.resultCount).toBe(2);
+      expect(emission.context?.route).toBe(
+        `${ROUTE_TABLE.skuResolution.methods} ${ROUTE_TABLE.skuResolution.path}`,
+      );
     });
   });
 
   // =========================================================================
   // CONCERN 4 - DOMAIN AND ERROR MAPPING
   //
-  // One mapping point, a closed set of three statuses, and one message published
-  // verbatim. Everything else is withheld from the body AND from the log line, because a
-  // log line is durable and centrally aggregated: publishing detail there rather than in
-  // a body changes who can read it, not whether it leaked.
+  // One mapping point, the closed status set this authenticated route can reach, and one
+  // message published verbatim. Everything else is withheld from the body AND from the log
+  // line, because a log line is durable and centrally aggregated: publishing detail there
+  // rather than in a body changes who can read it, not whether it leaked.
   // =========================================================================
   describe('domain and error mapping', () => {
     it('maps an unrecognised failure to a generic response and leaks nothing', async () => {
@@ -2021,7 +2171,8 @@ describe('the SKU resolution Lambda entry point', () => {
       // [org/Hibachi/HibachiEntity.cfc:L565] and [org/Hibachi/HibachiService.cfc:L280], it
       // is an OBSERVABLE BEHAVIOURAL CONTRACT.
       //
-      // LEGACY-DEFECT [org/Hibachi/HibachiEntity.cfc:L565]: the framework's terminal onMissingMethod throw reads "does not exists", which is grammatically incorrect.
+      // LEGACY-DEFECT [org/Hibachi/HibachiEntity.cfc:L565]: the framework's terminal
+      // `onMissingMethod` throw reads "does not exists", which is grammatically incorrect.
       // Preserved deliberately; do not fix without a product decision.
       //
       // It is server-shaped rather than client-shaped because a dead call target is this
@@ -2086,7 +2237,7 @@ describe('the SKU resolution Lambda entry point', () => {
       // stream, instead of being a container-level fault with no request to attribute.
       const populated = createHarness({}, 'bootstrap');
 
-      const response = await populated.invoke(requestFor('getTransactionExistsFlag'));
+      const response = await populated.invoke(servableRequest());
 
       expect(response.statusCode).toBe(500);
       expect(errorBodyOf(response).category).toBe('unrecognized');
@@ -2100,7 +2251,7 @@ describe('the SKU resolution Lambda entry point', () => {
     it('maps a failure to open the request scope, without reaching any service', async () => {
       const populated = createHarness({}, 'scope');
 
-      const response = await populated.invoke(requestFor('getTransactionExistsFlag'));
+      const response = await populated.invoke(servableRequest());
 
       expect(response.statusCode).toBe(500);
       expect(errorBodyOf(response).category).toBe('unrecognized');
@@ -2124,17 +2275,15 @@ describe('the SKU resolution Lambda entry point', () => {
       expect(response.body).not.toContain('.ts:');
     });
 
-    it('produces only the closed set of statuses, and no header beyond the two declared', async () => {
-      // ★ CLIENT-SHAPED, SERVER-SHAPED, ROUTE-NOT-FOUND, AND SUCCESS. Nothing else.
-      // No 401, 403, 409, 422 or 429 is reachable, because no authentication, permission
-      // check, conflict detection, semantic-validation tier or rate limiter exists here -
-      // and no `retry-after`, rate-limit or circuit-breaker header is ever emitted, which
-      // the exhaustive header assertion below is what actually rules out.
+    it('produces only the closed status set, and no header beyond the two declared', async () => {
+      // ★ CLIENT-SHAPED, UNAUTHENTICATED, SERVER-SHAPED, ROUTE-NOT-FOUND, AND SUCCESS.
+      // No 403, 409, 422 or 429 is reachable because this route has no administrative
+      // operation, conflict tier, semantic-validation tier or rate limiter. No
+      // `retry-after`, rate-limit, challenge or circuit-breaker header is emitted.
       const observed = new Set<number>();
       const populatedResponses: readonly APIGatewayProxyResult[] = [
-        await createHarness({ transactionExistsFlag: true }).invoke(
-          requestFor('getTransactionExistsFlag'),
-        ),
+        await createHarness().invoke(servableRequest()),
+        await createHarness().invoke(apiGatewayEvent({ authorizer: null })),
         await createHarness().invoke(apiGatewayEvent({ path: '/catalog/products' })),
         await createHarness().invoke(apiGatewayEvent({ query: null })),
         await createHarness({ failure: { kind: 'throw', thrown: new Error('boom') } }).invoke(
@@ -2151,7 +2300,7 @@ describe('the SKU resolution Lambda entry point', () => {
         ]);
       }
 
-      expect([...observed].sort((left, right) => left - right)).toEqual([200, 400, 404, 500]);
+      expect([...observed].sort((left, right) => left - right)).toEqual([200, 400, 401, 404, 500]);
     });
   });
 
@@ -2165,22 +2314,40 @@ describe('the SKU resolution Lambda entry point', () => {
   // =========================================================================
   describe('the deliberately non-exposed surface', () => {
     it('names every absent member, and the inventory has neither grown nor shrunk', async () => {
+      // ★★ THREE ENTRIES WERE ADDED, one per WITHDRAWN operation (findings F10 and F18). They are
+      // recorded in the same inventory as the never-published members, because "this route does not
+      // answer for X" is only auditable if X is named - and a caller that used to reach one of them
+      // deserves to find the reason in the shipped artifact rather than in a changelog.
       expect(Object.keys(NON_EXPOSED_SURFACE_NOTES).sort()).toEqual([
         'createSkus',
+        'findSkus',
         'getProductSkus',
         'getSkuStocksDeletableFlag',
         'getSortedProductSkus',
+        'getTransactionExistsFlag',
         'outOfScopeModules',
         'outOfScopeProductProcesses',
         'processImageUpload',
+        'searchSkusByProductType',
         'subscriptionAndContentAccessSkuCreation',
       ]);
 
-      for (const reason of Object.values(NON_EXPOSED_SURFACE_NOTES)) {
-        expect(reason.startsWith('Not exposed.')).toBe(true);
+      // ★ TWO PREFIXES, AND THE DISTINCTION IS DELIBERATE. A member that was NEVER published reads
+      // "Not exposed."; one that WAS published and has been removed reads "WITHDRAWN (finding Fnn)."
+      // Flattening them into one prefix would erase the difference between a boundary and a
+      // correction, which is the thing a reviewer most needs to see.
+      const withdrawn = ['findSkus', 'getTransactionExistsFlag', 'searchSkusByProductType'];
+
+      for (const [member, reason] of Object.entries(NON_EXPOSED_SURFACE_NOTES)) {
+        if (withdrawn.includes(member)) {
+          expect(reason.startsWith('WITHDRAWN (finding F')).toBe(true);
+        } else {
+          expect(reason.startsWith('Not exposed.')).toBe(true);
+        }
       }
 
-      // LEGACY-DEFECT [model/service/SkuService.cfc:L281]: getSkuStocksDeletableFlag delegates at [L282] to a SkuDAO member that does not exist, so the legacy raises on every call.
+      // LEGACY-DEFECT [model/service/SkuService.cfc:L281]: `getSkuStocksDeletableFlag` delegates at
+      // [L282] to a SkuDAO member that does not exist, so the legacy raises on every call.
       // Preserved deliberately; do not fix without a product decision.
       //
       // NO REPLACEMENT QUERY IS AUTHORED ANYWHERE, the seven-member SkuRepository port
@@ -2235,7 +2402,8 @@ describe('the SKU resolution Lambda entry point', () => {
     });
 
     it('publishes no route to the two members that raise by design', async () => {
-      // LEGACY-DEFECT [model/entity/Sku.cfc:L258]: getPriceByPromotion calls calculateSkuPriceBasedOnPromotion, which does not exist, so the legacy raises every time.
+      // LEGACY-DEFECT [model/entity/Sku.cfc:L258]: `getPriceByPromotion` calls
+      // `calculateSkuPriceBasedOnPromotion`, which does not exist, so the legacy raises every time.
       // Preserved deliberately; do not fix without a product decision.
       //
       // Reproduced at the entity as a throwing stub. It is NOT called here, NOT caught
@@ -2253,15 +2421,9 @@ describe('the SKU resolution Lambda entry point', () => {
       }
     });
 
-    it('records that no SKU-creation path exists, so the three bulk obligations do not apply', async () => {
-      // Recorded rather than assumed, because "the requirement did not apply" is only a
-      // defensible answer when the requirement is written down beside the reason. All five
-      // published operations are READS, so replaying any of them writes nothing and the
-      // whole routed surface is idempotent by construction rather than by mechanism.
-      expect(SKU_CREATION_SAFETY_ENVELOPE.exposed).toContain('no');
-      expect(SKU_CREATION_SAFETY_ENVELOPE.idempotency).toContain('not applicable');
-      expect(SKU_CREATION_SAFETY_ENVELOPE.explicitBound).toContain('SkuService');
-      expect(SKU_CREATION_SAFETY_ENVELOPE.compensation).toContain('no partial state');
+    it('records that no SKU-creation path exists on the read-only route', async () => {
+      expect(NON_EXPOSED_SURFACE_NOTES.createSkus).toContain('Not exposed');
+      expect(NON_EXPOSED_SURFACE_NOTES.createSkus).toContain('durable mutation');
 
       // The declared method is the shared table's, and it admits no write.
       expect(ROUTE_TABLE.skuResolution.methods).toBe('GET');
@@ -2274,5 +2436,415 @@ describe('the SKU resolution Lambda entry point', () => {
       expect(response.statusCode).toBe(404);
       expect(isolated.calls).toHaveLength(0);
     });
+  });
+
+  // =========================================================================
+  // CONCERN 6 - THE THREE WITHDRAWN OPERATIONS, AND THE TWO ADMISSION BOUNDS
+  //
+  // ★★★ ASSERTED FROM THE OUTSIDE, WHICH IS THE ONLY DIRECTION THAT PROVES A WITHDRAWAL.
+  // Deleting a `case` arm makes an operation unreachable; it does not prove that a caller
+  // asking for it gets a sensible answer, that nothing was constructed on the way to the
+  // refusal, or that the reason is discoverable in the shipped artifact. Each case below
+  // asserts one of those.
+  // =========================================================================
+  describe('the withdrawn operations and the admission bounds', () => {
+    const WITHDRAWN: readonly (readonly [string, Readonly<Record<string, string>>])[] = [
+      ['getTransactionExistsFlag', {}],
+      ['searchSkusByProductType', { term: 'TESTSKU' }],
+      ['findSkus', { keyword: 'TESTSKU' }],
+    ];
+
+    it.each(WITHDRAWN)(
+      'refuses the withdrawn operation %s as unrecognized',
+      async (operation, parameters) => {
+        const isolated = createHarness();
+
+        const response = await isolated.invoke(
+          apiGatewayEvent({ query: { operation, ...parameters } }),
+        );
+
+        // The SAME rejection a nonsense operation earns, with the field path `operation`. A distinct
+        // "withdrawn" outcome would advertise that the action once existed and invite a caller to wait
+        // for it to come back.
+        expect(response.statusCode).toBe(400);
+        expect(fieldPathsOf(response)).toContain('operation');
+        // Nothing was constructed, and no service member was reached - the three tripwire overrides on
+        // the recording service would have rejected loudly if one had been.
+        expect(isolated.calls).toHaveLength(0);
+        expect(isolated.scopeOpenings).toHaveLength(0);
+        expect(isolated.bootstrapCount()).toBe(0);
+      },
+    );
+
+    it.each(WITHDRAWN)(
+      'publishes the reason %s is absent, in the shipped artifact',
+      (operation) => {
+        const reason = NON_EXPOSED_SURFACE_NOTES[operation];
+
+        if (reason === undefined) {
+          throw new Error(`no non-exposure note is published for ${operation}`);
+        }
+
+        // `tsconfig.build.json` sets `removeComments: false` and this constant is exported, so the
+        // reason travels with the artifact rather than living only in a review comment.
+        expect(reason.startsWith('WITHDRAWN (finding F')).toBe(true);
+        expect(reason.length).toBeGreaterThan(80);
+      },
+    );
+
+    it('★★★ proves the F18 route was unservable, against the REAL service and repository', async () => {
+      // ★★★ NO DOUBLE ANSWERS HERE, AND THAT IS THE ENTIRE POINT. The suite's own scripted
+      // `SkuService` was named by review as the reason finding F18 went unnoticed: it returned a
+      // configured boolean, so the route looked serviceable. This case builds the REAL `SkuService`
+      // over the REAL `MysqlSkuRepository` and drives the same call.
+      //
+      // The statement executor is a counting stand-in for the database and nothing else - the
+      // assertion is that it is NEVER REACHED, because the repository refuses before it would issue a
+      // statement. So this needs no connection, no schema and no credential, and it still exercises
+      // the production code path end to end.
+      let statementsIssued = 0;
+      const refuseStatement = (): never => {
+        statementsIssued += 1;
+
+        throw new Error('a statement was issued, and this case asserts none is');
+      };
+      const countingExecutor: PreparedStatementExecutor = {
+        execute: (): Promise<readonly SqlRow[]> => Promise.resolve(refuseStatement()),
+        executeMutation: (): Promise<SqlMutationResult> => Promise.resolve(refuseStatement()),
+        transaction: <T>(): Promise<T> => Promise.resolve(refuseStatement()),
+      };
+
+      // `adminAccountFlag` is REQUIRED by the audit-actor contract rather than defaulted, precisely so
+      // a construction site cannot omit it; `false` is the honest value for a suite with no account.
+      const realRepository = new MysqlSkuRepository(countingExecutor, { adminAccountFlag: false });
+      const realService = new SkuService(
+        realRepository,
+        unreachableImageStore,
+        unreachableSubscriptionTermProvider,
+      );
+
+      await expect(realService.getTransactionExistsFlag()).rejects.toThrow(/productID/);
+      // CFML parity [model/dao/SkuDAO.cfc:L59-L63]: the legacy takes its `<cfelse>` arm and executes
+      // with an UNDEFINED `arguments.productID`, so it cannot serve this call either. The refusal is
+      // PARITY, not a divergence - which is why the fix was to withdraw the route rather than to
+      // change the service.
+      expect(statementsIssued).toBe(0);
+    });
+
+    it('★★★ REFUSES a selectedOptions list past the 64-element HTTP ceiling', async () => {
+      // ★★★ THE OLD PROTOCOL-ONLY CLAIM IS NO LONGER SUFFICIENT. Security finding V-06a
+      // established a narrower boundary limit because every option expands the downstream
+      // statement. The handler therefore refuses 65 rather than relying only on the much
+      // larger representation bound.
+      const overWide = Array.from({ length: 65 }, (unused, index) => String(index)).join(',');
+      const isolated = createHarness();
+
+      const response = await isolated.invoke(
+        requestFor('getProductSkusBySelectedOptions', {
+          selectedOptions: overWide,
+          productID: PRODUCT_ID,
+        }),
+      );
+
+      // A client-shaped 400 names the member and refuses before opening a request graph.
+      expect(response.statusCode).toBe(400);
+      expect(errorBodyOf(response).category).toBe('invalidRequest');
+      expect(fieldPathsOf(response)).toContain('selectedOptions');
+      expect(isolated.calls).toHaveLength(0);
+      expect(isolated.scopeOpenings).toHaveLength(0);
+    });
+
+    it('admits a selectedOptions list AT the bound and forwards it byte for byte', async () => {
+      const atBound = Array.from({ length: 64 }, (unused, index) => String(index)).join(',');
+      const populated = createHarness({ productSkusBySelectedOptions: [] });
+
+      const response = await populated.invoke(
+        requestFor('getProductSkusBySelectedOptions', {
+          selectedOptions: atBound,
+          productID: PRODUCT_ID,
+        }),
+      );
+
+      expect(response.statusCode).toBe(200);
+      // ★★ FORWARDED UNCHANGED, WHICH IS THE HALF OF F17 THAT IS EASY TO BREAK WHILE FIXING THE OTHER
+      // HALF. The bound COUNTS the list; it does not trim, sort, de-duplicate, case-fold, reorder or
+      // shorten it, and the string the service receives is the string the caller sent.
+      expect(populated.calls[0]?.args).toEqual([atBound, PRODUCT_ID]);
+    });
+
+    it('REINSTATES the reviewed 64-element cap at the HTTP boundary', async () => {
+      // ★ INVERTED DEFECT-PINNING ASSERTION. The old case claimed that the handler must
+      // "NOT reinstate the 64-element policy cap" and admitted 200 values. Security finding
+      // V-06a superseded that claim: the route now refuses the expansion before any request
+      // graph or service is reached, while the lower fidelity layers remain total.
+      const wide = Array.from(
+        { length: 200 },
+        (unused, index) => ` opt-${String(index % 7)} `,
+      ).join(',');
+      const populated = createHarness({ productSkusBySelectedOptions: [] });
+
+      const response = await populated.invoke(
+        requestFor('getProductSkusBySelectedOptions', {
+          selectedOptions: wide,
+          productID: PRODUCT_ID,
+        }),
+      );
+
+      expect(response.statusCode).toBe(400);
+      expect(fieldPathsOf(response)).toContain('selectedOptions');
+      expect(populated.scopeOpenings).toHaveLength(0);
+      expect(populated.calls).toHaveLength(0);
+    });
+
+    it('★★★ emits its diagnostic keys LEGIBLY through the REAL process logger', async () => {
+      // ★★★ FINDING F7, AND IT CAN ONLY BE PROVEN THROUGH THE PRODUCTION LOGGER. The suite's
+      // recording logger captures the context object as given, so it cannot see the real logger's
+      // key-based redaction policy - under which `capability` and `operation` were being REDACTED,
+      // leaving an operator a line with a correlation identifier and nothing else. This case drives
+      // the handler through `../../../src/lib/logger.js` itself, with stdout captured, and asserts the
+      // serialized line is legible.
+      //
+      // `route` and `resultCount` are asserted with them, because a policy change that admitted two
+      // of the four and not the others would be a half-fix.
+      const written: string[] = [];
+      const restore = vi.spyOn(process.stdout, 'write').mockImplementation((chunk): boolean => {
+        written.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+
+        return true;
+      });
+
+      try {
+        const productionLogged = createHarness({}, undefined, productionLogger);
+
+        await productionLogged.invoke(servableRequest(), {
+          awsRequestId: INVOCATION_REQUEST_ID,
+        });
+      } finally {
+        restore.mockRestore();
+      }
+
+      const line = written.join('');
+
+      expect(line).toContain('sku resolution operation completed');
+      expect(line).toContain('"capability":"skuResolution"');
+      expect(line).toContain('"operation":"getSkuBySkuCode"');
+      expect(line).toContain(
+        `"route":"${ROUTE_TABLE.skuResolution.methods} ${ROUTE_TABLE.skuResolution.path}"`,
+      );
+      expect(line).toContain('"resultCount":0');
+      // And the correlation identifier, which was the ONLY legible member before the policy change.
+      expect(line).toContain(INVOCATION_REQUEST_ID);
+      // Nothing was redacted on this line.
+      expect(line).not.toContain('[REDACTED]');
+    });
+  });
+});
+
+// ===========================================================================
+// CONCERN 7 - THE AUTHENTICATED BOUNDARY AND THE OPTION-LIST CEILING
+//
+// These controls are net-new at the HTTP boundary. The lower service and SQL
+// fidelity tiers remain total; this suite proves the route rejects unidentified
+// callers and unbounded query expansion before constructing either tier.
+// ===========================================================================
+
+describe('the admission gate (NET-NEW)', () => {
+  it('refuses a request carrying no authorizer context', async () => {
+    const populated = createHarness({ skuBySkuCode: undefined });
+
+    const response = await populated.invoke(
+      apiGatewayEvent({
+        authorizer: null,
+        query: { operation: 'getSkuBySkuCode', skuCode: SERVABLE_SKU_CODE },
+      }),
+    );
+
+    expect(response.statusCode).toBe(401);
+    expect(errorBodyOf(response).category).toBe('unauthenticated');
+    expect(populated.bootstrapCount()).toBe(0);
+    expect(populated.scopeOpenings).toHaveLength(0);
+    expect(populated.calls).toHaveLength(0);
+  });
+
+  it('refuses every context that names no usable account', async () => {
+    for (const authorizer of [
+      {},
+      { unrelated: 'x' },
+      { accountID: '' },
+      { accountID: '  ' },
+      { accountID: 42 },
+    ]) {
+      const populated = createHarness({ skuBySkuCode: undefined });
+
+      const response = await populated.invoke(
+        apiGatewayEvent({
+          authorizer,
+          query: { operation: 'getSkuBySkuCode', skuCode: SERVABLE_SKU_CODE },
+        }),
+      );
+
+      expect(response.statusCode).toBe(401);
+      expect(populated.bootstrapCount()).toBe(0);
+      expect(populated.scopeOpenings).toHaveLength(0);
+      expect(populated.calls).toHaveLength(0);
+    }
+  });
+
+  it('refuses before the query document is validated', async () => {
+    const populated = createHarness();
+
+    const response = await populated.invoke(
+      apiGatewayEvent({ authorizer: null, query: { operation: 'nonsense' } }),
+    );
+
+    expect(response.statusCode).toBe(401);
+    expect(populated.bootstrapCount()).toBe(0);
+  });
+
+  it('still resolves the route first, so a wrong path is a 404 rather than a 401', async () => {
+    const response = await createHarness().invoke(
+      apiGatewayEvent({ authorizer: null, path: '/catalog/products' }),
+    );
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('publishes no claim name, internal reason or field detail in the refusal', async () => {
+    const response = await createHarness().invoke(apiGatewayEvent({ authorizer: null }));
+
+    expect(response.body).not.toContain('accountID');
+    expect(response.body).not.toContain('noAuthorizerContext');
+    expect(response.body).not.toContain('authoriz');
+    expect(errorBodyOf(response)).not.toHaveProperty('fields');
+  });
+
+  it('emits no authentication challenge because this route declares no challenge scheme', async () => {
+    const response = await createHarness().invoke(apiGatewayEvent({ authorizer: null }));
+
+    expect(Object.keys(response.headers ?? {}).map((name) => name.toLowerCase())).toEqual([
+      'content-type',
+      'cache-control',
+    ]);
+  });
+
+  it('serves an identified caller past the gate', async () => {
+    const populated = createHarness({ skuBySkuCode: undefined });
+
+    const response = await populated.invoke(servableRequest());
+
+    expect(response.statusCode).toBe(200);
+    expect(populated.calls).toHaveLength(1);
+    expect(populated.scopeOpenings[0]?.input).toEqual({
+      accountID: AUTHENTICATED_ACCOUNT_ID,
+    });
+  });
+});
+
+describe('the selectedOptions element ceiling (NET-NEW)', () => {
+  /** A comma-delimited list of `count` distinct option identifiers. */
+  function optionList(count: number): string {
+    return Array.from({ length: count }, (_unused, index) => `option-${String(index)}`).join(',');
+  }
+
+  it('admits a list at the ceiling and forwards the submitted string byte for byte', async () => {
+    const populated = createHarness({ productSkusBySelectedOptions: [] });
+    const submitted = optionList(64);
+
+    const response = await populated.invoke(
+      requestFor('getProductSkusBySelectedOptions', {
+        selectedOptions: submitted,
+        productID: PRODUCT_ID,
+      }),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(populated.calls).toHaveLength(1);
+    expect(populated.calls[0]?.args).toEqual([submitted, PRODUCT_ID]);
+  });
+
+  it('REFUSES a list past the ceiling and never truncates it', async () => {
+    const populated = createHarness({ productSkusBySelectedOptions: [] });
+
+    const response = await populated.invoke(
+      requestFor('getProductSkusBySelectedOptions', {
+        selectedOptions: optionList(65),
+        productID: PRODUCT_ID,
+      }),
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(fieldPathsOf(response)).toContain('selectedOptions');
+    expect(populated.calls).toHaveLength(0);
+    expect(populated.scopeOpenings).toHaveLength(0);
+  });
+
+  it('refuses the hundreds-of-elements magnitude measured by the review', async () => {
+    const populated = createHarness({ productSkusBySelectedOptions: [] });
+
+    for (const count of [500, 1000]) {
+      const response = await populated.invoke(
+        requestFor('getProductSkusBySelectedOptions', {
+          selectedOptions: optionList(count),
+          productID: PRODUCT_ID,
+        }),
+      );
+
+      expect(response.statusCode).toBe(400);
+    }
+
+    expect(populated.calls).toHaveLength(0);
+  });
+
+  it('names the bound and never echoes the submitted list', async () => {
+    const populated = createHarness({ productSkusBySelectedOptions: [] });
+    const submitted = optionList(70);
+
+    const response = await populated.invoke(
+      requestFor('getProductSkusBySelectedOptions', {
+        selectedOptions: submitted,
+        productID: PRODUCT_ID,
+      }),
+    );
+
+    expect(response.body).toContain('must not name more than 64 options');
+    expect(response.body).not.toContain('option-69');
+  });
+
+  it('counts elements with legacy listLen semantics, dropping empty positions', async () => {
+    const populated = createHarness({ productSkusBySelectedOptions: [] });
+    const submitted = `${optionList(64)}${',,,,,,,,,,'.repeat(4)}`;
+
+    const response = await populated.invoke(
+      requestFor('getProductSkusBySelectedOptions', {
+        selectedOptions: submitted,
+        productID: PRODUCT_ID,
+      }),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(populated.calls[0]?.args).toEqual([submitted, PRODUCT_ID]);
+  });
+
+  it('leaves empty and untidy values total while forwarding both verbatim', async () => {
+    const populated = createHarness({ productSkusBySelectedOptions: [] });
+    const untidy = ' Option-2 ,option-1,OPTION-1,';
+
+    const empty = await populated.invoke(
+      requestFor('getProductSkusBySelectedOptions', {
+        selectedOptions: '',
+        productID: PRODUCT_ID,
+      }),
+    );
+    const forwarded = await populated.invoke(
+      requestFor('getProductSkusBySelectedOptions', {
+        selectedOptions: untidy,
+        productID: PRODUCT_ID,
+      }),
+    );
+
+    expect(empty.statusCode).toBe(200);
+    expect(populated.calls[0]?.args).toEqual(['', PRODUCT_ID]);
+    expect(forwarded.statusCode).toBe(200);
+    expect(populated.calls[1]?.args).toEqual([untidy, PRODUCT_ID]);
   });
 });

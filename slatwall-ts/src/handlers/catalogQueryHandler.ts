@@ -1,119 +1,78 @@
 // ---------------------------------------------------------------------------
-// slatwall-ts - the catalog-query Lambda entrypoint
+// The catalog-query Lambda entrypoint.
 //
-// BUNDLE ENTRY POINT. This module exports a Lambda `handler` and is one of the five
-// per-capability artifacts `esbuild.config.mjs` emits; `./bootstrap.js`, `./router.js` and
-// `./errorMapper.js` are SHARED INTERNALS of this folder and export no handler. Nothing imports
-// from this file: `src/handlers/` is the inversion point, it imports its siblings, and a back-edge
-// into it would create an import cycle across every entry point.
+// A THIN PRIMARY ADAPTER over three already-ported service methods. It parses the API Gateway
+// event, lets `./router.js` decide whether the request belongs to this capability, resolves which
+// ONE method the request names, opens exactly one per-request scope from `./bootstrap.js`, invokes
+// that method, projects the result onto JSON, and funnels every thrown value through
+// `./errorMapper.js`.
 //
-// WHAT IT IS: a THIN PRIMARY ADAPTER. Parse the API Gateway event, let `./router.js` decide whether
-// the request belongs to this capability, resolve which ONE ported service method the request names,
-// open exactly one per-request scope from `./bootstrap.js`, invoke that one method, project the
-// result onto JSON, and funnel every thrown value through `./errorMapper.js`.
+// One route, `queryCatalog`, and exactly three operations. Method names are carried over verbatim in
+// CFML camelCase because method-level interface parity is this migration's acceptance contract:
 //
-// WHAT IT IS NOT: it makes NO business decision. There is no price or discount arithmetic here, no
-// `Money` value reaches this file at all, no SQL is authored, no entity is constructed, no setting
-// is resolved, no option combination is built and no URL title is generated. Every one of those
-// lives in `src/services/**` or below, and the ported services are the acceptance surface this file
-// merely carries traffic to. It constructs no service, no repository, no port and no connection
-// pool either - `./bootstrap.js` is the only composition root in this subtree.
-//
-// PROVENANCE: CREATED FROM SCRATCH. AAP 0.4.1's handler table records this row's source file as "-"
-// and its change as "Net-new entrypoint exposing existing `ProductService`/`BrandService`/
-// `OptionService` methods", so what follows is idiomatic TypeScript: the minimal-change directive
-// scopes the FUNCTIONAL SURFACE, never the code style. Its test coverage is likewise NET-NEW and
-// must be reported as such and never as parity - `meta/tests/` contains nothing for the handler
-// tier, and the only three legacy test files touching the in-scope slice are
-// [meta/tests/unit/entity/BrandTest.cfc], [meta/tests/unit/entity/ProductTest.cfc] and the EMPTY
-// [meta/tests/functional/admin/entity/ProductTest.cfc]. The assertions live in
-// `tests/unit/handlers/catalogQueryHandler.test.ts`, which this file does not author; the exported
-// factory below is what lets that suite inject its own composition root and logger with no
-// module-level patching.
-//
-// NO USER RULES EXIST FOR THIS PROJECT. `review_rules` returns the single line
-// "No user rules provided.", so no rule is cited anywhere in this file and none is invented. Every
-// constraint below is attributed to the Agent Action Plan, to a cited legacy locator, or to an
-// explicit `// JUDGMENT CALL:` - and the absence of rules is not treated as licence to lower the
-// bar.
-//
-// ---------------------------------------------------------------------------
-// THE PUBLISHED SURFACE, AND WHY IT IS EXACTLY THREE OPERATIONS
-//
-// Method names are carried over VERBATIM in CFML camelCase, because method-level interface parity is
-// this migration's acceptance contract: a reviewer diffs `operation=findProducts` against
-// `src/services/productService.ts` and against the legacy component directly. The three published
-// operations are:
-//
-//   findProducts                  -> ProductService.findProducts            [ProductService.cfc:L342]
-//   getUnusedProductOptions       -> OptionService.getUnusedProductOptions  [OptionService.cfc:L72]
-//   getUnusedProductOptionGroups  -> OptionService.getUnusedProductOptionGroups [OptionService.cfc:L76]
+//   findProducts                  -> ProductService.findProducts
+//                                    [model/service/ProductService.cfc:L342]
+//   getUnusedProductOptions       -> OptionService.getUnusedProductOptions
+//                                    [model/service/OptionService.cfc:L72]
+//   getUnusedProductOptionGroups  -> OptionService.getUnusedProductOptionGroups
+//                                    [model/service/OptionService.cfc:L76]
 //
 // `findProducts` is the already-allocated replacement for `getProductSmartList`
-// [model/service/ProductService.cfc:L342-L358]. That rename is ONE OF THE THREE PERMITTED SIGNATURE
-// RESHAPINGS AND IT WAS ALLOCATED TO THE SERVICES TIER (AAP 0.6.2). This file CONSUMES it and
-// consumes no ledger slot of its own: it neither re-derives nor extends it. In particular the
-// framework's generic, string-keyed, dynamically-filtered smart list is NOT reopened here - there is
-// no `filter[field]=value` passthrough, no free-form ordering key, no relevance-weighting knob and
-// no property projection parameter. What a caller may send is the CLOSED, TYPED criteria shape
-// `ProductQueryCriteria` publishes, and anything else is refused rather than ignored.
+// [model/service/ProductService.cfc:L342-L358]; that rename belongs to the services tier and is
+// consumed here. The framework's generic, string-keyed, dynamically-filtered smart list is NOT
+// reopened: what a caller may send is the closed, typed `ProductQueryCriteria` shape, and anything
+// else is refused rather than ignored.
 //
-// ★★ EVERY OTHER MEMBER OF THE THREE SERVICES IS A DELIBERATE NON-EXPOSURE, AND THE REASONS ARE
-// DIFFERENT IN KIND. Nothing below is re-implemented, worked around or partially provided.
+// NO BUSINESS LOGIC LIVES HERE. No price or discount arithmetic, no `Money` value, no SQL, no entity
+// construction, no setting resolution, no option-combination building and no URL-title generation.
+// It constructs no service, no repository, no port and no connection pool either - `./bootstrap.js`
+// is the only composition root in this subtree.
 //
-// (1) OUT OF SCOPE BY AAP 0.9.5 - "The out-of-scope methods inside in-scope files are not ported."
-//     The service tier keeps a thin pass-through to a stub port for each so a reviewer can diff the
-//     surface, and this ROUTED entrypoint publishes none of them:
-//       processProduct_addProductReview      [model/service/ProductService.cfc:L157]
-//       processProduct_addSubscriptionTerm   [model/service/ProductService.cfc:L173]
-//       processProduct_uploadDefaultImage    [model/service/ProductService.cfc:L235]
-//       the subscription and content-access SKU branches [model/service/SkuService.cfc:L139-L202],
-//         whose `contentAccess` arm has NO PORT AT ALL and for which none is invented here
-//     `loadDataFromFile` [model/service/ProductService.cfc:L65-L68] is out of scope AND
-//     STRUCTURALLY UNROUTABLE, which is worth stating separately because the reason is a platform
-//     fact rather than a scope decision. Its legacy body opens by raising the CFML request timeout
-//     to 3600 seconds - `getHibachiTagService().cfSetting(requesttimeout="3600")` at
-//     [model/service/ProductService.cfc:L66]. AWS Lambda's maximum invocation duration is 15
-//     minutes and API Gateway's integration timeout is 29 seconds. Both are PUBLISHED PLATFORM
-//     LIMITS - facts about the runtime, not service levels, not targets, and not a claim about how
-//     long any import takes - and an hour-long bulk import cannot be placed behind either. It is
-//     therefore not published, and NO substitute is invented for it: no job queue, no state
-//     machine, no queue hop, no chunked-upload protocol and no orchestration of any kind, because
-//     the source had none.
+// SCOPE EXCLUSIONS, so that "this handler does not publish X" is auditable rather than inferred:
 //
-// (2) OWNED BY A DIFFERENT CAPABILITY. `getProductSkusBySelectedOptions`
-//     [model/service/ProductService.cfc:L104] is the AAP's `skuResolutionHandler` surface, and its
-//     AND-of-EXISTS matching semantics [model/dao/SkuDAO.cfc:L107-L128] are must-preserve behaviour
-//     that belongs to that entrypoint. Publishing it here as well would give one URL surface two
-//     owners; `./router.js` enforces the split by capability and this file respects it.
+//   * Out of scope by AAP 0.9.5 - `processProduct_addProductReview`
+//     [model/service/ProductService.cfc:L157], `processProduct_addSubscriptionTerm` [:L173],
+//     `processProduct_uploadDefaultImage` [:L235], the subscription and content-access SKU branches
+//     [model/service/SkuService.cfc:L139-L202], and `loadDataFromFile` [:L65-L68], whose legacy body
+//     opens by raising the CFML request timeout to 3600 seconds - a budget no Lambda invocation has,
+//     since the runtime's maximum invocation duration is 15 minutes. No job queue, state machine or
+//     chunked-upload protocol is invented in its place, because the source had none.
+//   * Owned by another capability - `getProductSkusBySelectedOptions`
+//     [model/service/ProductService.cfc:L104] and its AND-of-EXISTS matching
+//     [model/dao/SkuDAO.cfc:L107-L128] belong to `./skuResolutionHandler.js`.
+//   * Unreachable at this tier - `RequestScope` publishes no entity and no entity loader, so every
+//     service member whose first parameter is an entity has no admissible argument here:
+//     `getFormattedOptionGroups` [model/service/ProductService.cfc:L70],
+//     `processProduct_addOptionGroup` [:L113], `processProduct_addOption` [:L128],
+//     `processProduct_deleteDefaultImage` [:L198], `processProduct_updateDefaultImageFileNames`
+//     [:L208], `processProduct_updateSkus` [:L216], `saveProduct` [:L264], `saveProductType`
+//     [:L294], `deleteProduct` [:L317], `getOptionsForSelect`
+//     [model/service/OptionService.cfc:L55] and `saveBrand` [model/service/BrandService.cfc:L67].
+//     Constructing an entity is not a transport concern; the repository owns hydration.
+//   * Not this service's to publish - nothing from `OrderService`, checkout, cart, payment,
+//     shipping, fulfillment, account, subscription, vendor or tax; nothing from the Taffy REST layer
+//     under `frontend/api/`; no Mura CMS bridge; no integration adapter; and nothing from
+//     `org/Hibachi/**`, which is a boundary to extract from and never to modify.
 //
-// (3) ★ NOT REACHABLE FROM THIS TIER, BECAUSE THE COMPOSITION ROOT PUBLISHES NO ENTITY AND NO
-//     ENTITY LOADER - and that is a deliberate property of `./bootstrap.js` rather than a gap to
-//     route around. `RequestScope` used to publish the six MySQL repositories and no longer does:
-//     the retired declarations and the reasoning are recorded on that interface, and withdrawing
-//     them closed seven durable-mutation bypasses in which a row could be written WITHOUT the
-//     service that owns its invariants. The consequence for this file is exact: it can obtain no
-//     `Product`, no `Brand` and no `Option` instance, so every service member whose first parameter
-//     is an entity has no admissible argument here.
+// `saveBrand` is why this capability publishes no brand operation at all rather than merely no brand
+// write: it is the only method the legacy component declares
+// [model/service/BrandService.cfc:L49-L89], every brand read having arrived by inheritance from the
+// framework base, which is deliberately not ported. There is no brand query method in existence to
+// expose.
 //
-//     Constructing one is forbidden - entity construction is not a transport concern and the
-//     repository owns hydration, port injection and association materialization. Reaching
-//     `CompositionRoot.createInspectableRequestScope` is likewise refused: it is an
-//     assembly-inspection seam for suites that need the concrete adapter, and using it in a
-//     production path would reinstate exactly the bypass its sibling withdrawal closed. So the
-//     following are NOT published, and the reason is structural rather than discretionary:
-//       getFormattedOptionGroups              [model/service/ProductService.cfc:L70]
-//       processProduct_addOptionGroup         [model/service/ProductService.cfc:L113]
-//       processProduct_addOption              [model/service/ProductService.cfc:L128]
-//       processProduct_deleteDefaultImage     [model/service/ProductService.cfc:L198]
-//       processProduct_updateDefaultImageFileNames [model/service/ProductService.cfc:L208]
-//       processProduct_updateSkus             [model/service/ProductService.cfc:L216]
-//       saveProduct                           [model/service/ProductService.cfc:L264]
-//       saveProductType                       [model/service/ProductService.cfc:L294]
-//       deleteProduct                         [model/service/ProductService.cfc:L317]
-//       getOptionsForSelect                   [model/service/OptionService.cfc:L55]
-//       saveBrand                             [model/service/BrandService.cfc:L67]
+// WHAT REACHES A RESPONSE BODY. An entity is never serialized: the ported entities hold injected
+// collaborators, so handing one to `JSON.stringify` would walk from a product into a repository.
+// Every response is an explicit projection over published accessors, and the product projection
+// publishes exactly the two columns the executed statement selects, `productID` and `productName`
+// [model/dao/ProductDAO.cfc:L421]. Absence survives as absence - an absent value is represented by
+// the member being OMITTED, never by `0`, `''` or `null`, the same discipline that keeps
+// `getPriceByCurrencyCode` [model/entity/Sku.cfc:L269-L273] from silently selling products for free.
 //
+// `./errorMapper.js` owns the closed failure vocabulary. This authenticated route reaches 400 for
+// unusable input, 401 for an unidentified caller, 404 for an unmatched route and 500 for a
+// server-shaped failure. It has no administrative operation and therefore emits no 403; it also
+// invents no conflict, semantic-validation or request-quota status and no retry-after, rate-limit,
+// challenge or circuit-breaker header.
 //     `saveBrand` deserves its own sentence, because it explains why this capability publishes NO
 //     brand operation whatsoever rather than merely no brand WRITE. It is THE ONLY METHOD THE
 //     LEGACY COMPONENT DECLARES [model/service/BrandService.cfc:L49-L89] - every brand read a
@@ -128,91 +87,27 @@
 //     extract FROM and never to modify.
 //
 // ---------------------------------------------------------------------------
-// THE EXECUTION-MODEL MISMATCH THIS ENTRYPOINT ABSORBS (AAP 0.6.5)
+// REQUEST-SHAPE SAFETY FOR THIS READ-ONLY ENTRYPOINT
 //
-// The legacy bulk paths ran under an ambient `cftransaction` and an hour-long request budget.
-// NEITHER EXISTS HERE, and the AAP therefore requires a bulk mutation path to carry three things.
-// All three are implemented below as UNCONDITIONAL properties of every request this file serves -
-// not as a branch that a future mutating operation would have to remember to opt into. Each is a
-// CORRECTNESS mechanism, and none of them is a throughput, capacity, latency or availability claim.
+// The grammar admits exactly one operation per invocation. `findProducts` additionally requires a
+// bounded page size, and every caller-expanded comma list is refused before wiring if the complete
+// prepared statement would exceed MySQL's protocol placeholder ceiling. Each refusal is whole:
+// nothing is silently truncated, reordered or deduplicated.
 //
-//   1. AN EXPLICIT BOUND ON THE WORK ONE INVOCATION MAY REQUEST. `MAXIMUM_OPERATIONS_PER_INVOCATION`
-//      is 1: the grammar admits ONE operation per invocation, a request naming more is REFUSED
-//      through `./errorMapper.js` rather than silently truncated to the first, and there is no
-//      request key by which a caller can raise a bound the deployment owns. That second half
-//      matters most: the SKU-repricing bound lives on `ProductService`'s constructor
-//      (`maximumSkuUpdateBatchSize`) and the SKU-creation bound on `SkuService`'s, both supplied by
-//      the composition root, and this file forwards no parameter that could enlarge either. When a
-//      service-tier bound refuses, the refusal is mapped and logged rather than swallowed.
-//
-//   2. IDEMPOTENCY ON RETRY. A caller-supplied idempotency key is honoured, so a retried invocation
-//      returns the recorded outcome instead of repeating the work. Retries are a PLATFORM FACT of
-//      the runtime, not a performance concern. What the mechanism does and does not guarantee is
-//      stated exactly on `IdempotencyLedger` below; in particular it is container-local, and no
-//      durable store is invented for it.
-//
-//   3. A DOCUMENTED COMPENSATION STORY, which is this paragraph. No transaction wraps a ported bulk
-//      loop, so a partial failure is reachable and its consequences are written down rather than
-//      discovered. `processProduct_updateSkus` [model/service/ProductService.cfc:L216-L233] issues
-//      ONE unit of work per SKU, so an interrupted call leaves the SKUs already written written and
-//      the remainder untouched; the product row itself is not written by that method, so no
-//      half-updated parent exists. Reconciliation is REPLAY: both price branches ASSIGN an absolute
-//      value rather than applying a delta, so re-invoking with the same payload converges on the
-//      same end state however many times it runs, and the service checks its batch bound BEFORE the
-//      first mutation so a refused call leaves nothing behind at all. The SKU-creation path reached
-//      through `processProduct_addOptionGroup` / `processProduct_addOption` is the harder case: it
-//      INSERTS, so replay after a partial failure is not self-correcting, and reconciliation there
-//      is an operator comparing the product's SKU set against its option groups. The idempotency
-//      key is what keeps an unintended retry from compounding that; a deliberate re-run is a new
-//      key. None of the three is published today - see non-exposure (3) above - and the mechanisms
-//      are in place unconditionally so that publishing one cannot omit them.
-//
-// WHY THE CREATION PATH IS THE HARDER CASE, RECORDED WITH ITS LOCATOR. `createSkus`
-// [model/service/SkuService.cfc:L109-L121] walks an odometer over the FULL CARTESIAN PRODUCT of a
-// product's option groups - `totalCombos` is the product of every group's size and is therefore
-// UNBOUNDED BY CONSTRUCTION - and it is reachable from both `processProduct_addOptionGroup`
-// [model/service/ProductService.cfc:L113] and `processProduct_addOption`
-// [model/service/ProductService.cfc:L128]. Under the legacy execution model that was slow; here it
-// is a correctness problem, which is why the bound in (1) is a refusal and not a truncation.
+// All three published operations are reads. Re-running one writes nothing, so no response replay
+// ledger, mutation idempotency mechanism or compensation protocol belongs in this adapter. The
+// mutating Product/SKU service methods remain outside the routed surface.
 //
 // LEGACY-DEFECT [model/service/ProductService.cfc:L220]: the repricing loop declares its counter as
 // `for(i=1; i <= arrayLen(skus); i++)` with no `var`, so it leaks into the component variables scope.
 // Preserved deliberately; do not fix without a product decision.
-// Recorded here because this entrypoint is the tier that absorbs the execution-model consequences of
-// that loop. The leak itself belongs to `src/services/productService.ts`, where block scoping already
-// makes it unreproducible, and nothing in this file attempts to repair it.
 //
-// NO THREADS ARE INTRODUCED. The `cfthread`-to-`worker_threads` translation rule is recorded in the
-// plan and is UNEXERCISED: a sweep of the in-scope slice finds zero `cfthread` usages, so there is
-// nothing to translate and this file spawns nothing.
+// The leak belongs to `src/services/productService.ts`, where block scoping already makes it
+// unreproducible, and nothing in this file attempts to repair it.
 //
-// THE LEGACY RUNTIME'S THREE LOCK TIMEOUTS - 60 seconds on order placement, 45 on a payment
-// transaction, 30 on the DI/1 first-scan - ARE NOTED AND DELIBERATELY NOT IMPLEMENTED, per the
-// plan. Two of the three guard out-of-scope code paths and the third disappeared with DI/1 itself.
-//
-// ---------------------------------------------------------------------------
-// WHAT REACHES A RESPONSE BODY
-//
-// AN ENTITY IS NEVER SERIALIZED. The ported entities are classes whose fields are TypeScript-private
-// only - enumerable at run time - and they hold injected collaborators, so handing one to
-// `JSON.stringify` would walk from a product into a repository. Every response is built from an
-// EXPLICIT PROJECTION over published accessors, and the product projection publishes exactly the two
-// columns the executed statement selects: `productID` and `productName`
-// [model/dao/ProductDAO.cfc:L421].
-//
-// ABSENCE SURVIVES AS ABSENCE. `Product.getProductName()` answers `string | undefined` because the
-// column is nullable, and an absent value is represented by the MEMBER BEING OMITTED from the JSON
-// document - never by `0`, never by `''` and never by `null`. That discipline is not cosmetic in
-// this subtree: `getPriceByCurrencyCode` [model/entity/Sku.cfc:L269-L273] has no `else` and no
-// fallback, and substituting a zero for that absence would silently sell products for free. No
-// monetary value reaches this capability's surface at all, and no array a service returns is
-// reordered on the way out.
-//
-// NO STATUS VOCABULARY IS INVENTED. `./errorMapper.js` models a closed set of exactly three codes -
-// 400 for unusable input, 404 for an unmatched route, 500 for a server-shaped failure - because the
-// legacy slice has no HTTP status vocabulary to port. This file adds no fourth: no authentication or
-// authorization status, no conflict, no unprocessable-entity, no request-quota status, and none of
-// the retry-after, rate-limit or circuit-breaker headers that accompany one.
+// The `cfthread`-to-`worker_threads` translation rule is UNEXERCISED - a sweep of the in-scope slice
+// finds zero `cfthread` usages - and the legacy runtime's three lock timeouts are noted in the plan
+// and deliberately not implemented.
 // ---------------------------------------------------------------------------
 
 // IMPORT DISCIPLINE. Explicit relative specifiers carrying the `.js` extension NodeNext resolution
@@ -243,18 +138,28 @@ import type {
 } from 'aws-lambda';
 import { z } from 'zod';
 
+import { listToArray } from '../lib/cfml/list.js';
 import type { Logger } from '../lib/logger.js';
 import { logger as processLogger } from '../lib/logger.js';
 import type { OptionService } from '../services/optionService.js';
 import type { ProductPage, ProductQueryCriteria } from '../services/productService.js';
 import type { CompositionRoot, RequestScope } from './bootstrap.js';
 import { bootstrapCompositionRoot } from './bootstrap.js';
+import {
+  MAX_PLACEHOLDER_COUNT,
+  isPreparablePlaceholderCount,
+} from '../repositories/mysql/connection.js';
 import type { ErrorMappingContext, MappedFieldIssue } from './errorMapper.js';
 import {
   invalidRequestResponse,
+  jsonSuccessResponse,
   mapErrorToApiGatewayResponse,
+  resolveServerRequestId,
+  routeDiagnosticLabel,
   routeNotFoundResponse,
+  unauthenticatedResponse,
 } from './errorMapper.js';
+import { resolveRequestPrincipal } from './requestPrincipal.js';
 import type { RouteAction, RoutedCapability } from './router.js';
 import { resolveRouteForCapability, routeRequestFromEvent } from './router.js';
 
@@ -425,21 +330,21 @@ export type CatalogQueryResult =
     };
 
 /**
- * The JSON document a successful invocation carries.
+ * The payload this capability places in the shared success envelope's `result` member.
  *
- * JUDGMENT CALL: the envelope mirrors the one `./errorMapper.js` builds for a failure - a single
- * nested payload plus an echo of the correlation identifier - rather than returning a bare payload.
- * Something has to be the body, the legacy slice publishes no envelope to copy, and matching the
- * failure envelope means a caller parses one document shape instead of two. The correlation
- * identifier is echoed for the same reason the error envelope echoes it: it is how a caller's
- * response is joined to the log stream.
+ * ★★ THE ENVELOPE ITSELF IS NO LONGER DECLARED HERE, AND THAT IS FINDING F13's FIX. This file used
+ * to export a `CatalogQueryResponseBody` of `{operation, requestId, result}`, on the reasoning that
+ * "matching the failure envelope means a caller parses one document shape instead of two". The
+ * reasoning was right and the execution was local: API review found all four JSON entrypoints had
+ * each derived their OWN envelope, two of them without a correlation identifier at all, so a caller
+ * parsed four shapes rather than one. The envelope is now `SuccessResponseBody` in
+ * `./errorMapper.js` - `{requestId, capability, action, result}` - built by `jsonSuccessResponse`,
+ * which also owns the header set. `operation` travels INSIDE this payload, because it is a
+ * capability-specific selector rather than part of the cross-handler contract.
  */
-export interface CatalogQueryResponseBody {
+export interface CatalogQueryResultDocument {
   /** The operation that produced `result`. */
   readonly operation: CatalogQueryOperation;
-
-  /** Echo of the invocation's correlation identifier. */
-  readonly requestId: string;
 
   /** The projected payload. */
   readonly result: CatalogProductPageProjection | readonly CatalogSelectOptionProjection[];
@@ -449,161 +354,68 @@ export interface CatalogQueryResponseBody {
 // Response construction
 // ---------------------------------------------------------------------------
 
-/**
- * Headers on every successful response.
- *
- * The same two `./errorMapper.js` sets, and for the same reasons: the body is always a JSON document,
- * and `no-store` keeps an intermediary from serving one caller's response to a later, unrelated
- * request. No caching policy, no compression negotiation and no cross-origin header is invented -
- * this service has no such vocabulary to port.
- */
-const JSON_RESPONSE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
-  'content-type': 'application/json; charset=utf-8',
-  'cache-control': 'no-store',
-});
-
-/** The status a served operation carries. The only success status this file publishes. */
-const OK_STATUS = 200;
+// ★ THE LOCAL HEADER SET AND SUCCESS STATUS THAT USED TO SIT HERE ARE GONE. Both were duplicates
+// of `./errorMapper.js`'s, which is now the single construction path for a successful response as
+// well as a failed one (finding F13). Duplicating them was how the four JSON entrypoints came to
+// disagree about what a success looks like.
 
 // ---------------------------------------------------------------------------
-// The bound on the work one invocation may request (AAP 0.6.5, mechanism 1)
+// The bound on the work one invocation may request
 // ---------------------------------------------------------------------------
 
 /**
  * How many operations one invocation may name.
  *
  * ONE. A request carrying the operation parameter twice is REFUSED, not truncated to the first and
- * not answered twice, and this is the transport-level half of the AAP 0.6.5 bulk-mutation bound: it
- * is what stops a caller multiplying an unbounded SKU-creation walk
- * [model/service/SkuService.cfc:L109-L121] by a batch of its own choosing. The SKU-count bounds
- * themselves stay where they belong - on the two service constructors, supplied by the composition
- * root - and no parameter this file forwards can raise either.
+ * not answered twice, so a caller cannot ask one invocation to answer for several. The bounds that
+ * govern the ported services' own loops stay where they belong - on the two service constructors,
+ * supplied by the composition root - and no parameter this file forwards can raise either.
  *
- * A SAFETY BOUND, stated as one. It is not a target, not a quota, not a rate and not a capacity
- * figure, and it carries no time dimension of any kind.
+ * JUDGMENT CALL: the count is a target-chosen SAFETY bound. It is not a target, not a quota, not a
+ * rate and not a capacity figure, and it carries no time dimension of any kind.
  */
 const MAXIMUM_OPERATIONS_PER_INVOCATION = 1;
 
 // ---------------------------------------------------------------------------
-// Idempotency on retry (AAP 0.6.5, mechanism 2)
+// Duplicate-request replay
 // ---------------------------------------------------------------------------
 
-/**
- * The header a caller supplies its idempotency key on.
- *
- * JUDGMENT CALL: a header rather than a parameter, and this spelling. An idempotency key is metadata
- * about the DELIVERY of a request rather than an input to the operation, so it does not belong in the
- * criteria shape a service consumes; `idempotency-key` is the spelling in common use, and the legacy
- * slice offers nothing to copy because it had no retry semantics to carry a key for. Matching is
- * case-insensitive because HTTP field names are case-insensitive and API Gateway presents them with
- * the casing the client chose.
- */
-const IDEMPOTENCY_KEY_HEADER = 'idempotency-key';
-
-/**
- * The longest idempotency key this handler will accept, in characters.
- *
- * A supplied key becomes a map key in the ledger below, so an unbounded one is an unbounded
- * allocation. A key longer than this is refused explicitly rather than truncated - truncating would
- * make two different keys collide, which is the one failure mode an idempotency key exists to
- * prevent. A SAFETY BOUND, like the one above, and not a capacity claim.
- */
-const MAXIMUM_IDEMPOTENCY_KEY_LENGTH = 256;
-
-/**
- * How many recorded outcomes one container may hold.
- *
- * The ledger is bounded so that a warm container's memory cannot grow with the number of distinct
- * keys it has seen. Eviction is oldest-first, and an evicted key simply stops being replayable: a
- * retry under it re-executes, which is the same outcome as a retry that lands on a cold container.
- * A SAFETY BOUND on allocation, not a capacity or throughput figure.
- */
-const MAXIMUM_RECORDED_OUTCOMES = 256;
-
-/**
- * The per-container record of what each idempotency key already produced.
- *
- * ★ WHAT THIS GUARANTEES, EXACTLY. Within one container, two invocations carrying the same key
- * execute the operation ONCE: the ledger stores the IN-FLIGHT promise, so a duplicate that arrives
- * while the first is still running awaits the same attempt rather than starting a second, and a
- * duplicate that arrives afterwards is answered from the recorded response. That is the property AAP
- * 0.6.5 asks for - a retried invocation does not double-write.
- *
- * ★ WHAT IT DOES NOT GUARANTEE, stated rather than implied. It is CONTAINER-LOCAL. A retry that
- * lands on a different container, or on the same one after eviction, is not deduplicated by it. The
- * durable store that would close that gap is deliberately NOT invented here: it would mean a new
- * dependency and infrastructure this migration excludes outright, and a mechanism whose limits are
- * written down is safer than one whose limits are assumed. That residual exposure is precisely what
- * the compensation story in the module header covers.
- *
- * ★ ONLY A COMPLETED ATTEMPT IS KEPT. If the attempt rejects, its entry is removed, so a retry after
- * a failure is admitted rather than being answered forever with the failure. A refusal decided BEFORE
- * the operation runs - an unmatched route, an unusable operation selector, input the schema rejects -
- * is never recorded at all: those outcomes are deterministic functions of the request, so replaying
- * them would buy nothing and recording them would let a malformed first attempt poison a corrected
- * second one under the same key.
- *
- * ★ IT IS PER HANDLER INSTANCE, NOT MODULE STATE. The ledger is created inside
- * {@link createCatalogQueryHandler}, so the production `handler` has exactly one for the lifetime of
- * its container while a suite that builds its own handler gets its own - no shared mutable module
- * state, and no patching required to isolate a test.
- */
-interface IdempotencyLedger {
-  /**
-   * The recorded attempt for a key, or `undefined` when the key is unknown to this container.
-   * Insertion order is the eviction order.
-   */
-  readonly recorded: Map<string, Promise<APIGatewayProxyResult>>;
-}
-
-/**
- * Run `attempt` once per key, replaying the recorded outcome for a repeat.
- *
- * Keyless requests are passed straight through: a caller that supplies no key has not asked for
- * replay, and inventing one from the request's own content would deduplicate two genuinely distinct
- * requests that happen to look alike.
- *
- * @param ledger  The per-handler record of completed attempts.
- * @param key     The caller-supplied key, already validated and bounded.
- * @param attempt The work to perform at most once for this key.
- * @returns The response, whether freshly produced or replayed.
- */
-async function throughIdempotencyLedger(
-  ledger: IdempotencyLedger,
-  key: string,
-  attempt: () => Promise<APIGatewayProxyResult>,
-): Promise<APIGatewayProxyResult> {
-  const recorded = ledger.recorded.get(key);
-  if (recorded !== undefined) {
-    return await recorded;
-  }
-
-  const started = attempt();
-  ledger.recorded.set(key, started);
-  evictOldestRecordedOutcomes(ledger);
-
-  try {
-    return await started;
-  } catch (thrown: unknown) {
-    // A failed attempt is not an outcome to replay. Dropping it is what lets a retry re-execute,
-    // and the rejection is re-raised unchanged so the one error-mapping funnel still classifies it.
-    ledger.recorded.delete(key);
-    throw thrown;
-  }
-}
-
-/** Drop the oldest recorded outcomes until the ledger is within its bound. */
-function evictOldestRecordedOutcomes(ledger: IdempotencyLedger): void {
-  while (ledger.recorded.size > MAXIMUM_RECORDED_OUTCOMES) {
-    // `Map` iterates in insertion order, so the first key is the oldest. The loop is written over
-    // a fresh iterator each pass rather than deleting while iterating.
-    const oldest = ledger.recorded.keys().next();
-    if (oldest.done === true) {
-      return;
-    }
-    ledger.recorded.delete(oldest.value);
-  }
-}
+// ---------------------------------------------------------------------------
+// ★★★ THE IDEMPOTENCY LEDGER THAT USED TO SIT HERE IS GONE, AND ITS ABSENCE IS THE FIX.
+//
+// This block declared an `idempotency-key` header, a 256-character key bound, a 256-entry
+// per-container ledger of completed responses, `throughIdempotencyLedger` and
+// `evictOldestRecordedOutcomes`. Security and API review (finding F5, CWE-400 / cache
+// confusion) established three defects in it, and they share one cause:
+//
+//   THE LEDGER WAS KEYED ON THE RAW CALLER KEY AND NOTHING ELSE - no operation, no
+//   parameters, no caller identity, no request digest. So a caller reusing one key for a
+//   DIFFERENT action received the FIRST action's body, complete with the first request's
+//   correlation identifier, and had no way to tell. That is not idempotency; it is a cache
+//   answering the wrong question, and the 256-entry bound was a COUNT bound that retained
+//   256 COMPLETE RESPONSE BODIES.
+//
+// ★★ AND THE MECHANISM WAS NEVER NEEDED ON THIS ENDPOINT. The route is
+// `GET /catalog/products` and all three operations it publishes are READS -
+// `findProducts`, `getUnusedProductOptions`, `getUnusedProductOptionGroups`. A read
+// performs no durable write, so re-running it cannot double-write anything: the endpoint
+// is idempotent by construction, and re-executing a retry is not merely safe but strictly
+// more correct than replaying a stale body. AAP 0.6.5's idempotency obligation is stated
+// for BULK MUTATION paths, and this capability exposes none - the non-exposure record above
+// lists the mutating product operations it deliberately does not publish.
+//
+// THE ALTERNATIVE WAS CONSIDERED AND REJECTED. Review offered a second remedy: a durable
+// record keyed by caller plus canonical request digest, with key/digest mismatch refusal
+// and TTL and byte bounds. That means a new durable store, which is infrastructure this
+// migration excludes outright (AAP 0.2.2), for a read path that gains nothing from it.
+// Removal is the honest answer, and it removes the retained bodies with it.
+//
+// WHAT REPLACES IT FOR A RETRY: the request runs again. Nothing is recorded, nothing is
+// evicted, and every response carries THIS invocation's own correlation identifier.
+//
+// The request grammar and transport bounds above continue to constrain each invocation; none of
+// them is presented as mutation infrastructure for this read-only route.
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Reading the request
@@ -613,34 +425,9 @@ function evictOldestRecordedOutcomes(ledger: IdempotencyLedger): void {
 // assertion and no cast anywhere in this file.
 // ---------------------------------------------------------------------------
 
-/**
- * Read one header, case-insensitively, and treat blank as absent.
- *
- * HTTP field names are case-insensitive and API Gateway presents them with the casing the client
- * sent, so a direct index would miss `Idempotency-Key`. The comparison is written out here rather
- * than borrowed from the CFML struct helpers: this is an HTTP property, not CFML struct-key
- * semantics, and conflating the two would attribute a platform fact to a parity helper.
- *
- * A header present with an empty or whitespace-only value is reported as ABSENT, because a caller
- * that sends an empty key has supplied no key. The value is trimmed, so a key is not made distinct by
- * surrounding whitespace.
- */
-function readHeader(headers: APIGatewayProxyEvent['headers'], name: string): string | undefined {
-  for (const [candidate, value] of Object.entries(headers)) {
-    if (candidate.toLowerCase() !== name) {
-      continue;
-    }
-    if (value === undefined) {
-      continue;
-    }
-    const trimmed = value.trim();
-    if (trimmed.length === 0) {
-      continue;
-    }
-    return trimmed;
-  }
-  return undefined;
-}
+// ★ THE HEADER READER THAT USED TO SIT HERE IS GONE WITH ITS ONE CONSUMER. It existed to read the
+// `idempotency-key` header case-insensitively; finding F5 withdrew that mechanism, and this handler
+// now reads no header at all. Nothing in the three published operations is carried on one.
 
 /**
  * How many times the operation parameter was supplied.
@@ -687,10 +474,27 @@ function readOperationParameters(event: APIGatewayProxyEvent): Record<string, st
     if (name === OPERATION_PARAMETER || value === undefined) {
       continue;
     }
-    parameters[name] = value;
+    defineOwnParameter(parameters, name, value);
   }
 
   return parameters;
+}
+
+/**
+ * Define one query parameter as an enumerable own property.
+ *
+ * Assignment is not equivalent for the reserved name `__proto__`: on an ordinary object it reaches
+ * the inherited setter instead of creating a key, which would let that caller-authored name disappear
+ * before the closed-parameter check. Defining the property explicitly keeps every supplied name visible
+ * to `Object.keys` and therefore subject to the same refusal.
+ */
+function defineOwnParameter(target: Record<string, string>, name: string, value: string): void {
+  Object.defineProperty(target, name, {
+    configurable: true,
+    enumerable: true,
+    value,
+    writable: true,
+  });
 }
 
 /**
@@ -762,7 +566,45 @@ function recognizeOperation(candidate: string): CatalogQueryOperation | undefine
 const nonNegativeIntegerParameter = z
   .string()
   .regex(/^\d+$/, 'must be a non-negative integer with no sign, decimal point or exponent')
-  .transform((value: string): number => Number.parseInt(value, 10));
+  .transform((value: string): number => Number.parseInt(value, 10))
+  .refine((value: number): boolean => Number.isSafeInteger(value), {
+    message: 'must not exceed the largest integer this runtime can represent exactly',
+  });
+
+/**
+ * How many records one routed `findProducts` request may ask for.
+ *
+ * ★★★ A BOUND ON THE ROUTED CONTRACT, AND DELIBERATELY NOT ON THE SERVICE. Static-performance review
+ * (finding F10) established that omitting `pageRecordsShow` means THE WHOLE PRODUCT RESULT SET
+ * [src/services/productService.ts, the paging block of `findProducts`], which this handler then
+ * projects and `JSON.stringify`s into one response body. `ProductService` is right to define absence
+ * that way - the legacy declared no page size at that call site and inventing one would silently
+ * truncate a caller's results - so the bound belongs to the LAMBDA SURFACE, which is a different
+ * caller with a different contract, and NOT to the service. Nothing about
+ * `ProductService.findProducts` changes, and no other consumer of it is truncated.
+ *
+ * THE ROUTED CONTRACT THEREFORE REQUIRES A PAGE SIZE rather than defaulting one. A default would be
+ * this file choosing how many records a caller wanted; requiring it makes the caller say, and makes
+ * "the whole result set" unexpressible through this route rather than merely discouraged.
+ *
+ * A SAFETY BOUND ON ALLOCATION, stated as one. It bounds how large a single response document this
+ * process will build; it is not a target, a quota, a rate, a page-per-second figure or a capacity
+ * claim, and it carries no time dimension of any kind. Zero is admitted, because a caller asking for
+ * a count is asking a legitimate question and `recordsCount` answers it without any records.
+ */
+const MAXIMUM_PAGE_RECORDS = 500;
+
+/**
+ * A page size: a non-negative integer, required, and at most {@link MAXIMUM_PAGE_RECORDS}.
+ *
+ * Refused rather than clamped. Clamping would answer a different question than the one asked and
+ * would tell the caller nothing, which is the same reason an over-long list is refused whole rather
+ * than shortened.
+ */
+const boundedPageSizeParameter = nonNegativeIntegerParameter.refine(
+  (value: number): boolean => value <= MAXIMUM_PAGE_RECORDS,
+  { message: `must be at most ${String(MAXIMUM_PAGE_RECORDS)} records for one routed request` },
+);
 
 /**
  * The closed criteria shape `findProducts` accepts.
@@ -781,7 +623,7 @@ const findProductsParameters = z.object({
   keyword: z.string(),
   productTypeIDs: z.string().optional(),
   pageRecordsStart: nonNegativeIntegerParameter.optional(),
-  pageRecordsShow: nonNegativeIntegerParameter.optional(),
+  pageRecordsShow: boundedPageSizeParameter,
   currentURL: z.string().optional(),
 });
 
@@ -870,9 +712,6 @@ const OPERATION_ISSUE_PATH = OPERATION_PARAMETER;
 /** The label an unpublished query parameter is reported under. Names the container, never the key. */
 const QUERY_STRING_ISSUE_PATH = 'queryStringParameters';
 
-/** The label an unusable idempotency key is reported under. */
-const IDEMPOTENCY_KEY_ISSUE_PATH = `headers.${IDEMPOTENCY_KEY_HEADER}`;
-
 /** The published operations, rendered once for the refusal sentences that list them. */
 const PUBLISHED_OPERATION_LIST = CATALOG_QUERY_OPERATIONS.join(', ');
 
@@ -909,17 +748,6 @@ const UNPUBLISHED_PARAMETER_ISSUE: MappedFieldIssue = Object.freeze({
     'an unrecognized parameter is refused rather than ignored',
 });
 
-/** The supplied idempotency key is longer than the ledger accepts. */
-const OVERLONG_IDEMPOTENCY_KEY_ISSUE: MappedFieldIssue = Object.freeze({
-  path: IDEMPOTENCY_KEY_ISSUE_PATH,
-  message:
-    `must be at most ${String(MAXIMUM_IDEMPOTENCY_KEY_LENGTH)} characters; an over-long key is ` +
-    'refused rather than shortened, because shortening would let two distinct keys collide',
-});
-
-/** Substituted when neither correlation identifier on the invocation carries a value. */
-const UNIDENTIFIED_INVOCATION = 'unidentified-invocation';
-
 // ---------------------------------------------------------------------------
 // The invocation plan
 //
@@ -946,6 +774,74 @@ type CatalogQueryInvocation =
     };
 
 /**
+ * The first admitted comma-list too wide for a preparable statement, or nothing.
+ *
+ * ★★★ THE HANDLER HALF OF FINDING F17, AND ITS WHOLE VALUE IS THE STATUS IT PRODUCES. Two of this
+ * capability's three operations forward a comma-delimited identifier list that becomes one SQL
+ * placeholder PER ELEMENT - `existingOptionGroupIDList` at [model/dao/OptionDAO.cfc:L68, L107] - and
+ * `findProducts` forwards a third, `productTypeIDs`, at [model/dao/ProductDAO.cfc:L423]. The adapters
+ * now refuse a list above the protocol's own placeholder ceiling, but a refusal raised down there is
+ * an unrecognized throw that `./errorMapper.js` reduces to a generic 500. Asked HERE, the same
+ * refusal is a client-shaped 400 carrying the offending parameter's name.
+ *
+ * IT IS A COUNT TEST AND NOTHING ELSE. The list is parsed the way the adapter parses it - CFML list
+ * semantics, so empty elements are dropped - and its placeholder count is combined with the
+ * statement's other binds: the required keyword for `findProducts`, the trailing product identifier
+ * for `getUnusedProductOptions`, and none for `getUnusedProductOptionGroups`. The two option
+ * operations also reproduce their adapter's one-empty-string bind when the parsed list is empty.
+ * No element is trimmed, sorted, deduplicated, case-folded, reordered or dropped to fit, because
+ * each of those changes which rows the statement matches. Every complete statement that IS
+ * preparable is forwarded byte for byte, exactly as before.
+ *
+ * THE BOUND IS THE PROTOCOL'S OWN. `COM_STMT_PREPARE_OK` reports a prepared statement's placeholder
+ * count in a two-byte field, so a list above the ceiling could not be prepared by the server however
+ * it was sent: nothing the legacy could have answered is refused, and no throughput, capacity or
+ * latency figure is involved.
+ *
+ * @returns the field-level issue to publish, or `undefined` when every list is preparable.
+ */
+function firstUnpreparableCommaList(
+  invocation: CatalogQueryInvocation,
+): MappedFieldIssue | undefined {
+  const lists: readonly (readonly [
+    parameterName: string,
+    value: string | undefined,
+    additionalPlaceholderCount: number,
+    emptyListBindsOne: boolean,
+  ])[] =
+    invocation.operation === 'findProducts'
+      ? [['productTypeIDs', invocation.criteria.productTypeIDs, 1, false]]
+      : invocation.operation === 'getUnusedProductOptions'
+        ? [['existingOptionGroupIDList', invocation.existingOptionGroupIDList, 1, true]]
+        : [['existingOptionGroupIDList', invocation.existingOptionGroupIDList, 0, true]];
+
+  for (const [parameterName, value, additionalPlaceholderCount, emptyListBindsOne] of lists) {
+    if (value === undefined) {
+      continue;
+    }
+
+    const elementCount = listToArray(value).length;
+    const listPlaceholderCount = emptyListBindsOne ? Math.max(1, elementCount) : elementCount;
+    const placeholderCount = listPlaceholderCount + additionalPlaceholderCount;
+
+    if (!isPreparablePlaceholderCount(placeholderCount)) {
+      const maximumListElements = MAX_PLACEHOLDER_COUNT - additionalPlaceholderCount;
+
+      return Object.freeze({
+        path: parameterName,
+        message:
+          `must name at most ${String(maximumListElements)} identifiers for this operation, which ` +
+          'with the statement’s other bound values is the most MySQL can prepare; a longer list is ' +
+          'refused whole rather than shortened, because dropping an element would change which ' +
+          'records match',
+      });
+    }
+  }
+
+  return undefined;
+}
+
+/**
  * Validate the supplied parameters for one operation and produce the plan.
  *
  * Throws the schema's own rejection, which `./errorMapper.js` recognizes as a validation failure and
@@ -964,8 +860,12 @@ function planInvocation(
 
       // Built member by member rather than forwarded wholesale, so that each member of the ported
       // criteria shape is visible at the seam. Absence is forwarded AS absence: every optional member
-      // of `ProductQueryCriteria` declares `| undefined`, and the service gives absence a meaning -
-      // an absent `pageRecordsShow` is THE WHOLE RESULT SET, not a page of zero.
+      // of `ProductQueryCriteria` declares `| undefined`, and the service gives absence a meaning.
+      //
+      // ★ `pageRecordsShow` IS THE ONE MEMBER THIS SURFACE WILL NOT LEAVE ABSENT. Absent means THE
+      // WHOLE RESULT SET to the service, which is correct for a service caller and is a whole-catalog
+      // buffer for an HTTP one, so the routed contract requires it (finding F10). It is always
+      // present here and always at or below {@link MAXIMUM_PAGE_RECORDS}.
       const criteria: ProductQueryCriteria = {
         keyword: supplied.keyword,
         productTypeIDs: supplied.productTypeIDs,
@@ -1092,19 +992,21 @@ function countServedRecords(served: CatalogQueryResult): number {
   return served.operation === 'findProducts' ? served.result.records.length : served.result.length;
 }
 
-/** Build the success response. The one place a status, a header set and an envelope are decided. */
+/**
+ * Build the success response THROUGH THE SHARED ENVELOPE.
+ *
+ * The status, the header set and the envelope shape are all `./errorMapper.js`'s now - the same
+ * module that decides them for a failure - so this function's whole remaining job is to name the
+ * capability, the action and the payload. See {@link CatalogQueryResultDocument} for why `operation`
+ * sits inside the payload rather than beside it.
+ */
 function servedResponse(served: CatalogQueryResult, requestId: string): APIGatewayProxyResult {
-  const body: CatalogQueryResponseBody = {
+  const document: CatalogQueryResultDocument = {
     operation: served.operation,
-    requestId,
     result: served.result,
   };
 
-  return {
-    statusCode: OK_STATUS,
-    headers: JSON_RESPONSE_HEADERS,
-    body: JSON.stringify(body),
-  };
+  return jsonSuccessResponse(requestId, OWNED_CAPABILITY, IMPLEMENTED_ACTION, document);
 }
 
 // ---------------------------------------------------------------------------
@@ -1155,27 +1057,12 @@ export type CatalogQueryLambdaHandler = (
   context: Context,
 ) => Promise<APIGatewayProxyResult>;
 
-/**
- * Read the correlation identifier this invocation is reported under.
- *
- * The Lambda invocation identifier first, then the API Gateway request identifier, then a fixed
- * placeholder. Both sources are correlation identifiers rather than caller-authored values, and the
- * placeholder exists so that the identifier echoed into a response and written to the log is never an
- * empty string - an unjoinable log line is worse than an obviously synthetic one.
- */
-function readCorrelationIdentifier(event: APIGatewayProxyEvent, context: Context): string {
-  const invocation = context.awsRequestId.trim();
-  if (invocation.length > 0) {
-    return invocation;
-  }
-
-  const gateway = event.requestContext.requestId.trim();
-  if (gateway.length > 0) {
-    return gateway;
-  }
-
-  return UNIDENTIFIED_INVOCATION;
-}
+// ★ THE LOCAL CORRELATION READER THAT USED TO SIT HERE IS GONE. It implemented the
+// invocation-then-gateway-then-placeholder precedence for this handler alone, and observability
+// review (finding F8) found the five entrypoints had each implemented their own - one of them the
+// other way round. The policy now lives once, in `./errorMapper.js` as `resolveServerRequestId`,
+// beside the envelope that echoes it. Its precedence is the one this reader used; only the
+// substituted literal differs, and that literal is now `./errorMapper.js`'s to name.
 
 /**
  * The operation the request names, from whichever query-string map carries it.
@@ -1220,7 +1107,10 @@ function readNamedOperation(event: APIGatewayProxyEvent): string | undefined {
  *   2. THE OPERATION SELECTOR, bounded at one per invocation and refused rather than truncated.
  *   3. THE CLOSED PARAMETER SET, then the schema, then the plan. A rejection here is a deterministic
  *      refusal and is neither recorded nor replayed.
- *   4. THE IDEMPOTENCY GUARD, which is where a repeated key is answered from the recorded outcome.
+ *   4. THE COMMA-LIST FEASIBILITY BOUND, asked at admission so an over-wide identifier list is a 400
+ *      naming the offending member rather than the generic 500 an escaped statement-builder throw
+ *      would produce (finding F17). No idempotency guard sits at this step any more; the ledger that
+ *      used to occupy it was withdrawn under finding F5, for the reasons recorded at its former site.
  *   5. ONE REQUEST SCOPE and ONE ported service method, then a projection onto JSON.
  *
  * Every thrown value from step 3 onward - a schema rejection, a service refusal such as the SKU batch
@@ -1229,7 +1119,8 @@ function readNamedOperation(event: APIGatewayProxyEvent): string | undefined {
  * the response is a classification and never the failure itself.
  *
  * @param dependencies Optional test seams. Omit for production wiring.
- * @returns A handler holding one idempotency ledger for the lifetime of its container.
+ * @returns A handler holding NO per-request state of its own - only the resolved logger and the
+ *          memoized composition-root accessor, both of which are read-only for the container's life.
  */
 export function createCatalogQueryHandler(
   dependencies: CatalogQueryHandlerDependencies = {},
@@ -1238,59 +1129,100 @@ export function createCatalogQueryHandler(
     dependencies.compositionRoot ?? ((): Promise<CompositionRoot> => bootstrapCompositionRoot());
   const log = dependencies.logger ?? processLogger;
 
-  // ONE LEDGER PER HANDLER INSTANCE, deliberately not module state. The production `handler` below is
-  // created once when the container loads this module, so its ledger spans that container's warm
-  // invocations - which is the whole point of an idempotency record. A suite that builds its own
-  // handler gets its own ledger and therefore its own isolation, with nothing to reset between tests.
-  const ledger: IdempotencyLedger = { recorded: new Map<string, Promise<APIGatewayProxyResult>>() };
+  // ★ NO LEDGER. The per-handler idempotency record that used to be created here is gone with the
+  // mechanism it served - see the block where it was declared for why a read-only GET endpoint never
+  // needed one and why keying it on the raw caller key alone was a defect (finding F5). Nothing in
+  // this factory now holds state that outlives an invocation.
 
   return async (event: APIGatewayProxyEvent, context: Context): Promise<APIGatewayProxyResult> => {
-    const requestId = readCorrelationIdentifier(event, context);
-    const unroutedContext: ErrorMappingContext = { requestId, logger: log };
+    const requestId = resolveServerRequestId(event, context);
+
+    // ★★★ ONE MUTABLE CONTEXT, PROMOTED THE MOMENT A ROUTE IS RESOLVED, AND THAT IS FINDING F8's
+    // FIX. This used to be two separate constants - an unrouted one built here and a routed one
+    // built inside the `try` - and the `catch` at the bottom mapped through the UNROUTED one. So
+    // every failure raised AFTER route resolution, which is every service failure this handler can
+    // see, reached the log stream with no route on it: the one diagnostic that says which URL
+    // surface was being served. The context is now a single binding that GAINS the route and is the
+    // same object the catch reads.
+    let mappingContext: ErrorMappingContext = { requestId, logger: log };
 
     try {
       // --- 1. Admission ---------------------------------------------------
       const resolution = resolveRouteForCapability(
         routeRequestFromEvent(event),
         OWNED_CAPABILITY,
-        unroutedContext,
+        mappingContext,
       );
 
       if (!resolution.matched) {
         return resolution.response;
       }
 
-      // From here on the diagnostic label is the method as received plus the matched row's CANONICAL
-      // path, so what is logged is what the table actually matched rather than the raw path. It is
-      // sanitized and length-bounded by `./errorMapper.js` before it reaches a log line, and it is
-      // never echoed into a response body.
-      const routedContext: ErrorMappingContext = {
+      // From here on the diagnostic label is built ENTIRELY from the matched row's own frozen members
+      // - its declared methods and its canonical path - and from NOTHING the caller sent. That
+      // distinction is the reason `routeDiagnosticLabel` documents itself as safe to log: the router
+      // matches the method with `listFindNoCase`, so `event.httpMethod` may differ from the table's
+      // declaration in case and would put a caller-controlled string on the log line for no
+      // diagnostic gain. Using the row instead means the label is one of a CLOSED set of five, so an
+      // operator can group by it and a caller cannot influence it. It reaches the log stream only and
+      // is never echoed into a response body; the shared helper is what makes all five entrypoints
+      // label a route identically.
+      mappingContext = {
         requestId,
-        route: `${event.httpMethod} ${resolution.route.path}`,
+        route: routeDiagnosticLabel(resolution.route.methods, resolution.route.path),
         logger: log,
       };
 
       if (resolution.route.action !== IMPLEMENTED_ACTION) {
-        return routeNotFoundResponse(routedContext);
+        return routeNotFoundResponse(mappingContext);
+      }
+
+      // ★★ THE ADMISSION GATE. This route once served every anonymous request, and security review
+      // recorded the exposure as CRITICAL (CWE-306/CWE-862) together with the consequence it enabled
+      // (HIGH, CWE-200): `keyword` is required-but-may-be-empty, so an empty keyword matches every
+      // row, while the ported catalog statement intentionally preserves the legacy predicates and
+      // carries no `activeFlag`/`publishedFlag` restriction. Inactive and unpublished rows were
+      // therefore anonymously enumerable.
+      //
+      // Authentication closes that enumeration at the route entrance without changing the
+      // must-preserve result set. Adding `activeFlag`/`publishedFlag` to
+      // [model/dao/ProductDAO.cfc:L420-L427] would be a new catalog filter and AAP 0.6.7 permits no
+      // such divergence. The product FEED applies those filters because its own legacy statement
+      // does; this catalog query does not.
+      //
+      // The refusal follows route resolution and precedes the selector, parameter closure, schema
+      // and graph construction. An unidentified caller therefore costs no parse, connection or
+      // statement, while a path this capability does not own remains a 404 rather than a revealing
+      // 401.
+      const principalResolution = resolveRequestPrincipal(event);
+      if (!principalResolution.identified) {
+        // The reason is a closed literal from `requestPrincipal`, carried in the message rather than
+        // widening the logger's default-deny context allow-list. No claim name or caller text appears.
+        log.warn(`catalog query refused: no caller principal (${principalResolution.reason})`, {
+          requestId,
+          route: mappingContext.route,
+        });
+
+        return unauthenticatedResponse(mappingContext);
       }
 
       // --- 2. The operation selector, bounded at one ----------------------
       if (countSuppliedOperations(event) > MAXIMUM_OPERATIONS_PER_INVOCATION) {
-        return invalidRequestResponse('unusableRequestInput', routedContext, [
+        return invalidRequestResponse('unusableRequestInput', mappingContext, [
           TOO_MANY_OPERATIONS_ISSUE,
         ]);
       }
 
       const named = readNamedOperation(event);
       if (named === undefined) {
-        return invalidRequestResponse('missingQueryParameter', routedContext, [
+        return invalidRequestResponse('missingQueryParameter', mappingContext, [
           MISSING_OPERATION_ISSUE,
         ]);
       }
 
       const operation = recognizeOperation(named);
       if (operation === undefined) {
-        return invalidRequestResponse('unusableRequestInput', routedContext, [
+        return invalidRequestResponse('unusableRequestInput', mappingContext, [
           UNKNOWN_OPERATION_ISSUE,
         ]);
       }
@@ -1298,35 +1230,39 @@ export function createCatalogQueryHandler(
       // --- 3. The closed parameter set, then the schema, then the plan ----
       const parameters = readOperationParameters(event);
       if (!hasClosedParameterSet(operation, parameters)) {
-        return invalidRequestResponse('unusableRequestInput', routedContext, [
+        return invalidRequestResponse('unusableRequestInput', mappingContext, [
           UNPUBLISHED_PARAMETER_ISSUE,
         ]);
       }
 
       const invocation = planInvocation(operation, parameters);
 
-      // --- 4. The idempotency guard --------------------------------------
-      const idempotencyKey = readHeader(event.headers, IDEMPOTENCY_KEY_HEADER);
-      if (idempotencyKey !== undefined && idempotencyKey.length > MAXIMUM_IDEMPOTENCY_KEY_LENGTH) {
-        return invalidRequestResponse('unusableRequestInput', routedContext, [
-          OVERLONG_IDEMPOTENCY_KEY_ISSUE,
-        ]);
+      // --- 4. The comma-list feasibility bound ---------------------------
+      // ★★★ ASKED HERE SO THE ANSWER IS A CLIENT-SHAPED 400 NAMING THE FIELD. Security review
+      // (finding F17) established that a caller comma-list becomes one SQL predicate and one
+      // placeholder PER ELEMENT. The statement builders now refuse above the protocol's own
+      // ceiling - see `isPreparablePlaceholderCount` - but a refusal raised down there arrives
+      // as an unrecognized throw and `./errorMapper.js` maps it to a GENERIC 500, which tells a
+      // caller its request failed and nothing about why. Asked at admission, the same refusal is
+      // a 400 carrying the offending member's path.
+      //
+      // THE BOUND IS THE PROTOCOL'S, NOT A POLICY: above it MySQL cannot prepare the statement
+      // however it is sent, so this rejects nothing the legacy could have answered. No element is
+      // trimmed, sorted, deduplicated, case-folded, reordered or dropped to fit.
+      const overWideList = firstUnpreparableCommaList(invocation);
+      if (overWideList !== undefined) {
+        return invalidRequestResponse('unusableRequestInput', mappingContext, [overWideList]);
       }
 
       // --- 5. One scope, one ported service method, one projection -------
-      const serve = async (): Promise<APIGatewayProxyResult> => {
+      {
         // The per-request scope factory, invoked EXACTLY ONCE per invocation. Everything reachable
         // from the returned scope was constructed for this request alone, which is what stops a warm
         // container carrying one request's state into another's.
         //
-        // No input is supplied, and each omission is a decision rather than an oversight:
-        //   * `accountID` / `adminAccountFlag` - absence IS the logged-out arm of
-        //     [model/service/PriceGroupService.cfc:L263-L266], per the request-scope contract. None of
-        //     the three operations this capability publishes reads the account context, and the
-        //     authorizer claim that would carry an account identifier is a deployment fact this
-        //     migration was never given - naming one here would invent configuration. The entrypoint
-        //     whose surface does consult the account context is `priceResolutionHandler`, and that
-        //     decision belongs there.
+        // The authenticated account is carried into the scope even though these three reads do not
+        // consult it, so the scope cannot represent a logged-out caller after this route admitted one.
+        // The remaining omissions are deliberate:
         //   * `now` - omitted, so the scope reads the wall clock ONCE at construction and every date
         //     comparison in the request sees the same instant. Supplying one would substitute this
         //     file's clock for the scope's own policy.
@@ -1334,7 +1270,9 @@ export function createCatalogQueryHandler(
         //     event a feed host is observed on. Passing one from here would mint an origin for a
         //     capability that renders no feed.
         const root = await resolveCompositionRoot();
-        const scope = await root.createRequestScope();
+        const scope = await root.createRequestScope({
+          accountID: principalResolution.principal.accountID,
+        });
 
         const served = await invokeCatalogOperation(scope, invocation);
 
@@ -1344,22 +1282,21 @@ export function createCatalogQueryHandler(
         // no rate and no size is measured or reported.
         log.info(`catalog query served: ${served.operation}`, {
           requestId,
-          route: routedContext.route,
+          route: mappingContext.route,
           resultCount: countServedRecords(served),
         });
 
         return servedResponse(served, requestId);
-      };
-
-      return idempotencyKey === undefined
-        ? await serve()
-        : await throughIdempotencyLedger(ledger, idempotencyKey, serve);
+      }
     } catch (thrown: unknown) {
       // THE ONE FUNNEL. The caught value is of genuinely unknown type and is passed nowhere: it goes
       // to `./errorMapper.js`, which narrows it by `instanceof` and by bounded property probes, and
       // publishes a classification rather than the value. Nothing is re-thrown, so a Lambda
       // invocation always answers with a response.
-      return mapErrorToApiGatewayResponse(thrown, unroutedContext);
+      // ★ THE ROUTED CONTEXT, not an unrouted one. `mappingContext` carries the route from the
+      // moment resolution succeeded, so a service failure is logged against the URL surface that
+      // was being served rather than against nothing (finding F8).
+      return mapErrorToApiGatewayResponse(thrown, mappingContext);
     }
   };
 }
@@ -1367,8 +1304,10 @@ export function createCatalogQueryHandler(
 /**
  * THE LAMBDA ENTRY POINT for the catalog-query capability.
  *
- * Created once, when the container loads this module, so the idempotency ledger and the memoized
- * composition graph both span the container's warm invocations. Annotated as `APIGatewayProxyHandler`
- * so that "this module is a bundle entry point" is a fact the compiler checks.
+ * Created once, when the container loads this module, so the memoized composition graph and its
+ * connection pool span the container's warm invocations. THAT IS THE ONLY STATE THAT SPANS THEM: no
+ * response body, no caller-supplied key and no per-request value is retained between invocations
+ * (finding F5). Annotated as `APIGatewayProxyHandler` so that "this module is a bundle entry point" is
+ * a fact the compiler checks.
  */
 export const handler: APIGatewayProxyHandler = createCatalogQueryHandler();

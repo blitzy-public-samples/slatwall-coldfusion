@@ -158,7 +158,40 @@ const CHANNEL_DESCRIPTION_PREFIX = 'Google Product Feed for ';
 /**
  * The scheme-and-separator prefix of the composed feed origin. Hardcoded, on purpose.
  *
- * SECURITY REVIEW DISPOSITION - RAISED AS S-09, CWE-319, DECLINED ON AAP GROUNDS.
+ * SECURITY REVIEW DISPOSITION - RAISED AS S-09, RE-RAISED AS V-12, CWE-319. ESCALATED ON AAP
+ * GROUNDS AND NOT RESOLVED HERE.
+ *
+ * ★★★ RE-RAISED BY A SECOND, LATER REVIEW AS V-12 (MINOR, CWE-319, Cleartext Transmission),
+ * WHICH REACHED THE SAME CONCLUSION THIS BLOCK ALREADY RECORDS and stated it as its own
+ * resolution: "AAP conflict - escalate, do not patch unilaterally." Its summary is explicit
+ * that this is one of "two genuine AAP-vs-security conflicts [that] require product
+ * decisions, not patches", that both "were previously raised in-code and declined on cited
+ * AAP grounds", and that it has "not 'fixed the AAP'" but escalated the conflict. That review
+ * also graded the surrounding containment as passing - the authority is allow-listed and the
+ * XML is escaped - with "cleartext scheme open (V-12)" recorded as the single remaining gap.
+ *
+ * ★★ SO NOTHING BELOW HAS CHANGED, AND THE ESCALATION IS THE DELIVERABLE. The finding is
+ * carried here under BOTH labels so a reader arriving from either review lands on one record.
+ * What a plan owner needs in order to close it:
+ *
+ *   1. AN AAP AMENDMENT, because AAP 0.1.1 requires preserving "the Google product-feed
+ *      integration contract exactly", AAP 0.8.1 freezes that contract, and AAP 0.6.7 permits
+ *      exactly three divergences in this port - none of them this, so a scheme change would be
+ *      a fourth. The AAP is aligned to, never edited by a remediation pass.
+ *   2. A DECISION ABOUT THE CONSUMER, because the document is machine-read by Google Merchant
+ *      Center rather than by a browser, so the exposure is what an on-path observer learns from
+ *      the fetch of a PUBLIC catalog feed - product names, images and prices that the store
+ *      publishes anyway. That is why both reviews graded it MINOR.
+ *   3. THE ONE-LINE EDIT, once authorized: this constant, plus the five call sites it feeds and
+ *      the fixture expectations in `tests/unit/integrations/google/rssFeedRenderer.test.ts`.
+ *      The intervening revision recorded below already proved the mechanism works; it was
+ *      reverted for authority, not for feasibility.
+ *
+ * ★ AND THE MITIGATION THAT IS ALREADY IN PLACE, so the escalation is not a bare refusal: a
+ * deployment that must publish `https` URLs terminates TLS in front of this service, and the
+ * authority the scheme is glued to is drawn from a deployment-owned allow-list
+ * (`assertAllowedFeedHost` in `../../handlers/bootstrap.js`, finding S-15) rather than from the
+ * request - so a cleartext scheme cannot be pointed at an attacker's origin.
  *
  * CFML parity [integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24]:
  * the legacy writes `http://#CGI.HTTP_HOST#` at FIVE sites - the channel link, the channel

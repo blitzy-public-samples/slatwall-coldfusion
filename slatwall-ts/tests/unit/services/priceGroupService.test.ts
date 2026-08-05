@@ -116,6 +116,7 @@ import type { SkuPriceGroupResolver } from '../../../src/domain/entities/sku.js'
 import type {
   AttributeSetSummary,
   ProductRepository,
+  ProductSearchMatches,
 } from '../../../src/domain/ports/productRepository.js';
 import type {
   CurrentAccountContext,
@@ -359,7 +360,7 @@ class RecordingProductRepository implements ProductRepository {
     return Promise.reject(new Error('loadDataFromFile is not exercised here'));
   }
 
-  searchProductsByProductType(): Promise<Product[]> {
+  searchProductsByProductType(): Promise<ProductSearchMatches> {
     return Promise.reject(new Error('searchProductsByProductType is not exercised here'));
   }
 

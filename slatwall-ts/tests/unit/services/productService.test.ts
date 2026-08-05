@@ -303,6 +303,28 @@ type ProductSavePayloadShape = Parameters<ProductRepositoryPort['saveProduct']>[
 /** The product-type counterpart of {@link ProductSavePayloadShape}. */
 type ProductTypeSavePayloadShape = Parameters<ProductTypeRepositoryPort['saveProductType']>[1];
 
+/**
+ * The materialization window the repository's search member accepts, recovered the same way and
+ * for the same reason - a type this suite never imports cannot drift from the shipped port.
+ *
+ * `NonNullable` strips the `| undefined` the optional parameter position carries, so the alias
+ * names the window ITSELF rather than "a window or nothing"; the places that can be handed
+ * nothing spell their own `| undefined`.
+ */
+type ProductMaterializationWindow = NonNullable<
+  Parameters<ProductRepositoryPort['searchProductsByProductType']>[2]
+>;
+
+/**
+ * The match set the repository's search member answers with, recovered the same way.
+ *
+ * `Awaited<ReturnType<...>>` unwraps the promise, so the alias names the settled value - the
+ * `{ records, matchedCount }` pair - which is what a double has to produce.
+ */
+type ProductSearchMatches = Awaited<
+  ReturnType<ProductRepositoryPort['searchProductsByProductType']>
+>;
+
 // --- Deterministic values, every one obviously synthetic -----
 
 /**
@@ -634,6 +656,15 @@ interface RecordedImportRequest {
 interface RecordedProductSearch {
   readonly term: string | undefined;
   readonly productTypeIDs: string | undefined;
+  /**
+   * The materialization window the service pushed down, or `undefined` when it pushed none.
+   *
+   * ★★ RECORDED BECAUSE THE PUSH-DOWN IS THE POINT. A security review found (MAJOR, CWE-400) that
+   * `findProducts` materialized every matched product graph and only then applied its window in
+   * memory, so the window bounded the RESPONSE and not the WORK. Capturing the third argument is
+   * what makes "the window reached the adapter" assertable rather than assumed.
+   */
+  readonly materializationWindow: ProductMaterializationWindow | undefined;
 }
 
 /**
@@ -666,6 +697,16 @@ class RecordingProductRepository implements ProductRepositoryPort {
 
   searchResult: Product[] = [];
 
+  /**
+   * What the double reports as the pre-window match count.
+   *
+   * Defaults to `undefined`, which means "as many as `searchResult` holds" - the honest reading for a
+   * double that windows nothing. A case exercising a WINDOWED search sets it explicitly, because the
+   * real adapter's count is the size of the identifier projection and is therefore INDEPENDENT of how
+   * many graphs it went on to materialize.
+   */
+  matchedCountOverride: number | undefined = undefined;
+
   deleteOutcome = true;
 
   constructor(private readonly persistedProduct: Product) {}
@@ -676,10 +717,28 @@ class RecordingProductRepository implements ProductRepositoryPort {
     return Promise.resolve();
   }
 
-  searchProductsByProductType(term?: string, productTypeIDs?: string): Promise<Product[]> {
-    this.searches.push({ term, productTypeIDs });
+  searchProductsByProductType(
+    term?: string,
+    productTypeIDs?: string,
+    materializationWindow?: ProductMaterializationWindow,
+  ): Promise<ProductSearchMatches> {
+    this.searches.push({ term, productTypeIDs, materializationWindow });
 
-    return Promise.resolve(this.searchResult);
+    // The double APPLIES the window it was handed, because the real adapter does - to the matched
+    // identifier list, before any graph is materialized. A double that ignored it would let a service
+    // that stopped pushing it down still pass every assertion about the returned page.
+    const records =
+      materializationWindow === undefined
+        ? this.searchResult
+        : this.searchResult.slice(
+            materializationWindow.start,
+            materializationWindow.start + materializationWindow.count,
+          );
+
+    return Promise.resolve({
+      records,
+      matchedCount: this.matchedCountOverride ?? this.searchResult.length,
+    });
   }
 
   /**
@@ -2664,8 +2723,15 @@ describe('ProductService', () => {
       // recorder interface explains why they are not harmonised. `currentURL` is carried on the
       // criteria for parity with the legacy signature's second argument and is NOT forwarded to the
       // repository - a query has no business knowing the URL that produced it.
+      // ★ THE WINDOW REACHED THE ADAPTER. `pageRecordsStart: 1` with `pageRecordsShow: 1` is a
+      // complete window, so it is pushed down and the adapter materializes ONE product graph rather
+      // than three and then discarding two.
       expect(productRepository.searches).toStrictEqual([
-        { term: 'nike', productTypeIDs: 'product-type-one,product-type-two' },
+        {
+          term: 'nike',
+          productTypeIDs: 'product-type-one,product-type-two',
+          materializationWindow: { start: 1, count: 1 },
+        },
       ]);
 
       expect(page.records).toStrictEqual([beta]);
@@ -2783,7 +2849,7 @@ describe('ProductService', () => {
       // source is: the keyword is ALWAYS bound, and the product-type list is forwarded
       // exactly as given, absence included.
       expect(productRepository.searches).toStrictEqual([
-        { term: REQUIRED_KEYWORD, productTypeIDs: undefined },
+        { term: REQUIRED_KEYWORD, productTypeIDs: undefined, materializationWindow: undefined },
       ]);
     });
 
@@ -2810,7 +2876,7 @@ describe('ProductService', () => {
       // term; the shipped adapter would not, and that gap is now unreachable from a
       // compiling caller.
       expect(productRepository.searches).toStrictEqual([
-        { term: undefined, productTypeIDs: 'product-type-one' },
+        { term: undefined, productTypeIDs: 'product-type-one', materializationWindow: undefined },
       ]);
     });
   });
@@ -2966,6 +3032,96 @@ describe('ProductService', () => {
 
       expect(page.records).toStrictEqual([alpha, beta, gamma]);
       expect(page.pageRecordsShow).toBe(Number.MAX_SAFE_INTEGER);
+    });
+
+    it('★★ pushes the window DOWN, so the bound is on the WORK and not just the answer', async () => {
+      // THE FINDING THIS CASE EXISTS FOR. A security review found (MAJOR, CWE-400) that this body
+      // awaited every matched product graph and only then sliced it, so a two-record page still
+      // paid for the whole catalog. The window now travels to the adapter, and the ONLY way to see
+      // that from here is to watch what the adapter was handed - which is why
+      // `RecordedProductSearch` records the third argument.
+      threeProducts();
+
+      const page = await service.findProducts({
+        keyword: REQUIRED_KEYWORD,
+        pageRecordsStart: 1,
+        pageRecordsShow: 1,
+      });
+
+      expect(productRepository.searches).toStrictEqual([
+        {
+          term: REQUIRED_KEYWORD,
+          productTypeIDs: undefined,
+          materializationWindow: { start: 1, count: 1 },
+        },
+      ]);
+
+      // And the service does NOT re-slice what the adapter already windowed. The double applies the
+      // window it was handed, so a body that also sliced would answer NOTHING here - `slice(1)` of
+      // a one-element array is empty - and this assertion is what catches that double application.
+      expect(page.records).toHaveLength(1);
+    });
+
+    it("★ reports the adapter's PRE-WINDOW total, not how many records came back", async () => {
+      // `recordsCount` keeps its documented meaning - "how much matched" - even though the adapter
+      // no longer returns everything that matched. It reads the adapter's separate count member, so
+      // a caller can still render "showing 1 of 40" without a second statement. The override is set
+      // to a value NO local array could produce, so a body that fell back to `records.length` or to
+      // the double's fixture size cannot pass.
+      threeProducts();
+      productRepository.matchedCountOverride = 40;
+
+      const page = await service.findProducts({
+        keyword: REQUIRED_KEYWORD,
+        pageRecordsStart: 1,
+        pageRecordsShow: 1,
+      });
+
+      expect(page.recordsCount).toBe(40);
+      expect(page.records).toHaveLength(1);
+    });
+
+    it('★ pushes NO window for a start with no count, and applies that start in memory', async () => {
+      // THE ONE DELIBERATE ASYMMETRY, pinned so it reads as a decision. "Everything from index 1
+      // onward" has no upper bound, so there is no window to push: the adapter is called with the
+      // third argument ABSENT and the start is applied here, exactly as it was before the push-down
+      // existed. Publishing `{ start: 1, count: <something invented> }` instead would have
+      // truncated a caller who asked for no ceiling.
+      const [, beta, gamma] = threeProducts();
+
+      const page = await service.findProducts({
+        keyword: REQUIRED_KEYWORD,
+        pageRecordsStart: 1,
+      });
+
+      expect(productRepository.searches).toStrictEqual([
+        { term: REQUIRED_KEYWORD, productTypeIDs: undefined, materializationWindow: undefined },
+      ]);
+      expect(page.records).toStrictEqual([beta, gamma]);
+      expect(page.recordsCount).toBe(3);
+    });
+
+    it('★ pushes a ZERO-COUNT window down rather than treating it as an absent one', async () => {
+      // An empty window is a WINDOW, and the cheapest one there is: the adapter should materialize
+      // nothing at all. Conflating `count: 0` with "no window" - the easy mistake, since both are
+      // falsy - would make the emptiest possible request the most expensive one.
+      threeProducts();
+
+      const page = await service.findProducts({
+        keyword: REQUIRED_KEYWORD,
+        pageRecordsStart: 0,
+        pageRecordsShow: 0,
+      });
+
+      expect(productRepository.searches).toStrictEqual([
+        {
+          term: REQUIRED_KEYWORD,
+          productTypeIDs: undefined,
+          materializationWindow: { start: 0, count: 0 },
+        },
+      ]);
+      expect(page.records).toStrictEqual([]);
+      expect(page.recordsCount).toBe(3);
     });
   });
 

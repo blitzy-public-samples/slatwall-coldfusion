@@ -4053,11 +4053,6 @@ export class ProductService {
     // [model/dao/ProductDAO.cfc:L422] is satisfied by construction rather than by hope.
     // `criteria.productTypeIDs` is forwarded exactly as given, absence included, because
     // the guard at [model/dao/ProductDAO.cfc:L423] gives absence a meaning there.
-    const matched = await this.productRepository.searchProductsByProductType(
-      criteria.keyword,
-      criteria.productTypeIDs,
-    );
-
     // Paging is EXPLICIT and defaults to nothing. `pageRecordsStart` absent means start
     // at the beginning; `pageRecordsShow` absent means THE WHOLE RESULT SET. No default
     // page size is invented, because the legacy declared none at this call site and a
@@ -4065,14 +4060,37 @@ export class ProductService {
     const pageRecordsStart = criteria.pageRecordsStart ?? 0;
     const pageRecordsShow = criteria.pageRecordsShow;
 
+    // ★★ THE WINDOW IS PUSHED DOWN TO THE ADAPTER RATHER THAN APPLIED HERE, and that is a fix for
+    // a resource finding (MAJOR, CWE-400) rather than a refactor. This body used to await EVERY
+    // matched product graph and only then `slice` it, so the window bounded the RESPONSE and not
+    // the WORK: one keyword could ask the adapter to hydrate the whole catalog and then discard
+    // all but a page of it. The adapter now applies the window to the matched IDENTIFIER list,
+    // between the row projection and the graph materialization - see
+    // `ProductRepository.searchProductsByProductType` for why it is placed there and not as a
+    // `LIMIT` on the ported statement.
+    //
+    // A WINDOW IS SUPPLIED ONLY WHEN THE CALLER ASKED FOR ONE. `pageRecordsShow` absent still
+    // means the whole result set, so an unwindowed call reaches the adapter exactly as it did
+    // before and nothing about it changes. `pageRecordsStart` alone is not a window either: a
+    // start with no count still means "from here to the end".
+    const matched = await this.productRepository.searchProductsByProductType(
+      criteria.keyword,
+      criteria.productTypeIDs,
+      ...(pageRecordsShow === undefined
+        ? []
+        : [{ start: pageRecordsStart, count: pageRecordsShow }]),
+    );
+
+    // A start with no count is still applied HERE, because it is not expressible as a window and
+    // the adapter has already materialized every match for it. That asymmetry is deliberate and
+    // small: it is the one shape of paging request that does not bound the work, and it does not,
+    // because "everything from index N onward" has no upper bound to push down.
     const records =
-      pageRecordsShow === undefined
-        ? matched.slice(pageRecordsStart)
-        : matched.slice(pageRecordsStart, pageRecordsStart + pageRecordsShow);
+      pageRecordsShow === undefined ? matched.records.slice(pageRecordsStart) : matched.records;
 
     return {
       records,
-      recordsCount: matched.length,
+      recordsCount: matched.matchedCount,
       pageRecordsStart,
       pageRecordsShow,
       entityName: 'SlatwallProduct',

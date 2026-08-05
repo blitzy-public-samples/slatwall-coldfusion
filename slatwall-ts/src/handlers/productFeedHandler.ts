@@ -1,105 +1,86 @@
 // The Google product-feed Lambda entrypoint.
 //
-// ★ THE ONE HANDLER IN THIS FOLDER THAT PORTS A LEGACY METHOD BODY. The other four capability
-// entrypoints expose service surfaces that were ported elsewhere; this one is the target of
-// `public void function product(required struct rc)`
-// [integrationServices/google/controllers/feed.cfc:L58], which AAP 0.4.1's handler table maps here
-// with the change "Ports the single `product(rc)` method; the smart-list filter chain becomes
-// explicit repository filters."
+// THE ONE HANDLER IN THIS FOLDER THAT PORTS A LEGACY METHOD BODY: `public void function
+// product(required struct rc)` [integrationServices/google/controllers/feed.cfc:L58]. That body did
+// five things - suppressed the site layout [:L60]; obtained a SmartList of SKUs from the SKU service
+// [:L63]; added three joins [:L64-L66], the third a LEFT join onto the brand; added three equality
+// filters [:L68-L70] and one open-ended range [:L72]; and returned nothing, leaving a `.cfm` view to
+// render RSS.
 //
-// WHAT THE LEGACY BODY DID, IN ITS ENTIRETY - the component is 74 lines and was read whole:
+// Steps 2 to 4 are the row source, owned by `../integrations/google/googleFeedRepository.js`. Step 5
+// is the renderer, owned by `../integrations/google/rssFeedRenderer.js`. Step 1 survives as the SHAPE
+// OF THIS RESPONSE: a bare document string with no wrapper. What is left for this file is the part the
+// legacy framework performed - accept the request, find the capability, open one scope, ask for the
+// document, hand it back - and nothing else. THIS FILE DECIDES NOTHING ABOUT WHAT APPEARS IN THE FEED.
+// If a line here filtered, joined, sorted, escaped or priced anything, it would be in the wrong file.
 //
-//   1. suppressed the site layout, because the response is a machine-readable document rather than
-//      a page [integrationServices/google/controllers/feed.cfc:L60];
-//   2. obtained a Hibachi SmartList of SKUs from the SKU service [:L63];
-//   3. added three joins [:L64-L66], the third of them a LEFT join onto the brand;
-//   4. added three equality filters [:L68-L70] and one open-ended range [:L72];
-//   5. returned nothing, leaving a `.cfm` view to read the one key it had written and render RSS.
+// ENTRY-POINT STATUS: YES. `slatwall-ts/esbuild.config.mjs` lists this module among its entrypoints
+// and emits one CommonJS artifact per entrypoint, so the exported `handler` below is what the runtime
+// resolves. `./bootstrap.js`, `./router.js` and `./errorMapper.js` are SHARED INTERNALS and are not
+// entrypoints. No bundler, manifest or configuration file is authored or edited here.
 //
-// Steps 2 to 4 are the row source, owned by `../integrations/google/googleFeedRepository.js`. Step
-// 5 is the renderer, owned by `../integrations/google/rssFeedRenderer.js`. Step 1 survives as the
-// SHAPE OF THIS RESPONSE: a bare document string with no wrapper. What is left for this file is the
-// part the legacy framework performed - accept the request, find the capability, open one scope,
-// ask for the document, hand it back - and nothing else. THIS FILE DECIDES NOTHING ABOUT WHAT
-// APPEARS IN THE FEED. If a line here filtered, joined, sorted, escaped or priced anything, it
-// would be in the wrong file.
+// THIS FOLDER IS THE INVERSION POINT. This module imports its three siblings, the port it drives, and
+// the logger; NOTHING imports from it. `./router.js` in particular must never import a handler - the
+// router owns RESOLUTION and a handler owns INVOCATION - and it does not: it names the five
+// capabilities as a string union and never calls one.
 //
-// ENTRY-POINT STATUS: YES. `slatwall-ts/esbuild.config.mjs` already lists this module among its
-// candidate entrypoints and emits one CommonJS artifact per entrypoint found, so the exported
-// `handler` below is what the runtime resolves. `./bootstrap.js`, `./router.js` and
-// `./errorMapper.js` are SHARED INTERNALS and are not entrypoints. No bundler, manifest or
-// configuration file is authored, edited or duplicated here.
-//
-// THIS FOLDER IS THE INVERSION POINT. This module imports its three siblings, the port it drives,
-// and the logger; NOTHING imports from it. `./router.js` in particular must never import a
-// handler - the router owns RESOLUTION and a handler owns INVOCATION - and it does not: it names
-// the five capabilities as a string union and never calls one.
-//
-// COVERAGE IS NET-NEW, NOT PARITY. `meta/tests/` contains nothing for the handler tier, nothing for
-// the Google adapter and nothing for the feed; the only three legacy test files touching the
-// in-scope slice are `meta/tests/unit/entity/BrandTest.cfc`,
-// `meta/tests/unit/entity/ProductTest.cfc` and the EMPTY
-// `meta/tests/functional/admin/entity/ProductTest.cfc`. Assertions for this module live in
-// `tests/unit/handlers/productFeedHandler.test.ts` and are authored elsewhere; no test file is
-// written from here.
-//
-// LICENSING. GPL v3.0 attribution for this subtree lives in `slatwall-ts/NOTICE-GPL.md` and is not
-// restated or duplicated here. Worth recording for THIS file specifically: the special exception
-// permitting custom code applies only to files under `/integrationServices/` [readme.md:L63-L65],
-// and this subtree sits outside that directory, so standard GPL terms govern it - even though the
-// method it ports came from inside it.
-//
-// NO USER RULES EXIST for this project: `review_rules` was queried three independent ways and every
-// call returned the same single sentence stating none were provided. Every constraint honoured
-// below is therefore attributed to the AAP, to this file's own requirements, or to an explicit
-// `JUDGMENT CALL:` annotation. None is attributed to a rule, and none is invented to fill the gap.
-//
-// The markers below sit at MODULE SCOPE deliberately. TypeScript emits comments from module scope
-// and `tsconfig.build.json` sets `removeComments: false`, so all seven markers in this file reach
-// `build/handlers/productFeedHandler.js` - verified, not assumed - and are shipped deliverables
-// rather than development notes.
+// The markers below sit at MODULE SCOPE so `tsc` emits them into `build/` under
+// `tsconfig.build.json`'s `removeComments: false`. THE SOURCE IS THE AUDIT RECORD, not the deployable
+// artifact: none of this file's annotations appears in `dist/productFeedHandler.cjs`, and disabling
+// minification does not change that, so a bundled artifact is never where one is read.
 
-// LEGACY-DEFECT [integrationServices/google/model/dao/FeedDAO.cfc:L52-L75]: the component's
-// `getProductFeedQuery` is both dead and unrunnable - its select list ends in a trailing comma
-// before `FROM` [:L57-L59] and its `INNER JOIN SwProduct` carries no `ON` clause [:L62-L63] - and
-// no caller anywhere in the subsystem invokes it.
-//
+// LEGACY-DEFECT [integrationServices/google/model/dao/FeedDAO.cfc:L52-L75]: `getProductFeedQuery` is
+// both dead and unrunnable.
 // Preserved deliberately; do not fix without a product decision.
+//
+// Its select list ends in a trailing comma before `FROM` [:L57-L59] and its `INNER JOIN SwProduct`
+// carries no `ON` clause [:L62-L63], and no caller anywhere in the subsystem invokes it.
 
 // LEGACY-NOTE [integrationServices/google/controllers/feed.cfc:L63-L72]: that DAO is NOT the
-// provenance of this handler and is not repaired, transcribed or treated as the feed query. The
-// real selection is the smart-list chain the controller builds, which states the quantity bound as
-// an open-ended range from one upward [:L72] where the dead DAO states `> 0` [FeedDAO.cfc:L71]. The
-// ported statement reproduces the controller's `>= 1`.
+// provenance of this handler and is not repaired, transcribed or treated as the feed query. The real
+// selection is the smart-list chain the controller builds, which states the quantity bound as an
+// open-ended range from one upward [:L72] where the dead DAO states `> 0`
+// [integrationServices/google/model/dao/FeedDAO.cfc:L71]. The ported statement reproduces the
+// controller's `>= 1`.
 //
 // Retained to preserve the cited legacy behavior.
 
 // LEGACY-NOTE [integrationServices/google/controllers/feed.cfc:L51]: the controller declares a
 // `productService` property that its body never reads - the only collaborator it reaches for is the
-// SKU service at [:L63]. It is the fifth dead DI/1 injection in the in-scope slice and is NOT wired
-// by `./bootstrap.js` and NOT reached from here. Wiring a dead injection would import coupling the
-// source does not have.
+// SKU service at [:L63]. It is NOT wired by `./bootstrap.js` and NOT reached from here; wiring a dead
+// injection would import coupling the source does not have.
 //
 // Retained to preserve the cited legacy behavior.
 
-// LEGACY-NOTE [integrationServices/google/controllers/feed.cfc:L54-L56]: the feed action is public
-// and unauthenticated in the source - `this.publicMethods="product"`, `this.anyAdminMethods=""`,
-// `this.secureMethods=""`. That is a FACT ABOUT THE SOURCE and not licence to invent an
-// authentication story: no API key, signed URL, token, session lookup, permission check, middleware
-// or interceptor layer is added here, and neither is this endpoint described as secured.
-// Authorizing callers is an API Gateway concern owned outside this subtree.
+// LEGACY-NOTE [integrationServices/google/controllers/feed.cfc:L54-L56]: the feed action is public and
+// unauthenticated in the source - `this.publicMethods="product"`, `this.anyAdminMethods=""`,
+// `this.secureMethods=""`. This port adds no authentication of its own: no API key, signed URL, token,
+// session lookup, permission check, middleware or interceptor layer appears here, and this endpoint is
+// not described as secured.
 //
 // Retained to preserve the cited legacy behavior.
 
 import { bootstrapCompositionRoot, UntrustedFeedHostError } from './bootstrap.js';
-import { invalidRequestResponse, mapErrorToApiGatewayResponse } from './errorMapper.js';
+import {
+  invalidRequestResponse,
+  mapErrorToApiGatewayResponse,
+  resolveServerRequestId,
+  routeDiagnosticLabel,
+  routeNotFoundResponse,
+} from './errorMapper.js';
 import { resolveRouteForCapability, routeRequestFromEvent } from './router.js';
-import { logger } from '../lib/logger.js';
+import type { Logger } from '../lib/logger.js';
+// ★ ALIASED `processLogger`, and the rename records a finding. A code review established that
+// `createProductFeedHandler` accepted a composition-root provider but hard-wired this singleton, so a
+// suite could not intercept the handler's own diagnostics without patching `process.stdout.write` -
+// which is exactly what the suite did, globally and without delegating. The singleton is now the
+// DEFAULT that {@link ProductFeedHandlerDependencies.logger} falls back to.
+import { logger as processLogger } from '../lib/logger.js';
 
 import type { APIGatewayProxyEvent, APIGatewayProxyResult, Context } from 'aws-lambda';
 import type { CompositionRoot, RequestScopeInput } from './bootstrap.js';
 import type { ErrorMappingContext } from './errorMapper.js';
-import type { RoutedCapability } from './router.js';
+import type { RouteAction, RoutedCapability } from './router.js';
 import type { ProductFeedPort } from '../domain/ports/productFeedPort.js';
 
 /**
@@ -125,8 +106,9 @@ const HOST_HEADER_NAME = 'host';
  * The status a served feed carries.
  *
  * The legacy slice has no HTTP status vocabulary at all, so this is the success code and nothing is
- * built on top of it. Every failure status comes from `./errorMapper.js`, which owns exactly
- * three, and no 401, 403, 409, 422 or 429 is introduced here, nor any retry-after, rate-limit or
+ * built on top of it. The shared mapper owns a wider refusal vocabulary for the four authenticated
+ * capability routes, but this source-public feed reaches only 400, 404 and 500 on failure. No 401,
+ * 403, 409, 422 or 429 is introduced here, nor any challenge, retry-after, rate-limit or
  * circuit-breaker semantic.
  */
 const FEED_RESPONSE_STATUS = 200;
@@ -168,6 +150,39 @@ const FEED_RESPONSE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
 export type CompositionRootProvider = () => Promise<CompositionRoot>;
 
 /**
+ * What this handler may be built over, for a suite that needs to drive it without a database.
+ *
+ * ★★★ THIS BUNDLE IS A CODE-REVIEW FINDING MADE STRUCTURAL. `createProductFeedHandler` used to take
+ * ONE positional argument - the composition-root provider - and emit through the module-level logger
+ * singleton. The consequence was not theoretical: with no way to inject a sink, the suite reached for
+ * a global `process.stdout.write` spy that did not delegate to the original write, which silences the
+ * stream for every sibling file sharing the worker and makes a JSON-only parse the only view of what
+ * was emitted. The review classified that as a security-relevant test defect, because a leak assertion
+ * that only inspects lines which PARSE cannot fail on a line that does not.
+ *
+ * Both members are optional and both default to the production wiring, so the exported `handler` is
+ * still built with no arguments and the deployed behaviour is unchanged. `exactOptionalPropertyTypes`
+ * is on, so each member spells `| undefined` rather than relying on the `?` alone.
+ */
+export interface ProductFeedHandlerDependencies {
+  /**
+   * How to reach the wired graph. Defaults to the memoized initializer, which is what keeps the
+   * per-container memo in play - `./bootstrap.js` records that ANY override bypasses it - and the
+   * narrow {@link CompositionRootProvider} type is what makes the override parameter unreachable from
+   * here, so this handler cannot assemble a second graph or a second pool.
+   */
+  readonly compositionRoot?: CompositionRootProvider | undefined;
+
+  /**
+   * Where structured lines are emitted. Defaults to the process logger, which writes JSON to stdout
+   * for the platform to collect. It is passed on to `./errorMapper.js` on the mapping context, so a
+   * mapped failure and a served feed leave through the SAME sink - which is what lets one case assert
+   * that neither discloses a statement, a bound value, a stack or a path.
+   */
+  readonly logger?: Logger | undefined;
+}
+
+/**
  * The entry signature this module publishes.
  *
  * Structurally invocable by the runtime's own proxy-handler contract: the runtime calls
@@ -199,24 +214,20 @@ export type ProductFeedHandler = (
 // [integrationServices/google/controllers/feed.cfc:L63-L72].
 // ---------------------------------------------------------------------------
 
-/**
- * The correlation identifier this invocation is reported under.
- *
- * Prefers the runtime's own request identifier, because that is the value CloudWatch groups an
- * invocation's log lines by, and falls back to the identifier API Gateway stamped onto the event.
- * BOTH ARE SERVER-GENERATED; neither is caller-authored, which is what makes echoing one into a
- * failure envelope safe - `./errorMapper.js` does exactly that so an operator can join a caller's
- * deliberately generic response to the full detail on the log stream.
- *
- * An empty runtime identifier is treated as absent rather than published as an empty correlation
- * key. Nothing is generated when both are empty: inventing an identifier would produce a key that
- * appears nowhere else in the log stream, which is worse than an honest empty one.
- */
-function resolveRequestId(event: APIGatewayProxyEvent, context: Context | undefined): string {
-  const runtimeRequestId = context?.awsRequestId.trim() ?? '';
-
-  return runtimeRequestId.length > 0 ? runtimeRequestId : event.requestContext.requestId;
-}
+// ★★★ THE LOCAL `resolveRequestId` WAS WITHDRAWN HERE, AND THAT IS FINDING F8. It read
+// `context?.awsRequestId.trim()` and fell back to `event.requestContext.requestId` - the SAME
+// precedence `./errorMapper.js` now owns as `resolveServerRequestId`, arrived at independently in
+// five files. Its documented behaviour survives unchanged in the shared helper: the runtime
+// identifier wins because that is the one the platform's own START/END/REPORT lines carry, the
+// gateway identifier is the fallback because a handler can be invoked without a runtime context, an
+// empty runtime identifier is treated as absent, and NO caller-supplied header is ever consulted.
+// The one difference is the both-empty case: this file published the empty gateway value and argued
+// that "inventing an identifier would produce a key that appears nowhere else in the log stream,
+// which is worse than an honest empty one", while the shared helper publishes its single
+// `UNATTRIBUTED_REQUEST_ID` token. The token is better on the same reasoning the argument used - it
+// is honest about there being no platform identifier, and unlike an empty string it is greppable and
+// cannot be mistaken for a missing field - and it is the same token the other four entrypoints
+// publish, which is the whole point of the finding.
 
 /**
  * The host the feed's URLs will be composed from, as observed on this request.
@@ -341,6 +352,89 @@ function feedDocumentResponse(feedDocument: string): APIGatewayProxyResult {
   };
 }
 
+/**
+ * The one route action this module implements.
+ *
+ * ★★★ THIS CONSTANT EXISTS BECAUSE OF FINDING F12, AND SO DOES THE COMPARISON IT FEEDS. The previous
+ * revision carried a `JUDGMENT CALL` arguing that "a switch over a one-member set would be
+ * unreachable code pretending to be a decision", and used the resolved action as a LOG VALUE only.
+ * The premise is true today and the conclusion did not follow: `./router.js`'s own note records that
+ * adding a second route to a capability later is ADDITIVE, so the moment a second row names this
+ * capability, an action this module does not implement would reach the feed generator and be served
+ * as though it were the feed. A one-line comparison is not a dispatch switch - it publishes no
+ * operation-selection surface, admits no caller-chosen action and adds no branch to the served
+ * path - it just refuses to serve an action this file was not written for.
+ *
+ * Typed to the router's own `RouteAction` union rather than written as a bare string, so a table edit
+ * that renamed the action fails to COMPILE here instead of silently turning every request into a
+ * non-route.
+ */
+const IMPLEMENTED_ROUTE_ACTION: RouteAction = 'generateProductFeed';
+
+/**
+ * Raised when a scope built for a hosted feed request published no port.
+ *
+ * ★★★ A NAMED CLASS RATHER THAN A LOCAL LOG LINE, AND THAT IS FINDING F14. The previous revision
+ * emitted its own `logger.error` and then threw a plain `Error`, which `mapErrorToApiGatewayResponse`
+ * logged a second time - two lines for one fault, and the reason given for the first was real: "the
+ * mapper's generic arm withholds a message from the response body by design and this one has to reach
+ * an operator." The mapper's single emission already carries a SHAPE-VALIDATED description of what was
+ * thrown, so naming the class is what puts the diagnosis on that one line: the operator reads
+ * `MissingProductFeedPortError` instead of a bare `Error`, and the response body still carries only
+ * the fixed generic sentence.
+ *
+ * Module-private deliberately. Nothing outside this file can be in a position to raise it, and this
+ * file's exported surface is the entrypoint plus its declared test seam and nothing else.
+ */
+class MissingProductFeedPortError extends Error {
+  public constructor() {
+    super('The request scope published no product-feed port.');
+    this.name = 'MissingProductFeedPortError';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ★★★ CAPACITY, CHARACTERIZED RATHER THAN BOUNDED (finding F19).
+//
+// THE FEED IS WHOLE-CATALOG AND STAYS WHOLE-CATALOG. The legacy action selected every row the four
+// predicates admitted [integrationServices/google/controllers/feed.cfc:L68-L72] with no `maxrows`, no
+// offset, no page parameter and no cursor, and the template rendered the lot into one document. A
+// consumer of a Google Merchant Center feed fetches ONE artifact and treats it as the complete
+// catalog, so serving a page of it would not be a smaller version of the same behaviour - it would be
+// a DIFFERENT and wrong behaviour, silently under-reporting the catalog to the consumer. This
+// entrypoint is therefore NOT paginated, and no `page`, `limit`, `offset`, `cursor`, `maxRows` or
+// `Link: rel=next` appears anywhere in this module. That is a deliberate tradeoff and this block is
+// the record of it.
+//
+// WHAT THE TRADEOFF COSTS, STATED AS PLATFORM FACTS. Every figure below is a documented ceiling of
+// the platform this artifact is deployed onto, or an arithmetic consequence of one. NONE is a
+// service level, a target, a budget or a measurement of this implementation - the legacy slice
+// asserts no latency, throughput, uptime or size guarantee of any kind and none is invented here:
+//
+//   * the API Gateway REST proxy integration caps a response payload at 10 MB, and a base64-encoded
+//     body counts against that ceiling after encoding, which is one further reason this response is
+//     text and omits `isBase64Encoded` (see {@link feedDocumentResponse});
+//   * a Lambda synchronous invocation caps its response payload at 6 MB, which is the LOWER of the
+//     two and therefore the effective artifact ceiling;
+//   * the runtime's configured memory has to hold the row set and the rendered document at once.
+//
+// The consequence for an operator is a single, checkable statement: THE LARGEST CATALOG THIS
+// ENTRYPOINT CAN SERVE IS THE ONE WHOSE RENDERED RSS DOCUMENT FITS INSIDE THE SMALLER OF THOSE TWO
+// PAYLOAD CEILINGS, and a catalog past that point does not degrade into a truncated feed - it fails,
+// visibly, at the platform boundary. Truncating would be the genuinely dangerous outcome, because a
+// silently short feed reads to Merchant Center as a shrinking catalog rather than as an error.
+//
+// AND NO DUPLICATE BUFFER IS INTRODUCED. The document is produced ONCE by the renderer and the string
+// this handler receives is the string it returns: {@link feedDocumentResponse} assigns it straight to
+// `body` and never trims, re-indents, slices, concatenates, re-escapes, re-encodes, compresses or
+// copies it, and nothing between the port and the response holds a second reference to it after the
+// return. The row set itself belongs to `../integrations/google/googleFeedRepository.js` and is not
+// re-materialised here in any form: this module never sees a row.
+//
+// The assertion for all of this lives in `tests/unit/handlers/productFeedHandler.test.ts`, which
+// drives the whole document through unpaginated and byte-identical.
+// ---------------------------------------------------------------------------
+
 // ---------------------------------------------------------------------------
 // The entrypoint.
 // ---------------------------------------------------------------------------
@@ -348,44 +442,42 @@ function feedDocumentResponse(feedDocument: string): APIGatewayProxyResult {
 /**
  * Build the feed entrypoint over a given route into the wired graph.
  *
- * JUDGMENT CALL: THIS IS A SECOND EXPORTED VALUE, AND IT EXISTS SOLELY AS THE TEST SEAM. The
- * standard for this subtree is one primary exported unit per file plus its co-located supporting
- * types, and {@link handler} is that primary unit. A single explicitly-labelled seam alongside it
- * is the idiom this very folder already publishes - `./bootstrap.js` exports `resetCompositionRoot`
- * beside `bootstrapCompositionRoot` for the same purpose, and `src/lib/config.ts` and the
- * connection module publish comparable reset seams. The requirement it discharges is explicit: the
- * host, the clock and the `ProductFeedPort` must be injectable and observable for a suite WITHOUT
- * module-level monkey-patching. The host and the clock are already drivable from a constructed
- * event; the port is not, because it is reached through the memoized composition root. Injecting
- * the provider is what makes it drivable, and it does so without mocking a module.
+ * JUDGMENT CALL: a second exported value, and it exists as THE INJECTION SEAM. The standard for this
+ * subtree is one primary exported unit per file plus its co-located supporting types, and
+ * {@link handler} is that primary unit. This seam makes the `ProductFeedPort` injectable and
+ * observable for an isolated suite without module-level monkey-patching: the host and the clock are
+ * already drivable from a constructed event, but the port is reached through the memoized composition
+ * root, so injecting the PROVIDER is what makes it drivable.
  *
- * A suite therefore hands back a composition root of its own making, and gets three observations
- * from one call: what feed host this handler captured, what instant it pinned the request to - both
- * visible as the `RequestScopeInput` its `createRequestScope` receives - and that the port it
- * published was invoked with no arguments.
- *
- * PRODUCTION PASSES NOTHING. The default is `bootstrapCompositionRoot` called with no overrides,
- * which is the arm that uses the memo, so a warm container resolves an already-built graph and a
- * cold one builds it exactly once however many invocations race. This factory itself performs no
- * I/O, constructs nothing and awaits nothing; it closes over a function reference and returns.
+ * PRODUCTION PASSES NOTHING. The default is `bootstrapCompositionRoot` called with no overrides, which
+ * is the arm that uses the memo, so a warm container resolves an already-built graph and a cold one
+ * builds it exactly once however many invocations race. This factory itself performs no I/O,
+ * constructs nothing and awaits nothing; it closes over a function reference and returns.
  *
  * ★ NOTHING IS COMPOSED HERE OR IN THE RETURNED FUNCTION. No service, repository, port, renderer,
- * integration adapter or connection pool is constructed anywhere in this module. `./bootstrap.js`
- * is the only composition root in the subtree, and the connection pool is the single documented
- * module-scope exception in it - deliberately, because module state on a warm container outlives
- * the request that created it. Every legacy component-level cache the port reaches through is
- * request-scoped there for that reason, so this handler must take a FRESH scope per invocation and
- * must never retain one. It does: the scope is a local binding inside the returned function.
+ * integration adapter or connection pool is constructed anywhere in this module. `./bootstrap.js` is
+ * the only composition root in the subtree, and the connection pool is the single documented
+ * module-scope exception in it - deliberately, because module state on a warm container outlives the
+ * request that created it. Every legacy component-level cache the port reaches through is
+ * request-scoped there for that reason, so this handler must take a FRESH scope per invocation and must
+ * never retain one. It does: the scope is a local binding inside the returned function.
  *
- * @param bootstrap how to reach the wired graph. Defaults to the memoized initializer; override
- *   only from a suite.
+ * @param dependencies how to reach the wired graph and where to emit. Both members default to the
+ *   production wiring; override only from a suite. Resolved ONCE, here, so the request path performs
+ *   no defaulting.
  * @returns the Lambda entrypoint.
  */
 export function createProductFeedHandler(
-  bootstrap: CompositionRootProvider = bootstrapCompositionRoot,
+  dependencies: ProductFeedHandlerDependencies = {},
 ): ProductFeedHandler {
+  const bootstrap: CompositionRootProvider =
+    dependencies.compositionRoot ?? bootstrapCompositionRoot;
+  const logger: Logger = dependencies.logger ?? processLogger;
+
   return async (event: APIGatewayProxyEvent, context?: Context): Promise<APIGatewayProxyResult> => {
-    const requestId = resolveRequestId(event, context);
+    // THE SHARED PRECEDENCE, owned by `./errorMapper.js` (finding F8). The platform's `Context`
+    // satisfies that helper's one-member structural parameter, so nothing is cast and nothing is lost.
+    const requestId = resolveServerRequestId(event, context);
 
     // Resolution first, and through the shared table, so five independently bundled entrypoints
     // agree on one URL surface and none answers for another. A miss - no match at all, or a match
@@ -393,8 +485,13 @@ export function createProductFeedHandler(
     // `./errorMapper.js`, which also emits the single log line for it. No status, header set or
     // body envelope is constructed here for that case, and the requested route is never echoed into
     // a response body.
+    // The logger travels HERE TOO, and its absence used to be a hole in exactly this line: the
+    // not-found line for an unmatched route is emitted by `./errorMapper.js` from this context, so a
+    // context without a logger sent that one line to the process default while every other line this
+    // invocation produced went to the injected sink. One request's diagnostics belong on one stream.
     const resolution = resolveRouteForCapability(routeRequestFromEvent(event), FEED_CAPABILITY, {
       requestId,
+      logger,
     });
 
     if (!resolution.matched) {
@@ -403,23 +500,45 @@ export function createProductFeedHandler(
 
     const { route } = resolution;
 
-    // JUDGMENT CALL: no dispatch switch, and no operation-selection surface. The route table holds
-    // exactly one row per capability and this capability's row names one action,
+    // NO DISPATCH SWITCH AND NO OPERATION-SELECTION SURFACE, which is unchanged: the route table
+    // holds exactly one row per capability and this capability's row names one action,
     // `generateProductFeed` - the name AAP 0.4.2 assigns to the legacy `product(rc)`
-    // [integrationServices/google/controllers/feed.cfc:L58], carried over verbatim. A switch over a
-    // one-member set would be unreachable code pretending to be a decision. The action is recorded
-    // on the log line below instead, where it is a fact rather than a branch.
+    // [integrationServices/google/controllers/feed.cfc:L58], carried over verbatim. What DID change is
+    // that the action is now VERIFIED rather than only logged; see {@link IMPLEMENTED_ROUTE_ACTION}
+    // and the guard below for finding F12.
     //
     // The label is built from the frozen table's own `methods` and `path`, never from anything the
     // caller sent, and it reaches the LOG only: `./errorMapper.js` logs its context's route and
-    // does not echo it into a body.
-    const routeLabel = `${route.methods} ${route.path}`;
+    // does not echo it into a body. Built by the SHARED helper rather than by an inline template
+    // (finding F8): the text is identical, and routing it through one function is what keeps the five
+    // entrypoints on one convention when that convention next changes. `event.httpMethod` is
+    // deliberately not used - the router matches the method with `listFindNoCase`, so a
+    // caller-supplied casing would reach the log line for no diagnostic gain.
+    const routeLabel = routeDiagnosticLabel(route.methods, route.path);
 
-    // The context carries a correlation identifier and the route, and no logger: `./errorMapper.js`
-    // defaults to the same module-level logger this file imports, so naming it would be redundant
-    // rather than explicit. It carries no event, no headers and no body either, so nothing a caller
-    // sent can reach a response body through this parameter.
-    const mappingContext: ErrorMappingContext = { requestId, route: routeLabel };
+    // ★★ QUOTE-THEN-REVISE. This context used to carry a correlation identifier and the route and NO
+    // logger, justified like this: "`./errorMapper.js` defaults to the same module-level logger this
+    // file imports, so naming it would be redundant rather than explicit."
+    //
+    // The premise held only while this handler could not be built over a different sink. Now that it
+    // can, the mapper's default and this handler's sink are two different things, and a mapped failure
+    // that left through the process logger while the handler's own lines left through an injected one
+    // would split one request's diagnostics across two streams. So the logger is named: ONE sink for
+    // the served line, the refusal line and every mapped failure alike.
+    //
+    // It still carries no event, no headers and no body, so nothing a caller sent can reach a response
+    // body through this parameter.
+    const mappingContext: ErrorMappingContext = { requestId, route: routeLabel, logger };
+
+    // ★★★ THE RESOLVED ACTION IS VERIFIED BEFORE THE HOST IS READ, BEFORE THE COMPOSITION ROOT IS
+    // AWAITED AND BEFORE ANY SCOPE EXISTS (finding F12). Placed first among the checks so an action
+    // this module does not implement costs nothing at all - no configuration read, no pool, no
+    // request graph - and is reported as a NON-ROUTE, which is the honest answer: the URL resolved,
+    // but not to anything this entrypoint serves. `./errorMapper.js` owns that response and emits its
+    // single line for it.
+    if (route.action !== IMPLEMENTED_ROUTE_ACTION) {
+      return routeNotFoundResponse(mappingContext);
+    }
 
     const feedHost = readObservedFeedHost(event);
 
@@ -451,15 +570,14 @@ export function createProductFeedHandler(
         // Unreachable given a supplied feed host - the composition root builds the port if and only
         // if `feedHost` was present, and it was proven present above. The branch exists because the
         // published type is honest about the member being optional and because a non-null assertion
-        // is the one construct that would silence precisely the checks this port relies on. Logged
-        // before it is raised, since the mapper's generic arm withholds a message from the response
-        // body by design and this one has to reach an operator.
-        logger.error('the request scope published no product-feed port for a hosted feed request', {
-          requestId,
-          route: routeLabel,
-        });
-
-        throw new Error('The request scope published no product-feed port.');
+        // is the one construct that would silence precisely the checks this port relies on.
+        //
+        // ★★★ RAISED AND NOT LOGGED HERE (finding F14). A local `logger.error` used to precede this
+        // throw, and the mapper then logged the same fault again - two lines for one defect. The
+        // mapper's single emission names the class through its shape-validated thrown description, so
+        // {@link MissingProductFeedPortError} is what carries the diagnosis to an operator now, and
+        // the response body is unchanged: the fixed generic sentence, with no detail.
+        throw new MissingProductFeedPortError();
       }
 
       // ★★★ ZERO ARGUMENTS, AND THE WHOLE POINT OF RULING 1. The four selection filters - the SKU
@@ -487,9 +605,9 @@ export function createProductFeedHandler(
       // is out of scope and unroutable.
       //
       // The adapter's own identity is recorded because this is the request that serves on its
-      // behalf, and reading it is how the nine-member ported adapter surface is consumed from here:
-      // eight members on `../integrations/google/integration.js` plus `generateProductFeed` on the
-      // separate port above. `getIntegrationTypes()` answers `"fw1"`
+      // behalf. What is consumed from here is the EIGHT-MEMBER GOOGLE ADAPTER on
+      // `../integrations/google/integration.js` PLUS THE SEPARATE FEED PORT above - the feed is not a
+      // ninth adapter member. `getIntegrationTypes()` answers `"fw1"`
       // [integrationServices/google/Integration.cfc:L55-L57], and the interface's documented
       // vocabulary is exactly the four values shipping, payment, fw1 and custom
       // [integrationServices/IntegrationInterface.cfc:L63-L72] - it has NO product-feed member,
@@ -497,12 +615,12 @@ export function createProductFeedHandler(
       // `productFeed` type is invented.
       //
       // LEGACY-DEFECT [integrationServices/google/Integration.cfc:L49]: the component tag declares
-      // `displayname="USA epay"` while `getDisplayName()` returns `"Google"` [:L59-L61] - a
-      // copy-paste artifact from a payment integration. The line below therefore records
-      // `"Google"`, because that is what the ported method answers; both halves of the
-      // contradiction survive untouched in the adapter.
-      //
+      // `displayname="USA epay"` while `getDisplayName()` returns `"Google"` [:L59-L61].
       // Preserved deliberately; do not fix without a product decision.
+      //
+      // A copy-paste artifact from a payment integration. The line below records `"Google"`, because
+      // that is what the ported method answers; both halves of the contradiction survive untouched in
+      // the adapter.
       //
       // ★ THE THREE FACTS TRAVEL IN THE MESSAGE, NOT IN THE CONTEXT, AND THAT IS NOT A STYLE
       // CHOICE. `../lib/logger.js` is FAIL-CLOSED over context keys: a key outside its two closed
@@ -514,11 +632,27 @@ export function createProductFeedHandler(
       // Message content keeps the permissive default, and none of the three values is
       // customer-shaped: two are constants the adapter returns and the third is a route action name
       // off the frozen table.
+      // ★ WHICH FACT TRAVELS WHERE, AND WHY THE SPLIT MOVED. `../lib/logger.js` is FAIL-CLOSED over
+      // context keys: a key outside its two closed allow-lists has its value replaced with a redaction
+      // marker. This line used to put ALL THREE facts in the MESSAGE, under a note recording that
+      // `requestId` and `route` were "the only two names this line could use that are on them -
+      // verified against the module, not assumed". That was true when it was written and is no longer:
+      // security review (finding F7) found the five entrypoints publishing operation and outcome
+      // fields under names no allow-list carried, and admitted a closed set of them - `capability` and
+      // `action` among them - on the test that each is a CLOSED LITERAL drawn from a compile-time union
+      // in this folder and cannot carry customer data whatever a caller sends.
+      //
+      // So the two that are now admitted move ONTO the context, where they are machine-readable and
+      // consistent with the other four entrypoints, and the two that are not stay in the prose. That
+      // is not a widening made to suit this line - the note's own objection, "widening a security
+      // allow-list to keep a demonstration green is how an allow-list stops meaning anything", still
+      // stands and no name was added for this file. `getDisplayName()` and `getIntegrationTypes()`
+      // answer adapter CONSTANTS with no allow-listed key name of their own, so they remain message
+      // content, which keeps the permissive default.
       logger.info(
         `the product feed was served by the ${root.integration.getDisplayName()} integration ` +
-          `adapter, which registers as ${root.integration.getIntegrationTypes()}, through the ` +
-          `${route.action} action`,
-        { requestId, route: routeLabel },
+          `adapter, which registers as ${root.integration.getIntegrationTypes()}`,
+        { requestId, route: routeLabel, capability: FEED_CAPABILITY, action: route.action },
       );
 
       return feedDocumentResponse(feedDocument);
@@ -533,19 +667,25 @@ export function createProductFeedHandler(
         // an authorization one. Neither the diagnosis nor the candidate reaches the response body,
         // which carries the mapper's own fixed sentence.
         //
-        // The error's OWN sentence is what is logged, and it is the right value to log because of
-        // how the class is built: it composes the ground of the refusal together with a summary of
-        // the candidate, and it never reproduces the candidate itself - `candidateSummary` and
-        // `reason` are the same two halves published separately for a caller that wants to branch
-        // on them. It travels in the message for the reason recorded on the served-feed line above:
-        // both member names are outside the logger's closed context allow-lists, and that
-        // allow-list is not widened from here.
-        logger.warn(`the observed feed host is not served by this deployment: ${thrown.message}`, {
-          requestId,
-          route: routeLabel,
-        });
-
-        return invalidRequestResponse('unusableRequestInput', mappingContext);
+        // ★★★ ONE EMISSION, OWNED BY THE MAPPER (finding F14). A local `logger.warn` used to carry
+        // the error's sentence and `invalidRequestResponse` then logged the refusal again, so one
+        // rejection produced two lines. The reason the local line existed was real - the closed
+        // `InvalidRequestReason` names the CLASS of problem while this handler knows the GROUND of it,
+        // and there was nowhere to put the ground - and `logDetail` is now that place. It is appended
+        // to the mapper's log MESSAGE and never to the response body, and it travels as message
+        // content so `../lib/logger.js` applies its statement, assignment-pair, connection-string and
+        // bearer-token rules to it before emission.
+        //
+        // The error's OWN sentence is the right value to pass, because of how the class is built: it
+        // composes the ground of the refusal together with a SUMMARY of the candidate, and it never
+        // reproduces the candidate itself - `candidateSummary` and `reason` are the same two halves
+        // published separately for a caller that wants to branch on them.
+        return invalidRequestResponse(
+          'unusableRequestInput',
+          mappingContext,
+          undefined,
+          `the observed feed host is not served by this deployment: ${thrown.message}`,
+        );
       }
 
       // Everything else goes through the one mapper, unexamined. It recognizes the framework's
@@ -561,46 +701,51 @@ export function createProductFeedHandler(
 }
 
 // The two markers below are written as module-scope comments rather than folded into the doc block
-// that follows, for the reason `../domain/ports/productFeedPort.js` records about its own pair: a
-// marker's survival into the compiler's output depends on where it sits, and module scope is the
-// position `tsc` emits from under `removeComments: false`.
+// that follows, because module scope is the position `tsc` emits from under `removeComments: false`.
 
 // LEGACY-DEFECT [integrationServices/google/views/feed/product.cfm:L20]: the document's
-// `g:google_product_category` element is emitted EMPTY, because the legacy template emits it empty
-// and no value source exists anywhere in the legacy path to fill it from. The adapter does declare
-// a `productGoogleProductType` setting definition
+// `g:google_product_category` element is emitted EMPTY, and there is no adjacent source TODO.
+// Preserved deliberately; do not fix without a product decision.
+//
+// The legacy template emits it empty and no value source exists anywhere in the legacy path to fill it
+// from: the adapter does declare a `productGoogleProductType` setting definition
 // [integrationServices/google/Integration.cfc:L67-L71], but the template never reads it, the feed
 // controller never resolves it and no column carries it.
-// `../integrations/google/rssFeedRenderer.js` owns that element and carries the gap's standing
-// note; it is referenced here and NOT re-authored, so there is one statement of it rather than two
-// to keep in step. Nothing in this file populates it, omits it or invents a category taxonomy, and
-// the hardcoded `new` condition [:L25] and `in stock` availability [:L26] are likewise the
-// renderer's preserved output and are not derived from data.
-//
-// Preserved deliberately; do not fix without a product decision.
+// `../integrations/google/rssFeedRenderer.js` owns that element and carries the gap's standing note; it
+// is referenced here and NOT re-authored, so there is one statement of it rather than two to keep in
+// step. Nothing in this file populates it, omits it or invents a category taxonomy, and the hardcoded
+// `new` condition [:L25] and `in stock` availability [:L26] are likewise the renderer's preserved
+// output and are not derived from data.
 
 // LEGACY-DEFECT [integrationServices/google/Integration.cfc:L73-L77]: `getSettingOptions` declares
-// `returntype="array"` while the body of its only conditional is empty, so it returns null. The
-// port types it as an optional string array and answers with the absent case; it is neither
-// populated, defaulted to an empty array nor made to throw. This handler never calls it, and the
-// reason is one paragraph up: the setting whose options it would have supplied is
-// `productGoogleProductType`, and nothing in the feed path consults that setting.
-//
+// `returntype="array"` while the body of its only conditional is empty, so it returns null.
 // Preserved deliberately; do not fix without a product decision.
+//
+// The port types it as an optional string array and answers with the absent case; it is neither
+// populated, defaulted to an empty array nor made to throw. This handler never calls it, and the reason
+// is one paragraph up: the setting whose options it would have supplied is `productGoogleProductType`,
+// and nothing in the feed path consults that setting.
 /**
  * THE PRIMARY EXPORTED UNIT: the Lambda entrypoint for the Google product feed.
  *
- * Read-only from end to end. It mutates nothing, writes nothing and has no retry semantics to get
- * right, so no batch limit, idempotency key or compensation story appears here; inventing one would
- * imply a write path the source does not have. No worker thread is introduced either - the in-scope
- * legacy slice contains no `cfthread` at all - and the legacy runtime's lock timeouts are noted in
- * the plan and deliberately not implemented.
+ * Read-only from end to end. It mutates nothing and writes nothing, so no batch limit, idempotency key
+ * or compensation story appears here; inventing one would imply a write path the source does not have.
+ * No worker thread is introduced either - the in-scope legacy slice contains no `cfthread` at all - and
+ * the legacy runtime's lock timeouts are noted in the plan and deliberately not implemented.
  *
- * There is nothing to validate: the ported method takes no arguments, so no schema is declared for
- * parameters that do not exist. The only two things read off the event are the method and path the
- * router needs, and the origin the document's URLs are composed from.
+ * THE PORTED OPERATION TAKES NO BUSINESS ARGUMENTS. `ProductFeedPort.generateProductFeed()` is
+ * nullary, so no schema is declared for parameters that do not exist and no query-string parameter,
+ * product identifier, date window, page or limit is read.
  *
- * Built through {@link createProductFeedHandler} with no argument, so this and a suite's own
- * instance share one construction path and cannot diverge.
+ * THE LAMBDA ADAPTER ITSELF STILL VALIDATES AND STILL READS THE EVENT. It reads the method and path for
+ * `./router.js` and refuses a request that resolves to no route or to another capability; it reads the
+ * `Host` header as the feed's origin and refuses a request that carries none, with the observed host
+ * then admitted only if the composition root's immutable allow-list contains it; and it reads two
+ * further values purely to construct the request scope and the log context - the runtime's
+ * `awsRequestId` falling back to the gateway's `requestContext.requestId` as the correlation
+ * identifier, and `requestContext.requestTimeEpoch` as the instant the request is pinned to.
+ *
+ * Built through {@link createProductFeedHandler} with no argument, so this and a suite's own instance
+ * share one construction path and cannot diverge.
  */
 export const handler: ProductFeedHandler = createProductFeedHandler();

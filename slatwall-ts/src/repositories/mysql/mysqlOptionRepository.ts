@@ -147,7 +147,11 @@ import type { OptionRepository, SelectOption } from '../../domain/ports/optionRe
 import { listToArray } from '../../lib/cfml/list.js';
 import { isNullish } from '../../lib/cfml/truthiness.js';
 import type { PreparedStatementExecutor, SqlRow } from './connection.js';
-import { sqlPlaceholderList } from './connection.js';
+import {
+  MAX_PLACEHOLDER_COUNT,
+  isPreparablePlaceholderCount,
+  sqlPlaceholderList,
+} from './connection.js';
 
 // --- Failure reporting -------------------------------------------------------
 
@@ -278,21 +282,86 @@ const EMPTY_LIST_ELEMENT = '';
 /**
  * The bound values for one group-list predicate, one element per placeholder.
  *
+ * ★★★ THE FEASIBILITY TEST RUNS HERE, BEFORE THE PLACEHOLDER BODY IS RENDERED. Security
+ * review (finding F17) observed that one clause and one placeholder are allocated per
+ * caller list element and that the only general ceiling on this path was the one
+ * `sqlPlaceholderList` applies - reached only AFTER this function had already parsed the
+ * list, and reported with a message about `IN ()` and zero-length lists that says nothing
+ * about which ARGUMENT was at fault. Both halves are addressed by asking the shared
+ * predicate here: the refusal now precedes `new Array(count).fill('?').join(', ')`, and it
+ * names the parameter.
+ *
+ * THE BOUND IS THE PROTOCOL'S, NOT A POLICY. `isPreparablePlaceholderCount` tests against
+ * the two-byte placeholder count of `COM_STMT_PREPARE_OK`, so a list above it could not be
+ * prepared by the server however it was sent - nothing [model/dao/OptionDAO.cfc:L52-L117]
+ * could have answered is rejected. No throughput, capacity or latency figure is involved.
+ *
+ * AND IT REFUSES ON A COUNT ALONE. Every accepted element is preserved byte for byte and in
+ * list order; nothing here trims, sorts, deduplicates, case-folds, reorders or truncates a
+ * list to fit, because each would change which groups the predicate excludes.
+ *
  * @param existingOptionGroupIDList the raw comma-delimited argument, exactly as the
  *   caller supplied it.
+ * @param parameterName the argument's own name, for the refusal message only.
+ * @param additionalPlaceholderCount placeholders the surrounding statement adds after the list.
  * @returns at least one element, so the placeholder count is never zero. An empty or
- *   all-empty list yields a single empty string. No upper bound is imposed here: a
- *   list longer than the MySQL protocol's own placeholder ceiling is refused by
- *   `sqlPlaceholderList` with an error named `SqlPlaceholderCountError`, which is the
- *   documented behaviour of that helper and not a guard this file adds.
+ *   all-empty list yields a single empty string.
+ * @throws {OptionGroupIDListTooWideError} when the list would need more placeholders than
+ *   a prepared statement can carry.
  */
-function bindGroupIDElements(existingOptionGroupIDList: string): readonly string[] {
+function bindGroupIDElements(
+  existingOptionGroupIDList: string,
+  parameterName: string,
+  additionalPlaceholderCount = 0,
+): readonly string[] {
   // `listToArray` carries CFML list semantics rather than re-inventing them with a
   // bare `split`: empty elements are DROPPED, so `''` becomes `[]` and `'a,,b'`
   // becomes `['a', 'b']` - the same elements `list="true"` would have expanded.
   const elements = listToArray(existingOptionGroupIDList);
+  const listPlaceholderCount = Math.max(1, elements.length);
+  const placeholderCount = listPlaceholderCount + additionalPlaceholderCount;
+
+  if (!isPreparablePlaceholderCount(placeholderCount)) {
+    throw new OptionGroupIDListTooWideError(parameterName, elements.length, placeholderCount);
+  }
 
   return elements.length > 0 ? elements : [EMPTY_LIST_ELEMENT];
+}
+
+/**
+ * A comma-list argument would need more placeholders than a statement can carry.
+ *
+ * Carries the PARAMETER NAME and the COUNT, and never the list: the two together locate the
+ * fault, and neither is caller content. This error can reach the shared error mapper and
+ * from there a log stream, so echoing the submitted list would be a disclosure.
+ */
+class OptionGroupIDListTooWideError extends Error {
+  /** The argument at fault, by its published name. */
+  public readonly parameterName: string;
+
+  /** How many elements the list carried. */
+  public readonly elementCount: number;
+
+  /** How many placeholders the complete statement would have carried. */
+  public readonly placeholderCount: number;
+
+  public constructor(parameterName: string, elementCount: number, placeholderCount: number) {
+    super(
+      [
+        `The ${parameterName} argument carries ${String(elementCount)} elements, so the complete`,
+        `statement would carry ${String(placeholderCount)} placeholders, and MySQL cannot`,
+        `prepare a statement with more than ${String(MAX_PLACEHOLDER_COUNT)} placeholders:`,
+        'COM_STMT_PREPARE_OK reports the count in a two-byte field, so the server could not accept',
+        'this statement however it was sent. The list is refused on its COUNT alone - no element is',
+        'trimmed, sorted, deduplicated, case-folded, reordered or dropped to fit, because each of',
+        'those would change which option groups the predicate excludes.',
+      ].join(' '),
+    );
+    this.name = 'OptionGroupIDListTooWideError';
+    this.parameterName = parameterName;
+    this.elementCount = elementCount;
+    this.placeholderCount = placeholderCount;
+  }
 }
 
 // --- Reading a column off a row ----------------------------------------------
@@ -642,7 +711,8 @@ export class MysqlOptionRepository implements OptionRepository {
     productID: string,
     existingOptionGroupIDList: string,
   ): Promise<readonly SelectOption[]> {
-    const groupIDs = bindGroupIDElements(existingOptionGroupIDList);
+    // This statement adds the trailing `productID` bind after the group-list placeholders.
+    const groupIDs = bindGroupIDElements(existingOptionGroupIDList, 'existingOptionGroupIDList', 1);
     const statement = buildUnusedProductOptionsStatement(sqlPlaceholderList(groupIDs.length));
 
     // CFML parity [model/dao/OptionDAO.cfc:L68, L78]: THE PARAMETER ORDER IS THE
@@ -680,7 +750,7 @@ export class MysqlOptionRepository implements OptionRepository {
   async getUnusedProductOptionGroups(
     existingOptionGroupIDList: string,
   ): Promise<readonly SelectOption[]> {
-    const groupIDs = bindGroupIDElements(existingOptionGroupIDList);
+    const groupIDs = bindGroupIDElements(existingOptionGroupIDList, 'existingOptionGroupIDList');
     const statement = buildUnusedProductOptionGroupsStatement(sqlPlaceholderList(groupIDs.length));
 
     // CFML parity [model/dao/OptionDAO.cfc:L107]: the group list is the statement's

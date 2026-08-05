@@ -459,6 +459,10 @@ export const LEGACY_TEST_MAP: {
       module: 'src/handlers/catalogQueryHandler.ts',
       test: 'tests/unit/handlers/catalogQueryHandler.test.ts',
     },
+    {
+      module: 'src/handlers/requestPrincipal.ts',
+      test: 'tests/unit/handlers/requestPrincipal.test.ts',
+    },
 
     // THE THIRD PROMOTION, AND THE FIRST OF THE FIVE CAPABILITY ENTRYPOINTS TO EARN ONE.
     // `src/handlers/skuResolutionHandler.ts` moved up out of `pendingModules`, where its
@@ -2581,33 +2585,31 @@ describe('A15 routed regression cases', () => {
   });
 });
 
-// --- A16: the runtime platform pin the S-17 declination rests on -----------
+// --- A16: the runtime platform pin, across every artifact that states it ---
 //
-// Finding S-17 (HIGH/MAJOR, CWE-1104) reports that Node 20 and the `nodejs20.x` Lambda
-// runtime are out of maintenance, and asks for a successor-runtime migration. That
-// upgrade is DECLINED, because AAP 0.1.1, AAP 0.5.1 and AAP 0.9.1 each freeze the
-// runtime independently and the AAP is to be aligned to rather than edited. The full
-// reasoning, including why the AWS block dates are deliberately not restated as fact,
-// is recorded at `esbuild.config.mjs`.
+// AAP 0.1.1, AAP 0.5.1 and AAP 0.9.1 each fix the target runtime independently: the
+// objective is a slice that runs on the `nodejs20.x` Lambda runtime, Node is pinned to
+// an exact verified version, and "Node `20.x`, TypeScript `5.x`, no caret ranges, no
+// `latest`" is a pass condition of the toolchain-pinning gate.
 //
-// A DECLINATION THAT LIVES ONLY IN PROSE IS ONE A LATER EDIT CAN QUIETLY FALSIFY, in
-// either direction: by drifting off the frozen line without authorization, or by
-// deleting the disposition that explains why the line is frozen at all. This block
-// makes both failure modes fail the suite.
+// THE INVARIANT THAT ACTUALLY MATTERS IS THAT THE ARTIFACTS AGREE WITH EACH OTHER. A
+// partial bump - `.nvmrc` moved but `engines` left behind, or an esbuild target raised
+// without the runtime under it - is how a pin decays in practice, and is exactly what a
+// single-file assertion misses. This block reads files only, in keeping with this
+// module's stated contract, which costs nothing here because every artifact stating the
+// pin (`.nvmrc`, `package.json`, `esbuild.config.mjs`) is a file.
 //
-// It reads files only, in keeping with this module's stated contract. That costs
-// nothing here, because all three artifacts the finding cites - `.nvmrc`,
-// `package.json` engines, and `esbuild.config.mjs` - are files, and the invariant that
-// actually matters is that they AGREE WITH EACH OTHER. A partial bump - `.nvmrc` moved
-// but `engines` left behind, or an esbuild target raised without the runtime under it -
-// is how a pin decays in practice, and is exactly what a single-file assertion misses.
+// Choosing a successor runtime is a plan-owner decision recorded in the project's
+// maintained security and project documentation, not something a code change makes on
+// its own; these assertions exist so that such a change cannot happen by accident.
 
-describe('A16 runtime platform pin (S-17): the frozen Node line, across every artifact stating it', () => {
+describe('A16 runtime platform pin: the frozen Node line, across every artifact stating it', () => {
   const FROZEN_NODE_VERSION = '20.20.2';
   const FROZEN_MAJOR = 20;
 
   type Manifest = {
     readonly engines?: { readonly node?: string };
+    readonly scripts?: Readonly<Record<string, string>>;
     readonly dependencies?: Readonly<Record<string, string>>;
     readonly devDependencies?: Readonly<Record<string, string>>;
   };
@@ -2632,20 +2634,19 @@ describe('A16 runtime platform pin (S-17): the frozen Node line, across every ar
   it('pins .nvmrc to the exact version AAP 0.5.1 verified', () => {
     expect(
       readSubtreeFile('.nvmrc').trim(),
-      '.nvmrc drifted off the AAP-frozen Node line: ' +
-        'the S-17 declination in esbuild.config.mjs explains why this line is frozen; changing it is a plan-owner decision, not a code fix.',
+      '.nvmrc drifted off the AAP-frozen Node line: changing it is a plan-owner decision that has to ' +
+        'move .nvmrc, package.json engines, @types/node and the esbuild target together.',
     ).toBe(FROZEN_NODE_VERSION);
   });
 
   it('and bounds package.json engines to that same major line', () => {
     const declared = manifest().engines?.node ?? '';
-    // The UPPER bound is the load-bearing half. Without `<21` the range would admit the
-    // successor runtimes S-17 asks for, and admitting them silently is the one outcome
-    // this declination exists to prevent - the choice belongs to the plan owner.
+    // The UPPER bound is the load-bearing half. Without `<21` the range would silently admit a
+    // successor runtime, and adopting one is a plan-owner choice rather than a side effect.
     expect(
       declared,
-      'package.json engines lost its upper bound, so it now admits a successor runtime: ' +
-        'the S-17 declination in esbuild.config.mjs explains why this line is frozen; changing it is a plan-owner decision, not a code fix.',
+      'package.json engines lost its upper bound, so it now admits a successor runtime: adopting one ' +
+        'is a plan-owner decision, not a side effect of a code change.',
     ).toContain(`<${String(FROZEN_MAJOR + 1)}`);
     expect(declared).toContain(`>=${String(FROZEN_MAJOR)}.`);
   });
@@ -2665,8 +2666,8 @@ describe('A16 runtime platform pin (S-17): the frozen Node line, across every ar
     const config = readSubtreeFile('esbuild.config.mjs');
     expect(
       config,
-      'the esbuild target drifted off the AAP-frozen Node line: ' +
-        'the S-17 declination in esbuild.config.mjs explains why this line is frozen; changing it is a plan-owner decision, not a code fix.',
+      'the esbuild target drifted off the AAP-frozen Node line: it has to move together with .nvmrc, ' +
+        'package.json engines and @types/node.',
     ).toContain(`target: 'node${String(FROZEN_MAJOR)}'`);
     // CJS is not a style preference: AAP 0.5.2 records that the ESM bundle builds and
     // then fails at runtime on `Dynamic require of "node:buffer"` from the MySQL driver.
@@ -2698,14 +2699,79 @@ describe('A16 runtime platform pin (S-17): the frozen Node line, across every ar
     expect(Object.keys(declared).length).toBeGreaterThan(10);
   });
 
-  it('and keeps the S-17 declination present, and attributed to S-17 rather than S-09', () => {
+  it('and keeps the build script free of embedded security-review dispositions', () => {
+    // A dated platform-lifecycle disposition frozen into a build script is exactly where such a
+    // figure rots unnoticed, and telling a maintainer in source that an upgrade is "declined" is not
+    // this file's decision to record. Successor-runtime planning belongs to maintained project and
+    // security documentation; the executable half of it is the artifact agreement asserted above.
     const config = readSubtreeFile('esbuild.config.mjs');
-    expect(config).toContain('RAISED AS S-17, DECLINED ON A CITED MANDATE');
-    expect(config).toContain('CWE-1104');
-    // S-09 in this review is a DIFFERENT finding - the product-feed URL scheme, CWE-319,
-    // resolved in the renderer and feed service, each carrying its own S-09 block. This
-    // file wore that label until the ids were reconciled; asserting the collision stays
-    // fixed is cheaper than rediscovering which disposition answered which finding.
-    expect(config).not.toContain('RAISED AS S-09');
+    expect(config).not.toContain('SECURITY REVIEW DISPOSITION');
+    expect(config).not.toContain('CWE-');
+    expect(config).not.toContain('npm audit');
+
+    // K15: the durable escalation record lives in maintained project documentation, while executable
+    // configuration carries only the frozen target and no mutable lifecycle snapshot.
+    const readme = readSubtreeFile('README.md');
+    expect(readme).toContain('S-17');
+    expect(readme).toContain('V-10');
+    expect(readme).toContain('CWE-1104');
+    expect(readme).toContain("`target: 'node20'`");
+    expect(readme).toContain('`A16`');
+    expect(readme).not.toContain('Verified 2026-08-05');
+    expect(readme).not.toContain('Block function _create_');
+  });
+});
+
+// --- A17: the package is the direct artifact set, with no host archive step -
+//
+// Build review found two independent defects in the former package path: it invoked a host-global
+// `zip` binary that the AAP does not permit, and it placed source maps inside the archive. The selected
+// design removes the archive unit entirely. That structurally subsumes the disclosure finding: no map
+// can be present in an archive that is never created.
+//
+// Annotation auditability remains independently executable. The external maps embed the original
+// TypeScript and the build reads each one back, requiring both mandated marker families before it can
+// report success. These assertions pin both halves so a later edit cannot trade one finding for the
+// other.
+
+describe('A17 package shape: direct artifacts, recoverable annotations, no host archive tool', () => {
+  it('makes package an alias of the locked build and exposes no live zip path', () => {
+    type PackageManifest = {
+      readonly scripts?: Readonly<Record<string, string>>;
+    };
+
+    const manifest = JSON.parse(readSubtreeFile('package.json')) as PackageManifest;
+    const config = readSubtreeFile('esbuild.config.mjs');
+
+    expect(manifest.scripts?.['package']).toBe('npm run build');
+    expect(config).not.toContain("process.argv.includes('--zip')");
+    expect(config).not.toContain("execFileSync('zip'");
+    expect(config).not.toContain('function archiveArtifacts');
+    expect(config).not.toContain("from 'node:child_process'");
+  });
+
+  it('embeds annotated sources in maps and fails the build when either marker family is absent', () => {
+    const config = readSubtreeFile('esbuild.config.mjs');
+    const readme = readSubtreeFile('README.md');
+
+    expect(config).toContain('sourcesContent: true');
+    expect(config).toContain('REQUIRED_ANNOTATION_MARKERS');
+    expect(config).toContain('assertAnnotationsRecoverable');
+    expect(config).toContain('readSourceMapFor');
+    expect(readme).toContain('there is no archive step');
+    expect(readme).toContain('`sourcesContent: true`');
+  });
+
+  it('keeps the cleartext feed-scheme escalation under both review labels', () => {
+    const renderer = readSubtreeFile('src/integrations/google/rssFeedRenderer.ts');
+
+    expect(renderer).toContain('RAISED AS S-09, RE-RAISED AS V-12');
+    expect(renderer).toContain('ESCALATED ON AAP');
+    expect(renderer).toContain('CWE-319');
+    expect(renderer).toContain('AAP 0.6.7');
+    expect(renderer).toContain('AN AAP AMENDMENT');
+
+    // Escalation preserves the legacy wire contract until the plan owner authorizes a divergence.
+    expect(renderer).toContain("const FEED_ORIGIN_SCHEME_PREFIX = 'http://';");
   });
 });

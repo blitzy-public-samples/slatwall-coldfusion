@@ -61,10 +61,10 @@
 // `/catalog/products`. That is the legacy semantic, not a convenience.
 //
 // A METHOD MISMATCH RESOLVES TO NOT-FOUND. FW/1 had no HTTP-method dispatch whatsoever - an action
-// was reached by any method - so there is no method-not-allowed concept in it to port, and
-// `./errorMapper.js` likewise models a closed status set of exactly three codes, none of them a
-// method-not-allowed. Inventing a fourth status, or an `Allow` header, would be inventing HTTP
-// semantics neither the source nor the error mapper has.
+// was reached by any method - so there is no method-not-allowed concept in it to port. The shared
+// mapper now also models explicit authentication and authorization refusals, but neither is a
+// routing outcome; this module still emits 404 for a method mismatch and never invents 405 or an
+// `Allow` header.
 //
 // BUSINESS LOGIC IS FORBIDDEN HERE, as are authentication, authorization, session and permission
 // logic: the one in-scope legacy controller publishes its action outright -

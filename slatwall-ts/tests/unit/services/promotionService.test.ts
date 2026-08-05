@@ -682,7 +682,7 @@ function makePriceGroupSubject(accountPriceGroups: readonly PriceGroupEntity[]):
   const productRepository: ProductRepositoryPort = {
     getAttributeSets: () => Promise.resolve([]),
     loadDataFromFile: () => Promise.resolve(undefined),
-    searchProductsByProductType: () => Promise.resolve([]),
+    searchProductsByProductType: () => Promise.resolve({ records: [], matchedCount: 0 }),
     getProductByProductID: () => Promise.resolve(undefined),
     saveProduct: (product) => Promise.resolve(product),
     deleteProduct: () => Promise.resolve(true),

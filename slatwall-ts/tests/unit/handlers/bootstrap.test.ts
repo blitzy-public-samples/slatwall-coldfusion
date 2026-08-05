@@ -81,7 +81,11 @@ import {
   UntrustedFeedHostError,
 } from '../../../src/handlers/bootstrap.js';
 import type {
+  AppliedPromotionDocument,
   CompositionRoot,
+  OrderFulfillmentDocument,
+  OrderItemDocument,
+  OrderViewDocument,
   RequestScope,
   RequestScopeAdapters,
   RequestScopeInput,
@@ -110,6 +114,15 @@ import type {
 } from '../../../src/domain/ports/urlTitleGenerator.js';
 import { makeOrderViewFixture } from '../../fixtures/orderViewFixtures.js';
 import { makePriceGroupFixtures } from '../../fixtures/priceGroupFixtures.js';
+// ★ THE TWO CATALOGUE FIXTURES THE WIRE-DOCUMENT HYDRATION CASES READ AGAINST. They build the
+// PRODUCT and SKU the hydrator's two repository reads answer with, so those cases assert entity
+// IDENTITY - the very instance the repository handed back is the one on the view - rather than
+// structural equality, which is what the promotion engine's `sku.getProduct().getProductType()` walk
+// depends on.
+import { makeProductFixture } from '../../fixtures/productFixtures.js';
+import { makeSkuFixture } from '../../fixtures/skuFixtures.js';
+import type { Product } from '../../../src/domain/entities/product.js';
+import type { Sku } from '../../../src/domain/entities/sku.js';
 import { Brand } from '../../../src/domain/entities/brand.js';
 import { RoundingRule } from '../../../src/domain/entities/roundingRule.js';
 import { toCurrencyCode } from '../../../src/domain/valueObjects/currencyCode.js';
@@ -1073,7 +1086,7 @@ describe('createRequestScope', () => {
   // prefix. This suite needs a value it controls, not one it inherits.
   const ACCOUNT_ID = 'account-bootstrap-scope-1';
 
-  it('★★ publishes exactly the THIRTEEN documented members, and NOT ONE RAW REPOSITORY', async () => {
+  it('★★ publishes exactly the SIXTEEN documented members, and NOT ONE RAW REPOSITORY', async () => {
     const root = await bootWith(makeExecutor());
 
     const scope = await root.createRequestScope();
@@ -1088,13 +1101,36 @@ describe('createRequestScope', () => {
     // without the services that own their invariants, including `saveProduct` without the
     // unique-URL-title resolution `ProductService.saveProduct` performs. Nineteen minus six is
     // thirteen, and the six are on the module-private `RequestGraph` now.
+    //
+    // ★★ THIRTEEN BECAME FOURTEEN WITH `entityLoaders`, WHICH IS THE OPPOSITE MOVE TO THE ONE
+    // ABOVE RATHER THAN A PARTIAL REVERSAL OF IT. API review finding F3 established that a
+    // boundary publishing NO way to turn an identifier into an entity forced
+    // `priceResolutionHandler` to invent one - a `productName LIKE ?` catalog scan behind a
+    // `{productName, skuCode}` selector, plus a silent substitution of the account's best price
+    // group for the price group the operation's own name says the caller chooses. The member added
+    // here is FIVE LOADS AND NOTHING ELSE, so it publishes strictly less than any one of the six
+    // struck names did; the case below proves the loads reach no mutation.
+    //
+    // ★★ FOURTEEN BECAME FIFTEEN WITH `materializeOrderView`: a
+    // code review found the deployed `applyPromotions` route had no successful wire path, because a
+    // primary adapter cannot receive anything but JSON TEXT and nothing in the request tier turned
+    // that text into entities. `materializeOrderView` is that member. It ADDS NO ROUTE TO AN
+    // ADAPTER - it is a function, and the case below proves the walk still finds no adapter class.
+    //
+    // ★★ FIFTEEN BECAME SIXTEEN WITH `prepareAddressZoneEvaluation`. The address-zone
+    // index is now deferred so catalog, SKU, price and feed scopes do not pay for an
+    // unbounded read they cannot consult. The composed order-pricing operation prepares
+    // it itself; this explicit member supports direct synchronous promotion queries.
     expect(Object.keys(scope).sort()).toEqual([
       'brandService',
       'currencyConverter',
       'currentAccountContext',
+      'entityLoaders',
       'getSalePriceDetailsForProductSkus',
+      'materializeOrderView',
       'now',
       'optionService',
+      'prepareAddressZoneEvaluation',
       'priceGroupService',
       'productFeedPort',
       'productService',
@@ -1103,6 +1139,63 @@ describe('createRequestScope', () => {
       'skuService',
       'updateOrderAmountsWithPriceGroupsThenPromotions',
     ]);
+  });
+
+  it('★★★ publishes exactly FIVE READ-ONLY LOADS on `entityLoaders`, and NO mutation', async () => {
+    // ★★★ THE GUARD THAT KEEPS F3's ANSWER FROM BECOMING F18's DEFECT AGAIN. The five loads exist
+    // so a handler can bind a service argument exactly; if a save or a delete ever appeared beside
+    // them, the seven durable mutations withdrawn from this surface would be back under a new name.
+    const root = await bootWith(makeExecutor());
+
+    const scope = await root.createRequestScope();
+
+    expect(Object.keys(scope.entityLoaders).sort()).toEqual([
+      'getPriceGroup',
+      'getPriceGroupRate',
+      'getProductByProductID',
+      'getProductTypeByProductTypeID',
+      'getSkuBySkuIdentity',
+    ]);
+
+    // Named individually as well as counted, because a set assertion alone would pass for a
+    // surface that had renamed a mutation into one of these slots.
+    for (const forbidden of [
+      'saveProduct',
+      'deleteProduct',
+      'saveSku',
+      'saveProductType',
+      'savePriceGroup',
+      'savePriceGroupRate',
+      'deletePriceGroup',
+      'loadDataFromFile',
+    ]) {
+      expect(scope.entityLoaders).not.toHaveProperty(forbidden);
+    }
+
+    // And frozen, like every other object this root publishes: substituting a load on a scope
+    // another consumer holds is what freezing refuses.
+    expect(Object.isFrozen(scope.entityLoaders)).toBe(true);
+  });
+
+  it('hands back `undefined` for an identifier that names nothing, rather than throwing', async () => {
+    // A miss is a DOMAIN OUTCOME a caller reports, not an exception - the same posture
+    // `Sku.getPriceByCurrencyCode` takes [model/entity/Sku.cfc:L269-L273], and for the same
+    // reason: substituting a fabricated entity would price something that does not exist.
+    const root = await bootWith(makeExecutor());
+
+    const scope = await root.createRequestScope();
+
+    await expect(
+      scope.entityLoaders.getProductByProductID('no-such-product'),
+    ).resolves.toBeUndefined();
+    await expect(scope.entityLoaders.getPriceGroup('no-such-price-group')).resolves.toBeUndefined();
+    await expect(scope.entityLoaders.getPriceGroupRate('no-such-rate')).resolves.toBeUndefined();
+    await expect(
+      scope.entityLoaders.getSkuBySkuIdentity({
+        productID: 'no-such-product',
+        skuID: 'no-such-sku',
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it('★★★ EXPOSES NO ROUTE FROM A SCOPE TO A REPOSITORY, UNDER ANY NAME', async () => {
@@ -1177,22 +1270,10 @@ describe('createRequestScope', () => {
     expect(second.currencyConverter).not.toBe(first.currencyConverter);
   });
 
-  it('★★ opening a scope issues EXACTLY ONE statement of its own, per scope', async () => {
-    // ★★ QUOTE-THEN-REVISE. This case was called "opening a scope issues no statement of
-    // its own" and asserted `expect(executor.calls).toHaveLength(1)` after three scopes,
-    // reasoning: "Scope construction is pure wiring. The only statement on the ledger is
-    // still the single eager tier-one read - three scopes added nothing, which is what
-    // makes the tier-one/tier-two split worth having."
-    //
-    // The premise no longer holds and it should never have been what the split was worth
-    // having FOR. One read genuinely belongs to the request rather than to the process:
-    // the address-zone locations that gate every shipping-related promotion. Tier one may
-    // not hold them - zone membership decides a discount, so a warm container answering
-    // one invocation from another's zone configuration would keep applying a promotion an
-    // administrator had already withdrawn - and the `AddressZoneEvaluator` port is
-    // SYNCHRONOUS by contract, so the read cannot happen inside the predicate either. It
-    // happens once per scope, and the split is worth having because tier two's state is
-    // DISCARDED with the request, not because tier two reads nothing.
+  it('★★ opening a scope issues NO statement of its own, however many scopes are opened', async () => {
+    // The zone index must exist before a synchronous evaluator CONSULTS it, not
+    // before that evaluator is CONSTRUCTED. Deferring the read restores pure scope
+    // assembly while keeping the index per request.
     const executor = makeExecutor();
     const root = await bootWith(executor);
 
@@ -1200,18 +1281,41 @@ describe('createRequestScope', () => {
     await root.createRequestScope();
     await root.createRequestScope();
 
-    // Three scopes, three zone reads, and the tier-one read still exactly once - which is
-    // the property that actually matters: what is shared is read once, and what is
-    // per-request is read per request.
-    expect(executor.calls).toHaveLength(4);
+    // Three scopes, ZERO zone reads, and the tier-one read still exactly once.
+    expect(executor.calls).toHaveLength(1);
     expect(executor.countOf(CURRENCY_RECORDS_SQL)).toBe(1);
-    expect(executor.countOf(ADDRESS_ZONE_LOCATIONS_SQL)).toBe(3);
+    expect(executor.countOf(ADDRESS_ZONE_LOCATIONS_SQL)).toBe(0);
 
-    // And nothing else crept in. Asserted as a SET so a fourth per-scope read added later
-    // fails here rather than passing quietly.
+    // And nothing else crept in. Asserted as a SET so a per-scope read added later fails here
+    // rather than passing quietly.
     expect(new Set(executor.calls.map((call: RecordedStatement): string => call.sql))).toEqual(
-      new Set([CURRENCY_RECORDS_SQL, ADDRESS_ZONE_LOCATIONS_SQL]),
+      new Set([CURRENCY_RECORDS_SQL]),
     );
+  });
+
+  it('★★ issues the zone read ONLY when a request asks for zone evaluation', async () => {
+    const executor = makeExecutor().seed(ADDRESS_ZONE_LOCATIONS_SQL, []);
+    const root = await bootWith(executor);
+
+    const silent = await root.createRequestScope();
+    expect(executor.countOf(ADDRESS_ZONE_LOCATIONS_SQL)).toBe(0);
+
+    const asking = await root.createRequestScope();
+    await asking.prepareAddressZoneEvaluation();
+
+    expect(executor.countOf(CURRENCY_RECORDS_SQL)).toBe(1);
+    expect(executor.countOf(ADDRESS_ZONE_LOCATIONS_SQL)).toBe(1);
+    expect(silent).not.toBe(asking);
+  });
+
+  it('★★ is SINGLE-FLIGHT: repeated and concurrent preparation issues one read', async () => {
+    const executor = makeExecutor().seed(ADDRESS_ZONE_LOCATIONS_SQL, []);
+    const scope = await bootWith(executor).then((root) => root.createRequestScope());
+
+    await Promise.all([scope.prepareAddressZoneEvaluation(), scope.prepareAddressZoneEvaluation()]);
+    await scope.prepareAddressZoneEvaluation();
+
+    expect(executor.countOf(ADDRESS_ZONE_LOCATIONS_SQL)).toBe(1);
   });
 
   it('adopts an injected instant rather than minting one', async () => {
@@ -1415,20 +1519,44 @@ describe('createRequestScope', () => {
       UntrustedFeedHostError,
     );
 
-    // ★ QUOTE-THEN-REVISE, AND THE PROPERTY IS UNCHANGED WHILE THE COUNT IS NOT. This
-    // assertion read `expect(executor.calls).toHaveLength(statementsBefore)` under the
-    // claim "nothing was read to find that out". One statement now is: opening a scope
-    // materializes this request's address-zone locations before it assembles anything, so
-    // the ledger grows by exactly that one read even on a refused request.
+    // ★ QUOTE-THEN-REVISE TWICE, AND THE ORIGINAL CLAIM IS RESTORED.
+    // This read `toHaveLength(statementsBefore)` under the claim "nothing was read to find that
+    // out"; it was then revised to `statementsBefore + 1` because opening ANY scope materialized
+    // that request's address-zone locations first. Finding F9 removed that unconditional read - a
+    // feed request cannot reach zone state, so it no longer pays for it - which makes the ORIGINAL
+    // assertion true again, for the original reason.
     //
-    // What the case is FOR survives intact, and is now asserted directly rather than
-    // inferred from a total: no FEED statement was issued, and no `GoogleFeedService`
-    // holds an unlisted origin because none was constructed.
-    expect(executor.calls).toHaveLength(statementsBefore + 1);
-    expect(executor.countOf(ADDRESS_ZONE_LOCATIONS_SQL)).toBe(1);
+    // What the case is FOR survives intact and is asserted directly rather than inferred from a
+    // total: no FEED statement was issued, and no `GoogleFeedService` holds an unlisted origin
+    // because none was constructed.
+    expect(executor.calls).toHaveLength(statementsBefore);
+    expect(executor.countOf(ADDRESS_ZONE_LOCATIONS_SQL)).toBe(0);
     expect(
       executor.calls.filter((call: RecordedStatement): boolean => call.sql.includes('SwSku')),
     ).toStrictEqual([]);
+  });
+
+  it('★★★ settles the feed host before graph publication and never starts a zone read', async () => {
+    const executor = makeExecutor();
+    const root = await bootWith(executor, FEED_ENVIRONMENT);
+    const statementsBefore = executor.calls.length;
+
+    await expect(root.createRequestScope({ feedHost: 'attacker.example.net' })).rejects.toThrow(
+      UntrustedFeedHostError,
+    );
+
+    expect(executor.calls).toHaveLength(statementsBefore);
+    expect(executor.countOf(ADDRESS_ZONE_LOCATIONS_SQL)).toBe(0);
+
+    const admitted = makeExecutor();
+    const admittingRoot = await bootWith(admitted, FEED_ENVIRONMENT);
+    const admittedBefore = admitted.calls.length;
+
+    const scope = await admittingRoot.createRequestScope({ feedHost: FEED_HOST });
+
+    expect(scope.productFeedPort).toBeDefined();
+    expect(admitted.countOf(ADDRESS_ZONE_LOCATIONS_SQL)).toBe(0);
+    expect(admitted.calls.length).toBe(admittedBefore);
   });
 
   it('refuses a feed host when the allow-list is empty, rather than admitting everything', async () => {
@@ -1559,6 +1687,10 @@ describe('the wired address-zone evaluator resolves locations by identifier', ()
     const executor = makeExecutor().seed(ADDRESS_ZONE_LOCATIONS_SQL, rows);
     const scope = await bootWith(executor).then((root) => root.createRequestScope());
 
+    // Direct promotion queries are synchronous, so callers prepare the deferred index
+    // explicitly. The composed order-pricing operation performs this step itself.
+    await scope.prepareAddressZoneEvaluation();
+
     // The single SHIPPING fulfillment. The pickup one carries no shipping method and no
     // address, so it is dropped rather than reasoned about.
     const order = makeOrderViewFixture({ includePickupFulfillment: false });
@@ -1599,6 +1731,46 @@ describe('the wired address-zone evaluator resolves locations by identifier', ()
     // tested the supplied array and nothing else.
     expect(configured.evaluate()).toStrictEqual([configured.fulfillmentID]);
     expect(scope.evaluate()).toStrictEqual([]);
+  });
+
+  it('★★★ THROWS rather than answering "not in zone" when preparation was forgotten', async () => {
+    const executor = makeExecutor().seed(ADDRESS_ZONE_LOCATIONS_SQL, [
+      zoneLocationRow(ZONE_ID, { countryCode: 'US' }),
+    ]);
+    const scope = await bootWith(executor).then((root) => root.createRequestScope());
+
+    const order = makeOrderViewFixture({ includePickupFulfillment: false });
+    const fulfillment = requirePresent(order.orderFulfillments[0], 'the shipping fulfillment');
+    const shippingMethod = requirePresent(fulfillment.shippingMethod, 'its shipping method');
+
+    const qualifier = new PromotionQualifier({
+      promotionQualifierID: 'pq-zone-unprepared',
+      qualifierType: 'fulfillment',
+      shippingAddressZoneIDs: [ZONE_ID],
+      shippingMethodIDs: [shippingMethod.shippingMethodID],
+    });
+
+    expect(() => scope.promotionService.getQualifierQualificationDetails(qualifier, order)).toThrow(
+      /address-zone test was reached before this request loaded/u,
+    );
+
+    let refusalMessage = '';
+    try {
+      scope.promotionService.getQualifierQualificationDetails(qualifier, order);
+    } catch (thrown: unknown) {
+      refusalMessage = thrown instanceof Error ? thrown.message : String(thrown);
+    }
+
+    expect(refusalMessage).toContain('prepareAddressZoneEvaluation');
+    expect(refusalMessage).toContain('updateOrderAmountsWithPriceGroupsThenPromotions');
+    expect(refusalMessage).not.toContain(ZONE_ID);
+    expect(executor.countOf(ADDRESS_ZONE_LOCATIONS_SQL)).toBe(0);
+
+    await scope.prepareAddressZoneEvaluation();
+    expect(
+      scope.promotionService.getQualifierQualificationDetails(qualifier, order)
+        .qualifiedFulfillmentIDs,
+    ).toStrictEqual([fulfillment.orderFulfillmentID]);
   });
 
   it('★★ keeps a GENUINELY empty zone restrictive rather than softening it into a match', async () => {
@@ -1679,7 +1851,9 @@ describe('the wired address-zone evaluator resolves locations by identifier', ()
   it('★★ issues the zone read PARAMETERLESS, as one statement joining the link table to SwAddress', async () => {
     const executor = makeExecutor();
 
-    await bootWith(executor).then((root) => root.createRequestScope());
+    await bootWith(executor)
+      .then((root) => root.createRequestScope())
+      .then((scope) => scope.prepareAddressZoneEvaluation());
 
     const recorded = requirePresent(
       executor.calls.find(
@@ -1710,8 +1884,11 @@ describe('the wired address-zone evaluator resolves locations by identifier', ()
     const executor = makeExecutor().seed(ADDRESS_ZONE_LOCATIONS_SQL, []);
     const root = await bootWith(executor);
 
-    await root.createRequestScope();
-    await root.createRequestScope();
+    const first = await root.createRequestScope();
+    const second = await root.createRequestScope();
+
+    await first.prepareAddressZoneEvaluation();
+    await second.prepareAddressZoneEvaluation();
 
     expect(executor.countOf(ADDRESS_ZONE_LOCATIONS_SQL)).toBe(2);
   });
@@ -2201,10 +2378,8 @@ describe('updateOrderAmountsWithPriceGroupsThenPromotions', () => {
 
     await scope.updateOrderAmountsWithPriceGroupsThenPromotions(makeOrderViewFixture());
 
-    // The composed operation is sequencing and projection only. With both passes
-    // substituted, the ledger shows nothing but the eager tier-one read and the one
-    // per-scope address-zone read - and the count is stated as that sum rather than as a
-    // bare `1`, which is what the case asserted before the zone read existed.
+    // The composed operation performs the deferred zone read before either pass,
+    // even when both passes are substituted.
     expect(executor.calls).toHaveLength(2);
     expect(executor.countOf(CURRENCY_RECORDS_SQL)).toBe(1);
     expect(executor.countOf(ADDRESS_ZONE_LOCATIONS_SQL)).toBe(1);
@@ -2244,6 +2419,623 @@ describe('updateOrderAmountsWithPriceGroupsThenPromotions', () => {
     // by identity.
     expect(result.priceGroupIntents).toEqual([]);
     expect(result.pricedOrder).toBe(order);
+  });
+
+  it('★★★ loads the address-zone index itself before either pass runs', async () => {
+    const executor = makeExecutor().seed(ADDRESS_ZONE_LOCATIONS_SQL, []);
+    const scope = await bootWith(executor).then((root) => root.createRequestScope());
+    const order = makeOrderViewFixture();
+
+    expect(executor.countOf(ADDRESS_ZONE_LOCATIONS_SQL)).toBe(0);
+
+    const zoneReadsWhenPassOneBegan: number[] = [];
+    vi.spyOn(
+      observableOrderPass(scope.priceGroupService),
+      'updateOrderAmountsWithPriceGroups',
+    ).mockImplementation((): Promise<PriceGroupAppliedIntent[]> => {
+      zoneReadsWhenPassOneBegan.push(executor.countOf(ADDRESS_ZONE_LOCATIONS_SQL));
+      return Promise.resolve([]);
+    });
+    vi.spyOn(
+      observablePromotionPass(scope.promotionService),
+      'updateOrderAmountsWithPromotions',
+    ).mockResolvedValue([]);
+
+    await scope.updateOrderAmountsWithPriceGroupsThenPromotions(order);
+
+    expect(zoneReadsWhenPassOneBegan).toStrictEqual([1]);
+    expect(executor.countOf(ADDRESS_ZONE_LOCATIONS_SQL)).toBe(1);
+
+    await scope.updateOrderAmountsWithPriceGroupsThenPromotions(order);
+    expect(executor.countOf(ADDRESS_ZONE_LOCATIONS_SQL)).toBe(1);
+  });
+});
+// ===========================================================================
+// 4b. WIRE-DOCUMENT HYDRATION.
+//
+// ★★★ WHY THIS BLOCK EXISTS AT ALL, STATED AS THE FINDING THAT PRODUCED IT.
+//
+// A code review found the deployed `applyPromotions` route had NO successful wire
+// path: `export const handler = createPromotionApplicationHandler()` passes no
+// arguments, so admission defaulted to the structural probe that requires a
+// method-bearing `Money`, `Sku` and `PriceGroup` - and API Gateway can only ever
+// deliver `event.body` as JSON TEXT. Every real request was refused as
+// `unsupportedBodyShape`.
+//
+// The remedy put the hydration HERE rather than in the handler, because rule T3 of
+// the plan gives the repository tier sole authority to turn identifiers into
+// entities, and because a primary adapter that constructed a `Sku` would be a
+// primary adapter deciding what the catalogue says. So
+// `RequestScope.materializeOrderView` is a member of the request tier, and this is
+// its suite.
+//
+// ★ WHAT THESE CASES OWN, AND WHAT THEY DELIBERATELY DO NOT. They own: which reads
+// the hydrator issues and how many, WHOSE instance ends up on the view, what it
+// REFUSES rather than defaults, and that no total is recomputed on the way in. They
+// do not own the ADMISSION schema that guards it - member paths, decimal grammar,
+// bounds and the account trust boundary all belong to
+// `tests/unit/handlers/promotionApplicationHandler.test.ts`, which drives them
+// through the deployed entrypoint.
+// ===========================================================================
+
+describe('RequestScope.materializeOrderView', () => {
+  /** The identifiers the documents below name, all invented and all non-sensitive. */
+  const DOCUMENT_PRODUCT_ID = 'prod-wire-0001';
+  const DOCUMENT_SECOND_PRODUCT_ID = 'prod-wire-0002';
+  const DOCUMENT_SKU_ID = 'sku-wire-0001';
+  const DOCUMENT_SECOND_SKU_ID = 'sku-wire-0002';
+  const DOCUMENT_ORDER_ID = 'order-wire-0001';
+  const DOCUMENT_ITEM_ID = 'oi-wire-0001';
+  const DOCUMENT_SECOND_ITEM_ID = 'oi-wire-0002';
+  const DOCUMENT_FULFILLMENT_ID = 'of-wire-0001';
+
+  /**
+   * The catalogue one case hydrates against, and the scope that will read it.
+   *
+   * ★ THE TWO SPIES ARE INSTALLED ON THE ADAPTERS THIS SCOPE WAS ASSEMBLED WITH, reached through
+   * `adaptersOf` for the reason that helper documents: nothing on a scope leads to an adapter any
+   * more, so a spy installed on a second assembly would mock a method this scope's hydrator never
+   * calls. Recording the calls rather than counting them lets a case assert WHICH product was asked
+   * for and with what, not merely how often.
+   */
+  async function openHydration(
+    options: {
+      /** The products the repository can answer, keyed by the identifier the document names. */
+      readonly products?: ReadonlyMap<string, Product>;
+      /** The SKUs each product carries, keyed by product identifier. */
+      readonly skusByProductID?: ReadonlyMap<string, readonly Sku[]>;
+      /** The price groups the set loader can resolve. */
+      readonly priceGroups?: readonly PriceGroup[];
+    } = {},
+  ): Promise<{
+    readonly scope: RequestScope;
+    readonly productReads: readonly string[];
+    readonly skuReads: readonly { readonly productID: string; readonly fetchOptions: boolean }[];
+  }> {
+    const root = await bootWith(makeExecutor());
+    const scope = await openScopeWithAdapters(root);
+    const adapters = adaptersOf(scope);
+    const productReads: string[] = [];
+    const skuReads: { readonly productID: string; readonly fetchOptions: boolean }[] = [];
+    const products = options.products ?? new Map<string, Product>();
+    const skusByProductID = options.skusByProductID ?? new Map<string, readonly Sku[]>();
+
+    vi.spyOn(adapters.productRepository, 'getProductByProductID').mockImplementation(
+      (productID: string): Promise<Product | undefined> => {
+        productReads.push(productID);
+
+        return Promise.resolve(products.get(productID));
+      },
+    );
+    vi.spyOn(adapters.skuRepository, 'getProductSkus').mockImplementation(
+      // TWO parameters, and the second IS `fetchOptions`: the ported port declares
+      // `getProductSkus(product, fetchOptions)` [src/domain/ports/skuRepository.ts], which is the
+      // legacy's own eager-fetch decision surfaced [model/dao/SkuDAO.cfc:L152-L163]. There is no
+      // `sorted` parameter on this read.
+      (product: Product, fetchOptions: boolean): Promise<Sku[]> => {
+        const productID = product.getProductID();
+        skuReads.push({ productID, fetchOptions });
+
+        return Promise.resolve([...(skusByProductID.get(productID) ?? [])]);
+      },
+    );
+    armSetLoader(scope, options.priceGroups ?? []);
+
+    return { scope, productReads, skuReads };
+  }
+
+  /** One product the repository can answer, at the identifier a document names. */
+  function documentProduct(productID: string): Product {
+    return makeProductFixture({ idPrefix: `${productID}-`, productID });
+  }
+
+  /** One SKU hanging off `product`, at the identifier a document names. */
+  function documentSku(skuID: string, product: Product): Sku {
+    return makeSkuFixture({ idPrefix: `${skuID}-`, skuID, product });
+  }
+
+  /** One order-item document, every member stated. */
+  function itemDocument(
+    overrides: Partial<{
+      readonly orderItemID: string;
+      readonly productID: string;
+      readonly skuID: string;
+      readonly appliedPriceGroupID: string | null;
+      readonly price: string;
+      readonly extendedPrice: string;
+      readonly extendedSkuPrice: string;
+      readonly appliedPromotions: readonly AppliedPromotionDocument[];
+    }> = {},
+  ): OrderItemDocument {
+    return {
+      orderItemID: overrides.orderItemID ?? DOCUMENT_ITEM_ID,
+      productID: overrides.productID ?? DOCUMENT_PRODUCT_ID,
+      skuID: overrides.skuID ?? DOCUMENT_SKU_ID,
+      quantity: 3,
+      price: overrides.price ?? '19.99',
+      skuPrice: '21.50',
+      extendedPrice: overrides.extendedPrice ?? '59.97',
+      extendedSkuPrice: overrides.extendedSkuPrice ?? '64.50',
+      appliedPriceGroupID:
+        overrides.appliedPriceGroupID === undefined ? null : overrides.appliedPriceGroupID,
+      orderItemType: { systemCode: 'oitSale' },
+      orderFulfillmentID: DOCUMENT_FULFILLMENT_ID,
+      appliedPromotions: overrides.appliedPromotions ?? [],
+    };
+  }
+
+  /** One whole order document, every member stated, defaults hydratable. */
+  function orderDocument(
+    overrides: Partial<{
+      readonly accountID: string | null;
+      readonly subtotal: string;
+      readonly orderItems: readonly OrderItemDocument[];
+      readonly orderFulfillments: readonly OrderFulfillmentDocument[];
+      readonly appliedPromotions: readonly AppliedPromotionDocument[];
+      readonly currencyCode: string;
+    }> = {},
+  ): OrderViewDocument {
+    return {
+      orderID: DOCUMENT_ORDER_ID,
+      orderType: { systemCode: 'otSalesOrder' },
+      accountID: overrides.accountID === undefined ? null : overrides.accountID,
+      promotionCodeList: '',
+      totalSaleQuantity: 3,
+      subtotal: overrides.subtotal ?? '59.97',
+      subtotalAfterItemDiscounts: '59.97',
+      fulfillmentChargeAfterDiscountTotal: '0.00',
+      currencyCode: overrides.currencyCode ?? 'USD',
+      appliedPromotions: overrides.appliedPromotions ?? [],
+      orderItems: overrides.orderItems ?? [itemDocument()],
+      orderFulfillments: overrides.orderFulfillments ?? [
+        {
+          orderFulfillmentID: DOCUMENT_FULFILLMENT_ID,
+          fulfillmentCharge: '5.00',
+          fulfillmentMethod: { fulfillmentMethodID: 'fm-0001', fulfillmentMethodType: 'shipping' },
+          shippingMethod: { shippingMethodID: 'sm-0001' },
+          appliedPromotions: [],
+          totalShippingWeight: 2,
+          address: {
+            postalCode: '90210',
+            city: null,
+            stateCode: null,
+            countryCode: 'US',
+            isNew: false,
+          },
+        },
+      ],
+    };
+  }
+
+  it('hydrates a plain JSON document into the view the two passes consume', async () => {
+    const product = documentProduct(DOCUMENT_PRODUCT_ID);
+    const sku = documentSku(DOCUMENT_SKU_ID, product);
+    const { scope, productReads, skuReads } = await openHydration({
+      products: new Map([[DOCUMENT_PRODUCT_ID, product]]),
+      skusByProductID: new Map([[DOCUMENT_PRODUCT_ID, [sku]]]),
+    });
+
+    const view = await scope.materializeOrderView(orderDocument());
+
+    // The identifiers travelled; the CATALOGUE was read.
+    expect(productReads).toEqual([DOCUMENT_PRODUCT_ID]);
+    // `fetchOptions` is TRUE, because option membership is one of the reward gates
+    // [model/service/PromotionService.cfc:L808-L818] and a SKU fetched without its options would
+    // silently fail every option-gated reward.
+    expect(skuReads).toEqual([{ productID: DOCUMENT_PRODUCT_ID, fetchOptions: true }]);
+
+    const item = itemAt(view, 0);
+    // ★ BY IDENTITY: the SKU on the view is the repository's own instance, not a reconstruction. That
+    // is what lets the engine walk `sku.getProduct().getProductType().getProductTypeIDPath()`.
+    expect(item.sku).toBe(sku);
+    expect(item.sku.getProduct()).toBe(product);
+    // Every monetary member is a MINTED `Money`, carrying the document's own amount.
+    expect(item.price.toDecimalString()).toBe('19.99');
+    // `toFixed2` here because `Money` drops the trailing zero from `'64.50'`, exactly as CFML does
+    // when it stringifies a number [model/service/RoundingRuleService.cfc:L101-L102]. Same amount,
+    // and the presentation form is what a caller reads.
+    expect(item.extendedSkuPrice.toFixed2()).toBe('64.50');
+    expect(view.orderID).toBe(DOCUMENT_ORDER_ID);
+    expect(view.currencyCode).toBe(toCurrencyCode('USD'));
+    expect(view.orderType.systemCode).toBe('otSalesOrder');
+  });
+
+  it('reads each distinct product ONCE, however many items name it', async () => {
+    const product = documentProduct(DOCUMENT_PRODUCT_ID);
+    const first = documentSku(DOCUMENT_SKU_ID, product);
+    const second = documentSku(DOCUMENT_SECOND_SKU_ID, product);
+    const { scope, productReads, skuReads } = await openHydration({
+      products: new Map([[DOCUMENT_PRODUCT_ID, product]]),
+      skusByProductID: new Map([[DOCUMENT_PRODUCT_ID, [first, second]]]),
+    });
+
+    const view = await scope.materializeOrderView(
+      orderDocument({
+        orderItems: [
+          itemDocument(),
+          itemDocument({ orderItemID: DOCUMENT_SECOND_ITEM_ID, skuID: DOCUMENT_SECOND_SKU_ID }),
+        ],
+      }),
+    );
+
+    // TWO items, ONE product read and ONE SKU read. A ten-line order selling ten variants of one
+    // product must not degenerate into an N+1 walk, which is why the hydrator keys by folded
+    // identifier rather than reading per item.
+    expect(view.orderItems).toHaveLength(2);
+    expect(productReads).toEqual([DOCUMENT_PRODUCT_ID]);
+    expect(skuReads).toHaveLength(1);
+    expect(itemAt(view, 0).sku).toBe(first);
+    expect(itemAt(view, 1).sku).toBe(second);
+  });
+
+  it('resolves a case-folded identifier, as a CFML key read does', async () => {
+    const product = documentProduct(DOCUMENT_PRODUCT_ID);
+    const sku = documentSku(DOCUMENT_SKU_ID, product);
+    const { scope } = await openHydration({
+      // The repository answers the SPELLING THE DOCUMENT USED, which is the upper-cased one here.
+      products: new Map([[DOCUMENT_PRODUCT_ID.toUpperCase(), product]]),
+      skusByProductID: new Map([[DOCUMENT_PRODUCT_ID, [sku]]]),
+    });
+
+    const view = await scope.materializeOrderView(
+      orderDocument({
+        orderItems: [
+          itemDocument({
+            productID: DOCUMENT_PRODUCT_ID.toUpperCase(),
+            skuID: DOCUMENT_SKU_ID.toUpperCase(),
+          }),
+        ],
+      }),
+    );
+
+    // The stored row's spelling and the caller's need not match: CFML identifiers are
+    // case-insensitive, and a case-sensitive lookup here would refuse a legitimate order.
+    expect(itemAt(view, 0).sku).toBe(sku);
+  });
+
+  it('hands two items naming ONE price group the SAME instance', async () => {
+    const product = documentProduct(DOCUMENT_PRODUCT_ID);
+    const first = documentSku(DOCUMENT_SKU_ID, product);
+    const second = documentSku(DOCUMENT_SECOND_SKU_ID, product);
+    const priceGroup = makePriceGroupFixtures().rootPriceGroup;
+    const { scope } = await openHydration({
+      products: new Map([[DOCUMENT_PRODUCT_ID, product]]),
+      skusByProductID: new Map([[DOCUMENT_PRODUCT_ID, [first, second]]]),
+      priceGroups: [priceGroup],
+    });
+
+    const view = await scope.materializeOrderView(
+      orderDocument({
+        orderItems: [
+          itemDocument({ appliedPriceGroupID: priceGroup.getPriceGroupID() }),
+          itemDocument({
+            orderItemID: DOCUMENT_SECOND_ITEM_ID,
+            skuID: DOCUMENT_SECOND_SKU_ID,
+            appliedPriceGroupID: priceGroup.getPriceGroupID(),
+          }),
+        ],
+      }),
+    );
+
+    // ONE INSTANCE, because the reward-eligibility comparison at
+    // [model/service/PromotionService.cfc:L241] compares price-group identity - two equal-but-distinct
+    // instances would answer differently for two items that named the same group.
+    const applied = itemAt(view, 0).appliedPriceGroup;
+    expect(applied).toBe(priceGroup);
+    expect(itemAt(view, 1).appliedPriceGroup).toBe(applied);
+  });
+
+  it('leaves an item that states NO price group on the other arm of the discriminator', async () => {
+    const product = documentProduct(DOCUMENT_PRODUCT_ID);
+    const sku = documentSku(DOCUMENT_SKU_ID, product);
+    const { scope } = await openHydration({
+      products: new Map([[DOCUMENT_PRODUCT_ID, product]]),
+      skusByProductID: new Map([[DOCUMENT_PRODUCT_ID, [sku]]]),
+    });
+
+    const view = await scope.materializeOrderView(orderDocument());
+
+    // `undefined`, and no price group INVENTED for it: a stated `null` is the `isNull(...)` arm at
+    // [model/service/PromotionService.cfc:L241], where the discount is computed from `getPrice()`.
+    expect(itemAt(view, 0).appliedPriceGroup).toBeUndefined();
+  });
+
+  it('carries the three totals VERBATIM rather than recomputing any of them', async () => {
+    const product = documentProduct(DOCUMENT_PRODUCT_ID);
+    const sku = documentSku(DOCUMENT_SKU_ID, product);
+    const { scope } = await openHydration({
+      products: new Map([[DOCUMENT_PRODUCT_ID, product]]),
+      skusByProductID: new Map([[DOCUMENT_PRODUCT_ID, [sku]]]),
+    });
+
+    // A subtotal that DISAGREES with `price × quantity`, deliberately: it is the aggregate's own
+    // state, the L252 correction term measures the gap between the two extended pairs, and
+    // recomputing either side here would be this tier deciding a number the order already decided.
+    const view = await scope.materializeOrderView(orderDocument({ subtotal: '1.23' }));
+
+    expect(view.subtotal.toDecimalString()).toBe('1.23');
+    expect(view.subtotalAfterItemDiscounts.toDecimalString()).toBe('59.97');
+    // `toFixed2` rather than `toDecimalString` for this one: `Money` normalises `'0.00'` to `'0'`,
+    // which is the SAME AMOUNT - CFML drops trailing zeros when it stringifies a number too
+    // [model/service/RoundingRuleService.cfc:L101-L102] - so the presentation form is what pins the
+    // value here without asserting a spelling the value object never promised.
+    expect(view.fulfillmentChargeAfterDiscountTotal.toFixed2()).toBe('0.00');
+  });
+
+  it('turns every stated absence into undefined, and NEVER into a zero or a wildcard', async () => {
+    const product = documentProduct(DOCUMENT_PRODUCT_ID);
+    const sku = documentSku(DOCUMENT_SKU_ID, product);
+    const { scope } = await openHydration({
+      products: new Map([[DOCUMENT_PRODUCT_ID, product]]),
+      skusByProductID: new Map([[DOCUMENT_PRODUCT_ID, [sku]]]),
+    });
+
+    const view = await scope.materializeOrderView(
+      orderDocument({
+        accountID: null,
+        appliedPromotions: [
+          { promotionAppliedID: 'pa-0001', discountAmount: null, promotion: null },
+          {
+            promotionAppliedID: 'pa-0002',
+            discountAmount: '0.00',
+            promotion: { promotionID: 'promo-0001' },
+          },
+        ],
+      }),
+    );
+
+    // ★ NO DISCOUNT and A ZERO DISCOUNT ARE DIFFERENT FACTS. The column is nullable
+    // [model/entity/PromotionApplied.cfc:L51], so `null` becomes `undefined` and a stated `'0.00'`
+    // becomes a `Money` that IS zero - substituting one for the other would invent a discount row.
+    const [absent, zero] = view.appliedPromotions;
+    expect(absent?.discountAmount).toBeUndefined();
+    expect(absent?.promotion).toBeUndefined();
+    expect(zero?.discountAmount?.toFixed2()).toBe('0.00');
+    expect(zero?.promotion?.promotionID).toBe('promo-0001');
+    // A stated-absent account is absent, not an empty string: the price-group pass reads it to decide
+    // whether to resolve any price groups at all.
+    expect(view.accountID).toBeUndefined();
+
+    const fulfillment = requirePresent(view.orderFulfillments[0], 'the shipping fulfillment');
+    const address: ShippingAddressView = requirePresent(fulfillment.address, 'its address');
+    // The zone evaluator SKIPS an absent comparison member
+    // [model/service/AddressService.cfc:L63, L66, L69, L72], so an absent member must stay absent -
+    // widening it into a wildcard or narrowing it into a match would both change which zone matches.
+    expect(address.city).toBeUndefined();
+    expect(address.stateCode).toBeUndefined();
+    expect(address.postalCode).toBe('90210');
+    expect(address.countryCode).toBe('US');
+  });
+
+  it('states a pickup fulfillment absent shipping method as undefined', async () => {
+    const product = documentProduct(DOCUMENT_PRODUCT_ID);
+    const sku = documentSku(DOCUMENT_SKU_ID, product);
+    const { scope } = await openHydration({
+      products: new Map([[DOCUMENT_PRODUCT_ID, product]]),
+      skusByProductID: new Map([[DOCUMENT_PRODUCT_ID, [sku]]]),
+    });
+
+    const view = await scope.materializeOrderView(
+      orderDocument({
+        orderFulfillments: [
+          {
+            orderFulfillmentID: DOCUMENT_FULFILLMENT_ID,
+            fulfillmentCharge: '0.00',
+            fulfillmentMethod: { fulfillmentMethodID: 'fm-0002', fulfillmentMethodType: 'pickup' },
+            shippingMethod: null,
+            appliedPromotions: [],
+            totalShippingWeight: 0,
+            address: null,
+          },
+        ],
+      }),
+    );
+
+    // [model/service/PromotionService.cfc:L701] tests `isNull(orderFulfillment.getShippingMethod())`
+    // explicitly, so "no shipping method" has to be expressible - and it is a state, not a gap.
+    const fulfillment = requirePresent(view.orderFulfillments[0], 'the pickup fulfillment');
+    expect(fulfillment.shippingMethod).toBeUndefined();
+    expect(fulfillment.address).toBeUndefined();
+  });
+
+  it('REFUSES an order item whose product cannot be loaded, naming both identifiers', async () => {
+    const { scope, skuReads } = await openHydration({ products: new Map<string, Product>() });
+
+    const raised = await rejectionOf(() => scope.materializeOrderView(orderDocument()));
+
+    // Refused, never skipped: an item whose product cannot be loaded is an item whose product-type
+    // ancestry, brand and option list are unknown - and those are exactly what reward and qualifier
+    // membership is decided by, so pricing it would be pricing against an unknown catalogue.
+    expect(raised.name).toBe('CompositionDataError');
+    expect(raised.message).toContain(DOCUMENT_PRODUCT_ID);
+    expect(raised.message).toContain(DOCUMENT_ITEM_ID);
+    // And it refused BEFORE reaching for SKUs.
+    expect(skuReads).toEqual([]);
+  });
+
+  it('REFUSES a SKU the named product does not carry, naming the pair', async () => {
+    const product = documentProduct(DOCUMENT_PRODUCT_ID);
+    const stranger = documentSku(DOCUMENT_SECOND_SKU_ID, product);
+    const { scope } = await openHydration({
+      products: new Map([[DOCUMENT_PRODUCT_ID, product]]),
+      // The product carries a DIFFERENT SKU from the one the document names.
+      skusByProductID: new Map([[DOCUMENT_PRODUCT_ID, [stranger]]]),
+    });
+
+    const raised = await rejectionOf(() => scope.materializeOrderView(orderDocument()));
+
+    // The two identifiers disagree about the catalogue. Both are named so the caller can fix the
+    // pair rather than guess which half was wrong.
+    expect(raised.name).toBe('CompositionDataError');
+    expect(raised.message).toContain(DOCUMENT_SKU_ID);
+    expect(raised.message).toContain(DOCUMENT_PRODUCT_ID);
+  });
+
+  it('REFUSES a price group that cannot be resolved rather than dropping it', async () => {
+    const product = documentProduct(DOCUMENT_PRODUCT_ID);
+    const sku = documentSku(DOCUMENT_SKU_ID, product);
+    const { scope } = await openHydration({
+      products: new Map([[DOCUMENT_PRODUCT_ID, product]]),
+      skusByProductID: new Map([[DOCUMENT_PRODUCT_ID, [sku]]]),
+      priceGroups: [],
+    });
+
+    const raised = await rejectionOf(() =>
+      scope.materializeOrderView(
+        orderDocument({ orderItems: [itemDocument({ appliedPriceGroupID: 'pg-missing-0001' })] }),
+      ),
+    );
+
+    // ★ DROPPING IT WOULD CHANGE THE MONEY, not merely lose a reference: an item with no applied
+    // price group takes the FIRST arm of the [model/service/PromotionService.cfc:L241] discriminator,
+    // which computes the discount from a different base price.
+    expect(raised.name).toBe('CompositionDataError');
+    expect(raised.message).toContain('pg-missing-0001');
+  });
+
+  it('REFUSES a monetary member that is not a plain decimal numeral', async () => {
+    const product = documentProduct(DOCUMENT_PRODUCT_ID);
+    const sku = documentSku(DOCUMENT_SKU_ID, product);
+    const { scope } = await openHydration({
+      products: new Map([[DOCUMENT_PRODUCT_ID, product]]),
+      skusByProductID: new Map([[DOCUMENT_PRODUCT_ID, [sku]]]),
+    });
+
+    const raised = await rejectionOf(() =>
+      // A grouped numeral, which `Money` refuses. The primary adapter's schema refuses it first in
+      // production - this asserts the hydrator does not accept one either, so the guarantee does not
+      // depend on which caller reached it.
+      scope.materializeOrderView(
+        orderDocument({ orderItems: [itemDocument({ price: '1,234.50' })] }),
+      ),
+    );
+
+    expect(raised.message.length).toBeGreaterThan(0);
+    // No `Money` was minted from it and nothing was rounded into range.
+    expect(raised.message).not.toContain('1234.50');
+  });
+
+  it('hydrates through ONE scope only, so two requests share no catalogue read', async () => {
+    const product = documentProduct(DOCUMENT_PRODUCT_ID);
+    const sku = documentSku(DOCUMENT_SKU_ID, product);
+    const root = await bootWith(makeExecutor());
+    const first = await openScopeWithAdapters(root);
+    const second = await openScopeWithAdapters(root);
+
+    // Only the FIRST scope's repository is armed.
+    vi.spyOn(adaptersOf(first).productRepository, 'getProductByProductID').mockImplementation(
+      (): Promise<Product | undefined> => Promise.resolve(product),
+    );
+    vi.spyOn(adaptersOf(first).skuRepository, 'getProductSkus').mockImplementation(
+      (): Promise<Sku[]> => Promise.resolve([sku]),
+    );
+    const secondProductReads: string[] = [];
+    vi.spyOn(adaptersOf(second).productRepository, 'getProductByProductID').mockImplementation(
+      (productID: string): Promise<Product | undefined> => {
+        secondProductReads.push(productID);
+
+        return Promise.resolve(undefined);
+      },
+    );
+
+    const view = await first.materializeOrderView(orderDocument());
+    const raised = await rejectionOf(() => second.materializeOrderView(orderDocument()));
+
+    // ★ PER-REQUEST ISOLATION IS THE PROPERTY. The first scope hydrated; the second refused, because
+    // it holds its OWN adapters and inherits nothing the first read. On a warm container that is what
+    // stops one invocation's catalogue - and therefore one customer's price - reaching another's.
+    expect(itemAt(view, 0).sku).toBe(sku);
+    expect(secondProductReads).toEqual([DOCUMENT_PRODUCT_ID]);
+    expect(raised.name).toBe('CompositionDataError');
+    // Two DISTINCT scopes, which is what "one per request" means: the root hands back a new one each
+    // time rather than a memoized singleton, so nothing either hydrated can be reached from the other.
+    expect(second).not.toBe(first);
+  });
+
+  it('runs NEITHER pricing pass, and issues no statement of its own', async () => {
+    const product = documentProduct(DOCUMENT_PRODUCT_ID);
+    const sku = documentSku(DOCUMENT_SKU_ID, product);
+    const root = await bootWith(makeExecutor());
+    const scope = await openScopeWithAdapters(root);
+    const adapters = adaptersOf(scope);
+
+    vi.spyOn(adapters.productRepository, 'getProductByProductID').mockImplementation(
+      (): Promise<Product | undefined> => Promise.resolve(product),
+    );
+    vi.spyOn(adapters.skuRepository, 'getProductSkus').mockImplementation((): Promise<Sku[]> =>
+      Promise.resolve([sku]),
+    );
+    const priceGroupPass = vi
+      .spyOn(observableOrderPass(scope.priceGroupService), 'updateOrderAmountsWithPriceGroups')
+      .mockImplementation((): Promise<PriceGroupAppliedIntent[]> => Promise.resolve([]));
+    const promotionPass = vi
+      .spyOn(observablePromotionPass(scope.promotionService), 'updateOrderAmountsWithPromotions')
+      .mockImplementation((): Promise<PromotionAppliedIntent[]> => Promise.resolve([]));
+
+    await scope.materializeOrderView(orderDocument());
+
+    // Hydration is a READ. It applies no rate, computes no discount and rounds nothing - the passes
+    // are the composed operation's business, and running one here would price an order twice.
+    expect(priceGroupPass).not.toHaveBeenCalled();
+    expect(promotionPass).not.toHaveBeenCalled();
+  });
+
+  it('reads no second product when every item names the same one, across two documents', async () => {
+    const first = documentProduct(DOCUMENT_PRODUCT_ID);
+    const second = documentProduct(DOCUMENT_SECOND_PRODUCT_ID);
+    const firstSku = documentSku(DOCUMENT_SKU_ID, first);
+    const secondSku = documentSku(DOCUMENT_SECOND_SKU_ID, second);
+    const { scope, productReads, skuReads } = await openHydration({
+      products: new Map([
+        [DOCUMENT_PRODUCT_ID, first],
+        [DOCUMENT_SECOND_PRODUCT_ID, second],
+      ]),
+      skusByProductID: new Map([
+        [DOCUMENT_PRODUCT_ID, [firstSku]],
+        [DOCUMENT_SECOND_PRODUCT_ID, [secondSku]],
+      ]),
+    });
+
+    const view = await scope.materializeOrderView(
+      orderDocument({
+        orderItems: [
+          itemDocument(),
+          itemDocument({
+            orderItemID: DOCUMENT_SECOND_ITEM_ID,
+            productID: DOCUMENT_SECOND_PRODUCT_ID,
+            skuID: DOCUMENT_SECOND_SKU_ID,
+          }),
+        ],
+      }),
+    );
+
+    // TWO distinct products means two reads, and each item's SKU comes from ITS OWN product - which
+    // is what makes the "sku is not carried by product" refusal above a real check rather than a
+    // formality.
+    expect(productReads).toEqual([DOCUMENT_PRODUCT_ID, DOCUMENT_SECOND_PRODUCT_ID]);
+    expect(skuReads).toHaveLength(2);
+    expect(itemAt(view, 0).sku).toBe(firstSku);
+    expect(itemAt(view, 1).sku).toBe(secondSku);
   });
 });
 

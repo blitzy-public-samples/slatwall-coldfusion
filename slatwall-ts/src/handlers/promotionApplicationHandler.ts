@@ -38,9 +38,9 @@
  *
  *   - A NULL applied price group, OR a reward that DOES list the applied group as eligible,
  *     discounts from `getPrice()` with NO correction term (L241 -> L244).
- *   - Otherwise - an applied price group the reward does NOT list as eligible - the discount comes
- *     from `getSkuPrice()` PLUS the correction term
- *     `originalDiscountAmount - (getExtendedSkuPrice() - getExtendedPrice())` (L246 -> L249, L252).
+ *   - Otherwise - an applied price group the reward does NOT list as eligible - compute
+ *     `originalDiscountAmount` from `getSkuPrice()`, then subtract
+ *     `(getExtendedSkuPrice() - getExtendedPrice())` (L246 -> L249, L252).
  *
  * `getAppliedPriceGroup()` is read IN THE BRANCH CONDITION ITSELF at L241, so the ordering
  * obligation holds WHICHEVER ARM RUNS. There is no price-group-free path that escapes it. And the
@@ -88,8 +88,32 @@
  *
  * ★★ WHY THIS ADAPTER ADMITS AN ORDER VIEW AND NEVER MINTS ONE.
  *
- * The AAP describes this entrypoint as "accepting an order view", and that verb is exact.
- * Materialising one is a REPOSITORIES-tier act and is structurally out of this tier's reach, for
+ * ★★★ QUOTE-THEN-REVISE, AND THE REVISION IS THE ONE THAT MADE THE ROUTE USABLE. This section used
+ * to conclude: "So a caller holding a wire document materialises it on the tier that owns hydration
+ * and hands the RESULT here; this adapter validates what it is given, refuses what it cannot vouch
+ * for, and never fabricates a member." Every clause of that was true of the CODE and the conclusion
+ * drawn from it was wrong, because there is no such caller on the wire: API Gateway delivers
+ * `event.body` as TEXT, so the only order a deployed route can receive is a JSON projection - and the
+ * structural admission refused exactly that. The route had a table row, a Lambda `handler` and a
+ * bundle entry, and no successful request path at all; a code review raised it as a CRITICAL
+ * deployability finding, and it was right to.
+ *
+ * WHAT CHANGED, AND WHAT DID NOT. The premise below is untouched: THIS TIER STILL MINTS NOTHING.
+ * What was added is a NAME for the hydration this tier cannot perform -
+ * `RequestScope.materializeOrderView`, published by `./bootstrap.js`, which holds the repositories
+ * and is the tier transformation rule T3 assigns loading to. This adapter parses a caller's
+ * projection against a declared schema ({@link ORDER_VIEW_DOCUMENT_SCHEMA}) and asks that member for
+ * the view. So the three reasons below still hold verbatim - this file constructs no `Sku`, no
+ * `PriceGroup` and no `CurrencyCode` - while the capability is reachable from the wire.
+ *
+ * AND THE SECURITY PROPERTY IS STRICTLY STRONGER THAN IT WOULD HAVE BEEN. The document names the
+ * SKU, its product and any applied price group by IDENTIFIER and describes none of them, so the
+ * product-type ancestry, the brand, the option list and the price-group eligibility that decide
+ * whether a promotion applies [model/service/PromotionService.cfc:L808-L818, L864-L865, L241] are
+ * read from `SwSku`, `SwProduct`, `SwProductType` and `SwPriceGroup` and cannot be asserted by a
+ * caller. A schema that accepted a described entity would have let a caller grant itself a discount.
+ *
+ * Materialising one remains a REPOSITORIES-tier act and is structurally out of this tier's reach, for
  * three independent reasons that a reader should be able to check rather than take on trust:
  *
  *   1. `OrderItemView.sku` is a ported `Sku` ENTITY, because the engine walks a deep graph through
@@ -100,13 +124,27 @@
  *   3. `OrderView.currencyCode` is a BRANDED value object whose only mint lives in
  *      `../domain/valueObjects/currencyCode.js`.
  *
- * Constructing any of the three is entity construction, which this tier does not do, and
- * `RequestScope` publishes no SKU-by-identifier loader, no price-group loader and - deliberately, as
- * `./bootstrap.js` records at length - none of the six MySQL adapters. So a caller holding a wire
- * document materialises it on the tier that owns hydration and hands the RESULT here; this adapter
- * validates what it is given, refuses what it cannot vouch for, and never fabricates a member.
- * Refusing is the safe outcome, and it is a complete one: no member is ever defaulted, and in
- * particular an absent price NEVER becomes zero, because a zero price sells product for free.
+ * Constructing any of the three is entity construction, which this tier does not do. `RequestScope`
+ * also publishes the five narrow `entityLoaders` used by price resolution, but this adapter neither
+ * receives nor calls them: its admission is handed only the `OrderViewMaterializer` projection. That
+ * projection exposes ONE hydration member, `materializeOrderView`, which takes the whole document and
+ * hands back the whole view, with no repository, service, setting or write reachable through it.
+ * `RequestScope` deliberately publishes none of the six raw MySQL adapters. This adapter validates
+ * what it is given, asks the materializer for the view, and refuses what neither the schema nor the
+ * hydration can account for. Refusing is the safe outcome, and it is a complete one: no member is ever
+ * defaulted, and in particular an absent price NEVER becomes zero, because a zero price sells product
+ * for free.
+ *
+ * ★ THE AUTHENTICATED ACCOUNT IS NEVER TAKEN FROM THE BODY, and this is the OTHER thing the review
+ * found. `PriceGroupService.updateOrderAmountsWithPriceGroups` resolves an order's price groups from
+ * `order.accountID` - the ported equivalent of the `!isNull(getAccount())` test at
+ * [model/service/PriceGroupService.cfc:L365] - so the account is a PRICING AUTHORITY, and a
+ * body-supplied one is an authority the caller writes. The envelope's optional `accountID` therefore
+ * no longer selects anything: `resolveRequestPrincipal` reads the account from
+ * `event.requestContext.authorizer`, which a caller cannot write, and the body member and the
+ * document's own `accountID` are each REFUSED when they disagree with it. The legacy equivalent is
+ * the same trust boundary: `getHibachiScope()` only held an account after `loginAccount(...)`, so the
+ * legacy actor came from an authenticated session and never from request content.
  *
  * THE ONE OTHER OPERATION. `getSalePriceDetailsForProductSkus(productID)`
  * [model/service/PromotionService.cfc:L1022] takes a plain string and is therefore fully
@@ -161,15 +199,6 @@
  * and are authored there, not here; this module's obligation is to be structurally testable for
  * them, which is what {@link createPromotionApplicationHandler} is for.
  *
- * NO USER-SPECIFIED RULES EXIST FOR THIS PROJECT. The rules source was queried and reports that
- * none were provided, so no rule is cited anywhere in this file and none is invented. Every
- * constraint below traces to the Agent Action Plan, to the folder's own requirements, or to an
- * explicit `JUDGMENT CALL` note. Their absence is not licence to lower the bar: the enterprise
- * standard the AAP enumerates - maximal strictness, mechanically enforced layer boundaries, all
- * money through `Money`, environment-driven configuration with no credential in source, one primary
- * exported unit with no barrel, and an in-code annotation for every judgment call and preserved
- * defect - is what this file is held to.
- *
  * PARAMETERIZED SQL: NOT APPLICABLE HERE, stated rather than silently omitted. This module contains
  * no query, no query fragment and no database access; that obligation rests wholly with
  * `src/repositories/mysql/**`, the only layer that speaks to the `Sw*` schema. Schema continuity is
@@ -209,23 +238,46 @@
 import { z } from 'zod';
 
 import { bootstrapCompositionRoot } from './bootstrap.js';
-import { invalidRequestResponse, mapErrorToApiGatewayResponse } from './errorMapper.js';
+import {
+  invalidRequestResponse,
+  jsonSuccessResponse,
+  mapErrorToApiGatewayResponse,
+  mapZodErrorFields,
+  resolveServerRequestId,
+  routeDiagnosticLabel,
+  routeNotFoundResponse,
+  unauthenticatedResponse,
+} from './errorMapper.js';
+import { resolveRequestPrincipal } from './requestPrincipal.js';
 import { resolveRouteForCapability, routeRequestFromEvent } from './router.js';
 import { logger as defaultLogger } from '../lib/logger.js';
+// `cfEquals` keeps the compatibility-account comparisons aligned with CFML's case-insensitive string
+// equality. Principal resolution itself is shared in `./requestPrincipal.js`.
+import { cfEquals } from '../lib/cfml/struct.js';
+import { toDecimalString } from '../lib/cfml/numberFormat.js';
 
 import type { APIGatewayProxyEvent, APIGatewayProxyResult, Context } from 'aws-lambda';
-import type { CompositionRoot, OrderPricingResult, RequestScope } from './bootstrap.js';
+import type {
+  CompositionRoot,
+  OrderPricingResult,
+  OrderViewDocument,
+  RequestScope,
+  RequestScopeInput,
+} from './bootstrap.js';
+import type { RouteAction } from './router.js';
 import type { ErrorMappingContext, InvalidRequestReason, MappedFieldIssue } from './errorMapper.js';
+import type { PromotionAppliedType } from '../domain/entities/promotionApplied.js';
+import type { PromotionAppliedIntent } from '../domain/promotionEngine/qualifiedDiscountTypes.js';
 import type { SalePriceDetail } from '../domain/ports/promotionRepository.js';
 import type { PriceGroupAppliedIntent } from '../services/priceGroupService.js';
 import type { PromotionService } from '../services/promotionService.js';
-import type { Money } from '../domain/valueObjects/money.js';
 import type {
   OrderFulfillmentView,
   ShippingAddressView,
 } from '../domain/views/orderFulfillmentView.js';
 import type { OrderItemView } from '../domain/views/orderItemView.js';
 import type { OrderView } from '../domain/views/orderView.js';
+import type { Money } from '../domain/valueObjects/money.js';
 import type { Logger } from '../lib/logger.js';
 
 // `../domain/ports/addressZoneEvaluator.js` is DELIBERATELY NOT IMPORTED, and saying so is worth more
@@ -276,27 +328,49 @@ const CAPABILITY = 'promotionApplication';
  * sub-vocabulary enumerated in the table would be a surface this migration was never asked to
  * design.
  */
-export type PromotionApplicationOperation = 'applyPromotions' | 'salePriceDetails';
+export type PromotionApplicationOperation = 'applyPromotions' | 'getSalePriceDetailsForProductSkus';
+
+/**
+ * The one capability an admission may reach for on the request scope: wire-document hydration.
+ *
+ * A `Pick<>` rather than the whole scope, so an admission cannot open a pass, reach a service or
+ * read a setting on its way to a view - and so a suite substituting one has one member to supply
+ * rather than fourteen. The member itself is documented on `./bootstrap.js`, which owns it because
+ * hydration is a repositories-tier act.
+ */
+export type OrderViewMaterializer = Pick<RequestScope, 'materializeOrderView'>;
 
 /**
  * How this adapter obtains the read-only order view it hands to the composed operation.
  *
  * ★ THE SEAM EXISTS BECAUSE MATERIALISING AN ORDER VIEW IS NOT A HANDLER-TIER ACT. See the module
  * header for the three independent reasons - a ported `Sku` entity, a ported `PriceGroup` entity and
- * a branded `CurrencyCode` - and for why `RequestScope` publishes no loader for any of them. An
- * admission either vouches for the value it was handed or REFUSES it; it never fabricates a member,
- * never defaults an absent price to zero, and never mutates what it admits.
+ * a branded `CurrencyCode`. A handler can neither construct nor load one, which is why the second
+ * parameter exists: the hydration itself is performed by `RequestScope.materializeOrderView`, on the
+ * tier that holds the repositories, and an admission's job is to decide WHAT is handed to it. An
+ * admission never fabricates a member, never defaults an absent price to zero, and never mutates
+ * what it admits.
+ *
+ * ★ TWO IMPLEMENTATIONS SHIP, AND THE DEFAULT IS THE WIRE ONE. {@link admitOrderDocument} parses a
+ * caller's JSON projection against a declared schema and hands the result to the materializer; it is
+ * the default precisely because API Gateway can deliver nothing else, so it is the arm the deployed
+ * route needs. {@link admitMaterializedOrderView} vouches for an ALREADY-MATERIALISED view without
+ * loading anything, and is what a strangler-fig proxy holding a live aggregate injects.
  *
  * Receiving the whole decoded request rather than just its `order` member is deliberate: an
  * admission may need the envelope's correlation identifier to report precisely what it refused, and
  * narrowing the parameter later is additive whereas widening it is not.
  *
  * @param request the decoded, schema-validated request envelope for the pricing operation.
+ * @param materializer the hydration capability of THIS request's scope.
  * @returns the order view to price.
- * @throws {@link OrderViewAdmissionError} when the value cannot be vouched for. Refusal is a normal
- *   outcome of an unvouchable input, and is mapped to a client-shaped response by the handler.
+ * @throws {@link OrderViewAdmissionError} when the document cannot be admitted. Refusal is a normal
+ *   outcome of an unusable input, and is mapped to a client-shaped response by the handler.
  */
-export type OrderViewAdmission = (request: ApplyPromotionsRequest) => Promise<OrderView>;
+export type OrderViewAdmission = (
+  request: ApplyPromotionsRequest,
+  materializer: OrderViewMaterializer,
+) => Promise<OrderView>;
 
 /**
  * Everything this handler is parameterised over, so that the clock, the order view and the composed
@@ -321,10 +395,21 @@ export interface PromotionApplicationDependencies {
   readonly compositionRoot?: (() => Promise<CompositionRoot>) | undefined;
 
   /**
-   * How the order view is obtained. Defaults to {@link admitMaterializedOrderView}.
+   * How the order view is obtained. Defaults to {@link admitOrderDocument}, the WIRE arm.
    *
-   * This is the member a suite supplies a golden fixture through, and the member a strangler-fig
-   * proxy that already holds a materialised aggregate supplies its own resolution through.
+   * ★ THE DEFAULT IS THE ONE A DEPLOYED ROUTE CAN ACTUALLY USE, and that is a correction rather
+   * than a preference. This member used to default to {@link admitMaterializedOrderView}, which
+   * requires a method-bearing order graph - so the deployed `applyPromotions` route refused every
+   * possible API Gateway body, because a body is text and `Money`, `Sku` and `PriceGroup` methods
+   * do not survive `JSON.parse`. A route that cannot be called is not a served capability. The
+   * default now parses a declared {@link OrderViewDocument} schema and hydrates it through
+   * `RequestScope.materializeOrderView`, so the wire path works and the entity graph is still
+   * loaded from the schema rather than described by the caller.
+   *
+   * Both other arms remain available and neither is diminished: a suite supplies a golden fixture
+   * through this member, and a strangler-fig proxy that already holds a materialised aggregate
+   * injects {@link admitMaterializedOrderView} - which is exported for exactly that - or its own
+   * resolution.
    */
   readonly admitOrderView?: OrderViewAdmission | undefined;
 
@@ -377,41 +462,36 @@ export type PromotionApplicationHandler = (
  * interface exists only so the three shared members are declared once and cannot drift.
  */
 interface PromotionApplicationRequestEnvelope {
-  /**
-   * The caller-supplied idempotency key. See {@link IDEMPOTENCY_KEY_PATTERN} for what it is required
-   * to look like and SECTION 2, obligation (2), for why it is required at all.
-   */
-  readonly idempotencyKey: string;
-
-  /** Correlation identifier for this invocation, already reduced to a safe token. */
+  /** Correlation identifier for this invocation, established by the server. */
   readonly requestId: string;
-
-  /**
-   * The authenticated account, as an OPAQUE identifier, or absent for the logged-out arm.
-   *
-   * Absence is a STATE, not a missing value: [model/service/PriceGroupService.cfc:L262-L268]
-   * branches on the logged-in flag and only then reads the account, and the else arm at [:L265-L266]
-   * returns the SKU's own price. `RequestScopeInput.accountID` carries exactly this and nothing else,
-   * so omitting it IS that else arm. The out-of-scope Account entity is never dereferenced, never
-   * imported and never constructed.
-   */
-  readonly accountID?: string;
 }
+
+// ★★★ TWO MEMBERS WERE REMOVED FROM THIS ENVELOPE, AND EACH REMOVAL IS A FINDING.
+//
+//   * `idempotencyKey: string` - FINDING F6. It was REQUIRED, character-filtered, bounded, echoed on
+//     the response and written to both log lines, and it was honoured by NOTHING: no ledger, no
+//     persistence boundary, no request fingerprint and no stable evaluation instant. Section 2's own
+//     obligation (2) argued the key "serves the party that DOES persist", which is a real observation
+//     about a DOWNSTREAM contract and not a reason to make it mandatory HERE - and worse, the clock is
+//     bound fresh per invocation, so the SAME key over the SAME document can straddle a
+//     promotion-period or sale-price boundary and legitimately return a DIFFERENT answer. A required
+//     key that cannot be honoured is a contract this entrypoint cannot keep. It is gone from the
+//     envelope, the schema, the response and the log lines; obligation (2) is restated in terms of the
+//     property that is actually true, which is that this entrypoint performs no durable write at all.
+//   * `accountID?: string` as an AUTHORITY - FINDING F2 (CWE-639). The compatibility member may still
+//     be stated, but it is compared with the API Gateway authorizer and then discarded. Only
+//     `resolveRequestPrincipal` supplies the request scope's pricing identity.
 
 /**
  * A request for the composed price-group-then-promotion operation.
  *
- * `order` is `unknown` on purpose. A schema can prove the envelope's own members and can prove that
- * an `order` member is PRESENT, but it cannot prove that an order view's entity-bearing members are
- * ported entities - so the envelope carries the value forward unexamined and
- * {@link OrderViewAdmission} is the single place that decides whether it may be vouched for. Typing it
- * `unknown` rather than a permissive object shape is what forces that decision to be made somewhere
- * explicit instead of dissolving into optional members nobody checks.
+ * `order` remains `unknown` at the envelope boundary and is validated by {@link admitOrderDocument}
+ * against the complete {@link OrderViewDocument} schema before the request scope materializes it.
  */
 export interface ApplyPromotionsRequest extends PromotionApplicationRequestEnvelope {
   readonly operation: 'applyPromotions';
 
-  /** The order to price. Stated as a value; its absence is refused by the admission. */
+  /** The order document to price. Its absence and shape are decided by the admission port. */
   readonly order?: unknown;
 }
 
@@ -423,7 +503,7 @@ export interface ApplyPromotionsRequest extends PromotionApplicationRequestEnvel
  * discriminated envelope schema refuses such a payload with a member path before it is ever decoded.
  */
 export interface SalePriceDetailsRequest extends PromotionApplicationRequestEnvelope {
-  readonly operation: 'salePriceDetails';
+  readonly operation: 'getSalePriceDetailsForProductSkus';
 
   /** The product whose SKUs' sale-price details are wanted. An opaque identifier. */
   readonly productID: string;
@@ -476,15 +556,26 @@ export class OrderViewAdmissionError extends Error {
  * would state a discount the engine never decided.
  */
 export interface PromotionAppliedIntentDocument {
-  /** `add` | `update` | `remove`, exactly as the engine decided it. */
-  readonly operation: string;
+  /**
+   * `add` | `update` | `remove`, exactly as the engine decided it.
+   *
+   * ★★★ TYPED FROM THE DOMAIN UNION RATHER THAN AS `string`, WHICH IS FINDING F15. Both this member
+   * and {@link PromotionAppliedIntentDocument.appliedType} were declared `string` under comments
+   * asserting the union was "NOT widened here" - so the documentation claimed a closed vocabulary that
+   * the type system had already thrown away, and a renderer emitting a fourth value would have
+   * compiled. Reusing the domain types makes the claim checkable: an operation the engine cannot
+   * produce is now a compile error at {@link renderPromotionIntent}.
+   */
+  readonly operation: PromotionAppliedIntent['operation'];
 
   /**
    * `order` | `orderItem` | `orderFulfillment` - the three values the engine actually writes
    * [model/service/PromotionService.cfc:L402, L448, L531]. The union is NOT widened here and no
-   * fourth applied type is invented.
+   * fourth applied type is invented, and now it CANNOT be: this is
+   * `PromotionAppliedType` from `../domain/entities/promotionApplied.js`, the same union the entity
+   * declares.
    */
-  readonly appliedType: string;
+  readonly appliedType: PromotionAppliedType;
 
   /** The promotion, as an opaque identifier. Absent only on a removal that names no promotion. */
   readonly promotionID?: string;
@@ -564,23 +655,25 @@ export interface SalePriceDetailDocument {
 }
 
 /**
- * The success body this handler returns.
+ * What this handler produced, carried as the `result` member of the shared success envelope.
  *
- * `idempotencyKey` and `requestId` are echoed so a caller can join a retried invocation to the
- * decision it already received, and an operator can join either to the log stream. `evaluatedAt` is
- * the instant the request scope bound - `RequestScope.now` - rendered ISO-8601 in UTC, which is what
- * makes the promotion-period window [model/entity/PromotionPeriod.cfc:L78] and the sale-price
- * expiration comparison auditable after the fact.
+ * ★★★ THIS TYPE WAS `PromotionApplicationResponseBody` AND WAS THE WHOLE BODY, WHICH IS FINDING F13.
+ * It declared its own `idempotencyKey` and its own `requestId` and was serialised by a module-local
+ * `successResponse` with a module-local header pair and a module-local `SUCCESS_STATUS` - so this
+ * capability answered in a shape none of its four siblings used. The correlation echo, the status, the
+ * headers and the `{requestId, capability, action, result}` framing now come from
+ * `./errorMapper.js`'s `jsonSuccessResponse`, which is the single construction path for a served JSON
+ * body across all five entrypoints. `idempotencyKey` went with finding F6.
+ *
+ * `evaluatedAt` stays, and stays HERE rather than on the envelope: it is the instant the request scope
+ * bound - `RequestScope.now` - rendered ISO-8601 in UTC, which is what makes the promotion-period
+ * window [model/entity/PromotionPeriod.cfc:L78] and the sale-price expiration comparison auditable
+ * after the fact. No sibling capability publishes it because none of them binds a decision to an
+ * instant the way a promotion window does.
  */
-export interface PromotionApplicationResponseBody {
+export interface PromotionApplicationResultDocument {
   /** Which operation ran. */
   readonly operation: PromotionApplicationOperation;
-
-  /** Echo of the caller's idempotency key. */
-  readonly idempotencyKey: string;
-
-  /** Echo of the correlation identifier, as a safe token. */
-  readonly requestId: string;
 
   /** The single instant every date comparison in this invocation resolved against, UTC. */
   readonly evaluatedAt: string;
@@ -591,18 +684,19 @@ export interface PromotionApplicationResponseBody {
   /** What the price-group pass decided, reported for completeness. */
   readonly priceGroupIntents?: readonly PriceGroupAppliedIntentDocument[];
 
-  /** Sale-price details keyed by opaque SKU identifier. Present only for `salePriceDetails`. */
+  /**
+   * Sale-price details keyed by opaque SKU identifier. Present only for
+   * `getSalePriceDetailsForProductSkus`.
+   */
   readonly salePriceDetails?: Readonly<Record<string, SalePriceDetailDocument>>;
 }
 
 // ===========================================================================
 // SECTION 2 - THE EXECUTION-MODEL OBLIGATIONS
 //
-// There is no ambient `cftransaction` on this runtime and a retry is a platform
-// fact rather than an exceptional event, so the three obligations below are
-// discharged explicitly. All three are stated as CORRECTNESS and EXPLICITNESS.
-// No throughput, latency, batch-rate or capacity figure appears in any of them,
-// and the numeric bounds are SAFETY bounds, never performance targets.
+// This endpoint performs no durable write. The safety properties below describe
+// only what this adapter owns; they make no claim about a downstream persistence
+// boundary or about how a caller schedules repeated requests.
 //
 // (1) EXPLICIT BOUNDS. {@link ORDER_DOCUMENT_LIMITS} caps how much work one
 //     invocation will accept. Exceeding a bound is REJECTED through
@@ -610,35 +704,28 @@ export interface PromotionApplicationResponseBody {
 //     silently truncated, because a truncated order is priced against items the
 //     caller did not send and the caller is never told.
 //
-// (2) IDEMPOTENCY ON RETRY. A caller-supplied {@link PromotionApplicationRequest.idempotencyKey}
-//     is REQUIRED and is echoed on the response. What makes honouring it
-//     inexpensive here is a property of the operation rather than a mechanism this
-//     adapter adds: BOTH passes RETURN INTENTS AND MUTATE NOTHING - the
-//     anti-corruption inversion in `../domain/views/orderView.js` - so this
-//     entrypoint performs NO durable write at all, and re-running it with the same
-//     document and the same bound instant yields the same decision without a second
-//     row anywhere. The key therefore serves the party that DOES persist: it
-//     travels with the intents so a persisting consumer can recognise a replay,
-//     and it is the join key an operator uses to prove two invocations decided the
-//     same thing. Nothing here caches a response under it, because caching a
-//     decision would make a warm container answer from one request inside another -
-//     exactly what the per-request scope exists to prevent.
+// (2) ★★★ REPEATED-CALL SAFETY BY CONSTRUCTION, AND NO IDEMPOTENCY KEY (finding F6). The
+//     previous revision REQUIRED a caller-supplied `idempotencyKey`, echoed it, and
+//     logged it - and honoured it with nothing at all: no ledger, no persistence
+//     boundary, no request fingerprint, no stable evaluation instant. Its own
+//     argument for requiring it described a persistence contract this endpoint
+//     does not own. Two further facts made the requirement untenable: the scope
+//     binds a FRESH instant per invocation, so
+//     the same key over the same document can straddle a promotion-period or
+//     sale-price boundary and legitimately answer differently; and nothing here
+//     caches a response under any key, deliberately, because caching a decision
+//     would let a warm container answer one request from inside another.
 //
-// (3) THE COMPENSATION STORY, WRITTEN OUT. A partial failure of THIS entrypoint
-//     leaves NOTHING BEHIND TO COMPENSATE FOR, and that is a consequence of (2):
-//     an invocation that fails at admission, inside either pass, or during
-//     serialisation has written no row, detached no row, and altered no order,
-//     so there is no half-applied discount to unwind and no reconciliation to
-//     schedule. The caller's remedy is to retry with the same idempotency key.
-//     The compensation obligation is REAL but it belongs to whoever persists the
-//     intents: the promotion pass emits a COMPLETE set of `add`, `update` and
-//     `remove` instructions for the order it was given - which is why the legacy's
-//     three backwards clear-out loops [model/service/PromotionService.cfc:L64-L80]
-//     are replaced by intents rather than reproduced - so a persisting consumer
-//     reconciles the stored set against the emitted set in one transaction of its
-//     own and never applies a partial set. If it cannot complete that transaction
-//     it discards the whole set and retries the invocation; discarding is safe
-//     precisely because this entrypoint holds no state to discard.
+//     What is actually true is stronger than what the key claimed, and it needs no
+//     caller cooperation: BOTH passes RETURN INTENTS AND MUTATE NOTHING - the
+//     anti-corruption inversion in `../domain/views/orderView.js` - so this
+//     entrypoint performs NO DURABLE WRITE AT ALL. Re-invoking it cannot duplicate
+//     a write in this adapter, so no key belongs on this request contract.
+//
+// (3) FAILURE LEAVES NO LOCAL PARTIAL STATE. An invocation that fails at admission,
+//     inside either pass, or during serialisation has written no row, detached no
+//     row and altered no order. This module emits intents and defines no persistence
+//     or compensation protocol for another component.
 // ===========================================================================
 
 /**
@@ -662,32 +749,37 @@ export interface PromotionApplicationResponseBody {
 export const ORDER_DOCUMENT_LIMITS: Readonly<{
   readonly maximumOrderItems: number;
   readonly maximumOrderFulfillments: number;
-  readonly maximumIdempotencyKeyLength: number;
   readonly maximumIdentifierLength: number;
 }> = Object.freeze({
   maximumOrderItems: 500,
   maximumOrderFulfillments: 100,
-  maximumIdempotencyKeyLength: 128,
   maximumIdentifierLength: 32,
 });
 
 /**
- * The shape an idempotency key must take.
+ * The four address members the legacy zone matcher compares.
  *
- * Letters, digits, `_`, `.` and `-` only. Bounded and character-filtered for the same reason
- * `./errorMapper.js` filters a classifier token and `./router.js` bounds a route diagnostic: the
- * value is CALLER-AUTHORED, it is echoed into a response body and written to a log line, and
- * excluding whitespace, quotes and punctuation is what makes it structurally impossible for a
- * sentence, a SQL fragment or a credential to pass itself off as a correlation token. No `g` flag,
- * so the regular expression carries no `lastIndex` state between calls.
+ * Kept as a typed closed set so the structural admission cannot silently omit a member that the
+ * promotion engine may read.
  */
-const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_.-]+$/;
+const ADDRESS_COMPARISON_MEMBERS: readonly (keyof ShippingAddressView)[] = [
+  'postalCode',
+  'city',
+  'stateCode',
+  'countryCode',
+];
 
-/** The same shape, applied to the platform-supplied correlation identifier. */
-const SAFE_REQUEST_ID_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/;
-
-/** Substituted when a correlation identifier is absent or is not shaped like a token. */
-const UNIDENTIFIED_REQUEST = 'unidentifiedRequest';
+// ★★★ THREE CONSTANTS WERE REMOVED HERE, AND EACH REMOVAL IS A FINDING.
+//
+//   * `maximumIdempotencyKeyLength`, `IDEMPOTENCY_KEY_PATTERN` - FINDING F6. A bound and a character
+//     filter on a caller-authored token that is no longer accepted at all. Nothing bounds a value that
+//     does not exist.
+//   * `SAFE_REQUEST_ID_PATTERN`, `UNIDENTIFIED_REQUEST` - FINDING F8. The correlation identifier is
+//     resolved by `./errorMapper.js`'s `resolveServerRequestId`, which is the ONE precedence rule and
+//     the ONE substitute token for all five entrypoints. This module's own pair preferred the same two
+//     sources but substituted a DIFFERENT literal, so an operator grepping for uncorrelated
+//     invocations had to know two spellings. See `resolveRequestPrincipal` for the one
+//     caller-facing read that remains in this module.
 
 /**
  * How many field-level complaints one refusal publishes.
@@ -700,44 +792,14 @@ const UNIDENTIFIED_REQUEST = 'unidentifiedRequest';
 const MAX_PUBLISHED_ADMISSION_ISSUES = 10;
 
 // ===========================================================================
-// SECTION 3 - REQUEST ENVELOPE VALIDATION
+// SECTION 3 - THE JSON WIRE CONTRACT
 //
-// `zod` validates the ENVELOPE: the operation selector, the idempotency key, the
-// opaque identifiers and the safety bounds. It is exactly the right tool there -
-// plain data, a closed discriminant and issue paths this handler can publish
-// verbatim.
-//
-// ★ IT IS DELIBERATELY NOT USED TO RECONSTRUCT THE ORDER VIEW, and the reason is
-// a correctness one rather than a stylistic one. `z.object` returns a NEW object
-// and STRIPS every key its shape does not declare, so validating an order document
-// through it and handing the RESULT to the engine would mean one forgotten member -
-// `subtotalAfterItemDiscounts`, say, which the order-level branch reads at
-// [model/service/PromotionService.cfc:L417] - silently arriving as `undefined`
-// inside a money calculation. `../domain/views/orderItemView.js` also assigns the
-// construction of the view to "whatever constructs the view", and that is not this
-// tier. So the order view is VOUCHED FOR AND HANDED ON UNTOUCHED - no key
-// stripped, no member fabricated, no identity disturbed - by SECTION 4, which
-// reports member paths of its own.
-//
-// No validation rule is invented for `PromotionQualifier`, `PromotionApplied` or
-// `PromotionAccount`. Those three deliberately have NO file under
-// `model/validation/` - unlike `Promotion.json`, `PromotionCode.json`,
-// `PromotionReward.json` and `PromotionPeriod.json`, which exist and are ported by
-// the tier that owns them - and an absence that the source chose is not a gap to
-// fill in here.
-//
-// Nothing is exposed for `PromotionAccount` at all. It is INERT in this slice: it
-// has no validation file, no service method references it, and
-// `model/service/PromotionService.cfc` never touches it.
+// The envelope selects one operation. The order itself is validated separately by SECTION 3b so the
+// production admission can report paths relative to `order` and hand the validated document to the
+// composition-root materializer. Unknown members are refused; no caller-authored account is trusted.
 // ===========================================================================
 
-/**
- * An opaque `Sw*` identifier as it may appear on the wire.
- *
- * Bounded by the schema's own `length="32"` declaration rather than by a number chosen here, and
- * required to be non-empty because an empty identifier names no row. CARRIED, NEVER PARSED: no
- * meaning is read out of the characters.
- */
+/** An opaque identifier, bounded by the persisted identifier width. */
 const OPAQUE_IDENTIFIER = z
   .string()
   .min(1, { message: 'must not be empty' })
@@ -745,71 +807,204 @@ const OPAQUE_IDENTIFIER = z
     message: 'must not be longer than the identifier column it names',
   });
 
-/**
- * The four address members the zone evaluator compares.
- *
- * Typed `keyof ShippingAddressView` rather than as bare strings, so a member renamed on the view
- * breaks this list at compile time instead of turning its probe into a silent no-op. These are exactly
- * the four the legacy compares, in the order it compares them: postal code
- * [model/service/AddressService.cfc:L63], city [:L66], state code [:L69], country code [:L72]. Each
- * is skipped when the ZONE LOCATION leaves it unset, which is why every one of them is nullable on
- * both sides.
- */
-const ADDRESS_COMPARISON_MEMBERS: readonly (keyof ShippingAddressView)[] = [
-  'postalCode',
-  'city',
-  'stateCode',
-  'countryCode',
-];
-
-/** The idempotency key, bounded and character-filtered. See {@link IDEMPOTENCY_KEY_PATTERN}. */
-const IDEMPOTENCY_KEY = z
-  .string()
-  .min(1, { message: 'must not be empty' })
-  .max(ORDER_DOCUMENT_LIMITS.maximumIdempotencyKeyLength, {
-    message: 'must not be longer than the published bound',
-  })
-  .regex(IDEMPOTENCY_KEY_PATTERN, {
-    message: 'must contain only letters, digits, underscore, dot or hyphen',
-  });
-
-/**
- * The envelope for the composed price-group-then-promotion operation.
- *
- * The `order` member is deliberately ABSENT from this shape - see the section note - and is read off
- * the raw document and carried forward as `unknown`.
- */
-const APPLY_PROMOTIONS_ENVELOPE = z.object({
+/** The apply-promotions envelope. `accountID` is checked and then discarded as an authority. */
+const APPLY_PROMOTIONS_ENVELOPE = z.strictObject({
   operation: z.literal('applyPromotions'),
-  idempotencyKey: IDEMPOTENCY_KEY,
   accountID: OPAQUE_IDENTIFIER.optional(),
+  order: z.unknown().optional(),
 });
 
-/**
- * The envelope for `getSalePriceDetailsForProductSkus` [model/service/PromotionService.cfc:L1022].
- *
- * `productID` is a plain string on the legacy signature and stays one, so this operation needs
- * nothing materialised.
- */
-const SALE_PRICE_DETAILS_ENVELOPE = z.object({
-  operation: z.literal('salePriceDetails'),
-  idempotencyKey: IDEMPOTENCY_KEY,
+/** The mapped sale-price operation, selected by payload rather than by a second route. */
+const SALE_PRICE_DETAILS_ENVELOPE = z.strictObject({
+  operation: z.literal('getSalePriceDetailsForProductSkus'),
+  accountID: OPAQUE_IDENTIFIER.optional(),
   productID: OPAQUE_IDENTIFIER,
-  accountID: OPAQUE_IDENTIFIER.optional(),
 });
 
-/**
- * The request envelope, discriminated on the operation.
- *
- * A discriminated union rather than one permissive shape with everything optional: it makes "a
- * `salePriceDetails` request without a `productID`" a validation failure with a member path rather
- * than a value the handler has to re-check later, and it makes adding a third operation without
- * giving it an envelope a compile error.
- */
 const REQUEST_ENVELOPE_SCHEMA = z.discriminatedUnion('operation', [
   APPLY_PROMOTIONS_ENVELOPE,
   SALE_PRICE_DETAILS_ENVELOPE,
 ]);
+
+// ===========================================================================
+// SECTION 3b - THE WIRE ORDER DOCUMENT
+//
+// The schema for the ONE shape an API Gateway body can actually carry: a projection
+// of the order aggregate in which every monetary value is a decimal STRING and every
+// entity is an opaque IDENTIFIER. `./bootstrap.js` declares the TYPES this schema
+// validates against - `OrderViewDocument` and its four nested members - beside the
+// hydration that consumes them; this section declares the VALIDATION, because
+// validating a request body is a primary adapter's own job.
+//
+// ★ WHY `.strictObject` THROUGHOUT. An unknown member is REFUSED rather than ignored.
+// A caller that sends `sku`, `price` as a number, or an `appliedPriceGroup` object has
+// misread this contract, and telling it so with a member path is more useful than
+// silently pricing an order it did not describe - and an ignored member is exactly how
+// a caller comes to believe it stated something the engine read.
+//
+// ★ WHY EVERY ABSENCE IS SPELLED `.nullable()` AND NOTHING IS `.optional()`. JSON has no
+// `undefined`, so `null` is the only absence a producer can state; and requiring the KEY
+// means "no shipping method" and "I forgot the shipping method" are different documents,
+// which is the same rule `../domain/views/orderItemView.js` states for its own members
+// under `exactOptionalPropertyTypes`. The one conversion from `null` to `undefined`
+// happens inside `RequestScope.materializeOrderView` and nowhere else.
+//
+// ★ WHY EVERY COLLECTION IS BOUNDED. The bounds are {@link ORDER_DOCUMENT_LIMITS}, the
+// same ones the structural admission enforces, and an over-large document is REFUSED and
+// never truncated - obligation (1) from SECTION 2.
+// ===========================================================================
+
+/**
+ * A monetary member as it travels: a plain decimal numeral, in a string.
+ *
+ * ★ THE GRAMMAR IS NOT RESTATED HERE - IT IS DELEGATED. `toDecimalString` from
+ * `../lib/cfml/numberFormat.js` is the validating brander `Money.fromDecimalString` itself calls, so
+ * using it as this predicate makes the wire grammar and the value object's grammar THE SAME RULE by
+ * construction. A regular expression copied into this file would be a second rule that starts equal
+ * and drifts, and the drift would be silent in both directions: a numeral the schema admitted and
+ * `Money` refused would become a 500 where a 400 was owed.
+ *
+ * Refusing is the whole point. `''`, `'abc'`, `'1,234.50'`, `'12.'`, `'NaN'`, `'Infinity'`,
+ * exponential notation and anything with surrounding whitespace are all rejected, and none of them is
+ * coerced to zero - a silent zero in a price path sells product for free.
+ */
+const WIRE_DECIMAL_NUMERAL = z.string().refine(
+  (value: string): boolean => {
+    try {
+      toDecimalString(value);
+
+      return true;
+    } catch {
+      // The caught value is deliberately not inspected: this is a PREDICATE, and the reported
+      // message is the schema's own so that no library's wording reaches a response body.
+      return false;
+    }
+  },
+  { message: 'must be a plain decimal numeral, as a string' },
+);
+
+/** A signed whole count. Negative quantities remain valid for return items. */
+const WIRE_COUNT = z.number().int({ message: 'must be a whole number' });
+
+/** A finite measurement, used for shipping weight rather than an item count. */
+const WIRE_WEIGHT = z.number().finite({ message: 'must be a finite number' });
+
+/** The three-character currency code [model/entity/Order.cfc:L54 `length="3"`]. */
+const WIRE_CURRENCY_CODE = z
+  .string()
+  .length(3, { message: 'must be a three-character currency code' });
+
+/** One already-applied promotion, as it travels. */
+const APPLIED_PROMOTION_DOCUMENT_SCHEMA = z.strictObject({
+  promotionAppliedID: OPAQUE_IDENTIFIER,
+  // Nullable because `SwPromotionApplied.discountAmount` is [model/entity/PromotionApplied.cfc:L51],
+  // and NEVER defaulted to zero: a zero discount is a different fact from no discount.
+  discountAmount: WIRE_DECIMAL_NUMERAL.nullable(),
+  promotion: z.strictObject({ promotionID: OPAQUE_IDENTIFIER }).nullable(),
+});
+
+/** One order item, as it travels. */
+const ORDER_ITEM_DOCUMENT_SCHEMA = z.strictObject({
+  orderItemID: OPAQUE_IDENTIFIER,
+  // BOTH handles, because the ported fetch shape reaches a product-wired SKU only through its
+  // product - the reason is recorded on `OrderItemDocument.productID` in `./bootstrap.js`.
+  productID: OPAQUE_IDENTIFIER,
+  skuID: OPAQUE_IDENTIFIER,
+  quantity: WIRE_COUNT,
+  // All four, because the [model/service/PromotionService.cfc:L241] discriminator needs all four:
+  // `getPrice()` on the first arm [:L244]; `getSkuPrice()` plus
+  // `getExtendedSkuPrice() - getExtendedPrice()` on the second [:L249, L252].
+  price: WIRE_DECIMAL_NUMERAL,
+  skuPrice: WIRE_DECIMAL_NUMERAL,
+  extendedPrice: WIRE_DECIMAL_NUMERAL,
+  extendedSkuPrice: WIRE_DECIMAL_NUMERAL,
+  // The discriminator itself, as an IDENTIFIER: the entity is loaded so that
+  // `reward.hasEligiblePriceGroup(...)` compares a real row's identity rather than a caller's claim.
+  appliedPriceGroupID: OPAQUE_IDENTIFIER.nullable(),
+  orderItemType: z.strictObject({ systemCode: OPAQUE_IDENTIFIER }),
+  orderFulfillmentID: OPAQUE_IDENTIFIER,
+  appliedPromotions: z
+    .array(APPLIED_PROMOTION_DOCUMENT_SCHEMA)
+    .max(ORDER_DOCUMENT_LIMITS.maximumOrderItems, {
+      message: 'must not carry more than the published bound',
+    }),
+});
+
+/**
+ * One shipping address, as it travels.
+ *
+ * All four comparison members are nullable and all four must be STATED, because the zone evaluator
+ * SKIPS a null one [model/service/AddressService.cfc:L63, L66, L69, L72] rather than failing on it -
+ * so an omitted member and a null one would mean the same thing to the evaluator while meaning
+ * different things to the caller. `isNew` is a definite boolean: [model/service/PromotionService.cfc:L703]
+ * reads `getAddress().getNewFlag()` unguarded.
+ */
+const SHIPPING_ADDRESS_DOCUMENT_SCHEMA = z.strictObject({
+  postalCode: z.string().nullable(),
+  city: z.string().nullable(),
+  stateCode: z.string().nullable(),
+  countryCode: z.string().nullable(),
+  isNew: z.boolean(),
+});
+
+/** One order fulfillment, as it travels. */
+const ORDER_FULFILLMENT_DOCUMENT_SCHEMA = z.strictObject({
+  orderFulfillmentID: OPAQUE_IDENTIFIER,
+  fulfillmentCharge: WIRE_DECIMAL_NUMERAL,
+  fulfillmentMethod: z.strictObject({
+    fulfillmentMethodID: OPAQUE_IDENTIFIER,
+    fulfillmentMethodType: OPAQUE_IDENTIFIER,
+  }),
+  // `null` is a real state: the gate at [model/service/PromotionService.cfc:L701] tests
+  // `isNull(orderFulfillment.getShippingMethod())` explicitly, so a pickup fulfillment states null.
+  shippingMethod: z.strictObject({ shippingMethodID: OPAQUE_IDENTIFIER }).nullable(),
+  appliedPromotions: z
+    .array(APPLIED_PROMOTION_DOCUMENT_SCHEMA)
+    .max(ORDER_DOCUMENT_LIMITS.maximumOrderItems, {
+      message: 'must not carry more than the published bound',
+    }),
+  totalShippingWeight: WIRE_WEIGHT,
+  address: SHIPPING_ADDRESS_DOCUMENT_SCHEMA.nullable(),
+});
+
+/**
+ * The order document a caller PUTs on the wire, validated member for member.
+ *
+ * What it deliberately does NOT accept is as important as what it does: no price for a SKU, no
+ * product type, no brand, no option list, no promotion-period window, no rate, no rounding rule, no
+ * evaluation instant and no ordering member. Every one of those either decides whether a promotion
+ * applies or decides what it is worth, and each is read from the schema or bound by the request scope
+ * instead. A caller can describe its own ORDER; it cannot describe the catalogue.
+ */
+const ORDER_VIEW_DOCUMENT_SCHEMA = z.strictObject({
+  orderID: OPAQUE_IDENTIFIER,
+  orderType: z.strictObject({ systemCode: OPAQUE_IDENTIFIER }),
+  // Stated, nullable, and NOT an authority - the account is the authorizer's answer and this member
+  // is refused when it disagrees. See {@link assertDocumentNamesAuthenticatedAccount}.
+  accountID: OPAQUE_IDENTIFIER.nullable(),
+  // A STRING, because the legacy binds it with `cfqueryparam ... list="true"`
+  // [model/dao/PromotionDAO.cfc], so the comma-delimited list form is load-bearing. An EMPTY string
+  // is a valid value - it is an order carrying no codes - so no `.min(1)` is applied.
+  promotionCodeList: z.string(),
+  totalSaleQuantity: WIRE_COUNT,
+  subtotal: WIRE_DECIMAL_NUMERAL,
+  subtotalAfterItemDiscounts: WIRE_DECIMAL_NUMERAL,
+  fulfillmentChargeAfterDiscountTotal: WIRE_DECIMAL_NUMERAL,
+  currencyCode: WIRE_CURRENCY_CODE,
+  appliedPromotions: z
+    .array(APPLIED_PROMOTION_DOCUMENT_SCHEMA)
+    .max(ORDER_DOCUMENT_LIMITS.maximumOrderItems, {
+      message: 'must not carry more than the published bound',
+    }),
+  orderItems: z.array(ORDER_ITEM_DOCUMENT_SCHEMA).max(ORDER_DOCUMENT_LIMITS.maximumOrderItems, {
+    message: 'must not carry more than the published bound',
+  }),
+  orderFulfillments: z
+    .array(ORDER_FULFILLMENT_DOCUMENT_SCHEMA)
+    .max(ORDER_DOCUMENT_LIMITS.maximumOrderFulfillments, {
+      message: 'must not carry more than the published bound',
+    }),
+});
 
 // ===========================================================================
 // SECTION 4 - ORDER-VIEW ADMISSION
@@ -1341,16 +1536,24 @@ function vouchesForMaterializedOrderView(
 }
 
 /**
- * The production admission: vouch for the order view the request carried, or refuse it.
+ * THE IN-PROCESS ADMISSION: vouch for an ALREADY-MATERIALISED order view, or refuse it.
  *
- * Asynchronous because {@link OrderViewAdmission} is - a strangler-fig proxy substituting its own
- * resolution will reach a hydration tier, and forcing that shape on the port is what keeps this one
- * substitutable. This implementation awaits nothing, which is the whole point: it performs no read,
- * no query and no construction.
+ * ★ EXPORTED, AND NO LONGER THE DEFAULT. It was the default, and that was the deployability defect a
+ * code review raised as CRITICAL: it demands a method-bearing graph, so it refuses every API Gateway
+ * body that has ever been sent - see {@link PromotionApplicationDependencies.admitOrderView}. It
+ * remains exactly as it was, and it is exported rather than deleted because the caller it was written
+ * for is real: a strangler-fig proxy inside the same process, holding a live aggregate it hydrated
+ * itself, injects THIS function and gets a hydration-free path with no second load. What changed is
+ * which arm a wire request takes, and nothing about what this one proves.
+ *
+ * Asynchronous because {@link OrderViewAdmission} is - an admission that reaches a hydration tier
+ * must be able to await it, and forcing that shape on the port is what keeps the two arms
+ * interchangeable. This implementation awaits nothing, which is the whole point: it performs no read,
+ * no query and no construction, and it ignores the materializer it is handed.
  *
  * @throws {@link OrderViewAdmissionError} with the member paths that failed.
  */
-function admitMaterializedOrderView(request: ApplyPromotionsRequest): Promise<OrderView> {
+export function admitMaterializedOrderView(request: ApplyPromotionsRequest): Promise<OrderView> {
   const issues: MappedFieldIssue[] = [];
 
   if (!Object.hasOwn(request, 'order')) {
@@ -1372,6 +1575,67 @@ function admitMaterializedOrderView(request: ApplyPromotionsRequest): Promise<Or
   // `ORDER BY`] and the collections the engine reads must arrive exactly as the caller composed
   // them.
   return Promise.resolve(candidate);
+}
+
+/**
+ * THE PRODUCTION ADMISSION: parse the caller's wire document and have the scope hydrate it.
+ *
+ * ★★★ THIS IS THE ARM A DEPLOYED ROUTE TAKES, AND IT IS THE FIX FOR THE ONE FINDING THAT MADE THIS
+ * CAPABILITY UNUSABLE. API Gateway delivers `event.body` as TEXT; after `JSON.parse` an order is a
+ * tree of strings, numbers, objects and nulls, with no `Money`, no `Sku` and no `PriceGroup` in it.
+ * This function validates that tree against {@link ORDER_VIEW_DOCUMENT_SCHEMA} and hands the result
+ * to `RequestScope.materializeOrderView`, which loads the named rows and mints the value objects on
+ * the tier that owns both. The division is exact: THIS function decides whether the caller described
+ * an order; THAT member decides what the schema says those identifiers are.
+ *
+ * ★ THE THREE THINGS IT DOES NOT DO.
+ *   1. It constructs nothing. No `Money`, no entity, no currency code and no view is built here; the
+ *      only thing this function builds is a list of complaints.
+ *   2. It defaults nothing. A member the schema requires and the document omits is a REFUSAL with a
+ *      member path, never a zero, an empty string or an absent price treated as free.
+ *   3. It trusts nothing about the catalogue. The document names a SKU, its product and any applied
+ *      price group; every attribute of all three is loaded, so a caller cannot state a product type,
+ *      a brand, an option or an eligibility that would decide a discount in its favour.
+ *
+ * @throws {@link OrderViewAdmissionError} with member paths when the document is absent or does not
+ *   validate. A hydration refusal is NOT wrapped: `./bootstrap.js` raises its own error naming the
+ *   identifier that could not be resolved, and `./errorMapper.js` classifies it - re-labelling it as
+ *   a client-shaped refusal here would tell a caller that a row exists or does not, which is a
+ *   disclosure this boundary has no reason to make.
+ */
+async function admitOrderDocument(
+  request: ApplyPromotionsRequest,
+  materializer: OrderViewMaterializer,
+): Promise<OrderView> {
+  if (!Object.hasOwn(request, 'order')) {
+    // The same distinction the structural arm draws, in the same words: "no order was sent" is a
+    // different report from "an order was sent and is unusable".
+    throw new OrderViewAdmissionError('unusableRequestInput', [
+      { path: 'order', message: 'is required for this operation' },
+    ]);
+  }
+
+  // `safeParse` rather than `parse`, because the outcome is reported through
+  // {@link OrderViewAdmissionError} - which the handler recognises and reports with its member paths
+  // as a CLIENT-shaped refusal - rather than as a thrown `ZodError` the mapper would have to
+  // rediscover. Both routes publish paths and withhold values; this one keeps the reason token this
+  // adapter's own refusals use.
+  const parsed = ORDER_VIEW_DOCUMENT_SCHEMA.safeParse(request.order);
+
+  if (!parsed.success) {
+    throw new OrderViewAdmissionError(
+      'unsupportedBodyShape',
+      mapZodErrorFields(parsed.error, 'order'),
+    );
+  }
+
+  // ANNOTATED, NOT CAST, and the annotation is the drift guard: `./bootstrap.js` declares
+  // `OrderViewDocument` and this assignment is what proves the schema still validates exactly that
+  // shape. A member renamed on either side is a compile error here rather than a runtime surprise in
+  // the hydration.
+  const document: OrderViewDocument = parsed.data;
+
+  return await materializer.materializeOrderView(document);
 }
 
 // ===========================================================================
@@ -1492,6 +1756,22 @@ function renderSalePriceDetail(detail: SalePriceDetail): SalePriceDetailDocument
 }
 
 /**
+ * Define one opaque-keyed result member as an enumerable own property.
+ *
+ * Plain assignment is unsafe for the reserved key `__proto__`: it reaches an inherited setter on an
+ * ordinary object instead of creating the SKU entry. Explicit definition preserves every opaque key
+ * without changing the result object's prototype.
+ */
+function putOwnStructKey<TValue>(target: Record<string, TValue>, key: string, value: TValue): void {
+  Object.defineProperty(target, key, {
+    configurable: true,
+    enumerable: true,
+    value,
+    writable: true,
+  });
+}
+
+/**
  * The exact shape `getSalePriceDetailsForProductSkus` answers with.
  *
  * Derived from the PORTED SERVICE's own signature [model/service/PromotionService.cfc:L1022] rather
@@ -1510,48 +1790,32 @@ function renderSalePriceDetails(
 ): Readonly<Record<string, SalePriceDetailDocument>> {
   const rendered: Record<string, SalePriceDetailDocument> = {};
   for (const [skuID, detail] of Object.entries(details)) {
-    rendered[skuID] = renderSalePriceDetail(detail);
+    putOwnStructKey(rendered, skuID, renderSalePriceDetail(detail));
   }
   return rendered;
 }
 
-/**
- * The headers every response from this handler carries.
- *
- * Deliberately identical to the set `./errorMapper.js` builds, so a caller sees one content type and
- * one caching directive whether the invocation succeeded or failed. `no-store` because a priced order
- * is specific to one account, one instant and one document, and an intermediary caching it would
- * serve one customer's discount to another. Frozen, because this module is instantiated once per
- * container and shared across every invocation it serves.
- *
- * No header invents a semantic the source never had: there is no `retry-after`, no rate-limit header
- * and no cross-origin header - the target renders no user interface at all and no browser is a
- * client of it.
- */
-const JSON_RESPONSE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
-  'content-type': 'application/json; charset=utf-8',
-  'cache-control': 'no-store',
-});
-
-/**
- * The one success status this handler returns.
- *
- * 200 and nothing else. Both operations are decisions rather than durable writes - the passes emit
- * intents and mutate nothing - so there is no resource created to report and no acceptance to
- * acknowledge. No status semantic the source never had is invented: no 201, no 202, no 401, no 403,
- * no 409, no 422 and no 429, and no retry-after, rate-limit or circuit-breaker behaviour of any kind.
- * The failure statuses are `./errorMapper.js`'s three and are not re-decided here.
- */
-const SUCCESS_STATUS = 200;
-
-/** Build the success response. */
-function successResponse(body: PromotionApplicationResponseBody): APIGatewayProxyResult {
-  return {
-    statusCode: SUCCESS_STATUS,
-    headers: JSON_RESPONSE_HEADERS,
-    body: JSON.stringify(body),
-  };
-}
+// ★★★ THREE MODULE-LOCAL RESPONSE PIECES WERE REMOVED HERE, AND THAT IS FINDING F13.
+//
+// `JSON_RESPONSE_HEADERS`, `SUCCESS_STATUS` and `successResponse` each restated something
+// `./errorMapper.js` already owns, and each carried an argument for itself that was correct on its own
+// terms and wrong as a reason to keep a second copy:
+//
+//   * the header pair was "deliberately identical to the set `./errorMapper.js` builds" - which is a
+//     reason to CALL that module rather than to mirror it, since two identical literals in two files
+//     stay identical only until one is edited;
+//   * the status note argued at length for 200 and against inventing 201, 202, 409, 422 or 429 -
+//     which remains true and `jsonSuccessResponse` decides once for all five entrypoints. Its former
+//     argument against 401 was superseded by this route's authenticated admission gate; this handler
+//     still has no permission-gated operation and therefore emits no 403;
+//   * `successResponse` serialised a body whose top level was this capability's own shape, so a caller
+//     integrating with two of the five had to learn two framings and a successful body carried no
+//     correlation identifier at all.
+//
+// `jsonSuccessResponse(requestId, capability, action, result)` now supplies the status, the headers and
+// the `{requestId, capability, action, result}` framing, and {@link PromotionApplicationResultDocument}
+// is what travels in `result`. The reasoning above is not lost - it lives at that function, which is
+// where it applies to every capability rather than to one.
 
 // ===========================================================================
 // SECTION 6 - EVENT DECODING
@@ -1570,32 +1834,83 @@ function successResponse(body: PromotionApplicationResponseBody): APIGatewayProx
 /** The outcome of decoding, before schema validation is attempted. */
 type EnvelopeDecoding =
   | { readonly ok: true; readonly request: PromotionApplicationRequest }
-  | { readonly ok: false; readonly reason: InvalidRequestReason };
+  | {
+      readonly ok: false;
+      readonly reason: InvalidRequestReason;
+      /** Member paths, when the refusal can name one. Never a submitted value. */
+      readonly fields?: readonly MappedFieldIssue[] | undefined;
+    };
+
+// ===========================================================================
+// THE TRUST BOUNDARY FOR THE ACCOUNT, AND WHY IT IS ONE
+//
+// ★★★ THE ACCOUNT IS A PRICING AUTHORITY. `PriceGroupService.updateOrderAmountsWithPriceGroups`
+// resolves the account's price groups from `order.accountID` - the ported equivalent of
+// `!isNull(arguments.order.getAccount()) && arrayLen(...getPriceGroups())` at
+// [model/service/PriceGroupService.cfc:L365] - and `calculateSkuPriceBasedOnAccount` [:L271] reaches
+// the subscription price-group query with it. The promotion side keys account use-counts by it too
+// [model/service/PromotionService.cfc:L1098]. Whoever chooses the account chooses which rates and
+// which use-limits apply, which is why it may not be chosen by the request body.
+//
+// ★★ THIS WAS A LIVE DEFECT AND IS RECORDED AS ONE. A code review raised it as CWE-639,
+// authorization bypass through a user-controlled key: the envelope's top-level `accountID` was read
+// straight into `createRequestScope`, this file read the authorizer NOWHERE, and nothing compared the
+// body's account with the order's. A caller could therefore select another account's price groups,
+// subscription price groups and promotion-account use counts by naming it.
+//
+// THE FIX IS THE ONE THE SIBLING ENTRYPOINT ALREADY USES, and using the same one is deliberate:
+// `./priceResolutionHandler.js` derives its account from `event.requestContext.authorizer`, a context
+// an API Gateway caller cannot write. Both body-supplied spellings are retained for compatibility and
+// neither is an authority: each is compared with the authenticated account and REFUSED on
+// disagreement, with a member path and no value echoed. An order that names NO account is always
+// admitted - that is the logged-out arm [model/service/PriceGroupService.cfc:L265-L266], it resolves
+// no price groups, and it can only ever reduce what a caller is granted.
+//
+// WHETHER the deployment's authorizer authenticates correctly is an authorizer concern outside this
+// AAP, and no API key, token, signature or session lookup is invented here.
+// ===========================================================================
 
 /**
- * Reduce the platform's correlation identifier to a safe token.
+ * Does a caller-supplied account agree with the authenticated one?
  *
- * The platform's own request identifier is preferred, then the event's; neither is caller-authored
- * under a proxy integration, but this handler is a function and a direct invoker can put anything in
- * either field. The value is ECHOED INTO A RESPONSE BODY by `./errorMapper.js` and written to every
- * log line, so it is held to the same bounded, character-filtered token shape `./errorMapper.js`
- * applies to a classifier and `./router.js` applies to a route diagnostic. A value that is not shaped
- * like a token is REPLACED, not truncated: a partial echo of an unexpected value is still an echo.
+ * ABSENT ALWAYS AGREES, on both sides, and each direction is a decision:
+ *   - a caller that supplies nothing has stated nothing to disagree with, and the authenticated
+ *     account stands;
+ *   - an ANONYMOUS request that supplies nothing is the logged-out arm, which resolves no price
+ *     groups.
+ * A caller that supplies a value while nothing is authenticated DISAGREES - that is precisely the
+ * bypass - and so does one that supplies a different value from the authenticated account.
+ *
+ * `cfEquals` rather than `===`, because CFML string comparison folds case
+ * [model/service/PriceGroupService.cfc reads the account by association, and CFML identifiers are
+ * case-insensitive], so an account named in a different casing is the SAME account and must not be
+ * reported as a conflict.
  */
-function readCorrelationIdentifier(
-  event: APIGatewayProxyEvent,
-  context: Context | undefined,
-): string {
-  const candidates: readonly unknown[] = [context?.awsRequestId, event.requestContext?.requestId];
-
-  for (const candidate of candidates) {
-    if (typeof candidate === 'string' && SAFE_REQUEST_ID_PATTERN.test(candidate)) {
-      return candidate;
-    }
+function accountAgrees(supplied: string | undefined, authenticated: string | undefined): boolean {
+  if (supplied === undefined) {
+    return true;
   }
 
-  return UNIDENTIFIED_REQUEST;
+  return authenticated !== undefined && cfEquals(supplied, authenticated);
 }
+
+// ★★★ `readCorrelationIdentifier` WAS REMOVED, AND THAT IS FINDING F8. Its own reasoning was sound -
+// prefer the platform's request identifier, then the event's; hold the value to a bounded,
+// character-filtered token shape because it is echoed into a body and written to every log line;
+// REPLACE rather than truncate an unexpected value, since a partial echo is still an echo - and every
+// word of it is now discharged by `resolveServerRequestId` in `./errorMapper.js`, which applies the
+// same precedence and the same filter for all five entrypoints. What differed was only the SUBSTITUTE
+// TOKEN: this module emitted `unidentifiedRequest` where the shared resolver emits `unattributed`, so
+// an operator looking for uncorrelated invocations across the service had to know two spellings.
+
+/** Maximum decoded order-shaped request document admitted before JSON parsing. */
+const MAXIMUM_REQUEST_DOCUMENT_BYTES = 512 * 1024;
+
+/** Encoded length above which a base64 body cannot decode within the byte ceiling. */
+const MAXIMUM_ENCODED_BODY_LENGTH = Math.ceil((MAXIMUM_REQUEST_DOCUMENT_BYTES * 4) / 3) + 4;
+
+/** Non-colliding result for a present body that exceeds the parse ceiling. */
+const OVERSIZED_BODY: unique symbol = Symbol('oversizedRequestBody');
 
 /**
  * Lift the request body out of the event as text.
@@ -1604,37 +1919,63 @@ function readCorrelationIdentifier(
  * well-formed document into an unparsable one. A body that is present but blank is treated as ABSENT,
  * which is the honest reading: whitespace is not a document.
  *
- * @returns the body text, or `undefined` when there is none.
+ * @returns the body text, `undefined` when absent, or {@link OVERSIZED_BODY} past the ceiling.
  */
-function readRequestBodyText(event: APIGatewayProxyEvent): string | undefined {
+function readRequestBodyText(
+  event: APIGatewayProxyEvent,
+): string | undefined | typeof OVERSIZED_BODY {
   const body = event.body;
   if (typeof body !== 'string' || body.trim().length === 0) {
     return undefined;
   }
 
   if (event.isBase64Encoded) {
+    if (body.length > MAXIMUM_ENCODED_BODY_LENGTH) {
+      return OVERSIZED_BODY;
+    }
+
     const decoded = Buffer.from(body, 'base64').toString('utf8');
+
+    if (Buffer.byteLength(decoded, 'utf8') > MAXIMUM_REQUEST_DOCUMENT_BYTES) {
+      return OVERSIZED_BODY;
+    }
+
     return decoded.trim().length === 0 ? undefined : decoded;
+  }
+
+  if (Buffer.byteLength(body, 'utf8') > MAXIMUM_REQUEST_DOCUMENT_BYTES) {
+    return OVERSIZED_BODY;
   }
 
   return body;
 }
 
 /**
- * Decode and validate the request envelope.
+ * Decode and validate the request envelope, and bind it to the AUTHENTICATED account.
  *
  * The schema is invoked with `parse`, so a validation failure is THROWN as a `ZodError` and
  * `mapErrorToApiGatewayResponse` recognises it, publishes the failing member paths and the constraint
  * descriptions, and withholds every submitted value. That is deliberately not re-implemented here.
  *
- * `order` is copied across ONLY when the document actually carries the key, so that
- * {@link admitMaterializedOrderView}'s `Object.hasOwn` test distinguishes "no order was sent" from "an
- * order was sent and is unusable" and reports the two differently.
+ * `order` is copied across ONLY when the document actually carries the key, so that both admissions'
+ * `Object.hasOwn` test distinguishes "no order was sent" from "an order was sent and is unusable" and
+ * reports the two differently.
+ *
+ * @param authenticatedAccountID the account this request is entitled to price for, from
+ *   `resolveRequestPrincipal`. It is the ONLY account the decoded request carries; see the
+ *   trust-boundary note above.
  */
-function decodeRequestEnvelope(event: APIGatewayProxyEvent, requestId: string): EnvelopeDecoding {
+function decodeRequestEnvelope(
+  event: APIGatewayProxyEvent,
+  requestId: string,
+  authenticatedAccountID: string | undefined,
+): EnvelopeDecoding {
   const text = readRequestBodyText(event);
   if (text === undefined) {
     return { ok: false, reason: 'missingRequestBody' };
+  }
+  if (text === OVERSIZED_BODY) {
+    return { ok: false, reason: 'unusableRequestInput' };
   }
 
   let document: unknown;
@@ -1654,17 +1995,33 @@ function decodeRequestEnvelope(event: APIGatewayProxyEvent, requestId: string): 
   }
 
   const envelope = REQUEST_ENVELOPE_SCHEMA.parse(document);
-  const accountID = envelope.accountID;
 
-  if (envelope.operation === 'salePriceDetails') {
+  if (!accountAgrees(envelope.accountID, authenticatedAccountID)) {
+    // ★ REFUSED, NOT OVERRIDDEN, and the choice is deliberate. Silently substituting the
+    // authenticated account for the one the caller named would price an order the caller did not ask
+    // for and report success, which is a worse outcome than a 400: a caller that believes it is
+    // pricing for account B must not be handed account A's discounts. The
+    // path is named so the mistake is fixable; neither value is echoed, because reporting the
+    // authenticated identifier back would disclose the session's account to whoever sent the body.
+    return {
+      ok: false,
+      reason: 'unusableRequestInput',
+      fields: [
+        {
+          path: 'accountID',
+          message: 'must name the authenticated account, or be omitted',
+        },
+      ],
+    };
+  }
+
+  if (envelope.operation === 'getSalePriceDetailsForProductSkus') {
     return {
       ok: true,
       request: {
-        operation: 'salePriceDetails',
-        idempotencyKey: envelope.idempotencyKey,
+        operation: 'getSalePriceDetailsForProductSkus',
         requestId,
         productID: envelope.productID,
-        ...(accountID === undefined ? {} : { accountID }),
       },
     };
   }
@@ -1673,10 +2030,8 @@ function decodeRequestEnvelope(event: APIGatewayProxyEvent, requestId: string): 
     ok: true,
     request: {
       operation: 'applyPromotions',
-      idempotencyKey: envelope.idempotencyKey,
       requestId,
-      ...(accountID === undefined ? {} : { accountID }),
-      ...(Object.hasOwn(document, 'order') ? { order: document['order'] } : {}),
+      order: envelope.order,
     },
   };
 }
@@ -1695,39 +2050,71 @@ async function runSelectedOperation(
   request: PromotionApplicationRequest,
   scope: RequestScope,
   admitOrderView: OrderViewAdmission,
+  accountID: string | undefined,
+  route: string,
+  action: RouteAction,
   sink: Logger,
-): Promise<PromotionApplicationResponseBody> {
+): Promise<PromotionApplicationResultDocument> {
   // THE INJECTED CLOCK, OBSERVED AND NOT READ. `scope.now` is the single instant this request bound;
   // there is no `new Date()` anywhere in this module. ISO-8601, hence UTC.
   const evaluatedAt = scope.now.toISOString();
 
-  if (request.operation === 'salePriceDetails') {
+  if (request.operation === 'getSalePriceDetailsForProductSkus') {
     // THE ONE OTHER ALREADY-PORTED SERVICE METHOD this adapter reaches
     // [model/service/PromotionService.cfc:L1022], published on `RequestScope` through the
     // `SalePriceResolver` contract in `../domain/ports/promotionRepository.js`. Its input is a plain
     // string, so there is nothing to materialise and no order view involved.
     const details = await scope.getSalePriceDetailsForProductSkus(request.productID);
 
+    // Every key here is in the logger's CLOSED diagnostic allow-list, which finding F7 established was
+    // not previously true of `capability`, `operation` or any of the counts - the real logger's
+    // fail-closed arm was replacing each of them with the redaction marker, so a served line recorded
+    // only the correlation identifier. `idempotencyKey` is gone with finding F6, and it would not be
+    // admitted even if it were still accepted: it is a CALLER-AUTHORED FREE STRING, and the allow-list
+    // refuses it by name for exactly that reason.
     sink.info('resolved sale-price details for a product', {
-      capability: CAPABILITY,
-      operation: request.operation,
       requestId: request.requestId,
-      idempotencyKey: request.idempotencyKey,
+      route,
+      capability: CAPABILITY,
+      action,
+      operation: request.operation,
       // A COUNT of what was resolved. No identifier, no price and no amount reaches a log line.
       resolvedSkuCount: Object.keys(details).length,
     });
 
     return {
       operation: request.operation,
-      idempotencyKey: request.idempotencyKey,
-      requestId: request.requestId,
       evaluatedAt,
       salePriceDetails: renderSalePriceDetails(details),
     };
   }
 
-  // VOUCHED FOR, NEVER MINTED - see SECTION 4.
-  const order = await admitOrderView(request);
+  // ADMITTED THROUGH THE INJECTED PORT, AND HYDRATED BY THE SCOPE - see SECTION 4. The scope is
+  // handed over NARROWED to its one hydration member, so an admission has no route to a service, a
+  // pass or a setting on its way to a view.
+  const order = await admitOrderView(request, scope);
+
+  // ★★★ THE ACCOUNT THE ORDER NAMES MUST BE THE ACCOUNT THE REQUEST IS AUTHENTICATED FOR.
+  //
+  // Checked HERE, after admission, because that is the first moment the order exists - and it must be
+  // checked at all because `order.accountID` is what
+  // `PriceGroupService.updateOrderAmountsWithPriceGroups` resolves price groups from
+  // [model/service/PriceGroupService.cfc:L365]. Binding only the request scope's account would have
+  // left the document itself as an unchecked authority, so the same rule is applied to both spellings
+  // and by the same predicate.
+  //
+  // An order naming NO account is admitted unconditionally: that is the logged-out arm
+  // [model/service/PriceGroupService.cfc:L265-L266], it resolves no price groups, and it can only
+  // reduce what a caller receives. `request.accountID` is the authenticated value - the body's was
+  // discarded during decoding - so this comparison is against a trusted operand on one side.
+  if (!accountAgrees(order.accountID, accountID)) {
+    throw new OrderViewAdmissionError('unusableRequestInput', [
+      {
+        path: 'order.accountID',
+        message: 'must name the authenticated account, or be stated as absent',
+      },
+    ]);
+  }
 
   // =========================================================================
   // ★★★ THE CROSS-SERVICE EXECUTION ORDERING, DISCHARGED IN ONE CALL.
@@ -1743,8 +2130,9 @@ async function runSelectedOperation(
   // THE READER: [model/service/PromotionService.cfc:L241] tests
   // `isNull(orderItem.getAppliedPriceGroup()) || reward.hasEligiblePriceGroup( orderItem.getAppliedPriceGroup() )`.
   // A null applied group, or a reward that DOES list it as eligible, discounts from
-  // `getPrice()` with NO correction term [:L244]; anything else discounts from
-  // `getSkuPrice()` PLUS the correction term [:L249, L252]. Because the member is read
+  // `getPrice()` with NO correction term [:L244]; anything else computes the original discount from
+  // `getSkuPrice()` and then subtracts `(getExtendedSkuPrice() - getExtendedPrice())` [:L249, L252].
+  // Because the member is read
   // in the branch CONDITION ITSELF, the obligation holds whichever arm runs - and
   // because the write at L370/L371 is gated by [:L365] and [:L369], an item may
   // legitimately still have no applied group afterwards, which is that first arm. So the
@@ -1774,10 +2162,15 @@ async function runSelectedOperation(
   const priceGroupIntents = pricing.priceGroupIntents.map(renderPriceGroupIntent);
 
   sink.info('priced an order through the composed price-group-then-promotion operation', {
-    capability: CAPABILITY,
-    operation: request.operation,
     requestId: request.requestId,
-    idempotencyKey: request.idempotencyKey,
+    route,
+    capability: CAPABILITY,
+    action,
+    operation: request.operation,
+    // Whether an account was established, as a BOOLEAN. The identifier itself is never a log value -
+    // `accountEstablished` is what the logger's allow-list admits, and it is admitted precisely because
+    // it names one without carrying it.
+    accountEstablished: accountID !== undefined,
     // COUNTS ONLY. No order identifier, no item identifier and no monetary amount reaches a log
     // line: an order document is caller-authored and a log stream is not the place to reproduce one.
     orderItemCount: order.orderItems.length,
@@ -1788,8 +2181,6 @@ async function runSelectedOperation(
 
   return {
     operation: request.operation,
-    idempotencyKey: request.idempotencyKey,
-    requestId: request.requestId,
     evaluatedAt,
     // An EMPTY array is a valid result and, for a return order, the CORRECT one - see the preserved
     // `issue #1766` no-op in the register below.
@@ -1801,6 +2192,45 @@ async function runSelectedOperation(
 // ===========================================================================
 // SECTION 8 - THE HANDLER
 // ===========================================================================
+
+/**
+ * The one route action this module implements.
+ *
+ * Read from the shared table's own vocabulary rather than written as a bare string, so a table edit
+ * that renamed the action would fail to compile here instead of silently turning every request into a
+ * non-route. See finding F12 and the guard in {@link createPromotionApplicationHandler}.
+ */
+const IMPLEMENTED_ROUTE_ACTION: RouteAction = 'applyPromotions';
+
+/**
+ * Build the per-invocation scope input.
+ *
+ * Address-zone preparation is deliberately absent here. The composition root's
+ * `updateOrderAmountsWithPriceGroupsThenPromotions` operation loads the deferred index
+ * before either pass, so this handler neither requests the unbounded read while opening
+ * the scope nor has to remember a second preparatory call.
+ *
+ * ★ THE OTHER THREE MEMBERS, AND WHY EACH IS OMITTED OR SUPPLIED AS IT IS:
+ *
+ *   * `now` - supplied as whatever the injected clock yields, which in production is `undefined`. The
+ *     scope then reads the wall clock ONCE at its own creation and binds that single instant across
+ *     every date-dependent read of the request, which is why this file calls no `new Date()` at all. The
+ *     instant is never taken from the payload: a caller able to move the pricing clock could walk an
+ *     expired promotion period back inside its window.
+ *   * `adminAccountFlag` - OMITTED, because this entrypoint performs NO durable write (section 2,
+ *     obligation 3), so there is no audit stamp to attribute. Absent means false, which is the non-admin
+ *     arm of the legacy gate `!account.isNew() && account.getAdminAccountFlag()`; nothing here defaults
+ *     it true.
+ *   * `feedHost` - OMITTED, because the product feed is another capability's entrypoint. Omitting it
+ *     leaves `RequestScope.productFeedPort` undefined, which is the safe outcome rather than a degraded
+ *     one.
+ */
+function buildRequestScopeInput(
+  accountID: string | undefined,
+  clock: (() => Date) | undefined,
+): RequestScopeInput {
+  return { now: clock?.(), accountID };
+}
 
 /**
  * Build a promotion-application handler over an explicit dependency bundle.
@@ -1826,13 +2256,18 @@ export function createPromotionApplicationHandler(
   // passing them here would build a fresh graph - and a fresh connection pool - on every invocation.
   const openCompositionRoot: () => Promise<CompositionRoot> =
     dependencies.compositionRoot ?? ((): Promise<CompositionRoot> => bootstrapCompositionRoot());
-  const admitOrderView: OrderViewAdmission =
-    dependencies.admitOrderView ?? admitMaterializedOrderView;
+  // THE WIRE ARM IS THE DEFAULT, because a wire document is the only order an API Gateway route can
+  // receive - see {@link PromotionApplicationDependencies.admitOrderView} for the finding that
+  // changed this line. {@link admitMaterializedOrderView} is exported beside it for an in-process
+  // caller that already holds a materialised aggregate.
+  const admitOrderView: OrderViewAdmission = dependencies.admitOrderView ?? admitOrderDocument;
   const sink: Logger = dependencies.logger ?? defaultLogger;
   const clock: (() => Date) | undefined = dependencies.clock;
 
   return async (event: APIGatewayProxyEvent, context?: Context): Promise<APIGatewayProxyResult> => {
-    const requestId = readCorrelationIdentifier(event, context);
+    // ★ THE SHARED CORRELATION PRECEDENCE (finding F8). One resolver, one substitute token, five
+    // entrypoints. See the note where `readCorrelationIdentifier` used to be.
+    const requestId = resolveServerRequestId(event, context);
 
     // Reassigned once, after the route is known, so a failure anywhere below is reported against the
     // route being served. `route` is composed from the FROZEN table row and never from the caller's
@@ -1851,15 +2286,37 @@ export function createPromotionApplicationHandler(
         return resolution.response;
       }
 
-      mappingContext = {
-        requestId,
-        route: `${resolution.route.methods} ${resolution.route.path}`,
-        logger: sink,
-      };
+      // ★ THE LABEL IS `METHOD /path`, BUILT BY THE SHARED HELPER FROM THE MATCHED ROW'S OWN FROZEN
+      // MEMBERS (finding F8). The template was inline here and produced the same text; routing it
+      // through `routeDiagnosticLabel` is what keeps the five entrypoints on one convention when that
+      // convention next changes. `event.httpMethod` is deliberately NOT used: the router matches the
+      // method with `listFindNoCase`, so a caller-supplied casing would reach the log line for no
+      // diagnostic gain.
+      const route = routeDiagnosticLabel(resolution.route.methods, resolution.route.path);
+      mappingContext = { requestId, route, logger: sink };
 
-      const decoding = decodeRequestEnvelope(event, requestId);
+      // ★★★ THE RESOLVED ACTION IS VERIFIED BEFORE THE BODY IS DECODED (finding F12). The previous
+      // revision never compared it and used it only as a log value. The shared table declares one route
+      // per capability today, so this is unreachable - and it is written anyway because the router's own
+      // note records that adding a second route to a capability later is ADDITIVE, at which point an
+      // action this module does not implement must fall out as a non-route rather than reaching the
+      // dispatcher. Placed before `decodeRequestEnvelope` so an unimplemented action costs no parse, no
+      // composition root and no scope.
+      if (resolution.route.action !== IMPLEMENTED_ROUTE_ACTION) {
+        return routeNotFoundResponse(mappingContext);
+      }
+
+      // Fail closed before decoding or opening the graph. The compatibility `accountID` body member
+      // remains non-authoritative: decoding accepts it only when it agrees with this principal.
+      const principalResolution = resolveRequestPrincipal(event);
+      if (!principalResolution.identified) {
+        return unauthenticatedResponse(mappingContext);
+      }
+
+      const accountID = principalResolution.principal.accountID;
+      const decoding = decodeRequestEnvelope(event, requestId, accountID);
       if (!decoding.ok) {
-        return invalidRequestResponse(decoding.reason, mappingContext);
+        return invalidRequestResponse(decoding.reason, mappingContext, decoding.fields);
       }
 
       // ONE await of the idempotent, memoized initializer, INSIDE the handler and never at module
@@ -1872,16 +2329,25 @@ export function createPromotionApplicationHandler(
       // therefore one customer's price - into another's. Request state is read from the event and from
       // this scope; it is NEVER read from `../lib/config.js`, which is static process configuration
       // and is not a request scope.
-      //
-      // `now` is passed as whatever the injected clock yields, which in production is `undefined` -
-      // the scope then binds the instant itself, once, and publishes it as `scope.now`.
-      const scope = await root.createRequestScope({
-        now: clock?.(),
-        accountID: decoding.request.accountID,
-      });
+      const scope = await root.createRequestScope(buildRequestScopeInput(accountID, clock));
 
-      return successResponse(
-        await runSelectedOperation(decoding.request, scope, admitOrderView, sink),
+      const document = await runSelectedOperation(
+        decoding.request,
+        scope,
+        admitOrderView,
+        accountID,
+        route,
+        resolution.route.action,
+        sink,
+      );
+
+      // ★ THE SHARED SUCCESS ENVELOPE, WHICH IS WHAT PUTS `requestId` IN A SUCCESSFUL BODY AT ALL
+      // (finding F13). It also owns the status and the header set, so neither is decided here.
+      return jsonSuccessResponse(
+        requestId,
+        resolution.route.capability,
+        resolution.route.action,
+        document,
       );
     } catch (thrown: unknown) {
       // Narrowed by `instanceof`, never cast. An admission refusal is a CLIENT-shaped rejection
@@ -1919,9 +2385,12 @@ export const handler: PromotionApplicationHandler = createPromotionApplicationHa
 // consequences cross THIS boundary - they shape which intents arrive, what they
 // are worth, and what the two use-count members return - so they are recorded
 // here where a reader of the wire contract will meet them. Each is reproduced by
-// the tier that owns it and NONE is repaired anywhere. Comments are part of the
-// deliverable: `slatwall-ts/tsconfig.build.json` sets `removeComments: false` and
-// the bundle is emitted unminified precisely so this audit trail survives.
+// the tier that owns it and NONE is repaired anywhere.
+//
+// THE SOURCE IS THE AUDIT RECORD. `slatwall-ts/tsconfig.build.json` sets
+// `removeComments: false`, so an annotation also survives into the `tsc` output in
+// `build/` whenever the declaration it sits on survives type erasure - but NOT into
+// the deployable artifact.
 //
 // ---------------------------------------------------------------------------
 // LEGACY-DEFECT [model/service/PromotionService.cfc:L468-L521]: the over-use
@@ -2017,12 +2486,13 @@ export const handler: PromotionApplicationHandler = createPromotionApplicationHa
 // handler serialises.
 //
 // ---------------------------------------------------------------------------
-// NOT MODELLED HERE, AND DELIBERATELY SO. The migration's three deliberate divergences
-// are allocated elsewhere and this file claims none of them: the un-`var`'d
-// `discountAmount` leaking into component scope [model/service/PromotionService.cfc:L1007,
-// L1009] and the `amountOff` branch's raw floating-point multiplication [:L998] are
-// SERVICES-tier divergences, and the entity memo defects [model/entity/Sku.cfc:L500-L522,
-// model/entity/Product.cfc:L524-L532] are an ENTITIES-tier divergence. `src/handlers/**`
+// NOT MODELLED HERE, AND DELIBERATELY SO. The migration's three deliberate divergences are
+// allocated elsewhere and this file claims none of them: the un-`var`'d `discountAmount`,
+// assigned WITHOUT `var` at all THREE of [model/service/PromotionService.cfc:L1007], [:L1009]
+// and the clamp at [:L1014] and therefore leaking into component scope, and the `amountOff`
+// branch's raw floating-point multiplication at [:L998], are SERVICES-tier divergences; the
+// entity memo defects [model/entity/Sku.cfc:L500-L522, model/entity/Product.cfc:L524-L532]
+// are an ENTITIES-tier divergence. `src/handlers/**`
 // owns ZERO slots of the divergence, signature-reshaping, visibility-widening and
 // entity-widening ledgers, and spends none.
 // ===========================================================================

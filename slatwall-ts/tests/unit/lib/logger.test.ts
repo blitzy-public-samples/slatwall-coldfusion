@@ -1756,6 +1756,222 @@ describe('the two accepted consequences of anchoring these rules', () => {
   });
 });
 
+describe('a sensitive value longer than the scan budget does not leak its tail', () => {
+  // ---------------------------------------------------------------------------
+  // SECURITY FINDING F16 (CWE-532), REPRODUCED BY THE STRINGS THAT PRODUCED IT.
+  //
+  // `sensitiveValueEnd` bounds its search for the end of a value at
+  // MAX_ASSIGNMENT_VALUE_LENGTH = 512 characters so a pathological string cannot
+  // stall the emission path. The defect was that reaching that bound was treated as
+  // having FOUND the end: the function returned the budget boundary, and
+  // `redactSensitiveAssignments` then masked the first 512 characters and copied
+  // everything after them out BYTE FOR BYTE. A secret longer than the budget
+  // therefore shipped with characters 513 onward in cleartext, under an
+  // `[REDACTED]` marker that said the opposite.
+  //
+  // The budget is now a trigger for masking MORE, never for masking less. Every
+  // case below asserts against the RAW EMITTED LINE as well as the parsed message,
+  // because an assertion on shape alone would pass while the material still shipped.
+  // ---------------------------------------------------------------------------
+
+  /** The tail a leak publishes. Distinctive so `not.toContain` cannot pass by luck. */
+  const TAIL_MARKER = 'TAIL-OF-THE-SECRET-abc123XYZ';
+
+  /**
+   * A single unbroken run of `length` characters ending in {@link TAIL_MARKER}.
+   *
+   * Unbroken matters: no space, tab or value terminator anywhere in it, so the token
+   * scan cannot find a legitimate terminus and must fall back on withholding the
+   * remainder. That is precisely the input the budget was mishandling.
+   */
+  function unbrokenSecret(length: number): string {
+    const filler = 'A'.repeat(Math.max(0, length - TAIL_MARKER.length));
+
+    return `${filler}${TAIL_MARKER}`;
+  }
+
+  it('withholds the tail of an UNQUOTED value longer than the 512-character budget', () => {
+    const captured = captureError(`password=${unbrokenSecret(600)}`);
+
+    expect(captured.line).not.toContain(TAIL_MARKER);
+    expect(captured.line).not.toContain('AAAA');
+    expect(messageOf(`password=${unbrokenSecret(600)}`)).toBe(`password=${REDACTED}`);
+  });
+
+  it('withholds the tail of a QUOTED value longer than the budget, and masks it whole', () => {
+    // The quoted arm used to require the closing quote to fall INSIDE the budget.
+    // Beyond it the arm was skipped, the token scan ran, and the 513th character
+    // onward - closing quote included - was published. Both `indexOf` calls the arm
+    // needs were already being made, so the terminator's position was known all
+    // along; it is now used at any length.
+    const message = `password="${unbrokenSecret(700)}"`;
+    const captured = captureError(message);
+
+    expect(captured.line).not.toContain(TAIL_MARKER);
+    expect(messageOf(message)).toBe(`password=${REDACTED}`);
+  });
+
+  it('withholds the tail of a continuation-head value - `token=Bearer <very long material>`', () => {
+    // The third route to the boundary: a recognized continuation head whose material
+    // is sliced AT the budget, so an unbroken run reaching the end of that slice said
+    // nothing about where the material stopped.
+    const message = `token=Bearer ${unbrokenSecret(900)}`;
+    const captured = captureError(message);
+
+    expect(captured.line).not.toContain(TAIL_MARKER);
+    expect(messageOf(message)).toBe(`token=${REDACTED}`);
+  });
+
+  it('keeps a LATER LINE legible, so withholding the remainder is bounded to one line', () => {
+    // The fallback stops at the newline rather than at the end of the text: a
+    // sanitized `stack` is many lines and only the line carrying the undelimited
+    // value is unsafe. `orderID` on the following line is an authorized opaque
+    // handle and must survive.
+    const message = `password=${unbrokenSecret(600)}\n    at handler (orderID=abc123)`;
+    const emitted = messageOf(message);
+
+    expect(emitted).not.toContain(TAIL_MARKER);
+    expect(emitted).toContain('orderID=abc123');
+    expect(emitted).toBe(`password=${REDACTED}\n    at handler (orderID=abc123)`);
+  });
+
+  it('still stops at a real terminator inside the budget, so short values are unaffected', () => {
+    // The correction must not have turned the budget into a licence to swallow the
+    // rest of every line. A delimited value is still masked exactly, and the
+    // diagnostics beside it stay legible.
+    expect(messageOf('password=hunter2; orderID=abc123')).toBe(
+      `password=${REDACTED}; orderID=abc123`,
+    );
+    expect(messageOf('password="hunter2" orderID=abc123')).toBe(
+      `password=${REDACTED} orderID=abc123`,
+    );
+  });
+
+  it('remains idempotent over an already-masked long value', () => {
+    // Re-logging a sanitized string must not nest one marker inside another. The
+    // already-masked short circuit runs before the budget is consulted at all.
+    expect(messageOf(`password=${REDACTED}`)).toBe(`password=${REDACTED}`);
+  });
+});
+
+describe('the capability handlers can publish their own diagnostics in the clear', () => {
+  // ---------------------------------------------------------------------------
+  // OBSERVABILITY FINDING F7, TESTED THROUGH THE REAL LOGGER.
+  //
+  // The five Lambda entrypoints publish operation and outcome fields that no
+  // allow-list carried, so the fail-closed context arm replaced every one of them
+  // with the redaction marker: a line recorded THAT a request was served while
+  // withholding WHICH capability served it, WHICH operation ran and HOW it came out.
+  //
+  // The review's instruction was explicit - "Add tests that route handler calls
+  // through the real logger" - because a suite asserting on a handler's own logger
+  // double would have shown these keys legible while production redacted them. Every
+  // case below goes through `src/lib/logger.ts` itself.
+  // ---------------------------------------------------------------------------
+
+  it('keeps every closed capability/operation/outcome literal legible', () => {
+    const captured = captureError('catalog query served', {
+      capability: 'catalogQuery',
+      action: 'queryCatalog',
+      operation: 'findProducts',
+      outcome: 'served',
+    });
+    const context = contextOf(captured);
+
+    expect(context['capability']).toBe('catalogQuery');
+    expect(context['action']).toBe('queryCatalog');
+    expect(context['operation']).toBe('findProducts');
+    expect(context['outcome']).toBe('served');
+  });
+
+  it('keeps the per-invocation counts and the account-established boolean legible', () => {
+    const captured = captureError('promotions applied', {
+      accountEstablished: true,
+      orderItemCount: 3,
+      orderFulfillmentCount: 1,
+      priceGroupIntentCount: 2,
+      promotionIntentCount: 4,
+      resolvedSkuCount: 3,
+    });
+    const context = contextOf(captured);
+
+    expect(context['accountEstablished']).toBe(true);
+    expect(context['orderItemCount']).toBe(3);
+    expect(context['orderFulfillmentCount']).toBe(1);
+    expect(context['priceGroupIntentCount']).toBe(2);
+    expect(context['promotionIntentCount']).toBe(4);
+    expect(context['resolvedSkuCount']).toBe(3);
+  });
+
+  it('refuses a name nothing in the service emits any longer', () => {
+    // ★★★ THE ALLOW-LIST SHRANK BY ONE, AND THE REMOVAL IS FINDINGS F14 AND F3.
+    // `skuSelectorRefusal` was admitted alongside the counts above, because
+    // `priceResolutionHandler` emitted its own `warn` line carrying that token before
+    // calling `invalidRequestResponse` - which logged the same refusal a second time.
+    // F14 removed the duplicate emission; F3 removed the error class behind it, since
+    // the product-name search that could be ambiguous at all is gone. The block's own
+    // standing rule then applies: a name that appears only in a test is not admitted,
+    // and this one now appears nowhere in `src/`.
+    const captured = captureError('served', {
+      skuSelectorRefusal: 'noPriceGroupResolvedForSkuAndAccount',
+    });
+    const context = contextOf(captured);
+
+    expect(context['skuSelectorRefusal']).toBe('[REDACTED]');
+  });
+
+  it('admits the names case-insensitively, as every other allow-list entry is admitted', () => {
+    // `normalizeKey` lowercases and strips non-alphanumerics, so an authorization is
+    // a property of the NAME rather than of one spelling of it.
+    const captured = captureError('served', { Capability: 'productFeed', ORDER_ITEM_COUNT: 7 });
+    const context = contextOf(captured);
+
+    expect(context['Capability']).toBe('productFeed');
+    expect(context['ORDER_ITEM_COUNT']).toBe(7);
+  });
+
+  it('STILL redacts a caller-chosen idempotency key, which was deliberately not admitted', () => {
+    // The one name in the finding's list that stays under the fail-closed arm: its
+    // value is a free string a caller chose, so admitting it would publish arbitrary
+    // caller text under an authorized name. The review asked for exactly this
+    // asymmetry - "retain redaction of idempotency keys, account IDs, bodies, SQL,
+    // and credentials" - and the two mechanisms that logged it were withdrawn anyway.
+    const captured = captureError('served', {
+      idempotencyKey: 'caller-chosen-value',
+      outcome: 'served',
+    });
+    const context = contextOf(captured);
+
+    expect(context['idempotencyKey']).toBe(REDACTED);
+    expect(context['outcome']).toBe('served');
+  });
+
+  it('does not admit a near-miss name that merely resembles one of the eleven', () => {
+    // The allow-list stays CLOSED: widening it to eleven names does not widen it to
+    // anything shaped like them.
+    const captured = captureError('served', {
+      capabilities: 'catalogQuery',
+      operationDetail: 'findProducts',
+      itemCount: 3,
+    });
+    const context = contextOf(captured);
+
+    expect(context['capabilities']).toBe(REDACTED);
+    expect(context['operationDetail']).toBe(REDACTED);
+    expect(context['itemCount']).toBe(REDACTED);
+  });
+
+  it('does not let an authorized name launder a credential-shaped value', () => {
+    // An authorized KEY still routes its value through the value rules, so a
+    // statement or a connection string inside one is withheld on its own merits.
+    const captured = captureError('served', {
+      operation: 'mysql://root:hunter2@db.internal/Slatwall',
+    });
+
+    expect(captured.line).not.toContain('hunter2');
+  });
+});
+
 describe('the redaction record cannot be written through a prototype accessor', () => {
   /**
    * A context object whose own keys include `__proto__`.

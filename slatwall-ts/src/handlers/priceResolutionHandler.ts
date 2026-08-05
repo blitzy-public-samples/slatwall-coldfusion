@@ -1,96 +1,61 @@
 // ===========================================================================
-// PRICE RESOLUTION - LAMBDA ENTRY POINT (bundle entry point 3 of 5)
+// The price resolution Lambda entrypoint.
 //
 // A NET-NEW primary adapter over the price-group and currency resolution surface of
-// `../services/priceGroupService.js` and `../domain/ports/currencyConverter.js`. AAP 0.4.1's
-// handler table records this row with source file "-" and change "Net-new entrypoint exposing the
-// price-group and currency resolution surface", so NOTHING HERE IS A PORT OF A LEGACY FILE: there
-// is no `.cfc` antecedent for a Lambda entrypoint, no FW/1 controller behind it, and no legacy
-// route. Every legacy citation below is PROVENANCE for a decision, never a transformation of a
-// file this module owns.
+// `../services/priceGroupService.js` and `../domain/ports/currencyConverter.js`. Its whole job: parse
+// the API Gateway event; resolve the action through `./router.js`; obtain the wired graph from
+// `./bootstrap.js` through its memoized initializer; open exactly ONE request scope; invoke ONE
+// already-ported member; serialise; map anything thrown through `./errorMapper.js`.
 //
-// ★ COVERAGE IS NET-NEW AND IS FLAGGED AS NET-NEW, NEVER AS PARITY (B8). The whole handler tier is
-//   net-new coverage: the only three legacy test files touching the in-scope slice are
-//   `meta/tests/unit/entity/BrandTest.cfc`, `meta/tests/unit/entity/ProductTest.cfc` and the EMPTY
-//   `meta/tests/functional/admin/entity/ProductTest.cfc`, none of which asserts anything about a
-//   handler. Assertions for this module live in `tests/unit/handlers/priceResolutionHandler.test.ts`
-//   and are authored by the test tier; no test file is authored here.
+// ★★ THIS ENTRYPOINT FRONTS THE MUST-PRESERVE PRICE-GROUP AND CURRENCY RESOLUTION CASCADE, so it does
+// the least it can. NO COERCION, NO DEFAULTING, NO REORDERING, NO CLAMPING AND NO ROUNDING
+// "CORRECTION" HAPPENS IN TRANSIT. In particular:
 //
-// ★★ THIS ENTRYPOINT FRONTS MUST-PRESERVE AREA 2 - THE PRICE-GROUP AND CURRENCY RESOLUTION
-//    CASCADE (B2). It therefore does the least it can: it translates a request into the domain
-//    inputs a ported service already accepts, calls ONE outcome-producing member, and serialises
-//    what came back. NO COERCION, NO DEFAULTING, NO REORDERING, NO CLAMPING AND NO ROUNDING
-//    "CORRECTION" HAPPENS IN TRANSIT. In particular:
+//   * The five-level cascade [model/service/PriceGroupService.cfc:L140-L181] is neither reordered,
+//     short-circuited, memoized nor "optimised" here. Its two documented asymmetries - the parent
+//     recursion at [:L174] and the rounding rule applied only on the `percentageOff` branch
+//     [:L316-L340] - are service-tier behaviour and are left alone.
+//   * `RoundingRuleService.roundValue()` [model/service/RoundingRuleService.cfc:L88-L175] is
+//     decimal-STRING manipulation and its measured outputs are counter-intuitive by design - `12.30`
+//     with `.99` yields `12.99`, `7.42` with `9.99` yields `9.99`, `2.30` with `0.99` yields `0.99`,
+//     and the default expression `"0.00"` turns `12.3456` into `10.00`. NO PRICE THIS MODULE
+//     SERIALISES IS POST-PROCESSED, SANITY-CHECKED, CLAMPED OR REJECTED FOR LOOKING WRONG.
+//   * `Sku.getPriceByCurrencyCode` and its two siblings answer NOTHING for a currency they have no
+//     price for [model/entity/Sku.cfc:L269-L285]. That absence is serialised STRUCTURALLY - never as
+//     `0`, never as a `null` a consumer can default, and never as an empty `Money`; it is represented
+//     by omitting the optional `price` member, which is JSON's structural form of `undefined`.
+//     Substituting zero would sell products for free.
 //
-//      * The five-level cascade [model/service/PriceGroupService.cfc:L140-L181] is neither
-//        reordered, short-circuited, memoized nor "optimised" here. Its two documented
-//        asymmetries - the parent recursion at [L174] and the rounding rule applied only on the
-//        `percentageOff` branch [L316-L340] - are service-tier behaviour and are left alone.
-//      * `RoundingRuleService.roundValue()` [model/service/RoundingRuleService.cfc:L88-L175] is
-//        decimal-STRING manipulation and its measured outputs are counter-intuitive by design -
-//        `12.30` with `.99` yields `12.99`, `7.42` with `9.99` yields `9.99`, `2.30` with `0.99`
-//        yields `0.99`, and the default expression `"0.00"` turns `12.3456` into `10.00`. NO PRICE
-//        THIS MODULE SERIALISES IS POST-PROCESSED, SANITY-CHECKED, CLAMPED OR REJECTED FOR LOOKING
-//        WRONG.
-//      * `Sku.getPriceByCurrencyCode` and its two siblings answer NOTHING for a currency they have
-//        no price for [model/entity/Sku.cfc:L269-L285]. That absence is serialised STRUCTURALLY -
-//        never as `0`, never as a `null` a consumer can default, never as an empty `Money`, and
-//        never as an omitted key. Substituting zero would sell products for free.
+// NO BUSINESS LOGIC LIVES HERE. No cascade walking, no rate selection, no rounding, no percentage
+// arithmetic, no currency conversion, no `Money` arithmetic, no SQL, no entity construction and no
+// settings resolution - every one of those lives in `../services/**` or `../domain/**`. It constructs
+// no service, repository, port or connection pool - `./bootstrap.js` is the only composition root -
+// and it never reads request state from `../lib/config.js`, which is STATIC PROCESS CONFIGURATION.
 //
-// ★ WHAT THIS MODULE IS. Parse the API Gateway event; resolve the action through `./router.js`;
-//   obtain the wired graph from `./bootstrap.js` through its idempotent memoized initializer;
-//   open exactly ONE request scope; invoke ONE already-ported member; serialise; map anything
-//   thrown through `./errorMapper.js`.
+// THREE DELIBERATE NON-EXPOSURES, each argued where it is decided:
+//   1. `updateOrderAmountsWithPriceGroups` - section 6.11, the cross-service ordering constraint.
+//   2. The service's three WRITE members - section 6.12.
+//   3. Two of the currency port's three members - section 6.13.
 //
-// ★ WHAT THIS MODULE IS NOT. It contains NO BUSINESS LOGIC. No cascade walking, no rate selection,
-//   no rounding, no percentage arithmetic, no currency conversion, no `Money` arithmetic, no SQL,
-//   no entity construction and no settings resolution. Every one of those lives in
-//   `../services/**` or `../domain/**`. If a line here made a pricing decision it would be in the
-//   wrong file. It also constructs no service, no repository, no port and no connection pool -
-//   `./bootstrap.js` is the only composition root - and it never reads request state from
-//   `../lib/config.js`, which is STATIC PROCESS CONFIGURATION and never a request scope.
+// DEPENDENCY DIRECTION. This module imports `./router.js`; the router never imports a handler, because
+// the router owns RESOLUTION and a handler owns INVOCATION. `src/handlers/` is the inversion point of
+// the subtree: nothing imports from it, so there is no back-edge and no cycle. No other capability
+// handler is imported.
 //
-// ★ DEPENDENCY DIRECTION. This module IMPORTS `./router.js`; the router never imports a handler.
-//   The router owns RESOLUTION, a handler owns INVOCATION. `src/handlers/` is the inversion point
-//   of the whole subtree: it imports its siblings and NOTHING imports from it, so there is no
-//   back-edge and no cycle. Nor does it import another capability handler.
+// `esbuild.config.mjs` emits CommonJS (`format: 'cjs'`) because bundling this dependency set to ESM
+// builds cleanly and then fails at run time with `Dynamic require of "node:buffer"` through mysql2 ->
+// sql-escaper. The consequence here is load-bearing: NO `import.meta` AND NO TOP-LEVEL `await`, so the
+// memoized initializer is awaited INSIDE the handler.
 //
-// ★★ THE THREE THINGS THIS MODULE DELIBERATELY DOES NOT EXPOSE, each argued where it is decided:
-//      1. `updateOrderAmountsWithPriceGroups` - section 6.11, the cross-service ordering constraint.
-//      2. The service's three WRITE members - section 6.12.
-//      3. Two of the currency port's three members - section 6.13.
-//
-// ★ BUNDLE FORMAT IS A SOLVED PROBLEM AND IS NOT RE-LITIGATED HERE. `esbuild.config.mjs` emits
-//   CommonJS (`format: 'cjs'`) because bundling this dependency set to ESM builds cleanly and then
-//   fails at run time with `Dynamic require of "node:buffer"` through mysql2 -> sql-escaper. The
-//   consequence for this file is concrete and load-bearing: NO `import.meta` AND NO TOP-LEVEL
-//   `await`. The memoized initializer is therefore awaited INSIDE the handler, never at module
-//   scope. TypeScript source stays `NodeNext`; only the emitted bundle format differs. No bundler,
-//   manifest or configuration file is authored, edited or duplicated here - they all live one level
-//   above this folder.
-//
-// ★ NO USER RULES EXIST FOR THIS PROJECT. `review_rules` returns the single line "No user rules
-//   provided." for both a default read and an explicit whole-document read, so there is no rules
-//   document to comply with and NO RULE IS INVENTED, IMPLIED OR CITED anywhere in this file. Every
-//   constraint traces to the AAP, to a cited legacy locator, or to an explicit `// JUDGMENT CALL:`.
-//   Their absence is not licence to lower the bar: the enterprise standards this subtree already
-//   holds itself to - maximal strictness, one arithmetic surface, parameterised SQL,
-//   environment-driven configuration with no credential in source, annotated judgment calls - are
-//   applied here in full.
-//
-// ★ NO INVENTED NON-FUNCTIONAL REQUIREMENT APPEARS IN THIS FILE OR ITS COMMENTS (B7). No SLA, no
-//   latency, throughput, uptime or availability figure, and no performance claim. Lambda's 15-minute
-//   ceiling and API Gateway's 29-second ceiling are PLATFORM FACTS and neither is restated as a
-//   target. The legacy 60-second, 45-second and 30-second lock timeouts are NOTED AND DELIBERATELY
-//   NOT IMPLEMENTED. `cfthread` usage across the in-scope slice is zero, so no worker thread is
-//   introduced.
-//
-// ★ NO HTTP STATUS SEMANTICS THE SOURCE NEVER HAD ARE INVENTED. The legacy slice has no HTTP status
-//   vocabulary at all. `./errorMapper.js` owns every status this module can produce - 400, 404 and
-//   500 - and nothing here mints a 401, 403, 409, 422 or 429, a retry-after, a rate limit or a
-//   circuit breaker. A request that names something unresolvable is answered with the mapper's own
-//   invalid-request vocabulary; a DOMAIN outcome that resolved to nothing is answered successfully,
-//   with the absence stated in the body.
+// NO HTTP STATUS SEMANTICS THE SOURCE NEVER HAD ARE INVENTED. The shared mapper owns every status
+// this module can produce: 400 for unusable input, 401 for an unidentified caller, 404 for an
+// unmatched route and 500 for a server-shaped failure. The administrative whole-document operation
+// was withdrawn, so this route has no permission-gated arm and emits no 403; it also mints no 409,
+// 422 or 429 and no retry-after, rate-limit, challenge or circuit-breaker header. A DOMAIN outcome
+// that resolved to nothing is answered successfully, with the absence stated in the body. No
+// service-level objective, latency, throughput, uptime or availability figure appears anywhere in
+// this file; the legacy 60-second, 45-second and 30-second lock timeouts are NOTED AND DELIBERATELY
+// NOT IMPLEMENTED, and `cfthread` usage across the in-scope slice is zero.
 // ===========================================================================
 
 import { z } from 'zod';
@@ -98,16 +63,37 @@ import { z } from 'zod';
 import type { APIGatewayProxyEvent, APIGatewayProxyResult, Context } from 'aws-lambda';
 
 import { bootstrapCompositionRoot } from './bootstrap.js';
-import type { PriceResolutionCapability, RequestScope, RequestScopeInput } from './bootstrap.js';
-import { invalidRequestResponse, mapErrorToApiGatewayResponse } from './errorMapper.js';
+import type {
+  CompositionRoot,
+  PriceResolutionCapability,
+  RequestScope,
+  RequestScopeInput,
+  SkuIdentity,
+} from './bootstrap.js';
+import {
+  invalidRequestResponse,
+  jsonSuccessResponse,
+  mapErrorToApiGatewayResponse,
+  resolveServerRequestId,
+  routeDiagnosticLabel,
+  routeNotFoundResponse,
+  unauthenticatedResponse,
+} from './errorMapper.js';
 import type { ErrorMappingContext, InvalidRequestReason } from './errorMapper.js';
+import { resolveRequestPrincipal } from './requestPrincipal.js';
 import { resolveRouteForCapability, routeRequestFromEvent } from './router.js';
+import type { RouteAction } from './router.js';
 import type { CurrencyConverter } from '../domain/ports/currencyConverter.js';
 import type { CurrentAccountContext } from '../domain/ports/priceGroupRepository.js';
 import { toCurrencyCode } from '../domain/valueObjects/currencyCode.js';
 import { Money } from '../domain/valueObjects/money.js';
-import { cfEquals, structGet } from '../lib/cfml/struct.js';
-import { logger } from '../lib/logger.js';
+import { cfEquals } from '../lib/cfml/struct.js';
+import type { Logger } from '../lib/logger.js';
+import { logger as processLogger } from '../lib/logger.js';
+
+// ★ `cfEquals` NO LONGER PARTICIPATES IN SKU SELECTION (finding F3). It remains only at the account
+// trust boundary, where CFML string comparison makes differently-cased spellings of the same opaque
+// account identifier equal; entity identifiers themselves are bound to repository reads unchanged.
 
 // Two declared dependencies of this module are deliberately NOT imported, and each absence is a
 // decision rather than an omission:
@@ -181,67 +167,74 @@ export type PriceResolutionOperation =
   | 'calculateSkuPriceBasedOnPriceGroup'
   | 'calculateSkuPriceBasedOnPriceGroupRate'
   | 'getBestPriceGroupDetailsBasedOnSkuAndAccount'
-  | 'getPriceGroupDataJSON'
   | 'getPriceByCurrencyCode'
   | 'getListPriceByCurrencyCode'
   | 'getRenewalPriceByCurrencyCode'
   | 'convertCurrency';
 
-/**
- * How a request names the SKU every SKU-taking operation needs.
- *
- * ★★★ WHY A PRODUCT NAME AND A SKU CODE, AND NOT A `skuID`. This is the single most consequential
- * shape in the file and it is dictated by what the request tier publishes, so it is argued in full
- * rather than asserted.
- *
- * `./bootstrap.js` deliberately WITHDREW the six MySQL repositories from `RequestScope`, because
- * they carried seven durable mutations onto the request-tier surface. One consequence is that there
- * is no load-by-identifier for a SKU, a product, a product type, a price group or a rate anywhere
- * on the surface a handler holds, and reaching for the composition root's assembly-inspection hook
- * to get one would put those same seven mutations back within reach of an HTTP-facing module -
- * which is precisely the arrangement the withdrawal exists to prevent.
- *
- * That leaves two published reads, and only one of them yields a SKU the cascade can price:
- *
- *   * `skuService.getSkuBySkuCode(skuCode)` hydrates with the bare fetch shape - options, option
- *     groups and the per-currency price rows WITH THE FOUR-STEP CASCADE RUN, but `product` UNSET.
- *     A SKU with no product is unusable for price-group resolution: level two of the cascade
- *     [model/service/PriceGroupService.cfc:L154] passes `sku.getProduct()` into a parameter the
- *     legacy declares `required` at [L102], and the ported service reproduces that by RAISING. So
- *     that read would answer the currency operations and throw on almost every price-group one.
- *   * `skuService.getProductSkus(product, sorted, fetchOptions)` wires `product` THROUGH from its
- *     argument, and the only published way to obtain a product is
- *     `productService.findProducts(criteria)`, whose records carry their `brand` and `productType`
- *     eagerly. Its keyword matches `productName` and only `productName`, which is why this selector
- *     names a product NAME.
- *
- * So one resolution path serves everything - and it makes all THREE `getRateFor*` entry points
- * COHERENT rather than merely callable, because the product and product type they are given are the
- * resolved SKU's OWN, not a second thing a caller named independently.
- */
-export interface PriceResolutionSkuSelector {
-  /**
-   * The exact product name.
-   *
-   * Matched case-insensitively through `cfEquals`, because CFML string comparison folds case and
-   * this target reproduces that rather than introducing a case-sensitive boundary the source never
-   * had. The published search is a `productName LIKE ?` scan, so `'Shirt'` also matches
-   * `'T-Shirt'`; the exact-name test narrows that back down, and a name matching two or more
-   * distinct products is REFUSED rather than resolved by picking one - the same
-   * refuse-rather-than-choose posture `MysqlSkuRepository` takes when a `LEFT JOIN` multiplies a
-   * unique-result read.
-   */
-  readonly productName: string;
+// ★★★ `getPriceGroupDataJSON` USED TO BE THE THIRTEENTH OPERATION AND IS WITHDRAWN (finding F10,
+// and the withdrawal arm expressly permitted by security finding V-03).
+//
+// `getPriceGroupDataJSON()` [model/service/PriceGroupService.cfc:L230-L257] takes NO arguments and
+// answers a document covering EVERY price group and EVERY rate the smart list pages over. There is no
+// member of the signature a routed contract could bound, so a single unauthenticated request obliged
+// the process to build the whole thing in memory and stringify it into one API Gateway body. Adding a
+// paging or ordering parameter is not available either: it would reshape a ported signature, and AAP
+// 0.4.1 assigns this entrypoint the price-group and currency RESOLUTION surface - a document dump of
+// the framework's administrative view is not resolution, and its legacy home is the `admin/`
+// subsystem AAP 0.2.2 places entirely out of scope. Withdrawal closes both the unbounded-document
+// finding and the missing-administrative-authorization finding without reintroducing either surface.
+//
+// THE TWO DEFECTS BEHIND IT ARE NEITHER REPAIRED NOR HIDDEN, only taken off the HTTP surface. They
+// remain reproduced, flagged and covered at `../services/priceGroupService.js`:
+//   CFML parity [model/service/PriceGroupService.cfc:L236]: the loop reads
+//   `priceGroupSmartList.getPageRecords()[local.i]` while the counter declared at [:L235] is `i`.
+//   `local` IS the implicit function scope in CFML, so `local.i` resolves to that same counter - the
+//   line misleads a reader rather than misbehaving, and the port indexes by the counter faithfully.
+//   LEGACY-DEFECT [model/service/PriceGroupService.cfc:L243]: the inner loop calls
+//   `thisRate.getAmountRepresentation()`, which no in-scope component declares, so the method RAISES
+//   for any page holding at least one rate and succeeds only in the degenerate case where every price
+//   group on the page has none.
+// Preserved deliberately; do not fix without a product decision.
 
-  /**
-   * The SKU code, within that product's SKUs.
-   *
-   * Also compared through `cfEquals`. `SwSku.skuCode` is unique per product in the legacy schema,
-   * so this identifies one SKU; a code matching two or more DISTINCT SKUs is refused rather than
-   * resolved.
-   */
-  readonly skuCode: string;
-}
+/**
+ * How a request names the SKU every SKU-taking operation needs: by identifier.
+ *
+ * ★★★ THIS REPLACED AN INVENTED `{productName, skuCode}` SELECTOR, AND THE REPLACEMENT IS THE FIX FOR
+ * FINDING F3. The previous shape existed for a reason that was true when it was written and is no
+ * longer true, and it is worth recording both halves.
+ *
+ * WHY IT EXISTED. `./bootstrap.js` had withdrawn the six MySQL repositories from `RequestScope`,
+ * because they carried seven durable mutations onto the request-tier surface. That left no
+ * load-by-identifier for a SKU, a product, a product type, a price group or a rate anywhere a handler
+ * could reach, so this module resolved a SKU the only way the published reads allowed: a
+ * `productName LIKE ?` search through `findProducts`, an exact-name filter, then `getProductSkus` and
+ * an exact-code filter.
+ *
+ * WHY THAT WAS WRONG ANYWAY. AAP review (finding F3) found three consequences, and they compound:
+ *   1. The named service operations did NOT accept the arguments their names declare. An operation
+ *      called `...BasedOnPriceGroup` could not be given a price group; one is chosen for it.
+ *   2. A single request could load a whole product result set and then all of a product's SKUs to
+ *      reach one row - the static-performance half, raised as finding F10.
+ *   3. The price group came from `getBestPriceGroupDetailsBasedOnSkuAndAccount`, so the handler
+ *      silently substituted THE ACCOUNT'S BEST GROUP for the group the caller asked about, and
+ *      `calculateSkuPriceBasedOnPriceGroupRate` ran a SECOND cascade to invent its rate argument.
+ *      Both are selection decisions, and a primary adapter has no business making either.
+ *
+ * WHAT CHANGED UNDERNEATH. The composition root now publishes `RequestScope.entityLoaders`: five
+ * READ-ONLY loads by identifier, each delegating to one repository read, with no save, no delete and
+ * no entity-taking member reachable through them. The withdrawal that motivated the selector is
+ * therefore still in force - the repositories are still not published - and the load a handler needs
+ * is available without it. So every operation below binds EXACTLY the arguments its ported signature
+ * declares, and this module makes no selection of any kind.
+ *
+ * Both identifiers are OPAQUE: they are keys, never handles, and nothing derives anything from their
+ * content. The product identifier is not redundant - the only published read that returns a SKU with
+ * its `product` WIRED THROUGH is `getProductSkus(product, ...)`, and a SKU without a product is
+ * unusable for price-group resolution because cascade level two passes `sku.getProduct()` into a
+ * parameter the legacy declares `required` [model/service/PriceGroupService.cfc:L154, L102].
+ */
+export type PriceResolutionSkuIdentity = SkuIdentity;
 
 /**
  * Whether a decimal numeral is one `Money` will accept.
@@ -267,11 +260,25 @@ function isMoneyNumeral(value: string): boolean {
   }
 }
 
-/** The SKU selector, as a schema. Both members are required and neither may be empty. */
-const SKU_SELECTOR_SCHEMA = z.strictObject({
-  productName: z.string().min(1),
-  skuCode: z.string().min(1),
+/**
+ * The SKU identity, as a schema. Both identifiers are required and neither may be empty.
+ *
+ * NO FORMAT IS IMPOSED beyond non-emptiness. `SwSku.skuID` and `SwProduct.productID` are 32-character
+ * hex strings in practice, but the legacy binds them with `cfqueryparam` and no pattern test, so an
+ * identifier that matches nothing must answer NOTHING rather than earning a 400 - see
+ * {@link UnresolvedReason}. Adding a pattern here would refuse input the legacy answered.
+ */
+const SKU_IDENTITY_SCHEMA = z.strictObject({
+  productID: z.string().min(1),
+  skuID: z.string().min(1),
 });
+
+/**
+ * An identifier a caller names to bind one entity argument.
+ *
+ * The same restraint as above: presence is required, format is not.
+ */
+const IDENTIFIER_SCHEMA = z.string().min(1);
 
 /**
  * A currency code as the three SKU accessors take one: ANY non-empty string.
@@ -299,73 +306,89 @@ const CONVERTER_CURRENCY_CODE_SCHEMA = z.string().length(3);
 /**
  * The whole request surface, as one strict discriminated union.
  *
+ * ★★★ EVERY ARM NAMES EXACTLY THE ARGUMENTS ITS PORTED SIGNATURE DECLARES, WHICH IS FINDING F3'S
+ * ACCEPTANCE TEST. Read the pairs off against `../services/priceGroupService.js`:
+ * `getRateForProductTypeBasedOnPriceGroup(productType, priceGroup)` takes a product type and a price
+ * group, so its arm carries `productTypeID` and `priceGroupID`;
+ * `calculateSkuPriceBasedOnPriceGroupRate(sku, rate)` takes a SKU and a RATE, so its arm carries
+ * `sku` and `priceGroupRateID` - it does not re-run a cascade to invent one. The two signatures that
+ * explicitly declare an account also carry `accountID`; section 5 admits that value only when it is
+ * identical to the SERVER-ESTABLISHED principal.
+ *
  * Discriminating on `operation` is what makes the per-operation criteria CLOSED: a body naming
- * `getPriceGroupDataJSON` and carrying a `sku` is rejected, and so is one naming
- * `convertCurrency` and carrying a `currencyCode`. No arm admits an unrecognised key.
+ * `convertCurrency` and carrying a `sku` is rejected, and so is one naming
+ * `getRateForProductBasedOnPriceGroup` and carrying a `priceGroupRateID`. No arm admits an
+ * unrecognised key.
  */
 const PRICE_RESOLUTION_REQUEST_SCHEMA = z.discriminatedUnion('operation', [
-  // --- The three cascade entry points, and the two calculations over them ----------------------
+  // --- The three cascade entry points, each bound to the two arguments it declares --------------
   //
-  // All five are SYNCHRONOUS on the service and are consumed synchronously - see section 6.
+  // All three are SYNCHRONOUS on the service and are consumed synchronously - see section 6.
   z.strictObject({
     operation: z.literal('getRateForProductTypeBasedOnPriceGroup'),
-    sku: SKU_SELECTOR_SCHEMA,
+    productTypeID: IDENTIFIER_SCHEMA,
+    priceGroupID: IDENTIFIER_SCHEMA,
   }),
   z.strictObject({
     operation: z.literal('getRateForProductBasedOnPriceGroup'),
-    sku: SKU_SELECTOR_SCHEMA,
+    productID: IDENTIFIER_SCHEMA,
+    priceGroupID: IDENTIFIER_SCHEMA,
   }),
   z.strictObject({
     operation: z.literal('getRateForSkuBasedOnPriceGroup'),
-    sku: SKU_SELECTOR_SCHEMA,
+    sku: SKU_IDENTITY_SCHEMA,
+    priceGroupID: IDENTIFIER_SCHEMA,
   }),
+
+  // --- The two calculations over the cascade ----------------------------------------------------
   z.strictObject({
     operation: z.literal('calculateSkuPriceBasedOnPriceGroup'),
-    sku: SKU_SELECTOR_SCHEMA,
+    sku: SKU_IDENTITY_SCHEMA,
+    priceGroupID: IDENTIFIER_SCHEMA,
   }),
   z.strictObject({
     operation: z.literal('calculateSkuPriceBasedOnPriceGroupRate'),
-    sku: SKU_SELECTOR_SCHEMA,
+    sku: SKU_IDENTITY_SCHEMA,
+    // ★ THE RATE IS NAMED, NOT DERIVED. The previous revision ran `getRateForSkuBasedOnPriceGroup`
+    // to manufacture this argument, which meant an operation declared over ONE rate answered about
+    // whichever rate a second cascade selected (finding F3).
+    priceGroupRateID: IDENTIFIER_SCHEMA,
   }),
 
   // --- The two account-scoped calculations, and the best-price-group report --------------------
   //
   // None of the three takes an account from the payload. The account is server-established - see
-  // section 5.
+  // section 5. None takes a price group either: these are the three members whose whole purpose is
+  // to SELECT one, and selecting it here is what finding F3 objected to.
   z.strictObject({
     operation: z.literal('calculateSkuPriceBasedOnCurrentAccount'),
-    sku: SKU_SELECTOR_SCHEMA,
+    sku: SKU_IDENTITY_SCHEMA,
   }),
   z.strictObject({
     operation: z.literal('calculateSkuPriceBasedOnAccount'),
-    sku: SKU_SELECTOR_SCHEMA,
+    sku: SKU_IDENTITY_SCHEMA,
+    accountID: IDENTIFIER_SCHEMA,
   }),
   z.strictObject({
     operation: z.literal('getBestPriceGroupDetailsBasedOnSkuAndAccount'),
-    sku: SKU_SELECTOR_SCHEMA,
+    sku: SKU_IDENTITY_SCHEMA,
+    accountID: IDENTIFIER_SCHEMA,
   }),
-
-  // --- The price-group data document ----------------------------------------------------------
-  //
-  // `getPriceGroupDataJSON()` [model/service/PriceGroupService.cfc:L230] takes NO arguments, so
-  // this arm carries none. Adding a paging or ordering member would model a capability no in-scope
-  // code exercises.
-  z.strictObject({ operation: z.literal('getPriceGroupDataJSON') }),
 
   // --- The currency resolution surface --------------------------------------------------------
   z.strictObject({
     operation: z.literal('getPriceByCurrencyCode'),
-    sku: SKU_SELECTOR_SCHEMA,
+    sku: SKU_IDENTITY_SCHEMA,
     currencyCode: ACCESSOR_CURRENCY_CODE_SCHEMA,
   }),
   z.strictObject({
     operation: z.literal('getListPriceByCurrencyCode'),
-    sku: SKU_SELECTOR_SCHEMA,
+    sku: SKU_IDENTITY_SCHEMA,
     currencyCode: ACCESSOR_CURRENCY_CODE_SCHEMA,
   }),
   z.strictObject({
     operation: z.literal('getRenewalPriceByCurrencyCode'),
-    sku: SKU_SELECTOR_SCHEMA,
+    sku: SKU_IDENTITY_SCHEMA,
     currencyCode: ACCESSOR_CURRENCY_CODE_SCHEMA,
   }),
   z.strictObject({
@@ -427,7 +450,7 @@ export type PriceResolutionRequest = z.infer<typeof PRICE_RESOLUTION_REQUEST_SCH
 /**
  * Why an operation produced no value.
  *
- * A CLOSED union of six tokens, for the same reason `./errorMapper.js` closes
+ * A CLOSED union of tokens, for the same reason `./errorMapper.js` closes
  * `InvalidRequestReason`: a caller-supplied or free-text reason string is how an internal detail -
  * a driver message, a resolved path, an echo of submitted input - reaches a response body. Each
  * token names a DOMAIN outcome the legacy also produced; none is an error, and none carries a
@@ -441,22 +464,21 @@ export type UnresolvedReason =
    * [model/service/PriceGroupService.cfc:L266]. `CurrentAccountContext` carries `accountID` and
    * nothing else, so its absence IS "not signed in" - see section 5. Note which operation this can
    * and cannot reach: `calculateSkuPriceBasedOnCurrentAccount` NEVER reports it, because the else
-   * arm inside the service answers `sku.getPrice()`; `calculateSkuPriceBasedOnAccount` and the
-   * price-group operations do, because [L271] and [L343] declare the account required.
+   * arm inside the service answers `sku.getPrice()`; `calculateSkuPriceBasedOnAccount` and
+   * `getBestPriceGroupDetailsBasedOnSkuAndAccount` do, because [L271] and [L343] declare the account
+   * required.
    */
   | 'noAuthenticatedAccount'
   /**
-   * The SKU has no price recorded for the requested currency.
+   * The request named an account other than the one established by the authorizer.
    *
-   * ★ ONE TOKEN FOR BOTH LEGACY CAUSES, DELIBERATELY. A miss can mean the currency is absent from
-   * the map [model/entity/Sku.cfc:L270] or that the currency is present and the `listPrice` /
-   * `renewalPrice` sub-key is not [L276], [L282] - and the published accessor answers the same
-   * nothing either way. Distinguishing them here would mean re-implementing the accessor's second
-   * key-existence check at this tier, which is business logic this file must not contain.
+   * Kept distinct from `noAuthenticatedAccount`: one means no principal exists, while this one
+   * means a principal exists and the explicit service argument does not name it. The submitted value
+   * is never echoed.
    */
-  | 'noPriceForCurrencyCode'
+  | 'accountNotTheAuthenticatedAccount'
   /**
-   * No price group was resolved for this SKU and account, so no cascade input exists.
+   * No price group was resolved for this SKU and account, so the best-price-group report names none.
    *
    * `getBestPriceGroupDetailsBasedOnSkuAndAccount` seeds its report with the SKU's own price and
    * leaves the price group unset unless one beat it [model/service/PriceGroupService.cfc:L347-L358].
@@ -474,27 +496,44 @@ export type UnresolvedReason =
    */
   | 'noRateApplies'
   /**
-   * The rate the cascade selected carries no amount.
+   * An identifier the request named matches no row.
    *
-   * A DISTINCT STATE FROM `noRateApplies`, and worth its own token rather than reusing that one: the
-   * rate DID apply, and its `amount` column is null. `PriceGroupRate.amount`
-   * [model/entity/PriceGroupRate.cfc:L54] is a nullable `big_decimal`, and
-   * `savePriceGroupRate` clears it outright on the `"new amount"` path
-   * [model/service/PriceGroupService.cfc:L399-L400], so the state is reachable rather than
-   * theoretical. Conflating the two would tell a caller that no rate matched when one did.
-   */
-  | 'rateCarriesNoAmount'
-  /**
-   * The resolved SKU's product carries no product type, so the product-type entry point has no
-   * argument.
+   * ★★★ FIVE TOKENS RATHER THAN ONE, AND THEY REPLACED A REFUSAL. The previous revision resolved a
+   * SKU by searching product names, and a name matching nothing or matching several distinct products
+   * was a client-shaped 400 built from a module-local `UnresolvableSkuSelectorError`. With the request
+   * naming identifiers instead (finding F3), there is no ambiguity to refuse: an identifier either
+   * names a row or it does not, and "it does not" is a DOMAIN OUTCOME the caller is told about in a
+   * successful response - the same posture `Sku.getPriceByCurrencyCode` takes for an unknown currency,
+   * and the same posture `RequestEntityLoaders` documents for a miss.
    *
-   * CFML parity [model/service/PriceGroupService.cfc:L159]: the legacy chains
-   * `sku.getProduct().getProductType()` with no null test and passes the result into a parameter
-   * declared `required` at [L57], so CFML raises there. Reported rather than raised ONLY because
-   * this is the boundary that would otherwise have to fabricate the argument: the service's own
-   * behaviour when it is called with an absent product type is untouched.
+   * Each token names WHICH identifier failed, so a caller supplying two identifiers in one body learns
+   * which to correct without either being echoed back.
    */
-  | 'productTypeAbsent';
+  | 'productTypeNotFound'
+  | 'productNotFound'
+  | 'skuNotFound'
+  | 'priceGroupNotFound'
+  | 'priceGroupRateNotFound';
+
+// ★★★ THREE TOKENS WERE REMOVED, AND EACH REMOVAL IS A FINDING RATHER THAN A TIDY-UP.
+//
+//   * `noPriceForCurrencyCode` - FINDING F4. It was the `reason` on a `{resolved:false, reason}`
+//     sentinel published where a SKU had no price for the requested currency. AAP 0.4.2 declares
+//     `Sku.getPriceByCurrencyCode` as `Money | undefined` and AAP 0.9.2 calls the `undefined` return
+//     "the single highest-consequence parity check in the plan"; a sentinel is a THIRD absence
+//     representation a consumer must learn to translate, and inventing one at the wire boundary is
+//     what the parity check exists to prevent. The price member is now OMITTED, so a consumer reads
+//     `undefined` - the exact value the accessor answered.
+//   * `rateCarriesNoAmount` - FINDING F4, same reasoning applied to `PriceGroupRate.amount`, which is
+//     a nullable `big_decimal` [model/entity/PriceGroupRate.cfc:L54] that `savePriceGroupRate` clears
+//     outright on the `"new amount"` path [model/service/PriceGroupService.cfc:L399-L400]. The state
+//     the token existed to distinguish is still expressible and still distinguishable: the rate is
+//     PRESENT and its `amount` member is ABSENT, which says "a rate applied and carries no amount"
+//     structurally rather than through a token.
+//   * `productTypeAbsent` - obsolete under finding F3. It reported that the RESOLVED SKU'S product
+//     carried no product type, which only arose because the product type was derived by chaining
+//     `sku.getProduct().getProductType()` off a searched-for SKU. The request now names the product
+//     type directly, so the only failure is `productTypeNotFound`.
 
 /**
  * A monetary value on the wire.
@@ -509,10 +548,21 @@ export interface SerializedMoney {
   readonly amount: string;
 }
 
-/** A monetary value that may legitimately not exist. See the section header. */
-export type OptionalSerializedMoney =
-  | { readonly resolved: true; readonly amount: string }
-  | { readonly resolved: false; readonly reason: UnresolvedReason };
+// ★★★ `OptionalSerializedMoney` IS GONE, AND ITS REMOVAL IS FINDING F4.
+//
+// It was `{resolved: true, amount} | {resolved: false, reason}`, and the section header above argued
+// for it on the grounds that a load-bearing absence must survive the wire. That premise is right and
+// the mechanism was wrong: a discriminated sentinel is a THIRD representation of absence, alongside
+// the `undefined` the accessor actually returned and the omitted member JSON already has a convention
+// for. AAP 0.4.2 declares the three currency accessors as `Money | undefined`, and AAP 0.9.2 names
+// preserving that `undefined` - "rather than `0`" - as the single highest-consequence parity check in
+// the plan.
+//
+// A MONETARY VALUE THAT MAY NOT EXIST IS NOW `SerializedMoney | undefined`, AND `JSON.stringify` OMITS
+// IT. A consumer reads `undefined` for the member, which is the exact value the accessor answered, and
+// has nothing to translate. The three prohibitions the header states are unchanged and are now
+// STRUCTURALLY unreachable rather than merely forbidden: there is no `0` arm, no `null` arm and no
+// sentinel object to mistake for a present-but-blank price.
 
 /**
  * The winning price group, as an opaque identifier.
@@ -546,8 +596,16 @@ export interface SerializedPriceGroupRate {
   /** Whether this is the price group's global rate [model/entity/PriceGroupRate.cfc:L57]. */
   readonly globalFlag: boolean;
 
-  /** The rate's amount, absent when the `big_decimal` column is null. */
-  readonly amount: OptionalSerializedMoney;
+  /**
+   * The rate's amount, OMITTED when the `big_decimal` column is null.
+   *
+   * ★ OMITTED RATHER THAN CARRIED UNDER A SENTINEL (finding F4). `PriceGroupRate.amount`
+   * [model/entity/PriceGroupRate.cfc:L54] is nullable and `savePriceGroupRate` clears it outright on
+   * the `"new amount"` path [model/service/PriceGroupService.cfc:L399-L400], so the state is reachable
+   * rather than theoretical - and it is still fully distinguishable from "no rate applied": the RATE
+   * is present here and this member is absent, which says both facts structurally.
+   */
+  readonly amount?: SerializedMoney | undefined;
 
   /**
    * The amount type, or `undefined` when the column is null.
@@ -566,12 +624,13 @@ export interface SerializedPriceGroupRate {
   /**
    * `PriceGroupRate.getAppliesTo()` [model/entity/PriceGroupRate.cfc:L95], verbatim.
    *
-   * LEGACY-DEFECT [model/entity/PriceGroupRate.cfc:L75-L77]: `excludedProductTypes`,
-   * `excludedProducts` and `excludedSkus` are declared, persisted and COUNTED BY `getAppliesTo()` -
-   * and never consulted by the five-level cascade at
-   * [model/service/PriceGroupService.cfc:L140-L181]. This value therefore describes exclusions that
-   * do not affect the rate the cascade selected.
+   * LEGACY-DEFECT [model/entity/PriceGroupRate.cfc:L75-L77]: the three `excluded*` collections are
+   * counted by `getAppliesTo()` yet never consulted by the cascade.
    * Preserved deliberately; do not fix without a product decision.
+   *
+   * `excludedProductTypes`, `excludedProducts` and `excludedSkus` are declared and persisted, and the
+   * five-level cascade at [model/service/PriceGroupService.cfc:L140-L181] does not read any of them -
+   * so this value describes exclusions that do not affect the rate the cascade selected.
    */
   readonly appliesTo: string;
 
@@ -598,8 +657,21 @@ export type PriceResolutionResult =
    * [L319] - so no absence arm exists here, deliberately.
    */
   | { readonly outcome: 'price'; readonly price: SerializedMoney }
-  /** One of the three currency accessors, whose absence is load-bearing. */
-  | { readonly outcome: 'currencyPrice'; readonly price: OptionalSerializedMoney }
+  /**
+   * One of the three currency accessors, whose absence is load-bearing.
+   *
+   * ★★★ `price` IS OMITTED ON A MISS (finding F4), never `0`, never `null` and never a sentinel
+   * object. AAP 0.4.2 declares all three accessors `Money | undefined` and AAP 0.9.2 names preserving
+   * that `undefined` the single highest-consequence parity check in the plan: substituting a zero here
+   * would sell products for free, and substituting a sentinel would oblige every consumer to learn a
+   * translation JSON already has a convention for.
+   *
+   * BOTH LEGACY CAUSES OF A MISS PRODUCE THE SAME ABSENCE, deliberately: the currency may be absent
+   * from the SKU's map [model/entity/Sku.cfc:L270], or present with the `listPrice` / `renewalPrice`
+   * sub-key unset [L276], [L282]. The published accessor answers the same nothing either way, and
+   * distinguishing them here would mean re-implementing its second key-existence check at this tier.
+   */
+  | { readonly outcome: 'currencyPrice'; readonly price?: SerializedMoney | undefined }
   /** The best-price-group report [model/service/PriceGroupService.cfc:L343-L362]. */
   | {
       readonly outcome: 'bestPriceGroupDetails';
@@ -608,45 +680,35 @@ export type PriceResolutionResult =
     }
   /** A cascade entry point's selection. */
   | { readonly outcome: 'priceGroupRate'; readonly rate: OptionalSerializedPriceGroupRate }
-  /**
-   * `getPriceGroupDataJSON()` [model/service/PriceGroupService.cfc:L230-L257], as the string the
-   * service returned.
-   *
-   * ★ CARRIED AS A STRING, NOT RE-PARSED AND NOT RE-SERIALISED. The ported signature is
-   * `Promise<string>` because the legacy returns `serializeJSON(priceGroupData)` at [L256], and
-   * re-formatting it here would be exactly the coercion in transit B2 forbids.
-   *
-   * LEGACY-DEFECT [model/service/PriceGroupService.cfc:L236]: the loop reads
-   * `priceGroupSmartList.getPageRecords()[local.i]` while the loop variable declared at [L235] is
-   * `i`, so the subscript resolves against an unset `local` struct key.
-   * Preserved deliberately; do not fix without a product decision.
-   *
-   * LEGACY-DEFECT [model/service/PriceGroupService.cfc:L243]: the inner loop calls
-   * `thisRate.getAmountRepresentation()`, which no in-scope component declares, so this method
-   * RAISES for any page holding at least one rate and succeeds only in the degenerate case where
-   * every price group on the page has none. That was confirmed at run time against a seeded database:
-   * the operation answers a mapped server-shaped response rather than a document.
-   * Preserved deliberately; do not fix without a product decision.
-   *
-   * ★ THE THROW IS MAPPED, NOT CAUGHT. Wrapping this call to return an empty document, a partial
-   * document or an `unresolved` outcome would REPAIR the defect at the boundary and hide it from
-   * every caller - which is precisely what preserving behaviour forbids. It leaves through
-   * `./errorMapper.js` like any other failure, so the detail reaches the log stream and the caller
-   * receives the module's fixed sentence.
-   */
-  | { readonly outcome: 'priceGroupData'; readonly priceGroupDataJSON: string }
+  // ★★★ THE `priceGroupData` ARM IS GONE WITH ITS OPERATION (finding F10). It carried the whole
+  // administrative price-group document as one string. Removing the arm rather than leaving it
+  // unreachable is what stops a consumer from finding a shape in this module's published types for a
+  // response it can no longer obtain - see the withdrawal note on {@link PriceResolutionOperation}
+  // for the reasoning, and `../services/priceGroupService.js` for the two defects that remain
+  // reproduced, flagged and covered there.
+
   /** Nothing was produced, and this is why. Answered successfully, with no status invented. */
   | { readonly outcome: 'unresolved'; readonly reason: UnresolvedReason };
 
 /**
- * The document a successful invocation returns.
+ * The CAPABILITY-SPECIFIC payload of a successful response.
  *
- * Three members and no more. There is no envelope version, no pagination cursor, no diagnostic
- * block and no rate-source status: the currency converter answers unconverted rather than
- * complaining when no rate is available [model/service/CurrencyService.cfc:L100-L101], so a
- * "conversion unavailable" indicator would be an invention this contract has no right to make.
+ * ★★ THIS USED TO BE `PriceResolutionResponseBody`, THE WHOLE DOCUMENT, AND IT CARRIED NO
+ * CORRELATION IDENTIFIER (finding F13). API review measured all four JSON entrypoints and found four
+ * differently-shaped success envelopes, two of them - this one included - with no `requestId` at all,
+ * so a caller could correlate a FAILURE to a log line and not a SUCCESS. The outer document now comes
+ * from `./errorMapper.js`'s `jsonSuccessResponse`, which publishes `{requestId, capability, action,
+ * result}` for every capability, and this type is what travels inside `result`.
+ *
+ * `requestId` is NOT duplicated here: the shared envelope carries it once, at the top level, and
+ * echoing it twice would let the two copies disagree.
+ *
+ * Two members and no more. There is no envelope version, no pagination cursor, no diagnostic block and
+ * no rate-source status: the currency converter answers unconverted rather than complaining when no
+ * rate is available [model/service/CurrencyService.cfc:L100-L101], so a "conversion unavailable"
+ * indicator would be an invention this contract has no right to make.
  */
-export interface PriceResolutionResponseBody {
+export interface PriceResolutionResultDocument {
   /** The operation that ran, echoed so a response is self-describing. */
   readonly operation: PriceResolutionOperation;
 
@@ -710,17 +772,34 @@ export interface PriceResolutionScope {
    */
   readonly currentAccountContext: CurrentAccountContext;
 
-  /** One published read: the product search that anchors SKU resolution. */
-  readonly productService: Pick<RequestScope['productService'], 'findProducts'>;
-
-  /** One published read: the only one that wires a SKU's `product` association through. */
-  readonly skuService: Pick<RequestScope['skuService'], 'getProductSkus'>;
+  /**
+   * The five READ-ONLY loads by identifier this entrypoint binds its service arguments from.
+   *
+   * ★★★ THIS MEMBER REPLACED `productService.findProducts` AND `skuService.getProductSkus`, AND THE
+   * REPLACEMENT IS THE STRUCTURAL HALF OF FINDING F3. Those two reads were the ONLY published way to
+   * reach a SKU when this module was written, which is why it searched product names to find one; the
+   * consequence was that a request naming a product could load a whole result set and then all of a
+   * product's SKUs to reach one row, and that an operation named `...BasedOnPriceGroup` had its price
+   * group chosen for it because nothing could load one.
+   *
+   * `RequestEntityLoaders` publishes exactly what binding needs and nothing else: five loads, each
+   * delegating to ONE repository read, with no save, no delete and no entity-taking member reachable
+   * through it. The withdrawal of the six MySQL repositories from `RequestScope` - made because they
+   * carried seven durable mutations - therefore still holds in full.
+   *
+   * THE SEARCH READS ARE GONE RATHER THAN KEPT ALONGSIDE, deliberately: leaving `findProducts` on this
+   * interface would leave the name-search path reachable, and a later change could quietly resurrect
+   * the selector this finding removed. Their absence makes that a compile error.
+   */
+  readonly entityLoaders: RequestScope['entityLoaders'];
 
   /**
-   * The nine price-group members this entrypoint exposes, and no others.
+   * The eight price-group members this entrypoint exposes, and no others.
    *
    * `PriceResolutionCapability` is already `PriceGroupService` MINUS its order pass; this `Pick`
-   * additionally withholds the three write members - see section 6.12.
+   * additionally withholds the three write members - see section 6.12 - and, since finding F10,
+   * `getPriceGroupDataJSON` as well. Withholding that member by TYPE rather than only by schema is
+   * what makes the withdrawal structural: naming it below would not compile.
    */
   readonly priceGroupService: Pick<
     PriceResolutionCapability,
@@ -732,7 +811,6 @@ export interface PriceResolutionScope {
     | 'calculateSkuPriceBasedOnPriceGroup'
     | 'calculateSkuPriceBasedOnPriceGroupRate'
     | 'getBestPriceGroupDetailsBasedOnSkuAndAccount'
-    | 'getPriceGroupDataJSON'
   >;
 
   /**
@@ -741,283 +819,165 @@ export interface PriceResolutionScope {
   readonly currencyConverter: Pick<CurrencyConverter, 'convertCurrency'>;
 }
 
-/** The product entity type, derived from `findProducts`. */
-type ResolvedProduct = Awaited<
-  ReturnType<PriceResolutionScope['productService']['findProducts']>
->['records'][number];
+/** The product entity type, derived from the load that returns one. */
+type ResolvedProduct = NonNullable<
+  Awaited<ReturnType<PriceResolutionScope['entityLoaders']['getProductByProductID']>>
+>;
 
-/** The SKU entity type, derived from `getProductSkus`. */
-type ResolvedSku = Awaited<
-  ReturnType<PriceResolutionScope['skuService']['getProductSkus']>
->[number];
+/** The product-type entity type, derived from the load that returns one. */
+type ResolvedProductType = NonNullable<
+  Awaited<ReturnType<PriceResolutionScope['entityLoaders']['getProductTypeByProductTypeID']>>
+>;
 
-/** The price-group entity type, derived from the one member that hands one back. */
+/** The SKU entity type, derived from the load that returns one with its product wired through. */
+type ResolvedSku = NonNullable<
+  Awaited<ReturnType<PriceResolutionScope['entityLoaders']['getSkuBySkuIdentity']>>
+>['sku'];
+
+/** The price-group entity type, derived from the load that returns one. */
 type ResolvedPriceGroup = NonNullable<
-  Awaited<
-    ReturnType<
-      PriceResolutionScope['priceGroupService']['getBestPriceGroupDetailsBasedOnSkuAndAccount']
-    >
-  >['priceGroup']
+  Awaited<ReturnType<PriceResolutionScope['entityLoaders']['getPriceGroup']>>
 >;
 
-/** The rate entity type, derived from the SKU cascade entry point. */
+/** The rate entity type, derived from the load that returns one. */
 type ResolvedPriceGroupRate = NonNullable<
-  ReturnType<PriceResolutionScope['priceGroupService']['getRateForSkuBasedOnPriceGroup']>
+  Awaited<ReturnType<PriceResolutionScope['entityLoaders']['getPriceGroupRate']>>
 >;
 
 // ===========================================================================
-// SECTION 4 - INPUT RESOLUTION
+// SECTION 4 - ARGUMENT BINDING
 //
-// Turning the wire selector into the entities a ported signature already declares. Every step
-// delegates to a published read and NONE OF THEM DECIDES A PRICE: resolution answers "which SKU did
-// the caller name", never "what is it worth".
+// Turning the identifiers a request names into the entities a ported signature already declares.
+// Every step is ONE load by primary key through `RequestScope.entityLoaders`, and NONE OF THEM DECIDES
+// A PRICE, A PRICE GROUP OR A RATE: binding answers "which row did the caller name", never "which row
+// should apply".
 //
-// ★ REFUSE RATHER THAN CHOOSE. Where a selector matches more than one candidate, resolution refuses
-// instead of picking one. That is the posture the data tier already takes - `MysqlSkuRepository`
-// raises rather than adding a `DISTINCT` or a row limit to a unique-result read, because either
-// would decide WHICH SKU is returned - and the same reasoning applies with more force at an
-// HTTP boundary, where the caller cannot see which candidate was picked.
+// ★★★ THIS SECTION USED TO BE 200 LINES OF SEARCHING, AND ALL OF IT IS GONE (finding F3). It held
+// `resolveProduct` - a `productName LIKE ?` scan followed by an exact-name filter and an ambiguity
+// refusal - `resolveSkuOfProduct`, `resolveSkuSelection`, `resolvePriceGroup`, `CascadeInputs`,
+// `resolveCascadeInputs`, a `SkuSelectorRefusal` token union and an `UnresolvableSkuSelectorError`
+// class. Every one of them existed to work around the absence of a load-by-identifier, and every one
+// introduced a decision this tier had no authority to make:
+//
+//   * `resolveProduct` searched, then chose - or refused - among candidates. A caller could not see
+//     which candidate was picked, and a name matching two products was a 400 for a request that named
+//     nothing wrong.
+//   * `resolveSkuOfProduct` read ALL of a product's SKUs to select one by code.
+//   * `resolvePriceGroup` called `getBestPriceGroupDetailsBasedOnSkuAndAccount` and handed its answer
+//     to operations named `...BasedOnPriceGroup`. That silently substituted THE ACCOUNT'S BEST GROUP
+//     for the group the caller asked about - the sharpest half of the finding, because the operation
+//     still answered, plausibly, about something else.
+//   * `resolveCascadeInputs` bundled all of the above and tested the account BEFORE the selector,
+//     which made the account failure pre-empt a selector failure for reasons of statement economy.
+//
+// WHAT REPLACES THEM IS FOUR ONE-LINE LOADS AND NO CONTROL FLOW WORTH NAMING. A miss is `undefined`
+// and becomes an `unresolved` outcome naming which identifier failed; nothing is searched, nothing is
+// filtered, nothing is chosen and nothing is refused for ambiguity, because a primary key admits none.
 // ===========================================================================
 
-/**
- * Why a selector could not be resolved. Logged, never echoed into a response body.
- *
- * `./errorMapper.js` owns every sentence a caller reads; these tokens exist so the log line an
- * operator joins by `requestId` says which of the four cases occurred. None of them carries a
- * submitted value.
- */
-type SkuSelectorRefusal =
-  | 'productNameMatchedNoProduct'
-  | 'productNameMatchedMoreThanOneProduct'
-  | 'skuCodeMatchedNoSkuOfProduct'
-  | 'skuCodeMatchedMoreThanOneSkuOfProduct';
-
-/**
- * A selector that named nothing resolvable.
- *
- * Module-local and un-exported: it is a private protocol between {@link dispatchPriceResolution} and
- * {@link handler}, which turns it into the mapper's own client-shaped invalid-request response. Its
- * message is FIXED TEXT and interpolates no submitted value - not the product name, not the SKU
- * code, not a query, not a driver message - so it is safe even though it never reaches a body.
- */
-class UnresolvableSkuSelectorError extends Error {
-  /** Which of the four cases occurred. */
-  readonly refusal: SkuSelectorRefusal;
-
-  constructor(refusal: SkuSelectorRefusal) {
-    super('the request named no single resolvable sku');
-    this.name = 'UnresolvableSkuSelectorError';
-    this.refusal = refusal;
-  }
-}
-
-/**
- * Resolve the one product a selector names.
- *
- * The published search matches `productName LIKE ?` and reports its own keyword configuration on
- * the returned page, so `'Shirt'` matches `'T-Shirt'` too. The exact-name test narrows that to the
- * product the caller actually named, folding case through `cfEquals` because CFML string comparison
- * folds case. `getProductName()` is nullable in the schema, and `cfEquals` RAISES on a nullish
- * operand by design, so an unnamed product is skipped before it can be compared rather than being
- * compared and throwing.
- *
- * @throws {UnresolvableSkuSelectorError} when no product, or more than one distinct product,
- *   carries the exact name.
- */
-async function resolveProduct(
+/** The SKU a request named, with its product, or nothing. */
+async function loadSku(
   scope: PriceResolutionScope,
-  productName: string,
-): Promise<ResolvedProduct> {
-  const page = await scope.productService.findProducts({ keyword: productName });
-
-  const exactMatches: ResolvedProduct[] = [];
-  const matchedProductIDs = new Set<string>();
-
-  for (const candidate of page.records) {
-    const candidateName = candidate.getProductName();
-
-    if (candidateName === undefined || !cfEquals(candidateName, productName)) {
-      continue;
-    }
-
-    // De-duplicated by identifier rather than by array position: a search join can report the same
-    // product twice, and two rows for one product is not an ambiguous selector.
-    if (!matchedProductIDs.has(candidate.getProductID())) {
-      matchedProductIDs.add(candidate.getProductID());
-      exactMatches.push(candidate);
-    }
-  }
-
-  const [product] = exactMatches;
-
-  if (product === undefined) {
-    throw new UnresolvableSkuSelectorError('productNameMatchedNoProduct');
-  }
-
-  if (exactMatches.length > 1) {
-    throw new UnresolvableSkuSelectorError('productNameMatchedMoreThanOneProduct');
-  }
-
-  return product;
+  identity: PriceResolutionSkuIdentity,
+): Promise<{ readonly product: ResolvedProduct; readonly sku: ResolvedSku } | undefined> {
+  return scope.entityLoaders.getSkuBySkuIdentity(identity);
 }
 
-/**
- * Resolve the one SKU of a product that a selector names.
- *
- * `getProductSkus(product, false)` is called with `sorted` FALSE and `fetchOptions` left at its
- * default. Both are deliberate. Sorting would take the dialect-dependent option-group ordering path
- * for a read whose result is filtered down to one row, and eager option fetching would branch on the
- * product's base type - neither changes WHICH SKU carries the requested code, so neither is asked
- * for. The read still materialises the per-currency price rows with the four-step cascade run, which
- * is what the currency operations need, and it wires `product` through, which is what the price-group
- * cascade needs.
- *
- * Row multiplication is expected and is NOT an ambiguity: that read deliberately adds no `DISTINCT`,
- * so one SKU can arrive as several instances. Distinctness is therefore judged by `skuID`.
- *
- * @throws {UnresolvableSkuSelectorError} when no SKU, or more than one distinct SKU, of the product
- *   carries the exact code.
- */
-async function resolveSkuOfProduct(
+/** The price group a request named, or nothing. */
+async function resolveNamedPriceGroup(
   scope: PriceResolutionScope,
-  product: ResolvedProduct,
-  skuCode: string,
-): Promise<ResolvedSku> {
-  const skus = await scope.skuService.getProductSkus(product, false);
-
-  const matchedSkuIDs = new Set<string>();
-  let match: ResolvedSku | undefined = undefined;
-
-  for (const candidate of skus) {
-    const candidateCode = candidate.getSkuCode();
-
-    if (candidateCode === undefined || !cfEquals(candidateCode, skuCode)) {
-      continue;
-    }
-
-    matchedSkuIDs.add(candidate.getSkuID());
-    match ??= candidate;
-  }
-
-  if (match === undefined) {
-    throw new UnresolvableSkuSelectorError('skuCodeMatchedNoSkuOfProduct');
-  }
-
-  if (matchedSkuIDs.size > 1) {
-    throw new UnresolvableSkuSelectorError('skuCodeMatchedMoreThanOneSkuOfProduct');
-  }
-
-  return match;
-}
-
-/** One resolved selector: the SKU, and the product it belongs to. */
-interface ResolvedSkuSelection {
-  readonly product: ResolvedProduct;
-  readonly sku: ResolvedSku;
-}
-
-/**
- * Resolve a selector into the SKU and its product.
- *
- * ★ THE PRODUCT IS RETURNED ALONGSIDE THE SKU BECAUSE THE CASCADE'S PRODUCT AND PRODUCT-TYPE ENTRY
- * POINTS NEED IT, AND BECAUSE IT IS THE SKU'S OWN. `getProductSkus` wires this exact product onto
- * every SKU it builds, so handing it to `getRateForProductBasedOnPriceGroup` reproduces
- * [model/service/PriceGroupService.cfc:L154], which passes `arguments.sku.getProduct()`, rather than
- * pairing the SKU with some second product a caller named independently.
- */
-async function resolveSkuSelection(
-  scope: PriceResolutionScope,
-  selector: PriceResolutionSkuSelector,
-): Promise<ResolvedSkuSelection> {
-  const product = await resolveProduct(scope, selector.productName);
-  const sku = await resolveSkuOfProduct(scope, product, selector.skuCode);
-
-  return { product, sku };
-}
-
-/**
- * Resolve the price group the cascade operations take as their second argument.
- *
- * ★★★ JUDGMENT CALL: THE PRICE GROUP IS RESOLVED THROUGH THE ONE PUBLISHED AFFORDANCE THAT YIELDS
- * ONE, AND A CALLER CANNOT NAME AN ARBITRARY ONE.
- *
- * `getBestPriceGroupDetailsBasedOnSkuAndAccount` [model/service/PriceGroupService.cfc:L343-L362] is
- * the only member of the request-tier surface that hands back a `PriceGroup` entity. A
- * load-by-identifier does exist on `../domain/ports/priceGroupRepository.js`, but that port is not
- * published to the request tier: `./bootstrap.js` withdrew the six repositories precisely because
- * they carried seven durable mutations, and the only remaining route to one is the composition
- * root's assembly-inspection hook - which a handler must not use, because doing so would put
- * `savePriceGroup`, `savePriceGroupRate`, `deletePriceGroup`, `saveProduct`, `deleteProduct`,
- * `saveSku` and `saveProductType` back within reach of an HTTP-facing module. The two alternatives
- * to this resolution are therefore inventing a fourteenth port member, whose count is explicitly
- * locked at six, or opening that bypass. Neither is acceptable, so the surface is narrowed instead
- * and the narrowing is stated here rather than hidden.
- *
- * WHAT THAT MEANS FOR A CALLER, PLAINLY: these operations answer "for this SKU and this request's
- * account, which rate did the cascade select, and what price does it produce" - the question the
- * cascade exists to answer - and they cannot be pointed at a price group the account does not hold.
- *
- * NOTHING ABOUT THE CASCADE IS PRE-EMPTED HERE. The price group is an INPUT, exactly as the SKU is;
- * the selection among the account's price groups is made INSIDE the service, at [L351-L358], and
- * this function neither repeats nor second-guesses it.
- *
- * @returns the resolved price group, or `undefined` when none was resolved, which is a domain
- *   outcome and not an error - see {@link UnresolvedReason}.
- */
-async function resolvePriceGroup(
-  scope: PriceResolutionScope,
-  sku: ResolvedSku,
-  accountID: string,
+  priceGroupID: string,
 ): Promise<ResolvedPriceGroup | undefined> {
-  const details = await scope.priceGroupService.getBestPriceGroupDetailsBasedOnSkuAndAccount(
-    sku,
-    accountID,
-  );
-
-  return details.priceGroup;
+  return scope.entityLoaders.getPriceGroup(priceGroupID);
 }
 
-/** Everything the five cascade operations need, or the reason they have nothing to run on. */
-type CascadeInputs =
-  | {
-      readonly resolved: true;
-      readonly selection: ResolvedSkuSelection;
-      readonly priceGroup: ResolvedPriceGroup;
-    }
-  | { readonly resolved: false; readonly reason: UnresolvedReason };
+/** The price-group rate a request named, or nothing. */
+async function resolveNamedPriceGroupRate(
+  scope: PriceResolutionScope,
+  priceGroupRateID: string,
+): Promise<ResolvedPriceGroupRate | undefined> {
+  return scope.entityLoaders.getPriceGroupRate(priceGroupRateID);
+}
+
+/** The product type a request named, or nothing. */
+async function loadProductType(
+  scope: PriceResolutionScope,
+  productTypeID: string,
+): Promise<ResolvedProductType | undefined> {
+  return scope.entityLoaders.getProductTypeByProductTypeID(productTypeID);
+}
+
+/** The product a request named, or nothing. */
+async function loadProduct(
+  scope: PriceResolutionScope,
+  productID: string,
+): Promise<ResolvedProduct | undefined> {
+  return scope.entityLoaders.getProductByProductID(productID);
+}
 
 /**
- * Resolve a SKU, its product and a price group for the cascade operations.
+ * The SKU and the price group a request named, or the reason one of them is missing.
  *
- * The account is read from {@link PriceResolutionScope.currentAccountContext} and NEVER from the
- * payload - see section 5. Its absence is the legacy's not-signed-in state and is reported as a
- * domain outcome rather than as an error.
- *
- * THE ACCOUNT IS TESTED BEFORE THE SELECTOR IS RESOLVED, which decides what a request with BOTH
- * problems is told: it hears about the account, and no read is issued on its behalf. Ordering it the
- * other way would spend two statements establishing that a caller named a real SKU before answering
- * that the operation could not have run anyway.
- *
- * @throws {UnresolvableSkuSelectorError} when the selector names no single SKU.
+ * ★ BOTH IDENTIFIERS ARE THE CALLER'S, SO BOTH LOADS ARE UNCONDITIONAL AND INDEPENDENT. The previous
+ * revision ordered its work so that an account failure pre-empted a selector failure, on the grounds
+ * that it saved two statements; there is nothing to trade off here, because neither load depends on
+ * the other and neither depends on an account. The SKU is reported first when both are missing, which
+ * is arbitrary and stated as such rather than dressed up as a policy.
  */
 async function resolveCascadeInputs(
   scope: PriceResolutionScope,
-  selector: PriceResolutionSkuSelector,
-): Promise<CascadeInputs> {
-  const accountID = scope.currentAccountContext.accountID;
+  identity: PriceResolutionSkuIdentity,
+  priceGroupID: string,
+): Promise<
+  | {
+      readonly bound: true;
+      readonly sku: ResolvedSku;
+      readonly priceGroup: ResolvedPriceGroup;
+    }
+  | { readonly bound: false; readonly reason: UnresolvedReason }
+> {
+  const loaded = await loadSku(scope, identity);
 
-  if (accountID === undefined) {
-    return { resolved: false, reason: 'noAuthenticatedAccount' };
+  if (loaded === undefined) {
+    return { bound: false, reason: 'skuNotFound' };
   }
 
-  const selection = await resolveSkuSelection(scope, selector);
-  const priceGroup = await resolvePriceGroup(scope, selection.sku, accountID);
+  const priceGroup = await resolveNamedPriceGroup(scope, priceGroupID);
 
   if (priceGroup === undefined) {
-    return { resolved: false, reason: 'noPriceGroupResolvedForSkuAndAccount' };
+    return { bound: false, reason: 'priceGroupNotFound' };
   }
 
-  return { resolved: true, selection, priceGroup };
+  return { bound: true, sku: loaded.sku, priceGroup };
+}
+
+/** The result of binding an explicit account argument to the authenticated request principal. */
+type AdmittedAccount =
+  | { readonly admitted: true; readonly accountID: string }
+  | {
+      readonly admitted: false;
+      readonly reason: 'noAuthenticatedAccount' | 'accountNotTheAuthenticatedAccount';
+    };
+
+/**
+ * Admit an explicit account argument only when it names the server-established principal.
+ *
+ * The ported methods declare this argument, so the wire contract represents it rather than silently
+ * substituting another value. Authorization remains server-owned: absence and mismatch are distinct
+ * closed outcomes, and the caller-authored identifier is never reflected.
+ */
+function admitNamedAccount(scope: PriceResolutionScope, claimed: string): AdmittedAccount {
+  const authenticated = scope.currentAccountContext.accountID;
+
+  if (authenticated === undefined) {
+    return { admitted: false, reason: 'noAuthenticatedAccount' };
+  }
+
+  if (!cfEquals(claimed, authenticated)) {
+    return { admitted: false, reason: 'accountNotTheAuthenticatedAccount' };
+  }
+
+  return { admitted: true, accountID: authenticated };
 }
 
 // ===========================================================================
@@ -1045,13 +1005,11 @@ async function resolveCascadeInputs(
 // visibility widening, no entity-signature widening and no deliberate divergence originates in this
 // file.
 //
-// ★★ THE ACCOUNT IS SERVER-ESTABLISHED AND IS NEVER READ FROM THE PAYLOAD. `./bootstrap.js` records
-// the reasoning at length: `HibachiScope.getAccount()` is `getSession().getAccount()`, and a session
-// only holds an account after `loginAccount(...)`, so the legacy actor was established from an
-// AUTHENTICATED SESSION and never taken from request content. The corresponding trust boundary here
-// is the API Gateway authorizer, whose context a caller cannot write; the request body is untrusted
-// payload and no schema arm above accepts an account identifier. Whether the deployment's authorizer
-// authenticates correctly is an authorizer concern outside this AAP.
+// ★★ THE ACCOUNT IS SERVER-ESTABLISHED EVEN WHERE A PORTED SIGNATURE EXPLICITLY NAMES IT.
+// `calculateSkuPriceBasedOnAccount` and `getBestPriceGroupDetailsBasedOnSkuAndAccount` carry the
+// declared argument on the wire, but {@link admitNamedAccount} accepts it only when it equals the
+// API Gateway authorizer's account claim. A missing principal and a mismatched explicit argument are
+// separate closed outcomes; neither lets request content choose another account's pricing context.
 //
 // ★ NOTHING IS READ FROM `../lib/config.js`. That module is STATIC PROCESS CONFIGURATION and must
 // never be used as a request scope. Nor is the context built at module scope: it is built here, ONCE
@@ -1061,47 +1019,6 @@ async function resolveCascadeInputs(
 // lines while the surrounding code uses `arguments.sku`. Recorded, and not repaired: it is latent
 // legacy sloppiness in a body this module does not own.
 // ===========================================================================
-
-/**
- * The authorizer-context member naming the authenticated account.
- *
- * A constant rather than an inline literal so the one name this boundary depends on is stated once.
- * It is not configuration and does not belong in `../lib/config.js`: it is the shape of the
- * authorizer's own output, which the deployment's authorizer and this adapter must agree on.
- */
-const AUTHORIZER_ACCOUNT_CLAIM = 'accountID';
-
-/**
- * Read the authenticated account identifier from the request's authorizer context.
- *
- * ★ JUDGMENT CALL: the claim is read through `structGet`, which folds key case exactly as a CFML
- * struct does. An authorizer emitting `accountId` and one emitting `accountID` name the same claim,
- * and CFML struct semantics are this subtree's house convention for a keyed read - the alternative,
- * a case-sensitive JavaScript index, would make a deployment's key casing silently decide whether a
- * request is treated as signed in.
- *
- * A non-string, an empty string and a whitespace-only string all yield NOTHING, which is the
- * logged-out arm. Absence is the safe direction: it routes
- * `calculateSkuPriceBasedOnCurrentAccount` to `sku.getPrice()`
- * [model/service/PriceGroupService.cfc:L266] and leaves every account-scoped operation reporting
- * `noAuthenticatedAccount`, whereas admitting a blank identifier would send an empty string into a
- * keyed account read.
- *
- * The value is narrowed with a `typeof` probe rather than a cast, because the authorizer context is
- * typed with an index signature this module must not trust.
- */
-function readAuthenticatedAccountID(event: APIGatewayProxyEvent): string | undefined {
-  const claims: Readonly<Record<string, unknown>> = event.requestContext.authorizer ?? {};
-  const candidate: unknown = structGet(claims, AUTHORIZER_ACCOUNT_CLAIM);
-
-  if (typeof candidate !== 'string') {
-    return undefined;
-  }
-
-  const trimmed = candidate.trim();
-
-  return trimmed.length === 0 ? undefined : trimmed;
-}
 
 /**
  * Build the per-invocation scope input.
@@ -1148,16 +1065,13 @@ function serializeMoney(value: Money): SerializedMoney {
 /**
  * Serialise a monetary value that may legitimately not exist.
  *
- * The absent arm carries the reason and no amount - never a zero, never a null and never an omitted
- * key. See the section 2 header for why that matters on a price.
+ * ★★★ ABSENCE IS CARRIED AS ABSENCE (finding F4). This function used to take a `reason` token and
+ * answer `{resolved: false, reason}` on a miss; the section 2 note records why that was wrong. It now
+ * answers `undefined`, which `JSON.stringify` OMITS from the enclosing document - so a consumer reads
+ * the exact value the accessor answered. Never a zero, never a null, never a sentinel object.
  */
-function serializeOptionalMoney(
-  value: Money | undefined,
-  reason: UnresolvedReason,
-): OptionalSerializedMoney {
-  return value === undefined
-    ? { resolved: false, reason }
-    : { resolved: true, ...serializeMoney(value) };
+function serializeOptionalMoney(value: Money | undefined): SerializedMoney | undefined {
+  return value === undefined ? undefined : serializeMoney(value);
 }
 
 /** Project a rate onto the wire. Reads the entity's own accessors and computes nothing. */
@@ -1168,7 +1082,8 @@ function serializePriceGroupRate(rate: ResolvedPriceGroupRate): SerializedPriceG
     // The rate's `amount` column is nullable, so its absence is carried structurally too - under its
     // OWN reason token, because a rate that applied without an amount is not the same state as no
     // rate applying. See {@link UnresolvedReason}.
-    amount: serializeOptionalMoney(rate.getAmount(), 'rateCarriesNoAmount'),
+    // Omitted when the nullable column is null - see {@link SerializedPriceGroupRate.amount}.
+    amount: serializeOptionalMoney(rate.getAmount()),
     amountType: rate.getAmountType(),
     amountFormatted: rate.getAmountFormatted(),
     appliesTo: rate.getAppliesTo(),
@@ -1193,13 +1108,16 @@ function serializeOptionalPriceGroupRate(
  * clock and the account context above all - to be injectable WITHOUT module-level monkey-patching.
  * `handler` obtains its scope from the memoized composition root, which a suite cannot substitute
  * without patching this module; this function takes the scope as a parameter, so a suite builds a
- * six-member fake and drives every operation directly. That is the same test-seam idiom
+ * five-member fake and drives every operation directly. That is the same test-seam idiom
  * `resetCompositionRoot` already publishes, and it keeps the PRIMARY exported unit - the Lambda
  * `handler` - singular.
  *
- * @throws {UnresolvableSkuSelectorError} when a selector names no single resolvable SKU. `handler`
- *   turns it into `./errorMapper.js`'s client-shaped invalid-request response; nothing else in this
- *   module interprets it.
+ * ★★★ IT NO LONGER THROWS FOR AN UNRESOLVABLE INPUT, AND THAT IS FINDING F3. The previous revision
+ * documented `@throws {UnresolvableSkuSelectorError} when a selector names no single resolvable SKU`,
+ * because a product-NAME search could match nothing or match several. An identifier admits neither
+ * outcome: it names a row or it does not, and "it does not" is reported as an `unresolved` outcome in a
+ * SUCCESSFUL response naming which identifier failed. This function therefore has no `throws` clause of
+ * its own; whatever a SERVICE throws is still propagated untouched and classified by the mapper.
  */
 export async function dispatchPriceResolution(
   scope: PriceResolutionScope,
@@ -1207,83 +1125,83 @@ export async function dispatchPriceResolution(
 ): Promise<PriceResolutionResult> {
   switch (request.operation) {
     // --- 6.1 The product-type cascade entry point [model/service/PriceGroupService.cfc:L57] -----
+    //
+    // ★★ BOUND TO THE TWO ARGUMENTS THE SIGNATURE DECLARES: a product type and a price group, each
+    // loaded by the identifier the caller named. The previous revision derived the product type by
+    // chaining `sku.getProduct().getProductType()` off a SKU it had found by searching product names,
+    // and took the price group from the account's best-group report - so the operation answered about
+    // a product type and a price group the caller had not named (finding F3).
     case 'getRateForProductTypeBasedOnPriceGroup': {
-      const inputs = await resolveCascadeInputs(scope, request.sku);
-
-      if (!inputs.resolved) {
-        return { outcome: 'unresolved', reason: inputs.reason };
-      }
-
-      // CFML parity [model/service/PriceGroupService.cfc:L159]: the legacy chains
-      // `sku.getProduct().getProductType()`. The product here IS the resolved SKU's own, wired
-      // through by the read that produced the SKU, and an absent product type is reported rather
-      // than fabricated.
-      const productType = inputs.selection.product.getProductType();
+      const productType = await loadProductType(scope, request.productTypeID);
 
       if (productType === undefined) {
-        return { outcome: 'unresolved', reason: 'productTypeAbsent' };
+        return { outcome: 'unresolved', reason: 'productTypeNotFound' };
+      }
+
+      const priceGroup = await resolveNamedPriceGroup(scope, request.priceGroupID);
+
+      if (priceGroup === undefined) {
+        return { outcome: 'unresolved', reason: 'priceGroupNotFound' };
       }
 
       return {
         outcome: 'priceGroupRate',
         rate: serializeOptionalPriceGroupRate(
-          scope.priceGroupService.getRateForProductTypeBasedOnPriceGroup(
-            productType,
-            inputs.priceGroup,
-          ),
+          scope.priceGroupService.getRateForProductTypeBasedOnPriceGroup(productType, priceGroup),
         ),
       };
     }
 
     // --- 6.2 The product cascade entry point [model/service/PriceGroupService.cfc:L102] ---------
     case 'getRateForProductBasedOnPriceGroup': {
-      const inputs = await resolveCascadeInputs(scope, request.sku);
+      const product = await loadProduct(scope, request.productID);
 
-      if (!inputs.resolved) {
-        return { outcome: 'unresolved', reason: inputs.reason };
+      if (product === undefined) {
+        return { outcome: 'unresolved', reason: 'productNotFound' };
+      }
+
+      const priceGroup = await resolveNamedPriceGroup(scope, request.priceGroupID);
+
+      if (priceGroup === undefined) {
+        return { outcome: 'unresolved', reason: 'priceGroupNotFound' };
       }
 
       return {
         outcome: 'priceGroupRate',
         rate: serializeOptionalPriceGroupRate(
-          scope.priceGroupService.getRateForProductBasedOnPriceGroup(
-            inputs.selection.product,
-            inputs.priceGroup,
-          ),
+          scope.priceGroupService.getRateForProductBasedOnPriceGroup(product, priceGroup),
         ),
       };
     }
 
     // --- 6.3 The SKU cascade entry point [model/service/PriceGroupService.cfc:L140] -------------
     //
-    // LEGACY-DEFECT [model/service/PriceGroupService.cfc:L174]: level five of this cascade recurses
-    // into the parent price group by calling `getRateForProductBasedOnPriceGroup` rather than the SKU
-    // variant, so a rate that includes the SKU on an ANCESTOR price group is never found.
+    // LEGACY-DEFECT [model/service/PriceGroupService.cfc:L174]: level five recurses into the parent
+    // price group through the PRODUCT variant rather than the SKU variant.
     // Preserved deliberately; do not fix without a product decision.
+    //
+    // So a rate that includes the SKU on an ANCESTOR price group is never found.
     case 'getRateForSkuBasedOnPriceGroup': {
-      const inputs = await resolveCascadeInputs(scope, request.sku);
+      const bound = await resolveCascadeInputs(scope, request.sku, request.priceGroupID);
 
-      if (!inputs.resolved) {
-        return { outcome: 'unresolved', reason: inputs.reason };
+      if (!bound.bound) {
+        return { outcome: 'unresolved', reason: bound.reason };
       }
 
       return {
         outcome: 'priceGroupRate',
         rate: serializeOptionalPriceGroupRate(
-          scope.priceGroupService.getRateForSkuBasedOnPriceGroup(
-            inputs.selection.sku,
-            inputs.priceGroup,
-          ),
+          scope.priceGroupService.getRateForSkuBasedOnPriceGroup(bound.sku, bound.priceGroup),
         ),
       };
     }
 
     // --- 6.4 The price for a price group [model/service/PriceGroupService.cfc:L301] -------------
     case 'calculateSkuPriceBasedOnPriceGroup': {
-      const inputs = await resolveCascadeInputs(scope, request.sku);
+      const bound = await resolveCascadeInputs(scope, request.sku, request.priceGroupID);
 
-      if (!inputs.resolved) {
-        return { outcome: 'unresolved', reason: inputs.reason };
+      if (!bound.bound) {
+        return { outcome: 'unresolved', reason: bound.reason };
       }
 
       // No absence arm: [L312] falls back to `sku.getPrice()` when the cascade finds no rate, so
@@ -1291,54 +1209,54 @@ export async function dispatchPriceResolution(
       return {
         outcome: 'price',
         price: serializeMoney(
-          scope.priceGroupService.calculateSkuPriceBasedOnPriceGroup(
-            inputs.selection.sku,
-            inputs.priceGroup,
-          ),
+          scope.priceGroupService.calculateSkuPriceBasedOnPriceGroup(bound.sku, bound.priceGroup),
         ),
       };
     }
 
     // --- 6.5 The price for one rate [model/service/PriceGroupService.cfc:L316] ------------------
     //
+    // ★★★ THE RATE IS THE CALLER'S, LOADED BY IDENTIFIER (finding F3). The previous revision called
+    // `getRateForSkuBasedOnPriceGroup` here to MANUFACTURE this argument, which meant an operation
+    // declared over ONE rate answered about whichever rate a second cascade run happened to select -
+    // and ran that cascade at the caller's expense to do it. Binding the declared argument makes the
+    // operation answer the question its name asks.
+    //
     // LEGACY-DEFECT [model/service/PriceGroupService.cfc:L316-L340]: the rounding rule is applied
-    // ONLY on the `percentageOff` branch [L326-L328]; `amountOff` [L330-L332] and `amount`
-    // [L333-L335] skip it, and the switch closes at [L336] with no `default:` arm, so an
-    // unrecognised `amountType` passes through with the SKU's own price [L319].
+    // ONLY on the `percentageOff` branch.
     // Preserved deliberately; do not fix without a product decision.
+    //
+    // `percentageOff` rounds at [:L326-L328]; `amountOff` [:L330-L332] and `amount` [:L333-L335] skip
+    // it, and the switch closes at [:L336] with no `default:` arm, so an unrecognised `amountType`
+    // passes through with the SKU's own price [:L319].
     case 'calculateSkuPriceBasedOnPriceGroupRate': {
-      const inputs = await resolveCascadeInputs(scope, request.sku);
+      const loaded = await loadSku(scope, request.sku);
 
-      if (!inputs.resolved) {
-        return { outcome: 'unresolved', reason: inputs.reason };
+      if (loaded === undefined) {
+        return { outcome: 'unresolved', reason: 'skuNotFound' };
       }
 
-      // The rate is this operation's INPUT, and the SKU cascade entry point is how a rate is
-      // obtained at all - there is no published load-by-identifier for one, for the reason recorded
-      // on `resolvePriceGroup`. Both calls are synchronous and neither is awaited.
-      const rate = scope.priceGroupService.getRateForSkuBasedOnPriceGroup(
-        inputs.selection.sku,
-        inputs.priceGroup,
-      );
+      const rate = await resolveNamedPriceGroupRate(scope, request.priceGroupRateID);
 
       if (rate === undefined) {
-        return { outcome: 'unresolved', reason: 'noRateApplies' };
+        return { outcome: 'unresolved', reason: 'priceGroupRateNotFound' };
       }
 
       return {
         outcome: 'price',
         price: serializeMoney(
-          scope.priceGroupService.calculateSkuPriceBasedOnPriceGroupRate(
-            inputs.selection.sku,
-            rate,
-          ),
+          scope.priceGroupService.calculateSkuPriceBasedOnPriceGroupRate(loaded.sku, rate),
         ),
       };
     }
 
     // --- 6.6 The two account-scoped prices [model/service/PriceGroupService.cfc:L262, L271] -----
     case 'calculateSkuPriceBasedOnCurrentAccount': {
-      const selection = await resolveSkuSelection(scope, request.sku);
+      const loaded = await loadSku(scope, request.sku);
+
+      if (loaded === undefined) {
+        return { outcome: 'unresolved', reason: 'skuNotFound' };
+      }
 
       // ★ NO ACCOUNT TEST HERE, DELIBERATELY. The whole point of this member is that it OWNS the
       // signed-in test: [L263] branches, [L264] resolves through the account, and [L265-L266]
@@ -1349,7 +1267,7 @@ export async function dispatchPriceResolution(
         outcome: 'price',
         price: serializeMoney(
           await scope.priceGroupService.calculateSkuPriceBasedOnCurrentAccount(
-            selection.sku,
+            loaded.sku,
             scope.currentAccountContext,
           ),
         ),
@@ -1357,36 +1275,51 @@ export async function dispatchPriceResolution(
     }
 
     case 'calculateSkuPriceBasedOnAccount': {
-      const accountID = scope.currentAccountContext.accountID;
+      const account = admitNamedAccount(scope, request.accountID);
 
-      // [L271] declares the account REQUIRED, so unlike the member above there is no fallback arm to
-      // reproduce. The absence is reported as the domain outcome it is.
-      if (accountID === undefined) {
-        return { outcome: 'unresolved', reason: 'noAuthenticatedAccount' };
+      if (!account.admitted) {
+        return { outcome: 'unresolved', reason: account.reason };
       }
 
-      const selection = await resolveSkuSelection(scope, request.sku);
+      const loaded = await loadSku(scope, request.sku);
+
+      if (loaded === undefined) {
+        return { outcome: 'unresolved', reason: 'skuNotFound' };
+      }
 
       return {
         outcome: 'price',
         price: serializeMoney(
-          await scope.priceGroupService.calculateSkuPriceBasedOnAccount(selection.sku, accountID),
+          await scope.priceGroupService.calculateSkuPriceBasedOnAccount(
+            loaded.sku,
+            account.accountID,
+          ),
         ),
       };
     }
 
     // --- 6.7 The best-price-group report [model/service/PriceGroupService.cfc:L343] -------------
+    //
+    // ★ THIS IS THE ONE OPERATION WHOSE JOB IS TO SELECT A PRICE GROUP, so it names no group or rate.
+    // It still carries the account argument its ported signature declares, and that argument must match
+    // the server-established principal. The previous revision used this operation as a resolution
+    // helper for the five operations above, silently substituting the account's best group.
     case 'getBestPriceGroupDetailsBasedOnSkuAndAccount': {
-      const accountID = scope.currentAccountContext.accountID;
+      const account = admitNamedAccount(scope, request.accountID);
 
-      if (accountID === undefined) {
-        return { outcome: 'unresolved', reason: 'noAuthenticatedAccount' };
+      if (!account.admitted) {
+        return { outcome: 'unresolved', reason: account.reason };
       }
 
-      const selection = await resolveSkuSelection(scope, request.sku);
+      const loaded = await loadSku(scope, request.sku);
+
+      if (loaded === undefined) {
+        return { outcome: 'unresolved', reason: 'skuNotFound' };
+      }
+
       const details = await scope.priceGroupService.getBestPriceGroupDetailsBasedOnSkuAndAccount(
-        selection.sku,
-        accountID,
+        loaded.sku,
+        account.accountID,
       );
 
       return {
@@ -1400,18 +1333,7 @@ export async function dispatchPriceResolution(
       };
     }
 
-    // --- 6.8 The price-group data document [model/service/PriceGroupService.cfc:L230] -----------
-    case 'getPriceGroupDataJSON': {
-      // Carried through as the string the service returned. Not parsed, not re-serialised, not
-      // re-formatted - and NOT guarded: this member raises for any page holding a rate, and that
-      // throw is mapped rather than caught. See {@link PriceResolutionResult} for both annotations.
-      return {
-        outcome: 'priceGroupData',
-        priceGroupDataJSON: await scope.priceGroupService.getPriceGroupDataJSON(),
-      };
-    }
-
-    // --- 6.9 The three currency accessors [model/entity/Sku.cfc:L269, L275, L281] --------------
+    // --- 6.8 The three currency accessors [model/entity/Sku.cfc:L269, L275, L281] --------------
     //
     // ★★ ALL THREE READ THROUGH THE FOUR-STEP CASCADE `Sku.getCurrencyDetails()`
     // [model/entity/Sku.cfc:L367-L433], whose memo is INSTANCE-SCOPED and whose instances are
@@ -1425,43 +1347,52 @@ export async function dispatchPriceResolution(
     // on-the-fly conversion "mechinism" at [L416-L428] all run inside the entity. This module
     // performs no lookup of its own into the resulting map, adds no second key-existence probe, and
     // supplies no eligible-currency list.
+    //
+    // ★★★ A MISS OMITS `price` (finding F4). Not `0`, not `null`, not a sentinel - see the
+    // `currencyPrice` arm of {@link PriceResolutionResult} for why AAP 0.9.2 makes this the single
+    // highest-consequence parity check in the plan.
     case 'getPriceByCurrencyCode': {
-      const selection = await resolveSkuSelection(scope, request.sku);
+      const loaded = await loadSku(scope, request.sku);
+
+      if (loaded === undefined) {
+        return { outcome: 'unresolved', reason: 'skuNotFound' };
+      }
 
       return {
         outcome: 'currencyPrice',
-        price: serializeOptionalMoney(
-          selection.sku.getPriceByCurrencyCode(request.currencyCode),
-          'noPriceForCurrencyCode',
-        ),
+        price: serializeOptionalMoney(loaded.sku.getPriceByCurrencyCode(request.currencyCode)),
       };
     }
 
     case 'getListPriceByCurrencyCode': {
-      const selection = await resolveSkuSelection(scope, request.sku);
+      const loaded = await loadSku(scope, request.sku);
+
+      if (loaded === undefined) {
+        return { outcome: 'unresolved', reason: 'skuNotFound' };
+      }
 
       return {
         outcome: 'currencyPrice',
-        price: serializeOptionalMoney(
-          selection.sku.getListPriceByCurrencyCode(request.currencyCode),
-          'noPriceForCurrencyCode',
-        ),
+        price: serializeOptionalMoney(loaded.sku.getListPriceByCurrencyCode(request.currencyCode)),
       };
     }
 
     case 'getRenewalPriceByCurrencyCode': {
-      const selection = await resolveSkuSelection(scope, request.sku);
+      const loaded = await loadSku(scope, request.sku);
+
+      if (loaded === undefined) {
+        return { outcome: 'unresolved', reason: 'skuNotFound' };
+      }
 
       return {
         outcome: 'currencyPrice',
         price: serializeOptionalMoney(
-          selection.sku.getRenewalPriceByCurrencyCode(request.currencyCode),
-          'noPriceForCurrencyCode',
+          loaded.sku.getRenewalPriceByCurrencyCode(request.currencyCode),
         ),
       };
     }
 
-    // --- 6.10 Conversion [model/service/CurrencyService.cfc:L84] --------------------------------
+    // --- 6.9 Conversion [model/service/CurrencyService.cfc:L84] ---------------------------------
     //
     // ★★ `convertCurrency` NEVER THROWS AND IS TREATED AS NEVER THROWING.
     // [model/service/CurrencyService.cfc:L100-L101] silently returns the amount UNCONVERTED when
@@ -1494,6 +1425,23 @@ export async function dispatchPriceResolution(
 }
 
 // ---------------------------------------------------------------------------
+// 6.10 ★★★ `getPriceGroupDataJSON` IS NO LONGER EXPOSED (finding F10 and V-03)
+//
+// It was operation 6.8 of the previous revision, dispatched as
+// `{outcome: 'priceGroupData', priceGroupDataJSON: await ...getPriceGroupDataJSON()}`. The member
+// takes NO arguments and answers a document covering every price group and every rate the framework
+// smart list pages over, so a routed contract had nothing to bound and a single request obliged the
+// process to build the whole thing and stringify it into one API Gateway body. It is withdrawn from
+// the schema, from the result union, from `PriceResolutionScope.priceGroupService` and from the
+// dispatcher - four places, so that naming it anywhere no longer compiles.
+//
+// The member is untouched at `../services/priceGroupService.js`, where it is still ported in full and
+// where its two legacy defects remain reproduced, flagged and covered. Withdrawing it neither repairs
+// them nor hides them; it takes them off an HTTP surface. See the note on
+// {@link PriceResolutionOperation} for the full argument, including why a paging parameter was not
+// available as an alternative.
+//
+// ---------------------------------------------------------------------------
 // 6.11 ★★★ `updateOrderAmountsWithPriceGroups` IS NOT EXPOSED, AND THAT IS STRUCTURAL
 //
 // JUDGMENT CALL: `public void function updateOrderAmountsWithPriceGroups(required any order)`
@@ -1504,12 +1452,13 @@ export async function dispatchPriceResolution(
 // THE CONSTRAINT. It must run BEFORE `updateOrderAmountsWithPromotions`
 // [model/service/PromotionService.cfc:L58], because the promotion pass chooses its discount BASE
 // PRICE from price-group state in its branch condition at [model/service/PromotionService.cfc:L241]
-// through [L254]: an ineligible order item discounts from `getPrice()` while an eligible one
-// discounts from `getSkuPrice()` plus the correction term
-// `originalDiscountAmount - (getExtendedSkuPrice() - getExtendedPrice())`. Run the two in the wrong
-// order and the amount a customer is charged changes. In the legacy that ordering held only because
-// `OrderService` happened to call them in sequence [model/service/OrderService.cfc:L60-L61] - an
-// obligation carried by convention.
+// through [:L254]. The polarity, as the source states it: a NULL applied price group, OR a reward that
+// DOES list the applied group as eligible, discounts from `getPrice()` with NO correction term
+// ([:L241] -> [:L244]); OTHERWISE the discount comes from `getSkuPrice()` and then SUBTRACTS the
+// extended-price delta, `originalDiscountAmount - (getExtendedSkuPrice() - getExtendedPrice())`
+// ([:L246] -> [:L249], [:L252]). Run the two in the wrong order and the amount a customer is charged
+// changes. In the legacy that ordering held only because `OrderService` happened to call them in
+// sequence [model/service/OrderService.cfc:L60-L61] - an obligation carried by convention.
 //
 // WHY NON-EXPOSURE IS THE ENFORCEMENT. `./bootstrap.js` publishes the two passes ONLY as a single
 // composed operation, `updateOrderAmountsWithPriceGroupsThenPromotions`, and withholds both
@@ -1543,13 +1492,17 @@ export async function dispatchPriceResolution(
 //      inventing one, or reaching for the composition root's assembly-inspection hook to borrow one,
 //      is not available.
 //
-// LEGACY-DEFECT [model/service/PriceGroupService.cfc:L465-L467] (register DEFECT 6): `deletePriceGroup`
-// loops on the length of a collection captured at [L463] and always removes index one, so the loop
-// can fail to terminate. It is reproduced at the services tier WITH a bounded-iteration termination
-// safeguard and a flagged note, and withholding the member here neither repairs it, hides it nor
-// removes that guard - it simply does not put the defect on an HTTP surface. Verified present at
-// `../services/priceGroupService.js`.
+// LEGACY-DEFECT [model/service/PriceGroupService.cfc:L465-L467]: `deletePriceGroup` loops on a
+// collection captured at [:L463] and always removes index one.
 // Preserved deliberately; do not fix without a product decision.
+//
+// The AAP's defect register carries that shape as a potential non-termination concern, and it is a
+// REGISTERED CONCERN rather than an established source failure: the captured array is the SAME array
+// `removeChildPriceGroup` -> `removeParentPriceGroup` -> `arrayDeleteAt`
+// [model/entity/PriceGroup.cfc:L116-L123, L139-L140] mutates, so in the source the length does shrink.
+// The services tier reproduces the loop WITH a bounded-iteration safeguard and a flagged note, and
+// withholding the member here neither repairs it, hides it nor removes that guard - it simply does not
+// put it on an HTTP surface.
 //
 // B4 INTERFACE PARITY IS UNAFFECTED, and it is worth being precise about why: parity is a property of
 // `../services/priceGroupService.js`, which still declares all thirteen members with their legacy
@@ -1590,14 +1543,29 @@ export async function dispatchPriceResolution(
 // ===========================================================================
 
 /**
+ * The one route action this module implements.
+ *
+ * ★ CHECKED RATHER THAN ASSUMED (finding F12). Typed to the router's own union, so a renamed action
+ * breaks this file at compile time instead of silently answering nothing, and compared explicitly in
+ * {@link handler} before any body is parsed. The capability check the router already performs implies
+ * this one while the table holds one route per capability - and the table is additive by design, so an
+ * action this module does not implement must be able to fall out as a non-route.
+ */
+const IMPLEMENTED_ROUTE_ACTION: RouteAction = 'resolvePrices';
+
+/**
  * Headers on a successful response.
  *
- * The same pair `./errorMapper.js` puts on every response it builds, restated because that constant
- * is module-private there. `no-store` is not a performance decision and carries no target: a resolved
- * price is account-scoped, so a shared cache must not be permitted to serve one account's price to
- * another.
+ * ★★ RETAINED ONLY AS THE ASSERTION THIS MODULE'S OWN CONTRACT MAKES; THE RESPONSE IS BUILT BY THE
+ * SHARED BUILDER NOW (finding F13). `jsonSuccessResponse` in `./errorMapper.js` emits exactly this
+ * pair for every capability, and this constant is no longer read - it is kept as the place the
+ * `no-store` reasoning lives, because that reasoning is specific to THIS capability and would be lost
+ * in a shared module: `no-store` is not a performance decision and carries no target, but a resolved
+ * price is ACCOUNT-SCOPED, so a shared cache must not be permitted to serve one account's price to
+ * another. If the shared builder ever stopped emitting it, this capability would have to reintroduce
+ * it, and the suite asserts the header pair on a served response for exactly that reason.
  */
-const SUCCESS_RESPONSE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+export const REQUIRED_SUCCESS_RESPONSE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   'content-type': 'application/json; charset=utf-8',
   'cache-control': 'no-store',
 });
@@ -1606,6 +1574,12 @@ const SUCCESS_RESPONSE_HEADERS: Readonly<Record<string, string>> = Object.freeze
 type RequestDocumentReading =
   | { readonly decoded: true; readonly document: object }
   | { readonly decoded: false; readonly reason: InvalidRequestReason };
+
+/** Maximum decoded request document admitted by this compact operation grammar. */
+const MAXIMUM_REQUEST_DOCUMENT_BYTES = 8 * 1024;
+
+/** Encoded length above which a base64 body cannot decode within the byte ceiling. */
+const MAXIMUM_ENCODED_BODY_LENGTH = Math.ceil((MAXIMUM_REQUEST_DOCUMENT_BYTES * 4) / 3) + 4;
 
 /**
  * Decode the request body into a JSON object.
@@ -1626,7 +1600,15 @@ function readRequestDocument(event: APIGatewayProxyEvent): RequestDocumentReadin
     return { decoded: false, reason: 'missingRequestBody' };
   }
 
+  if (event.isBase64Encoded && rawBody.length > MAXIMUM_ENCODED_BODY_LENGTH) {
+    return { decoded: false, reason: 'unusableRequestInput' };
+  }
+
   const text = event.isBase64Encoded ? Buffer.from(rawBody, 'base64').toString('utf8') : rawBody;
+
+  if (Buffer.byteLength(text, 'utf8') > MAXIMUM_REQUEST_DOCUMENT_BYTES) {
+    return { decoded: false, reason: 'unusableRequestInput' };
+  }
 
   let parsed: unknown;
 
@@ -1645,8 +1627,22 @@ function readRequestDocument(event: APIGatewayProxyEvent): RequestDocumentReadin
   return { decoded: true, document: parsed };
 }
 
+/** The two production dependencies the price-resolution entrypoint allows a suite to substitute. */
+export interface PriceResolutionHandlerDependencies {
+  /** Resolve the wired graph. Defaults to the memoized production composition root. */
+  readonly compositionRoot?: (() => Promise<CompositionRoot>) | undefined;
+  /** Structured diagnostic sink. Defaults to the process logger. */
+  readonly logger?: Logger | undefined;
+}
+
+/** The two-parameter async Lambda shape emitted by this module. */
+export type PriceResolutionLambdaHandler = (
+  event: APIGatewayProxyEvent,
+  lambdaContext?: Context,
+) => Promise<APIGatewayProxyResult>;
+
 /**
- * The price-resolution Lambda entry point.
+ * Build the price-resolution Lambda entry point over explicit substitution seams.
  *
  * ★ THE MEMOIZED INITIALIZER IS AWAITED INSIDE THE HANDLER, NEVER AT MODULE SCOPE.
  * `bootstrapCompositionRoot()` is idempotent: the first invocation on a container starts
@@ -1659,100 +1655,140 @@ function readRequestDocument(event: APIGatewayProxyEvent): RequestDocumentReadin
  * Nothing is promoted to module scope: on a warm container that would carry one invocation's state,
  * and therefore one customer's price, into another's.
  *
- * @param event the API Gateway proxy event.
- * @param lambdaContext the Lambda context, read ONLY for its request identifier, which is the
- *   correlation token `./errorMapper.js` echoes so an operator can join a caller's generic response
- *   to the full detail on the log stream.
- * @returns the serialised outcome, or a mapped error response. This function does not reject:
- *   every failure is mapped.
+ * @param dependencies optional composition-root and logger substitutions. Omit in production.
+ * @returns the serialised Lambda handler. It never rejects: every failure is mapped.
  */
-export async function handler(
-  event: APIGatewayProxyEvent,
-  lambdaContext: Context,
-): Promise<APIGatewayProxyResult> {
-  const baseErrorContext: ErrorMappingContext = {
-    requestId: lambdaContext.awsRequestId,
-    logger,
-  };
+export function createPriceResolutionHandler(
+  dependencies: PriceResolutionHandlerDependencies = {},
+): PriceResolutionLambdaHandler {
+  const openCompositionRoot =
+    dependencies.compositionRoot ?? ((): Promise<CompositionRoot> => bootstrapCompositionRoot());
+  const logger = dependencies.logger ?? processLogger;
 
-  // The router owns resolution and hands back a READY response when nothing matched, so no status,
-  // header set or body envelope for an unmatched request is decided here. Resolution is scoped to
-  // THIS capability, so a request that matched another capability's route is reported as unmatched
-  // rather than served by the wrong handler.
-  const resolution = resolveRouteForCapability(
-    routeRequestFromEvent(event),
-    'priceResolution',
-    baseErrorContext,
-  );
+  return async (
+    event: APIGatewayProxyEvent,
+    lambdaContext?: Context,
+  ): Promise<APIGatewayProxyResult> => {
+    // ★★ THE SHARED CORRELATION POLICY, NOT THIS MODULE'S OWN (finding F8). It used to read
+    // `lambdaContext.awsRequestId` and nothing else, which meant an event delivered without a runtime
+    // context - synthesisable, and the reason the parameter is now optional - produced `undefined` in a
+    // response body and on every log line. `resolveServerRequestId` prefers the runtime identifier, falls
+    // back to the gateway's, and substitutes a fixed obviously-synthetic token when the platform supplied
+    // neither. Nothing is read from a header in any of the three arms.
+    const requestId = resolveServerRequestId(event, lambdaContext);
 
-  if (!resolution.matched) {
-    return resolution.response;
-  }
+    // ★★ ONE MAPPING CONTEXT FOR THE WHOLE INVOCATION, REASSIGNED ONCE WHEN THE ROUTE IS KNOWN, and it
+    // is the same object every refusal and the single `catch` read.
+    let mappingContext: ErrorMappingContext = { requestId, logger };
 
-  const route = resolution.route;
-  const errorContext: ErrorMappingContext = { ...baseErrorContext, route: route.path };
+    // The router owns resolution and hands back a READY response when nothing matched, so no status,
+    // header set or body envelope for an unmatched request is decided here. Resolution is scoped to
+    // THIS capability, so a request that matched another capability's route is reported as unmatched
+    // rather than served by the wrong handler.
+    const resolution = resolveRouteForCapability(
+      routeRequestFromEvent(event),
+      'priceResolution',
+      mappingContext,
+    );
 
-  const reading = readRequestDocument(event);
-
-  if (!reading.decoded) {
-    return invalidRequestResponse(reading.reason, errorContext);
-  }
-
-  try {
-    // A `ZodError` from here is RECOGNIZED by `./errorMapper.js` and published as a client-shaped
-    // response carrying field PATHS and constraint descriptions only - never the submitted values.
-    const request = PRICE_RESOLUTION_REQUEST_SCHEMA.parse(reading.document);
-
-    const accountID = readAuthenticatedAccountID(event);
-
-    const compositionRoot = await bootstrapCompositionRoot();
-    const scope = await compositionRoot.createRequestScope(buildRequestScopeInput(accountID));
-
-    const result = await dispatchPriceResolution(scope, request);
-
-    const body: PriceResolutionResponseBody = {
-      operation: request.operation,
-      // The injected clock, rendered UTC. See {@link PriceResolutionResponseBody.resolvedAt}.
-      resolvedAt: scope.now.toISOString(),
-      result,
-    };
-
-    // Only closed-vocabulary values are logged: the route and action come from the route table, the
-    // operation from the schema's literal union, the outcome from the result union. The account is
-    // reported as a BOOLEAN rather than as an identifier, and no part of the request document is
-    // logged.
-    logger.info('price resolution request served', {
-      requestId: lambdaContext.awsRequestId,
-      route: route.path,
-      action: route.action,
-      operation: request.operation,
-      outcome: result.outcome,
-      accountEstablished: accountID !== undefined,
-    });
-
-    return {
-      statusCode: 200,
-      headers: SUCCESS_RESPONSE_HEADERS,
-      body: JSON.stringify(body),
-    };
-  } catch (thrown: unknown) {
-    // Narrowed by `instanceof`, never by a cast. A selector that named nothing resolvable is the
-    // caller's mistake, so it earns the mapper's client-shaped invalid-request response; the refusal
-    // token is logged and is NOT published, because which of the four cases occurred is diagnostic
-    // rather than actionable and reporting it would confirm the existence of a product or SKU the
-    // caller guessed at.
-    if (thrown instanceof UnresolvableSkuSelectorError) {
-      logger.warn('the request named no single resolvable sku', {
-        requestId: lambdaContext.awsRequestId,
-        route: route.path,
-        skuSelectorRefusal: thrown.refusal,
-      });
-
-      return invalidRequestResponse('unusableRequestInput', errorContext);
+    if (!resolution.matched) {
+      return resolution.response;
     }
 
-    // Everything else - a validation failure, a driver error, a cascade association the legacy also
-    // raised on - is classified by the mapper. Nothing thrown is passed into a response body.
-    return mapErrorToApiGatewayResponse(thrown, errorContext);
-  }
+    const route = resolution.route;
+
+    // ★ THE LABEL IS `METHOD /path`, BUILT FROM THE MATCHED ROW'S OWN FROZEN MEMBERS (finding F8). It
+    // used to be `route.path` alone - this module was the only one of the five labelling a route without
+    // its method, so an operator could not group failures across the five endpoints by one convention.
+    // `event.httpMethod` is deliberately NOT used: the router matches the method with `listFindNoCase`,
+    // so a caller-supplied casing would reach the log line for no diagnostic gain.
+    mappingContext = {
+      requestId,
+      route: routeDiagnosticLabel(route.methods, route.path),
+      logger,
+    };
+
+    // ★★★ THE RESOLVED ACTION IS VERIFIED BEFORE ANY BODY IS READ (finding F12). The previous revision
+    // never compared it at all and used it only as a log value. The shared table declares one route per
+    // capability today, so this is unreachable - and it is written anyway because the router's own note
+    // records that adding a second route to a capability later is ADDITIVE, at which point an action this
+    // module does not implement must fall out as a non-route rather than reaching the dispatcher. Placed
+    // before `readRequestDocument` so an unimplemented action costs no parse and no service work.
+    if (route.action !== IMPLEMENTED_ROUTE_ACTION) {
+      return routeNotFoundResponse(mappingContext);
+    }
+
+    // Refuse an unidentified caller before reading or parsing the body and before opening the graph.
+    // The product feed is the one source-public capability; this pricing route is not.
+    const principalResolution = resolveRequestPrincipal(event);
+    if (!principalResolution.identified) {
+      return unauthenticatedResponse(mappingContext);
+    }
+
+    const reading = readRequestDocument(event);
+
+    if (!reading.decoded) {
+      return invalidRequestResponse(reading.reason, mappingContext);
+    }
+
+    try {
+      // A `ZodError` from here is RECOGNIZED by `./errorMapper.js` and published as a client-shaped
+      // response carrying field PATHS and constraint descriptions only - never the submitted values.
+      // Every arm is a `z.strictObject`, so an unrecognised key is refused and named rather than dropped.
+      const request = PRICE_RESOLUTION_REQUEST_SCHEMA.parse(reading.document);
+
+      const accountID = principalResolution.principal.accountID;
+
+      const compositionRoot = await openCompositionRoot();
+      const scope = await compositionRoot.createRequestScope(buildRequestScopeInput(accountID));
+
+      const result = await dispatchPriceResolution(scope, request);
+
+      const document: PriceResolutionResultDocument = {
+        operation: request.operation,
+        // The injected clock, rendered UTC. See {@link PriceResolutionResultDocument.resolvedAt}.
+        resolvedAt: scope.now.toISOString(),
+        result,
+      };
+
+      // Only closed-vocabulary values are logged: the route label and action come from the route table,
+      // the operation from the schema's literal union, the outcome from the result union. The account is
+      // reported as a BOOLEAN rather than as an identifier, and no part of the request document is
+      // logged. Every key here is in the logger's closed diagnostic allow-list, which finding F7
+      // established was not previously true of `action`, `operation`, `outcome` and `accountEstablished`.
+      logger.info('price resolution request served', {
+        requestId,
+        route: mappingContext.route,
+        action: route.action,
+        operation: request.operation,
+        outcome: result.outcome,
+        accountEstablished: accountID !== undefined,
+      });
+
+      // ★ THE SHARED SUCCESS ENVELOPE, WHICH IS WHAT PUTS `requestId` IN A SUCCESSFUL BODY AT ALL
+      // (finding F13). It also owns the status and the header set, so neither is decided here.
+      return jsonSuccessResponse(requestId, route.capability, route.action, document);
+    } catch (thrown: unknown) {
+      // ★★★ ONE EMISSION, OWNED BY THE MAPPER (finding F14). The previous revision caught a
+      // module-local `UnresolvableSkuSelectorError`, emitted its OWN `warn` line carrying the refusal
+      // token, and then called `invalidRequestResponse` - which logs the same refusal again. Two lines
+      // for one event makes a log stream count refusals twice and forces an operator to recognise that
+      // the pair is one occurrence.
+      //
+      // That whole arm is gone for a second reason as well: the error class it caught no longer exists.
+      // It was raised only by the product-name search this module performed to find a SKU, and finding
+      // F3 replaced that search with a load by identifier - so there is no ambiguity to refuse and no
+      // local classification left to emit. A miss is now an `unresolved` outcome in a SUCCESSFUL
+      // response, and the only remaining refusals are the schema's, which the mapper already owns.
+      //
+      // Narrowing is by the mapper's own `instanceof` probes, never by a cast here. Nothing thrown is
+      // passed into a response body: a driver error's text can embed a statement and its bound values.
+      // The context is the ROUTED one, so the classification is logged against the endpoint that
+      // produced it.
+      return mapErrorToApiGatewayResponse(thrown, mappingContext);
+    }
+  };
 }
+
+/** The production Lambda entrypoint. */
+export const handler: PriceResolutionLambdaHandler = createPriceResolutionHandler();

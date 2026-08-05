@@ -645,7 +645,42 @@ export interface PreparedStatementExecutor {
  * ABOVE the protocol ceiling costs one comparison and cannot reject any request
  * the server would have accepted.
  */
-const MAX_PLACEHOLDER_COUNT = 65535;
+export const MAX_PLACEHOLDER_COUNT = 65535;
+
+/**
+ * Whether a statement carrying `count` placeholders could be prepared at all.
+ *
+ * ★★★ EXPORTED SO THE CEILING CAN BE CHECKED **EARLY**, WHICH IS THE WHOLE POINT.
+ * Security review (finding F17) found that a caller-supplied comma-list becomes one
+ * predicate and one placeholder PER ELEMENT, and that the only general ceiling in the
+ * port was the one {@link sqlPlaceholderList} applies - reached AFTER the calling
+ * builder has already parsed the list, allocated one SQL fragment per element and
+ * joined them into a single string. The refusal was correct and its position was not:
+ * the allocation this bound exists to prevent had already happened by the time it
+ * fired, and a builder that assembles its placeholders INLINE rather than through
+ * `sqlPlaceholderList` - `buildSkusBySelectedOptionsStatement` in
+ * `./sql/skusBySelectedOptions.sql.ts` - never reached it at all.
+ *
+ * THE BOUND IS A PROTOCOL FACT, NOT A POLICY, and emphatically not a throughput or
+ * capacity target. `COM_STMT_PREPARE_OK` reports a prepared statement's placeholder
+ * count in a TWO-BYTE little-endian field, so 65535 is the most any statement can
+ * carry no matter what a client sends. A request above it has exactly one possible
+ * outcome at the server - a refusal - so declining it before construction cannot
+ * reject anything the server would have accepted. AT the bound is ACCEPTED, because
+ * the server accepts it.
+ *
+ * EVERY ACCEPTED ELEMENT IS PRESERVED UNCHANGED. This is a feasibility test on a
+ * COUNT and nothing else: no caller may trim, sort, deduplicate, case-fold or reorder
+ * a list to fit under it, because each of those changes which rows the statement
+ * matches.
+ *
+ * @param count how many placeholders the statement would carry, including any that
+ *   are not part of the caller's list.
+ * @returns `true` when a statement of that width is preparable.
+ */
+export function isPreparablePlaceholderCount(count: number): boolean {
+  return Number.isSafeInteger(count) && count >= 0 && count <= MAX_PLACEHOLDER_COUNT;
+}
 
 /** A caller asked for a placeholder list that cannot be rendered. */
 class SqlPlaceholderCountError extends Error {

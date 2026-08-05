@@ -115,6 +115,7 @@ import type {
   SqlMutationResult,
   SqlRow,
 } from '../../../src/repositories/mysql/connection.js';
+import { MAX_PLACEHOLDER_COUNT } from '../../../src/repositories/mysql/connection.js';
 import { MysqlOptionRepository } from '../../../src/repositories/mysql/mysqlOptionRepository.js';
 
 // --- The recording double ----------------------------------------------------
@@ -1667,5 +1668,106 @@ describe('MysqlOptionRepository - net-new coverage with no legacy antecedent', (
       expect(typeof first.value).toBe('string');
       expect(onlyStatement(executor.calls).sql.toUpperCase()).not.toContain('FLAG');
     });
+  });
+});
+
+describe('MysqlOptionRepository - the protocol placeholder ceiling on the group list', () => {
+  // ---------------------------------------------------------------------------
+  // SECURITY FINDING F17. One clause and one placeholder are allocated per element of the
+  // caller-supplied `existingOptionGroupIDList`, and the only general ceiling on this path
+  // was the one `sqlPlaceholderList` applies - reached only AFTER the list had been parsed,
+  // and reported with a message about `IN ()` and zero-length lists that names no argument.
+  //
+  // THE BOUND IS THE PROTOCOL'S OWN, NOT A POLICY. `COM_STMT_PREPARE_OK` reports a prepared
+  // statement's placeholder count in a two-byte field, so a list above 65535 could not be
+  // prepared by the server however it was sent - nothing [model/dao/OptionDAO.cfc:L52-L117]
+  // could have answered is refused, and no throughput or capacity figure is involved.
+  // ---------------------------------------------------------------------------
+
+  /** A comma-list of `count` single-character elements. The COUNT is what is under test. */
+  function listOfCountedElements(count: number): string {
+    return new Array<string>(count).fill('x').join(',');
+  }
+
+  it('accepts a group-only list EXACTLY at the ceiling, because the server accepts one', async () => {
+    const executor = new RecordingExecutor([]);
+    const repository = new MysqlOptionRepository(executor);
+
+    await repository.getUnusedProductOptionGroups(listOfCountedElements(MAX_PLACEHOLDER_COUNT));
+
+    expect(onlyStatement(executor.calls).params).toHaveLength(MAX_PLACEHOLDER_COUNT);
+  });
+
+  it('counts the trailing productID bind when admitting the sibling statement', async () => {
+    // `getUnusedProductOptions` adds one placeholder after the group list. A list at the raw
+    // ceiling would therefore produce 65,536 placeholders even though the list itself has 65,535.
+    const refusedExecutor = new RecordingExecutor([]);
+    const refused = new MysqlOptionRepository(refusedExecutor);
+
+    await expect(
+      refused.getUnusedProductOptions(PRODUCT_ID, listOfCountedElements(MAX_PLACEHOLDER_COUNT)),
+    ).rejects.toThrow(/complete statement would carry 65536 placeholders/);
+    expect(refusedExecutor.calls).toStrictEqual([]);
+
+    // One fewer group plus the product bind lands exactly on the protocol ceiling and is admitted.
+    const admittedExecutor = new RecordingExecutor([]);
+    const admitted = new MysqlOptionRepository(admittedExecutor);
+
+    await admitted.getUnusedProductOptions(
+      PRODUCT_ID,
+      listOfCountedElements(MAX_PLACEHOLDER_COUNT - 1),
+    );
+
+    const params = onlyStatement(admittedExecutor.calls).params;
+    expect(params).toHaveLength(MAX_PLACEHOLDER_COUNT);
+    expect(params.at(-1)).toBe(PRODUCT_ID);
+  });
+
+  it('refuses ONE PAST the ceiling on BOTH methods, naming the argument and the count', async () => {
+    const executor = new RecordingExecutor([]);
+    const repository = new MysqlOptionRepository(executor);
+    const oneTooMany = listOfCountedElements(MAX_PLACEHOLDER_COUNT + 1);
+
+    await expect(repository.getUnusedProductOptionGroups(oneTooMany)).rejects.toThrow(
+      /existingOptionGroupIDList/,
+    );
+    await expect(repository.getUnusedProductOptions(PRODUCT_ID, oneTooMany)).rejects.toThrow(
+      /cannot prepare a statement with more than 65535 placeholders/,
+    );
+
+    // ★ AND NO STATEMENT WAS ISSUED, which is the half of the finding that matters: the
+    // refusal now precedes the placeholder-body allocation rather than following it.
+    expect(executor.calls).toStrictEqual([]);
+    expect(executor.mutationCalls).toStrictEqual([]);
+  });
+
+  it('reproduces no element of the refused list in the message', async () => {
+    const executor = new RecordingExecutor([]);
+    const repository = new MysqlOptionRepository(executor);
+
+    try {
+      await repository.getUnusedProductOptionGroups(
+        listOfCountedElements(MAX_PLACEHOLDER_COUNT + 1),
+      );
+      expect.unreachable('the adapter accepted a statement the server cannot prepare');
+    } catch (thrown: unknown) {
+      expect(thrown).toBeInstanceOf(Error);
+      const { name, message } = thrown as Error;
+      expect(name).toBe('OptionGroupIDListTooWideError');
+      expect(message).toContain(String(MAX_PLACEHOLDER_COUNT + 1));
+      expect(message).not.toContain('x,x');
+    }
+  });
+
+  it('leaves an ordinary list untouched - no trim, sort, dedupe, case fold or reorder', async () => {
+    // The bound refuses on a COUNT alone. Every accepted element still reaches the bind array
+    // byte for byte and in list order, because each of those transformations would change
+    // which option groups the predicate excludes.
+    const executor = new RecordingExecutor([]);
+    const repository = new MysqlOptionRepository(executor);
+
+    await repository.getUnusedProductOptionGroups(' B , a ,a,B ');
+
+    expect(onlyStatement(executor.calls).params).toStrictEqual([' B ', ' a ', 'a', 'B ']);
   });
 });

@@ -532,6 +532,54 @@ const LEGIBLE_DIAGNOSTIC_KEYS: ReadonlySet<string> = new Set([
   'errorcode',
   'publishedissuecount',
   'issuecount',
+  // ★★★ THE CAPABILITY HANDLERS' OWN DIAGNOSTICS, ADMITTED AFTER A MEASURED
+  // FAILURE. Security review (finding F7) found that the five Lambda entrypoints
+  // publish operation and outcome fields under names no allow-list carried, so
+  // rule 5 - the fail-closed arm - replaced every one of them with the redaction
+  // marker. The result was a line that recorded THAT a request was served while
+  // withholding WHICH capability served it, WHICH operation ran and HOW it came
+  // out: precisely the diagnostics an operator reads a line for, erased by a rule
+  // meant for customer data.
+  //
+  // EVERY NAME BELOW IS ADMITTED ON THE SAME TEST THE REST OF THIS SET APPLIES -
+  // its VALUE CANNOT BE CUSTOMER DATA BY NATURE, whatever a caller sends. Each is
+  // either a CLOSED LITERAL drawn from a compile-time union in `src/handlers/`, a
+  // BOOLEAN, or a COUNT of items handled in this one invocation. None can carry a
+  // name, an address, a credential, a monetary amount, a submitted document or a
+  // statement.
+  //
+  // AND THE SET IS DELIBERATELY NOT WIDENED FURTHER; the refusals matter more than
+  // the admissions:
+  //   * `idempotencykey` is REFUSED. It is a CALLER-CHOSEN FREE STRING, so its
+  //     value is whatever a caller decided to put in it, and admitting it would
+  //     publish arbitrary caller text under an authorized name. It stays under
+  //     rule 5. (Findings F5 and F6 withdrew the two mechanisms that logged it, so
+  //     nothing in `src/` emits it at all now.)
+  //   * `pagerecordsshow` and `recordcount` are REFUSED because no line in this
+  //     service emits them. This block's standing rule - "a name that appears only
+  //     in a test is NOT added" - applies equally to a name that appears only in a
+  //     proposal.
+  //   * `skuselectorrefusal` WAS admitted here and has been REMOVED under the same
+  //     standing rule. It named the refusal token that `priceResolutionHandler`
+  //     emitted on its OWN `warn` line before calling `invalidRequestResponse`,
+  //     which logged the same refusal a second time; finding F14 removed that
+  //     duplicate emission and finding F3 removed the error class behind it - the
+  //     product-name search that could be ambiguous at all. Nothing in `src/`
+  //     emits the name now, so it does not belong in an allow-list that exists to
+  //     describe what this service actually logs.
+  // An ACCOUNT IDENTIFIER is untouched by any of this: `accountid` is authorized
+  // one set above as an opaque handle, and `accountestablished` below is a BOOLEAN
+  // that says whether one was established WITHOUT naming it.
+  'capability',
+  'action',
+  'operation',
+  'outcome',
+  'accountestablished',
+  'orderitemcount',
+  'orderfulfillmentcount',
+  'pricegroupintentcount',
+  'promotionintentcount',
+  'resolvedskucount',
   // The ported engines' own diagnostics. A discount amount is a formatted string
   // and a quantity is a count: both are order-shaped rather than customer-shaped,
   // and the out-of-scope aggregate they belong to is addressed only through the
@@ -1092,7 +1140,15 @@ const VALUE_CONTINUATION_HEADS: ReadonlySet<string> = new Set([
   'set',
 ]);
 
-/** The longest value span this scanner will mask, so a pathological string cannot stall it. */
+/**
+ * How far this scanner will look for the END of a value before giving up on delimiting it.
+ *
+ * A STALL GUARD, and - since security finding F7/F16 - a TRIGGER FOR MASKING MORE rather than a cap
+ * on how much is masked. Reaching it means "where this value ends is unknown", and
+ * {@link sensitiveValueEnd} answers that by withholding the remainder of the line. It is emphatically
+ * NOT the longest value that can be masked: a quoted value terminated on its own line is masked
+ * whole at any length. See {@link sensitiveValueEnd} for the defect this ordering corrects.
+ */
 const MAX_ASSIGNMENT_VALUE_LENGTH = 512;
 
 /**
@@ -1199,11 +1255,49 @@ const ABSOLUTE_PATH_PATTERNS: readonly RegExp[] = [
 const AUTH_SCHEME_PATTERN = /\b(bearer|basic|digest)\s+[A-Za-z0-9._~+/=-]{8,}/gi;
 
 /**
+ * Where the line containing `start` ends - the whole remainder when there is no newline after it.
+ *
+ * The FAIL-CLOSED fallback for a value this scanner cannot delimit, and the reason it stops at the
+ * newline rather than at the end of the text: a sanitized `stack` is many lines, and only the line
+ * carrying the undelimited value is unsafe. Masking to the newline withholds all of that value and
+ * keeps every later frame legible.
+ *
+ * Total and bounded: one native `indexOf`, no throwing path.
+ */
+function lineRemainderEnd(text: string, start: number): number {
+  const lineEnd = text.indexOf('\n', start);
+
+  return lineEnd === -1 ? text.length : lineEnd;
+}
+
+/**
  * Where the value that starts at `start` ends, for masking purposes.
  *
  * Returns `start` itself when there is nothing to mask - an empty value, or one already masked -
  * which is what makes this function idempotent: sanitizing an already-sanitized string leaves it
  * alone rather than nesting one marker inside another.
+ *
+ * ★★★ QUOTE-THEN-REVISE - THE SCAN BUDGET USED TO BE A DISCLOSURE, AND THIS IS THE CORRECTION.
+ * {@link MAX_ASSIGNMENT_VALUE_LENGTH} exists so a pathological string cannot stall the scan, and the
+ * previous form treated reaching that budget as though it had FOUND the end of the value: it returned
+ * the budget boundary, and `redactSensitiveAssignments` then masked the first 512 characters and
+ * copied the rest out VERBATIM. A secret longer than the budget therefore went out with its tail in
+ * cleartext - `password="<520 characters>"` published characters 513 onward. Security review raised
+ * that as a log-disclosure defect (CWE-532).
+ *
+ * The budget is now a TRIGGER FOR MASKING MORE, never for masking less. Two changes carry that:
+ *
+ *   1. A QUOTED VALUE TERMINATED ON ITS OWN LINE IS MASKED WHOLE, however long it is. The budget no
+ *      longer bounds this arm, and that costs nothing: both `indexOf` calls below were already
+ *      executed unconditionally for every quoted value, so the terminator's position was ALREADY
+ *      known - the old form simply declined to use it once it lay past 512 characters.
+ *   2. WHEN A SCAN REACHES THE BUDGET WITHOUT FINDING A TERMINATOR, the whole remainder of the line
+ *      is masked through {@link lineRemainderEnd}. Withholding more than the value is the safe
+ *      direction; resuming legible output inside an undelimited secret is not.
+ *
+ * Reaching the budget is distinguished from reaching the END OF THE TEXT: when the text is shorter
+ * than the budget, the scan stopping at its final character has found a real terminus and nothing
+ * extra is masked.
  *
  * Total: every branch is a bounded scan or a set lookup, so there is no throwing path. It runs
  * inside the emission path that must never throw.
@@ -1222,16 +1316,21 @@ function sensitiveValueEnd(text: string, start: number): number {
 
   const limit = Math.min(text.length, start + MAX_ASSIGNMENT_VALUE_LENGTH);
 
+  // Whether a scan that stopped at `limit` was cut off by the BUDGET rather than by the end of the
+  // text. Only the former leaves material unaccounted for, and only the former masks the remainder.
+  const budgetCutsOffTheValue = limit < text.length;
+
   // A QUOTED VALUE IS ITS QUOTES AND EVERYTHING BETWEEN THEM, so a value containing spaces,
-  // semicolons or brackets is masked whole. An unterminated quote falls through to the token scan
-  // rather than swallowing the rest of the line.
+  // semicolons or brackets is masked whole - at any length. An UNTERMINATED quote, and one whose
+  // closing quote lies on a LATER LINE, both fall through to the token scan rather than swallowing
+  // material across a line boundary.
   const opening = text[start];
 
   if (opening === '"' || opening === "'") {
     const closing = text.indexOf(opening, start + 1);
     const lineEnd = text.indexOf('\n', start + 1);
 
-    if (closing !== -1 && closing < limit && (lineEnd === -1 || closing < lineEnd)) {
+    if (closing !== -1 && (lineEnd === -1 || closing < lineEnd)) {
       return closing + 1;
     }
   }
@@ -1247,6 +1346,13 @@ function sensitiveValueEnd(text: string, start: number): number {
     }
 
     firstTokenEnd += 1;
+  }
+
+  // AN UNDELIMITED TOKEN. 512 characters went by with no whitespace and no terminator, so where this
+  // value ends is unknown and the rest of the line is withheld. A token this long is also not a
+  // continuation head, so the check below is skipped rather than consulted on a truncated slice.
+  if (firstTokenEnd === limit && budgetCutsOffTheValue) {
+    return lineRemainderEnd(text, start);
   }
 
   if (!VALUE_CONTINUATION_HEADS.has(text.slice(start, firstTokenEnd).toLowerCase())) {
@@ -1271,6 +1377,13 @@ function sensitiveValueEnd(text: string, start: number): number {
 
   if (nextPair !== null && nextPair.index < stop) {
     stop = nextPair.index;
+  }
+
+  // THE CONTINUATION RUN HIT THE BUDGET TOO. `rest` is sliced AT `limit`, so an unbroken run reaching
+  // its end tells us nothing about where the material stops - `stop` is then the slice's length
+  // rather than a terminator's position. Same fail-closed answer as the token arm above.
+  if (stop === rest.length && budgetCutsOffTheValue) {
+    return lineRemainderEnd(text, start);
   }
 
   let end = firstTokenEnd + stop;

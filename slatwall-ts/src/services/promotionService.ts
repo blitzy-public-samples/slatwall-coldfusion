@@ -75,8 +75,9 @@
 // discount; this file authors no test.
 //
 // LEGACY-NOTE [model/service/PromotionService.cfc:L241-L252]: the ELIGIBLE / no-applied-price-group
-// case uses `getPrice()` with NO correction term; the INELIGIBLE case uses `getSkuPrice()` PLUS the
-// correction term `originalDiscountAmount - (extendedSkuPrice - extendedPrice)`. Read the guard
+// case uses `getPrice()` with NO correction term; the INELIGIBLE case computes
+// `originalDiscountAmount` from `getSkuPrice()` and subtracts
+// `(extendedSkuPrice - extendedPrice)`. Read the guard
 // literally: the `if` is taken when there is no applied price group OR the reward DOES list the
 // applied group as eligible, and that arm is the uncorrected one. Prose in the specification - and
 // in `./priceGroupService.ts`'s own header - has these two branches TRANSPOSED. The source governs,
@@ -1611,9 +1612,11 @@ export class PromotionService {
    * eligible - discounts from `getPrice()` with NO correction term. The `else` - taken when there IS
    * an applied price group AND the reward does NOT list it as eligible - discounts from
    * `getSkuPrice()` and THEN subtracts the price-group saving the item is already receiving. The
-   * specification's prose, and `./priceGroupService.ts`'s own header, have these two branches
-   * TRANSPOSED; the source governs, and implementing the transposed wording would invert the discount
-   * on every price-group order.
+   * specification's prose has these two branches TRANSPOSED, and so did three docblocks in this
+   * subtree until a code review flagged the copy in `../handlers/priceResolutionHandler.ts`:
+   * `./priceGroupService.ts`'s header and `../handlers/bootstrap.ts`'s capability note carried the
+   * same inversion and have been corrected to match this method. The source governs, and implementing
+   * the transposed wording would invert the discount on every price-group order.
    *
    * This is also the method that makes the cross-service ordering constraint concrete: all five
    * values it reads are written by the price-group pass.

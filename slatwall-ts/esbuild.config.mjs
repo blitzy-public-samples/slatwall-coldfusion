@@ -9,10 +9,15 @@
 // no credential of any kind. Nothing in this file emits, references or templates an infrastructure
 // artifact, and it must never be renamed or repurposed into a deploy step.
 //
-// It is invoked by three published `package.json` scripts and by nothing else:
+// It takes no arguments and has exactly one mode, and it is invoked by three published
+// `package.json` scripts and by nothing else:
 //
-//   node esbuild.config.mjs          `npm run bundle` / `npm run build` - bundle only
-//   node esbuild.config.mjs --zip    `npm run package`                 - bundle, then archive
+//   node esbuild.config.mjs          `npm run bundle` / `npm run build` / `npm run package`
+//
+// THE BUNDLED ARTIFACT IS THE DELIVERABLE, SO THERE IS NO SEPARATE ARCHIVE STAGE. `dist/` holds
+// exactly the five `.cjs` artifacts and their five source maps, and `npm run package` is
+// `npm run build` - the same typecheck-then-bundle gate under the name AAP 0.9.1 uses for the
+// deliverable. No host-global packaging utility is required.
 //
 // EVERY PATH IT WRITES IS INSIDE `slatwall-ts/`. The only output location is `<subtree>/dist`, and
 // the only removal it performs targets that one directory. `tsc -p tsconfig.build.json` writes to
@@ -84,9 +89,11 @@
 //   1. LONG REQUEST BUDGETS DO NOT SURVIVE. `ProductService.loadDataFromFile()` sets
 //      `requesttimeout=3600` [model/service/ProductService.cfc:L65-L68] and the Google feed
 //      template sets `requesttimeout=360` [integrationServices/google/views/feed/product.cfm].
-//      The Lambda runtime caps an invocation at 15 minutes and API Gateway caps a request at
-//      29 seconds, so neither budget exists any more. That costs this port nothing: the bulk import
-//      is out of scope, and the feed generator is an in-memory string renderer with no such need.
+//      The Lambda runtime's execution ceiling is shorter than the first budget, while the applicable
+//      API Gateway integration timeout is deployment- and API-type configuration owned outside this
+//      build. Neither legacy request-timeout directive is reproduced here. That costs this port
+//      nothing: the bulk import is out of scope, and the feed generator is an in-memory string
+//      renderer with no such need.
 //   2. COMPONENT-LEVEL MUTABLE CACHES BECOME REQUEST-SCOPED, because a warm container keeps
 //      module-level state alive between unrelated requests. That is why this file introduces no
 //      module-scope mutable state of its own: every value below is either a frozen constant or a
@@ -119,8 +126,7 @@
 //     writes the existing `Sw*` tables unchanged.
 // ---------------------------------------------------------------------------
 
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -135,8 +141,17 @@ import { build } from 'esbuild';
  */
 const SUBTREE_DIR = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * The port's own TypeScript source root.
+ *
+ * It is also how the annotation check below tells this port's modules apart from the third-party
+ * packages that share a bundle with them: a source-map entry that does not resolve under this
+ * directory belongs to a dependency, and a dependency carries none of this port's annotations.
+ */
+const SOURCE_DIR = path.join(SUBTREE_DIR, 'src');
+
 /** Where the five capability entrypoints live. */
-const HANDLERS_DIR = path.join(SUBTREE_DIR, 'src', 'handlers');
+const HANDLERS_DIR = path.join(SOURCE_DIR, 'handlers');
 
 /**
  * The bundle output directory - `dist`, never `build`.
@@ -176,6 +191,21 @@ const LAMBDA_ENTRYPOINT_FILES = Object.freeze([
   'priceResolutionHandler.ts',
   'productFeedHandler.ts',
 ]);
+
+/**
+ * THE ANNOTATION MARKERS THAT MUST BE RECOVERABLE FROM EVERY ARTIFACT, AND THIS LIST IS A CONTRACT.
+ *
+ * This port reproduces legacy defects rather than repairing them, so the in-code annotations
+ * recording each preserved defect and each sanctioned divergence are part of the deliverable rather
+ * than commentary on it. `README.md` states the two marker formats and `assertAnnotationsRecoverable`
+ * enforces them, so a bundle that has quietly stopped carrying the audit trail fails the build
+ * instead of shipping.
+ *
+ * The bracketed forms are matched on purpose. Every real annotation cites its legacy locator - for
+ * example `LEGACY-DEFECT [model/entity/Sku.cfc:L258]` - so requiring the opening bracket means prose
+ * that merely mentions a marker by name cannot satisfy the check on a marker's behalf.
+ */
+const REQUIRED_ANNOTATION_MARKERS = Object.freeze(['LEGACY-DEFECT [', 'DELIBERATE DIVERGENCE [']);
 
 /** Prefix for every diagnostic this script writes, so its output is greppable in a build log. */
 const LOG_PREFIX = '[esbuild]';
@@ -239,86 +269,60 @@ function buildOptions(entryPoints) {
     bundle: true,
     platform: 'node',
 
-    // SECURITY REVIEW DISPOSITION - RAISED AS S-17, DECLINED ON A CITED MANDATE.
-    //
-    // RENUMBERED FROM S-09, WHICH THIS BLOCK CARRIED UNTIL THE FINDING IDS WERE
-    // RECONCILED. In the review this file answers, S-09 is the product-feed URL scheme
-    // finding (CWE-319), resolved in `src/integrations/google/rssFeedRenderer.ts` and
-    // `src/integrations/google/googleFeedService.ts` - both of which now carry their own
-    // S-09 dispositions. The runtime-lifecycle finding is S-17. Three blocks shared one
-    // label, so no reader could tell which finding a given disposition answered.
-    //
-    // Finding S-17 (HIGH/MAJOR, CWE-1104, Use of Unmaintained Third-Party Components)
-    // records that Node 20 is out of maintenance and that the `nodejs20.x` Lambda runtime
-    // is deprecated. Both are accurate: Node 20 reached end of life on 2026-04-30, and
-    // Lambda stopped applying security patches to `nodejs20.x` on that same date. This is
-    // a platform-lifecycle exposure rather than an allegation about any package in this
-    // tree, and `npm audit` is clean.
-    //
-    // THE BLOCK DATES ARE DELIBERATELY NOT RESTATED AS FACT. This block previously
-    // asserted "new functions blocked 2027-02-01, updates 2027-03-03" as a dated deadline.
-    // AWS publishes block-function-create and block-function-update dates as forecasts
-    // "subject to change" and has repeatedly moved them for Node runtimes; currently
-    // published dates for `nodejs20.x` disagree with each other, and with the review, by
-    // many months - some of them EARLIER than the dates this block used to assert. A date
-    // frozen into a build script is exactly where such a figure rots unnoticed, and a
-    // deadline later than the real one is worse than no deadline at all. The plan owner
-    // must read the current figure from the runtimes table AWS publishes rather than from
-    // here. What is NOT in doubt, and correctly bounds the exposure: Lambda never blocks
-    // INVOCATION of a deprecated runtime, so an already-deployed function keeps serving
-    // traffic; what lapses is the ability to create or update one.
-    //
-    // THE UPGRADE IS DECLINED HERE BECAUSE IT IS NOT THIS AGENT'S TO MAKE. The runtime is
-    // fixed by the frozen plan in three independent places: AAP 0.1.1 states the objective
-    // as re-expressing the slice so that it runs on the `nodejs20.x` Lambda runtime;
-    // AAP 0.5.1 pins Node 20.20.2 and npm 10.8.2 and resolves every package to an exact
-    // verified version, recording that the 20.20.2 floor is itself forced by eslint's
-    // `^20.19.0` engine requirement; and AAP 0.9.1 makes "Node `20.x`, TypeScript `5.x`,
-    // and all fourteen packages at the exact versions in 0.5.1 - no caret ranges, no
-    // `latest`" a pass condition of its runtime-and-toolchain-pinning gate. ("Fourteen" is
-    // the AAP's own count, quoted rather than recomputed; the manifest carries thirteen
-    // direct dependencies alongside the pinned Node runtime.) The AAP is the agreed, frozen
-    // source of truth and is to be aligned to, never edited - so changing the target would
-    // put this file, `package.json`, `package-lock.json`, `.nvmrc`, `@types/node` and the
-    // verified bundle recipe out of agreement with the plan, and would invalidate the
-    // packaging constraint AAP 0.5.2 established by experiment rather than by assumption.
-    //
-    // It is therefore recorded for the plan owner as a platform decision requiring a
-    // successor-runtime selection OUTSIDE this AAP, not resolved by unilateral drift in a
-    // code-remediation pass. The six artifacts that must move together are named above so
-    // the change is one deliberate edit when it is authorized, and the pin is enforced
-    // executably by "A16" in `tests/traceability/legacyTestMap.ts`, so drift off the
-    // frozen line fails the suite instead of passing unnoticed.
+    // The build target matches the runtime line frozen by AAP 0.1.1, 0.5.1 and 0.9.1, and it moves
+    // only together with `.nvmrc`, `package.json` engines, `package-lock.json` and `@types/node`.
+    // `tests/traceability/legacyTestMap.ts` asserts that agreement. Runtime-lifecycle escalation is
+    // recorded in `README.md`, not here: dates, support status and advisory results are mutable facts
+    // and do not belong in executable configuration.
     target: 'node20',
 
     // Option A. The one non-negotiable line in this file; see the header for the evidence.
     format: 'cjs',
 
-    // External maps, without the original sources embedded. The map is what keeps a stack trace
-    // from a bundled artifact readable; `sourcesContent: false` keeps the source text itself out of
-    // the emitted map, which is the same posture `README.md` documents.
+    // EXTERNAL MAPS, WITH THE ORIGINAL SOURCES EMBEDDED - AND THE SECOND HALF IS THE AUDIT-TRAIL
+    // MECHANISM, NOT A CONVENIENCE. A map is what keeps a stack trace from a bundled artifact
+    // readable. `sourcesContent: true` additionally puts the annotated source text itself inside the
+    // emitted map, and that is what makes every preserved-defect annotation recoverable from the
+    // artifact set rather than only from a checkout. `assertAnnotationsRecoverable` below proves the
+    // property on every build; see the note on `minify` for the measurement that forced this option
+    // to change from `false`.
+    //
+    // IT EXPOSES NOTHING. There is no credential or environment value in `src/**` to embed:
+    // configuration is read at runtime from the environment by `src/lib/config.ts` alone and there is
+    // no `define` to bake a value in. The subtree is GPL v3.0 (see the header), so its source is
+    // required to be available in the first place - embedding it serves the license rather than
+    // straining it.
     sourcemap: true,
-    sourcesContent: false,
+    sourcesContent: true,
 
-    // MINIFICATION IS OFF, DELIBERATELY. This port reproduces legacy defects rather than repairing
-    // them, and the in-code annotations that record each preserved defect and each carried-forward
-    // source TODO are part of the deliverable's audit trail. Minifying strips them, and no size
-    // constraint exists anywhere in this project that would justify the loss. No identifier-renaming
-    // transform is enabled either - not minification, not name mangling - so the exported `handler`
-    // symbol the runtime resolves survives verbatim in every artifact.
+    // MINIFICATION IS OFF, DELIBERATELY - BUT IT IS NOT WHAT CARRIES THE ANNOTATIONS, AND THIS BLOCK
+    // USED TO CLAIM THAT IT WAS. Measured on this exact entrypoint set: 130 `LEGACY-DEFECT` markers
+    // exist in the modules bundled into one artifact and 56 survive in the artifact text. esbuild
+    // preserves a comment only where its printer happens to emit one and drops the rest - the option
+    // that governs comment retention is `legalComments`, and an ordinary `//` annotation is not a
+    // legal comment. So `minify: false` and `legalComments: 'inline'` together do NOT carry the audit
+    // trail into the artifact; `sourcesContent: true` above is what actually does.
+    //
+    // What minification off does buy is worth keeping on its own terms: the artifact stays readable
+    // beside its map, and NO identifier-renaming transform is enabled - not minification, not name
+    // mangling - so the exported `handler` symbol the runtime resolves survives verbatim in every
+    // artifact. No size constraint exists anywhere in this project that would justify trading either
+    // of those away.
     minify: false,
 
     treeShaking: true,
 
     // Third-party license notices stay inside the artifact. `'linked'` would move them to a sidecar
     // `.LEGAL.txt` that is trivially separated from the file it describes, and GPL v3.0 attribution
-    // has to travel with the code; inlining it also keeps one bundle file per entrypoint.
+    // has to travel with the code; inlining it also keeps one bundle file per entrypoint. Its reach
+    // is legal comments and only legal comments, which is precisely why this port's own annotations
+    // ride in the map rather than on this option.
     legalComments: 'inline',
 
     logLevel: 'info',
 
-    // Read back below to report exactly which artifacts were emitted, and to drive `--zip` from the
-    // real output list rather than from a guess about esbuild's naming.
+    // Read back below to report exactly which artifacts were emitted, taking the output list from
+    // esbuild itself rather than from a guess about its naming.
     metafile: true,
   };
 }
@@ -327,7 +331,9 @@ function buildOptions(entryPoints) {
  * Extracts the bundled entrypoint artifacts from a build result, in a stable order.
  *
  * The source-map siblings are excluded here on purpose: an artifact is what the runtime loads, and
- * the count reported below is meant to be comparable against the entrypoint count.
+ * the count reported below is meant to be comparable against the entrypoint count. They are not
+ * ignored - the annotation check derives each map from the artifact it belongs to, which is a
+ * stronger pairing than matching two entries out of the same list.
  *
  * @param {{ metafile?: { outputs?: Record<string, unknown> } }} result The esbuild build result.
  * @returns {readonly string[]} Absolute paths to the emitted `.cjs` artifacts.
@@ -345,65 +351,147 @@ function collectArtifacts(result) {
 }
 
 /**
- * Archives each artifact, and its source map when one is present, into `<subtree>/dist`.
+ * Reads a bundle's own source map back off disk and returns it parsed.
  *
- * `-j` junks the stored paths so the module sits at the archive root, which is where the runtime
- * looks for a `<file>.handler` entry. The map is included because it is what keeps a stack trace
- * from a bundled artifact readable, and it is optional rather than assumed so the routine stays
- * correct if source maps are ever turned off.
- *
- * THIS IS A PACKAGE STEP AND ONLY A PACKAGE STEP. Every archive is written beside the artifact it
- * describes, inside `<subtree>/dist`. Nothing is uploaded, transmitted or published, no platform
- * tooling is invoked, and no credential is read.
- *
- * @param {readonly string[]} artifacts Absolute paths to the emitted artifacts.
- * @returns {readonly string[]} Absolute paths to the archives written.
- * @throws {Error} If the `zip` utility is unavailable or reports a failure.
+ * @param {string} artifact Absolute path to an emitted `.cjs` artifact.
+ * @returns {{ path: string, sources: unknown, sourcesContent: unknown }} The map, and where it was
+ *   read from so a diagnostic can name it.
+ * @throws {Error} If the map is absent or is not parseable JSON.
  */
-function archiveArtifacts(artifacts) {
-  const archives = [];
+function readSourceMapFor(artifact) {
+  const basename = path.basename(artifact, ARTIFACT_EXTENSION);
+  const mapPath = path.join(OUT_DIR, `${basename}${SOURCE_MAP_EXTENSION}`);
 
-  for (const artifact of artifacts) {
-    const basename = path.basename(artifact, ARTIFACT_EXTENSION);
-    const archivePath = path.join(OUT_DIR, `${basename}.zip`);
-    const sourceMapPath = path.join(OUT_DIR, `${basename}${SOURCE_MAP_EXTENSION}`);
-
-    // A stale archive from a previous run would otherwise be appended to rather than replaced.
-    rmSync(archivePath, { force: true });
-
-    const contents = existsSync(sourceMapPath) ? [artifact, sourceMapPath] : [artifact];
-
-    try {
-      execFileSync('zip', ['-q', '-j', archivePath, ...contents], { stdio: 'inherit' });
-    } catch (cause) {
-      throw new Error(
-        `Failed to archive ${path.relative(SUBTREE_DIR, artifact)}. The \`zip\` utility must be ` +
-          'available on PATH for `npm run package`; `npm run bundle` does not need it.',
-        { cause },
-      );
-    }
-
-    archives.push(archivePath);
+  if (!existsSync(mapPath)) {
+    throw new Error(
+      `No source map was emitted beside ${path.relative(SUBTREE_DIR, artifact)}. ` +
+        '`sourcemap: true` is what makes the preserved-defect annotations recoverable from the ' +
+        'artifact set, so a missing map is a packaging failure rather than a cosmetic one.',
+    );
   }
 
-  return Object.freeze(archives);
+  try {
+    // Only the two fields the check needs are lifted out, rather than spreading the whole map: the
+    // shape stays exactly what the JSDoc above promises, whatever else a future esbuild emits.
+    const parsed = JSON.parse(readFileSync(mapPath, 'utf8'));
+
+    return { path: mapPath, sources: parsed.sources, sourcesContent: parsed.sourcesContent };
+  } catch (cause) {
+    throw new Error(
+      `The source map ${path.relative(SUBTREE_DIR, mapPath)} is not parseable JSON, so the ` +
+        'annotations it is supposed to carry cannot be recovered from it.',
+      { cause },
+    );
+  }
 }
 
 /**
- * Bundles the five capability entrypoints, and optionally archives them.
+ * PROVES, BY READING BACK WHAT WAS JUST EMITTED, THAT THIS PORT'S ANNOTATIONS SURVIVE INTO THE
+ * ARTIFACT SET. Writes nothing; every path it touches was produced by the build immediately above.
  *
- * The whole routine is a function of its argument and touches no module-scope mutable state, which
- * is the same discipline the ported services are held to for the reason recorded in the header: a
- * warm container keeps module state alive between unrelated invocations.
+ * WHY A BUILD-TIME PROOF AND NOT A COMMENT. This file previously asserted in prose that
+ * `minify: false` plus `legalComments: 'inline'` kept the annotations in the artifact, and the claim
+ * was wrong: esbuild retains a comment only where its printer emits one, so of the 130
+ * `LEGACY-DEFECT` markers in the modules bundled into one artifact, 56 survived. A claim about an
+ * emitted artifact that nothing checks is a claim that decays silently, which is exactly what
+ * happened, so the property is now measured on every build instead of being described.
  *
- * Ordering matters. Entrypoints are verified BEFORE `dist` is cleared, so a broken tree cannot leave
- * the previous artifacts deleted and nothing in their place.
+ * The check is deliberately per artifact rather than across the set. Each artifact is independently
+ * deployable, so "the audit trail is somewhere in `dist/`" is not the property that matters - the
+ * property that matters is that the artifact a reviewer holds carries it.
  *
- * @param {{ zip?: boolean }} [options] Set `zip` to also emit one archive per artifact.
- * @returns {Promise<{ artifacts: readonly string[], archives: readonly string[] }>} What was written.
+ * Third-party sources are excluded because they carry none of this port's markers, so counting them
+ * could only dilute the signal; `SOURCE_DIR` is what draws that line.
+ *
+ * @param {readonly string[]} artifacts Absolute paths to the emitted artifacts.
+ * @returns {readonly { artifact: string, recovered: Readonly<Record<string, number>> }[]} Per
+ *   artifact, how many occurrences of each required marker were recovered from its map.
+ * @throws {Error} If any map omits its embedded sources, or if any required marker is unrecoverable
+ *   from any artifact.
  */
-async function bundleLambdaArtifacts(options = {}) {
-  const shouldArchive = options.zip === true;
+function assertAnnotationsRecoverable(artifacts) {
+  const summary = [];
+
+  for (const artifact of artifacts) {
+    const map = readSourceMapFor(artifact);
+    const relativeMap = path.relative(SUBTREE_DIR, map.path);
+
+    // This is the exact failure mode `sourcesContent: false` produces: a structurally valid map
+    // whose `sourcesContent` key is simply absent, so nothing in it can be read back.
+    if (!Array.isArray(map.sources) || !Array.isArray(map.sourcesContent)) {
+      throw new Error(
+        `${relativeMap} carries no embedded sources, so no annotation is recoverable from it. ` +
+          'Set `sourcesContent: true` in the options above: it is the only thing that puts the ' +
+          'annotated source text into the emitted map.',
+      );
+    }
+
+    if (map.sources.length !== map.sourcesContent.length) {
+      throw new Error(
+        `${relativeMap} lists ${String(map.sources.length)} sources but embeds ` +
+          `${String(map.sourcesContent.length)} source bodies, so the two cannot be read together.`,
+      );
+    }
+
+    /** @type {Record<string, number>} */
+    const recovered = Object.fromEntries(REQUIRED_ANNOTATION_MARKERS.map((marker) => [marker, 0]));
+
+    map.sources.forEach((source, index) => {
+      // `sources` are relative to the map's own directory, which is `dist`.
+      const resolved = path.resolve(OUT_DIR, String(source));
+      const body = map.sourcesContent[index];
+
+      if (typeof body !== 'string' || !resolved.startsWith(SOURCE_DIR + path.sep)) {
+        return;
+      }
+
+      for (const marker of REQUIRED_ANNOTATION_MARKERS) {
+        recovered[marker] += body.split(marker).length - 1;
+      }
+    });
+
+    const unrecoverable = REQUIRED_ANNOTATION_MARKERS.filter((marker) => recovered[marker] === 0);
+
+    if (unrecoverable.length > 0) {
+      throw new Error(
+        [
+          `${relativeMap} carries none of the following annotation markers, so the audit trail this`,
+          `package is supposed to ship is not recoverable from ${path.basename(artifact)}:`,
+          ...unrecoverable.map((marker) => `  - ${marker}`),
+          "Either the emitted map stopped embedding this port's own sources, or the annotations",
+          'themselves were removed from `src/**`. Neither is a change to make quietly: AAP 0.6.7',
+          'requires every preserved legacy defect to be annotated in place, and the annotation is',
+          'how a reviewer confirms a defect was reproduced knowingly rather than by accident.',
+        ].join('\n'),
+      );
+    }
+
+    summary.push(Object.freeze({ artifact, recovered: Object.freeze(recovered) }));
+  }
+
+  return Object.freeze(summary);
+}
+
+/**
+ * Bundles the five capability entrypoints into `<subtree>/dist`.
+ *
+ * THIS IS A BUILD AND PACKAGE STEP AND ONLY THAT. Every path written is inside `<subtree>/dist`.
+ * Nothing is archived, uploaded, transmitted or published, no platform tooling and no host utility
+ * is invoked, and no credential is read. The `.cjs` artifact the runtime loads IS the package.
+ *
+ * The whole routine takes no arguments and touches no module-scope mutable state, which is the same
+ * discipline the ported services are held to for the reason recorded in the header: a warm container
+ * keeps module state alive between unrelated invocations.
+ *
+ * Ordering matters twice. Entrypoints are verified BEFORE `dist` is cleared, so a broken tree cannot
+ * leave the previous artifacts deleted and nothing in their place; and the annotations are verified
+ * AFTER the build, from the emitted files themselves, because a claim about an artifact can only be
+ * checked against the artifact.
+ *
+ * @returns {Promise<{ artifacts: readonly string[], annotations: readonly object[] }>} What was
+ *   written, and the annotation evidence read back out of it.
+ */
+async function bundleLambdaArtifacts() {
   const entryPoints = resolveEntryPoints();
 
   rmSync(OUT_DIR, { recursive: true, force: true });
@@ -428,13 +516,19 @@ async function bundleLambdaArtifacts(options = {}) {
     console.log(`${LOG_PREFIX}   ${path.relative(SUBTREE_DIR, artifact)}`);
   }
 
-  const archives = shouldArchive ? archiveArtifacts(artifacts) : Object.freeze([]);
+  const annotations = assertAnnotationsRecoverable(artifacts);
 
-  for (const archive of archives) {
-    console.log(`${LOG_PREFIX} Packaged ${path.relative(SUBTREE_DIR, archive)}`);
+  for (const { artifact, recovered } of annotations) {
+    const counted = REQUIRED_ANNOTATION_MARKERS.map(
+      (marker) => `${marker.replace(' [', '')} x${String(recovered[marker])}`,
+    ).join(', ');
+    console.log(
+      `${LOG_PREFIX} Annotations recoverable from ` +
+        `${path.basename(artifact, ARTIFACT_EXTENSION)}${SOURCE_MAP_EXTENSION}: ${counted}`,
+    );
   }
 
-  return { artifacts, archives };
+  return { artifacts, annotations };
 }
 
 // The single exported unit of this file. There is no barrel anywhere in this subtree and this is not
@@ -448,7 +542,7 @@ export default bundleLambdaArtifacts;
 // invokes this file directly (`node esbuild.config.mjs`) and a config that only exported would
 // silently do nothing. Guarding the invocation on an entry-module check was considered and rejected:
 // the check misfires when the path is reached through a symlink, and its failure mode is a build
-// that reports success while emitting nothing - the exact defect this file already had to fix once.
+// that reports success while emitting nothing.
 //
 // FAILURE IS LOUD. esbuild has already printed its own formatted diagnostics at `logLevel: 'info'`,
 // so what is added here is the one line naming why the process is failing, plus a non-zero exit code
@@ -456,7 +550,7 @@ export default bundleLambdaArtifacts;
 // ---------------------------------------------------------------------------
 
 try {
-  await bundleLambdaArtifacts({ zip: process.argv.includes('--zip') });
+  await bundleLambdaArtifacts();
 } catch (error) {
   process.exitCode = 1;
   console.error(`${LOG_PREFIX} Build failed.`);

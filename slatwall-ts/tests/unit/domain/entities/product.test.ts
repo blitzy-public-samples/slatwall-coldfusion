@@ -54,6 +54,7 @@ import { Money } from '../../../../src/domain/valueObjects/money.js';
 import { listLen, listToArray } from '../../../../src/lib/cfml/list.js';
 import { structKeyExists, structKeyList } from '../../../../src/lib/cfml/struct.js';
 import { cfLen, cfTruthy } from '../../../../src/lib/cfml/truthiness.js';
+import type { ProductSearchMatches } from '../../../../src/domain/ports/productRepository.js';
 import { makeProductFixture } from '../../../fixtures/productFixtures.js';
 import { makeSkuFixture } from '../../../fixtures/skuFixtures.js';
 
@@ -496,8 +497,8 @@ class ProductRepositoryDouble {
     );
   }
 
-  searchProductsByProductType(): Promise<Product[]> {
-    return Promise.resolve([]);
+  searchProductsByProductType(): Promise<ProductSearchMatches> {
+    return Promise.resolve({ records: [], matchedCount: 0 });
   }
 
   getProductByProductID(): Promise<Product | undefined> {

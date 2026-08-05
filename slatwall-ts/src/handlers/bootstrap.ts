@@ -258,6 +258,10 @@ import type {
 } from '../domain/ports/subscriptionTermProvider.js';
 import type { UrlTitleGenerator, UrlTitleTableName } from '../domain/ports/urlTitleGenerator.js';
 import type { PriceGroup } from '../domain/entities/priceGroup.js';
+// `materializeOrderViewDocument` holds each loaded product so every SKU arrives with its product
+// association wired; `ProductType` is also published through the existing read-only entity loaders.
+import type { Product } from '../domain/entities/product.js';
+import type { ProductType } from '../domain/entities/productType.js';
 import type { PriceGroupRate } from '../domain/entities/priceGroupRate.js';
 import type { Sku, SkuImageSettingValues, SkuPriceGroupResolver } from '../domain/entities/sku.js';
 import type { CfStruct } from '../lib/cfml/struct.js';
@@ -272,6 +276,10 @@ import type {
 } from '../integrations/google/googleFeedRepository.js';
 import type { OrderView } from '../domain/views/orderView.js';
 import type { OrderItemView } from '../domain/views/orderItemView.js';
+import type {
+  AppliedPromotionView,
+  OrderFulfillmentView,
+} from '../domain/views/orderFulfillmentView.js';
 import type { PriceGroupAppliedIntent } from '../services/priceGroupService.js';
 import type {
   OptionLoadingCollaborator,
@@ -441,6 +449,367 @@ export interface RequestScopeInput {
 }
 
 /**
+ * A SKU named the way the schema names one: by its product and its own identifier.
+ *
+ * BOTH members are required, and the product identifier is not redundant. `SwSku.skuID` is
+ * the row's own primary key [model/entity/Sku.cfc:L52], but the ONLY published read that
+ * returns a SKU with its `product` WIRED THROUGH is `getProductSkus(product, ...)` - and a
+ * SKU without a product is unusable for price-group resolution, because cascade level two
+ * passes `sku.getProduct()` into a parameter the legacy declares `required`
+ * [model/service/PriceGroupService.cfc:L154, L102]. Naming the product is therefore how
+ * the load stays BOUNDED - one product's SKUs, never a catalog scan - and how the SKU it
+ * returns is complete enough to price.
+ *
+ * Both identifiers are OPAQUE: they are keys, never handles, and nothing derives anything
+ * from their content.
+ */
+export interface SkuIdentity {
+  /** The owning product's identifier [model/entity/Product.cfc:L52]. */
+  readonly productID: string;
+
+  /** The SKU's own identifier [model/entity/Sku.cfc:L52]. */
+  readonly skuID: string;
+}
+
+/**
+ * A SKU and the product it belongs to, as one load produced them.
+ *
+ * The product is returned ALONGSIDE the SKU because the cascade's product and product-type
+ * entry points need it and because it is THE SKU'S OWN: `getProductSkus` wires this exact
+ * instance onto every SKU it builds, so handing it to
+ * `getRateForProductBasedOnPriceGroup` reproduces [model/service/PriceGroupService.cfc:L154]
+ * rather than pairing the SKU with a second product a caller named independently.
+ */
+export interface LoadedSku {
+  /** The product the SKU belongs to, as the read wired it. */
+  readonly product: Product;
+
+  /** The SKU itself, hydrated with its options and its per-currency price rows. */
+  readonly sku: Sku;
+}
+
+/**
+ * The READ-ONLY entity loads published to the request tier.
+ *
+ * ★ EVERY METHOD IS A LOAD, AND EVERY NAME IS THE NAME OF THE READ IT DELEGATES TO. Four
+ * of the five carry their repository method's name verbatim -
+ * `ProductRepository.getProductByProductID`,
+ * `ProductTypeRepository.getProductTypeByProductTypeID`,
+ * `PriceGroupRepository.getPriceGroup` and `PriceGroupRepository.getPriceGroupRate` - so a
+ * reviewer can bind caller to definer by name with nothing to translate. The fifth is a
+ * COMPOSITION of two reads and no repository has a name for it, so it is named for what it
+ * takes.
+ *
+ * ★ A MISS IS `undefined`, NEVER AN EMPTY ENTITY AND NEVER A THROW. An identifier naming
+ * nothing is a domain outcome a caller reports, not an exception: the same posture
+ * `Sku.getPriceByCurrencyCode` takes, and for the same reason - substituting a fabricated
+ * entity would price something that does not exist.
+ *
+ * NOTHING HERE MUTATES, and no method takes an entity, a payload or a save context. See
+ * {@link RequestScope.entityLoaders} for why that constraint is the member's whole purpose.
+ */
+export interface RequestEntityLoaders {
+  /**
+   * The product a caller named, or nothing.
+   *
+   * Delegates to `ProductRepository.getProductByProductID`, whose fetch shape carries the
+   * product's brand, product type, options and sale-price detail.
+   */
+  getProductByProductID(productID: string): Promise<Product | undefined>;
+
+  /**
+   * The product type a caller named, or nothing.
+   *
+   * Delegates to `ProductTypeRepository.getProductTypeByProductTypeID`, which materializes
+   * the `productTypeIDPath` the cascade and the promotion engine walk.
+   */
+  getProductTypeByProductTypeID(productTypeID: string): Promise<ProductType | undefined>;
+
+  /**
+   * The SKU a caller named, with its product, or nothing.
+   *
+   * TWO READS, BOTH BOUNDED, AND NEITHER A SCAN. The product is loaded by its own primary
+   * key, then that product's SKUs are read and the one carrying `skuID` is selected. The
+   * SKU read deliberately adds no `DISTINCT`, so one SKU can arrive as several instances;
+   * the first is returned and the rest are the same row.
+   *
+   * `sorted` is FALSE and `fetchOptions` is left at its default, deliberately: sorting
+   * would take the dialect-dependent option-group ordering path for a read filtered down
+   * to one row, and eager option fetching would branch on the product's base type. Neither
+   * changes WHICH SKU carries the identifier. The read still materializes the per-currency
+   * price rows with the four-step cascade run, which is what the currency accessors need.
+   *
+   * @returns the SKU and its product, or `undefined` when either identifier names nothing.
+   */
+  getSkuBySkuIdentity(identity: SkuIdentity): Promise<LoadedSku | undefined>;
+
+  /**
+   * The price group a caller named, or nothing.
+   *
+   * Delegates to `PriceGroupRepository.getPriceGroup`. THIS IS WHAT LETS AN OPERATION
+   * NAMED `...BasedOnPriceGroup` ACTUALLY TAKE THE PRICE GROUP ITS NAME DECLARES, instead
+   * of having one chosen for it.
+   */
+  getPriceGroup(priceGroupID: string): Promise<PriceGroup | undefined>;
+
+  /**
+   * The price-group rate a caller named, or nothing.
+   *
+   * Delegates to `PriceGroupRepository.getPriceGroupRate`, so
+   * `calculateSkuPriceBasedOnPriceGroupRate` can be bound to the rate it declares rather
+   * than to one derived by re-running the cascade.
+   */
+  getPriceGroupRate(priceGroupRateID: string): Promise<PriceGroupRate | undefined>;
+}
+
+// ===========================================================================
+// THE WIRE-SHAPED ORDER DOCUMENT, AND WHY IT LIVES HERE
+//
+// `src/domain/views/orderView.ts` is the shape the two order passes CONSUME: its
+// monetary members are `Money`, its `sku` is a ported `Sku` entity, its
+// `appliedPriceGroup` is a ported `PriceGroup` entity and its `currencyCode` is a
+// branded value object. None of those four survives `JSON.parse`, so an API Gateway
+// body cannot BE an `OrderView` - it can only NAME one.
+//
+// The shapes below are that naming: a projection of the order aggregate in which every
+// monetary value is a decimal STRING and every entity is an opaque IDENTIFIER.
+// {@link RequestScope.materializeOrderView} turns one into an `OrderView` by loading the
+// identified rows through the wired repositories and minting the value objects through
+// their own constructors - which is transformation rule T3's division of labour honoured
+// exactly: HYDRATION IS A REPOSITORIES-TIER ACT, and this file is the composition root
+// that holds the repositories. A handler parses and validates; it never loads and never
+// mints.
+//
+// ★ WHY THE TYPES SIT IN THIS FILE RATHER THAN IN `src/domain/views/`. The domain views
+// folder is enumerated at exactly three modules by AAP 0.3.1 and its contents are what the
+// ENGINE reads; a wire projection is not a domain concept and adding a fourth view module
+// would both widen a closed inventory and put a transport shape inside the domain. It is
+// declared beside the operation that consumes it instead, on the same terms
+// {@link OrderPricingResult} is.
+//
+// ★ WHY EVERY ABSENCE IS `| null` RATHER THAN `| undefined`. JSON has no `undefined`, so a
+// producer can only STATE an absence as `null`. The views state theirs as `undefined`
+// because `exactOptionalPropertyTypes` makes "absent key" and "key holding undefined"
+// different states there. The materializer performs that one conversion, in one place, and
+// it is the only place either spelling is translated.
+//
+// ★ WHAT IS DELIBERATELY NOT ON THESE SHAPES. No price the engine could read from a
+// caller instead of from the schema: `sku` carries an identifier and NOT a price, a product
+// type, a brand or an option list, because every one of those decides whether a promotion
+// APPLIES [model/service/PromotionService.cfc:L808-L818, L864-L865] and a caller that could
+// state them could grant itself a discount. They are loaded from `SwSku`, `SwProduct` and
+// `SwProductType` instead. There is likewise no `now`, no rate, no discount and no
+// ordering member of any kind.
+// ===========================================================================
+
+/**
+ * One already-applied promotion, as it travels on the wire.
+ *
+ * The engine reads this collection at [model/service/PromotionService.cfc:L427] as a
+ * first-writer-wins test and never removes from it - the legacy's three backwards
+ * clear-out loops [:L64-L80] are replaced by emitted intents - so it is carried and never
+ * mutated.
+ */
+export interface AppliedPromotionDocument {
+  /** The persisted row's own handle [model/entity/PromotionApplied.cfc:L55]. */
+  readonly promotionAppliedID: string;
+
+  /**
+   * The recorded discount as a decimal numeral, or `null`.
+   *
+   * `null` is a real state: `SwPromotionApplied.discountAmount` is a nullable
+   * `big_decimal` [model/entity/PromotionApplied.cfc:L51], and it is NEVER defaulted to
+   * zero here - stating zero would state a discount nobody decided.
+   */
+  readonly discountAmount: string | null;
+
+  /** The promotion this row belongs to, or `null` when the row names none. */
+  readonly promotion: { readonly promotionID: string } | null;
+}
+
+/** One order item, as it travels on the wire. */
+export interface OrderItemDocument {
+  /** The opaque handle every emitted intent is keyed by [model/entity/PromotionApplied.cfc:L58]. */
+  readonly orderItemID: string;
+
+  /**
+   * The product owning the named SKU.
+   *
+   * ★ REQUIRED, AND THE REASON IS THE PORTED FETCH SHAPE RATHER THAN A PREFERENCE.
+   * `SkuRepository.getSkuBySkuCode` and `getSkusBySelectedOptions` hydrate a SKU with NO
+   * `product` association - `src/repositories/mysql/mysqlSkuRepository.ts` calls them with
+   * its bare fetch shape - while the promotion engine walks
+   * `sku.getProduct().getProductType().getProductTypeIDPath()`. The one ported read that
+   * wires the association through is `getProductSkus(product, fetchOptions)`, which is
+   * HANDED a `Product`. Naming the product is therefore what makes a SKU loadable in the
+   * shape the engine requires, and it is a handle the order aggregate already holds.
+   */
+  readonly productID: string;
+
+  /** The SKU this item sells. Loaded, never described by the caller. */
+  readonly skuID: string;
+
+  /**
+   * The quantity ordered - a COUNT, hence the one plain number here
+   * [model/entity/OrderItem.cfc:L56 `ormtype="integer"`].
+   */
+  readonly quantity: number;
+
+  /** The current price, as a decimal numeral. The base of the L244 arm. */
+  readonly price: string;
+
+  /** The undiscounted SKU price, as a decimal numeral. The base of the L249 arm. */
+  readonly skuPrice: string;
+
+  /** `price × quantity` as the aggregate holds it [model/entity/OrderItem.cfc:L200]. */
+  readonly extendedPrice: string;
+
+  /** `skuPrice × quantity` as the aggregate holds it [model/entity/OrderItem.cfc:L204]. */
+  readonly extendedSkuPrice: string;
+
+  /**
+   * The price group already applied to this item, or `null`.
+   *
+   * The [model/service/PromotionService.cfc:L241] discriminator itself. `null` is the
+   * `isNull(...)` arm and a perfectly normal state, because the write at
+   * [model/service/PriceGroupService.cfc:L370-L371] is conditional; it is NEVER defaulted
+   * to a fabricated group, which would push the item down the `getSkuPrice()` arm and apply
+   * a correction term with nothing to correct.
+   */
+  readonly appliedPriceGroupID: string | null;
+
+  /** The item type, dereferenced with no absence test at [model/service/PromotionService.cfc:L206]. */
+  readonly orderItemType: { readonly systemCode: string };
+
+  /** The owning fulfillment, as an opaque identifier [model/entity/PromotionApplied.cfc:L59]. */
+  readonly orderFulfillmentID: string;
+
+  /** Promotions already applied to this item. */
+  readonly appliedPromotions: readonly AppliedPromotionDocument[];
+}
+
+/** One shipping address, as it travels on the wire. */
+export interface ShippingAddressDocument {
+  /** Each of the four comparison members is nullable in the legacy schema, and the */
+  readonly postalCode: string | null;
+  /** address-zone evaluator SKIPS a null one rather than failing on it */
+  readonly city: string | null;
+  /** [model/service/AddressService.cfc:L63, L66, L69, L72], so all four are stated. */
+  readonly stateCode: string | null;
+  /** A null member is a skipped comparison, never a wildcard and never a match. */
+  readonly countryCode: string | null;
+
+  /** `getAddress().getNewFlag()` [model/service/PromotionService.cfc:L703] - a definite boolean. */
+  readonly isNew: boolean;
+}
+
+/** One order fulfillment, as it travels on the wire. */
+export interface OrderFulfillmentDocument {
+  /** The opaque handle a fulfillment-level intent is keyed by. */
+  readonly orderFulfillmentID: string;
+
+  /** The fulfillment charge, as a decimal numeral. */
+  readonly fulfillmentCharge: string;
+
+  /** The fulfillment method the qualifier gates test. */
+  readonly fulfillmentMethod: {
+    readonly fulfillmentMethodID: string;
+    readonly fulfillmentMethodType: string;
+  };
+
+  /**
+   * The shipping method, or `null`.
+   *
+   * `null` is a real state rather than a missing value: the gate at
+   * [model/service/PromotionService.cfc:L701] tests
+   * `isNull(orderFulfillment.getShippingMethod())` explicitly, so a pickup fulfillment
+   * states `null` here.
+   */
+  readonly shippingMethod: { readonly shippingMethodID: string } | null;
+
+  /** Promotions already applied to this fulfillment. */
+  readonly appliedPromotions: readonly AppliedPromotionDocument[];
+
+  /** A weight, hence a count rather than money. */
+  readonly totalShippingWeight: number;
+
+  /** The address the zone evaluator consumes, or `null`. */
+  readonly address: ShippingAddressDocument | null;
+}
+
+/**
+ * An order, as it travels on the wire: the JSON-materializable naming of an {@link OrderView}.
+ *
+ * Every member the two order passes read is present, because
+ * {@link RequestScope.materializeOrderView} must be able to build a COMPLETE view from it -
+ * there is no member it infers, defaults or invents.
+ */
+export interface OrderViewDocument {
+  /** The opaque order handle [model/entity/PromotionApplied.cfc:L61]. */
+  readonly orderID: string;
+
+  /**
+   * The order-type gate. [model/service/PromotionService.cfc:L61] and [:L542] BOTH read
+   * `getOrderType().getSystemCode()`, and the two conditionals are SEQUENTIAL rather than
+   * else-if, so this member is read whichever branch applies.
+   */
+  readonly orderType: { readonly systemCode: string };
+
+  /**
+   * The account this order prices for, or `null` for the logged-out arm.
+   *
+   * ★ THIS MEMBER IS A PRICING AUTHORITY, WHICH IS WHY IT IS CHECKED BEFORE IT IS USED.
+   * `PriceGroupService.updateOrderAmountsWithPriceGroups` resolves the account's price
+   * groups from it (`src/services/priceGroupService.ts`, the equivalent of the
+   * `!isNull(getAccount())` test at [model/service/PriceGroupService.cfc:L365]), so a caller
+   * free to name any account here would be free to price against any account's rates.
+   * `src/handlers/promotionApplicationHandler.ts` refuses a document whose account
+   * disagrees with the request's authenticated account; this file performs no such check and
+   * makes no claim to.
+   */
+  readonly accountID: string | null;
+
+  /**
+   * The comma-delimited promotion-code list.
+   *
+   * A STRING for signature parity: the legacy binds it with `cfqueryparam ... list="true"`
+   * [model/dao/PromotionDAO.cfc], so the list form is load-bearing and is not modernised
+   * into an array at this boundary.
+   */
+  readonly promotionCodeList: string;
+
+  /** A count [model/entity/Order.cfc:L624-L631], the seed for the qualification count. */
+  readonly totalSaleQuantity: number;
+
+  /** `getSubtotal()`, tested by the qualifier gates [model/service/PromotionService.cfc:L648, L650]. */
+  readonly subtotal: string;
+
+  /** `getSubtotalAfterItemDiscounts()`, read by the order-level reward branch [:L417]. */
+  readonly subtotalAfterItemDiscounts: string;
+
+  /** The order-level fulfillment total the same branch measures against. */
+  readonly fulfillmentChargeAfterDiscountTotal: string;
+
+  /**
+   * The three-character currency code [model/entity/Order.cfc:L54 `length="3"`].
+   *
+   * Minted through `toCurrencyCode`, which checks the column's own constraint and nothing
+   * more: WHICH codes are real is the `skuEligibleCurrencies` setting's decision
+   * [model/service/SettingService.cfc:L222], not a value object's.
+   */
+  readonly currencyCode: string;
+
+  /** Order-level applied promotions. */
+  readonly appliedPromotions: readonly AppliedPromotionDocument[];
+
+  /** The items to price. */
+  readonly orderItems: readonly OrderItemDocument[];
+
+  /** The fulfillments the shipping-related gates read. */
+  readonly orderFulfillments: readonly OrderFulfillmentDocument[];
+}
+
+/**
  * The result of the one composed pricing operation this root publishes.
  *
  * Both passes return INTENTS rather than mutating an order, because the order
@@ -466,8 +835,9 @@ export interface OrderPricingResult {
  * `updateOrderAmountsWithPriceGroups` [model/service/PriceGroupService.cfc:L364] must run BEFORE
  * `updateOrderAmountsWithPromotions` [model/service/PromotionService.cfc:L58], because the promotion
  * pass reads price-group state in its branch CONDITION at
- * [model/service/PromotionService.cfc:L241-L254] - an ineligible item discounts from `getPrice()`
- * while an eligible one discounts from `getSkuPrice()` plus a correction term. In the legacy that
+ * [model/service/PromotionService.cfc:L241-L254] - no applied group, or an eligible applied group,
+ * discounts from `getPrice()` with no correction; an ineligible applied group computes the original
+ * discount from `getSkuPrice()` and subtracts the extended price-group saving. In the legacy that
  * ordering held only because `OrderService` happened to call the two in sequence
  * [model/service/OrderService.cfc:L60-L61]. Publishing the pass as an independently callable member
  * would reproduce exactly that arrangement: an obligation carried by convention, whose violation
@@ -590,6 +960,38 @@ export interface RequestScope extends SalePriceResolver {
   // back the scope together with the adapters that scope closes over. See its documentation for
   // what it does and does not claim.
 
+  /**
+   * The five READ-ONLY entity loads a handler may perform to bind a service argument.
+   *
+   * ★★★ WHY THIS MEMBER EXISTS, AND WHY IT IS NOT THE SIX REPOSITORIES COMING BACK.
+   * Several ported service methods take an ENTITY - `getRateForProductBasedOnPriceGroup`
+   * takes a `Product` [model/service/PriceGroupService.cfc:L102],
+   * `calculateSkuPriceBasedOnPriceGroupRate` takes a `PriceGroupRate` [:L316], the
+   * promotion engine's order items carry a `Sku` and an `appliedPriceGroup` - and an
+   * API Gateway request carries only identifiers. Something has to turn an identifier
+   * into the entity the method declares.
+   *
+   * With no such member, `priceResolutionHandler` did that itself, and API review
+   * (finding F3) found what it cost: lacking a load-by-identifier it invented a
+   * `{productName, skuCode}` selector, resolved the name through a `productName LIKE ?`
+   * catalog scan, loaded every SKU of the match, and then silently substituted the
+   * ACCOUNT'S BEST PRICE GROUP for the price group the operation's name says the caller
+   * chooses. Three defects, one cause: the boundary published no way to name an entity.
+   *
+   * ★★ AND THE NARROWING IS THE POINT. The six raw repositories were withdrawn from this
+   * interface because they carried SEVEN DURABLE MUTATIONS onto the request tier - see the
+   * note above where they used to sit - and nothing here reopens that. This surface is
+   * READ ONLY BY CONSTRUCTION: five methods, every one a load, and the type makes
+   * `saveProduct`, `deleteProduct`, `saveSku`, `saveProductType`, `savePriceGroup`,
+   * `savePriceGroupRate` and `deletePriceGroup` a compile error to reach. It publishes
+   * strictly less than `productRepository` alone did.
+   *
+   * NOR DOES IT ADD A PORT. Every method below is either a repository read that already
+   * exists or - for the SKU - a COMPOSITION of two that do. No port file gained a member
+   * and there is no fourteenth port.
+   */
+  readonly entityLoaders: RequestEntityLoaders;
+
   readonly roundingRuleService: RoundingRuleService;
   readonly brandService: BrandService;
   readonly optionService: OptionService;
@@ -639,6 +1041,49 @@ export interface RequestScope extends SalePriceResolver {
    * Its host and clock are closed over at construction - RULING B.
    */
   readonly productFeedPort: ProductFeedPort | undefined;
+
+  /**
+   * TURN A WIRE-SHAPED ORDER DOCUMENT INTO THE `OrderView` THE TWO PASSES CONSUME.
+   *
+   * ★★★ THIS IS THE TIER THAT OWNS HYDRATION, WHICH IS THE WHOLE REASON THE MEMBER IS HERE
+   * AND NOT ON A HANDLER. An `OrderView` carries a ported `Sku` entity, a ported `PriceGroup`
+   * entity, `Money` values and a branded `CurrencyCode`; a JSON body carries identifiers and
+   * decimal strings. Bridging the two means LOADING ROWS, and transformation rule T3 puts
+   * loading behind the repository ports this file is the only holder of. A primary adapter
+   * therefore parses and validates a {@link OrderViewDocument} - which it can do with a
+   * schema - and asks this member for the view, rather than fabricating entity-shaped objects
+   * it has no way to construct.
+   *
+   * ★ WHAT IS LOADED RATHER THAN TAKEN FROM THE CALLER, AND WHY EVERY ONE OF THEM MATTERS.
+   * The document names a SKU, its product and an optional price group; this member resolves
+   * all three from `SwSku`, `SwProduct` (with its product-type ancestry and brand) and
+   * `SwPriceGroup`. Those associations are exactly what decide whether a promotion applies -
+   * reward and qualifier membership walks `productTypeIDPath`, the brand, the option list and
+   * the price-group eligibility collections [model/service/PromotionService.cfc:L808-L818,
+   * L864-L865, L241] - so a caller permitted to STATE them would be a caller permitted to
+   * grant itself a discount. The monetary members ARE taken from the document, because an
+   * order's prices are the aggregate's own state and the out-of-scope aggregate is their only
+   * source; each is minted through `Money.fromDecimalString`, which refuses anything that is
+   * not a plain decimal numeral.
+   *
+   * ★ IT REFUSES RATHER THAN DEFAULTS. A product, SKU or price group the schema does not
+   * carry raises `CompositionDataError`; no member is ever fabricated, no absent price becomes
+   * `Money.zero`, and no unresolvable price group is quietly dropped - dropping one would move
+   * the [model/service/PromotionService.cfc:L241] discriminator to the other arm and change
+   * the discount. The rule is the one `projectPriceGroupIntents` already follows for the same
+   * reason.
+   *
+   * ★ IT RUNS NO PASS AND CHANGES NO SEQUENCE. Materializing a view is a read; the ordering
+   * guarantee still lives entirely in
+   * {@link RequestScope.updateOrderAmountsWithPriceGroupsThenPromotions}, which is still the
+   * only route by which either pass executes. This member publishes no repository, no service
+   * and no write: the four durable mutations withheld from this interface stay withheld.
+   *
+   * @param document the caller's projection of the order aggregate.
+   * @returns the read-only order view, with every entity loaded and every value object minted.
+   * @throws `CompositionDataError` naming the member and identifier that could not be resolved.
+   */
+  materializeOrderView(document: OrderViewDocument): Promise<OrderView>;
 
   // `getSalePriceDetailsForProductSkus(productID)` IS INHERITED, NOT REDECLARED. This interface
   // `extends SalePriceResolver`, the second contract exported by
@@ -734,6 +1179,20 @@ export interface RequestScope extends SalePriceResolver {
    * finding that the type does not already close.
    */
   updateOrderAmountsWithPriceGroupsThenPromotions(order: OrderView): Promise<OrderPricingResult>;
+
+  /**
+   * Load this request's address-zone index so a synchronous zone test can answer.
+   *
+   * Most callers never need this member. The composed order-pricing operation above
+   * prepares the index itself before either pass runs; this explicit member exists only
+   * for a caller that reaches a zone-consulting promotion query directly.
+   *
+   * A direct zone consultation before preparation throws rather than answering "not in
+   * zone", because an unloaded index is indistinguishable from a genuinely empty zone
+   * and the quiet answer would disable configured promotion restrictions. Calls are
+   * idempotent and single-flight for the lifetime of this request scope.
+   */
+  prepareAddressZoneEvaluation(): Promise<void>;
 }
 
 /**
@@ -1525,6 +1984,28 @@ class CompositionIncompleteError extends Error {
         'the composition root, not a data condition.',
     );
     this.name = 'CompositionIncompleteError';
+  }
+}
+
+/**
+ * A zone test was reached before this request's zone-to-locations index was loaded.
+ *
+ * The evaluator is synchronous, so it cannot start the read itself. Treating an
+ * unloaded index as empty would silently disable every configured address-zone
+ * restriction; callers must prepare the request or use the composed pricing operation,
+ * which prepares it before either pass.
+ */
+class AddressZoneEvaluationNotPreparedError extends Error {
+  public constructor() {
+    super(
+      'An address-zone test was reached before this request loaded its zone-to-locations ' +
+        'index, so no verdict was produced. Answering "not in zone" here would silently ' +
+        'disable configured address-zone restrictions. Await ' +
+        "'RequestScope.prepareAddressZoneEvaluation()' before reaching a zone-consulting " +
+        "promotion query directly, or use 'updateOrderAmountsWithPriceGroupsThenPromotions', " +
+        'which loads the index itself.',
+    );
+    this.name = 'AddressZoneEvaluationNotPreparedError';
   }
 }
 
@@ -2489,9 +2970,12 @@ class BootstrapSettingsProvider implements SettingsProvider {
  * The port declares `isAddressInZone(...): boolean`, never `Promise<boolean>`, and both
  * qualification call sites are themselves synchronous - so this class may not issue a
  * statement, and the zone-to-locations state must exist BEFORE the call. It is
- * materialized once per request by `readAddressZoneLocationIndex` and handed in, exactly
- * as the SKU currency-detail map is materialized during hydration so that
- * `getPriceByCurrencyCode` can stay a synchronous accessor.
+ * materialized by `readAddressZoneLocationIndex` for a request that DECLARED it evaluates
+ * zones and handed in, exactly as the SKU currency-detail map is materialized during
+ * hydration so that `getPriceByCurrencyCode` can stay a synchronous accessor. That same
+ * synchronicity is why the read is SCOPED rather than deferred: a synchronous predicate
+ * cannot await, so laziness is not available and declaring the need is what replaces it -
+ * see {@link AddressZoneLocationSource}.
  *
  * ★ AND THE INDEX IS PER REQUEST, NOT PER CONTAINER. Zone membership decides a discount,
  * so a warm Lambda container must never answer one invocation from another's zone
@@ -2516,11 +3000,13 @@ class BootstrapSettingsProvider implements SettingsProvider {
  */
 class CfmlAddressZoneEvaluator implements AddressZoneEvaluator {
   /**
-   * @param addressZoneLocations - THIS REQUEST'S zone-to-locations index, already
-   *   materialized. Keyed by folded `addressZoneID`; see
-   *   {@link readAddressZoneLocationIndex}.
+   * @param addressZoneLocations - THIS REQUEST'S zone-to-locations state, as a SOURCE
+   *   rather than as the index itself. The index is read only for a scope that declared
+   *   it evaluates zones - see {@link AddressZoneLocationSource} for why - and a source
+   *   over unrequested state raises when consulted rather than answering emptily. Keyed
+   *   by folded `addressZoneID`; see {@link readAddressZoneLocationIndex}.
    */
-  public constructor(private readonly addressZoneLocations: AddressZoneLocationIndex) {}
+  public constructor(private readonly addressZoneLocations: AddressZoneLocationSource) {}
 
   public isAddressInZone(address: AddressProjection, addressZone: AddressZoneProjection): boolean {
     // [model/service/AddressService.cfc:L58] `var addressInZone = false;`
@@ -2597,7 +3083,13 @@ class CfmlAddressZoneEvaluator implements AddressZoneEvaluator {
       return addressZone.addressZoneLocations;
     }
 
-    return this.addressZoneLocations.get(foldIdentifier(addressZone.addressZoneID)) ?? NO_LOCATIONS;
+    const index = this.addressZoneLocations.loaded();
+
+    if (index === undefined) {
+      throw new AddressZoneEvaluationNotPreparedError();
+    }
+
+    return index.get(foldIdentifier(addressZone.addressZoneID)) ?? NO_LOCATIONS;
   }
 }
 
@@ -2626,6 +3118,59 @@ const NO_LOCATIONS: readonly AddressZoneLocationProjection[] = Object.freeze([])
  * module holds a mutable handle on it.
  */
 const NO_ADDRESS_ZONE_LOCATIONS: AddressZoneLocationIndex = new Map();
+
+/**
+ * One request's access to its zone-to-locations index, loaded on demand.
+ *
+ * The unbounded zone-location statement is not issued while a scope is assembled.
+ * `load()` is single-flight and memoized only for this request; `loaded()` is the
+ * synchronous half used by the evaluator. An unloaded consultation refuses rather than
+ * pretending the configured zone has no locations.
+ */
+interface AddressZoneLocationSource {
+  load(): Promise<AddressZoneLocationIndex>;
+  loaded(): AddressZoneLocationIndex | undefined;
+}
+
+/** Build a per-request source that executes the zone read on first demand. */
+function createDeferredAddressZoneLocationSource(
+  executor: PreparedStatementExecutor,
+): AddressZoneLocationSource {
+  let inFlight: Promise<AddressZoneLocationIndex> | undefined;
+  let settled: AddressZoneLocationIndex | undefined;
+
+  return {
+    load: async (): Promise<AddressZoneLocationIndex> => {
+      if (settled !== undefined) {
+        return settled;
+      }
+
+      inFlight ??= readAddressZoneLocationIndex(executor).then(
+        (index: AddressZoneLocationIndex): AddressZoneLocationIndex => {
+          settled = index;
+          return index;
+        },
+        (reason: unknown): never => {
+          inFlight = undefined;
+          throw reason;
+        },
+      );
+
+      return await inFlight;
+    },
+    loaded: (): AddressZoneLocationIndex | undefined => settled,
+  };
+}
+
+/** Build a source that is already loaded and never issues a statement. */
+function createPreparedAddressZoneLocationSource(
+  index: AddressZoneLocationIndex,
+): AddressZoneLocationSource {
+  return {
+    load: (): Promise<AddressZoneLocationIndex> => Promise.resolve(index),
+    loaded: (): AddressZoneLocationIndex => index,
+  };
+}
 
 /**
  * Read every zone's locations, once, for THIS request.
@@ -4994,7 +5539,18 @@ async function createModuleScopeGraph(overrides: CompositionOverrides): Promise<
   // server. A zone lookup against the empty index answers no locations and therefore
   // `false`, which is the same restrictive verdict a request against a database with no
   // configured zones would get - so the probe cannot be misread as having proven a match.
-  assertCompleteRequestGraph(createRequestGraph(graph, {}, NO_ADDRESS_ZONE_LOCATIONS));
+  // A PRIMED source over the empty index, not an unrequested one: this probe asserts that
+  // the graph ASSEMBLES with no reachable server, and every binding on it must be
+  // walkable. Handing it a refusing source would make the probe's own answer depend on
+  // whether anything happened to consult a zone during assembly - which nothing does, but
+  // that is a property of the assembly rather than something the probe should rely on.
+  assertCompleteRequestGraph(
+    createRequestGraph(
+      graph,
+      {},
+      createPreparedAddressZoneLocationSource(NO_ADDRESS_ZONE_LOCATIONS),
+    ),
+  );
 
   // --- 7. Publish -------------------------------------------------------
   // ★ THE MESSAGE CARRIES THE SIGNAL; THE CONTEXT CARRIES ONLY LEGIBLE KEYS.
@@ -5230,6 +5786,12 @@ interface RequestGraph {
   readonly priceGroupRepository: PriceGroupRepository;
 
   /** The five ported services published whole, plus the two published narrowed. */
+  /**
+   * The five read-only entity loads, projected onto {@link RequestScope.entityLoaders}
+   * unchanged. Held here because it closes over this request's repositories.
+   */
+  readonly entityLoaders: RequestEntityLoaders;
+
   readonly roundingRuleService: RoundingRuleService;
   readonly brandService: BrandService;
   readonly optionService: OptionService;
@@ -5253,10 +5815,16 @@ interface RequestGraph {
     productID: string,
   ) => Promise<CfStruct<SalePriceDetail>>;
 
+  /** The wire-document hydration `RequestScope.materializeOrderView` publishes. */
+  readonly materializeOrderView: (document: OrderViewDocument) => Promise<OrderView>;
+
   /** The ONE route by which either order pass executes, in the mandated order. */
   readonly updateOrderAmountsWithPriceGroupsThenPromotions: (
     order: OrderView,
   ) => Promise<OrderPricingResult>;
+
+  /** Load this request's address-zone index before a direct synchronous consultation. */
+  readonly prepareAddressZoneEvaluation: () => Promise<void>;
 }
 
 /**
@@ -5290,17 +5858,14 @@ function assertCompleteRequestGraph(requestGraph: RequestGraph): void {
  *
  * @param graph - tier one's shared, stateless bindings.
  * @param input - this request's clock, account and feed host, all optional.
- * @param addressZoneLocations - THIS REQUEST'S zone-to-locations index, already read.
- *   It is a PARAMETER rather than something this function fetches for itself precisely
- *   so that this function stays synchronous and I/O-free: tier one calls it once as a
- *   completeness probe, with no request and no reachable server, and that probe must not
- *   become a database round trip. `createRequestScope` performs the read and passes the
- *   result through; the probe passes {@link NO_ADDRESS_ZONE_LOCATIONS}.
+ * @param addressZoneLocations - this request's deferred access to the zone index. It is
+ *   passed in so graph assembly remains synchronous and I/O-free. Tier one's validation
+ *   probe supplies a prepared empty source; real requests receive a deferred source.
  */
 function createRequestGraph(
   graph: ModuleScopeGraph,
   input: RequestScopeInput,
-  addressZoneLocations: AddressZoneLocationIndex,
+  addressZoneLocations: AddressZoneLocationSource,
 ): RequestGraph {
   // --- The request's instant, under an explicit UTC policy ----------------
   // A `Date` IS an absolute instant - it carries no zone - so threading one and
@@ -5678,6 +6243,58 @@ function createRequestGraph(
     mysqlSkuRepository,
   );
 
+  // --- THE FIVE READ-ONLY ENTITY LOADS ------------------------------------
+  // ★★★ THE ANSWER TO FINDING F3, AND IT IS DELIBERATELY BUILT FROM READS THAT ALREADY
+  // EXIST. A ported service method that declares a `Product`, a `ProductType`, a `Sku` or
+  // a `PriceGroupRate` can only be bound EXACTLY if the boundary publishes a way to turn
+  // an identifier into that entity. Four of the five below forward a repository read
+  // verbatim; the SKU is a composition of two, because no port returns a SKU by its own
+  // identifier WITH its product wired through, and a SKU without a product cannot be
+  // priced [model/service/PriceGroupService.cfc:L154, L102].
+  //
+  // ★★ IT IS READ ONLY BY CONSTRUCTION. `RequestEntityLoaders` declares five loads and
+  // nothing else, so none of the seven durable mutations that got the raw repositories
+  // withdrawn from the request tier is reachable through it - and this object closes over
+  // the repositories rather than publishing them, so a caller cannot widen back to one.
+  //
+  // FROZEN, like every other object this file publishes: the members are the loads, and
+  // substituting one on a scope another consumer holds is what freezing refuses.
+  const entityLoaders: RequestEntityLoaders = Object.freeze({
+    getProductByProductID: (productID: string): Promise<Product | undefined> =>
+      productRepository.getProductByProductID(productID),
+
+    getProductTypeByProductTypeID: (productTypeID: string): Promise<ProductType | undefined> =>
+      productTypeRepository.getProductTypeByProductTypeID(productTypeID),
+
+    getSkuBySkuIdentity: async (identity: SkuIdentity): Promise<LoadedSku | undefined> => {
+      const product = await productRepository.getProductByProductID(identity.productID);
+
+      if (product === undefined) {
+        return undefined;
+      }
+
+      // `fetchOptions` FALSE, deliberately: eager option fetching branches on the
+      // product's base type and does not change WHICH SKU carries the identifier. The read
+      // still materializes the per-currency price rows with the four-step cascade run
+      // [model/entity/Sku.cfc:L367-L433], which is what the currency accessors need, and it
+      // wires `product` through, which is what the price-group cascade needs.
+      const skus = await skuRepository.getProductSkus(product, false);
+
+      // The read adds no `DISTINCT`, so one SKU can arrive as several instances of the same
+      // row. The first match is returned; comparing by identifier rather than by position
+      // is what makes that a selection rather than a guess.
+      const sku = skus.find((candidate) => candidate.getSkuID() === identity.skuID);
+
+      return sku === undefined ? undefined : { product, sku };
+    },
+
+    getPriceGroup: (priceGroupID: string): Promise<PriceGroup | undefined> =>
+      priceGroupRepository.getPriceGroup(priceGroupID),
+
+    getPriceGroupRate: (priceGroupRateID: string): Promise<PriceGroupRate | undefined> =>
+      priceGroupRepository.getPriceGroupRate(priceGroupRateID),
+  });
+
   // --- THE SEVEN SERVICES, AS ONE UNINTERRUPTED GROUP ---------------------
   // In dependency order, and every one of them after every repository. Each of the
   // three late bindings above is closed inside this block, the moment the service it
@@ -5985,6 +6602,7 @@ function createRequestGraph(
     productTypeRepository,
     promotionRepository,
     priceGroupRepository,
+    entityLoaders,
     roundingRuleService,
     brandService,
     optionService,
@@ -6005,6 +6623,20 @@ function createRequestGraph(
     // handler reaches and the capability a hydration reaches cannot drift apart. The
     // forward is written as an arrow rather than as a detached member reference because a
     // detached one is what `@typescript-eslint/unbound-method` exists to reject.
+    // The wire-document hydration. Written as an arrow closing over the three collaborators
+    // it reads through, for the same reason the forward above is an arrow rather than a
+    // detached member reference. It holds no state of its own: each call resolves what THAT
+    // document names and nothing is cached between calls, so two documents naming one product
+    // in one request each read it - the repositories and entities behind them are already
+    // request-scoped, and adding a second memo here would only add a second thing to reason
+    // about.
+    materializeOrderView: (document) =>
+      materializeOrderViewDocument(
+        document,
+        productRepository,
+        skuRepository,
+        mysqlPriceGroupRepository,
+      ),
     getSalePriceDetailsForProductSkus: (productID) =>
       salePriceResolver.getSalePriceDetailsForProductSkus(productID),
     updateOrderAmountsWithPriceGroupsThenPromotions: (order) =>
@@ -6012,8 +6644,12 @@ function createRequestGraph(
         priceGroupService,
         promotionService,
         mysqlPriceGroupRepository,
+        addressZoneLocations,
         order,
       ),
+    prepareAddressZoneEvaluation: async (): Promise<void> => {
+      await addressZoneLocations.load();
+    },
   };
 }
 
@@ -6054,16 +6690,17 @@ function createRequestGraph(
  * promises rather than synchronous throws. The refusal itself is unchanged: no
  * `ProductFeedPort` is constructed for an unlisted host and no feed statement is issued.
  */
-async function createRequestScope(
+function createRequestScope(
   graph: ModuleScopeGraph,
   input: RequestScopeInput,
 ): Promise<RequestScope> {
-  // BEFORE the graph is assembled, because `CfmlAddressZoneEvaluator` takes the index as
-  // a constructor argument and `PromotionService` takes the evaluator as one. There is no
-  // later point at which it could be supplied without making the evaluator mutable, and a
-  // mutable evaluator is exactly the cross-consultation instability the index type's own
-  // note refuses.
-  return projectRequestScope(await assembleRequestGraph(graph, input), input);
+  return Promise.resolve().then(() => {
+    if (input.feedHost !== undefined) {
+      assertAllowedFeedHost(input.feedHost, graph.config.feed.allowedHosts);
+    }
+
+    return projectRequestScope(assembleRequestGraph(graph, input), input);
+  });
 }
 
 /**
@@ -6074,11 +6711,25 @@ async function createRequestScope(
  * host rejects with `UntrustedFeedHostError`, no port is constructed and no feed statement is
  * issued. See {@link CompositionRoot.createInspectableRequestScope}.
  */
-async function createInspectableRequestScope(
+function createInspectableRequestScope(
   graph: ModuleScopeGraph,
   input: RequestScopeInput,
 ): Promise<InspectableRequestScope> {
-  const requestGraph = await assembleRequestGraph(graph, input);
+  return Promise.resolve().then(() => {
+    if (input.feedHost !== undefined) {
+      assertAllowedFeedHost(input.feedHost, graph.config.feed.allowedHosts);
+    }
+
+    return projectInspectableRequestScope(graph, input);
+  });
+}
+
+/** Assemble once, then publish the scope together with the adapters it closes over. */
+function projectInspectableRequestScope(
+  graph: ModuleScopeGraph,
+  input: RequestScopeInput,
+): InspectableRequestScope {
+  const requestGraph = assembleRequestGraph(graph, input);
 
   // Frozen at both levels, for the reason recorded on `projectRequestScope`: the two halves are
   // published objects and every other published object in this file is frozen.
@@ -6110,13 +6761,8 @@ async function createInspectableRequestScope(
  * for the reason recorded on `createRequestScope`: `CfmlAddressZoneEvaluator` takes the index as a
  * constructor argument and the port it satisfies is synchronous by contract.
  */
-async function assembleRequestGraph(
-  graph: ModuleScopeGraph,
-  input: RequestScopeInput,
-): Promise<RequestGraph> {
-  const addressZoneLocations = await readAddressZoneLocationIndex(graph.executor);
-
-  return createRequestGraph(graph, input, addressZoneLocations);
+function assembleRequestGraph(graph: ModuleScopeGraph, input: RequestScopeInput): RequestGraph {
+  return createRequestGraph(graph, input, createDeferredAddressZoneLocationSource(graph.executor));
 }
 
 /**
@@ -6143,6 +6789,9 @@ function projectRequestScope(requestGraph: RequestGraph, input: RequestScopeInpu
       return requestGraph.now;
     },
     currentAccountContext: requestGraph.currentAccountContext,
+    // Forwarded UNCHANGED - already frozen where it was built, and already narrowed to five
+    // loads, so the projection has nothing to add and nothing to withhold.
+    entityLoaders: requestGraph.entityLoaders,
     roundingRuleService: requestGraph.roundingRuleService,
     brandService: requestGraph.brandService,
     optionService: requestGraph.optionService,
@@ -6153,9 +6802,11 @@ function projectRequestScope(requestGraph: RequestGraph, input: RequestScopeInpu
     currencyConverter: requestGraph.currencyConverter,
     productFeedPort:
       input.feedHost === undefined ? undefined : requestGraph.createProductFeedPort(input.feedHost),
+    materializeOrderView: requestGraph.materializeOrderView,
     getSalePriceDetailsForProductSkus: requestGraph.getSalePriceDetailsForProductSkus,
     updateOrderAmountsWithPriceGroupsThenPromotions:
       requestGraph.updateOrderAmountsWithPriceGroupsThenPromotions,
+    prepareAddressZoneEvaluation: requestGraph.prepareAddressZoneEvaluation,
   });
 }
 
@@ -6277,6 +6928,296 @@ async function toCreateSkusInput(
 }
 
 // ===========================================================================
+// SECTION 7b - WIRE-DOCUMENT HYDRATION
+//
+// The implementation behind {@link RequestScope.materializeOrderView}. It is the
+// counterpart of `projectPriceGroupIntents` below: that one rebuilds a view from
+// intents BETWEEN the two passes, this one builds the first view from a caller's
+// projection BEFORE either pass. Both refuse rather than default, both key by
+// case-folded identifier, and neither mutates what it was given.
+//
+// ★ WHAT IT DOES NOT DO, STATED FIRST. It runs no pass, applies no rate, computes no
+// discount, re-derives no total and rounds nothing. `subtotal`,
+// `subtotalAfterItemDiscounts` and `fulfillmentChargeAfterDiscountTotal` are carried
+// VERBATIM from the document, because they are the aggregate's own state and the
+// between-pass recomputation belongs to `projectPriceGroupIntents`, which owns it for a
+// stated reason. Recomputing them here would silently overrule the caller's own snapshot
+// on the way in.
+// ===========================================================================
+
+/**
+ * Load every product the document names, once each, keyed by case-folded identifier.
+ *
+ * ONE READ PER DISTINCT PRODUCT. A ten-line order selling ten variants of one product
+ * reads that product once, and the SKUs that hang off it once, which is what keeps a
+ * hydration from degenerating into an N+1 walk.
+ *
+ * @throws `CompositionDataError` naming the first product the schema does not carry.
+ */
+async function loadDocumentProducts(
+  document: OrderViewDocument,
+  productRepository: ProductRepository,
+): Promise<ReadonlyMap<string, Product>> {
+  const productsByFoldedID = new Map<string, Product>();
+
+  for (const item of document.orderItems) {
+    const foldedProductID = foldIdentifier(item.productID);
+
+    if (productsByFoldedID.has(foldedProductID)) {
+      continue;
+    }
+
+    const product = await productRepository.getProductByProductID(item.productID);
+
+    if (product === undefined) {
+      // Refused, never skipped. An order item whose product cannot be loaded is an order
+      // item whose product-type ancestry, brand and option list are unknown - and those are
+      // precisely what reward and qualifier membership is decided by, so pricing it would be
+      // pricing against an unknown catalogue.
+      throw new CompositionDataError(
+        `product "${item.productID}" named by order item "${item.orderItemID}" could not be ` +
+          'loaded, so the order view cannot be materialized',
+      );
+    }
+
+    productsByFoldedID.set(foldedProductID, product);
+  }
+
+  return productsByFoldedID;
+}
+
+/**
+ * Resolve every SKU the document names, keyed by case-folded identifier.
+ *
+ * ★ REACHED THROUGH `getProductSkus(product, true)`, WHICH IS THE ONE PORTED READ THAT
+ * WIRES A SKU'S `product` ASSOCIATION THROUGH. `getSkuBySkuCode` and
+ * `getSkusBySelectedOptions` hydrate with the adapter's bare fetch shape, which leaves
+ * `product` undefined - and the promotion engine walks
+ * `sku.getProduct().getProductType().getProductTypeIDPath()`
+ * [model/service/PromotionService.cfc:L864-L865], so a bare SKU is not a usable SKU here.
+ * `fetchOptions` is TRUE because option membership is one of the reward gates
+ * [model/service/PromotionService.cfc:L808-L818]; the flag is the legacy's own eager-fetch
+ * decision [model/dao/SkuDAO.cfc:L152-L163] and not an invention.
+ *
+ * @throws `CompositionDataError` naming the first SKU the named product does not carry.
+ */
+async function loadDocumentSkus(
+  document: OrderViewDocument,
+  productsByFoldedID: ReadonlyMap<string, Product>,
+  skuRepository: SkuRepository,
+): Promise<ReadonlyMap<string, Sku>> {
+  const skusByFoldedID = new Map<string, Sku>();
+
+  for (const [, product] of productsByFoldedID) {
+    for (const sku of await skuRepository.getProductSkus(product, true)) {
+      skusByFoldedID.set(foldIdentifier(sku.getSkuID()), sku);
+    }
+  }
+
+  const resolved = new Map<string, Sku>();
+
+  for (const item of document.orderItems) {
+    const sku = skusByFoldedID.get(foldIdentifier(item.skuID));
+
+    if (sku === undefined) {
+      // The SKU is not among the SKUs of the product the caller named it under. That is a
+      // broken invariant rather than a data variation - the two identifiers disagree about
+      // the catalogue - and it is refused with both of them named so the caller can fix the
+      // pair rather than guess which half was wrong.
+      throw new CompositionDataError(
+        `sku "${item.skuID}" is not carried by product "${item.productID}" named on order item ` +
+          `"${item.orderItemID}", so the order view cannot be materialized`,
+      );
+    }
+
+    resolved.set(foldIdentifier(item.skuID), sku);
+  }
+
+  return resolved;
+}
+
+/**
+ * Resolve every applied price group the document names, IN ONE KEYED READ.
+ *
+ * The same set loader, keyed the same case-folded way, that `projectPriceGroupIntents`
+ * uses - so two order items naming one price group receive THE SAME INSTANCE, which is what
+ * makes the entity comparison at [model/service/PromotionService.cfc:L241] answer the same
+ * way for both. An item stating `null` is not part of the request at all: that is the
+ * `isNull(...)` arm, and no price group is invented for it.
+ *
+ * @throws `CompositionDataError` naming the first price group the schema does not carry.
+ */
+async function loadDocumentPriceGroups(
+  document: OrderViewDocument,
+  priceGroupSetLoader: PriceGroupSetLoader,
+): Promise<ReadonlyMap<string, PriceGroup>> {
+  const requested = [
+    ...new Set(
+      document.orderItems.flatMap((item) =>
+        item.appliedPriceGroupID === null ? [] : [item.appliedPriceGroupID],
+      ),
+    ),
+  ];
+
+  if (requested.length === 0) {
+    return new Map<string, PriceGroup>();
+  }
+
+  const priceGroupsByFoldedID = await priceGroupSetLoader.getPriceGroupsByID(requested);
+
+  for (const priceGroupID of requested) {
+    if (priceGroupsByFoldedID.has(foldIdentifier(priceGroupID))) {
+      continue;
+    }
+
+    // Refused rather than dropped, for the reason `projectPriceGroupIntents` states about
+    // its own identical refusal: dropping it would move the L241 discriminator to the other
+    // arm and change the discount.
+    throw new CompositionDataError(
+      `price group "${priceGroupID}" named by an order item could not be loaded, so the order ` +
+        'view cannot be materialized',
+    );
+  }
+
+  return priceGroupsByFoldedID;
+}
+
+/**
+ * Mint one applied-promotion view from its wire form.
+ *
+ * `discountAmount` is `undefined` when the document states `null`, and it is NEVER
+ * `Money.zero`: the column is nullable [model/entity/PromotionApplied.cfc:L51] and a zero
+ * discount is a different fact from no discount.
+ */
+function materializeAppliedPromotion(document: AppliedPromotionDocument): AppliedPromotionView {
+  return {
+    promotionAppliedID: document.promotionAppliedID,
+    discountAmount:
+      document.discountAmount === null
+        ? undefined
+        : Money.fromDecimalString(document.discountAmount),
+    promotion:
+      document.promotion === null ? undefined : { promotionID: document.promotion.promotionID },
+  };
+}
+
+/**
+ * Build the read-only order view the two passes consume from the caller's projection.
+ *
+ * Every entity is LOADED, every value object is MINTED through its own constructor, and
+ * every absence the document states as `null` becomes the `undefined` the views state it
+ * as. Nothing is inferred: a document that omits a member does not reach this function,
+ * because the primary adapter's schema refuses it first with a member path.
+ *
+ * @throws `CompositionDataError` when a named product, SKU or price group cannot be loaded.
+ * @throws the decimal-numeral error from `../lib/cfml/numberFormat.js` when a monetary
+ *   member is not a plain decimal numeral, and `InvalidCurrencyCodeError` when the currency
+ *   code is not three characters. Both propagate unwrapped: they name the malformed value's
+ *   own failure better than a re-thrown wrapper would.
+ */
+async function materializeOrderViewDocument(
+  document: OrderViewDocument,
+  productRepository: ProductRepository,
+  skuRepository: SkuRepository,
+  priceGroupSetLoader: PriceGroupSetLoader,
+): Promise<OrderView> {
+  const productsByFoldedID = await loadDocumentProducts(document, productRepository);
+  const skusByFoldedID = await loadDocumentSkus(document, productsByFoldedID, skuRepository);
+  const priceGroupsByFoldedID = await loadDocumentPriceGroups(document, priceGroupSetLoader);
+
+  const orderItems: OrderItemView[] = document.orderItems.map((item): OrderItemView => {
+    const sku = skusByFoldedID.get(foldIdentifier(item.skuID));
+
+    if (sku === undefined) {
+      // Unreachable: `loadDocumentSkus` resolved every item or threw. Stated as a refusal so
+      // the compiler never needs a non-null assertion here.
+      throw new CompositionDataError(
+        `sku "${item.skuID}" was resolved but is missing from the hydration map`,
+      );
+    }
+
+    const appliedPriceGroup =
+      item.appliedPriceGroupID === null
+        ? undefined
+        : priceGroupsByFoldedID.get(foldIdentifier(item.appliedPriceGroupID));
+
+    if (item.appliedPriceGroupID !== null && appliedPriceGroup === undefined) {
+      // Likewise unreachable: `loadDocumentPriceGroups` resolved every named group or threw.
+      throw new CompositionDataError(
+        `price group "${item.appliedPriceGroupID}" was resolved but is missing from the ` +
+          'hydration map',
+      );
+    }
+
+    return {
+      orderItemID: item.orderItemID,
+      sku,
+      quantity: item.quantity,
+      // All four monetary members, each minted from the document's own decimal numeral. The
+      // extended pair is CARRIED rather than recomputed from `price × quantity`: it is the
+      // aggregate's state, the L252 correction term measures the gap between the two pairs,
+      // and computing one side of that gap here would be this file deciding a number the
+      // order already decided.
+      price: Money.fromDecimalString(item.price),
+      skuPrice: Money.fromDecimalString(item.skuPrice),
+      extendedPrice: Money.fromDecimalString(item.extendedPrice),
+      extendedSkuPrice: Money.fromDecimalString(item.extendedSkuPrice),
+      appliedPriceGroup,
+      orderItemType: { systemCode: item.orderItemType.systemCode },
+      orderFulfillmentID: item.orderFulfillmentID,
+      appliedPromotions: item.appliedPromotions.map(materializeAppliedPromotion),
+    };
+  });
+
+  const orderFulfillments: readonly OrderFulfillmentView[] = document.orderFulfillments.map(
+    (fulfillment): OrderFulfillmentView => ({
+      orderFulfillmentID: fulfillment.orderFulfillmentID,
+      fulfillmentCharge: Money.fromDecimalString(fulfillment.fulfillmentCharge),
+      fulfillmentMethod: {
+        fulfillmentMethodID: fulfillment.fulfillmentMethod.fulfillmentMethodID,
+        fulfillmentMethodType: fulfillment.fulfillmentMethod.fulfillmentMethodType,
+      },
+      shippingMethod:
+        fulfillment.shippingMethod === null
+          ? undefined
+          : { shippingMethodID: fulfillment.shippingMethod.shippingMethodID },
+      appliedPromotions: fulfillment.appliedPromotions.map(materializeAppliedPromotion),
+      totalShippingWeight: fulfillment.totalShippingWeight,
+      // The four comparison members keep their stated absences as `undefined`, which the zone
+      // evaluator SKIPS [model/service/AddressService.cfc:L63, L66, L69, L72]. An absent
+      // member is never widened into a wildcard and never narrowed into a match.
+      address:
+        fulfillment.address === null
+          ? undefined
+          : {
+              postalCode: fulfillment.address.postalCode ?? undefined,
+              city: fulfillment.address.city ?? undefined,
+              stateCode: fulfillment.address.stateCode ?? undefined,
+              countryCode: fulfillment.address.countryCode ?? undefined,
+              isNew: fulfillment.address.isNew,
+            },
+    }),
+  );
+
+  return {
+    orderID: document.orderID,
+    orderItems,
+    orderFulfillments,
+    appliedPromotions: document.appliedPromotions.map(materializeAppliedPromotion),
+    totalSaleQuantity: document.totalSaleQuantity,
+    subtotal: Money.fromDecimalString(document.subtotal),
+    orderType: { systemCode: document.orderType.systemCode },
+    accountID: document.accountID ?? undefined,
+    subtotalAfterItemDiscounts: Money.fromDecimalString(document.subtotalAfterItemDiscounts),
+    promotionCodeList: document.promotionCodeList,
+    fulfillmentChargeAfterDiscountTotal: Money.fromDecimalString(
+      document.fulfillmentChargeAfterDiscountTotal,
+    ),
+    currencyCode: toCurrencyCode(document.currencyCode),
+  };
+}
+
+// ===========================================================================
 // SECTION 8 - THE COMPOSED PRICING OPERATION
 //
 // ★ THE CROSS-SERVICE ORDERING CONSTRAINT, MADE STRUCTURALLY IMPOSSIBLE TO INVERT.
@@ -6309,7 +7250,8 @@ async function toCreateSkusInput(
 //   L254 }
 //   L257 if(discountAmount > 0) {
 // ⇒ NULL-OR-ELIGIBLE ⇒ `getPrice()` with NO correction.
-// ⇒ OTHERWISE ⇒ `getSkuPrice()` PLUS the correction term.
+// ⇒ OTHERWISE ⇒ compute from `getSkuPrice()`, then subtract
+//    `(getExtendedSkuPrice() - getExtendedPrice())`.
 //
 // ★ THE COROLLARY THAT MAKES THE ORDERING UNCONDITIONAL: `getAppliedPriceGroup()`
 // is read at L241 IN THE BRANCH CONDITION ITSELF, so the obligation holds
@@ -6349,8 +7291,14 @@ async function updateOrderAmountsWithPriceGroupsThenPromotions(
   priceGroupService: PriceGroupService,
   promotionService: PromotionService,
   priceGroupSetLoader: PriceGroupSetLoader,
+  addressZoneLocations: AddressZoneLocationSource,
   order: OrderView,
 ): Promise<OrderPricingResult> {
+  // The promotion pass reaches a synchronous zone predicate, so the deferred index
+  // must be ready before either pricing pass begins. Non-promotion routes never call
+  // this operation and therefore never issue the unbounded zone-location statement.
+  await addressZoneLocations.load();
+
   // PASS ONE. Emits intents rather than mutating an order aggregate, because the
   // order aggregate is out of scope - that inversion IS the anti-corruption seam.
   const priceGroupIntents = await priceGroupService.updateOrderAmountsWithPriceGroups(order);

@@ -1,103 +1,70 @@
 // ---------------------------------------------------------------------------
-// BUNDLE ENTRY POINT - the SKU resolution capability.
+// The SKU resolution Lambda entrypoint.
 //
-// One of the five independently deployable Lambda entrypoints `esbuild.config.mjs` enumerates by
-// file name, and the one that fronts a MUST-PRESERVE behaviour: product / SKU / option-to-SKU
-// resolution, whose service entry point is
-// `getProductSkusBySelectedOptions(selectedOptions, productID)`
-// [model/service/ProductService.cfc:L104] and whose correctness rests on the AND-of-EXISTS option
-// matching at [model/dao/SkuDAO.cfc:L107-L128] - a SKU qualifies only if EVERY selected option is
-// present on it. Neither the matching nor the SQL lives here; both are reached, unmodified, through
-// the ported service surface the composition root hands over.
+// A THIN PRIMARY ADAPTER over five already-ported read operations. Its whole job, in order: lift the
+// method and path off the event and resolve them through `./router.js`; select ONE operation and
+// validate the arguments that operation needs; await the memoized composition root from
+// `./bootstrap.js` and open EXACTLY ONE request scope; invoke EXACTLY ONE ported service method;
+// project the result onto JSON; map anything thrown through `./errorMapper.js`.
 //
-// PROVENANCE: CREATE - NET-NEW ENTRYPOINT. AAP 0.4.1, Handlers table: source file "-", change
-// "Net-new entrypoint exposing `getProductSkusBySelectedOptions` and SKU lookup." There is no
-// legacy controller for this capability, so nothing here is a port of a CFML file. The five legacy
-// artefacts cited throughout - `model/service/ProductService.cfc`, `model/service/SkuService.cfc`,
-// `model/dao/SkuDAO.cfc`, `model/entity/Product.cfc`, `model/entity/Sku.cfc` - are REFERENCE ONLY.
-// Every citation is provenance; none is a write target, and no file outside `slatwall-ts/` is
-// created, modified or deleted by this work.
+// DELEGATION IS VERBATIM AND RESULT ORDER IS PRESERVED. Every argument reaches the ported service
+// exactly as the request supplied it - `selectedOptions` stays a comma-delimited string all the way
+// to the statement builder, and no value is trimmed, split, sorted, de-duplicated, case-folded or
+// bounded on the way through. Whatever array the service returns is projected in the order it
+// returned it, never re-sorted or re-ranked.
 //
-// COVERAGE IS NET-NEW, NEVER PARITY. Exactly three legacy test files touch the in-scope slice -
-// `meta/tests/unit/entity/BrandTest.cfc`, `meta/tests/unit/entity/ProductTest.cfc`, and
-// `meta/tests/functional/admin/entity/ProductTest.cfc`, which is an EMPTY stub - and none of them
-// reaches the handler tier. Assertions for this module therefore live in
-// `tests/unit/handlers/skuResolutionHandler.test.ts` and are net-new by construction; nothing here
-// may be presented as carried-forward coverage. The dependency seam below
-// ({@link SkuResolutionHandlerDependencies}) exists so that suite can drive this module without
-// patching module state.
-//
-// ---------------------------------------------------------------------------
-// WHAT THIS MODULE IS
-//
-// A THIN PRIMARY ADAPTER, and nothing else. Its whole job, in order:
-//
-//   1. lift the method and path off the event and resolve them through `./router.js`;
-//   2. select ONE operation from the request, and validate the arguments that operation needs;
-//   3. await the memoized composition root from `./bootstrap.js` and open EXACTLY ONE request scope;
-//   4. invoke EXACTLY ONE already-ported service method;
-//   5. project the result onto a JSON document;
-//   6. map anything thrown through `./errorMapper.js`.
-//
-// There is NO business logic here. No option-combination building, no price arithmetic, no `Money`
-// arithmetic, no SQL, no entity construction, no settings resolution, no service, repository, port
-// or connection pool construction. `./bootstrap.js` is the only composition root in the subtree and
-// this module builds nothing.
-//
-// DEPENDENCY DIRECTION. This module imports `./router.js`; the router imports NO handler. The router
-// owns RESOLUTION and a handler owns INVOCATION, and that split is what keeps five bundle entry
-// points free of an import cycle. `src/handlers/` is the inversion point of the architecture:
-// nothing in `src/domain/**`, `src/services/**` or `src/repositories/**` imports from here, and the
-// ESLint `no-restricted-imports` layer boundary makes a back-edge from `src/domain/**` a BUILD
-// FAILURE rather than a review finding. This module imports no other capability handler.
-//
-// BUNDLE FORMAT IS A SOLVED PROBLEM AND IS NOT RE-LITIGATED HERE. The Lambda artifact is emitted
-// CommonJS, because bundling this dependency set to ESM builds cleanly and then fails at run time
-// with `Dynamic require of "node:buffer"` through `mysql2` -> `sql-escaper`. The consequence for
-// this file is concrete and observed rather than assumed: NO `import.meta` and NO top-level `await`
-// appear anywhere in it. The TypeScript source stays `NodeNext`; only the emitted bundle differs.
-// `esbuild.config.mjs` owns that decision, one directory above this folder, and nothing here
-// duplicates or overrides it.
-//
-// ---------------------------------------------------------------------------
-// PROJECT RULES: THERE ARE NONE, AND THAT IS A FINDING RATHER THAN A GAP.
-//
-// The rules source was queried and returned, byte for byte, the single line
-// `No user rules provided.` - on an unbounded read and again on a whole-document read. So no
-// user-specified rule governs this file. Their absence is NOT licence to lower the bar and no rule
-// has been invented to fill it: every constraint honoured below is attributed to the Agent Action
-// Plan, to this module's own folder requirements, or to an explicit `JUDGMENT CALL:` annotation.
-// Where a decision is mine rather than the source's, it says so in those words.
-//
-// ---------------------------------------------------------------------------
-// NULL AND UNDEFINED SEMANTICS ARE LOAD-BEARING, AND THIS MODULE IS THE LAST PLACE THEY COULD BE
-// LOST.
-//
+// ABSENCE IS SERIALIZED AS ABSENCE, AND THIS IS THE LAST PLACE IT COULD BE LOST.
 // `getPriceByCurrencyCode` [model/entity/Sku.cfc:L269-L273] has no `else` and no fallback, so an
-// unknown currency yields nothing; `getListPriceByCurrencyCode` [L275-L279] and
-// `getRenewalPriceByCurrencyCode` [L281-L285] add a SECOND key check on the sub-key and therefore
+// unknown currency yields nothing; `getListPriceByCurrencyCode` [:L275-L279] and
+// `getRenewalPriceByCurrencyCode` [:L281-L285] add a SECOND key check on the sub-key and therefore
 // yield nothing even for a currency that IS in the map. Substituting `0` anywhere along that chain
-// would silently sell products for free. Every monetary value that reaches a response body here is
-// rendered through `Money`'s own presentation surface, an absent one is OMITTED from the document
-// rather than rendered as `0`, as `null`, or as an empty object, and `Money.zero` is never used as a
-// fallback. See {@link projectCurrencyDetail} for the encoding and the reasoning behind it.
+// would silently sell products for free. An absent monetary value is OMITTED from the document rather
+// than rendered as `0`, `null` or an empty object, and `Money.zero` is never a fallback. See
+// {@link projectCurrencyDetail}.
+//
+// NO SQL AND NO BUSINESS LOGIC LIVE HERE. This capability fronts a must-preserve behaviour - product
+// / SKU / option-to-SKU resolution, entered at
+// `getProductSkusBySelectedOptions(selectedOptions, productID)`
+// [model/service/ProductService.cfc:L104] - whose correctness rests on the AND-of-EXISTS option
+// matching at [model/dao/SkuDAO.cfc:L107-L128]: a SKU qualifies only if EVERY selected option is
+// present on it. Neither the matching nor the statement lives here; both are reached unmodified
+// through the ported service surface the composition root hands over. No option-combination building,
+// no price or `Money` arithmetic, no entity construction and no settings resolution either, and no
+// service, repository, port or connection pool is constructed - `./bootstrap.js` is the only
+// composition root in this subtree.
+//
+// DEPENDENCY DIRECTION. This module imports `./router.js`; the router imports no handler, because the
+// router owns RESOLUTION and a handler owns INVOCATION. `src/handlers/` is the inversion point:
+// nothing in `src/domain/**`, `src/services/**` or `src/repositories/**` imports from here, and the
+// ESLint `no-restricted-imports` layer boundary makes a back-edge from `src/domain/**` a build
+// failure. No other capability handler is imported.
+//
+// The Lambda artifact is emitted CommonJS because bundling this dependency set to ESM builds cleanly
+// and then fails at run time with `Dynamic require of "node:buffer"` through `mysql2` ->
+// `sql-escaper`. The consequence here is concrete: no `import.meta` and no top-level `await` appear
+// anywhere in this file. `esbuild.config.mjs` owns that decision and nothing here duplicates it.
 // ---------------------------------------------------------------------------
 
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { z } from 'zod';
 
+import { listLen as cfListLen } from '../lib/cfml/list.js';
 import { structGet, structKeyList } from '../lib/cfml/struct.js';
 import type { Logger } from '../lib/logger.js';
 import { logger as processLogger } from '../lib/logger.js';
-import type { SkuPage, SkuQueryCriteria } from '../services/skuService.js';
 import type { CompositionRoot, RequestScope } from './bootstrap.js';
 import { bootstrapCompositionRoot } from './bootstrap.js';
-import type { ErrorMappingContext } from './errorMapper.js';
+import type { ErrorMappingContext, MappedFieldIssue } from './errorMapper.js';
 import {
   invalidRequestResponse,
+  jsonSuccessResponse,
   mapErrorToApiGatewayResponse,
+  resolveServerRequestId,
+  routeDiagnosticLabel,
   routeNotFoundResponse,
+  unauthenticatedResponse,
 } from './errorMapper.js';
+import { resolveRequestPrincipal } from './requestPrincipal.js';
 import type { RouteAction, RoutedCapability } from './router.js';
 import { resolveRouteForCapability, routeRequestFromEvent } from './router.js';
 
@@ -121,22 +88,47 @@ import { resolveRouteForCapability, routeRequestFromEvent } from './router.js';
  * service methods a given payload calls for". So the route names the CAPABILITY and this union names
  * the OPERATION, selected from the request by the `operation` query parameter.
  *
- * The set is not a preference. It is exactly the members of the two ported services that are
- * INVOCABLE AT THIS TIER, and the boundary is structural: `./bootstrap.js` publishes
- * {@link RequestScope} WITHOUT the six MySQL repositories - a withdrawal its own documentation
- * explains at length - and no ported service publishes a load-by-identifier. A primary adapter
- * therefore cannot obtain a hydrated `Product` or `Sku` instance, and it may not construct one.
- * Every member of `SkuService` and `ProductService` whose signature takes an ENTITY is consequently
- * unreachable from here; every member that takes only primitives is reachable, and all five of those
- * are published below. See {@link NON_EXPOSED_SURFACE_NOTES} for the enumerated other side of that
- * boundary, member by member, with the reason each is absent.
+ * The set is not a preference. Two structural boundaries decide it, and both are recorded rather than
+ * left to inference.
+ *
+ * FIRST, WHAT IS REACHABLE AT ALL. `./bootstrap.js` publishes {@link RequestScope} WITHOUT the six
+ * MySQL repositories - a withdrawal its own documentation explains at length - and no ported service
+ * publishes a load-by-identifier that this capability needs. A primary adapter therefore cannot obtain
+ * a hydrated `Product` or `Sku` instance, and it may not construct one. Every member of `SkuService`
+ * and `ProductService` whose signature takes an ENTITY is consequently unreachable from here.
+ *
+ * ★★★ SECOND, AND THIS IS WHAT NARROWED THE SET FROM FIVE TO TWO. Three operations that WERE published
+ * here have been WITHDRAWN, and each withdrawal is a review finding rather than a preference:
+ *
+ *   * `getTransactionExistsFlag` - FINDING F18. The route advertised a boolean it could never return.
+ *     `SkuService.getTransactionExistsFlag()` declares no parameters and forwards none
+ *     [model/service/SkuService.cfc:L285-L287], and `MysqlSkuRepository.getTransactionExistsFlag`
+ *     raises a named `SkuColumnError` when neither `productID` nor `skuID` is supplied - which is
+ *     CORRECT PARITY, because [model/dao/SkuDAO.cfc:L59-L63] takes its `<cfelse>` arm and executes
+ *     with an UNDEFINED `arguments.productID`, and the legacy cannot serve that call either. Against
+ *     the real composition the action could only ever produce a 500. It is withdrawn rather than
+ *     repaired: supplying an identifier would mean widening the service signature, and the AAP fixes
+ *     it at `getTransactionExistsFlag(): Promise<boolean>` (AAP 0.4.2) with every ledger slot already
+ *     allocated, so this tier has no authority to reshape it. The service keeps its faithful raise and
+ *     its own coverage of it.
+ *   * `searchSkusByProductType` - FINDING F10. Returns `Sku[]`, complete and unpaged, with no member
+ *     of the signature able to bound it. Bounding it would mean adding a parameter the legacy
+ *     [model/service/SkuService.cfc:L271-L273] does not have.
+ *   * `findSkus` - FINDING F10. Returns a whole `SkuPage`, and `SkuQueryCriteria` declares NO paging
+ *     members at all, so there is nothing for a routed contract to bound. Adding them would reshape a
+ *     signature the AAP has already spent its smart-list allocation on.
+ *
+ * WITHDRAWAL IS THE AAP-ALIGNED ANSWER RATHER THAN A REDUCTION IN SCOPE. AAP 0.4.1 specifies this
+ * entrypoint as "Net-new entrypoint exposing `getProductSkusBySelectedOptions` and SKU lookup" -
+ * exactly the two below. The three withdrawn actions were never AAP-named, so publishing them was the
+ * deviation and removing them restores the specified surface. Each remains reachable in-process by any
+ * caller that holds the service, and each keeps its own service-tier coverage; what is withdrawn is
+ * the LAMBDA surface, which is the only thing this module owns.
+ *
+ * See {@link NON_EXPOSED_SURFACE_NOTES} for the enumerated other side of that boundary, member by
+ * member, with the reason each is absent - the three withdrawals included.
  */
-export type SkuResolutionOperation =
-  | 'getProductSkusBySelectedOptions'
-  | 'getSkuBySkuCode'
-  | 'searchSkusByProductType'
-  | 'getTransactionExistsFlag'
-  | 'findSkus';
+export type SkuResolutionOperation = 'getProductSkusBySelectedOptions' | 'getSkuBySkuCode';
 
 /**
  * The capability this handler answers for, and only this one.
@@ -170,34 +162,27 @@ const SKU_RESOLUTION_ACTION: RouteAction = 'resolveSkus';
  */
 const OPERATION_QUERY_PARAMETER = 'operation';
 
-/**
- * Headers on every SUCCESS response this module builds.
- *
- * `./errorMapper.js` owns the header set for every FAILURE response and is not reached on the
- * success path, so the two values are declared here rather than exported from there; they are
- * deliberately identical in effect. `content-type` is explicit because the body is always a JSON
- * document. `cache-control: no-store` is the non-inventing choice: the legacy slice published no
- * caching semantics for any of these reads, and choosing a freshness lifetime would invent one -
- * a decision with product consequences for a price-bearing document. Frozen, because this module is
- * instantiated once per container and shared across every invocation it serves.
- */
-const JSON_SUCCESS_HEADERS: Readonly<Record<string, string>> = Object.freeze({
-  'content-type': 'application/json; charset=utf-8',
-  'cache-control': 'no-store',
-});
+/** A query parameter is singular on this transport; repeats are refused rather than collapsed. */
+const MAXIMUM_VALUES_PER_PARAMETER = 1;
 
-/** Status for a successfully dispatched operation. The only status this module chooses itself. */
-const OK_STATUS = 200;
-
-/**
- * The correlation identifier used when neither the event nor the invocation context carries one.
- *
- * Echoed into a response body by `./errorMapper.js` purely so an operator can join a caller's
- * response to the full detail on the log stream. A fixed, obviously-synthetic token is the honest
- * value for "there was nothing to correlate with"; fabricating a random identifier would look like a
- * real one and correlate with nothing.
- */
-const UNCORRELATED_REQUEST_ID = 'uncorrelated';
+// ★★ THE SUCCESS HEADER SET, THE SUCCESS STATUS AND THE UNCORRELATED-IDENTIFIER TOKEN THAT USED TO
+// SIT HERE ARE ALL GONE, AND THEIR REMOVAL IS THE FIX FOR TWO FINDINGS AT ONCE.
+//
+// This module declared its own `JSON_SUCCESS_HEADERS`, its own `OK_STATUS` and its own
+// `'uncorrelated'` token, and argued - reasonably at the time - that `./errorMapper.js` owned only the
+// FAILURE half so the success half belonged here. API review measured the consequence across all five
+// entrypoints and found exactly what splitting one contract in half produces: four differently-shaped
+// success envelopes, two of them with no correlation identifier at all (finding F13), and five
+// different answers to which correlation identifier wins (finding F8) - of which THIS module's was the
+// outlier, preferring the gateway's identifier where its peers preferred the runtime's.
+//
+// All three decisions now live once, in `./errorMapper.js`, beside the failure half of the same
+// contract it already owned - the response construction, the header set, the correlation echo and the
+// route sanitizer were all there already. This module consumes `jsonSuccessResponse`,
+// `resolveServerRequestId` and `routeDiagnosticLabel` and derives none of them. The `no-store`
+// reasoning survives verbatim at the shared header set: the legacy slice published no caching
+// semantics for any of these reads and choosing a freshness lifetime would invent one, which is a
+// decision with product consequences for a price-bearing document.
 
 // ===========================================================================
 // SECTION 2 - THE TYPES THE SERVICE TIER HANDS OVER
@@ -208,8 +193,16 @@ const UNCORRELATED_REQUEST_ID = 'uncorrelated';
 // module is `./bootstrap.js`, `./router.js`, `./errorMapper.js`, `../services/productService.js`,
 // `../services/skuService.js`, `../domain/ports/skuRepository.js` and `../lib/logger.js` (plus the
 // locked CFML parity helpers under `../lib/cfml/`). Naming the entity module directly would widen
-// that set for a type this module can obtain from inside it, so the entity type is taken from
-// `SkuPage`, which `../services/skuService.js` exports.
+// that set for a type this module can obtain from inside it, so the entity type is taken from the
+// PUBLISHED SERVICE SURFACE - specifically from the return type of the SKU lookup this capability
+// dispatches.
+//
+// ★ IT USED TO BE TAKEN FROM `SkuPage`, and the source of the alias moved with finding F10. When
+// `findSkus` was withdrawn from this routed surface, `SkuPage` stopped being a shape this module
+// consumes, and keeping a type import solely to reach an element type would have left a dangling
+// reference to a withdrawn operation. Deriving it from `getSkuBySkuCode` instead ties the alias to an
+// operation that IS published, so the compile-time coupling below still points at something this file
+// actually serializes.
 //
 // The second reason is the better one: this projection is then typed to WHAT THE SERVICE RETURNS
 // rather than to what the entity module happens to declare. If the service surface ever changes
@@ -223,11 +216,13 @@ const UNCORRELATED_REQUEST_ID = 'uncorrelated';
 /**
  * The SKU entity as the ported service tier publishes it.
  *
- * `SkuPage.skus` is declared `readonly Sku[]`, so this is exactly the `Sku` class. `NonNullable` is
- * applied because `noUncheckedIndexedAccess` is on and an indexed access type is the one place that
- * flag can widen a definite element type; it is a no-op when the element type is already definite.
+ * `SkuService.getSkuBySkuCode` is declared `Promise<Sku | undefined>`, so unwrapping the promise and
+ * stripping the miss arm yields exactly the `Sku` class. `NonNullable` is doing real work here rather
+ * than being merely defensive: the `undefined` it removes is the load-bearing miss value this module
+ * deliberately carries through to an OMITTED response member (AAP 0.4.2), so the projection type must
+ * exclude it while the outcome type keeps it.
  */
-type ResolvedSku = NonNullable<SkuPage['skus'][number]>;
+type ResolvedSku = NonNullable<Awaited<ReturnType<RequestScope['skuService']['getSkuBySkuCode']>>>;
 
 /**
  * One per-currency entry of the four-step cascade [model/entity/Sku.cfc:L367-L433], as the entity
@@ -302,10 +297,10 @@ export interface CurrencyDetailProjection {
  * ★ WHAT IS DELIBERATELY NOT ON IT, because five members of the entity THROW BY DESIGN and reaching
  * any of them from a serializer would turn a read into a failure:
  *
- *   - `getPriceByPromotion(promotion)` - LEGACY-DEFECT 16. [model/entity/Sku.cfc:L258] calls
+ *   - `getPriceByPromotion(promotion)` - register defect 16. [model/entity/Sku.cfc:L258] calls
  *     `calculateSkuPriceBasedOnPromotion`, which does not exist, so the legacy raises every time.
  *     Reproduced as a throwing stub. It is not called here, not caught here, and not silenced here.
- *   - `getStocksDeletableFlag()` - LEGACY-DEFECT 28, the entity half. See
+ *   - `getStocksDeletableFlag()` - register defect 28, the entity half. See
  *     {@link NON_EXPOSED_SURFACE_NOTES}.
  *   - `getImage()`, `getResizedImagePath()`, `getImageExistsFlag()` - the image surface, out of
  *     scope, published as throwing stubs.
@@ -374,48 +369,17 @@ export interface SkuProjection {
   readonly currencyDetails: Readonly<Record<string, CurrencyDetailProjection>>;
 }
 
-/**
- * One keyword property the executed statement matches, rendered for transport.
- *
- * Reported rather than hidden so the query surface is observable from outside the process. It
- * describes the STATEMENT `findSkus` executes - `skuCode like` against one table
- * [model/dao/SkuDAO.cfc:L132] - and NOT the five properties the legacy smart list additionally
- * configured at [model/service/SkuService.cfc:L318-L322]. That narrowing is the service tier's,
- * recorded there; this module publishes what it is handed.
- */
-export interface SkuKeywordPropertyProjection {
-  /** The property the statement matches. */
-  readonly propertyIdentifier: string;
-
-  /** Its weight, as the legacy smart list configured it. */
-  readonly weight: number;
-}
-
-/**
- * A page of SKUs, rendered for transport.
- *
- * The transport form of `SkuPage`, which is the typed query result the AAP substitutes for
- * `getSkuSmartList` [model/service/SkuService.cfc:L309-L325]. ★ THAT RESHAPING WAS ALLOCATED TO THE
- * SERVICES TIER AND IS MERELY CONSUMED HERE: no criterion, filter, join or keyword property is
- * re-derived, added or extended by this module. Consuming it costs nothing; extending it would be a
- * violation.
- */
-export interface SkuPageProjection {
-  /** The matched SKUs, in the order the repository returned them. */
-  readonly skus: readonly SkuProjection[];
-
-  /** The term that was searched for, echoed back. */
-  readonly keyword: string;
-
-  /** The keyword properties the executed statement matches. */
-  readonly keywordProperties: readonly SkuKeywordPropertyProjection[];
-
-  /**
-   * The joins the executed statement performs. Empty: the product-type restriction at
-   * [model/dao/SkuDAO.cfc:L135] is an `IN` subquery, not a join.
-   */
-  readonly joins: readonly string[];
-}
+// ★★ `SkuKeywordPropertyProjection` AND `SkuPageProjection` USED TO SIT HERE AND ARE WITHDRAWN WITH
+// THE OPERATION THAT PRODUCED THEM. Both were the transport form of `SkuPage`, the typed query result
+// the AAP substitutes for `getSkuSmartList` [model/service/SkuService.cfc:L309-L325], and both existed
+// solely to serialize the `findSkus` outcome. Finding F10 withdrew that operation from this routed
+// surface because `SkuQueryCriteria` declares no paging members and therefore nothing a routed
+// contract could bound. Removing the shapes with it keeps the published contract honest: a consumer
+// reading this module's exports cannot find a page type for a page it can no longer request.
+//
+// NOTHING WAS RESHAPED TO ACHIEVE THIS. `SkuPage` still exists exactly as the services tier declares
+// it, still carries its keyword properties and its empty join list, and is still returned by
+// `SkuService.findSkus` to any in-process caller. The service tier owns its own coverage of it.
 
 /**
  * What one dispatched operation produced, discriminated by the operation that produced it.
@@ -436,39 +400,37 @@ export type SkuResolutionOutcome =
       readonly operation: 'getSkuBySkuCode';
       /**
        * The matching SKU, or NOTHING. On a miss this member is OMITTED from the serialized document
-       * - see {@link serializeSuccessBody} for why omission is the faithful encoding and why neither
+       * - see {@link serializeOutcome} for why omission is the faithful encoding and why neither
        * `null`, `0` nor `{}` is used.
        */
       readonly sku?: SkuProjection | undefined;
-    }
-  | {
-      readonly operation: 'searchSkusByProductType';
-      /** Every matching SKU, in the order the service returned them. */
-      readonly skus: readonly SkuProjection[];
-    }
-  | {
-      readonly operation: 'getTransactionExistsFlag';
-      /** Whether any order item anywhere references any SKU [model/dao/SkuDAO.cfc:L53-L100]. */
-      readonly transactionExistsFlag: boolean;
-    }
-  | {
-      readonly operation: 'findSkus';
-      /** The typed page that replaces the framework smart list. */
-      readonly page: SkuPageProjection;
     };
 
+// ★★ THREE ARMS WERE REMOVED FROM THIS UNION, AND THE COMPILER IS WHAT MADE THAT SAFE. `searchSkusByProductType`
+// and `findSkus` went with finding F10, `getTransactionExistsFlag` with finding F18; the reasoning for
+// each is on {@link SkuResolutionOperation}. Because the dispatcher switches over this closed union
+// with no default branch, deleting an arm here turned every site that produced or consumed it into a
+// compile error rather than into dead code that still answered - which is the property that makes a
+// withdrawal auditable instead of merely intended.
+
 /**
- * The JSON document a successful invocation returns.
+ * The CAPABILITY-SPECIFIC payload of a successful response.
+ *
+ * ★★ THIS USED TO BE `SkuResolutionResponseBody`, A WHOLE-DOCUMENT `{requestId, outcome}` OF THIS
+ * MODULE'S OWN. Finding F13 measured all four JSON entrypoints and found four differently-shaped
+ * success envelopes - this one nested its payload under `outcome`, its siblings under `result`, and two
+ * of them carried no correlation identifier at all. The OUTER document now comes from
+ * `./errorMapper.js`'s `jsonSuccessResponse`, which publishes `{requestId, capability, action, result}`
+ * for every capability, and this type is what travels inside `result`.
+ *
+ * The `requestId` member is GONE FROM HERE rather than duplicated: the shared envelope carries it once,
+ * at the top level, and echoing it twice would let the two copies disagree.
  *
  * Published as a type so the net-new test tier can parse a body without restating its shape, exactly
- * as `./errorMapper.js` publishes `ErrorResponseBody` for the failure side. It carries no legacy
- * error code, no framework exception type, no SQL, no connection detail and no echo of the caller's
- * path.
+ * as `./errorMapper.js` publishes `ErrorResponseBody` for the failure side. It carries no legacy error
+ * code, no framework exception type, no SQL, no connection detail and no echo of the caller's path.
  */
-export interface SkuResolutionResponseBody {
-  /** Echo of the correlation identifier, for log correlation. */
-  readonly requestId: string;
-
+export interface SkuResolutionResultDocument {
   /** What the dispatched operation produced. */
   readonly outcome: SkuResolutionOutcome;
 }
@@ -498,27 +460,48 @@ export interface SkuResolutionResponseBody {
 // no `PromotionApplied.json`, no `PromotionAccount.json`, no `Product_AddOption.json` and no
 // `Product_AddOptionGroup.json` - are likewise not filled in.
 //
-// `zod` 4.4.3, the pinned validator, is the only validation dependency. Unknown query parameters are
-// STRIPPED rather than rejected, which is `z.object`'s default: refusing an unrecognized parameter
-// would be inventing a strictness the source never expressed.
+// `zod` 4.4.3, the pinned validator, is the only validation dependency.
+//
+// ★★★ UNKNOWN AND REPEATED QUERY PARAMETERS ARE NOW REJECTED, AND THE PREVIOUS PARAGRAPH WAS WRONG.
+// It read: "Unknown query parameters are STRIPPED rather than rejected, which is `z.object`'s default:
+// refusing an unrecognized parameter would be inventing a strictness the source never expressed."
+// Request-binding review (finding F11) established that the analogy to CFML does not hold, in both
+// directions:
+//
+//   * A CFML function call CANNOT carry an argument the function does not declare - `cffunction`
+//     rejects an unknown named argument at invocation. Silently DROPPING one is therefore not the
+//     permissive legacy behaviour; it is a NEW behaviour with no legacy counterpart, and the more
+//     faithful reading of "no strictness the source expressed" is that a misspelled parameter should
+//     not be quietly ignored either.
+//   * A repeated parameter has no legacy counterpart AT ALL, and the previous revision resolved one by
+//     reading whichever value the single-valued map happened to keep. That is a silent, undocumented
+//     choice between two things the caller asked for, made where the caller cannot see it.
+//
+// Each per-operation schema below declares `operation`, while a separate closed-set check refuses an
+// unpublished key with a fixed message that does not echo caller-authored text. The handler also
+// refuses any parameter supplied more than once BEFORE validation.
+//
+// THE PRESENCE-NOT-EMPTINESS RULE ABOVE IS UNAFFECTED. Strictness governs WHICH keys may appear; it
+// adds no length, pattern, trim, case fold or de-duplication to any value, and an empty string is
+// still admitted everywhere the legacy admitted one.
 // ===========================================================================
 
 /**
  * The operation name, validated against the closed set.
  *
- * A `z.enum` over the same five literals {@link SkuResolutionOperation} declares, so an unrecognized
+ * A `z.enum` over the same two literals {@link SkuResolutionOperation} declares, so an unrecognized
  * value fails validation with the field path `operation` and reaches the caller as a client-shaped
  * rejection rather than as a server failure. The array is spelled out rather than derived from the
  * type, because a type cannot be enumerated at run time and deriving it from a runtime constant would
  * invert the direction the compiler can check.
+ *
+ * ★ THREE LITERALS WERE REMOVED - `searchSkusByProductType`, `getTransactionExistsFlag` and
+ * `findSkus`. A caller naming one of them now receives the SAME client-shaped rejection as a caller
+ * naming a nonsense string, with the field path `operation`, and that uniformity is deliberate: a
+ * distinct "withdrawn" outcome would advertise that the operation once existed and invite a caller to
+ * wait for it to return. The reason each was withdrawn is on {@link SkuResolutionOperation}.
  */
-const operationSchema = z.enum([
-  'getProductSkusBySelectedOptions',
-  'getSkuBySkuCode',
-  'searchSkusByProductType',
-  'getTransactionExistsFlag',
-  'findSkus',
-]);
+const operationSchema = z.enum(['getProductSkusBySelectedOptions', 'getSkuBySkuCode']);
 
 /**
  * The operation name in the position it actually occupies: a member of the query struct.
@@ -527,8 +510,13 @@ const operationSchema = z.enum([
  * would report a failure with an EMPTY field path, because a scalar parse has no path to report -
  * observed, not assumed - so a caller sending an unrecognized operation would receive a rejection that
  * named no field. Validating the struct reports the path `operation`, which is the member the caller
- * can actually correct. `z.object` strips the other parameters here; each operation's own schema below
- * reads them.
+ * can actually correct.
+ *
+ * ★ THIS ONE STAYS NON-STRICT WHILE EVERY SCHEMA BELOW IS STRICT, and the asymmetry is required rather
+ * than an oversight. This is a PRE-PARSE whose only job is to read the discriminator out of a struct
+ * that still holds the operation's own parameters; making it strict would reject every well-formed
+ * request that carried any. Strictness is applied once, by the operation-specific schema that knows the
+ * complete key set - which is the only place it CAN be applied correctly.
  */
 const operationEnvelopeSchema = z.object({
   operation: operationSchema,
@@ -544,88 +532,116 @@ const operationEnvelopeSchema = z.object({
  * element parsing belongs to the repository tier where the binding happens - the same ruling the
  * service tier already applied to this parameter and to `existingOptionGroupIDList`.
  *
- * ★★ AND NO ELEMENT CEILING IS APPLIED HERE, WHICH IS AN OBLIGATION THIS FILE INHERITS RATHER THAN A
- * PREFERENCE IT HOLDS. `src/repositories/mysql/sql/skusBySelectedOptions.sql.ts` records that an
- * earlier revision of its own documentation asserted "the ceiling lives instead in
- * `src/handlers/skuResolutionHandler.ts`, applied to the caller-supplied field before any service is
- * reached", and then withdrew that claim outright: a 64-element cap had existed alongside `len()`,
- * `trim()` and membership checks at two layers and every one of them was removed, because each turned
- * "no SKU matches" into a REQUEST FAILURE for an input [model/dao/SkuDAO.cfc:L107-L128] accepts. That
- * statement builder is now total on magnitude and its suite keeps those cases INVERTED so that a
- * reintroduced guard fails a case naming it. This module is the layer that claim pointed at, so it
- * says plainly what it does: it applies NO count, length, membership or de-duplication constraint to
- * `selectedOptions`, and an unmatched list answers with an empty array rather than a rejection. DO NOT
- * ADD ONE HERE. The resource concern belongs where the amplification is - the adapter batches its
- * association follow-up statements - not to a refusal at the boundary.
+ * ★★★ THE ROUTED BOUNDARY APPLIES A 64-ELEMENT CEILING, WHILE THE SERVICE AND SQL BUILDER REMAIN
+ * TOTAL. This is a transport safety bound on the net-new Lambda route, not a change to the ported
+ * service contract. It refuses whole and never truncates, because truncation selects a different SKU.
+ *
+ * The fidelity layers still apply no count, length, membership, ordering or de-duplication rule.
+ * Any in-process caller can exercise the full legacy surface. Only this HTTP boundary refuses a list
+ * above the explicit batch limit required by AAP 0.6.5.
+ *
+ * THE REPOSITORY AND SQL BUILDER RETAIN THEIR INDEPENDENT PROTOCOL-FEASIBILITY CHECK. The statement
+ * binds one option placeholder per element plus the required `productID`; the routed ceiling means a
+ * request reaching that tier carries at most 65 placeholders, while an in-process caller may still
+ * exercise the wider service contract. The lower transport policy and the higher MySQL protocol
+ * ceiling therefore protect different boundaries without a redundant second route-level check.
  */
+/** Maximum selected-option elements admitted by the routed transport. */
+const MAXIMUM_SELECTED_OPTION_ELEMENTS = 64;
+
+/** Fixed refusal text; the submitted list is never echoed. */
+const SELECTED_OPTIONS_CEILING_MESSAGE = `must not name more than ${String(
+  MAXIMUM_SELECTED_OPTION_ELEMENTS,
+)} options`;
+
 const getProductSkusBySelectedOptionsSchema = z.object({
-  selectedOptions: z.string(),
+  operation: z.literal('getProductSkusBySelectedOptions'),
+  selectedOptions: z
+    .string()
+    .refine((value) => cfListLen(value) <= MAXIMUM_SELECTED_OPTION_ELEMENTS, {
+      message: SELECTED_OPTIONS_CEILING_MESSAGE,
+    }),
   productID: z.string(),
 });
 
 /**
  * `getSkuBySkuCode` [model/service/SkuService.cfc:L289-L291].
  *
- * JUDGMENT CALL: `skuCode` is REQUIRED ON THIS ROUTED SURFACE even though the legacy service
- * signature declares it optional, and the distinction matters enough to state precisely.
- *
- * The legacy service forwards an empty `argumentCollection` into
- * `getSkuBySkuCode(required string skuCode)` [model/dao/SkuDAO.cfc:L102], which raises. The ported
- * service reproduces that raise faithfully, and it STAYS reproduced - this module changes no
- * signature, withdraws no member and consumes no interface-parity ledger slot. What it declines to do
- * is construct a call it already knows is malformed: rejecting absent input at the boundary is
- * exactly what a primary adapter is for, and it produces a client-shaped rejection out of the
- * error mapper's closed status set rather than a server-shaped one. The service-tier raise remains
- * the observable behaviour for any caller that invokes the service directly, and the service tier
- * owns its own coverage of it.
+ * `skuCode` is OPTIONAL because `SkuService.getSkuBySkuCode(skuCode?)` declares it optional. Absence
+ * is forwarded as absence rather than narrowed into a different transport contract; the service and
+ * repository tiers retain responsibility for the legacy raise reached by an absent DAO argument.
  *
  * An EMPTY `skuCode` is still admitted, per the section rule: the legacy would bind `''` and match
  * nothing, and this handler must not decide otherwise.
  */
 const getSkuBySkuCodeSchema = z.object({
-  skuCode: z.string(),
+  operation: z.literal('getSkuBySkuCode'),
+  skuCode: z.string().optional(),
 });
 
-/**
- * `searchSkusByProductType` [model/service/SkuService.cfc:L271-L273].
- *
- * ⚠️ `productTypeID` IS SINGULAR HERE, AND IS NOT NORMALISED. Its product-side sibling
- * `searchProductsByProductType(term?, productTypeIDs?)` is PLURAL. Both spellings are the legacy
- * names [model/dao/SkuDAO.cfc:L130] and [model/dao/ProductDAO.cfc], both are preserved verbatim, and
- * the cross-service asymmetry is deliberately NOT harmonised - in either direction.
- *
- * `term` is required on this routed surface for the reason recorded on
- * {@link getSkuBySkuCodeSchema}: [model/dao/SkuDAO.cfc:L133] binds it unconditionally, so the
- * repository raises on an absent term. `productTypeID` stays optional, matching the legacy, and its
- * absence is forwarded as absence rather than as an empty string - the DAO gates its restriction on
- * `structKeyExists` plus a non-blank test [model/dao/SkuDAO.cfc:L134], so an empty string and an
- * absent value are NOT the same request.
- */
-const searchSkusByProductTypeSchema = z.object({
-  term: z.string(),
-  productTypeID: z.string().optional(),
+/** The closed parameter set for each surviving routed operation. */
+const PUBLISHED_PARAMETER_NAMES: Readonly<Record<SkuResolutionOperation, readonly string[]>> =
+  Object.freeze({
+    getProductSkusBySelectedOptions: Object.freeze(
+      Object.keys(getProductSkusBySelectedOptionsSchema.shape),
+    ),
+    getSkuBySkuCode: Object.freeze(Object.keys(getSkuBySkuCodeSchema.shape)),
+  });
+
+/** Whether every caller-supplied key belongs to the named operation's published parameter set. */
+function hasClosedParameterSet(
+  operation: SkuResolutionOperation,
+  parameters: Readonly<Record<string, string | undefined>>,
+): boolean {
+  const published = PUBLISHED_PARAMETER_NAMES[operation];
+
+  for (const supplied of Object.keys(parameters)) {
+    if (supplied !== OPERATION_QUERY_PARAMETER && !published.includes(supplied)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/** Fixed, non-reflective refusal for a key outside the named operation's closed set. */
+const UNPUBLISHED_PARAMETER_ISSUE: MappedFieldIssue = Object.freeze({
+  path: 'queryStringParameters',
+  message:
+    'carries a parameter the named operation does not publish; the query surface is closed, and ' +
+    'an unrecognized parameter is refused rather than silently dropped',
 });
 
-/**
- * `findSkus` - the typed query the AAP substitutes for `getSkuSmartList`
- * [model/service/SkuService.cfc:L309-L325].
- *
- * `keyword` is required because `SkuQueryCriteria` declares it required, and the service tier's own
- * note explains why: the seven-member `SkuRepository` port publishes no member that lists SKUs
- * without a search term, and no member may be added, so an unfiltered listing is unrepresentable by
- * design rather than by omission. `productTypeID` is the same singular optional as above.
- */
-const findSkusSchema = z.object({
-  keyword: z.string(),
-  productTypeID: z.string().optional(),
+/** Fixed refusal for any parameter supplied more than once. */
+const REPEATED_PARAMETER_ISSUE: MappedFieldIssue = Object.freeze({
+  path: 'multiValueQueryStringParameters',
+  message:
+    'carries a parameter more than once; each parameter of this capability admits exactly one ' +
+    'value, and a repeated parameter is refused whole rather than collapsed to one of the values',
 });
+
+// ★★ THE `searchSkusByProductType` AND `findSkus` SCHEMAS USED TO SIT HERE AND WENT WITH THEIR
+// OPERATIONS (finding F10). Both carried a genuinely useful note that is preserved rather than lost,
+// because the asymmetry it recorded is a source fact and outlives the schemas:
+//
+//   ⚠️ `productTypeID` IS SINGULAR ON THE SKU SIDE AND PLURAL ON THE PRODUCT SIDE.
+//   `searchSkusByProductType(term, productTypeID)` [model/dao/SkuDAO.cfc:L130] against
+//   `searchProductsByProductType(term?, productTypeIDs?)` [model/dao/ProductDAO.cfc]. Both spellings
+//   are the legacy's own, both are preserved verbatim at the service tier, and the cross-service
+//   asymmetry is deliberately NOT harmonised in either direction. The absent-versus-empty distinction
+//   it depended on is likewise a source fact: the DAO gates its restriction on `structKeyExists` plus a
+//   non-blank test [model/dao/SkuDAO.cfc:L134], so an empty string and an absent value are NOT the same
+//   request. `../services/skuService.ts` holds both facts and its suite exercises them.
 
 // ===========================================================================
 // SECTION 5 - WHAT IS DELIBERATELY NOT EXPOSED
 //
 // Enumerated in source rather than left to inference, because "this handler does not publish X" is
-// only auditable if X is named. `tsconfig.build.json` sets `removeComments: false`, so these
-// annotations are shipped deliverables and travel with the artifact.
+// only auditable if X is named. THE SOURCE IS THE AUDIT RECORD. `tsconfig.build.json` sets
+// `removeComments: false`, so an annotation also survives into the `tsc` output in `build/` whenever
+// the declaration it sits on survives type erasure - but NOT into the deployable artifact: none of
+// this file's own annotations appears in `dist/skuResolutionHandler.cjs`, so a bundled artifact is
+// never where one is read.
 // ===========================================================================
 
 /**
@@ -652,20 +668,16 @@ const findSkusSchema = z.object({
  * defect never reaches. The service tier keeps the signature for interface parity and rejects when
  * called; the entity keeps `getStocksDeletableFlag(): never` for the same reason.
  *
- * ---------------------------------------------------------------------------
  * LEGACY-DEFECT [model/dao/SkuDAO.cfc:L163]: `var hql &= "WHERE ..."` re-declares a variable already
  * declared at L152, which is not valid CFML.
  * Preserved deliberately; do not fix without a product decision.
- * ---------------------------------------------------------------------------
  *
  * Recorded because it sits on the `getProductSkus` path this module declines to publish. It is not
  * repaired here and nothing here depends on it.
  *
- * ---------------------------------------------------------------------------
  * LEGACY-DEFECT [model/dao/SkuDAO.cfc:L222-L226]: `clearNextOptionGroupSortOrder` deletes the memo
  * only when the memo does NOT exist, so the condition is inverted and the clear can never fire.
  * Preserved deliberately; do not fix without a product decision.
- * ---------------------------------------------------------------------------
  *
  * In the legacy that memo was component state on a long-lived DAO. In the target the whole graph
  * that would hold it is REQUEST-SCOPED, established by `./bootstrap.js`'s per-request scope factory,
@@ -674,16 +686,15 @@ const findSkusSchema = z.object({
  * every invocation and holds none across invocations. A module-scope cache of a request scope in this
  * file would re-open the defect and carry one caller's state into another's request.
  *
- * ---------------------------------------------------------------------------
- * TODO CARRY-FORWARD [model/dao/SkuDAO.cfc:L175]: "test to see if this query works with DB's other
+ * TODO CARRY-FORWARD [model/dao/SkuDAO.cfc:L177]: "test to see if this query works with DB's other
  * than MSSQL and MySQL" - the legacy TODO on `getSortedProductSkusID`, whose `ORDER BY` branches on
  * the database product name. Carried forward as a flagged TODO and NOT silently completed: the
  * dialect-parameterized statement lives in `src/repositories/mysql/sql/sortedProductSkus.sql.ts`,
  * only the MySQL branch is targeted, and no portability work is performed anywhere in this module.
- * ---------------------------------------------------------------------------
  */
 export const NON_EXPOSED_SURFACE_NOTES: Readonly<Record<string, string>> = Object.freeze({
-  // LEGACY-DEFECT [model/service/SkuService.cfc:L281]: getSkuStocksDeletableFlag calls a DAO method that does not exist; it fails as a raw engine error, not a Hibachi message.
+  // LEGACY-DEFECT [model/service/SkuService.cfc:L281]: `getSkuStocksDeletableFlag` calls a DAO
+  // method that does not exist; it fails as a raw engine error, not a Hibachi message.
   // Preserved deliberately; do not fix without a product decision.
   getSkuStocksDeletableFlag:
     'Not exposed. [model/service/SkuService.cfc:L281] delegates to a SkuDAO method that does not ' +
@@ -709,16 +720,13 @@ export const NON_EXPOSED_SURFACE_NOTES: Readonly<Record<string, string>> = Objec
     '[model/dao/SkuDAO.cfc:L172-L202] is CONTRACT and is reproduced in the repository statement; no ' +
     'sorting, re-sorting or re-ordering of any returned collection happens in this module.',
 
-  /**
-   * The unbounded bulk mutation. See {@link SKU_CREATION_SAFETY_ENVELOPE} for the three obligations
-   * that would attach to it and where each already lives.
-   */
+  /** The unbounded creation path is not published by this read-only capability. */
   createSkus:
     'Not exposed. Three independent reasons, each sufficient: it takes a hydrated Product entity; ' +
     'it is a durable mutation and the shared route table declares this capability GET-only, so a ' +
     'mutation behind it would invent HTTP semantics the source never had; and its odometer over the ' +
     'full cartesian product of option groups [model/service/SkuService.cfc:L105-L121] is unbounded ' +
-    'by construction. See SKU_CREATION_SAFETY_ENVELOPE.',
+    'by construction.',
 
   /** A durable mutation delegating to a STUB port. Absent for the same route-shape reason. */
   processImageUpload:
@@ -745,84 +753,50 @@ export const NON_EXPOSED_SURFACE_NOTES: Readonly<Record<string, string>> = Objec
     'job queue, step function or queue hop is invented to work around that, because the source had ' +
     'none.',
 
+  /**
+   * ★★★ WITHDRAWN BY FINDING F18, NOT ABSENT BY DESIGN. This entry differs in kind from the others
+   * above: the operation was PUBLISHED on this routed surface and has been removed, so it is recorded
+   * here with the reason rather than simply disappearing.
+   */
+  getTransactionExistsFlag:
+    'WITHDRAWN (finding F18). Was published as a routed operation and could never have answered. ' +
+    '[model/service/SkuService.cfc:L285-L287] declares no parameters and forwards none, and ' +
+    'MysqlSkuRepository.getTransactionExistsFlag raises a named SkuColumnError when neither ' +
+    'productID nor skuID is supplied - which is CORRECT PARITY, because ' +
+    '[model/dao/SkuDAO.cfc:L59-L63] takes its <cfelse> arm and executes with an UNDEFINED ' +
+    'arguments.productID, so the legacy cannot serve that call either. Against the real composition ' +
+    'the route could only ever produce a 500. Withdrawn rather than repaired: supplying an ' +
+    'identifier means widening a signature the AAP fixes at getTransactionExistsFlag(): ' +
+    'Promise<boolean> (AAP 0.4.2), and this tier holds no authority to reshape it. The service keeps ' +
+    'its faithful raise and its own coverage; no test double papers over it here.',
+
+  /**
+   * ★★ WITHDRAWN BY FINDING F10. Unpaged and unboundable at this tier.
+   */
+  searchSkusByProductType:
+    'WITHDRAWN (finding F10). Returns Sku[] complete and unpaged ' +
+    '[model/service/SkuService.cfc:L271-L273], and no member of that signature can bound it. ' +
+    'Bounding it means adding a parameter the legacy does not have, which is a signature reshaping ' +
+    'this tier may not allocate. AAP 0.4.1 specifies this entrypoint as exposing ' +
+    'getProductSkusBySelectedOptions and SKU lookup, so the action was never AAP-named. Still ' +
+    'reachable in-process by any caller holding the service, with its own service-tier coverage.',
+
+  /**
+   * ★★ WITHDRAWN BY FINDING F10. A whole page, over criteria that declare no paging.
+   */
+  findSkus:
+    'WITHDRAWN (finding F10). Returns a whole SkuPage, and SkuQueryCriteria declares NO paging ' +
+    'members at all, so a routed contract has nothing to bound - a page size cannot be required of a ' +
+    'caller and then forwarded to a criteria object with nowhere to put it. Adding paging members ' +
+    'reshapes a signature the AAP has already spent its smart-list allocation on (AAP 0.6.2). Never ' +
+    'AAP-named for this entrypoint. Still reachable in-process, with its own service-tier coverage.',
+
   /** The whole of the excluded pipeline, named so the boundary is explicit. */
   outOfScopeModules:
     'Not exposed. Nothing from OrderService, checkout, cart, payment, shipping, fulfillment, ' +
     'account, subscription, vendor or tax; nothing from the Taffy REST layer; nothing from the Mura ' +
     'CMS bridge; no integration adapter other than Google, which belongs to a different capability; ' +
     'and no org/Hibachi/** capability, which is a boundary to extract from and never modify.',
-});
-
-/**
- * The three obligations that WOULD attach to a SKU-creation path, and where each one lives.
- *
- * ★ THIS CAPABILITY EXPOSES NO SKU-CREATION PATH. The three obligations are recorded anyway, because
- * "the requirement did not apply" is only a defensible answer if the requirement is written down
- * beside the reason it did not apply.
- *
- * WHY IT IS NOT EXPOSED - two structural facts, neither of them a preference. First, the shared route
- * table declares this capability's single route as GET, and `./router.js` is consumed rather than
- * extended: a durable mutation reached by GET would invent HTTP semantics the legacy never had, and
- * adding a second route to a capability is a product decision that belongs to the router. Second, and
- * decisively, `createSkus(product, data)` [model/service/SkuService.cfc:L58] takes a HYDRATED
- * `Product`, and this tier can obtain none - `RequestScope` publishes no repository and no service
- * publishes a load-by-identifier, and a primary adapter constructs no entity. A POST route would not
- * change that.
- *
- * WHAT MAKES THE PATH DANGEROUS IN THE FIRST PLACE. `createSkus` runs an odometer over the FULL
- * CARTESIAN PRODUCT of the product's option groups [model/service/SkuService.cfc:L105-L121]; its
- * combination count is the product of every option-group size and is therefore UNBOUNDED BY
- * CONSTRUCTION. Under the legacy engine an ambient `cftransaction` and a one-hour request budget made
- * that merely slow. Under this execution model there is NO ambient transaction to fall back on, and
- * the platform bounds an invocation at fifteen minutes and a gateway-fronted request at
- * twenty-nine seconds. Those two numbers are PLATFORM FACTS, stated as facts; they are not service
- * levels, not targets, and nothing in this subtree asserts one.
- *
- * 1. EXPLICIT BOUND - already enforced, at the service tier. `SkuService` takes
- *    `maximumSkuCreationBatchSize` as a constructor argument, validates it as a positive safe
- *    integer, and refuses an invocation that would exceed it rather than truncating the work
- *    silently. It is a COUNT, and a count is a CORRECTNESS bound: it makes the number of rows one
- *    invocation can write a stated property of the deployment instead of a property of whatever
- *    option data happened to arrive. It is not a rate, not a duration, not a size budget and not a
- *    capacity figure, and no such figure appears anywhere in this file.
- *
- * 2. IDEMPOTENCY ON RETRY - a caller-supplied idempotency key, which is what a creation route would
- *    have to carry and honour. A retry is a PLATFORM FACT of this execution model, not an
- *    exceptional case, so a creation route that ignored one would double-write on the platform's
- *    ordinary behaviour. No such key is accepted by this module, because no operation here writes:
- *    all five published operations are reads, so replaying any of them writes nothing and the whole
- *    routed surface is idempotent by construction rather than by mechanism.
- *
- * 3. COMPENSATION STORY - stated explicitly, as the obligation requires. Were a creation route
- *    published, a partial failure would leave behind exactly the SKU rows the odometer had already
- *    committed before the failure, together with their option link rows, and NOT the product-level
- *    default-SKU assignment the legacy performs at the end of its loop - so the product would carry
- *    orphaned SKUs and no default. There being no ambient transaction, nothing rolls that back
- *    implicitly. Reconciliation is therefore the caller replaying the SAME idempotency key, which a
- *    correct implementation must treat as a resumption of the identical unit of work rather than as
- *    a new one, so that already-written rows are recognized instead of duplicated. This module
- *    publishes no such route, so it owns no partial state and there is nothing here to reconcile.
- *
- * ★ NO WORKER THREADS. The `cfthread`-to-worker-threads translation rule is recorded by the plan and
- * is UNEXERCISED: the `cfthread` count across the entire in-scope legacy slice is zero. None is
- * introduced here.
- *
- * ★ THE LEGACY LOCK TIMEOUTS ARE NOTED AND DELIBERATELY NOT IMPLEMENTED - the sixty-second
- * order-placement lock, the forty-five-second payment-transaction lock and the thirty-second
- * dependency-injection first-scan lock. All three sit in code paths outside this slice, and the last
- * disappears with the runtime bean factory itself.
- */
-export const SKU_CREATION_SAFETY_ENVELOPE: Readonly<Record<string, string>> = Object.freeze({
-  exposed: 'no - this capability publishes five read operations and no creation path',
-  explicitBound:
-    'enforced at the service tier by SkuService.maximumSkuCreationBatchSize; a COUNT, hence a ' +
-    'correctness bound, and an over-bound invocation is refused rather than truncated',
-  idempotency:
-    'not applicable - all five published operations are reads, so replay writes nothing and the ' +
-    'routed surface is idempotent by construction',
-  compensation:
-    'no partial state is owned here because nothing is written here; the story for a creation route ' +
-    'is written out in full on this constant',
 });
 
 // ===========================================================================
@@ -978,52 +952,24 @@ function projectSkus(skus: readonly ResolvedSku[]): readonly SkuProjection[] {
   return skus.map((sku) => projectSku(sku));
 }
 
-/**
- * Render a page of SKUs.
- *
- * The three non-SKU members are copied straight from the page the service built. `keywordProperties`
- * and `joins` DESCRIBE THE EXECUTED STATEMENT - `skuCode like` against one table
- * [model/dao/SkuDAO.cfc:L132], and no joins because the product-type restriction at [L135] is an `IN`
- * subquery - and that narrowing belongs to the service tier, which owns and documents it. Nothing is
- * added to either member here, and neither the smart-list reshaping nor its criteria surface is
- * re-derived or extended.
- *
- * @param page - the page exactly as the service built it.
- * @returns its transport form.
- */
-function projectSkuPage(page: SkuPage): SkuPageProjection {
-  return {
-    skus: projectSkus(page.skus),
-    keyword: page.keyword,
-    keywordProperties: page.keywordProperties.map((property) => ({
-      propertyIdentifier: property.propertyIdentifier,
-      weight: property.weight,
-    })),
-    // Assigned directly rather than mapped: the service publishes an empty list, so there is nothing
-    // to project, and a positional map over it would be theatre. Declaring the transport member
-    // `readonly string[]` is what makes a future change to the service's join shape break THIS file
-    // at compile time instead of silently publishing an unprojected object.
-    joins: page.joins,
-  };
-}
+// ★ `projectSkuPage` USED TO SIT HERE AND WENT WITH `findSkus` (finding F10). It copied the page's
+// three non-SKU members straight through; nothing it did is needed by either surviving operation.
 
 // ===========================================================================
 // SECTION 7 - VALIDATION AND DISPATCH, AS TWO STEPS
 //
-// ★★ THE SPLIT IS LOAD-BEARING, AND IT EXISTS BECAUSE VALIDATION WAS ONCE INTERLEAVED WITH DISPATCH.
+// ★★ THE SPLIT IS LOAD-BEARING. VALIDATION IS TOTAL AND COMES FIRST, ahead of any wiring.
 //
-// An earlier revision validated each operation's arguments INSIDE its dispatch arm, which meant the
-// composition root had already been awaited and A REQUEST SCOPE HAD ALREADY BEEN OPENED by the time an
-// argument-level rejection was produced. Ad-hoc validation caught it: a request naming a valid
-// operation but omitting a required argument opened one scope and then returned a client-shaped
-// rejection. Nothing incorrect was published, but the module was doing avoidable work in the database
-// tier on behalf of a request it had already established it could not serve - and the header's claim
-// that an unusable request opens no scope was true only of the operation NAME.
+// {@link validateInvocation} is pure, synchronous and reaches nothing: it either produces a
+// fully-typed invocation or throws, and it validates the operation NAME and the arguments that
+// operation declares in the same step. {@link invokeOperation} then takes that value and calls exactly
+// one service method.
 //
-// So validation is now TOTAL and comes FIRST. {@link validateInvocation} is pure, synchronous, and
-// reaches nothing: it either produces a fully-typed invocation or throws. {@link invokeOperation} then
-// takes that value and calls exactly one service method. The guarantee "an unusable request opens no
-// request scope" is consequently STRUCTURAL rather than a claim about ordering.
+// Interleaving the two - validating each operation's arguments inside its dispatch arm - would put the
+// composition root and an open request scope ahead of an argument-level rejection, so a request naming
+// a valid operation while omitting a required argument would reach the database tier before being
+// refused. Keeping them separate is what makes "an unusable request opens no connection and no request
+// scope" a STRUCTURAL property rather than a claim about ordering.
 // ===========================================================================
 
 /**
@@ -1042,20 +988,7 @@ type ValidatedInvocation =
     }
   | {
       readonly operation: 'getSkuBySkuCode';
-      readonly skuCode: string;
-    }
-  | {
-      readonly operation: 'searchSkusByProductType';
-      readonly term: string;
-      /** ⚠️ SINGULAR. Absent stays absent - the DAO gates its restriction on presence. */
-      readonly productTypeID?: string | undefined;
-    }
-  | {
-      readonly operation: 'getTransactionExistsFlag';
-    }
-  | {
-      readonly operation: 'findSkus';
-      readonly criteria: SkuQueryCriteria;
+      readonly skuCode?: string | undefined;
     };
 
 /**
@@ -1095,31 +1028,6 @@ function validateInvocation(
       const input = getSkuBySkuCodeSchema.parse(parameters);
 
       return { operation, skuCode: input.skuCode };
-    }
-
-    case 'searchSkusByProductType': {
-      const input = searchSkusByProductTypeSchema.parse(parameters);
-
-      return { operation, term: input.term, productTypeID: input.productTypeID };
-    }
-
-    case 'getTransactionExistsFlag': {
-      // No arguments to validate: the legacy declares none
-      // [model/service/SkuService.cfc:L285-L287], so none is invented.
-      return { operation };
-    }
-
-    case 'findSkus': {
-      const input = findSkusSchema.parse(parameters);
-
-      // Built to the type the service declares and carrying nothing else. `productTypeID` is carried
-      // as absent when absent, for the same reason as above.
-      const criteria: SkuQueryCriteria = {
-        keyword: input.keyword,
-        productTypeID: input.productTypeID,
-      };
-
-      return { operation, criteria };
     }
   }
 }
@@ -1168,31 +1076,6 @@ async function invokeOperation(
         sku: sku === undefined ? undefined : projectSku(sku),
       };
     }
-
-    case 'searchSkusByProductType': {
-      // `productTypeID` is SINGULAR here and is forwarded as absent when the caller omitted it,
-      // because the DAO gates its restriction on presence [model/dao/SkuDAO.cfc:L134] - an empty
-      // string and an absent value are not the same request. It is never normalised against the
-      // plural product-side sibling, in either direction.
-      const skus = await scope.skuService.searchSkusByProductType(
-        invocation.term,
-        invocation.productTypeID,
-      );
-
-      return { operation: invocation.operation, skus: projectSkus(skus) };
-    }
-
-    case 'getTransactionExistsFlag': {
-      const transactionExistsFlag = await scope.skuService.getTransactionExistsFlag();
-
-      return { operation: invocation.operation, transactionExistsFlag };
-    }
-
-    case 'findSkus': {
-      const page = await scope.skuService.findSkus(invocation.criteria);
-
-      return { operation: invocation.operation, page: projectSkuPage(page) };
-    }
   }
 }
 
@@ -1232,13 +1115,11 @@ export type SkuResolutionHandler = (
 /**
  * The two collaborators this handler reaches outside itself.
  *
- * ★ THE INJECTION SEAM, AND THE REASON IT EXISTS. Assertions for this module live in
- * `tests/unit/handlers/skuResolutionHandler.test.ts`, owned by a different agent, and that suite must
- * be able to drive the handler against an isolated graph WITHOUT patching module state - no module
- * mock, no monkey-patched import, no reset hook. Supplying a `bootstrap` closure that itself calls
+ * ★ THE INJECTION SEAM, AND THE REASON IT EXISTS. The handler tier's own suite must be able to drive
+ * this module against an isolated graph WITHOUT patching module state - no module mock, no
+ * monkey-patched import, no reset hook. Supplying a `bootstrap` closure that itself calls
  * `bootstrapCompositionRoot` with overrides is the whole mechanism: any overrides bypass the module
- * memo entirely, which is exactly what the composition root's own documentation describes as its test
- * seam. This mirrors the idiom already established there and by `resetCompositionRoot`.
+ * memo entirely, which is what the composition root publishes as its test seam.
  *
  * Deliberately only two members. Nothing else in this module is a collaborator: the router and the
  * error mapper are pure functions over data, and the projection functions are pure. Widening this
@@ -1272,33 +1153,19 @@ export interface SkuResolutionHandlerDependencies {
   readonly logger: Logger;
 }
 
-/**
- * Resolve the correlation identifier for this invocation.
- *
- * The gateway's own request identifier first, because that is the value a caller sees and can quote;
- * then the platform invocation identifier; then a fixed, obviously-synthetic token. Only ever LOGGED
- * and echoed back for correlation - it is not used for routing, for authorization, or as a key for
- * anything.
- *
- * @param event - the proxy event.
- * @param context - the invocation context, when the platform supplied one.
- * @returns a non-empty correlation identifier.
- */
-function resolveRequestId(event: APIGatewayProxyEvent, context?: InvocationIdentity): string {
-  const gatewayRequestId = event.requestContext.requestId;
-
-  if (gatewayRequestId !== '') {
-    return gatewayRequestId;
-  }
-
-  const invocationRequestId = context?.awsRequestId;
-
-  if (invocationRequestId !== undefined && invocationRequestId !== '') {
-    return invocationRequestId;
-  }
-
-  return UNCORRELATED_REQUEST_ID;
-}
+// ★★★ THE LOCAL `resolveRequestId` IS GONE, AND ITS PRECEDENCE WAS THE ONE THAT WAS WRONG.
+// It preferred `event.requestContext.requestId` - the gateway's identifier - on the reasoning that
+// "that is the value a caller sees and can quote", then fell back to the runtime's `awsRequestId`,
+// then to a local `'uncorrelated'` token. Correlation review (finding F8) measured all five
+// entrypoints and found THIS module was the only one in that order; its three siblings preferred the
+// runtime identifier.
+//
+// THE SHARED POLICY WINS ON A CONCRETE ARGUMENT RATHER THAN ON UNIFORMITY ALONE. The runtime's
+// `awsRequestId` is the identifier the platform's own START/END/REPORT lines carry for THIS execution,
+// so an operator joining a response to a log stream lands on the right invocation even when the
+// gateway retried and produced TWO executions under ONE gateway identifier - which is exactly the case
+// the old precedence resolved the wrong way. `resolveServerRequestId` in `./errorMapper.js` owns it
+// now, along with the fallback token, and reads nothing from a header in either module.
 
 /**
  * The query parameters of the request, as a struct.
@@ -1307,9 +1174,15 @@ function resolveRequestId(event: APIGatewayProxyEvent, context?: InvocationIdent
  * the two cases are collapsed to one empty struct here - which lets every schema below report an
  * absent parameter in the same way whether the query string was empty or missing altogether.
  *
- * ONLY the single-valued parameter map is read. The multi-valued map is deliberately ignored: a
- * repeated parameter has no meaning in any of the five operations, and giving one a meaning would be
- * inventing a request grammar the source never had.
+ * ★★ THE PREVIOUS REVISION IGNORED THE MULTI-VALUED MAP, AND THAT WAS THE DEFECT. It read: "ONLY the
+ * single-valued parameter map is read. The multi-valued map is deliberately ignored: a repeated
+ * parameter has no meaning in either published operation, and giving one a meaning would be inventing a
+ * request grammar the source never had." The first clause of that reasoning is right and the conclusion
+ * does not follow from it: a repeated parameter having NO meaning is precisely why it must be REFUSED
+ * rather than silently resolved to whichever value the single-valued map happened to keep. Request-binding
+ * review (finding F11) named that silent resolution as an undocumented choice made where the caller
+ * cannot see it. {@link countSuppliedValues} performs the refusal; this function still reads
+ * only the single-valued map, because by the time it runs the two maps are known to agree.
  *
  * @param event - the proxy event.
  * @returns the query parameters, or an empty struct.
@@ -1318,6 +1191,33 @@ function readQueryParameters(
   event: APIGatewayProxyEvent,
 ): Readonly<Record<string, string | undefined>> {
   return event.queryStringParameters ?? {};
+}
+
+/**
+ * The largest number of values any one query parameter carried.
+ *
+ * API Gateway reports every value of a repeated parameter on `multiValueQueryStringParameters` while
+ * the single-valued map keeps only one of them, so counting there is the only way to notice. An event
+ * synthesized without the multi-value map reports one rather than pretending that a repeat occurred.
+ *
+ * @param event - the proxy event.
+ * @returns the maximum multiplicity across supplied parameters; `1` when nothing repeated.
+ */
+function countSuppliedValues(event: APIGatewayProxyEvent): number {
+  const repeated = event.multiValueQueryStringParameters;
+
+  if (repeated === null || repeated === undefined) {
+    return 1;
+  }
+
+  let widest = 1;
+  for (const values of Object.values(repeated)) {
+    if (values !== undefined && values.length > widest) {
+      widest = values.length;
+    }
+  }
+
+  return widest;
 }
 
 /**
@@ -1331,15 +1231,22 @@ function readQueryParameters(
  * present-but-blank SKU. The same encoding applies to every optional member of
  * {@link SkuProjection} and {@link CurrencyDetailProjection}.
  *
- * @param body - the document to serialize.
- * @returns the response, with the success status and the JSON header set.
+ * ★ THE OUTER DOCUMENT IS NO LONGER BUILT HERE. This function used to assemble a whole response - its
+ * own status, its own header set and its own `{requestId, outcome}` body. Finding F13 moved the outer
+ * document to `./errorMapper.js`'s `jsonSuccessResponse`, which every capability now shares, so what
+ * remains here is the capability payload and the omission semantics that are genuinely this module's.
+ * The omission behaviour is unchanged and is the reason this function still exists at all rather than
+ * being inlined: `JSON.stringify` runs inside the shared builder, so `undefined` still becomes an
+ * ABSENT member exactly as before.
+ *
+ * @param outcome - what the dispatched operation produced.
+ * @param requestId - the correlation identifier the shared envelope echoes.
+ * @returns the response, with the shared success status, header set and envelope.
  */
-function serializeSuccessBody(body: SkuResolutionResponseBody): APIGatewayProxyResult {
-  return {
-    statusCode: OK_STATUS,
-    headers: JSON_SUCCESS_HEADERS,
-    body: JSON.stringify(body),
-  };
+function serializeOutcome(outcome: SkuResolutionOutcome, requestId: string): APIGatewayProxyResult {
+  const document: SkuResolutionResultDocument = { outcome };
+
+  return jsonSuccessResponse(requestId, SKU_RESOLUTION_CAPABILITY, SKU_RESOLUTION_ACTION, document);
 }
 
 /**
@@ -1356,17 +1263,10 @@ function serializeSuccessBody(body: SkuResolutionResponseBody): APIGatewayProxyR
 function countResults(outcome: SkuResolutionOutcome): number {
   switch (outcome.operation) {
     case 'getProductSkusBySelectedOptions':
-    case 'searchSkusByProductType':
       return outcome.skus.length;
 
     case 'getSkuBySkuCode':
       return outcome.sku === undefined ? 0 : 1;
-
-    case 'getTransactionExistsFlag':
-      return 0;
-
-    case 'findSkus':
-      return outcome.page.skus.length;
   }
 }
 
@@ -1391,19 +1291,22 @@ function countResults(outcome: SkuResolutionOutcome): number {
  *   3. Verify the resolved action is the one this module implements, and treat anything else as a
  *      non-route. Unreachable while the shared table holds one route per capability, and stated
  *      anyway because the table is additive by design.
- *   4. Read the operation. Its absence is a rejection the handler ITSELF establishes, so it is
+ *   4. REFUSE A REPEATED QUERY PARAMETER. Asked before anything reads one, because a repeat is
+ *      invisible to the single-valued map every schema reads - by then one of the caller's two values
+ *      has already been discarded and no schema can notice (finding F11).
+ *   5. Read the operation. Its absence is a rejection the handler ITSELF establishes, so it is
  *      reported through `invalidRequestResponse` with the reason named from the error mapper's closed
  *      union - the words belong to that module, not to this one. An operation that is present but
  *      unrecognized fails validation instead and reaches the same client-shaped status with the field
  *      path `operation` attached.
- *   5. VALIDATE COMPLETELY, BEFORE ANY WIRING. Both the operation AND the arguments it declares are
+ *   6. VALIDATE COMPLETELY, BEFORE ANY WIRING. Both the operation AND the arguments it declares are
  *      validated while nothing has been awaited, so AN UNUSABLE REQUEST OPENS NO CONNECTION AND NO
  *      REQUEST SCOPE. That is a structural property of the ordering here plus the purity of
- *      {@link validateInvocation}, not a claim about intent; the section 7 header records the revision
- *      that made it true and the ad-hoc finding that prompted it.
- *   6. Await the memoized composition root, then open EXACTLY ONE request scope, then invoke EXACTLY
+ *      {@link validateInvocation}, not a claim about intent.
+ *   7. Await the memoized composition root, then open EXACTLY ONE request scope, then invoke EXACTLY
  *      ONE service method.
- *   7. Serialize. One `catch` maps anything thrown.
+ *   8. Serialize through the SHARED success envelope. One `catch` maps anything thrown, through the
+ *      ROUTED mapping context so the failure is logged against the endpoint that produced it.
  *
  * ★ EXACTLY ONE REQUEST SCOPE PER INVOCATION, AND NONE HELD BETWEEN THEM. The scope is a local, it is
  * created after validation and discarded when the invocation returns, and nothing in this module
@@ -1414,14 +1317,11 @@ function countResults(outcome: SkuResolutionOutcome): number {
  * scope holds one request's state.
  *
  * ★ NO REQUEST STATE IS READ FROM `../lib/config.js`. That module is STATIC PROCESS CONFIGURATION and
- * is never a request scope; this module does not import it at all. The scope is opened with NO input:
- * none of the five operations reads an account-scoped price, a date-dependent window or a feed host,
- * so supplying `accountID`, `adminAccountFlag`, `now` or `feedHost` would be fabricating inputs -
- * and `accountID`'s absence IS the logged-out arm rather than a missing value, as the composition root
- * records. Deriving a caller identity from an event here would be inventing an authorization tier,
- * which this handler has no authority to do: no authentication, no permission check, no rate limit, no
- * retry-after and no circuit breaker appears anywhere in it, and no status outside the error mapper's
- * closed set of three is ever produced.
+ * is never a request scope; this module does not import it. The scope receives only the account
+ * identifier established by `resolveRequestPrincipal`; `adminAccountFlag`, `now` and `feedHost` stay
+ * omitted because this route performs no administrative write, owns no clock policy and renders no
+ * feed. A missing principal is refused before validation or wiring rather than represented as a
+ * logged-out scope.
  *
  * @param overrides - collaborators to substitute. Omit for the production path.
  * @returns the Lambda entry point.
@@ -1438,8 +1338,17 @@ export function createSkuResolutionHandler(
     event: APIGatewayProxyEvent,
     context?: InvocationIdentity,
   ): Promise<APIGatewayProxyResult> => {
-    const requestId = resolveRequestId(event, context);
-    const errorContext: ErrorMappingContext = {
+    // ★ THE SHARED CORRELATION POLICY, NOT THIS MODULE'S OWN (finding F8). Runtime identifier first,
+    // then the gateway's, then the shared fallback token - and nothing from a header in either case.
+    const requestId = resolveServerRequestId(event, context);
+
+    // ★★ ONE MAPPING CONTEXT FOR THE WHOLE INVOCATION, REASSIGNED ONCE WHEN THE ROUTE IS KNOWN. It
+    // starts without a route because none has been resolved yet, and it is the SAME object the single
+    // `catch` below reads - so a failure raised after routing is logged WITH the route rather than
+    // through a separate unrouted context. Finding F8 named the route's absence from error and success
+    // lines as the defect; carrying it on one mutable local is what fixes both at once without
+    // introducing a second mapping point.
+    let mappingContext: ErrorMappingContext = {
       requestId,
       logger: dependencies.logger,
     };
@@ -1448,44 +1357,83 @@ export function createSkuResolutionHandler(
       const resolution = resolveRouteForCapability(
         routeRequestFromEvent(event),
         SKU_RESOLUTION_CAPABILITY,
-        errorContext,
+        mappingContext,
       );
 
       if (!resolution.matched) {
         return resolution.response;
       }
 
+      // ★ BUILT FROM THE MATCHED ROW'S OWN FROZEN MEMBERS AND FROM NOTHING THE CALLER SENT. The router
+      // matches the method with `listFindNoCase`, so `event.httpMethod` may differ from the table's
+      // declaration in case and would put a caller-controlled string on the log line for no diagnostic
+      // gain. Using the row instead keeps the label one of a CLOSED set of five. It reaches the log
+      // stream only and is never echoed into a response body.
+      mappingContext = {
+        requestId,
+        route: routeDiagnosticLabel(resolution.route.methods, resolution.route.path),
+        logger: dependencies.logger,
+      };
+
       if (resolution.route.action !== SKU_RESOLUTION_ACTION) {
-        return routeNotFoundResponse(errorContext);
+        return routeNotFoundResponse(mappingContext);
+      }
+
+      // Fail closed after routing and before query parsing or graph construction. Identity comes only
+      // from the authorizer context; `requestContext.identity` remains deliberately unread.
+      const principalResolution = resolveRequestPrincipal(event);
+      if (!principalResolution.identified) {
+        return unauthenticatedResponse(mappingContext);
+      }
+
+      // ★★ REPEATED PARAMETERS ARE REFUSED BEFORE ANYTHING READS ONE (finding F11). Asked here rather
+      // than inside a schema because a repeat is invisible to the single-valued map every schema reads:
+      // by the time `readQueryParameters` runs, one of the caller's two values has already been
+      // discarded, and no schema can notice that it happened.
+      if (countSuppliedValues(event) > MAXIMUM_VALUES_PER_PARAMETER) {
+        return invalidRequestResponse('unusableRequestInput', mappingContext, [
+          REPEATED_PARAMETER_ISSUE,
+        ]);
       }
 
       const parameters = readQueryParameters(event);
       const requestedOperation = parameters[OPERATION_QUERY_PARAMETER];
 
       if (requestedOperation === undefined || requestedOperation === '') {
-        return invalidRequestResponse('missingQueryParameter', errorContext);
+        return invalidRequestResponse('missingQueryParameter', mappingContext);
       }
 
       // TOTAL VALIDATION, BEFORE ANY WIRING. Nothing below this line runs for a request whose
       // operation is unrecognized or whose arguments are unusable - see the section 7 header.
       const invocation = validateInvocation(parameters);
 
+      if (!hasClosedParameterSet(invocation.operation, parameters)) {
+        return invalidRequestResponse('unusableRequestInput', mappingContext, [
+          UNPUBLISHED_PARAMETER_ISSUE,
+        ]);
+      }
+
       const compositionRoot = await dependencies.bootstrap();
-      const scope = await compositionRoot.createRequestScope();
+      const scope = await compositionRoot.createRequestScope({
+        accountID: principalResolution.principal.accountID,
+      });
 
       const outcome = await invokeOperation(invocation, scope);
 
-      // A count and the operation name only. The operation name is a closed literal of this module's
-      // own making, and the count is a number - neither can carry a caller-supplied value, a
-      // credential, a connection string or a statement fragment.
+      // A count, the operation name and the route only. The operation name and the route label are
+      // closed literals of this module's and the route table's own making, and the count is a number -
+      // none can carry a caller-supplied value, a credential, a connection string or a statement
+      // fragment. The route is emitted on the SUCCESS line as well as the failure one (finding F8), so
+      // an operator can group both by endpoint.
       dependencies.logger.info('sku resolution operation completed', {
         capability: SKU_RESOLUTION_CAPABILITY,
         operation: outcome.operation,
         requestId,
+        route: mappingContext.route,
         resultCount: countResults(outcome),
       });
 
-      return serializeSuccessBody({ requestId, outcome });
+      return serializeOutcome(outcome, requestId);
     } catch (thrown: unknown) {
       // THE SINGLE MAPPING POINT. The caught value is passed as `unknown` and is narrowed inside
       // `./errorMapper.js` by `instanceof` and bounded property probes - never cast here, never
@@ -1505,7 +1453,11 @@ export function createSkuResolutionHandler(
       // [model/entity/Sku.cfc:L258], or `getSkuStocksDeletableFlag`'s missing DAO member
       // [model/service/SkuService.cfc:L281] - is reported, never silenced and never replaced by a
       // substituted value. This module reaches neither of them, and if one arrived it would surface.
-      return mapErrorToApiGatewayResponse(thrown, errorContext);
+      //
+      // ★ THE ROUTED CONTEXT, not an unrouted one. `mappingContext` carries the route from the moment
+      // the router matched, so a failure classified here is logged against the endpoint that produced
+      // it (finding F8).
+      return mapErrorToApiGatewayResponse(thrown, mappingContext);
     }
   };
 }

@@ -129,7 +129,9 @@ import type { ProductHydrationInput } from '../../src/domain/entities/product.js
 import type { Sku } from '../../src/domain/entities/sku.js';
 import type {
   AttributeSetSummary,
+  ProductMaterializationWindow,
   ProductRepository,
+  ProductSearchMatches,
 } from '../../src/domain/ports/productRepository.js';
 import type { OptionRepository, SelectOption } from '../../src/domain/ports/optionRepository.js';
 import type { SettingKey, SettingsProvider } from '../../src/domain/ports/settingsProvider.js';
@@ -1062,11 +1064,18 @@ function makeFixtureProductRepository(): ProductRepository {
       );
     },
 
-    searchProductsByProductType(term?: string, productTypeIDs?: string): Promise<Product[]> {
+    searchProductsByProductType(
+      term?: string,
+      productTypeIDs?: string,
+      materializationWindow?: ProductMaterializationWindow,
+    ): Promise<ProductSearchMatches> {
       void term;
       void productTypeIDs;
+      // The window is accepted and unused: the double holds no store, so there is nothing to window.
+      // Declaring it keeps the double honest about the port's shape rather than narrowing it.
+      void materializationWindow;
 
-      return Promise.resolve([]);
+      return Promise.resolve({ records: [], matchedCount: 0 });
     },
 
     getProductByProductID(productID: string): Promise<Product | undefined> {

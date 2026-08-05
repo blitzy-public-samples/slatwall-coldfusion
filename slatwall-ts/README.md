@@ -17,7 +17,9 @@ Two consequences of that follow immediately, and both are load-bearing:
   contains a defect that changes money, the defect is reproduced and annotated rather than repaired.
   Every such site carries a `LEGACY-DEFECT [<path>:<locator>]` marker, and the three sanctioned
   exceptions carry a `DELIBERATE DIVERGENCE [<citation>]` marker instead. `tsconfig.build.json` sets
-  `removeComments: false` precisely so those annotations survive into the emitted artifact.
+  `removeComments: false` precisely so those annotations survive into the `build/` output verbatim.
+  They reach the bundled Lambda artifacts in `dist/` by a different route — the source map, not the
+  artifact text — which is set out under [What "deployable" means here](#what-deployable-means-here).
 
 ---
 
@@ -42,6 +44,22 @@ npm ci             # install from package-lock.json, exactly
 
 Use `npm ci`, not `npm install`. Every dependency below is pinned to an **exact** version — no caret
 ranges, no `latest` — and `npm ci` is the command that honours the lockfile without renegotiating it.
+
+### Runtime lifecycle — an escalated plan decision
+
+> **This is a plan-level decision that has been escalated, not a defect this subtree claims to have
+> fixed.** The pinned Node 20 / Lambda `nodejs20.x` line was raised as **S-17** and re-raised as
+> **V-10** (CWE-1104, _Use of Unmaintained Third-Party Components_).
+>
+> AAP 0.1.1, 0.5.1 and 0.9.1 freeze this runtime line and its exact toolchain. `.nvmrc`,
+> `engines.node`, `package-lock.json`, `@types/node` and `target: 'node20'` therefore move together,
+> and the `A16` traceability suite fails a partial change. Selecting a successor runtime requires a
+> plan-owner update rather than unilateral drift in executable build configuration.
+>
+> Before any release or deployment decision, revalidate the runtime against the maintained
+> [AWS Lambda runtimes](https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtimes.html) authority.
+> No lifecycle date, support-status snapshot or dependency-scan result is restated here or in
+> `esbuild.config.mjs`; each is mutable and must be checked at the time the decision is made.
 
 ### Runtime dependencies
 
@@ -90,7 +108,7 @@ All commands run from this directory.
 | `npm run compile`       | `tsc -p tsconfig.build.json` — emits `.js`, `.d.ts` and maps for `src/**` into `build/`.     |
 | `npm run bundle`        | `node esbuild.config.mjs` — emits the bundled Lambda artifacts into `dist/`.                 |
 | `npm run build`         | `typecheck` then `bundle`.                                                                   |
-| `npm run package`       | `typecheck` then `bundle --zip` — the deployable artifacts plus a `.zip` per entrypoint.     |
+| `npm run package`       | `npm run build`. The bundled artifacts **are** the package — there is no archive step.       |
 | `npm run verify`        | `typecheck` → `lint` → `format:check` → `test`. The gate to run before committing.           |
 | `npm run clean`         | Removes `dist/`, `build/` and `coverage/`.                                                   |
 
@@ -119,17 +137,51 @@ A declared entrypoint that is missing from disk is a **hard error**, not somethi
 `npm run bundle` and `npm run package` are gates, and a step that reports success while emitting
 nothing is not one. The build also fails if the artifact count does not match the entrypoint count.
 
-Each artifact is emitted with `platform: 'node'`, `target: 'node20'`, `format: 'cjs'`, external
-source maps without embedded sources, tree shaking on, license comments inlined so GPL attribution
-travels inside the artifact, and minification **off** — the preserved-defect annotations are part of
-the deliverable's audit trail and minifying them away would destroy it.
+Each artifact is emitted with `platform: 'node'`, `target: 'node20'`, `format: 'cjs'`, tree shaking
+on, license comments inlined so GPL attribution travels inside the artifact, and an **external source
+map that embeds the original TypeScript sources** (`sourcesContent: true`).
+
+That last setting is the audit trail, and an earlier revision of this section credited the wrong
+mechanism for it. The preserved-defect annotations this port is required to carry —
+`// LEGACY-DEFECT [...]` and `// DELIBERATE DIVERGENCE [...]`, the format AAP 0.6.7 mandates — are
+ordinary line comments, and a bundler discards ordinary comments regardless of what `minify` is set
+to. Measured on this exact entrypoint set: roughly 130 `LEGACY-DEFECT` markers exist across the
+modules that go into a single artifact, and only about 56 survive in the artifact text. Embedding the
+sources in the map is what makes every one of them recoverable, with its legacy `[<path>:<locator>]`
+citation intact, so the `.cjs.map` is a local build-and-audit companion rather than a debugging
+nicety. It intentionally contains the GPL v3.0 TypeScript source and module paths, so this is not a
+claim that the map is disclosure-free or suitable for indiscriminate publication. What the build
+does guarantee is that no environment value is substituted into it: `src/lib/config.ts` remains the
+only runtime reader of `process.env`, and esbuild uses no build-time `define`.
+
+`minify: false` is still set and still worth setting: an unminified artifact is diffable and its
+stack traces stay legible. It is simply not what carries the annotations.
+
+The build proves that rather than asserting it. After bundling, `esbuild.config.mjs` reads each
+emitted `dist/<entrypoint>.cjs.map`, requires `sources` and `sourcesContent` to be present and of
+equal length, and requires at least one `LEGACY-DEFECT [` and one `DELIBERATE DIVERGENCE [` to be
+recoverable from a source resolving under `src/`. It writes nothing and exits non-zero if any of that
+fails — a missing map, a map without embedded sources, or a marker set that has gone absent. On
+success it reports the per-artifact counts:
+
+```text
+[esbuild] Annotations recoverable from productFeedHandler.cjs.map: LEGACY-DEFECT x100, DELIBERATE DIVERGENCE x7
+```
 
 The `.cjs` extension is not cosmetic. `package.json` declares `"type": "module"`, so a CommonJS
 payload in a `.js` file would be loaded as ESM and throw; `outExtension: { '.js': '.cjs' }` makes the
 format unambiguous to Node, and the runtime resolves a `.cjs` module for a `<file>.handler` entry.
-`npm run package` archives each artifact — with its source map, when one is present — as
-`dist/<entrypoint>.zip`, with stored paths junked so the module sits at the archive root. Nothing is
-uploaded: archiving beside the artifact **is** the whole of the package step.
+
+`npm run package` is `npm run build` — the same typecheck-then-bundle gate, under the name AAP 0.9.1
+uses for the deliverable. There is no separate archive stage: a run leaves exactly ten files in
+`dist/`, five `.cjs` artifacts and their five `.cjs.map` maps, and the `.cjs` the runtime loads **is**
+the package. An earlier revision accepted a `--zip` flag and shelled out to a host-global `zip`
+executable to write one `.zip` per artifact; that is removed. This checkpoint requires no zip step,
+and depending on a utility that is absent from a stock container made `npm run package` fail for
+reasons that had nothing to do with the code being packaged. Nothing is archived, uploaded,
+transmitted or published, no platform tooling is invoked, and no credential is read. The maps remain
+beside the runtime artifacts for local auditability; this build script does not place them into a
+deployable archive or send them anywhere.
 
 ---
 

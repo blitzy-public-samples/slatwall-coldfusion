@@ -1,23 +1,14 @@
 // ---------------------------------------------------------------------------
 // The catalog-query Lambda entrypoint, under test.
 //
-// ★★ 100% NET-NEW COVERAGE, AND IT IS NEVER PRESENTED AS PARITY. `meta/tests/` holds 32 `.cfc`
-// files and NOT ONE of them tests a handler tier - there was no handler tier to test, because FW/1
-// resolved a controller by subsystem convention rather than through anything a suite could call.
-// `meta/tests/unit/service/` carries AccountService, HibachiService, PaymentService and
-// UtilityRBService tests only, none of them in scope. The three legacy files that touch the in-scope
-// slice at all are [meta/tests/unit/entity/BrandTest.cfc], [meta/tests/unit/entity/ProductTest.cfc]
-// and the EMPTY [meta/tests/functional/admin/entity/ProductTest.cfc]; the first two are the only two
-// legacy-extended suites in this subtree and neither is this one. Nothing below carries a legacy
-// assertion forward, and AAP 0.9.4 fails a suite that claims otherwise.
+// NET-NEW COVERAGE, never presented as parity: no legacy test file reaches the handler tier. The two
+// legacy-extended suites in this subtree are the brand and product entity suites, and neither is this
+// one.
 //
-// WHAT IS DELIBERATELY NOT DONE HERE: no MXUnit shape is transliterated. There is no MXUnit
-// assertion shim, no `setUp`/`tearDown` component, no port of [meta/tests/unit/Helper.cfc] as a
-// class, no `variables.`-scope emulation, no `evaluate`, and no dynamic dispatch. The legacy helper
-// is followed for the SHAPE of its sentinels only - a `TESTPRODUCTXXX`-style product code and a
-// 32-character hex identifier [meta/tests/unit/Helper.cfc:L51-L60] - and its `price = 100` bare
-// numeric is treated as the anti-pattern it is: every monetary literal below is a decimal STRING
-// handed to `Money`.
+// A handler is a primary adapter, so every `describe` below serves exactly one of four concerns:
+// request parsing and validation, delegation to the composed services, API Gateway response shaping,
+// and domain/error mapping. Nothing here asserts a price, a discount, a rounding outcome or a cascade
+// result, and SQL shape and parameter binding are owned by the repository integration tests.
 //
 // ---------------------------------------------------------------------------
 // WHAT THIS SUITE ASSERTS, AND THE FOUR CONCERNS IT IS ALLOWED TO ASSERT ABOUT
@@ -31,16 +22,27 @@
 //
 // THE SUBJECT IS BUILT THROUGH THE SHIPPED FACTORY. `createCatalogQueryHandler({ compositionRoot,
 // logger })` is the substitution API the module publishes for exactly this purpose, so every test
-// below drives a handler whose composition root is a hand-written in-memory double and whose logger
-// writes to a recording sink. NO REAL COMPOSITION ROOT IS EVER CALLED, no connection pool is
-// created, no statement is issued, no environment variable is read, no `.env` is loaded, no
-// credential exists anywhere in this file, and no network, filesystem or clock is touched. The suite
-// passes with a COMPLETELY EMPTY environment.
+// below drives a handler whose logger writes to a recording sink and whose composition root is
+// assembled over an INJECTED statement executor and an EXPLICIT environment source. No connection pool
+// is created, no statement leaves this file, no environment variable is read from the process, no
+// `.env` is loaded, no credential exists anywhere here, and no network, filesystem or clock is touched.
+// The suite passes with a COMPLETELY EMPTY environment.
 //
-// NO MOCKING LIBRARY IS USED. The doubles are ordinary objects, typed member-for-member against the
-// shipped classes through `Pick<>`, which is what makes a signature change in
-// `src/services/productService.ts` or `src/services/optionService.ts` break this file at COMPILE
-// time rather than silently pass. `vi` appears once, in the per-suite `afterEach` described there.
+// ★★ QUOTE-THEN-REVISE. Those two sentences used to say the composition root was "a hand-written
+// in-memory double" and that "NO REAL COMPOSITION ROOT IS EVER CALLED". Both were true, and the price
+// of them was a `double as unknown as CompositionRoot` cast that a code review found - a crossing that
+// "defeats contract-drift detection for every unimplemented member" and leaves an unintended read
+// observing `undefined` instead of failing. The root is now the REAL one, built through the documented
+// override arm that bypasses both the pool and the module memo, wrapped in a delegating decorator that
+// counts the scopes it opened. Nothing is asserted or suppressed anywhere in this file.
+//
+// NO MOCKING LIBRARY IS USED for the doubles themselves: they are ordinary objects, typed member for
+// member against the shipped classes through `Pick<>`, which is what makes a signature change in
+// `src/services/productService.ts` or `src/services/optionService.ts` break this file at COMPILE time
+// rather than silently pass. `vi` is vitest itself and is used for two things only - restoring in the
+// per-suite `afterEach`, and installing those same typed objects on the three service prototypes the
+// real request scope's real instances inherit from. There is no `vi.mock`, no `vi.doMock`, no
+// `vi.resetModules`, no `vi.stubEnv`, no `vi.stubGlobal` and no global stream is touched.
 //
 // ★ THE THREE LINES OF THE SUBJECT THIS SUITE DELIBERATELY DOES NOT REACH, named so the gap reads as
 // a decision rather than an oversight:
@@ -85,12 +87,6 @@
 //     honest transport-level fact: the operation is refused, and no schema for those rules exists in
 //     this tier to drift from the one that owns them.
 //
-// NO RULE IS CITED ANYWHERE IN THIS FILE, BECAUSE THERE ARE NONE. `review_rules` returns the single
-// line "No user rules provided.", corroborated by AAP 0.7. Their absence is not licence to lower the
-// bar: the standard applied instead is the strict type profile, the closed dependency whitelist, the
-// single-arithmetic-surface discipline and the annotation forms below.
-// ---------------------------------------------------------------------------
-
 // IMPORT DISCIPLINE. Explicit relative specifiers carrying the `.js` extension NodeNext resolution
 // requires, named imports only, and `import type` on its own statement for every type-only import.
 // There is no barrel anywhere in this subtree. Every module below is one this suite is permitted to
@@ -105,27 +101,61 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { APIGatewayProxyEvent, APIGatewayProxyResult, Context } from 'aws-lambda';
 
 import { Money } from '../../../src/domain/valueObjects/money.js';
-import type { CompositionRoot } from '../../../src/handlers/bootstrap.js';
+// ★★★ THE REAL COMPOSITION ROOT, IMPORTED BECAUSE A DOUBLE CANNOT BE ONE WITHOUT A CAST.
+//
+// A code review found `asCompositionRoot(double)` here - a `double as unknown as CompositionRoot`
+// crossing that "defeats contract-drift detection for every unimplemented member", and leaves an
+// unintended read observing `undefined` rather than failing loudly. Its own documentation explained why
+// the cast existed: `RequestScope` publishes `productService`, `optionService`, `brandService`,
+// `skuService` and `roundingRuleService` as the CLASS types, every one of those classes holds
+// `private readonly` collaborators, and a TypeScript type with private members can only be satisfied by
+// an instance of the declaring class. That reasoning was sound; the conclusion was not the only one
+// available.
+//
+// The way out is to stop hand-writing a root at all: `bootstrapCompositionRoot({ executor, environment })`
+// assembles the REAL one over an injected statement executor and an explicit environment source - no
+// pool, no socket, no `process.env` - which is the construction `tests/unit/handlers/bootstrap.test.ts`
+// is built on. The scope it hands back IS a `RequestScope`, so nothing needs asserting, and the
+// programmable answers below are installed on the class PROTOTYPES the real instances inherit from,
+// each through one typed `vi.spyOn`. The `Pick<>` service surfaces are unchanged and still fully typed,
+// so a signature change in any of the three services still breaks this file at compile time - and now
+// the OTHER members of `RequestScope` are checked too rather than suppressed.
+import { bootstrapCompositionRoot, resetCompositionRoot } from '../../../src/handlers/bootstrap.js';
+import type {
+  CompositionRoot,
+  InspectableRequestScope,
+  RequestScope,
+  RequestScopeInput,
+} from '../../../src/handlers/bootstrap.js';
+import { appConfig } from '../../../src/lib/config.js';
+import type { EnvironmentSource } from '../../../src/lib/config.js';
+import type {
+  PreparedStatementExecutor,
+  SqlMutationResult,
+  SqlRow,
+} from '../../../src/repositories/mysql/connection.js';
+import { MAX_PLACEHOLDER_COUNT } from '../../../src/repositories/mysql/connection.js';
 import type {
   CatalogProductPageProjection,
   CatalogQueryLambdaHandler,
   CatalogQueryOperation,
-  CatalogQueryResponseBody,
+  CatalogQueryResultDocument,
   CatalogSelectOptionProjection,
 } from '../../../src/handlers/catalogQueryHandler.js';
 import { createCatalogQueryHandler, handler } from '../../../src/handlers/catalogQueryHandler.js';
-import type { ErrorResponseBody } from '../../../src/handlers/errorMapper.js';
+import type { ErrorResponseBody, SuccessResponseBody } from '../../../src/handlers/errorMapper.js';
 import { ROUTE_TABLE } from '../../../src/handlers/router.js';
 import type { LogSink } from '../../../src/lib/logger.js';
 import { logger } from '../../../src/lib/logger.js';
-import type { BrandService } from '../../../src/services/brandService.js';
-import type { OptionService } from '../../../src/services/optionService.js';
-import type {
-  ProductPage,
-  ProductQueryCriteria,
+// VALUE imports, not type-only: the programmable answers are installed on these classes' prototypes,
+// which is what the real request scope's real instances inherit from.
+import { BrandService } from '../../../src/services/brandService.js';
+import { OptionService } from '../../../src/services/optionService.js';
+import type { ProductPage, ProductQueryCriteria } from '../../../src/services/productService.js';
+import {
+  ProductPagingCriteriaError,
   ProductService,
 } from '../../../src/services/productService.js';
-import { ProductPagingCriteriaError } from '../../../src/services/productService.js';
 import { makeProductFixture } from '../../fixtures/productFixtures.js';
 import { makeSkuFixture } from '../../fixtures/skuFixtures.js';
 
@@ -172,6 +202,9 @@ const SENTINEL_SKU_ID = 'dddd5555666677778888999900001111';
 /** A SKU code, in the shape [meta/tests/unit/Helper.cfc:L56] uses. */
 const SENTINEL_SKU_CODE = 'TESTPRODUCTXXX-1';
 
+/** The opaque account identifier the default authorizer context establishes. */
+const CALLER_ACCOUNT_ID = 'eeee1111222233334444555566667777';
+
 /**
  * A unit price, as a DECIMAL STRING.
  *
@@ -197,8 +230,18 @@ const INVOCATION_ID = 'test-invocation-0f6c1d2e';
 /** The API Gateway identifier, used only where the invocation identifier is blank. */
 const GATEWAY_REQUEST_ID = 'test-gateway-4b7a9c30';
 
-/** The fixed placeholder the handler substitutes when neither identifier carries a value. */
-const UNIDENTIFIED_INVOCATION = 'unidentified-invocation';
+/**
+ * The fixed placeholder the SHARED resolver substitutes when neither identifier carries a value.
+ *
+ * ★★ THE VALUE MOVED WITH THE RESOLVER. This suite used to assert a per-handler
+ * `'unidentified-invocation'`; API review (finding F8) found five different correlation policies
+ * across the five entrypoints and collapsed them into `resolveServerRequestId` in
+ * `../../../src/handlers/errorMapper.js`, whose placeholder is `'unattributed'`. The literal is
+ * restated here rather than imported because the shared module keeps it module-private - a test that
+ * imported it could not detect the constant being changed to an empty string, which is exactly the
+ * regression the assertion below exists to catch.
+ */
+const UNATTRIBUTED_REQUEST_ID = 'unattributed';
 
 /**
  * The request instant, as an explicit UTC ISO-8601 literal.
@@ -251,6 +294,12 @@ interface EventOverrides {
 
   /** The API Gateway correlation identifier. Defaults to {@link GATEWAY_REQUEST_ID}. */
   readonly gatewayRequestId?: string | undefined;
+
+  /**
+   * The authorizer context. Omitted means an authenticated caller; `null` means
+   * no authorizer context.
+   */
+  readonly authorizer?: Readonly<Record<string, unknown>> | null | undefined;
 }
 
 /**
@@ -289,7 +338,10 @@ function makeEvent(overrides: EventOverrides = {}): APIGatewayProxyEvent {
     requestContext: {
       accountId: '000000000000',
       apiId: 'catalog-query-test-api',
-      authorizer: null,
+      authorizer:
+        overrides.authorizer === undefined
+          ? { accountID: CALLER_ACCOUNT_ID }
+          : overrides.authorizer,
       protocol: 'HTTP/1.1',
       httpMethod: method,
       identity: {
@@ -375,12 +427,20 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
  * against a document that no longer has the shape claimed for it. The nested payload is re-checked
  * where it is read, in {@link readProductPage} and {@link readSelectRows}.
  */
-function isServedBody(value: unknown): value is CatalogQueryResponseBody {
+function isServedBody(value: unknown): value is ServedEnvelope {
+  if (
+    !isRecord(value) ||
+    typeof value['requestId'] !== 'string' ||
+    typeof value['capability'] !== 'string' ||
+    typeof value['action'] !== 'string'
+  ) {
+    return false;
+  }
+
+  const payload = value['result'];
+
   return (
-    isRecord(value) &&
-    typeof value['operation'] === 'string' &&
-    typeof value['requestId'] === 'string' &&
-    value['result'] !== undefined
+    isRecord(payload) && typeof payload['operation'] === 'string' && payload['result'] !== undefined
   );
 }
 
@@ -406,8 +466,20 @@ function isFailureBody(value: unknown): value is ErrorResponseBody {
   );
 }
 
+/**
+ * The SHARED success envelope, with this capability's payload inside it.
+ *
+ * ★★ THIS USED TO BE `CatalogQueryResponseBody`, a per-handler `{operation, requestId, result}` this
+ * file exported for itself. API review (finding F13) found all four JSON entrypoints had each derived
+ * their own envelope - two of them without a correlation identifier at all - so the envelope moved to
+ * `../../../src/handlers/errorMapper.js` as `SuccessResponseBody`, beside the failure envelope it was
+ * modelled on. `operation` travels INSIDE the payload now, because it is a capability-specific
+ * selector rather than part of the cross-handler contract.
+ */
+type ServedEnvelope = SuccessResponseBody<CatalogQueryResultDocument>;
+
 /** The success envelope a served response carries, verified before it is typed. */
-function readServedBody(response: APIGatewayProxyResult): CatalogQueryResponseBody {
+function readServedBody(response: APIGatewayProxyResult): ServedEnvelope {
   const parsed: unknown = JSON.parse(response.body);
   if (!isServedBody(parsed)) {
     throw new Error(`a served response body is not the published envelope: ${response.body}`);
@@ -571,46 +643,174 @@ type OptionServiceDouble = Pick<
  */
 type BrandServiceDouble = Pick<BrandService, 'saveBrand'>;
 
-/** The three members of the request scope this capability can reach, and nothing else. */
-interface CatalogQueryScopeDouble {
-  readonly productService: ProductServiceDouble;
-  readonly optionService: OptionServiceDouble;
-  readonly brandService: BrandServiceDouble;
-}
+/**
+ * A configuration source answering the five keys that have no default, and nothing else.
+ *
+ * NOT A CREDENTIAL. `.invalid` is the reserved never-resolvable TLD [RFC 2606] and both
+ * account-shaped values are the literal string that says what they are. No pool is ever built from
+ * this: the executor below is injected, so `getPreparedStatementExecutor()` is never reached.
+ */
+const CATALOG_ENVIRONMENT: EnvironmentSource = Object.freeze({
+  DB_HOST: 'unused-by-this-suite.invalid',
+  DB_USER: 'unused-by-this-suite',
+  DB_PASSWORD: 'unused-by-this-suite',
+  DB_TLS_MODE: 'disabled',
+  DB_DIALECT: 'mySql',
+});
 
-/** The one member of the composition root this capability calls. */
-interface CatalogQueryRootDouble {
-  createRequestScope(): Promise<CatalogQueryScopeDouble>;
+/**
+ * The statement executor the real graph is assembled over.
+ *
+ * Answers every read with NO ROWS and refuses every write. This suite asserts nothing about SQL - the
+ * three published operations are answered from data on the class prototypes - so the executor exists
+ * only to keep the composition root away from a connection pool. A write reaching it would be a
+ * finding, since a query capability performs none.
+ */
+class CatalogExecutor implements PreparedStatementExecutor {
+  public execute(sql: string, params?: readonly unknown[]): Promise<readonly SqlRow[]> {
+    void sql;
+    void params;
+
+    return Promise.resolve([]);
+  }
+
+  public executeMutation(sql: string, params?: readonly unknown[]): Promise<SqlMutationResult> {
+    void params;
+
+    throw new Error(
+      `a mutation reached the catalog-query capability, which publishes reads: ${sql}`,
+    );
+  }
+
+  public transaction<TValue>(
+    work: (tx: PreparedStatementExecutor) => Promise<TValue>,
+  ): Promise<TValue> {
+    void work;
+
+    throw new Error(
+      'a transaction was opened by the catalog-query capability, which writes nothing',
+    );
+  }
 }
 
 /**
- * Present the double as the composition root the shipped dependency type asks for.
+ * A composition root that DELEGATES to a real one and counts the scopes it was asked for.
  *
- * ★★ THE ONE TYPE ASSERTION IN THIS FILE, AND THE REASONING IS WORTH WRITING DOWN RATHER THAN
- * HIDING. `RequestScope` publishes `productService`, `optionService`, `brandService`, `skuService`
- * and `roundingRuleService` as the CLASS types themselves, and every one of those classes holds
- * `private readonly` collaborators. A TypeScript type with private members can only be satisfied by
- * an instance of the declaring class, so an object literal cannot be a `RequestScope` however
- * complete it is - that is a property of the language, not a gap in the double.
- *
- * The alternative was to construct the five real services. It was rejected, and not for convenience:
- * it would require roughly twenty port doubles drawn from `src/domain/ports/**`, none of which this
- * suite is permitted to depend on, and it would turn a handler unit test into a service integration
- * test in which a failing assertion no longer told a reader which tier was wrong.
- *
- * ★ WHAT IS AND IS NOT GIVEN UP BY CROSSING HERE. The members the subject actually reaches stay
- * FULLY TYPED, because {@link CatalogQueryScopeDouble} declares them as `Pick<>` over the shipped
- * classes: a signature change in any of the three services still breaks this file at compile time.
- * What the assertion suppresses is only the compiler's knowledge that the OTHER members of
- * `RequestScope` are absent - `now`, `currentAccountContext`, `skuService`, `roundingRuleService`,
- * the two narrowed pricing capabilities, the currency converter, the feed port, the inherited
- * sale-price resolver and the composed order-pricing operation. The subject reads none of them, and
- * a test that reached for one would fail at run time rather than pass on a fiction. It is written as
- * a single named function so there is exactly one such crossing to audit, and the form matches the
- * one already established elsewhere in this test tier.
+ * ★★ A DELEGATING DECORATOR IN PLACE OF A CAST, AND THE FORWARDING IS TOTAL. The published root is
+ * `Object.freeze`d so a spy cannot be installed on it, and a class that `implements CompositionRoot`
+ * forwards every member to the real graph - so the compiler checks the WHOLE contract, a member added
+ * to `CompositionRoot` breaks this file, and an unintended read reaches the real object rather than
+ * observing `undefined`. That is exactly what the cast this replaced gave up.
  */
-function asCompositionRoot(double: CatalogQueryRootDouble): CompositionRoot {
-  return double as unknown as CompositionRoot;
+class RecordingCompositionRoot implements CompositionRoot {
+  public constructor(
+    private readonly inner: CompositionRoot,
+    private readonly counters: { scopesOpened: number },
+    private readonly scopeInputs: (RequestScopeInput | undefined)[],
+  ) {}
+
+  public get diagnostics(): CompositionRoot['diagnostics'] {
+    return this.inner.diagnostics;
+  }
+
+  public get dialect(): CompositionRoot['dialect'] {
+    return this.inner.dialect;
+  }
+
+  public get settingsProvider(): CompositionRoot['settingsProvider'] {
+    return this.inner.settingsProvider;
+  }
+
+  public get integration(): CompositionRoot['integration'] {
+    return this.inner.integration;
+  }
+
+  public createRequestScope(input?: RequestScopeInput): Promise<RequestScope> {
+    this.counters.scopesOpened += 1;
+    this.scopeInputs.push(input);
+
+    return this.inner.createRequestScope(input);
+  }
+
+  public createInspectableRequestScope(
+    input?: RequestScopeInput,
+  ): Promise<InspectableRequestScope> {
+    return this.inner.createInspectableRequestScope(input);
+  }
+}
+
+/**
+ * Install one bed's programmed answers on the three service classes the capability reaches.
+ *
+ * ★ ON THE PROTOTYPES, BECAUSE THAT IS WHAT THE REAL SCOPE'S REAL INSTANCES INHERIT FROM, and one
+ * typed `vi.spyOn` per member, so each installation is checked against the shipped signature. Every
+ * member of all three surfaces is installed - the three published answers AND the fifteen tripwires -
+ * so no call can reach a real implementation and no real implementation can reach a repository.
+ *
+ * Restored by this file's `afterEach`, by the global hook in `tests/setup.ts` and by
+ * `vitest.config.ts`'s `restoreMocks`, three belts for one obligation.
+ */
+function installServiceAnswers(
+  productService: ProductServiceDouble,
+  optionService: OptionServiceDouble,
+  brandService: BrandServiceDouble,
+): void {
+  vi.spyOn(ProductService.prototype, 'findProducts').mockImplementation(
+    productService.findProducts,
+  );
+  vi.spyOn(ProductService.prototype, 'deleteProduct').mockImplementation(
+    productService.deleteProduct,
+  );
+  vi.spyOn(ProductService.prototype, 'getFormattedOptionGroups').mockImplementation(
+    productService.getFormattedOptionGroups,
+  );
+  vi.spyOn(ProductService.prototype, 'getProductSkusBySelectedOptions').mockImplementation(
+    productService.getProductSkusBySelectedOptions,
+  );
+  vi.spyOn(ProductService.prototype, 'loadDataFromFile').mockImplementation(
+    productService.loadDataFromFile,
+  );
+  vi.spyOn(ProductService.prototype, 'processProduct_addOption').mockImplementation(
+    productService.processProduct_addOption,
+  );
+  vi.spyOn(ProductService.prototype, 'processProduct_addOptionGroup').mockImplementation(
+    productService.processProduct_addOptionGroup,
+  );
+  vi.spyOn(ProductService.prototype, 'processProduct_addProductReview').mockImplementation(
+    productService.processProduct_addProductReview,
+  );
+  vi.spyOn(ProductService.prototype, 'processProduct_addSubscriptionTerm').mockImplementation(
+    productService.processProduct_addSubscriptionTerm,
+  );
+  vi.spyOn(ProductService.prototype, 'processProduct_deleteDefaultImage').mockImplementation(
+    productService.processProduct_deleteDefaultImage,
+  );
+  vi.spyOn(
+    ProductService.prototype,
+    'processProduct_updateDefaultImageFileNames',
+  ).mockImplementation(productService.processProduct_updateDefaultImageFileNames);
+  vi.spyOn(ProductService.prototype, 'processProduct_updateSkus').mockImplementation(
+    productService.processProduct_updateSkus,
+  );
+  vi.spyOn(ProductService.prototype, 'processProduct_uploadDefaultImage').mockImplementation(
+    productService.processProduct_uploadDefaultImage,
+  );
+  vi.spyOn(ProductService.prototype, 'saveProduct').mockImplementation(productService.saveProduct);
+  vi.spyOn(ProductService.prototype, 'saveProductType').mockImplementation(
+    productService.saveProductType,
+  );
+
+  vi.spyOn(OptionService.prototype, 'getUnusedProductOptions').mockImplementation(
+    optionService.getUnusedProductOptions,
+  );
+  vi.spyOn(OptionService.prototype, 'getUnusedProductOptionGroups').mockImplementation(
+    optionService.getUnusedProductOptionGroups,
+  );
+  vi.spyOn(OptionService.prototype, 'getOptionsForSelect').mockImplementation(
+    optionService.getOptionsForSelect,
+  );
+
+  vi.spyOn(BrandService.prototype, 'saveBrand').mockImplementation(brandService.saveBrand);
 }
 
 /**
@@ -643,7 +843,7 @@ interface Gate {
 /**
  * Build a gate.
  *
- * Used only by the in-flight idempotency test, where the point is that a SECOND request arriving
+ * Used only where the point is that a SECOND request arriving
  * while the first is still running must not start a second execution. Holding the first call open
  * explicitly is how that is proven without a timer, a sleep or any dependence on scheduling.
  */
@@ -722,12 +922,15 @@ interface CatalogQueryTestBed {
 
   /** How many times the composition root was resolved and a request scope opened. */
   readonly counters: { rootsResolved: number; scopesOpened: number };
+
+  /** Every input used to open a request scope, in invocation order. */
+  readonly scopeInputs: readonly (RequestScopeInput | undefined)[];
 }
 
 /**
  * Wire one subject over hand-written in-memory doubles.
  *
- * A FRESH BED PER TEST, always. The shipped handler holds its idempotency ledger per handler INSTANCE
+ * A FRESH BED PER TEST, always. The shipped handler is created per INSTANCE
  * rather than at module scope, so building a new subject is the whole of the isolation this suite
  * needs - there is no module state to reset, no global to restore and no cache to clear. Recorded
  * arrays are created here too, so no observation can leak from one test into the next.
@@ -739,6 +942,7 @@ function makeTestBed(): CatalogQueryTestBed {
   const unpublishedTouches: string[] = [];
   const logLines: string[] = [];
   const counters = { rootsResolved: 0, scopesOpened: 0 };
+  const scopeInputs: (RequestScopeInput | undefined)[] = [];
 
   const outcomes: CatalogQueryOutcomes = {
     productPage: makeProductPage([]),
@@ -850,13 +1054,22 @@ function makeTestBed(): CatalogQueryTestBed {
     saveBrand: () => refuseUnpublishedCall(unpublishedTouches, 'BrandService.saveBrand [L67]'),
   };
 
-  const scope: CatalogQueryScopeDouble = { productService, optionService, brandService };
+  // The programmed answers reach the REAL services through their prototypes. Installed here, once per
+  // bed, so a test that never invokes the subject still gets its tripwires armed.
+  installServiceAnswers(productService, optionService, brandService);
 
-  const root: CatalogQueryRootDouble = {
-    createRequestScope: (): Promise<CatalogQueryScopeDouble> => {
-      counters.scopesOpened += 1;
-      return Promise.resolve(scope);
-    },
+  // ONE REAL GRAPH PER BED, built lazily on first resolution and reused, which is what the production
+  // memo does per container. `bootstrapCompositionRoot` with overrides bypasses the module memo by
+  // design, so nothing is left behind for a sibling file - and `resetCompositionRoot()` in the hooks is
+  // a second belt.
+  let rootPromise: Promise<CompositionRoot> | undefined;
+  const openRoot = async (): Promise<CompositionRoot> => {
+    const inner = await bootstrapCompositionRoot({
+      executor: new CatalogExecutor(),
+      environment: CATALOG_ENVIRONMENT,
+    });
+
+    return new RecordingCompositionRoot(inner, counters, scopeInputs);
   };
 
   // The logger is pinned to `debug` AND redirected to a recording sink. Pinning is what makes the
@@ -870,7 +1083,9 @@ function makeTestBed(): CatalogQueryTestBed {
   const subject = createCatalogQueryHandler({
     compositionRoot: (): Promise<CompositionRoot> => {
       counters.rootsResolved += 1;
-      return Promise.resolve(asCompositionRoot(root));
+      rootPromise ??= openRoot();
+
+      return rootPromise;
     },
     logger: recordingLogger,
   });
@@ -889,6 +1104,7 @@ function makeTestBed(): CatalogQueryTestBed {
     unpublishedTouches,
     logLines,
     counters,
+    scopeInputs,
   };
 }
 
@@ -897,7 +1113,18 @@ function queryFor(
   operation: string,
   parameters: Readonly<Record<string, string>> = {},
 ): Readonly<Record<string, string>> {
-  return { operation, ...parameters };
+  // ★★ `pageRecordsShow` IS SUPPLIED FOR EVERY `findProducts` REQUEST THAT DOES NOT NAME ITS OWN.
+  // Static-performance review (finding F10) made the page size a REQUIRED member of the routed
+  // contract, because omitting it means THE WHOLE PRODUCT RESULT SET to `ProductService.findProducts`
+  // and this handler then projects and stringifies it into one body. Folding a default in here keeps
+  // the cases that are ABOUT something else from having to restate it; the cases that are about the
+  // bound name it explicitly and are unaffected by this line.
+  const pageDefault =
+    operation === 'findProducts' && parameters['pageRecordsShow'] === undefined
+      ? { pageRecordsShow: '25' }
+      : {};
+
+  return { operation, ...pageDefault, ...parameters };
 }
 
 /** The published operations, as the three selector values a caller may send. */
@@ -910,7 +1137,7 @@ const PUBLISHED_OPERATIONS: readonly CatalogQueryOperation[] = [
 /** A minimal, valid parameter set for each published operation. */
 const VALID_PARAMETERS: Readonly<Record<CatalogQueryOperation, Readonly<Record<string, string>>>> =
   {
-    findProducts: { keyword: 'jorden' },
+    findProducts: { keyword: 'jorden', pageRecordsShow: '25' },
     getUnusedProductOptions: {
       productID: FIRST_PRODUCT_ID,
       existingOptionGroupIDList: UNTIDY_OPTION_GROUP_ID_LIST,
@@ -942,7 +1169,7 @@ function atIndex<TElement>(items: readonly TElement[], index: number): TElement 
  * page and a row array, and only the page declares `records`.
  */
 function readProductPage(response: APIGatewayProxyResult): CatalogProductPageProjection {
-  const result = readServedBody(response).result;
+  const result = readServedBody(response).result.result;
   if (!('records' in result)) {
     throw new Error('expected a product page, and the response carried a select-row array');
   }
@@ -951,7 +1178,7 @@ function readProductPage(response: APIGatewayProxyResult): CatalogProductPagePro
 
 /** The select rows a served response carries. */
 function readSelectRows(response: APIGatewayProxyResult): readonly CatalogSelectOptionProjection[] {
-  const result = readServedBody(response).result;
+  const result = readServedBody(response).result.result;
   if ('records' in result) {
     throw new Error('expected select rows, and the response carried a product page');
   }
@@ -1000,6 +1227,8 @@ describe('catalogQueryHandler', () => {
   let bed: CatalogQueryTestBed;
 
   beforeEach(() => {
+    resetCompositionRoot();
+    appConfig.reset();
     bed = makeTestBed();
   });
 
@@ -1012,6 +1241,11 @@ describe('catalogQueryHandler', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     bed.logLines.length = 0;
+    // The composition memo and `appConfig` are module state. Every bed builds its graph through the
+    // override arm, which bypasses the memo by design, and clearing both here means this file leaves
+    // neither behind for a sibling suite in the same worker.
+    resetCompositionRoot();
+    appConfig.reset();
   });
 
   it('publishes a Lambda entry point, without any test invoking it', () => {
@@ -1019,7 +1253,7 @@ describe('catalogQueryHandler', () => {
     // it EXISTS is deliberate: invoking it would reach the real composition root, the real
     // configuration and therefore a connection pool, which this suite must never do. The factory
     // below is what every other test drives, and it is a DIFFERENT instance - each handler owns its
-    // own idempotency ledger, which is why building one per test is the whole of the isolation.
+    // own composition-root resolver, which is why building one per test is the whole of the isolation.
     expect(typeof handler).toBe('function');
     expect(bed.subject).not.toBe(handler);
     expect(bed.counters.rootsResolved).toBe(0);
@@ -1138,6 +1372,138 @@ describe('catalogQueryHandler', () => {
   });
 
   // =========================================================================
+  // CONCERN 1 - REQUEST PARSING AND VALIDATION: the admission gate
+  // =========================================================================
+
+  describe('concern 1, request parsing: the admission gate', () => {
+    it('refuses a request carrying no authorizer context', async () => {
+      const response = await bed.invoke({
+        authorizer: null,
+        query: queryFor('findProducts', { keyword: 'jorden' }),
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(readFailureBody(response).error.category).toBe('unauthenticated');
+      expect(bed.counters.rootsResolved).toBe(0);
+      expect(bed.counters.scopesOpened).toBe(0);
+      expect(bed.findProductsCalls).toEqual([]);
+      expect(bed.unpublishedTouches).toEqual([]);
+    });
+
+    it('refuses every context that names no usable account', async () => {
+      for (const authorizer of [
+        {},
+        { unrelated: 'x' },
+        { accountID: '' },
+        { accountID: '   ' },
+        { accountID: 42 },
+      ]) {
+        const fresh = makeTestBed();
+
+        const response = await fresh.invoke({
+          authorizer,
+          query: queryFor('findProducts', { keyword: 'jorden' }),
+        });
+
+        expect(response.statusCode).toBe(401);
+        expect(fresh.counters.rootsResolved).toBe(0);
+        expect(fresh.findProductsCalls).toEqual([]);
+      }
+    });
+
+    it('refuses before the selector, parameter closure and schema are evaluated', async () => {
+      for (const query of [
+        {},
+        { operation: 'nonsense' },
+        queryFor('findProducts', { keyword: 'jorden', nosuchparameter: 'x' }),
+        queryFor('findProducts'),
+      ]) {
+        const fresh = makeTestBed();
+        const response = await fresh.invoke({ authorizer: null, query });
+
+        expect(response.statusCode).toBe(401);
+        expect(fresh.counters.rootsResolved).toBe(0);
+      }
+    });
+
+    it('still resolves the route first, so a wrong path is a 404 rather than a 401', async () => {
+      const unmatched = await bed.invoke({ authorizer: null, path: '/nothing/here' });
+      const sibling = await bed.invoke({
+        authorizer: null,
+        path: SKU_RESOLUTION_ROUTE.path,
+      });
+
+      expect(unmatched.statusCode).toBe(404);
+      expect(sibling.statusCode).toBe(404);
+    });
+
+    it('publishes no claim name, internal reason or field detail in the refusal', async () => {
+      const response = await bed.invoke({ authorizer: null });
+      const failure = readFailureBody(response).error;
+
+      expect(failure.message).toBe('The request was not served.');
+      expect(failure.fields).toBeUndefined();
+      expect(response.body).not.toContain('accountID');
+      expect(response.body).not.toContain('authoriz');
+      expect(response.body).not.toContain('noAuthorizerContext');
+      expect(response.body).not.toContain('noAccountClaim');
+      expect(failure.requestId).toBe(INVOCATION_ID);
+    });
+
+    it('emits no authentication challenge because no scheme is declared', async () => {
+      const response = await bed.invoke({ authorizer: null });
+
+      expect(
+        Object.keys(response.headers ?? {})
+          .map((name): string => name.toLowerCase())
+          .sort(),
+      ).toEqual(['cache-control', 'content-type']);
+    });
+
+    it('logs only the closed refusal category and no caller-authored claim text', async () => {
+      await bed.invoke({ authorizer: null });
+
+      const warnings = decodedLines(bed).filter((line) => line.level === 'warn');
+      expect(warnings).toHaveLength(2);
+      expect(atIndex(warnings, 0).message).toContain('no caller principal');
+      expect(atIndex(warnings, 0).message).toContain('noAuthorizerContext');
+      expect(atIndex(warnings, 1).message).toContain('serves no unidentified caller');
+      for (const warning of warnings) {
+        expect(warning.raw).not.toContain('accountID');
+      }
+    });
+
+    it('opens the request scope with the account the gate established', async () => {
+      const response = await bed.invoke({
+        authorizer: { accountID: CALLER_ACCOUNT_ID },
+        query: queryFor('findProducts', { keyword: 'jorden' }),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(bed.scopeInputs).toStrictEqual([{ accountID: CALLER_ACCOUNT_ID }]);
+    });
+
+    it('reads the account claim case-insensitively', async () => {
+      const response = await bed.invoke({
+        authorizer: { accountId: CALLER_ACCOUNT_ID },
+        query: queryFor('findProducts', { keyword: 'jorden' }),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(bed.scopeInputs).toStrictEqual([{ accountID: CALLER_ACCOUNT_ID }]);
+    });
+
+    it('serves the authenticated default caller past the gate', async () => {
+      const response = await bed.invoke({
+        query: queryFor('findProducts', { keyword: 'jorden' }),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(bed.findProductsCalls).toHaveLength(1);
+    });
+  });
+
+  // =========================================================================
   // CONCERN 1 - REQUEST PARSING AND VALIDATION: the operation selector
   // =========================================================================
 
@@ -1215,12 +1581,14 @@ describe('catalogQueryHandler', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(readServedBody(response).operation).toBe(operation);
+      expect(readServedBody(response).result.operation).toBe(operation);
     });
 
     it('reads the selector from the multi-value map when the single-valued map lacks it', async () => {
       const response = await bed.invoke({
-        query: { keyword: 'jorden' },
+        // The page size is named here rather than left to `queryFor`, because this case assembles the
+        // single-valued map directly in order to leave `operation` out of it.
+        query: { keyword: 'jorden', pageRecordsShow: '25' },
         repeatedQuery: { operation: ['findProducts'] },
       });
 
@@ -1270,6 +1638,31 @@ describe('catalogQueryHandler', () => {
       // response body that echoed it would be a hole through the no-echo guarantee.
       expect(response.body).not.toContain('unpublishedKnob');
       expect(bed.findProductsCalls).toEqual([]);
+    });
+
+    it.each([['__proto__'], ['constructor'], ['prototype']])(
+      'refuses the reserved key %s, so the closed grammar has no inherited-property bypass',
+      async (reservedKey) => {
+        const response = await bed.invoke({
+          query: queryFor('findProducts', { keyword: 'jorden', [reservedKey]: 'injected' }),
+        });
+
+        expect(response.statusCode).toBe(400);
+        expect(atIndex(readFieldIssues(response), 0).path).toBe('queryStringParameters');
+        expect(response.body).not.toContain(reservedKey);
+        expect(response.body).not.toContain('injected');
+        expect(bed.findProductsCalls).toEqual([]);
+        expect(bed.counters.scopesOpened).toBe(0);
+      },
+    );
+
+    it('leaves Object.prototype untouched after a reserved-key request', async () => {
+      await bed.invoke({
+        query: queryFor('findProducts', { keyword: 'jorden', ['__proto__']: 'polluted' }),
+      });
+
+      expect(Object.prototype).not.toHaveProperty('polluted');
+      expect(Object.keys({})).toHaveLength(0);
     });
 
     it('does not reopen the framework smart list\u2019s dynamic filter surface', async () => {
@@ -1332,10 +1725,42 @@ describe('catalogQueryHandler', () => {
       expect(criteria.pageRecordsShow).toBe(5);
     });
 
+    it.each([
+      ['just above the safe-integer ceiling', '9007199254740992'],
+      ['far above it', '99999999999999999999'],
+      ['absurdly long', '1'.repeat(400)],
+    ])('refuses %s as a paging bound at the boundary', async (_description, supplied) => {
+      const response = await bed.invoke({
+        query: queryFor('findProducts', { keyword: 'jorden', pageRecordsShow: supplied }),
+      });
+      const issue = atIndex(readFieldIssues(response), 0);
+
+      expect(response.statusCode).toBe(400);
+      expect(issue.path).toBe('pageRecordsShow');
+      expect(issue.message).toContain('largest integer this runtime can represent exactly');
+      expect(bed.findProductsCalls).toEqual([]);
+      expect(bed.counters.scopesOpened).toBe(0);
+    });
+
+    it('admits the largest exactly-representable integer', async () => {
+      const response = await bed.invoke({
+        query: queryFor('findProducts', {
+          keyword: 'jorden',
+          pageRecordsStart: String(Number.MAX_SAFE_INTEGER),
+        }),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(atIndex(bed.findProductsCalls, 0).pageRecordsStart).toBe(Number.MAX_SAFE_INTEGER);
+    });
+
     it('forwards a supplied window of ZERO as zero, never as absence', async () => {
-      // The distinction is load-bearing on the service's contract: an ABSENT `pageRecordsShow` means
-      // the whole result set, so silently treating a supplied `0` as absence would return everything
-      // to a caller that asked for nothing.
+      // The distinction is load-bearing on the service's contract, where the member remains OPTIONAL:
+      // an absent `pageRecordsShow` reaching `ProductService.findProducts` means the whole result set,
+      // so a `0` that decayed into absence on the way through would return everything to a caller that
+      // asked for nothing. The routed contract refuses absence (see the paging-bound block below), but
+      // it does so by REJECTING the request rather than by substituting a window, which is what keeps
+      // this case and that one from contradicting each other.
       const response = await bed.invoke({
         query: queryFor('findProducts', { keyword: 'jorden', pageRecordsShow: '0' }),
       });
@@ -1461,6 +1886,175 @@ describe('catalogQueryHandler', () => {
   // CONCERN 2 - DELEGATION TO THE COMPOSED SERVICES
   // =========================================================================
 
+  // -------------------------------------------------------------------------
+  // Concern 1, continued: the two admission bounds a routed request must clear
+  //
+  // ★★ BOTH BOUNDS ARE NEW, AND NEITHER IS A STYLE PREFERENCE. Review found two ways one caller could
+  // ask this entrypoint for unbounded work:
+  //
+  //   * FINDING F10 - the page size was OPTIONAL on the routed contract, and an absent one means THE
+  //     WHOLE `SwProduct` MATCH SET to `ProductService.findProducts`, which this handler then projects
+  //     and JSON-stringifies into a single API Gateway body. The service member stays optional, so no
+  //     in-process caller was truncated; the REQUEST is what now has to name a window.
+  //   * FINDING F17 - a comma-delimited identifier list becomes one SQL predicate and one placeholder
+  //     PER ELEMENT, and the MySQL wire protocol cannot carry more than 65535 placeholders in one
+  //     prepared statement.
+  //
+  // Both are enforced at ADMISSION, so the answer is a client-shaped 400 naming the member rather than
+  // the generic 500 an unrecognized throw from the statement builder would produce. Both REFUSE rather
+  // than clamp or shorten: answering a narrower question than the one asked, silently, is the failure
+  // mode these cases exist to prevent.
+  // -------------------------------------------------------------------------
+  describe('concern 1, request parsing: the two admission bounds (F10, F17)', () => {
+    it('REFUSES a findProducts request that names no page size at all', async () => {
+      const response = await bed.invoke({
+        query: { operation: 'findProducts', keyword: 'jorden' },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(atIndex(readFieldIssues(response), 0).path).toBe('pageRecordsShow');
+      // The refusal happens BEFORE any service work, so the unbounded query is never issued.
+      expect(bed.findProductsCalls).toEqual([]);
+      expect(bed.counters.scopesOpened).toBe(0);
+    });
+
+    it('accepts a page size AT the ceiling and forwards it unchanged', async () => {
+      const response = await bed.invoke({
+        query: queryFor('findProducts', { keyword: 'jorden', pageRecordsShow: '500' }),
+      });
+
+      // AT the bound is accepted, not rejected: the boundary is inclusive, and pinning it here is what
+      // stops a later off-by-one from narrowing the surface without a failing test.
+      expect(response.statusCode).toBe(200);
+      expect(atIndex(bed.findProductsCalls, 0).pageRecordsShow).toBe(500);
+    });
+
+    it('REFUSES a page size one record above the ceiling, and does not clamp it', async () => {
+      const response = await bed.invoke({
+        query: queryFor('findProducts', { keyword: 'jorden', pageRecordsShow: '501' }),
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(atIndex(readFieldIssues(response), 0).path).toBe('pageRecordsShow');
+      expect(bed.findProductsCalls).toEqual([]);
+      // NOT clamped to the ceiling: a 200 carrying 500 records would answer a different question than
+      // the one asked and would tell the caller nothing about why.
+      expect(response.statusCode).not.toBe(200);
+    });
+
+    it('names the constraint without echoing the submitted value back', async () => {
+      const response = await bed.invoke({
+        query: queryFor('findProducts', { keyword: 'jorden', pageRecordsShow: '999999' }),
+      });
+
+      const issue = atIndex(readFieldIssues(response), 0);
+      expect(issue.path).toBe('pageRecordsShow');
+      expect(issue.message).toContain('500');
+      expect(response.body).not.toContain('999999');
+    });
+
+    it('admits a comma list well inside the protocol ceiling', async () => {
+      const groups = Array.from(
+        { length: 64 },
+        (unused, index) => `${MERCHANDISE_PRODUCT_TYPE_ID}-${String(index)}`,
+      );
+      const response = await bed.invoke({
+        query: queryFor('getUnusedProductOptionGroups', {
+          existingOptionGroupIDList: groups.join(','),
+        }),
+      });
+
+      expect(response.statusCode).toBe(200);
+      // Forwarded as the COMMA-DELIMITED STRING the ported signature declares, byte for byte: not
+      // split, not trimmed, not sorted, not de-duplicated and not re-joined.
+      expect(atIndex(bed.unusedProductOptionGroupsCalls, 0)).toBe(groups.join(','));
+    });
+
+    it('REFUSES a comma list the wire protocol could not bind, naming the member', async () => {
+      const overWide = Array.from({ length: MAX_PLACEHOLDER_COUNT + 1 }, (unused, index) =>
+        String(index),
+      ).join(',');
+      const response = await bed.invoke({
+        query: queryFor('getUnusedProductOptionGroups', { existingOptionGroupIDList: overWide }),
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(atIndex(readFieldIssues(response), 0).path).toBe('existingOptionGroupIDList');
+      expect(atIndex(readFieldIssues(response), 0).message).toContain('65535');
+      // Refused before the service is reached, so no statement is built and no scope is opened.
+      expect(bed.unusedProductOptionGroupsCalls).toEqual([]);
+      expect(bed.counters.scopesOpened).toBe(0);
+    });
+
+    it('admits a group-only list exactly at the protocol ceiling', async () => {
+      const atCeiling = Array.from({ length: MAX_PLACEHOLDER_COUNT }, (unused, index) =>
+        String(index),
+      ).join(',');
+      const response = await bed.invoke({
+        query: queryFor('getUnusedProductOptionGroups', {
+          existingOptionGroupIDList: atCeiling,
+        }),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(atIndex(bed.unusedProductOptionGroupsCalls, 0)).toBe(atCeiling);
+    });
+
+    it('counts the keyword bind in the findProducts placeholder ceiling', async () => {
+      const overWide = Array.from({ length: MAX_PLACEHOLDER_COUNT }, (unused, index) =>
+        String(index),
+      ).join(',');
+      const response = await bed.invoke({
+        query: queryFor('findProducts', { keyword: 'jorden', productTypeIDs: overWide }),
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(atIndex(readFieldIssues(response), 0).path).toBe('productTypeIDs');
+      expect(atIndex(readFieldIssues(response), 0).message).toContain(
+        String(MAX_PLACEHOLDER_COUNT - 1),
+      );
+      expect(bed.findProductsCalls).toEqual([]);
+    });
+
+    it('counts the trailing productID bind in the unused-options placeholder ceiling', async () => {
+      const overWide = Array.from({ length: MAX_PLACEHOLDER_COUNT }, (unused, index) =>
+        String(index),
+      ).join(',');
+      const response = await bed.invoke({
+        query: queryFor('getUnusedProductOptions', {
+          productID: FIRST_PRODUCT_ID,
+          existingOptionGroupIDList: overWide,
+        }),
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(atIndex(readFieldIssues(response), 0).path).toBe('existingOptionGroupIDList');
+      expect(atIndex(readFieldIssues(response), 0).message).toContain(
+        String(MAX_PLACEHOLDER_COUNT - 1),
+      );
+      expect(bed.unusedProductOptionsCalls).toEqual([]);
+    });
+
+    it('does not let the refusal reach the caller as a 500', async () => {
+      // The point of asking at admission rather than letting the statement builder raise: the same
+      // refusal arriving from `src/repositories/mysql/sql/**` is an unrecognized throw, and
+      // `./errorMapper.js` maps an unrecognized throw to a generic 500 with no field report at all.
+      const overWide = Array.from({ length: 70000 }, (unused, index) => String(index)).join(',');
+      const response = await bed.invoke({
+        query: queryFor('getUnusedProductOptions', {
+          productID: FIRST_PRODUCT_ID,
+          existingOptionGroupIDList: overWide,
+        }),
+      });
+
+      expect(response.statusCode).toBe(400);
+      // The mapper's own client-shaped category, the same one every schema rejection carries - NOT the
+      // `unrecognized` category an escaped statement-builder throw would have been given.
+      expect(readFailureBody(response).error.category).toBe('invalidRequest');
+      expect(atIndex(readFieldIssues(response), 0).path).toBe('existingOptionGroupIDList');
+    });
+  });
+
   describe('concern 2, delegation: one ported service method per invocation', () => {
     it('resolves the composition root once, opens one scope, and calls findProducts once', async () => {
       const response = await bed.invoke({ query: queryFor('findProducts', { keyword: 'jorden' }) });
@@ -1493,17 +2087,28 @@ describe('catalogQueryHandler', () => {
       });
     });
 
-    it('forwards ABSENCE as absence on every optional member', async () => {
-      await bed.invoke({ query: queryFor('findProducts', { keyword: 'jorden' }) });
+    it('forwards ABSENCE as absence on every member that is still optional', async () => {
+      await bed.invoke({
+        query: queryFor('findProducts', { keyword: 'jorden', pageRecordsShow: '25' }),
+      });
       const criteria = atIndex(bed.findProductsCalls, 0);
 
-      // Absence is forwarded as `undefined`, never as a substituted value: an absent
-      // `pageRecordsShow` means the whole result set and an absent `productTypeIDs` means "do not
-      // restrict", so a `0` or an `''` in either place would silently ask a different question.
+      // Absence is forwarded as `undefined`, never as a substituted value: an absent `productTypeIDs`
+      // means "do not restrict", so a `0` or an `''` in its place would silently ask a different
+      // question.
       expect(criteria.productTypeIDs).toBeUndefined();
       expect(criteria.pageRecordsStart).toBeUndefined();
-      expect(criteria.pageRecordsShow).toBeUndefined();
       expect(criteria.currentURL).toBeUndefined();
+
+      // ★★ `pageRecordsShow` IS NO LONGER ONE OF THEM, AND THAT IS THE FIX RATHER THAN AN OVERSIGHT.
+      // Static-performance review (finding F10) established that forwarding an absent page size means
+      // THE WHOLE `SwProduct` RESULT SET to `ProductService.findProducts`, which this handler then
+      // projects and stringifies into a single API Gateway body under a fixed response-size ceiling.
+      // The bound therefore lives on the ROUTED contract - a request that names no page size is
+      // refused at 400, which the paging-bound block below pins - and the value the caller supplied
+      // is what reaches the service, unchanged and unsubstituted. `ProductQueryCriteria` still
+      // declares the member optional, so no service caller was truncated by this.
+      expect(criteria.pageRecordsShow).toBe(25);
     });
 
     it('keeps productTypeIDs a COMMA-DELIMITED STRING rather than modernising it', async () => {
@@ -1699,13 +2304,12 @@ describe('catalogQueryHandler', () => {
 
     it('publishes no route to the hour-long bulk import, which no route could carry', async () => {
       // `loadDataFromFile` [model/service/ProductService.cfc:L65-L68] opens by raising the CFML
-      // request timeout to 3600 seconds through `cfSetting(requesttimeout="3600")` at [L66]. AWS
-      // Lambda's maximum invocation duration is 15 minutes and API Gateway's integration timeout is 29
-      // seconds. Both are PUBLISHED PLATFORM LIMITS - facts about the runtime, not service levels, not
-      // targets and not a claim about how long any import takes - so an hour-long import cannot be
-      // placed behind either. It is therefore not published, and NO substitute is invented for it: no
-      // job queue, no state machine, no queue hop and no chunked-upload protocol, because the source
-      // had none. This assertion is about ROUTABILITY only and measures nothing.
+      // request timeout to 3600 seconds through `cfSetting(requesttimeout="3600")` at [L66]. The
+      // Lambda runtime's maximum invocation duration is 900 seconds, so an hour-long budget cannot be
+      // carried onto it at all - a fact about the runtime, not a service level, not a target and not a
+      // claim about how long any import takes. It is therefore not published, and NO substitute is
+      // invented for it: no job queue, no state machine, no queue hop and no chunked-upload protocol,
+      // because the source had none. This assertion is about ROUTABILITY only and measures nothing.
       const response = await bed.invoke({ query: { operation: 'loadDataFromFile' } });
 
       expect(response.statusCode).toBe(400);
@@ -1774,13 +2378,25 @@ describe('catalogQueryHandler', () => {
       });
     });
 
-    it('carries the operation, the correlation identifier and the payload', async () => {
+    it('carries the shared envelope members, with the operation inside the payload', async () => {
+      // ★★ THE SHAPE THIS ASSERTS IS THE CROSS-HANDLER ONE, NOT THIS FILE'S OWN. Finding F13 found
+      // four entrypoints each publishing a differently-shaped success - two with no correlation
+      // identifier at all - so `jsonSuccessResponse` now owns the outer document for all of them:
+      // `requestId`, `capability`, `action`, `result`. The capability-specific selector travels
+      // INSIDE `result`, which is why `operation` is asserted one level down. Both key sets are
+      // pinned exactly so an added member is a failure rather than a silent widening.
       const response = await bed.invoke({ query: queryFor('findProducts', { keyword: 'jorden' }) });
       const body = readServedBody(response);
 
-      expect(body.operation).toBe('findProducts');
       expect(body.requestId).toBe(INVOCATION_ID);
-      expect(Object.keys(body).sort()).toEqual(['operation', 'requestId', 'result']);
+      expect(body.capability).toBe('catalogQuery');
+      // The ROUTE action, which is fixed for this entrypoint - not the operation selector, which is
+      // per-request and travels inside the payload. The two are asserted separately on purpose.
+      expect(body.action).toBe('queryCatalog');
+      expect(Object.keys(body).sort()).toEqual(['action', 'capability', 'requestId', 'result']);
+
+      expect(body.result.operation).toBe('findProducts');
+      expect(Object.keys(body.result).sort()).toEqual(['operation', 'result']);
     });
 
     it('projects a product onto exactly the two columns the statement selects', async () => {
@@ -1974,7 +2590,7 @@ describe('catalogQueryHandler', () => {
 
       // An unjoinable log line is worse than an obviously synthetic identifier, which is why the
       // placeholder exists and why it is never an empty string.
-      expect(readServedBody(response).requestId).toBe(UNIDENTIFIED_INVOCATION);
+      expect(readServedBody(response).requestId).toBe(UNATTRIBUTED_REQUEST_ID);
     });
 
     it('emits a body that is valid JSON on every published operation', async () => {
@@ -2033,14 +2649,51 @@ describe('catalogQueryHandler', () => {
       expect(response.body).not.toContain('ProductPagingCriteriaError');
       expect(response.body).not.toContain(CATALOG_ROUTE.path);
 
-      // JUDGMENT CALL: this asserts the route is ABSENT from a mapped-failure line, which is what the
-      // shipped handler does rather than what one might expect. Its single `catch` funnel sits outside
-      // the block that holds the routed diagnostic, so it maps through the UNROUTED context and the
-      // route is therefore omitted from the serialized line. It is asserted as observed rather than
-      // asserted away, and `src/**` is deliberately left untouched: changing production code so a
-      // test could read what it assumed would be the wrong way round. The correlation identifier
-      // remains present, which is the member the response echoes and the join an operator needs.
-      expect('route' in line.context).toBe(false);
+      // ★★ THE ROUTE NOW REACHES THIS LINE, AND THE INVERSION IS THE FIX. This assertion used to read
+      // `toBe(false)` under a comment recording it as a judgment call - the shipped handler held the
+      // routed diagnostic in a block its single `catch` funnel sat outside, so every mapped failure
+      // was logged through the UNROUTED context and an operator investigating a 500 could not tell
+      // WHICH endpoint had failed without correlating by hand. Observability review (finding F8)
+      // named that as the defect rather than as intended behaviour, and the handler now carries ONE
+      // mapping context that GAINS the route once it is resolved and is the same object the `catch`
+      // reads. The label is the shared `METHOD /path` form, so it is comparable across all five
+      // entrypoints, and it still reaches the LOG only - the body assertion above is unchanged.
+      expect(line.context['route']).toBe(`${CATALOG_ROUTE.methods} ${CATALOG_ROUTE.path}`);
+    });
+
+    it('labels the route from the TABLE, never from the method the caller sent', async () => {
+      // The router matches the method with `listFindNoCase`, so a lower-case `get` is admitted. The
+      // logged label must still be the table's own declaration: it is one of a closed set of five, so
+      // an operator can group by it, and a caller cannot steer what appears on the line.
+      bed.outcomes.findProductsRejectsWith = new ProductPagingCriteriaError('pageRecordsStart', 3);
+
+      const response = await bed.invoke({
+        method: CATALOG_ROUTE.methods.toLowerCase(),
+        query: queryFor('findProducts', { keyword: 'jorden' }),
+      });
+      const line = atIndex(
+        decodedLines(bed).filter((emitted) => emitted.level === 'error'),
+        0,
+      );
+
+      expect(response.statusCode).toBe(500);
+      expect(line.context['route']).toBe(`${CATALOG_ROUTE.methods} ${CATALOG_ROUTE.path}`);
+      expect(line.context['route']).not.toContain(CATALOG_ROUTE.methods.toLowerCase());
+    });
+
+    it('reports the requested route rather than a canonical row for a pre-resolution miss', async () => {
+      const response = await bed.invoke({ method: 'DELETE' });
+      const line = atIndex(
+        decodedLines(bed).filter((entry) => entry.level === 'warn'),
+        0,
+      );
+
+      expect(response.statusCode).toBe(404);
+      expect(line.context['requestId']).toBe(INVOCATION_ID);
+      expect(String(line.context['route'])).toContain('DELETE');
+      expect(String(line.context['route'])).not.toBe(
+        `${CATALOG_ROUTE.methods} ${CATALOG_ROUTE.path}`,
+      );
     });
 
     it('lets NEITHER a statement nor a bound value out, in the body or on the log', async () => {
@@ -2130,24 +2783,28 @@ describe('catalogQueryHandler', () => {
       ).resolves.toMatchObject({ statusCode: 500 });
     });
 
-    it('publishes exactly three statuses and invents no fourth', async () => {
+    it('publishes the closed status set this authenticated route can reach', async () => {
       const served = await bed.invoke({ query: queryFor('findProducts', { keyword: 'jorden' }) });
       const unmatched = await bed.invoke({ path: '/nothing/here' });
       const unusable = await bed.invoke({ query: {} });
+      const unidentified = await bed.invoke({
+        authorizer: null,
+        query: queryFor('findProducts', { keyword: 'jorden' }),
+      });
 
       bed.outcomes.findProductsRejectsWith = driverShapedFailure();
       const failed = await bed.invoke({ query: queryFor('findProducts', { keyword: 'jorden' }) });
 
-      // No authentication or authorization status, no conflict, no unprocessable entity, no
-      // request-quota status, and none of the retry-after, rate-limit or circuit-breaker headers that
-      // accompany one. The legacy slice has no HTTP status vocabulary to port, so none is invented.
+      // Authentication adds the one 401 arm. There is no administrative operation, conflict,
+      // semantic-validation tier or request quota, and none of their accompanying headers.
       expect([
         served.statusCode,
         unmatched.statusCode,
         unusable.statusCode,
+        unidentified.statusCode,
         failed.statusCode,
-      ]).toEqual([200, 404, 400, 500]);
-      for (const response of [served, unmatched, unusable, failed]) {
+      ]).toEqual([200, 404, 400, 401, 500]);
+      for (const response of [served, unmatched, unusable, unidentified, failed]) {
         expect(Object.keys(response.headers ?? {}).sort()).toEqual([
           'cache-control',
           'content-type',
@@ -2214,18 +2871,25 @@ describe('catalogQueryHandler', () => {
   });
 
   // =========================================================================
-  // CONCERN 2 - DELEGATION: the AAP 0.6.5 obligations this tier carries
+  // CONCERN 2 - DELEGATION: the per-invocation bound and duplicate-request replay
   //
-  // The legacy bulk paths ran under an ambient `cftransaction` and an hour-long request budget, and
-  // Lambda offers neither. Each assertion below is a CORRECTNESS assertion about that gap. None of
-  // them is a capacity, rate, duration or availability claim, and none of them measures anything.
+  // Every operation this capability publishes is a READ. The assertions below are about the bound on
+  // how many operations one invocation may name, and about the container-local replay cache that
+  // answers a repeated key from the first attempt. None of them is a capacity, rate, duration or
+  // availability claim, and none of them measures anything.
   // =========================================================================
 
-  describe('concern 2, delegation: the bulk-mutation obligations', () => {
+  describe('concern 2, delegation: the invocation bound and duplicate-request replay', () => {
     /** A valid findProducts request, used wherever the request itself is not what varies. */
     const validRequest: EventOverrides = { query: queryFor('findProducts', { keyword: 'jorden' }) };
 
-    /** Build a valid request carrying an idempotency key under the given header spelling. */
+    /**
+     * Build a valid request carrying an `idempotency-key` header.
+     *
+     * ★ THE HEADER IS INERT NOW, and these cases exist to prove it. Finding F5 withdrew the ledger
+     * that read it; the helper is kept so the proofs are written against the same request shape the
+     * removed mechanism consumed.
+     */
     function keyedRequest(key: string, headerName = 'idempotency-key'): EventOverrides {
       return {
         query: queryFor('findProducts', { keyword: 'jorden' }),
@@ -2262,11 +2926,9 @@ describe('catalogQueryHandler', () => {
     });
 
     it('exposes no parameter by which a caller could raise a bound the deployment owns', async () => {
-      // The SKU-repricing bound lives on `ProductService`'s constructor and the SKU-creation bound on
-      // `SkuService`'s, both supplied by the composition root. Neither is reachable from a request:
-      // the criteria shape is closed, so a parameter named after either is refused rather than
-      // forwarded. That is what keeps `createSkus`'s unbounded cartesian-product walk
-      // [model/service/SkuService.cfc:L109-L121] out of a caller's control.
+      // The two service-tier bounds live on `ProductService`'s and `SkuService`'s constructors, both
+      // supplied by the composition root. Neither is reachable from a request: the criteria shape is
+      // closed, so a parameter named after either is refused rather than forwarded.
       for (const knob of [
         'maximumSkuUpdateBatchSize',
         'maximumSkuCreationBatchSize',
@@ -2296,202 +2958,131 @@ describe('catalogQueryHandler', () => {
       expect(bed.findProductsCalls).toHaveLength(1);
     });
 
-    it('honours a caller-supplied idempotency key, executing the work once', async () => {
+    it('★★★ HONOURS NO IDEMPOTENCY KEY, because this read-only route no longer carries a ledger', async () => {
+      // ★★★ SECURITY / API FINDING F5 (CWE-400, cache confusion). THIRTEEN CASES USED TO SIT HERE,
+      // pinning a per-container ledger: replay under one key, in-flight sharing, key trimming,
+      // case-insensitive header matching, oldest-first eviction at 256 entries, and a 256-character
+      // key bound. Every one of them described a mechanism that has been REMOVED, and their removal
+      // is the fix rather than a loss of coverage.
+      //
+      // WHAT WAS WRONG WITH IT. The ledger was keyed on the RAW CALLER KEY and nothing else - no
+      // operation, no parameters, no caller identity, no request digest - so a caller reusing one key
+      // for a DIFFERENT action received the FIRST action's body, complete with the first request's
+      // correlation identifier. The 256-entry bound was a COUNT bound that retained 256 COMPLETE
+      // response bodies.
+      //
+      // WHY REMOVAL RATHER THAN REPAIR. The route is `GET /catalog/products` and all three published
+      // operations are READS, so re-running one cannot double-write anything: the endpoint is
+      // idempotent by construction and re-executing a retry is strictly more correct than replaying a
+      // stale body. AAP 0.6.5's idempotency obligation is stated for BULK MUTATION paths and this
+      // capability publishes none. The alternative review offered - a durable record keyed by caller
+      // plus canonical request digest - means new infrastructure this migration excludes outright
+      // (AAP 0.2.2), for a read path that gains nothing from it.
+      //
+      // The two cases below are what replaces thirteen: the key is inert, and a retry re-executes.
       const first = await bed.invoke(keyedRequest('idem-0001'));
       const second = await bed.invoke(keyedRequest('idem-0001'), 'a-different-invocation');
 
-      expect(bed.findProductsCalls).toHaveLength(1);
-      expect(bed.counters.scopesOpened).toBe(1);
-      expect(second).toBe(first);
-      // The replayed response is the RECORDED one, correlation identifier included - which is the
-      // honest thing for a replay to be, and is how an operator joins the retry to the original work.
-      expect(readServedBody(second).requestId).toBe(INVOCATION_ID);
-    });
+      expect(first.statusCode).toBe(200);
+      expect(second.statusCode).toBe(200);
 
-    it('replays byte-identically, which is the transport half of the compensation story', async () => {
-      // No transaction wraps a ported bulk loop, so a partial failure is reachable and reconciliation
-      // is REPLAY: both repricing branches ASSIGN an absolute value rather than applying a delta
-      // [model/service/ProductService.cfc:L216-L233], so re-invoking with the same payload converges
-      // on the same end state however many times it runs. The key is what keeps an UNINTENDED retry
-      // from compounding the harder, INSERTING case; a deliberate re-run is a new key. What this tier
-      // owes is that a retry under one key is answered from the record rather than re-executed, and
-      // that is what is asserted here.
-      bed.outcomes.productPage = makeProductPage([
-        makeProductFixture({ productID: FIRST_PRODUCT_ID, productName: 'Nike Air Jorden' }),
-      ]);
-
-      const first = await bed.invoke(keyedRequest('idem-0002'));
-      const replayed = await bed.invoke(keyedRequest('idem-0002'));
-
-      expect(replayed.body).toBe(first.body);
-      expect(replayed.statusCode).toBe(first.statusCode);
-      expect(bed.findProductsCalls).toHaveLength(1);
-    });
-
-    it('shares an IN-FLIGHT attempt rather than starting a second one', async () => {
-      const gate = makeGate();
-      bed.outcomes.gate = gate.promise;
-
-      const firstPromise = bed.invoke(keyedRequest('idem-0003'));
-      const secondPromise = bed.invoke(keyedRequest('idem-0003'));
-      gate.open();
-      const [first, second] = await Promise.all([firstPromise, secondPromise]);
-
-      expect(bed.findProductsCalls).toHaveLength(1);
-      expect(bed.counters.scopesOpened).toBe(1);
-      expect(second).toBe(first);
-    });
-
-    it('does not record a FAILED attempt, so a retry under the same key re-executes', async () => {
-      bed.outcomes.findProductsRejectsWith = driverShapedFailure();
-      const failed = await bed.invoke(keyedRequest('idem-0004'));
-      expect(failed.statusCode).toBe(500);
-
-      bed.outcomes.findProductsRejectsWith = undefined;
-      const retried = await bed.invoke(keyedRequest('idem-0004'));
-
-      // Recording a failure would answer every later retry with it forever, which is the opposite of
-      // what an idempotency record is for.
-      expect(retried.statusCode).toBe(200);
-      expect(bed.findProductsCalls).toHaveLength(2);
-    });
-
-    it('does not record a DETERMINISTIC refusal, so a corrected retry under the same key succeeds', async () => {
-      const refused = await bed.invoke({
-        query: queryFor('findProducts'),
-        headers: { 'idempotency-key': 'idem-0005' },
-      });
-      expect(refused.statusCode).toBe(400);
-
-      const corrected = await bed.invoke(keyedRequest('idem-0005'));
-
-      // A schema rejection is a deterministic function of the request, so replaying it would buy
-      // nothing and recording it would let a malformed first attempt poison a corrected second one.
-      expect(corrected.statusCode).toBe(200);
-      expect(bed.findProductsCalls).toHaveLength(1);
-    });
-
-    it('executes every invocation when no key is supplied', async () => {
-      await bed.invoke(validRequest);
-      await bed.invoke(validRequest);
-
-      // A caller that supplies no key has not asked for replay, and inventing one from the request's
-      // own content would deduplicate two genuinely distinct requests that happen to look alike.
+      // TWO executions and TWO scopes: nothing is recorded and nothing is replayed.
       expect(bed.findProductsCalls).toHaveLength(2);
       expect(bed.counters.scopesOpened).toBe(2);
+      expect(second).not.toBe(first);
     });
 
-    it('treats a blank key as no key at all', async () => {
-      await bed.invoke(keyedRequest('   '));
-      await bed.invoke(keyedRequest('   '));
+    it("★★ answers every response with THIS invocation's correlation identifier, never a recorded one", async () => {
+      // The sharpest consequence of the old ledger: a replayed response carried the FIRST request's
+      // correlation identifier, so an operator joining a caller's response to the log stream landed on
+      // a different invocation. Each response now carries its own.
+      const first = await bed.invoke(keyedRequest('idem-0002'));
+      const second = await bed.invoke(keyedRequest('idem-0002'), 'a-different-invocation');
 
-      expect(bed.findProductsCalls).toHaveLength(2);
+      expect(readServedBody(first).requestId).toBe(INVOCATION_ID);
+      expect(readServedBody(second).requestId).toBe('a-different-invocation');
     });
 
-    it('trims a key, so surrounding whitespace does not mint a second identity', async () => {
-      await bed.invoke(keyedRequest('idem-0006'));
-      await bed.invoke(keyedRequest('  idem-0006  '));
+    it("★★★ CANNOT REPLAY ONE OPERATION'S BODY FOR ANOTHER, which was the defect itself", async () => {
+      // The wrong-operation replay, reproduced as a positive assertion. Under the old ledger the
+      // second call - a DIFFERENT operation under the SAME key - was answered with the first
+      // operation's body. Each operation now answers for itself.
+      const products = await bed.invoke(keyedRequest('idem-0003'));
+      const optionGroups = await bed.invoke({
+        query: queryFor('getUnusedProductOptionGroups', { existingOptionGroupIDList: '' }),
+        headers: { 'idempotency-key': 'idem-0003' },
+      });
 
+      expect(readServedBody(products).result.operation).toBe('findProducts');
+      expect(readServedBody(optionGroups).result.operation).toBe('getUnusedProductOptionGroups');
       expect(bed.findProductsCalls).toHaveLength(1);
+      expect(bed.unusedProductOptionGroupsCalls).toHaveLength(1);
     });
 
-    it('matches the key header case-insensitively', async () => {
-      await bed.invoke(keyedRequest('idem-0007', 'idempotency-key'));
-      await bed.invoke(keyedRequest('idem-0007', 'Idempotency-Key'));
-
-      // HTTP field names are case-insensitive and API Gateway presents them with the casing the client
-      // chose, so a direct index would miss the second spelling.
-      expect(bed.findProductsCalls).toHaveLength(1);
-    });
-
-    it('keeps distinct keys distinct', async () => {
-      await bed.invoke(keyedRequest('idem-0008'));
-      await bed.invoke(keyedRequest('idem-0009'));
-
-      expect(bed.findProductsCalls).toHaveLength(2);
-    });
-
-    it('ignores an unrelated header while matching the key', async () => {
-      const withCompanion: EventOverrides = {
-        query: queryFor('findProducts', { keyword: 'jorden' }),
-        headers: { 'x-request-hint': 'catalog', 'idempotency-key': 'idem-0010' },
-      };
-
-      await bed.invoke(withCompanion);
-      await bed.invoke(withCompanion);
-
-      expect(bed.findProductsCalls).toHaveLength(1);
-    });
-
-    it('treats a header present with NO value as no key at all', async () => {
-      // The platform's header type admits a present-but-valueless field, so the subject has to decide
-      // what that means. Reporting it as ABSENT is the safe reading: a caller that sent no key has not
-      // asked for replay, and treating an empty field as a key would make every such request share one.
-      const valueless: EventOverrides = {
-        query: queryFor('findProducts', { keyword: 'jorden' }),
-        headers: { 'idempotency-key': undefined },
-      };
-
-      await bed.invoke(valueless);
-      await bed.invoke(valueless);
-
-      expect(bed.findProductsCalls).toHaveLength(2);
-    });
-
-    it('bounds the recorded outcomes, and an evicted key re-executes rather than answering wrongly', async () => {
-      // The ledger is bounded so a warm container's memory cannot grow with the number of DISTINCT
-      // keys it has seen. This is an allocation bound stated as a correctness property, and it measures
-      // nothing: eviction is oldest-first, and an evicted key simply stops being replayable - a retry
-      // under it RE-EXECUTES, which is the same outcome as a retry landing on a cold container. The
-      // count below mirrors the bound the shipped module declares; were that bound to change, this test
-      // fails loudly at the boundary rather than drifting silently.
-      const recordedOutcomeBound = 256;
-
-      for (let index = 0; index <= recordedOutcomeBound; index += 1) {
-        await bed.invoke(keyedRequest(`idem-evict-${String(index)}`));
+    it('★★ retains NO response body across invocations, so a warm container holds no caller data', async () => {
+      // The count bound retained 256 complete bodies; nothing is retained now. A distinct key per
+      // call proves the point without depending on the removed eviction order.
+      for (let index = 0; index < 8; index += 1) {
+        const response = await bed.invoke(keyedRequest(`idem-retain-${String(index)}`));
+        expect(response.statusCode).toBe(200);
       }
-      expect(bed.findProductsCalls).toHaveLength(recordedOutcomeBound + 1);
 
-      // The FIRST key was evicted when the bound was exceeded, so its retry executes again.
-      await bed.invoke(keyedRequest('idem-evict-0'));
-      expect(bed.findProductsCalls).toHaveLength(recordedOutcomeBound + 2);
-
-      // The most recent key is still recorded, so its retry is replayed and executes nothing.
-      const executedSoFar = bed.findProductsCalls.length;
-      await bed.invoke(keyedRequest(`idem-evict-${String(recordedOutcomeBound)}`));
-      expect(bed.findProductsCalls).toHaveLength(executedSoFar);
+      // Every one executed: there is no record to answer from.
+      expect(bed.findProductsCalls).toHaveLength(8);
+      expect(bed.counters.scopesOpened).toBe(8);
     });
 
-    it('accepts a key at the longest admissible length', async () => {
-      const response = await bed.invoke(keyedRequest('k'.repeat(256)));
+    it('★★ imposes NO length bound on the inert key, because nothing keys anything on it', async () => {
+      // A 257-character key used to be a 400 naming that header path. The header is no longer
+      // read at all, so it cannot make a valid request invalid - which is the right outcome for a
+      // field this route does not consume.
+      const response = await bed.invoke(keyedRequest('k'.repeat(1024)));
 
       expect(response.statusCode).toBe(200);
       expect(bed.findProductsCalls).toHaveLength(1);
     });
 
-    it('refuses an over-long key rather than shortening it', async () => {
-      const response = await bed.invoke(keyedRequest('k'.repeat(257)));
-      const issue = atIndex(readFieldIssues(response), 0);
+    it('★★ SHARES NO IN-FLIGHT CALL between two concurrent requests carrying one key', async () => {
+      // The last of the removed mechanisms, and the one that needed a held call to prove either way:
+      // the old ledger recorded the PROMISE, so a second request arriving under the same key while the
+      // first was still running was handed the first's eventual body. Two callers therefore shared one
+      // execution AND one correlation identifier.
+      //
+      // Held open explicitly rather than raced on a timer: the gate keeps both calls inside
+      // `ProductService.findProducts` until the assertion below has observed BOTH arrivals, so this
+      // proves independence without depending on scheduling.
+      const gate = makeGate();
+      bed.outcomes.gate = gate.promise;
 
-      expect(response.statusCode).toBe(400);
-      expect(issue.path).toBe('headers.idempotency-key');
-      expect(issue.message).toContain('at most 256 characters');
-      // Shortening would make two distinct keys collide, which is the one failure mode an idempotency
-      // key exists to prevent.
-      expect(issue.message).toContain('refused rather than shortened');
-      expect(bed.findProductsCalls).toEqual([]);
-      expect(bed.counters.scopesOpened).toBe(0);
+      const first = bed.invoke(keyedRequest('idem-inflight'));
+      const second = bed.invoke(keyedRequest('idem-inflight'), 'a-second-invocation');
+
+      // Both are inside the service before either has returned: no sharing, no coalescing.
+      await vi.waitFor(() => {
+        expect(bed.findProductsCalls).toHaveLength(2);
+      });
+
+      gate.open();
+      const [firstResponse, secondResponse] = await Promise.all([first, second]);
+
+      expect(firstResponse.statusCode).toBe(200);
+      expect(secondResponse.statusCode).toBe(200);
+      expect(bed.counters.scopesOpened).toBe(2);
+      // Each answered under its OWN identifier, which a shared in-flight promise could not have done.
+      expect(readServedBody(firstResponse).requestId).toBe(INVOCATION_ID);
+      expect(readServedBody(secondResponse).requestId).toBe('a-second-invocation');
     });
 
-    it('leaves nothing behind when it refuses, so there is nothing to compensate for', async () => {
+    it('reaches nothing at all when it refuses', async () => {
       await bed.invoke({ query: {} });
       await bed.invoke({ query: { operation: 'processProduct_updateSkus' } });
       await bed.invoke({ path: SKU_RESOLUTION_ROUTE.path });
-      await bed.invoke(keyedRequest('k'.repeat(257)));
+      await bed.invoke({
+        query: queryFor('findProducts', { keyword: 'jorden', unknownKnob: '1' }),
+      });
 
       // Every refusal above is decided BEFORE anything is constructed: no composition root resolved,
-      // no request scope opened, no service member reached. A refused call therefore has no partial
-      // effect for a compensation path to undo.
+      // no request scope opened, no service member reached.
       expect(bed.counters.rootsResolved).toBe(0);
       expect(bed.counters.scopesOpened).toBe(0);
       expect(bed.findProductsCalls).toEqual([]);

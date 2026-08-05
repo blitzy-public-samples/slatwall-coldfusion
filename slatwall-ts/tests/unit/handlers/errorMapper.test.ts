@@ -66,14 +66,24 @@
 //   own documented contract.
 // ---------------------------------------------------------------------------
 
+import type { APIGatewayProxyEvent, Context } from 'aws-lambda';
 import { describe, expect, it, vi } from 'vitest';
-import { ZodError } from 'zod';
+import { z, ZodError } from 'zod';
 
-import type { ErrorMappingContext, ErrorResponseBody } from '../../../src/handlers/errorMapper.js';
+import type {
+  ErrorMappingContext,
+  ErrorResponseBody,
+  SuccessResponseBody,
+} from '../../../src/handlers/errorMapper.js';
 import {
+  forbiddenResponse,
   invalidRequestResponse,
+  jsonSuccessResponse,
   mapErrorToApiGatewayResponse,
+  resolveServerRequestId,
+  routeDiagnosticLabel,
   routeNotFoundResponse,
+  unauthenticatedResponse,
 } from '../../../src/handlers/errorMapper.js';
 import type { LogContext, LogLevel, Logger, LogSink } from '../../../src/lib/logger.js';
 
@@ -540,6 +550,169 @@ describe('a schema-rejected request input', () => {
     // per-segment clamp would have had to.
     expect(field.path).not.toContain('x'.repeat(65));
   });
+
+  // -------------------------------------------------------------------------
+  // ★★★ UNRECOGNIZED KEYS KEEP ONLY THEIR SCHEMA-AUTHORED CONTAINER PATH.
+  //
+  // The validator's `keys` and rendered message contain caller-authored member names. Publishing
+  // either would make a 400 response and its durable log line an echo channel. The mapper therefore
+  // substitutes a fixed sentence and keeps only `path`: empty for the root object, or a bounded
+  // containing path such as `order` for a nested strict object.
+  // -------------------------------------------------------------------------
+
+  /** A genuine strict-object rejection, produced by the pinned validator rather than forged. */
+  function strictRejection(input: Readonly<Record<string, unknown>>): unknown {
+    const schema = z.strictObject({ operation: z.string() });
+    const outcome = schema.safeParse(input);
+
+    if (outcome.success) {
+      throw new Error(
+        'the fixture input was admitted; it must be rejected for this case to mean anything',
+      );
+    }
+
+    return outcome.error;
+  }
+
+  it('publishes the safe root-container path and a fixed sentence', () => {
+    const { logger } = createRecordingLogger();
+
+    const response = mapErrorToApiGatewayResponse(
+      strictRejection({ operation: 'findProducts', notAParameter: 'x' }),
+      contextWith(logger),
+    );
+    const body = bodyOf(response.body);
+
+    expect(body.category).toBe('invalidRequest');
+    expect((body.fields ?? []).map((field) => field.path)).toStrictEqual(['']);
+    expect((body.fields ?? [])[0]?.message).toBe(
+      'contains a member this operation does not publish; remove it and retry',
+    );
+    expect(response.body).not.toContain('notAParameter');
+  });
+
+  it('does not enumerate several caller-authored keys', () => {
+    const { logger } = createRecordingLogger();
+
+    const response = mapErrorToApiGatewayResponse(
+      strictRejection({ operation: 'findProducts', alpha: '1', bravo: '2', charlie: '3' }),
+      contextWith(logger),
+    );
+    const body = bodyOf(response.body);
+
+    expect((body.fields ?? []).map((field) => field.path)).toStrictEqual(['']);
+    expect(response.body).not.toContain('alpha');
+    expect(response.body).not.toContain('bravo');
+    expect(response.body).not.toContain('charlie');
+  });
+
+  it('NEVER publishes either the name or the value of a rejected key', () => {
+    const { logger } = createRecordingLogger();
+    const callerKey = 'smuggled';
+    const planted = 'PLANTED-KEY-VALUE-3f9a17c4';
+
+    const response = mapErrorToApiGatewayResponse(
+      strictRejection({ operation: 'findProducts', [callerKey]: planted }),
+      contextWith(logger),
+    );
+
+    expect(response.body).not.toContain(callerKey);
+    expect(response.body).not.toContain(planted);
+  });
+
+  it('does not publish even a clamped prefix of an over-long key name', () => {
+    const { logger } = createRecordingLogger();
+    const overLong = 'k'.repeat(200);
+
+    const response = mapErrorToApiGatewayResponse(
+      strictRejection({ operation: 'findProducts', [overLong]: '1' }),
+      contextWith(logger),
+    );
+    const body = bodyOf(response.body);
+
+    const [field] = body.fields ?? [];
+    if (field === undefined) {
+      throw new Error('the mapper published no field issue');
+    }
+
+    expect(field.path).toBe('');
+    expect(response.body).not.toContain(overLong);
+    expect(field.path).not.toContain('k'.repeat(65));
+  });
+
+  it('logs only the safe container path, at warning severity', () => {
+    const { logger, emissions } = createRecordingLogger();
+    const callerKey = 'notAParameter';
+
+    mapErrorToApiGatewayResponse(
+      strictRejection({ operation: 'findProducts', [callerKey]: 'x' }),
+      contextWith(logger),
+    );
+    const emission = soleEmission(emissions);
+
+    expect(emission.level).toBe('warn');
+    expect(contextOf(emission)['fieldPaths']).toStrictEqual(['']);
+    expect(emission.serialized).not.toContain(callerKey);
+  });
+
+  it('collapses a wide unrecognized-key issue to one safe container complaint', () => {
+    const { logger } = createRecordingLogger();
+    const wide: Record<string, unknown> = { operation: 'findProducts' };
+
+    for (let index = 0; index < 40; index += 1) {
+      wide[`extra${String(index)}`] = String(index);
+    }
+
+    const body = bodyOf(
+      mapErrorToApiGatewayResponse(strictRejection(wide), contextWith(logger)).body,
+    );
+
+    expect(body.fields).toHaveLength(1);
+    expect(body.fields?.[0]?.path).toBe('');
+  });
+
+  it('★★★ KEEPS the containing path when the strict object is nested', () => {
+    const { logger, emissions } = createRecordingLogger();
+    const nested = z.strictObject({
+      operation: z.string(),
+      order: z.strictObject({ subtotal: z.string() }),
+    });
+    const outcome = nested.safeParse({
+      operation: 'applyPromotions',
+      order: { subTotal: '59.97' },
+    });
+
+    if (outcome.success) {
+      throw new Error('the fixture input was admitted; it must be rejected to mean anything');
+    }
+
+    const response = mapErrorToApiGatewayResponse(outcome.error, contextWith(logger));
+    const paths = (bodyOf(response.body).fields ?? []).map((field) => field.path).sort();
+
+    // The schema-authored container remains actionable; the caller-authored misspelling does not.
+    expect(paths).toStrictEqual(['order', 'order.subtotal']);
+    expect(contextOf(soleEmission(emissions))['fieldPaths']).toStrictEqual([
+      'order.subtotal',
+      'order',
+    ]);
+    expect(response.body).not.toContain('subTotal');
+    expect(response.body).not.toContain('59.97');
+  });
+
+  it('still reports a missing REQUIRED member alongside the unrecognized one', () => {
+    const { logger } = createRecordingLogger();
+
+    const body = bodyOf(
+      mapErrorToApiGatewayResponse(strictRejection({ notAParameter: 'x' }), contextWith(logger))
+        .body,
+    );
+
+    const paths = (body.fields ?? []).map((field) => field.path).sort();
+
+    // BOTH facts reach the caller without quoting the submitted key: the root object contains an
+    // unpublished member, and the operation member the schema requires is absent.
+    expect(paths).toStrictEqual(['', 'operation']);
+  });
 });
 
 describe('the router and handler entry points', () => {
@@ -587,6 +760,8 @@ describe('the router and handler entry points', () => {
       mapErrorToApiGatewayResponse(new Error('x'), contextWith(logger)),
       routeNotFoundResponse(contextWith(logger)),
       invalidRequestResponse('unsupportedBodyShape', contextWith(logger)),
+      unauthenticatedResponse(contextWith(logger)),
+      forbiddenResponse(contextWith(logger)),
     ];
 
     for (const response of responses) {
@@ -621,5 +796,447 @@ describe('the router and handler entry points', () => {
     expect(written).toHaveLength(1);
     expect(written[0]).not.toContain('opaque');
     expect(written[0]).toContain('"thrownShape":"Error"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The authorization refusal vocabulary
+// ---------------------------------------------------------------------------
+
+describe('a refusal to serve a caller', () => {
+  it('answers 401 for a caller it could not identify', () => {
+    const { logger, emissions } = createRecordingLogger();
+
+    const response = unauthenticatedResponse(contextWith(logger));
+
+    expect(response.statusCode).toBe(401);
+    expect(bodyOf(response.body).category).toBe('unauthenticated');
+    expect(soleEmission(emissions).level).toBe('warn');
+    expect(contextOf(soleEmission(emissions))['statusCode']).toBe(401);
+  });
+
+  it('answers 403 for an identified caller that is not permitted the operation', () => {
+    const { logger, emissions } = createRecordingLogger();
+
+    const response = forbiddenResponse(contextWith(logger));
+
+    expect(response.statusCode).toBe(403);
+    expect(bodyOf(response.body).category).toBe('forbidden');
+    expect(contextOf(soleEmission(emissions))['statusCode']).toBe(403);
+  });
+
+  it('publishes the same fixed sentence for both refusals', () => {
+    const { logger } = createRecordingLogger();
+
+    const unauthenticated = bodyOf(unauthenticatedResponse(contextWith(logger)).body);
+    const forbidden = bodyOf(forbiddenResponse(contextWith(logger)).body);
+
+    expect(unauthenticated.message).toBe(forbidden.message);
+    expect(unauthenticated.message).toBe('The request was not served.');
+  });
+
+  it('names no claim, scheme, operation or principal in either body', () => {
+    const { logger } = createRecordingLogger();
+
+    for (const response of [
+      unauthenticatedResponse(contextWith(logger)),
+      forbiddenResponse(contextWith(logger)),
+    ]) {
+      const body = response.body ?? '';
+
+      expect(body).not.toContain('accountID');
+      expect(body).not.toContain('adminAccountFlag');
+      expect(body).not.toContain('authoriz');
+      expect(body).not.toContain('POST /skus/resolve');
+      expect(bodyOf(body)).not.toHaveProperty('fields');
+    }
+  });
+
+  it('sends no authentication challenge because no scheme is declared', () => {
+    const { logger } = createRecordingLogger();
+    const headers = unauthenticatedResponse(contextWith(logger)).headers ?? {};
+
+    expect(
+      Object.keys(headers)
+        .map((name): string => name.toLowerCase())
+        .sort(),
+    ).toEqual(['cache-control', 'content-type']);
+  });
+
+  it('is never produced by the thrown-value mapping funnel', () => {
+    const { logger } = createRecordingLogger();
+    const forged = Object.assign(new Error('nope'), {
+      category: 'unauthenticated',
+      statusCode: 401,
+      name: 'UnauthenticatedError',
+    });
+
+    const response = mapErrorToApiGatewayResponse(forged, contextWith(logger));
+
+    expect(response.statusCode).toBe(500);
+    expect(bodyOf(response.body).category).toBe('unrecognized');
+  });
+
+  it('carries the route to the log stream and not into the refusal body', () => {
+    const { logger, emissions } = createRecordingLogger();
+
+    const response = forbiddenResponse(contextWith(logger));
+
+    expect(response.body).not.toContain('POST /skus/resolve');
+    expect(contextOf(soleEmission(emissions))['route']).toBe('POST /skus/resolve');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// An unrecognized member is reported without quoting the caller
+// ---------------------------------------------------------------------------
+
+describe('a strict schema rejecting a member it does not publish', () => {
+  const CALLER_AUTHORED_KEY = 'x-PLANTED-KEY-9f2c41ab';
+
+  function unrecognizedKeyFailure(): ZodError {
+    return new ZodError([
+      {
+        code: 'unrecognized_keys',
+        keys: [CALLER_AUTHORED_KEY],
+        path: ['order'],
+        message: `Unrecognized key: "${CALLER_AUTHORED_KEY}"`,
+      },
+    ] as never);
+  }
+
+  it('does not echo the submitted key name into the response body', () => {
+    const { logger } = createRecordingLogger();
+
+    const response = mapErrorToApiGatewayResponse(unrecognizedKeyFailure(), contextWith(logger));
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body).not.toContain(CALLER_AUTHORED_KEY);
+  });
+
+  it('publishes a fixed sentence and keeps the schema-authored container path', () => {
+    const { logger } = createRecordingLogger();
+
+    const [field] =
+      bodyOf(mapErrorToApiGatewayResponse(unrecognizedKeyFailure(), contextWith(logger)).body)
+        .fields ?? [];
+
+    expect(field?.path).toBe('order');
+    expect(field?.message).toBe(
+      'contains a member this operation does not publish; remove it and retry',
+    );
+  });
+
+  it('does not echo the key name onto the log stream either', () => {
+    const { logger, emissions } = createRecordingLogger();
+
+    mapErrorToApiGatewayResponse(unrecognizedKeyFailure(), contextWith(logger));
+
+    expect(soleEmission(emissions).serialized).not.toContain(CALLER_AUTHORED_KEY);
+    expect(contextOf(soleEmission(emissions))['fieldPaths']).toEqual(['order']);
+  });
+
+  it('leaves every other constraint description intact', () => {
+    const { logger } = createRecordingLogger();
+
+    const [field] =
+      bodyOf(
+        mapErrorToApiGatewayResponse(
+          new ZodError([
+            {
+              code: 'invalid_type',
+              expected: 'string',
+              path: ['idempotencyKey'],
+              message: 'Invalid input: expected string, received number',
+            },
+          ] as never),
+          contextWith(logger),
+        ).body,
+      ).fields ?? [];
+
+    expect(field?.path).toBe('idempotencyKey');
+    expect(field?.message).toBe('Invalid input: expected string, received number');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The shared response and correlation contract
+//
+// API review findings F8 and F13: the five capability entrypoints had each derived
+// their own answer to three questions every one of them has to answer - which
+// correlation identifier wins, how a route is labelled, and what a successful JSON
+// body looks like. The decisions now live in this module, beside the failure half of
+// the same contract, and these cases pin them so a sixth divergence cannot reappear
+// unnoticed.
+// ---------------------------------------------------------------------------
+
+/** The runtime identifier a real invocation carries. */
+const RUNTIME_REQUEST_ID = 'aaaaaaaa-1111-2222-3333-444444444444';
+
+/** The gateway identifier a real invocation carries. */
+const GATEWAY_REQUEST_ID = 'bbbbbbbb-5555-6666-7777-888888888888';
+
+/**
+ * A proxy event carrying only what correlation reads.
+ *
+ * Deliberately built as a partial and narrowed on the way in rather than assembled
+ * in full: `APIGatewayProxyEvent` declares dozens of members, none of which this
+ * function may read, and constructing them would suggest otherwise.
+ */
+function eventWithGatewayRequestId(gatewayRequestId?: unknown): APIGatewayProxyEvent {
+  const requestContext =
+    gatewayRequestId === undefined ? {} : { requestId: gatewayRequestId as string };
+
+  return { requestContext } as unknown as APIGatewayProxyEvent;
+}
+
+/** An event with no `requestContext` at all, as a synthesised one may be. */
+function eventWithoutRequestContext(): APIGatewayProxyEvent {
+  return {} as unknown as APIGatewayProxyEvent;
+}
+
+/** A Lambda context carrying only the invocation identifier. */
+function contextWithRuntimeRequestId(awsRequestId?: unknown): Context {
+  return { awsRequestId } as unknown as Context;
+}
+
+/** Parse a success body, narrowing rather than casting blindly. */
+function successBodyOf(body: string | undefined): SuccessResponseBody<unknown> {
+  if (body === undefined) {
+    throw new Error('the response carried no body');
+  }
+  const parsed: unknown = JSON.parse(body);
+  if (typeof parsed !== 'object' || parsed === null || !('requestId' in parsed)) {
+    throw new Error('the response body is not the documented success envelope');
+  }
+
+  return parsed as SuccessResponseBody<unknown>;
+}
+
+describe('the one correlation-precedence policy', () => {
+  it("prefers the runtime's invocation identifier over the gateway's request identifier", () => {
+    // The precedence is not a security choice - both are platform-minted - it is that
+    // the runtime identifier is the one the platform's own START/END/REPORT lines
+    // carry for THIS execution, so a gateway retry that produced two executions is
+    // still joined to the right one.
+    const resolved = resolveServerRequestId(
+      eventWithGatewayRequestId(GATEWAY_REQUEST_ID),
+      contextWithRuntimeRequestId(RUNTIME_REQUEST_ID),
+    );
+
+    expect(resolved).toBe(RUNTIME_REQUEST_ID);
+  });
+
+  it("falls back to the gateway's identifier when no runtime context was supplied", () => {
+    expect(resolveServerRequestId(eventWithGatewayRequestId(GATEWAY_REQUEST_ID))).toBe(
+      GATEWAY_REQUEST_ID,
+    );
+  });
+
+  it('treats a blank or whitespace-only platform identifier as absent', () => {
+    expect(
+      resolveServerRequestId(
+        eventWithGatewayRequestId(GATEWAY_REQUEST_ID),
+        contextWithRuntimeRequestId('   '),
+      ),
+    ).toBe(GATEWAY_REQUEST_ID);
+  });
+
+  it('trims a padded identifier rather than echoing its padding', () => {
+    expect(
+      resolveServerRequestId(
+        eventWithGatewayRequestId(undefined),
+        contextWithRuntimeRequestId(`  ${RUNTIME_REQUEST_ID}  `),
+      ),
+    ).toBe(RUNTIME_REQUEST_ID);
+  });
+
+  it('narrows a non-string identifier instead of publishing it', () => {
+    // Both sources are typed with index signatures this module must not trust: a
+    // synthesised event can carry a number, a null or an object where the platform
+    // would have put a string.
+    expect(
+      resolveServerRequestId(eventWithGatewayRequestId(42), contextWithRuntimeRequestId(null)),
+    ).toBe('unattributed');
+  });
+
+  it('publishes a fixed literal rather than minting one when the platform supplied none', () => {
+    // Nothing is generated: a random-looking value would appear on no log line the
+    // platform emitted, and would look like a real join key while joining to nothing.
+    expect(resolveServerRequestId(eventWithoutRequestContext())).toBe('unattributed');
+  });
+
+  it('reads NOTHING from a caller-supplied header', () => {
+    // The security half. This value is echoed into response bodies and written to the
+    // log stream, so honouring a caller-chosen `X-Request-Id` would let a caller stamp
+    // its own text onto both and forge a join key onto another invocation's line.
+    const event = {
+      requestContext: { requestId: GATEWAY_REQUEST_ID },
+      headers: { 'x-request-id': 'CALLER-CHOSEN', 'X-Amzn-Trace-Id': 'CALLER-CHOSEN-TRACE' },
+    } as unknown as APIGatewayProxyEvent;
+
+    expect(resolveServerRequestId(event)).toBe(GATEWAY_REQUEST_ID);
+  });
+});
+
+describe('the one route-label policy', () => {
+  it('labels a route as METHOD then path, from the frozen table members', () => {
+    expect(routeDiagnosticLabel('GET', '/catalog/products')).toBe('GET /catalog/products');
+    expect(routeDiagnosticLabel('POST', '/promotions/application')).toBe(
+      'POST /promotions/application',
+    );
+  });
+
+  it('survives the route sanitizer intact, so the label reaches the log as written', () => {
+    // The sanitizer drops everything from the first character outside its path
+    // alphabet, and a SPACE is inside that alphabet - so a method-and-path label is
+    // not truncated to a path. This is what makes the shared label usable on
+    // `ErrorMappingContext.route`.
+    const { logger, emissions } = createRecordingLogger();
+
+    routeNotFoundResponse({
+      requestId: REQUEST_ID,
+      route: routeDiagnosticLabel('GET', '/feeds/google/products'),
+      logger,
+    });
+
+    expect(contextOf(soleEmission(emissions))['route']).toBe('GET /feeds/google/products');
+  });
+});
+
+describe('the one JSON success envelope', () => {
+  it('carries the correlation identifier, the capability, the action and the result', () => {
+    const response = jsonSuccessResponse(REQUEST_ID, 'catalogQuery', 'queryCatalog', {
+      recordsCount: 2,
+    });
+    const body = successBodyOf(response.body);
+
+    expect(response.statusCode).toBe(200);
+    expect(body.requestId).toBe(REQUEST_ID);
+    expect(body.capability).toBe('catalogQuery');
+    expect(body.action).toBe('queryCatalog');
+    expect(body.result).toStrictEqual({ recordsCount: 2 });
+  });
+
+  it('uses the same header set as the failure envelope, no-store included', () => {
+    // One construction path for a response means one header policy: an intermediary
+    // must not be able to serve a stored success to a later, unrelated request any
+    // more than it can serve a stored failure.
+    const success = jsonSuccessResponse(REQUEST_ID, 'productFeed', 'generateProductFeed', null);
+    const failure = routeNotFoundResponse({ requestId: REQUEST_ID });
+
+    expect(success.headers).toStrictEqual(failure.headers);
+    expect(success.headers?.['content-type']).toBe('application/json; charset=utf-8');
+    expect(success.headers?.['cache-control']).toBe('no-store');
+  });
+
+  it('does NOT echo the route path into the success body', () => {
+    // Same rule the failure envelope follows: the route is logged and never reflected
+    // back, because the closed `action` literal already names what ran.
+    const response = jsonSuccessResponse(REQUEST_ID, 'skuResolution', 'resolveSkus', { skus: [] });
+
+    expect(response.body).not.toContain('/catalog/skus');
+    expect(Object.keys(successBodyOf(response.body)).sort()).toStrictEqual([
+      'action',
+      'capability',
+      'requestId',
+      'result',
+    ]);
+  });
+
+  it('omits nothing and invents nothing when the result is an empty projection', () => {
+    const body = successBodyOf(
+      jsonSuccessResponse(REQUEST_ID, 'priceResolution', 'resolvePrices', {}).body,
+    );
+
+    expect(body.result).toStrictEqual({});
+  });
+
+  it('emits no log line of its own, so a served request is logged by its handler once', () => {
+    // Deliberately silent. The handler owns the served line - it is the only party
+    // that knows the operation and the counts - and a second emission here would make
+    // every success two lines, which is the defect F14 raised on the failure side.
+    const written: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk: string | Uint8Array): boolean => {
+        written.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+
+        return true;
+      });
+
+    jsonSuccessResponse(REQUEST_ID, 'catalogQuery', 'queryCatalog', { recordsCount: 0 });
+
+    writeSpy.mockRestore();
+
+    expect(written).toHaveLength(0);
+  });
+});
+
+describe('the mapper owns the single emission for a handler-established refusal', () => {
+  it('appends a handler-supplied ground to the LOG MESSAGE', () => {
+    // F14: two handlers emitted their own `warn` for a refusal they then passed here,
+    // producing two lines for one rejection. They did so because the closed reason
+    // names the CLASS of problem while the handler knows the GROUND of it, and there
+    // was nowhere to put the ground. This is that place.
+    const { logger, emissions } = createRecordingLogger();
+
+    invalidRequestResponse(
+      'unusableRequestInput',
+      contextWith(logger),
+      undefined,
+      'the observed feed host is not served by this deployment',
+    );
+
+    const emission = soleEmission(emissions);
+
+    expect(emission.level).toBe('warn');
+    expect(emission.message).toBe(
+      'request input rejected before it reached the services: ' +
+        'the observed feed host is not served by this deployment',
+    );
+  });
+
+  it('never lets that ground reach the RESPONSE BODY', () => {
+    // The central guarantee is untouched: the body still carries only the frozen
+    // sentence this module owns for the reason.
+    const { logger } = createRecordingLogger();
+
+    const response = invalidRequestResponse(
+      'unusableRequestInput',
+      contextWith(logger),
+      undefined,
+      `rejected host carrying ${PLANTED_SECRET}`,
+    );
+
+    expect(response.body).not.toContain(PLANTED_SECRET);
+    expect(response.body).not.toContain('rejected host');
+    expect(bodyOf(response.body).message).toBe('The request input is not valid.');
+  });
+
+  it('keeps the unadorned message when no ground is supplied', () => {
+    const { logger, emissions } = createRecordingLogger();
+
+    invalidRequestResponse('missingQueryParameter', contextWith(logger));
+
+    expect(soleEmission(emissions).message).toBe(
+      'request input rejected before it reached the services',
+    );
+  });
+
+  it('still publishes the closed reason and the field paths in the context', () => {
+    const { logger, emissions } = createRecordingLogger();
+
+    invalidRequestResponse(
+      'missingQueryParameter',
+      contextWith(logger),
+      [{ path: 'queryStringParameters.keyword', message: 'is required' }],
+      'keyword was absent',
+    );
+
+    const context = contextOf(soleEmission(emissions));
+
+    expect(context['invalidRequestReason']).toBe('missingQueryParameter');
+    expect(context['fieldPaths']).toStrictEqual(['queryStringParameters.keyword']);
   });
 });

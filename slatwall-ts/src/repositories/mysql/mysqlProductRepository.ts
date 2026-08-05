@@ -136,8 +136,10 @@ import type { SkuHydrationInput } from '../../domain/entities/sku.js';
 import { Sku } from '../../domain/entities/sku.js';
 import type {
   AttributeSetSummary,
+  ProductMaterializationWindow,
   ProductRepository,
   ProductSavePayload,
+  ProductSearchMatches,
 } from '../../domain/ports/productRepository.js';
 import type { SalePriceDetail } from '../../domain/ports/promotionRepository.js';
 import { Money } from '../../domain/valueObjects/money.js';
@@ -148,6 +150,8 @@ import { cfBoolean, cfLen, isNullish } from '../../lib/cfml/truthiness.js';
 import type { AuditActorContext, PreparedStatementExecutor, SqlRow } from './connection.js';
 import {
   chunkTupleRows,
+  isPreparablePlaceholderCount,
+  MAX_PLACEHOLDER_COUNT,
   resolveAuditActorAccountID,
   resolveStampedModifiedByAccountID,
   SQL_TUPLE_ROW_LIMIT,
@@ -283,6 +287,29 @@ class ProductUndefinedArgumentError extends Error {
   }
 }
 
+/** A product-type filter would make the complete search statement unpreparable. */
+class ProductSearchPlaceholderCountError extends Error {
+  /** How many product-type identifiers the caller supplied. */
+  public readonly productTypeIDCount: number;
+
+  /** How many placeholders the complete statement would have carried. */
+  public readonly placeholderCount: number;
+
+  public constructor(productTypeIDCount: number, placeholderCount: number) {
+    super(
+      [
+        `The productTypeIDs argument carries ${String(productTypeIDCount)} identifiers, so the`,
+        `complete product search would carry ${String(placeholderCount)} placeholders; MySQL cannot`,
+        `prepare a statement with more than ${String(MAX_PLACEHOLDER_COUNT)} placeholders.`,
+        'The list is refused on its count alone and no identifier is reproduced or altered.',
+      ].join(' '),
+    );
+    this.name = 'ProductSearchPlaceholderCountError';
+    this.productTypeIDCount = productTypeIDCount;
+    this.placeholderCount = placeholderCount;
+  }
+}
+
 // --- Read totality: why this module refuses nothing on magnitude ------------
 //
 // SECURITY REVIEW DISPOSITION - RAISED AS S-08, AND THE TWO REFUSAL CEILINGS AN EARLIER REVISION
@@ -305,6 +332,12 @@ class ProductUndefinedArgumentError extends Error {
 // limit. Those lists are now chunked, so an arbitrarily large match set becomes a bounded number of
 // bounded statements. No statement's TEXT changed: the pinned parity claim that the search statement
 // emits "NO ORDER BY, and no DISTINCT or LIMIT either" still holds exactly.
+//
+// ONE PROTOCOL FEASIBILITY CEILING IS NOT A READ POLICY. The product search always binds the term,
+// then one placeholder per supplied product-type identifier. `COM_STMT_PREPARE_OK` carries the total
+// placeholder count in two bytes, so a complete statement above 65,535 cannot be prepared by MySQL
+// at all. That impossible statement is refused before its placeholder body is allocated; every
+// preparable input remains total and unchanged.
 
 /**
  * A row carries a foreign key that names no row in the referenced table.
@@ -1154,9 +1187,10 @@ ${ATTRIBUTE_SET_ORDER_BY}`;
  * two look alike.
  *
  * `productName` is selected and never read. The legacy projects `productID, productName` into a
- * two-key autocomplete structure [model/dao/ProductDAO.cfc:L429-L436], and the port returns `Product[]`
- * instead, so only the identifier is consumed - but the projection is the ported statement's text and
- * is carried over unchanged rather than trimmed to what this adapter happens to need.
+ * two-key autocomplete structure [model/dao/ProductDAO.cfc:L429-L436], and the port returns
+ * `ProductSearchMatches` whose `records` are materialized products, so only the identifier is
+ * consumed - but the projection is the ported statement's text and is carried over unchanged rather
+ * than trimmed to what this adapter happens to need.
  *
  * NO `ORDER BY`, NO `DISTINCT` AND NO `LIMIT` - the legacy has none, so none is added.
  *
@@ -3189,11 +3223,12 @@ export class MysqlProductRepository implements ProductRepository {
    * this statement, so it is mandatory. An empty parsed list omits the predicate entirely rather than
    * emitting `IN ()`, which is exactly what the legacy guard at [model/dao/ProductDAO.cfc:L423] does.
    *
-   * T3, FETCH SHAPE: the port returns `Product[]`, so the matched identifiers are hydrated through this
-   * module's single product graph loader - each product carries its eager `brand` and `productType`, its
-   * `skus`, each SKU's `options`, and its `defaultSku`. Results come back IN THE ORDER THE SEARCH
-   * PRODUCED THEM, and the search statement carries no `ORDER BY` because the legacy carries none; no
-   * ordering is invented on either side of the hydration.
+   * T3, FETCH SHAPE: the port returns `ProductSearchMatches`, whose `records` hydrate the selected
+   * identifiers through this module's single product graph loader and whose `matchedCount` retains
+   * the complete pre-window match count. Each record carries its eager `brand` and `productType`, its
+   * `skus`, each SKU's `options`, and its `defaultSku`. Records come back IN THE ORDER THE SEARCH
+   * PRODUCED THEM, and the search statement carries no `ORDER BY` because the legacy carries none;
+   * no ordering is invented on either side of the hydration.
    *
    * NET-NEW COVERAGE OBLIGATIONS: a term plus a two-element list emits the product-type predicate with
    * two placeholders and binds `%term%` first; an empty or whitespace-only `productTypeIDs` string is
@@ -3203,15 +3238,18 @@ export class MysqlProductRepository implements ProductRepository {
    *
    * @param term optional name fragment.
    * @param productTypeIDs optional comma-delimited product-type identifiers.
-   * @returns the matching products, materialized as the port requires.
+   * @returns the materialized window and the complete pre-window match count.
    * @throws An error named `ProductUndefinedArgumentError` when `term` is absent.
+   * @throws An error named `ProductSearchPlaceholderCountError` when the complete statement would
+   *   exceed MySQL's protocol placeholder ceiling.
    * @throws An error named `ProductColumnError` when a projected column is missing or malformed.
    * @throws An error named `ProductAssociationError` when a matched row carries a dangling foreign key.
    */
   public async searchProductsByProductType(
     term?: string,
     productTypeIDs?: string,
-  ): Promise<Product[]> {
+    materializationWindow?: ProductMaterializationWindow,
+  ): Promise<ProductSearchMatches> {
     // [model/dao/ProductDAO.cfc:L422] the unconditional bind. See ProductUndefinedArgumentError.
     if (term === undefined) {
       throw new ProductUndefinedArgumentError('term', PRODUCT_SEARCH_LABEL);
@@ -3228,6 +3266,11 @@ export class MysqlProductRepository implements ProductRepository {
     // asymmetry 1 above. `cfLen` is the ported `len()`, so a whitespace-only list passes as it does there.
     const boundProductTypeIDs: readonly string[] =
       productTypeIDs !== undefined && cfLen(productTypeIDs) > 0 ? listToArray(productTypeIDs) : [];
+    const placeholderCount = boundProductTypeIDs.length + 1;
+
+    if (!isPreparablePlaceholderCount(placeholderCount)) {
+      throw new ProductSearchPlaceholderCountError(boundProductTypeIDs.length, placeholderCount);
+    }
 
     const rows = await this.executor.execute(buildProductSearchSql(boundProductTypeIDs.length), [
       // [model/dao/ProductDAO.cfc:L422] `value="%#arguments.term#%"` - the wildcards are part of the
@@ -3236,16 +3279,38 @@ export class MysqlProductRepository implements ProductRepository {
       ...boundProductTypeIDs,
     ]);
 
-    // EVERY MATCHED IDENTIFIER IS MATERIALIZED, however many there are. An earlier revision refused
-    // a match set above 2,000 here, which made a search the legacy answered fail outright. The
-    // amplification that motivated the refusal is real - the legacy projected two columns per match
-    // [model/dao/ProductDAO.cfc:L421] and this port materializes a product graph per match - and it
-    // is answered inside `materializeProducts`, whose statements chunk their identifier lists.
+    // EVERY MATCHED IDENTIFIER IS PROJECTED, however many there are, and that is deliberate: the
+    // projection is the legacy's own two-column read [model/dao/ProductDAO.cfc:L421] and its size is the
+    // honest `matchedCount`. An earlier revision refused a match set above 2,000 here, which made a
+    // search the legacy answered fail outright; that refusal is not reinstated.
     const matchedProductIDs = rows.map((row: SqlRow) =>
       readIdentifier(row, 'productID', PRODUCT_SEARCH_LABEL),
     );
 
-    return await this.materializeProducts(matchedProductIDs);
+    // ★★ THE WINDOW IS APPLIED HERE, BETWEEN THE PROJECTION AND THE GRAPH MATERIALIZATION, and that
+    // placement is the fix for a resource finding (MAJOR, CWE-400): the caller's paging window used to
+    // be applied AFTER every matched graph had been hydrated, so it bounded the response and not the
+    // work. The amplification is real and is exactly here - the legacy read two columns per match and
+    // this port materializes a product graph, its SKUs and each SKU's options per match - so bounding
+    // the identifier list bounds the three statements that do the work while leaving the ported
+    // statement text above byte-identical and `matchedCount` truthful. See
+    // `ProductRepository.searchProductsByProductType` for why this is not a `LIMIT`.
+    //
+    // AN ABSENT WINDOW MEANS EVERY MATCH, exactly as before. `slice` is total on both bounds - a start
+    // past the end yields an empty list and an over-long count is clamped by the array - so a window the
+    // service already validated cannot produce a partial statement or an out-of-range read.
+    const windowedProductIDs =
+      materializationWindow === undefined
+        ? matchedProductIDs
+        : matchedProductIDs.slice(
+            materializationWindow.start,
+            materializationWindow.start + materializationWindow.count,
+          );
+
+    return {
+      records: await this.materializeProducts(windowedProductIDs),
+      matchedCount: matchedProductIDs.length,
+    };
   }
 
   // =========================================================================

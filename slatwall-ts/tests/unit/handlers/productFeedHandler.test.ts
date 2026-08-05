@@ -1,9 +1,9 @@
 // ---------------------------------------------------------------------------
-// The Google product-feed Lambda entrypoint - unit suite.
+// The Google product-feed Lambda entrypoint, under test.
 //
 // Subject: `src/handlers/productFeedHandler.ts`, whose two exported values are
-// `createProductFeedHandler` and `handler`. It is the ONLY one of the five capability
-// entrypoints that ports a legacy method body - `public void function product(required struct rc)`
+// `createProductFeedHandler` and `handler`. It is the ONLY one of the five capability entrypoints that
+// ports a legacy method body - `public void function product(required struct rc)`
 // [integrationServices/google/controllers/feed.cfc:L58] - so it is also the only one whose routing,
 // delegation, response shape and failure mapping can be checked against a source line.
 //
@@ -14,97 +14,67 @@
 //   3. RESPONSE SHAPING      - the status, the single header, and the document returned unmodified.
 //   4. ERROR MAPPING         - the three statuses the mapper owns, and what may never reach a body.
 //
-// COVERAGE IS NET-NEW, AND IS NOT PARITY. `meta/tests/` holds 32 test components and NOT ONE of
-// them touches the feed, the Google adapter or the handler tier: the three legacy files that touch
-// the in-scope slice at all are `meta/tests/unit/entity/BrandTest.cfc`,
-// `meta/tests/unit/entity/ProductTest.cfc` and the EMPTY
-// `meta/tests/functional/admin/entity/ProductTest.cfc`. Nothing in this file may be read as
-// carrying a legacy assertion forward, because there is no legacy assertion here to carry. What IS
-// carried over from that harness is one convention and one only - the `issue_<ticket#>` regression
-// naming of `meta/tests/unit/IssuesTest.cfc` - and this suite has no ticket to name, so it uses
-// none. Everything the legacy harness DID do is refused: every case there boots the real
-// application, the ORM and the bean factory - it instantiates and persists entities through the
-// engine's own ORM functions, flushes the session between steps, and reaches its collaborators
-// through the ambient request scope - which is why the legacy "unit" tier is integration-style at
-// every level and why nothing in it is isolated in the modern sense.
+// NET-NEW COVERAGE, never presented as parity: no legacy test file touches the feed, the Google adapter
+// or the handler tier. The two legacy-extended suites in this subtree are the brand and product entity
+// suites, and neither is this one. The one convention carried over is `issue_<ticket#>` regression
+// naming from `meta/tests/unit/IssuesTest.cfc`, and this suite has no ticket to name, so it uses none.
 //
-// NO MXUNIT TRANSLITERATION. Assertions are carried over in SUBSTANCE where a legacy assertion
-// exists; the harness never is. No MXUnit assertion helper is ported or shimmed, there is no
+// NO MXUNIT TRANSLITERATION. No MXUnit assertion helper is ported or shimmed, there is no
 // `setUp`/`tearDown` pair, no `Helper`-class port, no `variables.`-scope emulation, no `eval`, no
-// `new Function`, no `vm` and no `Proxy` dispatch anywhere below.
-//
-// NO USER RULES EXIST for this project. `review_rules` was queried five times in four distinct
-// forms - the default read and three explicit ranges - and every call returned the same single
-// sentence stating that none were provided, which AAP 0.7 corroborates. There is no rules document
-// to page through, so there is no partial read behind that finding. Their absence is NOT permission
-// to lower the bar: every constraint honoured below is attributed to the AAP, to this file's own
-// requirements, or to an explicit `JUDGMENT CALL:` annotation, and not one is attributed to a rule
-// or invented to fill the gap.
-//
-// LICENSING. No GPL header and no restated licence text appears here; attribution for the whole
-// subtree lives once in `slatwall-ts/NOTICE-GPL.md`. Worth recording for THIS file: the special
-// exception permitting custom code is scoped to a single literal path, `/integrationServices/`
-// [integrationServices/google/controllers/feed.cfc:L36], and this subtree sits outside it, so
-// standard GPL terms govern this file - which is precisely why no per-file header is added.
+// `new Function`, no `vm` and no `Proxy` dispatch anywhere below. The row source's SQL shape is owned by
+// the repository and integration suites; the RSS element set is owned by
+// `src/integrations/google/rssFeedRenderer.ts` and its own suite.
 //
 // ---------------------------------------------------------------------------
-// A FOLDER MISMATCH, RAISED RATHER THAN SILENTLY ABSORBED
+// THE SIBLING SUITES IN THIS FOLDER, STATED AS THEY ARE
 //
-// This file's own requirements describe it as the fifth and final file in `tests/unit/handlers` and
-// state that bootstrap, router and error mapping have no separate suites. The branch says
-// otherwise: `tests/unit/handlers` already carries `bootstrap.test.ts`,
-// `bootstrapStatements.test.ts` and `errorMapper.test.ts` from an earlier batch, all passing. The
-// five PLANNED files in that folder are the five capability suites, of which this is the fifth, so
-// the folder holds eight once the batch lands. The mismatch is reported here and mirrored rather
-// than resolved by deletion: nothing outside this file is created, renamed or edited, and in
-// particular no sibling suite is removed to make a count come out right. There is no
-// `router.test.ts`, which the requirements and the branch agree on.
+// `tests/unit/handlers` carries EIGHT suites: the five capability entrypoints - catalog query, SKU
+// resolution, promotion application, price resolution and this one - plus `bootstrap.test.ts`,
+// `bootstrapStatements.test.ts` and `errorMapper.test.ts`. Only `router.ts` has no dedicated suite; it
+// is frozen route data plus one pure function, and all five capability suites exercise it transitively.
 // ---------------------------------------------------------------------------
 
-// LEGACY-DEFECT [integrationServices/google/model/dao/FeedDAO.cfc:L52-L75]: `getProductFeedQuery`
-// is both unrunnable and dead - its select list ends in a trailing comma before `FROM` [:L58-L60],
-// its `INNER JOIN SwProduct` carries no `ON` clause [:L62-L63], and an exhaustive search of the
-// legacy tree finds the name only on its own declaration line, so nothing calls it.
-//
+// LEGACY-DEFECT [integrationServices/google/model/dao/FeedDAO.cfc:L52-L75]: `getProductFeedQuery` is
+// both unrunnable and dead.
 // Preserved deliberately; do not fix without a product decision.
 //
-// It is EXCLUDED as a source of behaviour here, not repaired and not transcribed. Where the two
-// disagree the live controller wins: the DAO states `SwProduct.calculatedQATS > 0` [:L71] while the
-// controller states an open-ended range from one upward [feed.cfc:L72], and the assertions below
-// pin the controller's `>= 1`.
+// Its select list ends in a trailing comma before `FROM` [:L58-L60], its `INNER JOIN SwProduct` carries
+// no `ON` clause [:L62-L63], and an exhaustive search of the legacy tree finds the name only on its own
+// declaration line, so nothing calls it. It is EXCLUDED as a source of behaviour here, not repaired and
+// not transcribed. Where the two disagree the live controller wins: the DAO states
+// `SwProduct.calculatedQATS > 0` [integrationServices/google/model/dao/FeedDAO.cfc:L71] while the
+// controller states an open-ended range from one upward
+// [integrationServices/google/controllers/feed.cfc:L72], and the assertions below pin the controller's
+// `>= 1`.
 
 // LEGACY-DEFECT [integrationServices/google/views/feed/product.cfm:L20]: the
-// `g:google_product_category` element is emitted EMPTY - the template supplies no value for it from
-// any source, and no column, setting read or controller line anywhere in the legacy path could.
-//
+// `g:google_product_category` element is emitted EMPTY, and there is NO TODO comment on or beside that
+// line.
 // Preserved deliberately; do not fix without a product decision.
 //
-// Stated precisely, because it is easy to overstate: the element is EMITTED EMPTY, and there is NO
-// TODO comment on or beside that line. The TODO-shaped content in that template is the three blocks
-// of commented-out optional fields at [:L33-L38], [:L40-L57] and [:L59-L61]. The element belongs to
-// `src/integrations/google/rssFeedRenderer.ts` and is asserted in that module's own suite; nothing
-// here populates it, omits it or invents a category taxonomy from the adapter's
-// `productGoogleProductType` setting definition.
+// Stated precisely, because it is easy to overstate: the template supplies no value for the element from
+// any source, and no column, setting read or controller line anywhere in the legacy path could. The
+// TODO-shaped content in that template is the three blocks of commented-out optional fields at
+// [:L33-L38], [:L40-L57] and [:L59-L61]. The element belongs to
+// `src/integrations/google/rssFeedRenderer.ts` and is asserted in that module's own suite; nothing here
+// populates it, omits it or invents a category taxonomy from the adapter's `productGoogleProductType`
+// setting definition.
 
 // LEGACY-DEFECT [integrationServices/google/Integration.cfc:L49]: the component tag declares
-// `displayname="USA epay"` - a copy-paste artefact from the USAePay payment adapter - while
-// `getDisplayName()` returns `"Google"` [:L59-L61].
-//
+// `displayname="USA epay"` while `getDisplayName()` returns `"Google"` [:L59-L61].
 // Preserved deliberately; do not fix without a product decision.
 //
-// Both halves survive in the source and the METHOD is authoritative, so the assertions below expect
-// `"Google"` and the tag's value appears nowhere in this file except in the marker above.
+// A copy-paste artefact from the USAePay payment adapter. Both halves survive in the source and the
+// METHOD is authoritative, so the assertions below expect `"Google"` and the tag's value appears nowhere
+// in this file except in the marker above.
 
 // LEGACY-DEFECT [integrationServices/google/Integration.cfc:L73-L77]: `getSettingOptions` declares
-// `returntype="array"`, the body of its only conditional is empty [:L74-L76], and the function
-// contains no return statement on any path - so it answers null for the setting name it tests and
-// for every other name alike.
-//
+// `returntype="array"` and contains no return statement on any path, so it answers null for every name.
 // Preserved deliberately; do not fix without a product decision.
 //
-// The port answers `undefined` on every path. It is not populated, not defaulted to an empty array
-// and not made to throw, and the assertions below drive the matched name, an unmatched name and a
-// case variant to prove all three.
+// The body of its only conditional is empty [:L74-L76]. The port answers `undefined` on every path: it
+// is not populated, not defaulted to an empty array and not made to throw, and the assertions below
+// drive the matched name, an unmatched name and a case variant to prove all three.
 
 // CFML parity [integrationServices/google/controllers/feed.cfc:L60]: request.layout = false, so the
 // target returns a bare document string with no layout wrapper.
@@ -112,10 +82,11 @@
 // CFML parity [integrationServices/google/controllers/feed.cfc:L51-L52]: property productService
 // (L51) is a DEAD DI/1 injection - the body uses only getSkuService() (L52, used at L63).
 
-// CFML parity [integrationServices/google/views/feed/product.cfm:L14,L22,L23]: the host is
-// interpolated with a hardcoded http:// scheme from CGI.HTTP_HOST, which is why the target injects
-// the feed host explicitly. It is captured at CONSTRUCTION - the composition root closes over it -
-// and is never a method argument, which is what keeps the port's one method parameterless.
+// CFML parity [integrationServices/google/views/feed/product.cfm:L14-L24]: the host is interpolated
+// with a hardcoded http:// scheme from CGI.HTTP_HOST at [:L14], [:L15], [:L22], [:L23] and [:L24],
+// which is why the target injects the feed host explicitly. It is captured at CONSTRUCTION - the
+// composition root closes over it - and is never a method argument, which is what keeps the port's one
+// method parameterless.
 
 // CFML parity [integrationServices/IntegrationInterface.cfc:L65]: the doc comment (carrying the
 // typo "seperated") describes a comma-separated LIST of types, so the contract permits multiples;
@@ -124,7 +95,7 @@
 // CFML parity [integrationServices/google/Integration.cfc:L74]: the comparison uses eq and is
 // case-insensitive.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { UntrustedFeedHostError } from '../../../src/handlers/bootstrap.js';
 // A namespace import ALONGSIDE the named one, and the only namespace import in this file. It exists
@@ -136,6 +107,11 @@ import { createProductFeedHandler, handler } from '../../../src/handlers/product
 import { ROUTE_TABLE } from '../../../src/handlers/router.js';
 import { GoogleFeedService } from '../../../src/integrations/google/googleFeedService.js';
 import { GoogleIntegration } from '../../../src/integrations/google/integration.js';
+// The process logger, imported for ONE purpose: its published `withSink` seam, which is how this suite
+// records what the handler emitted. A code review found this file spying on `process.stdout.write`
+// without delegating - silencing the stream for every sibling suite in the worker - and the remedy is
+// this import plus the logger member `createProductFeedHandler` now accepts. Nothing global is patched.
+import { logger as processLogger } from '../../../src/lib/logger.js';
 import { makeProductFixture } from '../../fixtures/productFixtures.js';
 import { makeSkuFixture } from '../../fixtures/skuFixtures.js';
 
@@ -148,6 +124,7 @@ import type {
   RequestScopeInput,
 } from '../../../src/handlers/bootstrap.js';
 import type { ErrorResponseBody } from '../../../src/handlers/errorMapper.js';
+import type { Logger } from '../../../src/lib/logger.js';
 import type { GoogleProductFeedRow } from '../../../src/integrations/google/googleFeedRepository.js';
 import type {
   GoogleProductFeedRenderer,
@@ -287,6 +264,13 @@ class FeedRequestScopeDouble implements RequestScope {
     return unreachableMember('RequestScope', 'currentAccountContext');
   }
 
+  // The feed binds no entity from an identifier: `generateProductFeed` takes zero
+  // arguments and the four selection filters are invariants of the ported statement.
+  // Reaching a loader from here would mean the feed had grown a criteria surface.
+  public get entityLoaders() {
+    return unreachableMember('RequestScope', 'entityLoaders');
+  }
+
   public get roundingRuleService() {
     return unreachableMember('RequestScope', 'roundingRuleService');
   }
@@ -319,12 +303,29 @@ class FeedRequestScopeDouble implements RequestScope {
     return unreachableMember('RequestScope', 'currencyConverter');
   }
 
+  public materializeOrderView() {
+    return unreachableMember('RequestScope', 'materializeOrderView');
+  }
+
   public updateOrderAmountsWithPriceGroupsThenPromotions() {
     return unreachableMember('RequestScope', 'updateOrderAmountsWithPriceGroupsThenPromotions');
   }
 
   public getSalePriceDetailsForProductSkus() {
     return unreachableMember('RequestScope', 'getSalePriceDetailsForProductSkus');
+  }
+
+  /**
+   * REFUSES, and the refusal is a claim about the feed route rather than a gap in the double.
+   *
+   * A security review found the shipped root awaited an unbounded
+   * `SwAddressZoneLocation ⋈ SwAddress` read on EVERY `createRequestScope`, naming the feed as one
+   * of four routes that paid for it and can never consult a zone (MEDIUM, CWE-770). The read is now
+   * deferred behind this member, so a handler that touches it would be issuing exactly the statement
+   * the fix removed - and this route has no address, no order and no promotion to evaluate one for.
+   */
+  public prepareAddressZoneEvaluation() {
+    return unreachableMember('RequestScope', 'prepareAddressZoneEvaluation');
   }
 }
 
@@ -570,46 +571,32 @@ function projectFeedRow(entry: CatalogEntry): GoogleProductFeedRow {
 }
 
 /**
- * The lower bound of the quantity range, as the live controller states it.
+ * The row source the feed service reads through: A PURE RECORDER THAT FILTERS NOTHING.
  *
- * `addRange('product.calculatedQATS', '1^')` [integrationServices/google/controllers/feed.cfc:L72]
- * reads "one and above, unbounded", so the ported bound is `>= 1`. It is deliberately NOT written
- * as `> 0` and deliberately NOT written as `!== 0`: the dead DAO is the component that says `> 0`
- * [integrationServices/google/model/dao/FeedDAO.cfc:L71], and it is excluded as a source of
- * behaviour. The two coincide on the integer column, and a fractional quantity is outside that
- * column's domain, so no fractional case is asserted below - inventing one would assert a state the
- * schema forbids in order to dramatise a difference the schema cannot produce.
- */
-const MINIMUM_QUANTITY_AVAILABLE_TO_SELL = 1;
-
-/**
- * The four selection predicates, applied together and unconditionally.
+ * ★★★ QUOTE-THEN-REVISE, AND THIS CLASS IS THE FINDING. It used to end with
+ * `.filter(qualifiesForFeed)` over a suite-local `qualifiesForFeed(row)` that reimplemented the four
+ * selection predicates and a `MINIMUM_QUANTITY_AVAILABLE_TO_SELL = 1` constant, defended like this:
+ * "The predicates are applied HERE, where the ported statement applies them."
  *
- * 1. the SKU is active            [integrationServices/google/controllers/feed.cfc:L68]
- * 2. its product is active        [:L69]
- * 3. its product is published     [:L70]
- * 4. its product has quantity available to sell, from one upward [:L72]
+ * They are NOT applied here. They are applied in SQL, by
+ * `src/integrations/google/googleFeedRepository.ts`, and a code review named the consequence exactly:
+ * a suite that reimplements the selection and then asserts the selection is asserting ITS OWN
+ * ALGORITHM. Every one of those assertions would have passed with the shipped statement's `WHERE`
+ * clause deleted. So the algorithm is gone, and the predicates are owned where they are executed -
+ * `tests/unit/integrations/google/googleFeedRepository.test.ts` asserts `SwSku.activeFlag = 1`,
+ * `SwProduct.activeFlag = 1`, `SwProduct.publishedFlag = 1` and `SwProduct.calculatedQATS >= 1`
+ * against the statement text, including that it does NOT say `> 0` (the dead DAO's spelling
+ * [integrationServices/google/model/dao/FeedDAO.cfc:L71]) and that the brand join is a `LEFT JOIN`.
  *
- * There is no parameter here by which a caller could relax, invert or extend any of them, because
- * there is none in the contract either: the port's one method takes no arguments, so the predicates
- * are invariants of the feed rather than defaults of a query.
- */
-function qualifiesForFeed(row: GoogleProductFeedRow): boolean {
-  return (
-    row.skuActiveFlag &&
-    row.productActiveFlag &&
-    row.productPublishedFlag &&
-    row.productCalculatedQATS >= MINIMUM_QUANTITY_AVAILABLE_TO_SELL
-  );
-}
-
-/**
- * The row source the feed service reads through.
+ * What remains here is the honest handler-tier double: it stands in for
+ * `GoogleFeedRepository.fetchProductFeedRows`, records how it was called, and hands back the rows it
+ * was built from IN ORDER AND UNCHANGED. That makes the property this tier actually owns falsifiable -
+ * this tier selects nothing, orders nothing and drops nothing - and it cannot pass vacuously, because a
+ * handler that filtered would now visibly lose a row.
  *
- * Stands in for `GoogleFeedRepository.fetchProductFeedRows` and nothing else - the narrowed
- * `Pick<>` the service declares is what makes an in-memory double possible at all, since the real
- * repository holds private fields and a class type with private members is satisfiable only by that
- * class. It holds no connection, issues no statement and reads no configuration.
+ * The narrowed `Pick<>` the service declares is what makes an in-memory double possible at all, since
+ * the real repository holds private fields and a class type with private members is satisfiable only by
+ * that class. It holds no connection, issues no statement and reads no configuration.
  */
 class RecordingFeedRowSource implements GoogleProductFeedRowSource {
   public readonly argumentCounts: number[] = [];
@@ -625,10 +612,9 @@ class RecordingFeedRowSource implements GoogleProductFeedRowSource {
   ): Promise<readonly GoogleProductFeedRow[]> {
     this.argumentCounts.push(args.length);
 
-    // The predicates are applied HERE, where the ported statement applies them, and the row order
-    // is left exactly as the candidate order: the legacy selection applies no ordering at all, so
-    // imposing one would be a repair rather than a port.
-    return Promise.resolve(this.candidates.map(projectFeedRow).filter(qualifiesForFeed));
+    // NO FILTER AND NO SORT. The ported statement owns selection, and the legacy selection applies no
+    // ordering at all, so imposing either here would be this suite deciding what the feed contains.
+    return Promise.resolve(this.candidates.map(projectFeedRow));
   }
 }
 
@@ -741,11 +727,28 @@ const CATALOG_SPECS: readonly CatalogEntrySpec[] = Object.freeze([
   },
 ]);
 
-/** The SKU codes the four predicates admit, in candidate order. */
-const QUALIFYING_SKU_CODES: readonly string[] = Object.freeze([
+/**
+ * EVERY candidate SKU code, in the order the row source hands them over.
+ *
+ * ★★ QUOTE-THEN-REVISE. This constant was called `CANDIDATE_SKU_CODES` and held three codes - "the
+ * SKU codes the four predicates admit, in candidate order" - because the suite's own row source applied
+ * those predicates. It no longer does, and it must not: the predicates are executed in SQL and are
+ * asserted against the statement text by
+ * `tests/unit/integrations/google/googleFeedRepository.test.ts`. Since this tier selects nothing, the
+ * codes it forwards are ALL of them - which is what makes the "changes nothing observable" cases below
+ * a real statement about the handler rather than a restatement of a local filter. The eight entries
+ * still include a zero-quantity, a negative-quantity, an inactive-SKU, an inactive-product and an
+ * unpublished-product candidate, so a handler that quietly dropped any of them fails here.
+ */
+const CANDIDATE_SKU_CODES: readonly string[] = Object.freeze([
   'branded-sku-code',
   'quantityone-sku-code',
   'brandless-sku-code',
+  'quantityzero-sku-code',
+  'quantitynegative-sku-code',
+  'inactivesku-sku-code',
+  'inactiveproduct-sku-code',
+  'unpublishedproduct-sku-code',
 ]);
 
 /** A fresh entity graph for every candidate, built per test. */
@@ -876,46 +879,72 @@ interface RecordedLogEntry {
   readonly context: Readonly<Record<string, unknown>>;
 }
 
+/** Everything one test's logger captured: the raw lines, and the ones that parsed as entries. */
+interface SinkRecorder {
+  /** A logger writing to this recorder instead of stdout, handed to the handler under test. */
+  readonly logger: Logger;
+  /** EVERY line the sink received, verbatim and unparsed. */
+  readonly rawLines: readonly string[];
+  /** The lines that parsed as the documented envelope. */
+  readonly entries: readonly RecordedLogEntry[];
+  /** Every raw line joined, so a leak anywhere in anything emitted is detectable. */
+  readonly text: () => string;
+}
+
 /**
- * Record the structured lines the module-level logger emits.
+ * Build a per-test recording logger through the sink seam the logger publishes.
  *
- * JUDGMENT CALL: THE RECORDING POINT IS THE SINK, BECAUSE THERE IS NO OTHER. `src/lib/logger.ts`
- * publishes an injectable sink through `withSink`, and `src/handlers/errorMapper.ts` accepts a
- * logger on its mapping context - but the shipped entrypoint builds that context with `requestId`
- * and `route` and NO logger member, and it imports the module-level logger directly for its own two
- * lines. A method spy is impossible as well, because `createLogger` returns a frozen surface. What
- * is left is the sink that logger writes to: `writeLineToStdout` calls `process.stdout.write` with
- * one newline-terminated JSON document per entry, so intercepting that call intercepts the emission
- * itself, with no module patched and no global console silenced. The interception lasts one test
- * and is restored by this file's own `afterEach` as well as by the global one in `tests/setup.ts`.
+ * ★★ QUOTE-THEN-REVISE, AND THIS HELPER IS THE FINDING. It used to install
+ * `vi.spyOn(process.stdout, 'write')` and return only the parsed entries, justified like this: "THE
+ * RECORDING POINT IS THE SINK, BECAUSE THERE IS NO OTHER. `src/lib/logger.ts` publishes an injectable
+ * sink through `withSink`, and `src/handlers/errorMapper.ts` accepts a logger on its mapping context -
+ * but the shipped entrypoint builds that context with `requestId` and `route` and NO logger member, and
+ * it imports the module-level logger directly for its own two lines."
  *
- * A chunk that is not a JSON object is ignored rather than allowed to throw, so an unrelated writer
- * cannot turn an assertion about logging into a parse failure.
+ * A code review rejected it on three counts, and each was correct. The spy did NOT DELEGATE to the
+ * original write, so every line the process emitted while a test ran was swallowed - including a
+ * sibling suite's, since a vitest worker is shared. It parsed only chunks that PARSED, so a leak
+ * assertion could never fail on a line that was not JSON, which is precisely the line a leak would
+ * arrive on. And it was installed once per test into MODULE-LEVEL MUTABLE STATE, so which test's
+ * emissions a `recordedLog` read observed depended on hook ordering.
+ *
+ * The premise it rested on is also gone: `createProductFeedHandler` now accepts a logger, so this
+ * suite injects one. NOTHING GLOBAL IS TOUCHED - no stream, no console, no module - the recorder is
+ * built inside the test that uses it, and EVERY raw line is kept in addition to the parsed view, so an
+ * assertion about disclosure can fail on text that never parsed.
  */
-function recordStructuredLogLines(): { readonly entries: RecordedLogEntry[] } {
+function makeSinkRecorder(): SinkRecorder {
+  const rawLines: string[] = [];
   const entries: RecordedLogEntry[] = [];
 
-  vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown): boolean => {
+  const logger = processLogger.withSink((line: string): void => {
+    rawLines.push(line);
+
     let parsed: unknown;
     try {
-      parsed = JSON.parse(String(chunk));
+      parsed = JSON.parse(line);
     } catch {
-      return true;
+      // Kept in `rawLines` regardless. A line that does not parse is exactly the line an assertion
+      // about disclosure must still be able to see, which is what the previous capture could not do.
+      return;
     }
 
     if (typeof parsed === 'object' && parsed !== null) {
-      const entry = parsed as { level?: unknown; message?: unknown; context?: unknown };
+      const entry: { level?: unknown; message?: unknown; context?: unknown } = parsed;
+      const context = entry.context;
+
       entries.push({
         level: String(entry.level),
         message: String(entry.message),
-        context: (entry.context ?? {}) as Readonly<Record<string, unknown>>,
+        context:
+          typeof context === 'object' && context !== null
+            ? Object.fromEntries(Object.entries(context))
+            : {},
       });
     }
-
-    return true;
   });
 
-  return { entries };
+  return { logger, rawLines, entries, text: (): string => rawLines.join('\n') };
 }
 
 /**
@@ -988,9 +1017,11 @@ const RENDERED_DOCUMENT = [
 /** A second, distinguishable document, for asserting that two invocations each get their own. */
 const SECOND_RENDERED_DOCUMENT = 'a second renderer-owned document';
 
-/** What a test drives: the wired entrypoint plus the root it will interrogate afterwards. */
+/** What a test drives: the wired entrypoint, the root it will interrogate, and its own log capture. */
 interface FeedHarness {
   readonly root: FeedCompositionRootDouble;
+  /** This handler's own sink. Fresh per harness, so no test can read another's emissions. */
+  readonly emitted: SinkRecorder;
   readonly invoke: (
     event: APIGatewayProxyEvent,
     context?: Context,
@@ -998,17 +1029,30 @@ interface FeedHarness {
 }
 
 /**
- * Wire the entrypoint over a composition root of this suite's making.
+ * Wire the entrypoint over a composition root of this suite's making, and over its own log sink.
  *
- * This is the shipped seam and the whole of it: `createProductFeedHandler` takes a nullary provider
- * of the composition root, so a suite substitutes the graph without patching a module, without a
- * container and without ever calling the real `bootstrapCompositionRoot`. The provider resolves an
- * already-built double, so no I/O happens on the way in either.
+ * BOTH SEAMS, AND BOTH SHIPPED. `createProductFeedHandler` takes a dependency bundle naming the
+ * composition-root provider and the logger, so a suite substitutes the graph AND intercepts the
+ * emissions without patching a module, without a global stream, without a container and without ever
+ * calling the real `bootstrapCompositionRoot`. The provider resolves an already-built double, so no
+ * I/O happens on the way in either.
+ *
+ * The logger member is the half a code review added: before it existed this suite spied on
+ * `process.stdout.write` and did not delegate, which silenced the stream for every sibling file in the
+ * worker. See {@link makeSinkRecorder}.
  */
 function harnessWith(resolvePort: FeedPortResolver, scopeRejection?: Error): FeedHarness {
   const root = new FeedCompositionRootDouble(resolvePort, scopeRejection);
+  const emitted = makeSinkRecorder();
 
-  return { root, invoke: createProductFeedHandler(() => Promise.resolve(root)) };
+  return {
+    root,
+    emitted,
+    invoke: createProductFeedHandler({
+      compositionRoot: (): Promise<CompositionRoot> => Promise.resolve(root),
+      logger: emitted.logger,
+    }),
+  };
 }
 
 /**
@@ -1061,7 +1105,13 @@ function harnessWithFeedService(
         ),
   );
 
-  return { root: harness.root, invoke: harness.invoke, rowSource, renderer };
+  return {
+    root: harness.root,
+    emitted: harness.emitted,
+    invoke: harness.invoke,
+    rowSource,
+    renderer,
+  };
 }
 
 /** The SKU codes the renderer was handed, in the order it was handed them. */
@@ -1069,22 +1119,18 @@ function renderedSkuCodes(renderer: RecordingFeedRenderer): readonly (string | u
   return soleRenderCall(renderer).rows.map((row) => row.skuCode);
 }
 
-/**
- * The logger's own emissions for the test currently running.
- *
- * JUDGMENT CALL: THE SINK IS INTERCEPTED FOR EVERY TEST, AND THAT IS NOT A GLOBAL CONSOLE SILENCE.
- * `console` is never touched, nothing is muted for the process, the interception is installed
- * inside `beforeEach` and removed inside `afterEach`, and it CAPTURES rather than discards - the
- * entries stay available to any assertion that wants them, which is the opposite of hiding output.
- * Doing it once per test rather than inside the handful of tests that assert on logging also keeps
- * a failure in any other test from being buried under the JSON lines the served-feed path
- * legitimately writes.
- */
-let recordedLog: { readonly entries: RecordedLogEntry[] } = { entries: [] };
-
-beforeEach(() => {
-  recordedLog = recordStructuredLogLines();
-});
+// ★★ THERE IS NO MODULE-LEVEL LOG CAPTURE ANY MORE, AND ITS OWN DOCUMENTATION IS WHY IT HAD TO GO.
+//
+// A `let recordedLog` stood here, reassigned by a `beforeEach`, defended like this: "THE SINK IS
+// INTERCEPTED FOR EVERY TEST, AND THAT IS NOT A GLOBAL CONSOLE SILENCE. `console` is never touched,
+// nothing is muted for the process ... and it CAPTURES rather than discards."
+//
+// Two halves of that were wrong. The interception replaced `process.stdout.write` WITHOUT delegating,
+// so everything the process emitted while a test ran was discarded rather than merely captured - and a
+// vitest worker is shared, so that included sibling suites. And a module-level binding reassigned by a
+// hook is shared mutable state between tests, which a code review named directly. Each harness now
+// carries its OWN recorder on `emitted`, built inside the test that uses it, writing through the
+// logger's published sink seam. Nothing global is touched at all.
 
 afterEach(() => {
   // Complementary to the global hook in `tests/setup.ts`, which restores spies and real timers
@@ -1120,9 +1166,10 @@ describe('the product-feed entrypoint module surface', () => {
     // One construction path, so the shipped entrypoint and a suite's instance cannot diverge. The
     // factory performs no I/O and constructs nothing, so calling it here is safe with no
     // environment configured at all.
-    const suiteInstance = createProductFeedHandler(() =>
-      Promise.resolve(new FeedCompositionRootDouble(() => undefined)),
-    );
+    const suiteInstance = createProductFeedHandler({
+      compositionRoot: (): Promise<CompositionRoot> =>
+        Promise.resolve(new FeedCompositionRootDouble(() => undefined)),
+    });
 
     expect(suiteInstance).toBeTypeOf('function');
     expect(suiteInstance.length).toBe(handler.length);
@@ -1206,8 +1253,8 @@ describe('the reshaped port contract', () => {
     expect(narrowedResponse.statusCode).toBe(200);
     expect(narrowedResponse.body).toBe(plainResponse.body);
     expect(narrowed.rowSource.argumentCounts).toStrictEqual([0]);
-    expect(renderedSkuCodes(narrowed.renderer)).toStrictEqual(QUALIFYING_SKU_CODES);
-    expect(renderedSkuCodes(plain.renderer)).toStrictEqual(QUALIFYING_SKU_CODES);
+    expect(renderedSkuCodes(narrowed.renderer)).toStrictEqual(CANDIDATE_SKU_CODES);
+    expect(renderedSkuCodes(plain.renderer)).toStrictEqual(CANDIDATE_SKU_CODES);
   });
 
   it('ignores a request body and any path parameters', async () => {
@@ -1223,7 +1270,7 @@ describe('the reshaped port contract', () => {
 
     expect(response.statusCode).toBe(200);
     expect(harness.rowSource.argumentCounts).toStrictEqual([0]);
-    expect(renderedSkuCodes(harness.renderer)).toStrictEqual(QUALIFYING_SKU_CODES);
+    expect(renderedSkuCodes(harness.renderer)).toStrictEqual(CANDIDATE_SKU_CODES);
   });
 
   it('opens exactly one request scope and reaches the port exactly once per invocation', async () => {
@@ -1253,23 +1300,35 @@ describe('the reshaped port contract', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. The four selection predicates
+// 3. The rows this tier forwards, and the selection it does NOT perform
 //
-// ★ ALL FOUR ARE INVARIANTS, APPLIED TOGETHER AND UNCONDITIONALLY ON EVERY INVOCATION:
+// ★★★ THIS SECTION WAS CALLED "The four selection predicates" AND IT ASSERTED A LOCAL ALGORITHM.
 //
-//   1. the SKU is active                              [integrationServices/google/controllers/feed.cfc:L68]
-//   2. its product is active                          [:L69]
-//   3. its product is published                       [:L70]
-//   4. its product has quantity available to sell,
-//      stated as an open-ended range from one upward  [:L72]
+// Eleven cases stood here, each driving a catalogue through this suite's own row source and then
+// asserting which rows came out - which SKUs the four predicates admit, that a zero quantity is
+// excluded, that a negative one is, that an inactive SKU is, that an unpublished product is. Every one
+// of them would have passed with the shipped statement's entire `WHERE` clause deleted, because the
+// filtering they exercised was `qualifiesForFeed` in this file. A code review named that directly, and
+// it is the reason both the function and those assertions are gone.
 //
-// and three joins sit under them: the SKU's product [:L64], the product's default SKU [:L65], and
-// the product's brand LEFT joined [:L66], which is why a product no brand row answers to still
-// appears.
+// ★ WHERE THE PREDICATES ARE OWNED, BY FILE AND BY ASSERTION.
+// `tests/unit/integrations/google/googleFeedRepository.test.ts` asserts them against the STATEMENT
+// TEXT, which is where they execute:
 //
-// The tests below assert those predicates through the ROWS, never through SQL: the row contract
-// carries the four filter columns precisely so the invariant is verifiable from returned data, and
-// feed-query statement text belongs to the integration tier.
+//   1. the SKU is active            -> `SwSku.activeFlag = 1`          [integrationServices/google/controllers/feed.cfc:L68]
+//   2. its product is active        -> `SwProduct.activeFlag = 1`      [:L69]
+//   3. its product is published     -> `SwProduct.publishedFlag = 1`   [:L70]
+//   4. quantity from one upward     -> `SwProduct.calculatedQATS >= 1` [:L72]
+//
+// and it additionally asserts that the statement does NOT say `> 0` - the spelling belonging to the
+// dead DAO [integrationServices/google/model/dao/FeedDAO.cfc:L71], which is excluded as a source of
+// behaviour - and that the brand join is a `LEFT JOIN SwBrand` with its ON clause, which is why a
+// product no brand row answers to still appears. None of that is restated here.
+//
+// WHAT THIS SECTION OWNS INSTEAD is the property that belongs to this tier and to no other: the
+// handler and the feed service apply NO selection, NO ordering and NO transformation of their own. The
+// row source now hands back every candidate unchanged, so a handler that dropped, reordered or rewrote
+// one visibly loses it - which is an assertion about production code that can fail.
 // ---------------------------------------------------------------------------
 
 /** Build a catalog from a chosen subset of the specs, in spec order. */
@@ -1277,149 +1336,24 @@ function catalogFor(keys: readonly string[]): readonly CatalogEntry[] {
   return CATALOG_SPECS.filter((spec) => keys.includes(spec.key)).map(makeCatalogEntry);
 }
 
-describe('the four selection predicates', () => {
-  it('serves exactly the SKUs all four predicates admit', async () => {
+describe('the rows this tier forwards, unchanged', () => {
+  it('forwards EVERY row the source returned, selecting none of them itself', async () => {
     const harness = harnessWithFeedService(makeCandidateCatalog());
 
     const response = await harness.invoke(feedRequestEvent(), lambdaContext());
 
     expect(response.statusCode).toBe(200);
-    expect(renderedSkuCodes(harness.renderer)).toStrictEqual(QUALIFYING_SKU_CODES);
-  });
-
-  it('includes a product whose quantity available to sell is exactly one', async () => {
-    // THE BOUNDARY. `'1^'` reads "one and above, unbounded", so one is INSIDE the range. This is
-    // the case that separates a faithful `>= 1` from an off-by-one `> 1`.
-    const harness = harnessWithFeedService(catalogFor(['quantityone']));
-
-    await harness.invoke(feedRequestEvent(), lambdaContext());
-
-    const call = soleRenderCall(harness.renderer);
-
-    expect(call.rows).toHaveLength(1);
-    expect(call.rows.map((row) => row.productCalculatedQATS)).toStrictEqual([1]);
-    expect(call.rows.map((row) => row.skuCode)).toStrictEqual(['quantityone-sku-code']);
-  });
-
-  it('excludes a product with nothing available to sell', async () => {
-    // The other side of the same boundary. Zero is OUTSIDE the range.
-    const harness = harnessWithFeedService(catalogFor(['quantityzero']));
-
-    await harness.invoke(feedRequestEvent(), lambdaContext());
-
-    expect(soleRenderCall(harness.renderer).rows).toStrictEqual([]);
-  });
-
-  it('excludes a product whose quantity available to sell is below the range', async () => {
-    // A negative quantity is below one and is therefore excluded by the same bound, which is why
-    // the ported predicate is a RANGE TEST and not an emptiness test: `!== 0` would have admitted
-    // this row.
-    const harness = harnessWithFeedService(catalogFor(['quantitynegative']));
-
-    await harness.invoke(feedRequestEvent(), lambdaContext());
-
-    expect(soleRenderCall(harness.renderer).rows).toStrictEqual([]);
-  });
-
-  it('excludes an inactive SKU even when its product qualifies', async () => {
-    const harness = harnessWithFeedService(catalogFor(['inactivesku']));
-
-    await harness.invoke(feedRequestEvent(), lambdaContext());
-
-    expect(soleRenderCall(harness.renderer).rows).toStrictEqual([]);
-  });
-
-  it('excludes an inactive product even when its SKU qualifies', async () => {
-    const harness = harnessWithFeedService(catalogFor(['inactiveproduct']));
-
-    await harness.invoke(feedRequestEvent(), lambdaContext());
-
-    expect(soleRenderCall(harness.renderer).rows).toStrictEqual([]);
-  });
-
-  it('excludes an unpublished product even when it is active and in stock', async () => {
-    const harness = harnessWithFeedService(catalogFor(['unpublishedproduct']));
-
-    await harness.invoke(feedRequestEvent(), lambdaContext());
-
-    expect(soleRenderCall(harness.renderer).rows).toStrictEqual([]);
-  });
-
-  it('carries all four filter columns on every served row, satisfied', async () => {
-    // The invariant is checkable from the data itself, which is the reason the projection carries
-    // four columns it never emits into the document.
-    const harness = harnessWithFeedService(makeCandidateCatalog());
-
-    await harness.invoke(feedRequestEvent(), lambdaContext());
-
-    for (const row of soleRenderCall(harness.renderer).rows) {
-      expect(row.skuActiveFlag).toBe(true);
-      expect(row.productActiveFlag).toBe(true);
-      expect(row.productPublishedFlag).toBe(true);
-      expect(row.productCalculatedQATS).toBeGreaterThanOrEqual(MINIMUM_QUANTITY_AVAILABLE_TO_SELL);
-    }
-  });
-
-  it('applies all four unconditionally, with no toggle, override or include-inactive flag', async () => {
-    // A caller asking in every way available to it for the excluded rows still gets exactly the
-    // qualifying three, because there is no parameter on the contract for the request to reach.
-    const harness = harnessWithFeedService(makeCandidateCatalog());
-
-    await harness.invoke(
-      feedRequestEvent({
-        queryStringParameters: {
-          activeFlag: '0',
-          'product.activeFlag': '0',
-          'product.publishedFlag': '0',
-          'product.calculatedQATS': '0^',
-          includeInactive: 'true',
-          includeUnpublished: 'true',
-          includeOutOfStock: 'true',
-        },
-        body: '{"includeInactive":true,"minimumQuantityAvailableToSell":0}',
-      }),
-      lambdaContext(),
-    );
-
-    expect(renderedSkuCodes(harness.renderer)).toStrictEqual(QUALIFYING_SKU_CODES);
+    // All eight candidates reach the renderer, INCLUDING the five the shipped statement's `WHERE`
+    // clause would have excluded. That is the point: excluding them is the repository's work, and a
+    // handler that took it on would be applying a second, undeclared selection.
+    expect(renderedSkuCodes(harness.renderer)).toStrictEqual(CANDIDATE_SKU_CODES);
     expect(harness.rowSource.argumentCounts).toStrictEqual([0]);
   });
 
-  it('still serves a product that no brand row answers to, with the brand value absent', async () => {
-    // The brand join is LEFT [integrationServices/google/controllers/feed.cfc:L66], so a brandless
-    // product is a member of the feed rather than an omission from it. Its brand VALUE is absent -
-    // `undefined`, not an empty string - which is what lets the renderer omit the element instead
-    // of emitting an empty one. Whether the element is omitted or emptied is the renderer's
-    // contract and is asserted in that module's own suite; what belongs here is that the row
-    // arrives at all, and arrives with nothing in the brand slot.
-    const harness = harnessWithFeedService(catalogFor(['branded', 'brandless']));
-
-    await harness.invoke(feedRequestEvent(), lambdaContext());
-
-    const rows = soleRenderCall(harness.renderer).rows;
-
-    expect(rows.map((row) => row.skuCode)).toStrictEqual([
-      'branded-sku-code',
-      'brandless-sku-code',
-    ]);
-
-    const [brandedRow, brandlessRow] = rows;
-
-    if (brandedRow === undefined || brandlessRow === undefined) {
-      throw new Error('both the branded and the brandless row were expected to reach the renderer');
-    }
-
-    expect(brandedRow.brandID).toBe(RESOLVED_BRAND_ID);
-    expect(brandedRow.brandName).toBeTypeOf('string');
-    expect(brandlessRow.brandID).toBeUndefined();
-    expect(brandlessRow.brandName).toBeUndefined();
-  });
-
   it('leaves the row order exactly as the source returned it', async () => {
-    // The legacy selection applies no ordering at all - `getActivePromotionRewards` is not the only
-    // statement in the slice without an `ORDER BY` - so imposing one anywhere on this path would be
-    // a repair rather than a port. The order the source yields is the order the document is built
-    // in.
+    // The legacy selection applies no ordering at all - no `ORDER BY`, no sort, no de-duplication
+    // [integrationServices/google/controllers/feed.cfc:L63-L72] - so imposing one would be a repair
+    // rather than a port. Reversing the source order must reverse the document order.
     const reversedKeys = ['brandless', 'quantityone', 'branded'];
     const harness = harnessWithFeedService(catalogFor(reversedKeys).slice().reverse());
 
@@ -1430,6 +1364,56 @@ describe('the four selection predicates', () => {
       'quantityone-sku-code',
       'branded-sku-code',
     ]);
+  });
+
+  it('forwards every column of every row verbatim, including a row with no brand', async () => {
+    const catalog = catalogFor(['branded', 'brandless']);
+    const harness = harnessWithFeedService(catalog);
+    // The brand name the CATALOGUE carries, read from the entity graph the row was projected from -
+    // not a literal restated here, which would assert this file against itself.
+    const expectedBrandName = catalog[0]?.product.getBrand()?.getBrandName();
+
+    await harness.invoke(feedRequestEvent(), lambdaContext());
+
+    const rows = soleRenderCall(harness.renderer).rows;
+    const branded = rows.find((row): boolean => row.skuCode === 'branded-sku-code');
+    const brandless = rows.find((row): boolean => row.skuCode === 'brandless-sku-code');
+
+    if (branded === undefined || brandless === undefined) {
+      throw new Error('both candidates were expected to reach the renderer');
+    }
+
+    // The brand travels when there is one and STAYS ABSENT when there is not - it is not defaulted to
+    // an empty string, which would make a brandless product look like a product branded "". The
+    // statement's `LEFT JOIN` is what produces the null row, and its own suite asserts the join; what
+    // is asserted here is that this tier passes the absence through as an absence.
+    expect(expectedBrandName).toBeTypeOf('string');
+    expect(branded.brandName).toBe(expectedBrandName);
+    expect(branded.brandID).toBe(RESOLVED_BRAND_ID);
+    expect(brandless.brandName).toBeUndefined();
+    expect(brandless.brandID).toBeUndefined();
+    // And the four filter columns arrive as the source stated them, unread and unaltered by this tier.
+    expect(branded.skuActiveFlag).toBe(true);
+    expect(branded.productActiveFlag).toBe(true);
+    expect(branded.productPublishedFlag).toBe(true);
+    expect(branded.productCalculatedQATS).toBe(4);
+  });
+
+  it('reaches the row source with NO argument, so no caller can narrow the selection', async () => {
+    // The port's one method takes no parameters and the ported repository read takes none either, so
+    // there is no surface on which a toggle, an override or an include-inactive flag could arrive.
+    const harness = harnessWithFeedService(makeCandidateCatalog());
+
+    await harness.invoke(
+      feedRequestEvent({
+        queryStringParameters: { includeInactive: 'true', publishedFlag: '0' },
+        body: '{"includeInactive":true}',
+      }),
+      lambdaContext(),
+    );
+
+    expect(harness.rowSource.argumentCounts).toStrictEqual([0]);
+    expect(renderedSkuCodes(harness.renderer)).toStrictEqual(CANDIDATE_SKU_CODES);
   });
 });
 
@@ -1534,10 +1518,11 @@ describe('the served response', () => {
   });
 
   it('captures the feed host at construction and hands it to the renderer', async () => {
-    // CFML parity: the legacy interpolated `CGI.HTTP_HOST` into five URL sites of the document
-    // [integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24], and the scheme
-    // is the renderer's own frozen `http://` literal. Here the authority half travels once, through
-    // the scope input and then the service constructor - never as an argument to the port's method.
+    // CFML parity [integrationServices/google/views/feed/product.cfm:L14-L24]: the legacy interpolated
+    // `CGI.HTTP_HOST` into five URL sites of the document - [:L14], [:L15], [:L22], [:L23] and [:L24] -
+    // and the scheme is the renderer's own frozen `http://` literal. Here the authority half travels
+    // once, through the scope input and then the service constructor - never as an argument to the
+    // port's method.
     const harness = harnessWithFeedService(makeCandidateCatalog());
 
     await harness.invoke(feedRequestEvent(), lambdaContext());
@@ -1761,9 +1746,10 @@ describe('the Google integration adapter surface', () => {
   });
 
   it('answers Google for its display name', () => {
-    // LEGACY-DEFECT 1 lives on the component tag and is recorded in this file's header. The METHOD
-    // is the contract member and it is authoritative, so this is the only value asserted, and the
-    // tag's text appears nowhere in this suite outside that marker.
+    // The `displayname="USA epay"` contradiction at [integrationServices/google/Integration.cfc:L49]
+    // lives on the component tag and is recorded in this file's header. The METHOD is the contract
+    // member and it is authoritative, so this is the only value asserted, and the tag's text appears
+    // nowhere in this suite outside that marker.
     expect(new GoogleIntegration().getDisplayName()).toBe('Google');
   });
 
@@ -1783,11 +1769,11 @@ describe('the Google integration adapter surface', () => {
   });
 
   it('answers nothing from getSettingOptions, on every path', () => {
-    // LEGACY-DEFECT 2, recorded in this file's header: the legacy declares an array return, the
-    // body of its only conditional is empty, and no path returns anything. All three inputs are
-    // driven - the name it tests, a case variant of that name, and a name it does not test - and
-    // all three answer `undefined`. It is not populated, not defaulted to an empty array, and does
-    // not throw.
+    // The `getSettingOptions` defect at [integrationServices/google/Integration.cfc:L73-L77] is
+    // recorded in this file's header: the legacy declares an array return, the body of its only
+    // conditional is empty, and no path returns anything. All three inputs are driven - the name it
+    // tests, a case variant of that name, and a name it does not test - and all three answer
+    // `undefined`. It is not populated, not defaulted to an empty array, and does not throw.
     const adapter = new GoogleIntegration();
 
     expect(adapter.getSettingOptions('productGoogleProductType')).toBeUndefined();
@@ -1814,11 +1800,11 @@ describe('the Google integration adapter surface', () => {
 
   it('records both adapter identities and the route action on the served-feed line', async () => {
     const port = new RecordingProductFeedPort(RENDERED_DOCUMENT);
-    const { invoke } = harnessWithPort(port);
+    const harness = harnessWithPort(port);
 
-    await invoke(feedRequestEvent(), lambdaContext());
+    await harness.invoke(feedRequestEvent(), lambdaContext());
 
-    const served = recordedLog.entries.filter((entry) => entry.level === 'info');
+    const served = harness.emitted.entries.filter((entry) => entry.level === 'info');
 
     expect(served).toHaveLength(1);
 
@@ -1828,11 +1814,20 @@ describe('the Google integration adapter surface', () => {
       throw new Error('the served-feed line was not emitted');
     }
 
+    // THE TWO ADAPTER CONSTANTS stay in the prose: neither has an allow-listed context key name of
+    // its own, and message content keeps the logger's permissive default.
     expect(line.message).toContain('Google');
     expect(line.message).toContain('fw1');
-    expect(line.message).toContain(FEED_ROUTE.action);
     expect(line.context.requestId).toBe(RUNTIME_REQUEST_ID);
     expect(line.context.route).toBe(FEED_ROUTE_LABEL);
+    // ★★★ THE CAPABILITY AND THE ACTION MOVED ONTO THE CONTEXT, which is finding F7's consequence
+    // here. The action used to be asserted as message TEXT because the logger redacted the key; it is
+    // now an admitted closed literal, so it is machine-readable on the line exactly as it is on the
+    // other four entrypoints. Asserted through the REAL logger - this suite records its stdout sink -
+    // so a key the policy does not admit would arrive as the redaction marker and fail here.
+    expect(line.context.capability).toBe('productFeed');
+    expect(line.context.action).toBe(FEED_ROUTE.action);
+    expect(JSON.stringify(line.context)).not.toContain('[REDACTED]');
   });
 
   it('measures nothing on the served-feed line', async () => {
@@ -1841,17 +1836,22 @@ describe('the Google integration adapter surface', () => {
     // `requesttimeout="360"` [integrationServices/google/views/feed/product.cfm:L9] is a platform
     // fact rather than a target, so it is neither asserted nor reproduced.
     const port = new RecordingProductFeedPort(RENDERED_DOCUMENT);
-    const { invoke } = harnessWithPort(port);
+    const harness = harnessWithPort(port);
 
-    await invoke(feedRequestEvent(), lambdaContext());
+    await harness.invoke(feedRequestEvent(), lambdaContext());
 
-    const [line] = recordedLog.entries.filter((entry) => entry.level === 'info');
+    const [line] = harness.emitted.entries.filter((entry) => entry.level === 'info');
 
     if (line === undefined) {
       throw new Error('the served-feed line was not emitted');
     }
 
-    expect(Object.keys(line.context).sort()).toStrictEqual(['requestId', 'route']);
+    expect(Object.keys(line.context).sort()).toStrictEqual([
+      'action',
+      'capability',
+      'requestId',
+      'route',
+    ]);
   });
 });
 
@@ -1863,8 +1863,8 @@ describe('the Google integration adapter surface', () => {
 // recorded as a property of what was read, and it is NOT taken as permission to invent an
 // authentication story - no API key, signed URL, bearer value, session lookup, permission check,
 // middleware or interceptor appears in the target, and none is asserted here. Equally, this
-// endpoint is not described as secured and no security property the source never had is claimed for
-// it. Authorizing callers is an API Gateway concern owned outside this subtree.
+// endpoint is not described as secured, and no security property the source never had is claimed for
+// it or placed anywhere on its behalf.
 // ---------------------------------------------------------------------------
 
 describe('the public, unauthenticated endpoint', () => {
@@ -2048,9 +2048,9 @@ describe('routing to the feed capability', () => {
     // takes.
     const opaqueSegment = 'aaaaaaaa-bbbbbbbb-cccccccc-dd';
     const port = new RecordingProductFeedPort(RENDERED_DOCUMENT);
-    const { invoke } = harnessWithPort(port);
+    const harness = harnessWithPort(port);
 
-    const response = await invoke(
+    const response = await harness.invoke(
       feedRequestEvent({ path: `${FEED_ROUTE.path}/${opaqueSegment}` }),
       lambdaContext(),
     );
@@ -2059,7 +2059,10 @@ describe('routing to the feed capability', () => {
     expect(response.body).not.toContain(opaqueSegment);
     expect(response.body).not.toContain('aaaaaaaa');
 
-    const [line] = recordedLog.entries.filter((entry) => entry.level === 'warn');
+    // ★ THE NOT-FOUND LINE ARRIVES ON THIS HANDLER'S OWN SINK, which it did not before: the
+    // route-resolution context omitted the logger, so this one line went to the process default while
+    // every other line the invocation produced went where the handler was told to write.
+    const [line] = harness.emitted.entries.filter((entry) => entry.level === 'warn');
 
     if (line === undefined) {
       throw new Error('the not-found line was not emitted');
@@ -2111,11 +2114,11 @@ describe('routing to the feed capability', () => {
 // ---------------------------------------------------------------------------
 // 8. Validation and safe error mapping
 //
-// THE STATUS SET IS MINIMAL AND CLOSED: 200 for a served document, and the three the mapper owns -
-// 400 for client-shaped input, 404 for a route that does not exist, 500 for a defect in this
-// service. No 401, 403, 409, 422 or 429 is reached for anywhere, and no retry-after, rate-limit or
-// circuit-breaker semantic is introduced. The legacy slice has no HTTP status vocabulary at all, so
-// there is nothing to reproduce and nothing to invent.
+// THE STATUS SET IS MINIMAL AND CLOSED: 200 for a served document, plus the three failure statuses
+// this source-public handler reaches - 400 for client-shaped input, 404 for a route that does not
+// exist, 500 for a defect in this service. The shared mapper also owns authentication refusals for
+// sibling routes, but no 401, 403, 409, 422 or 429 is reached here and no challenge, retry-after,
+// rate-limit or circuit-breaker semantic is introduced.
 //
 // AND NO RESPONSE BODY MAY CARRY DETAIL. A recognized failure publishes its own message; anything
 // else publishes a fixed generic sentence while the classification goes to the log stream under the
@@ -2232,33 +2235,46 @@ describe('validation and safe error mapping', () => {
     expect(response.body).not.toContain('allow-list');
   });
 
-  it('sends the refusal diagnosis to the log stream without reproducing the candidate', async () => {
-    // The error's own sentence is the right thing to log, because the class composes the GROUND of
-    // the refusal with a SUMMARY of the candidate and never reproduces the candidate itself.
+  it('★★★ sends the refusal diagnosis in ONE mapper-owned line, without the candidate (finding F14)', async () => {
+    // ★★★ THE COUNT IS THE POINT OF THIS REVISION. The previous version filtered the stream for a line
+    // containing the refusal's reason and asserted it found ONE - which it did, both before and after
+    // the fix, because the handler's own `logger.warn` carried the reason and the mapper's line did
+    // not. So the assertion could not detect that the refusal was being logged TWICE. It now counts
+    // EVERY line the invocation emitted, which is what makes finding F14 checkable.
+    //
+    // The ground still reaches an operator, through `invalidRequestResponse`'s `logDetail` seam: it is
+    // appended to the mapper's message and never to the body. The error's own sentence is the right
+    // value to pass, because the class composes the GROUND of the refusal with a SUMMARY of the
+    // candidate and never reproduces the candidate itself.
     const candidate = 'rogue.example.test';
     const reason = 'it is not on the deployment-owned allow-list';
-    const { invoke } = harnessWith(
+    const harness = harnessWith(
       () => new RecordingProductFeedPort(RENDERED_DOCUMENT),
       new UntrustedFeedHostError(candidate, reason),
     );
 
-    await invoke(feedRequestEvent(), lambdaContext());
+    await harness.invoke(feedRequestEvent(), lambdaContext());
 
-    const refusals = recordedLog.entries.filter((entry) => entry.message.includes(reason));
+    // ONE LINE FOR THE WHOLE INVOCATION - not one line that mentions the reason.
+    expect(harness.emitted.entries).toHaveLength(1);
 
-    expect(refusals).toHaveLength(1);
-
-    const [line] = refusals;
+    const [line] = harness.emitted.entries;
 
     if (line === undefined) {
       throw new Error('the refusal was not logged');
     }
 
     expect(line.level).toBe('warn');
+    // The mapper's own opening, with the handler-supplied ground appended to it.
+    expect(line.message).toContain('request input rejected before it reached the services');
+    expect(line.message).toContain(reason);
     expect(line.message).toContain(`${String(candidate.length)} characters long`);
     expect(line.message).not.toContain(candidate);
     expect(line.context.requestId).toBe(RUNTIME_REQUEST_ID);
     expect(line.context.route).toBe(FEED_ROUTE_LABEL);
+    // The closed reason literal is on the CONTEXT, which is what the mapper adds and the handler
+    // could not: the class of problem alongside the ground of it.
+    expect(line.context.invalidRequestReason).toBe('unusableRequestInput');
   });
 
   it('answers a feed read failure generically, letting no statement text or bound value out', async () => {
@@ -2296,11 +2312,11 @@ describe('validation and safe error mapping', () => {
     // category, the status, the sanitized route, the thrown shape and the machine code. The MESSAGE
     // is carried by neither, which is stronger than publishing it to one of the two.
     const failure = new FeedReadFailure();
-    const { invoke } = harnessWithPort(new FailingProductFeedPort(failure));
+    const harness = harnessWithPort(new FailingProductFeedPort(failure));
 
-    await invoke(feedRequestEvent(), lambdaContext());
+    await harness.invoke(feedRequestEvent(), lambdaContext());
 
-    const failures = recordedLog.entries.filter((entry) => entry.level === 'error');
+    const failures = harness.emitted.entries.filter((entry) => entry.level === 'error');
 
     expect(failures).toHaveLength(1);
 
@@ -2338,26 +2354,53 @@ describe('validation and safe error mapping', () => {
     expect(envelope.message).toContain('does not exists');
   });
 
-  it('answers generically when the scope publishes no feed port, with the detail logged', async () => {
+  it('★★★ answers generically when the scope publishes no feed port, in ONE emission (finding F14)', async () => {
+    // ★★★ THIS CASE WAS INVERTED, NOT REPAIRED. It was named "...with the detail logged" and it
+    // asserted an `error`-level line whose message contained "product-feed port" - the handler's OWN
+    // emission, which it wrote immediately before throwing a plain `Error` that the mapper then logged
+    // a SECOND time. One defect, two lines. The old assertion could not see the duplication because it
+    // filtered for the local line by its wording and never counted the total.
+    //
+    // The property now pinned is the one the finding asks for: ONE emission, owned by
+    // `./errorMapper.js`, carrying bounded safe detail. The diagnosis survives because the thrown
+    // value is a NAMED class and the mapper publishes a shape-validated description of what was
+    // thrown - so an operator still reads which fault occurred, from a single line.
+    //
     // Unreachable given a supplied host, since the real root builds the port if and only if one was
     // present - but the published type is honest about the member being optional, and a non-null
     // assertion is the one construct that would silence exactly the checks this path relies on.
-    const { invoke } = harnessWith(() => undefined);
+    const harness = harnessWith(() => undefined);
 
-    const response = await invoke(feedRequestEvent(), lambdaContext());
+    const response = await harness.invoke(feedRequestEvent(), lambdaContext());
     const envelope = errorEnvelopeOf(response);
 
     expect(response.statusCode).toBe(500);
     expect(envelope.category).toBe('unrecognized');
     expect(envelope.message).toBe(GENERIC_FAILURE_MESSAGE);
 
-    const operatorLines = recordedLog.entries.filter(
-      (entry) => entry.level === 'error' && entry.message.includes('product-feed port'),
-    );
+    // EXACTLY ONE emission for the whole invocation, at error severity, and it is the mapper's.
+    const errorLines = harness.emitted.entries.filter((entry) => entry.level === 'error');
 
-    expect(operatorLines).toHaveLength(1);
-    expect(operatorLines[0]?.context.requestId).toBe(RUNTIME_REQUEST_ID);
-    expect(operatorLines[0]?.context.route).toBe(FEED_ROUTE_LABEL);
+    expect(errorLines).toHaveLength(1);
+
+    const [line] = errorLines;
+
+    if (line === undefined) {
+      throw new Error('the fault was not logged at all');
+    }
+
+    expect(line.message).toBe('unrecognized failure mapped to a generic response');
+    expect(line.context.requestId).toBe(RUNTIME_REQUEST_ID);
+    expect(line.context.route).toBe(FEED_ROUTE_LABEL);
+    // THE DIAGNOSIS, carried by the thrown value's own class name rather than by a second line.
+    expect(String(line.context.thrownShape)).toContain('MissingProductFeedPortError');
+    // And no handler-authored wording survives anywhere in the stream.
+    expect(harness.emitted.entries.map((entry) => entry.message).join('\n')).not.toContain(
+      'the request scope published no product-feed port',
+    );
+    // The sentence never reaches the caller either - the body is the mapper's fixed one.
+    expect(response.body).not.toContain('MissingProductFeedPortError');
+    expect(response.body).not.toContain('product-feed port');
   });
 
   it('draws every status from the minimal set, reaching for no other', async () => {
@@ -2426,5 +2469,252 @@ describe('validation and safe error mapping', () => {
       expect(response.body).not.toContain('retryAfter');
       expect(response.body).not.toContain('circuitBreaker');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. The three remaining review findings: closed dispatch (F12), the
+//    capability-scoped request graph (F9's consumer half) and the deliberate
+//    whole-feed capacity tradeoff (F19).
+// ---------------------------------------------------------------------------
+
+describe('closed dispatch, capability-scoped assembly and the whole-feed tradeoff', () => {
+  it('★★★ publishes exactly ONE route for this capability, whose action the module implements (finding F12)', () => {
+    // ★★★ THE PREVIOUS REVISION ARGUED THIS CHECK AWAY. Its `JUDGMENT CALL` read: "no dispatch switch,
+    // and no operation-selection surface ... A switch over a one-member set would be unreachable code
+    // pretending to be a decision. The action is recorded on the log line below instead, where it is a
+    // fact rather than a branch." The premise holds - there is one row - and the conclusion did not,
+    // because `./router.js`'s own note records that adding a second route to a capability later is
+    // ADDITIVE. The moment a second row named this capability, an action this file was never written
+    // for would have reached the feed generator and been served as though it were the feed.
+    expect(FEED_ROUTE.capability).toBe('productFeed');
+    expect(FEED_ROUTE.action).toBe('generateProductFeed');
+
+    // ONE row for this capability today, which is why the guard is a forward-compatibility check
+    // rather than a currently reachable branch - stated here so a reader does not hunt for a case that
+    // drives it. If a second row is ever added, THIS assertion fails first and points at the guard.
+    const rowsForThisCapability = Object.values(ROUTE_TABLE).filter(
+      (candidate) => candidate.capability === 'productFeed',
+    );
+
+    expect(rowsForThisCapability).toHaveLength(1);
+  });
+
+  it('★★★ verifies the route BEFORE reading the host, so an unrouted request opens no scope (finding F12)', async () => {
+    // The ordering is observable without a second action: a request that resolves to no route carries
+    // a perfectly good `Host` header and is still refused as a NON-ROUTE, and no scope is opened. Had
+    // the host read or the composition root come first, the answer would have been a 400 about the
+    // input or a 500 from graph assembly instead.
+    const port = new RecordingProductFeedPort(RENDERED_DOCUMENT);
+    const { root, invoke } = harnessWithPort(port);
+
+    const response = await invoke(
+      feedRequestEvent({ path: '/feeds/not-a-route' }),
+      lambdaContext(),
+    );
+
+    expect(response.statusCode).toBe(404);
+    expect(errorEnvelopeOf(response).message).toBe(ROUTE_NOT_FOUND_MESSAGE);
+    expect(root.scopeInputs).toStrictEqual([]);
+    expect(port.argumentCounts).toStrictEqual([]);
+
+    // And a request with NO host on a route that DOES match is refused as unusable input instead -
+    // which is what makes the 404 above attributable to ordering rather than to the host being
+    // ignored everywhere.
+    const hostless = harnessWithPort(new RecordingProductFeedPort(RENDERED_DOCUMENT));
+    const hostlessResponse = await hostless.invoke(
+      feedRequestEvent({ headers: {} }),
+      lambdaContext(),
+    );
+
+    expect(hostlessResponse.statusCode).toBe(400);
+    expect(hostless.root.scopeInputs).toStrictEqual([]);
+  });
+
+  it('★★★ opens a plain scope because the feed evaluates no address zone (finding F9)', async () => {
+    // Zone loading is now a request-scope capability rather than an input flag.
+    // The feed supplies only the origin and clock it owns, and its scope double
+    // refuses `prepareAddressZoneEvaluation` if the handler ever reaches it.
+    const { root, invoke } = harnessWithPort(new RecordingProductFeedPort(RENDERED_DOCUMENT));
+
+    const response = await invoke(feedRequestEvent(), lambdaContext());
+
+    expect(response.statusCode).toBe(200);
+
+    const input = soleScopeInput(root);
+
+    expect(Object.keys(input).sort()).toStrictEqual(['feedHost', 'now']);
+  });
+
+  it('★★★ serves the WHOLE feed in one unpaginated, byte-identical artifact (finding F19)', async () => {
+    // ★★★ THE TRADEOFF, ASSERTED RATHER THAN ASSUMED. The finding asks for whole-feed semantics to be
+    // KEPT and the capacity cost to be characterized and documented; the module's own capacity block
+    // carries the characterization, and this case carries the behaviour. A Merchant Center consumer
+    // fetches ONE artifact and reads it as the complete catalog, so a page of it would not be a
+    // smaller version of the same behaviour - it would silently under-report the catalog.
+    //
+    // A document deliberately larger than the fixtures elsewhere in this file, so that "returned
+    // whole" is a statement about a document with many items rather than about a short string.
+    const items = Array.from(
+      { length: 500 },
+      (_unused, index) => `<item><g:id>sku-${String(index)}</g:id></item>`,
+    );
+    const wholeDocument = `<rss><channel>${items.join('')}</channel></rss>`;
+    const port = new RecordingProductFeedPort(wholeDocument);
+    const { invoke } = harnessWithPort(port);
+
+    const response = await invoke(feedRequestEvent(), lambdaContext());
+
+    expect(response.statusCode).toBe(200);
+    // BYTE FOR BYTE, and the length is asserted separately so a truncation cannot hide behind a
+    // prefix comparison.
+    expect(response.body).toBe(wholeDocument);
+    expect(response.body.length).toBe(wholeDocument.length);
+    // EVERY item is present. A feed that dropped the tail is the specific failure this guards.
+    expect(response.body).toContain('<g:id>sku-0</g:id>');
+    expect(response.body).toContain('<g:id>sku-499</g:id>');
+    expect(response.body.split('<item>')).toHaveLength(items.length + 1);
+
+    // THE PORT WAS ASKED ONCE, WITH NO ARGUMENTS. No page, no offset, no limit and no cursor, because
+    // the port has no parameter to carry one and this handler declares no criteria type.
+    expect(port.argumentCounts).toStrictEqual([0]);
+
+    // AND NO PAGINATION SEMANTIC IS DECLARED ANYWHERE ON THE RESPONSE. Not as a header, not as a link
+    // relation, and not as a body member - the body is the document and nothing wraps it.
+    const headerNames = Object.keys(response.headers ?? {}).map((name) => name.toLowerCase());
+
+    expect(headerNames).toStrictEqual(['content-type']);
+    expect(headerNames).not.toContain('link');
+    for (const paging of ['rel="next"', 'nextPageToken', 'nextCursor', 'hasMore', 'totalPages']) {
+      expect(response.body).not.toContain(paging);
+    }
+  });
+
+  it('★★★ characterizes capacity as PLATFORM ceilings and states no service level (finding F19)', async () => {
+    // The characterization is a statement about the PLATFORM, so nothing about it may leak into what a
+    // caller receives or into what an operator reads as though it were a measurement of this service.
+    // The legacy slice asserts no latency, throughput, uptime or size guarantee, and none is invented:
+    // this case pins that the served path publishes no size, count, duration or budget of any kind.
+    const port = new RecordingProductFeedPort(RENDERED_DOCUMENT);
+    const harness = harnessWithPort(port);
+
+    const response = await harness.invoke(feedRequestEvent(), lambdaContext());
+
+    expect(response.statusCode).toBe(200);
+
+    const emitted = harness.emitted.entries.map((entry) => JSON.stringify(entry)).join('\n');
+
+    for (const measurement of [
+      'documentBytes',
+      'documentLength',
+      'itemCount',
+      'rowCount',
+      'elapsedMs',
+      'durationMs',
+      'budget',
+      'sla',
+      'maxRows',
+      'timeout',
+    ]) {
+      expect(emitted).not.toContain(measurement);
+      expect(response.body).not.toContain(measurement);
+    }
+
+    // And no size-shaped header either: declaring a content length here would be this module
+    // measuring the artifact, which the runtime does for itself.
+    expect(Object.keys(response.headers ?? {}).map((name) => name.toLowerCase())).not.toContain(
+      'content-length',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. The logger seam
+//
+// ★★★ THIS SECTION IS A CODE-REVIEW FINDING. `createProductFeedHandler` took ONE positional
+// argument - the composition-root provider - and emitted through the module-level logger singleton,
+// which left a suite no way to observe the handler's own diagnostics except by patching
+// `process.stdout.write`. This file did exactly that, globally and without delegating, so every line
+// the process emitted while a test ran was discarded rather than captured - and a vitest worker is
+// shared with sibling suites.
+//
+// The seam is now `{ compositionRoot, logger }`, both optional and both defaulting to the production
+// wiring, so the exported `handler` is still built with no arguments. The cases below assert the seam
+// itself: that a supplied sink receives EVERYTHING the invocation emitted, that the default is still
+// in place when none is supplied, and that the raw text of every line is available to an assertion
+// about disclosure - which is the half the JSON-only capture could not offer.
+// ---------------------------------------------------------------------------
+
+describe('the logger seam', () => {
+  it('sends the WHOLE invocation to the injected sink, leaving nothing for the default', async () => {
+    const harness = harnessWithFeedService(makeCandidateCatalog());
+
+    const response = await harness.invoke(feedRequestEvent(), lambdaContext());
+
+    expect(response.statusCode).toBe(200);
+    // ★ ONE LINE EMITTED AND ONE LINE RECEIVED. The served path writes exactly one entry, and the
+    // recorder holds exactly one raw line, so no part of this invocation's output went anywhere else.
+    // That is the property a suite could not state while the sink was a stream spy: a spy observes
+    // what reached stdout, whereas this observes what the handler was TOLD to write to.
+    expect(harness.emitted.rawLines).toHaveLength(1);
+    expect(harness.emitted.entries).toHaveLength(1);
+    expect(harness.emitted.entries[0]?.message).toContain('product feed');
+  });
+
+  it('keeps every line RAW, so an assertion about disclosure can fail on text that never parsed', async () => {
+    const harness = harnessWithFeedService(makeCandidateCatalog());
+
+    await harness.invoke(feedRequestEvent(), lambdaContext());
+
+    const [raw] = harness.emitted.rawLines;
+
+    if (raw === undefined) {
+      throw new Error('the served-feed line was not emitted');
+    }
+
+    // The raw text IS the serialized entry - the recorder stores it before parsing and keeps it even
+    // when parsing fails - so `text()` is a complete view of everything emitted rather than a view of
+    // the subset that happened to be well-formed JSON.
+    expect(raw.startsWith('{')).toBe(true);
+    expect(harness.emitted.text()).toBe(raw);
+    expect(JSON.parse(raw)).toBeTypeOf('object');
+    // And nothing a caller sent reaches it: no credential-shaped header value, no query string.
+    expect(harness.emitted.text()).not.toContain('Bearer');
+    expect(harness.emitted.text()).not.toContain('includeInactive');
+  });
+
+  it('is fresh per harness, so one test cannot read another emissions', async () => {
+    const first = harnessWithFeedService(makeCandidateCatalog());
+    const second = harnessWithFeedService(makeCandidateCatalog());
+
+    await first.invoke(feedRequestEvent(), lambdaContext());
+
+    // The second harness has its own recorder and has served nothing, so it holds nothing. Under the
+    // module-level capture this file used to keep, both would have read the same array.
+    expect(first.emitted.rawLines).toHaveLength(1);
+    expect(second.emitted.rawLines).toHaveLength(0);
+
+    await second.invoke(feedRequestEvent(), lambdaContext());
+
+    expect(first.emitted.rawLines).toHaveLength(1);
+    expect(second.emitted.rawLines).toHaveLength(1);
+  });
+
+  it('defaults BOTH members, so the production entrypoint needs no argument at all', () => {
+    // Three constructions, all valid: no argument, an empty bundle, and one member only. Each performs
+    // no I/O and constructs nothing, which is why calling them here is safe with no environment
+    // configured - and each yields the two-parameter shape the runtime invokes.
+    const bare = createProductFeedHandler();
+    const empty = createProductFeedHandler({});
+    const rootOnly = createProductFeedHandler({
+      compositionRoot: (): Promise<CompositionRoot> =>
+        Promise.resolve(new FeedCompositionRootDouble(() => undefined)),
+    });
+
+    expect(bare.length).toBe(2);
+    expect(empty.length).toBe(2);
+    expect(rootOnly.length).toBe(2);
+    expect(bare).not.toBe(handler);
+    expect(empty).not.toBe(bare);
   });
 });

@@ -24,18 +24,48 @@
 // WHY THE STATUS SET IS THIS SMALL. The legacy CFML slice has NO HTTP status vocabulary at all: its
 // controllers are framework subsystem actions and its only failure signal is a thrown string, so
 // there is nothing to port and no licence to invent. The set is held to base HTTP meanings
-// following directly from the three recognized shapes plus a default - a client-shaped failure
-// whose input is not usable, a route-not-found, and a server-shaped failure for everything else.
+// following directly from the recognized shapes plus a default - a client-shaped failure
+// whose input is not usable, a route-not-found, a refusal to serve an unidentified or unauthorized
+// caller, and a server-shaped failure for everything else.
 // Distinguishing route-not-found from a domain failure is not invented either: the legacy framework
 // already raised TYPED exceptions for routing failures (`org/Hibachi/FW1/framework.cfc:L963` for a
 // missing service, `:L1231` for a missing service method, `:L2023-L2024` for a missing view), which
 // proves routing failures were distinguishable in the source. Those exception TYPE NAMES are
 // deliberately NOT carried forward - FW/1 itself is not carried forward, and reproducing its type
 // strings would invent a contract the target does not owe. Nothing beyond that is modelled - no
-// authentication or authorization status, because the one in-scope legacy controller publishes its
-// feed action outright with empty secure- and admin-method lists, and no conflict,
-// unprocessable-entity or request-quota status nor the headers that accompany one, because the
-// source has no notion of any of them.
+// conflict, unprocessable-entity or request-quota status nor the headers that accompany one, because
+// the source has no notion of any of them.
+//
+// ★★ THE AUTHORIZATION VOCABULARY WAS ADDED, AND THIS PARAGRAPH RECORDS THE REVERSAL RATHER THAN
+// HIDING IT. This header once read "Nothing beyond that is modelled - no authentication or
+// authorization status, because the one in-scope legacy controller publishes its feed action
+// outright with empty secure- and admin-method lists". That reasoning generalized ONE controller's
+// declaration to FIVE net-new routes it says nothing about, and the consequence was concrete: with
+// no 401 and no 403 in the vocabulary, a handler that wanted to refuse an unidentified caller had no
+// way to express the refusal, so four of the five capability entrypoints served every anonymous
+// request instead. A security review recorded that as its dominant finding (CRITICAL, CWE-306 and
+// CWE-862) and named the missing vocabulary as the blocker to fixing it.
+//
+// The correction is bounded and traceable:
+//
+//   * The legacy fact still holds where it applies. `integrationServices/google/controllers/feed.cfc:L54-L56`
+//     declares `this.publicMethods="product"` with EMPTY `secureMethods` and `anyAdminMethods`, so
+//     the product feed is source-public and `productFeedHandler` continues to serve it anonymously.
+//     That one declaration is not evidence about the catalog, SKU, promotion or pricing routes, none
+//     of which has a legacy antecedent at all.
+//   * The legacy DID have an authorization notion, in the framework this port replaces: FW/1's
+//     `secureMethods`/`anyAdminMethods` declarations and the admin subsystem's own gating. Modelling
+//     a refusal is therefore reproducing a source concept in the target's protocol, not inventing
+//     one. `model/service/PriceGroupService.cfc:L263-L266` likewise distinguishes an authenticated
+//     account from none.
+//   * Two statuses are added and no more. 401 for "this route will not serve a caller it cannot
+//     identify"; 403 for "the caller is identified and is not permitted this operation". No
+//     `WWW-Authenticate` challenge, no scheme name, no realm, no retry-after, no rate limit, no
+//     token lifetime and no 409/422/429 - each of those would be inventing a mechanism, and a status
+//     is all a handler needs to refuse.
+//   * NEITHER SENTENCE DISTINGUISHES THE TWO CASES BEYOND THE STATUS ITSELF, and the bodies name no
+//     claim, no scheme, no operation and no principal. A refusal must not become an oracle telling
+//     an unauthenticated caller which operations exist or which claim would have satisfied them.
 //
 // THE CENTRAL GUARANTEE, STATED ONCE HERE AND REFERRED TO THROUGHOUT: THE THROWN VALUE IS PASSED
 // NOWHERE - not into the response, and not into the log either. This module is SELECTIVE, never a
@@ -72,7 +102,7 @@
 // so that "explicitly recognized" cannot become "anything that looks the part".
 // ---------------------------------------------------------------------------
 
-import type { APIGatewayProxyResult } from 'aws-lambda';
+import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { ZodError } from 'zod';
 
 import type { LogContext, Logger } from '../lib/logger.js';
@@ -86,11 +116,24 @@ import { logger } from '../lib/logger.js';
  * `mapErrorToApiGatewayResponse` ends in an unconditional default arm - so a failure can never fall
  * through unmapped. `missingMethod` is server-shaped because a call target that does not exist is a
  * defect in this service rather than the caller's mistake; `routeNotFound` is raised by the router
- * and never by a service; `invalidRequest` is client-shaped; `unrecognized` is anything else, and
- * its message is withheld from the body.
+ * and never by a service; `invalidRequest` is client-shaped; `unauthenticated` and `forbidden` are
+ * the two refusal shapes a handler decides for itself before any service is reached - see the
+ * authorization-vocabulary note in the module header for why they exist and what they deliberately
+ * do not carry; `unrecognized` is anything else, and its message is withheld from the body.
+ *
+ * NEITHER REFUSAL SHAPE IS EVER PRODUCED BY `mapErrorToApiGatewayResponse`. No thrown value is
+ * recognized as a refusal, because a refusal is a decision a handler makes about a request rather
+ * than a failure that happens to it, and recognizing one from a thrown shape would let a value
+ * reaching the funnel from anywhere - a service, a driver, a deserialized document - choose an
+ * authorization status. `unauthenticatedResponse` and `forbiddenResponse` are the only producers.
  */
 export type MappedErrorCategory =
-  'missingMethod' | 'routeNotFound' | 'invalidRequest' | 'unrecognized';
+  | 'missingMethod'
+  | 'routeNotFound'
+  | 'invalidRequest'
+  | 'unauthenticated'
+  | 'forbidden'
+  | 'unrecognized';
 
 /**
  * What a caller must hand this module alongside the failure.
@@ -182,7 +225,7 @@ export type InvalidRequestReason =
  */
 export interface ErrorResponseBody {
   readonly error: {
-    /** Which of the four mapped shapes this response represents. */
+    /** Which of the six mapped shapes this response represents. */
     readonly category: MappedErrorCategory;
     /**
      * Safe description. For a recognized failure this is the failure's own message; for an
@@ -201,8 +244,9 @@ export interface ErrorResponseBody {
 }
 
 /**
- * The status carried by each mapped shape. Three codes, and only three - see the status-set note in
- * the module header for why nothing further is modelled.
+ * The status carried by each mapped shape. Five codes, and only five - see the status-set note and
+ * the authorization-vocabulary note in the module header for why each exists and why nothing further
+ * is modelled.
  *
  * A `Record` keyed by the closed union rather than an index signature, so an index into it is
  * `number` and never widens to `undefined`, and adding a category without giving it a status is a
@@ -213,6 +257,12 @@ const STATUS_BY_CATEGORY: Readonly<Record<MappedErrorCategory, number>> = Object
   missingMethod: 500,
   routeNotFound: 404,
   invalidRequest: 400,
+  // The caller was not identified. NO `WWW-Authenticate` header accompanies it: naming a scheme
+  // would publish an authentication mechanism this migration was never given, and a handler needs
+  // only the status to refuse.
+  unauthenticated: 401,
+  // The caller WAS identified and is not permitted the operation it named.
+  forbidden: 403,
   unrecognized: 500,
 });
 
@@ -236,8 +286,40 @@ const GENERIC_FAILURE_MESSAGE = 'The request could not be completed.';
 /** Body message for a request that matched no route. */
 const ROUTE_NOT_FOUND_MESSAGE = 'The requested route does not exist.';
 
+/**
+ * The correlation identifier published when the platform supplied neither of its own.
+ *
+ * A FIXED LITERAL, never a minted value. Two identifiers are always present on a real invocation -
+ * the runtime's and the gateway's - so reaching this constant means the event was synthesised, and
+ * saying so plainly is more useful than a random string that looks like a real correlation handle and
+ * joins to nothing. Nothing is generated here: minting one would put a value in the response body
+ * that appears on no log line the platform emitted.
+ */
+const UNATTRIBUTED_REQUEST_ID = 'unattributed';
+
 /** Body message for a schema-rejected request input. */
 const INVALID_REQUEST_MESSAGE = 'The request input is not valid.';
+
+/**
+ * Body message for a caller this route declines to serve without an identity.
+ *
+ * Fixed, and deliberately uninformative in the same way {@link GENERIC_FAILURE_MESSAGE} is. It names
+ * no claim, no header, no authentication scheme, no operation and no principal, because a refusal
+ * must not become an oracle: telling an unidentified caller WHICH claim would have satisfied the
+ * route, or that the operation it named exists at all, hands over exactly the reconnaissance the
+ * refusal exists to withhold.
+ */
+const UNAUTHENTICATED_MESSAGE = 'The request was not served.';
+
+/**
+ * Body message for an identified caller that is not permitted the operation it named.
+ *
+ * Byte-identical to {@link UNAUTHENTICATED_MESSAGE} on purpose. The STATUS distinguishes the two
+ * cases for a caller that needs to know whether to re-authenticate; the SENTENCE distinguishes
+ * nothing further, so a caller probing for administrative operations learns only that it was
+ * refused - never that a given operation exists and is administrative.
+ */
+const FORBIDDEN_MESSAGE = UNAUTHENTICATED_MESSAGE;
 
 /**
  * The sentence published for each `InvalidRequestReason`.
@@ -505,13 +587,64 @@ function readIssuePath(issue: object): string {
 }
 
 /**
+ * The library's issue code for a member the schema does not publish.
+ *
+ * The exact literal `zod` 4.4.3 emits for a `strictObject` rejection, verified against the pinned
+ * version rather than assumed from documentation.
+ */
+const UNRECOGNIZED_KEYS_ISSUE_CODE = 'unrecognized_keys';
+
+/**
+ * The sentence published in place of an unrecognized-key complaint.
+ *
+ * ★★ WHY A SUBSTITUTION AND NOT A CLAMP. A security review found (LOW, CWE-209) that this module
+ * reflected a CALLER-AUTHORED KEY NAME back into a response body: `zod` renders that complaint as
+ * `Unrecognized key: "<theKeyTheCallerSent>"`, and publishing it verbatim - clamped or not - makes a
+ * 400 response an echo of submitted input. Clamping bounds the LENGTH of the echo and does not stop
+ * it, and a partial echo of a caller-chosen string is still an echo.
+ *
+ * The substitution is a fixed, schema-independent sentence. What survives is the `path`, which for
+ * this issue kind names the CONTAINING OBJECT and never the offending key - verified against the
+ * pinned library: a top-level rejection reports `path: []` and a nested one reports the parent's
+ * path. A caller therefore still learns WHERE its document was refused without this module quoting
+ * anything the caller wrote.
+ *
+ * ★ AND THIS IS WHAT MAKES `strictObject` USABLE AT THE HANDLER TIER AT ALL. Before this fix, a
+ * handler wanting a closed request grammar had to choose between a strict schema that echoed the key
+ * and a hand-written membership check that did not; `catalogQueryHandler.hasClosedParameterSet`
+ * documents exactly that trade-off, and the two siblings that chose neither left their surfaces open
+ * and silently STRIPPED unknown members. With the echo closed here, a strict schema is the
+ * lower-ceremony half of that choice and both remain safe.
+ */
+const UNRECOGNIZED_MEMBER_MESSAGE =
+  'contains a member this operation does not publish; remove it and retry';
+
+/**
+ * Whether a raw issue is the library's unrecognized-key complaint.
+ *
+ * Probes `code` rather than pattern-matching the rendered sentence, because the sentence is exactly
+ * the thing that must not be trusted here. A non-string `code`, or one that is not the literal
+ * above, declines - so an unfamiliar issue kind is treated as an ordinary constraint description
+ * rather than being silently substituted.
+ */
+function isUnrecognizedMemberIssue(raw: object): boolean {
+  if (!('code' in raw)) {
+    return false;
+  }
+  const { code } = raw;
+  return typeof code === 'string' && code === UNRECOGNIZED_KEYS_ISSUE_CODE;
+}
+
+/**
  * Reduce one raw issue to the two members that are safe to publish.
  *
- * Reads `path` and `message` and NOTHING else. In particular the library also records what it
- * RECEIVED, on `received` and on the sibling members some issue kinds add, and none of those is
- * read here or anywhere else in this module - which is the reason a rejected credential or card
- * number cannot travel out through a 400 response. The message is CLAMPED rather than published as
- * given, because an unrecognized-key complaint names the key, which came from the caller.
+ * Reads `path` and `message`, and NOTHING else. In particular the library also records what it
+ * RECEIVED, and some issue kinds add sibling members; none of those is read here or anywhere else in
+ * this module, which is why a rejected credential or card number cannot travel out through a 400.
+ *
+ * Unrecognized-member complaints are intercepted by {@link expandUnrecognizedKeys} before reaching
+ * this reducer. Every message that reaches here is CLAMPED rather than published as given, because
+ * bounding a schema-authored sentence keeps the response proportional to the request.
  */
 function toFieldIssue(raw: unknown): MappedFieldIssue | undefined {
   if (typeof raw !== 'object' || raw === null) {
@@ -525,6 +658,93 @@ function toFieldIssue(raw: unknown): MappedFieldIssue | undefined {
     return undefined;
   }
   return { path: readIssuePath(raw), message: clampText(message, MAX_ISSUE_MESSAGE_LENGTH) };
+}
+
+/**
+ * Expand an unrecognized-key complaint into the one safe issue this API may publish, or decline.
+ *
+ * ★★★ THIS COMPOSES TWO REVIEW FINDINGS RATHER THAN CHOOSING BETWEEN THEM. The API review required
+ * nested strict-object failures to retain their CONTAINING path, so a complaint under `order` does
+ * not become an ambiguous root-level failure. The security review then established that the
+ * offending key itself is caller-authored text and must not be reflected at all (CWE-209).
+ *
+ * The result therefore keeps the schema-authored container path from `readIssuePath` and substitutes
+ * the fixed sentence from {@link UNRECOGNIZED_MEMBER_MESSAGE}. The library's `keys`, `received`,
+ * `values` and `input` members are never read. A root-level unknown member has an empty path; a nested
+ * one has the bounded prefix such as `order`. No submitted key name or value travels.
+ *
+ * @param raw one raw issue from the validator.
+ * @returns one fixed issue carrying the containing path, or `undefined` for another issue kind.
+ */
+function expandUnrecognizedKeys(raw: unknown): readonly MappedFieldIssue[] | undefined {
+  if (typeof raw !== 'object' || raw === null || !isUnrecognizedMemberIssue(raw)) {
+    return undefined;
+  }
+
+  return [{ path: readIssuePath(raw), message: UNRECOGNIZED_MEMBER_MESSAGE }];
+}
+
+/** Prefix one already-sanitized issue with a server-authored containing path. */
+function prefixMappedIssue(
+  issue: MappedFieldIssue,
+  pathPrefix: string | undefined,
+): MappedFieldIssue {
+  if (pathPrefix === undefined || pathPrefix.length === 0) {
+    return issue;
+  }
+
+  return {
+    path: issue.path === '' ? pathPrefix : `${pathPrefix}.${issue.path}`,
+    message: issue.message,
+  };
+}
+
+/**
+ * Reduce one Zod failure to the safe field details a handler may publish.
+ *
+ * This is the shared path for both the mapper's own thrown-error funnel and a handler that validates
+ * a nested document separately. In particular, unrecognized-key issues are recognized by issue code,
+ * retain only their schema-authored container path, and never expose the caller-authored `keys` or
+ * rendered message.
+ *
+ * @param error the genuine Zod failure to reduce.
+ * @param pathPrefix optional SERVER-AUTHORED path to the nested document, such as `order`.
+ * @returns at most {@link MAX_PUBLISHED_ISSUES} sanitized issues, in validator order.
+ */
+export function mapZodErrorFields(
+  error: ZodError,
+  pathPrefix?: string,
+): readonly MappedFieldIssue[] {
+  const rawIssues: readonly unknown[] = error.issues;
+  const mapped: MappedFieldIssue[] = [];
+
+  for (const raw of rawIssues) {
+    if (mapped.length >= MAX_PUBLISHED_ISSUES) {
+      break;
+    }
+
+    // An unrecognized-key complaint is reduced first so neither its rendered message nor its `keys`
+    // member can reach the ordinary reducer. The result is one fixed complaint at the schema-authored
+    // containing path, and the bound is re-tested before it is admitted.
+    const expanded = expandUnrecognizedKeys(raw);
+
+    if (expanded !== undefined) {
+      for (const issue of expanded) {
+        if (mapped.length >= MAX_PUBLISHED_ISSUES) {
+          break;
+        }
+        mapped.push(prefixMappedIssue(issue, pathPrefix));
+      }
+      continue;
+    }
+
+    const issue = toFieldIssue(raw);
+    if (issue !== undefined) {
+      mapped.push(prefixMappedIssue(issue, pathPrefix));
+    }
+  }
+
+  return mapped;
 }
 
 /** What a recognized validation failure yields. Module-private. */
@@ -553,17 +773,8 @@ function recognizeValidationIssues(thrown: unknown): RecognizedValidationFailure
     return undefined;
   }
   const rawIssues: readonly unknown[] = thrown.issues;
-  const mapped: MappedFieldIssue[] = [];
-  for (const raw of rawIssues) {
-    if (mapped.length >= MAX_PUBLISHED_ISSUES) {
-      break;
-    }
-    const issue = toFieldIssue(raw);
-    if (issue !== undefined) {
-      mapped.push(issue);
-    }
-  }
-  return { fields: mapped, issueCount: rawIssues.length };
+
+  return { fields: mapZodErrorFields(thrown), issueCount: rawIssues.length };
 }
 
 // --- Response and log construction -----------------------------------------
@@ -757,7 +968,178 @@ function resolveLogger(context: ErrorMappingContext): Logger {
   return context.logger ?? logger;
 }
 
+/**
+ * The first non-empty trimmed candidate, or nothing.
+ *
+ * `unknown` rather than `string | undefined` because both correlation sources below are typed with
+ * index signatures this module must not trust: a synthesised event can carry a number, a `null` or an
+ * object where the platform would have put a string, and a `typeof` probe is how that is narrowed
+ * without a cast.
+ */
+function firstNonEmptyIdentifier(candidates: readonly unknown[]): string | undefined {
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') {
+      continue;
+    }
+
+    const trimmed = candidate.trim();
+
+    if (trimmed.length > 0) {
+      return trimmed;
+    }
+  }
+
+  return undefined;
+}
+
 // --- Exported surface ------------------------------------------------------
+
+// ===========================================================================
+// THE SHARED RESPONSE AND CORRELATION CONTRACT
+//
+// ★★★ WHY THESE THREE LIVE HERE RATHER THAN IN EACH HANDLER. API review (findings F8 and F13) found
+// the five capability entrypoints had each derived their own answer to three questions every one of
+// them has to answer: which correlation identifier wins, how a route is labelled, and what a
+// successful JSON body looks like. Measured, the drift was real - one handler preferred the gateway's
+// identifier while three preferred the runtime's, one labelled a route by path alone while the others
+// used method-and-path, and all four JSON handlers published a differently-shaped success envelope,
+// two of them without a correlation identifier at all. Every one of those is a CROSS-HANDLER contract
+// and none is a capability-specific decision, so the decisions move to the module that already owns
+// the failure half of the same contract: the response construction, the header set, the correlation
+// echo and the route sanitizer are all here already, and splitting the success half away from them is
+// what let them diverge.
+//
+// THE ROUTING TABLE IS DELIBERATELY NOT IMPORTED. `./router.ts` imports THIS module, so importing it
+// back would close a cycle across all five bundle entry points. The label builder therefore takes the
+// two strings it needs positionally; a caller holding a `RouteDescriptor` passes its own members.
+//
+// NO SUCCESS STATUS VOCABULARY IS ADDED. A served request is 200 and nothing else; the failure
+// vocabulary is documented above and separately includes the two explicit authorization refusals.
+// ===========================================================================
+
+/**
+ * The one member of a Lambda invocation context that {@link resolveServerRequestId} reads.
+ *
+ * Structural rather than nominal, so both the platform's `Context` and a handler's own narrower
+ * invocation-identity type satisfy it without a cast. Declared here because this module owns the
+ * correlation policy; nothing else about an invocation is read anywhere in it.
+ */
+export interface ServerInvocationIdentity {
+  /** The runtime's identifier for this invocation, when the runtime supplied one. */
+  readonly awsRequestId?: string | undefined;
+}
+
+/**
+ * The correlation identifier for one invocation, resolved from SERVER-ESTABLISHED sources only.
+ *
+ * ★ THE PRECEDENCE, AND WHY IT IS THIS WAY ROUND. The runtime's `awsRequestId` wins, then the
+ * gateway's `requestContext.requestId`. Both are minted by the platform and neither is caller-
+ * writable, so the choice is not a security one; it is that the runtime identifier is the one the
+ * platform's own `START`/`END`/`REPORT` lines carry for THIS execution, so an operator joining a
+ * response to a log stream lands on the right invocation even when the gateway retried and produced
+ * two executions under one gateway identifier. The gateway identifier is the fallback because an
+ * event can be delivered to a handler invoked without a runtime context.
+ *
+ * NOTHING IS READ FROM A HEADER, and that is the security half. A caller-supplied `X-Request-Id` is
+ * NOT consulted: this value is echoed into response bodies and written to the log stream, so honouring
+ * a caller-chosen one would let a caller stamp its own text onto both and forge a join key onto
+ * another invocation's line. There is no header override and none may be added.
+ *
+ * ★ THE CONTEXT PARAMETER IS A MINIMAL STRUCTURAL SHAPE, NOT `Context`. Exactly one member of the
+ * platform's context object is read, and the platform's own `Context` satisfies this shape
+ * structurally - so nothing is lost at the real boundary while a handler that publishes its own
+ * one-member invocation-identity type can pass it, and a suite is not obliged to fabricate a dozen
+ * unrelated members to exercise the fallback. `awsRequestId` is declared OPTIONAL here because
+ * `exactOptionalPropertyTypes` is on and a caller assembling this from an optional value may pass an
+ * explicit `undefined`; the platform always supplies it.
+ *
+ * @param event the API Gateway proxy event; only `requestContext.requestId` is read.
+ * @param context the invocation identity when the runtime supplied one; only `awsRequestId` is read.
+ * @returns a non-empty identifier - {@link UNATTRIBUTED_REQUEST_ID} when the platform supplied none.
+ */
+export function resolveServerRequestId(
+  event: APIGatewayProxyEvent,
+  context?: ServerInvocationIdentity,
+): string {
+  // `requestContext` is typed as always present but a synthesised event may omit it, so the read is
+  // optional rather than trusting the declaration.
+  return (
+    firstNonEmptyIdentifier([context?.awsRequestId, event.requestContext?.requestId]) ??
+    UNATTRIBUTED_REQUEST_ID
+  );
+}
+
+/**
+ * The canonical diagnostic label for a resolved route: `METHOD /path`.
+ *
+ * Built from the FROZEN route table's own members and never from anything a caller sent, which is what
+ * makes it safe to log. It reaches the log stream only - {@link ErrorMappingContext.route} is logged
+ * and never echoed into a response body, because reflecting a path back serves no diagnostic purpose
+ * the correlation identifier does not already serve.
+ *
+ * @param methods the route's HTTP methods, as the table declares them.
+ * @param path the route's canonical path, as the table declares it.
+ */
+export function routeDiagnosticLabel(methods: string, path: string): string {
+  return `${methods} ${path}`;
+}
+
+/**
+ * The ONE shape a successful JSON response from any capability handler carries.
+ *
+ * Four members, all of them cross-handler rather than capability-specific:
+ *
+ *   * `requestId` - the same identifier the failure envelope echoes, so a caller can correlate a
+ *     SUCCESS as well as a failure. Two handlers previously omitted it, which meant a served request
+ *     could not be joined to its own log line at all.
+ *   * `capability` and `action` - the two closed literals off the route table, so a body says which
+ *     bundle answered and which action ran without a reader having to infer it from the shape.
+ *   * `result` - the capability's own payload, unexamined and unwrapped by this module.
+ *
+ * The route PATH is deliberately absent: it is a caller-supplied string, and the closed `action`
+ * literal already names what ran.
+ */
+export interface SuccessResponseBody<TResult> {
+  /** Echo of the server-established correlation identifier. */
+  readonly requestId: string;
+  /** The capability that answered, as a closed literal from the route table. */
+  readonly capability: string;
+  /** The action that ran, as a closed literal from the route table. */
+  readonly action: string;
+  /** The capability's own payload. */
+  readonly result: TResult;
+}
+
+/**
+ * Build the shared 200 response for a served request.
+ *
+ * The single construction path for a successful JSON body, exactly as `buildResponse` is for a failed
+ * one - same header set, same `cache-control: no-store`, same correlation echo. A handler supplies its
+ * payload and nothing else; it does not choose a status, a header or an envelope shape.
+ *
+ * FEED XML IS NOT ROUTED THROUGH HERE. `productFeedHandler` answers with an RSS document under
+ * `application/rss+xml`, which is a machine-consumer contract carried over from the legacy template
+ * and must not be wrapped in a JSON envelope.
+ *
+ * @param requestId the identifier from {@link resolveServerRequestId}.
+ * @param capability the answering capability, from the route table.
+ * @param action the action that ran, from the route table.
+ * @param result the capability's own payload.
+ */
+export function jsonSuccessResponse<TResult>(
+  requestId: string,
+  capability: string,
+  action: string,
+  result: TResult,
+): APIGatewayProxyResult {
+  const body: SuccessResponseBody<TResult> = { requestId, capability, action, result };
+
+  return {
+    statusCode: 200,
+    headers: JSON_RESPONSE_HEADERS,
+    body: JSON.stringify(body),
+  };
+}
 
 /**
  * Map an arbitrary thrown value onto an API Gateway proxy response.
@@ -780,7 +1162,9 @@ function resolveLogger(context: ErrorMappingContext): Logger {
  * @param thrown  The caught value, of genuinely unknown type. Narrowed by `instanceof` and by
  *                bounded property probes; never cast.
  * @param context Correlation identifier, optional route, optional logger.
- * @returns       A JSON response carrying one of exactly three statuses.
+ * @returns       A JSON response carrying 400, 404 or 500. This function NEVER produces 401 or 403:
+ *                a refusal is a decision a handler makes, never something recognized from a thrown
+ *                value - see {@link MappedErrorCategory}.
  */
 export function mapErrorToApiGatewayResponse(
   thrown: unknown,
@@ -863,17 +1247,39 @@ export function routeNotFoundResponse(context: ErrorMappingContext): APIGatewayP
  * guarantee structural. The reason itself is a closed literal, so it is logged, because it is the
  * detail an operator needs and the body no longer carries it.
  *
+ * ★★ `logDetail` EXISTS SO THIS MODULE OWNS THE ONE EMISSION, AND IT REACHES THE LOG ALONE.
+ * Observability review (finding F14) found two handlers emitting their own `warn` for a refusal they
+ * then passed here, so one rejection produced two lines - and the reason each did so was real: the
+ * closed `InvalidRequestReason` names the CLASS of problem while the handler often knows the GROUND of
+ * it, and there was nowhere to put the ground. This parameter is that place, and its constraints are
+ * exactly the ones that keep the module header's central guarantee intact:
+ *
+ *   * IT IS APPENDED TO THE LOG MESSAGE AND NEVER TO THE RESPONSE BODY. The body still carries only
+ *     the frozen sentence this module owns for the reason, so no caller-authored or caught text can
+ *     reach a caller through it. That is the property the closed union protects, and it is untouched.
+ *   * IT IS SANITIZED. It travels as log MESSAGE content, so `../lib/logger.js` applies its statement,
+ *     assignment-pair, connection-string and bearer-token rules to it before emission.
+ *   * IT IS FOR A GROUND THE HANDLER ESTABLISHED, not for a caught value. A caught failure belongs to
+ *     `mapErrorToApiGatewayResponse`, which classifies rather than quotes.
+ *
  * @param reason  Which class of unusable input the handler established.
  * @param context Correlation identifier, optional route, optional logger.
  * @param fields  Field-level complaints. Omit when there are none; an empty array is treated the
  *                same as omitting it and is not published.
+ * @param logDetail The ground of the refusal, for the LOG LINE ONLY. Omit when the reason says it all.
  */
 export function invalidRequestResponse(
   reason: InvalidRequestReason,
   context: ErrorMappingContext,
   fields?: readonly MappedFieldIssue[],
+  logDetail?: string,
 ): APIGatewayProxyResult {
-  resolveLogger(context).warn('request input rejected before it reached the services', {
+  const message =
+    logDetail === undefined
+      ? 'request input rejected before it reached the services'
+      : `request input rejected before it reached the services: ${logDetail}`;
+
+  resolveLogger(context).warn(message, {
     ...baseLogContext('invalidRequest', context),
     invalidRequestReason: reason,
     fieldPaths: fields === undefined ? [] : fields.map((field) => field.path),
@@ -884,4 +1290,55 @@ export function invalidRequestResponse(
     context.requestId,
     fields,
   );
+}
+
+/**
+ * Build the response for a request this route declines to serve because it identifies no caller.
+ *
+ * ★ THE FAIL-CLOSED DIRECTION, and the reason it is a separate function rather than a parameter on
+ * `invalidRequestResponse`: an unidentified caller has not made a MISTAKE about its input, so
+ * reporting a 400 with a field path would mis-state what happened and would tell the caller that its
+ * document was read. Nothing about the request is read to build this response, and nothing about the
+ * request is published in it.
+ *
+ * `fields` is NOT a parameter. There is no member of the request to point at, and offering the slot
+ * would invite a handler to name the claim it wanted - which is exactly the reconnaissance
+ * {@link UNAUTHENTICATED_MESSAGE} withholds.
+ *
+ * Called by a handler BEFORE it opens a composition root, a request scope or a connection, so a
+ * refused request costs no statement. See each capability handler's admission section.
+ *
+ * @param context Correlation identifier, the route being served if known, and an optional logger.
+ */
+export function unauthenticatedResponse(context: ErrorMappingContext): APIGatewayProxyResult {
+  resolveLogger(context).warn(
+    'request refused: the route serves no unidentified caller',
+    baseLogContext('unauthenticated', context),
+  );
+  return buildResponse('unauthenticated', UNAUTHENTICATED_MESSAGE, context.requestId, undefined);
+}
+
+/**
+ * Build the response for an identified caller that is not permitted the operation it named.
+ *
+ * The counterpart to {@link unauthenticatedResponse} for the case where an identity WAS established
+ * and is insufficient. The administrative whole-price-group document that motivated the first use
+ * was withdrawn from the routed surface instead, satisfying both its unbounded-document and access
+ * control findings. No current handler therefore emits 403, but the closed response vocabulary
+ * remains published and tested so a future, explicitly approved permission-gated operation cannot
+ * mislabel that decision as malformed input or failed authentication.
+ *
+ * ★ THE OPERATION IS LOGGED BY THE REFUSING HANDLER AND IS NOT ACCEPTED HERE. This function takes no
+ * operation, no permission name and no principal, so nothing about WHO was refused or WHAT they
+ * asked for can reach the body through it. The published sentence is identical to the
+ * unauthenticated one; only the status differs.
+ *
+ * @param context Correlation identifier, the route being served if known, and an optional logger.
+ */
+export function forbiddenResponse(context: ErrorMappingContext): APIGatewayProxyResult {
+  resolveLogger(context).warn(
+    'request refused: the identified caller is not permitted the operation',
+    baseLogContext('forbidden', context),
+  );
+  return buildResponse('forbidden', FORBIDDEN_MESSAGE, context.requestId, undefined);
 }

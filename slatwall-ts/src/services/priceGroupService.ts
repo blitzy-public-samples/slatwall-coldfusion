@@ -20,10 +20,16 @@
 // `updateOrderAmountsWithPriceGroups()` MUST RUN BEFORE
 // `PromotionService.updateOrderAmountsWithPromotions()`. It is NON-OPTIONAL and it decides how much
 // money a customer is charged. At [model/service/PromotionService.cfc:L241-L254] the promotion
-// engine chooses the base price it discounts FROM by price-group eligibility: an INELIGIBLE item
-// discounts from `getPrice()` [L243]; an ELIGIBLE item from `getSkuPrice()` [L248] plus a
-// correction term of `originalDiscountAmount - (getExtendedSkuPrice() - getExtendedPrice())`
-// [L251]. THE PROMOTION PASS READS STATE THIS PASS WRITES - the item price at
+// engine chooses the base price it discounts FROM by price-group eligibility. READ THE GUARD
+// LITERALLY - an earlier revision of this paragraph had the two arms TRANSPOSED, and a code review
+// flagged the same transposition where it had been copied into `../handlers/priceResolutionHandler.ts`
+// and `../handlers/bootstrap.ts`: an item with NO applied price group, OR one whose reward DOES list
+// the applied group as eligible, discounts from `getPrice()` with NO correction [L243]; an item that
+// HAS an applied group the reward does NOT list computes `originalDiscountAmount` from
+// `getSkuPrice()` [L248-L249], then subtracts
+// `(getExtendedSkuPrice() - getExtendedPrice())` [L251-L252]. The implementation
+// in `./promotionService.ts` has always followed the source rather than this prose; it is the prose
+// that was wrong. THE PROMOTION PASS READS STATE THIS PASS WRITES - the item price at
 // [model/service/PriceGroupService.cfc:L370] and the applied price group at [L371]. Reverse the two
 // and the discount base is wrong and the discount is wrong with it. In legacy the ordering held
 // only by luck of call order: `model/service/OrderService.cfc` injects sixteen collaborators, of

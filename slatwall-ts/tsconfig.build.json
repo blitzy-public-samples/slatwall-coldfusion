@@ -19,7 +19,7 @@
     // recursively removes `<subtree>/dist` at the start of every run, so
     // declarations emitted there would be deleted by `npm run bundle`.
     //   build/  tsc     -> .js + .d.ts + maps
-    //   dist/   esbuild -> bundled .cjs (+ .zip) Lambda artifacts
+    //   dist/   esbuild -> bundled .cjs Lambda artifacts + their .cjs.map maps
     "outDir": "build",
 
     // Anchors the emitted tree at `src/`, so `src/domain/entities/skuCurrency.ts`

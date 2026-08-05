@@ -196,6 +196,7 @@
 // ---------------------------------------------------------------------------
 
 import { listToArray } from '../../../lib/cfml/list.js';
+import { MAX_PLACEHOLDER_COUNT, isPreparablePlaceholderCount } from '../connection.js';
 
 // ---------------------------------------------------------------------------
 // ★ NO VALIDATION LIVES IN THIS MODULE, AND AN EARLIER REVISION WAS WRONG TO CARRY SOME.
@@ -468,40 +469,84 @@ const PRODUCT_PREDICATE = 'and sku.productID = ?';
  * @returns The frozen statement text and its positional bind values, with one
  *   `params` element per `?` in `sql`. Both the object and the bind array are
  *   frozen.
- * @throws Nothing. THIS FUNCTION IS TOTAL, and that is a contract obligation
- *   rather than an accident: [model/dao/SkuDAO.cfc:L107-L128] validates nothing,
- *   so every input reaches a statement. An input that cannot match - an over-long
- *   identifier, an untrimmed element, an option belonging to another product, an
- *   empty-string `productID` - yields a statement that returns ZERO ROWS, exactly
- *   as the legacy did. It does not yield an exception.
+ * @throws {SkusBySelectedOptionsPlaceholderCountError} ONLY when the statement could
+ *   not be PREPARED BY THE SERVER at all. This function is otherwise TOTAL, and that
+ *   is a contract obligation rather than an accident:
+ *   [model/dao/SkuDAO.cfc:L107-L128] validates nothing, so every input reaches a
+ *   statement. An input that cannot match - an over-long identifier, an untrimmed
+ *   element, an option belonging to another product, an empty-string `productID` -
+ *   yields a statement that returns ZERO ROWS, exactly as the legacy did. It does not
+ *   yield an exception.
  *
- *   SECURITY REVIEW DISPOSITION - RAISED AS S-08, AND NO CEILING IS IMPOSED, HERE OR
- *   ANYWHERE ELSE ON THIS PATH. The finding names this builder's `EXISTS`-per-element
- *   loop as an unbounded-construction risk, and it is right that the loop is
- *   unbounded. It stays unbounded, for the reason this module recorded before the
- *   review ever ran: an earlier revision DID carry a 64-element cap alongside `len()`,
- *   `trim()` and membership checks, and all of them were removed because each turned
- *   "no SKU matches" into a request failure for inputs
+ *   SECURITY REVIEW DISPOSITION - RAISED AS S-08, RE-RAISED AS F17, AND THE SECOND
+ *   PASS CHANGED THE ANSWER. S-08 named this builder's `EXISTS`-per-element loop as an
+ *   unbounded-construction risk and NO ceiling was imposed, for a reason this module
+ *   recorded at length: an earlier revision DID carry a 64-ELEMENT CAP alongside
+ *   `len()`, `trim()` and membership checks, and every one of them was removed because
+ *   each turned "no SKU matches" into a REQUEST FAILURE for inputs
  *   [model/dao/SkuDAO.cfc:L107-L128] accepted. The suite KEPT those cases, INVERTED,
  *   precisely so that a returning guard fails a case that names it - see
  *   `tests/integration/repositories/skusBySelectedOptions.test.ts`, block
- *   "buildSkusBySelectedOptionsStatement - totality: it never throws".
+ *   "buildSkusBySelectedOptionsStatement - totality: it never throws". THAT REASONING
+ *   STANDS, AND EVERY ONE OF THOSE CASES STILL PASSES.
  *
- *   ★ AND THE CEILING IS NOT SOMEWHERE ELSE EITHER, WHICH THIS PARAGRAPH USED TO CLAIM.
- *   It read: "The ceiling lives instead in `src/handlers/skuResolutionHandler.ts`,
- *   applied to the caller-supplied field before any service is reached." That was
- *   wrong twice over. No such module exists, so the sentence pointed at nothing a
- *   reader could check. And the adapter one layer up, `../mysqlSkuRepository.ts`, DID
- *   briefly carry a 64-element refusal of its own - which has since been removed for
- *   the same reason this module never accepted one; see the read-totality block at the
- *   head of that file. The whole path from the request to the statement is now total on
- *   magnitude, and `getProductSkusBySelectedOptions` - a must-preserve behaviour -
- *   answers every list it is given, with rows or with an empty array.
+ *   ★★★ WHAT F17 ADDED IS NOT A POLICY CAP - IT IS THE PROTOCOL'S OWN CEILING, AND THE
+ *   DISTINCTION IS THE WHOLE ARGUMENT. A 64-element cap rejects a request the SERVER
+ *   WOULD HAVE ANSWERED, which is why it was wrong. `COM_STMT_PREPARE_OK` reports a
+ *   prepared statement's placeholder count in a TWO-BYTE field, so a statement carrying
+ *   more than {@link MAX_PLACEHOLDER_COUNT} placeholders CANNOT BE PREPARED BY MySQL no
+ *   matter what this process sends: the only possible outcome above the ceiling is a
+ *   refusal at the server, and the only question was whether this process first parsed
+ *   the list, allocated one fragment per element and joined them into a multi-megabyte
+ *   string. Refusing above the ceiling therefore rejects NOTHING the legacy could have
+ *   answered - and 65535 is nine hundred times the largest list any case in the suite
+ *   uses. It is a FEASIBILITY test, not a throughput, capacity or latency bound; no such
+ *   figure appears anywhere in this module.
  *
- *   The resource concern the finding raised is answered where the amplification
- *   actually is: the adapter's association follow-up statements batch their identifier
- *   lists, so a large answer costs bounded statements rather than a refused request.
+ *   AND IT REFUSES ON A COUNT ALONE. Every accepted element is preserved BYTE FOR BYTE
+ *   and in list order: nothing here trims, sorts, deduplicates, case-folds, reorders or
+ *   truncates a list to fit under the ceiling, because each of those changes WHICH ROWS
+ *   the statement matches. `getProductSkusBySelectedOptions` is a must-preserve
+ *   behaviour and this bound leaves its answer identical for every preparable input.
+ *
+ *   The resource concern S-08 raised is still answered where the amplification actually
+ *   is: the adapter's association follow-up statements batch their identifier lists, so
+ *   a large answer costs bounded statements rather than a refused request.
  */
+/**
+ * The selected-options list would need more placeholders than a statement can carry.
+ *
+ * ★ NAMED, AND CARRYING A COUNT RATHER THAN THE LIST. The count locates the fault on its
+ * own and is not caller content; the list itself is never reproduced, because a refusal is
+ * not a place to echo input back and this error can reach the shared error mapper and from
+ * there a log stream.
+ *
+ * A module-local class rather than a shared one: `../connection.ts` raises its own
+ * `SqlPlaceholderCountError` for the same protocol fact, but that one is raised by the
+ * placeholder-list renderer and its message speaks about `IN ()` and zero-length lists,
+ * neither of which applies to an `EXISTS`-per-element conjunction. Two builders, two
+ * accurate messages, one shared ceiling.
+ */
+class SkusBySelectedOptionsPlaceholderCountError extends Error {
+  /** How many placeholders the statement would have carried. Kept for inspection. */
+  public readonly placeholderCount: number;
+
+  public constructor(placeholderCount: number) {
+    super(
+      [
+        `A selected-options statement would carry ${String(placeholderCount)} placeholders,`,
+        `and MySQL cannot prepare more than ${String(MAX_PLACEHOLDER_COUNT)}:`,
+        'COM_STMT_PREPARE_OK reports the count in a two-byte field, so the server could not',
+        'accept this statement however it was sent. The list is refused on its COUNT alone -',
+        'no element is trimmed, sorted, deduplicated, case-folded, reordered or dropped to fit,',
+        'because each of those would change which rows the statement matches.',
+      ].join(' '),
+    );
+    this.name = 'SkusBySelectedOptionsPlaceholderCountError';
+    this.placeholderCount = placeholderCount;
+  }
+}
+
 export function buildSkusBySelectedOptionsStatement(
   selectedOptions: string,
   productID?: string,
@@ -529,7 +574,23 @@ export function buildSkusBySelectedOptionsStatement(
   // `src/lib/cfml/list.ts` and its suite.
   const selectedOptionIDs = listToArray(selectedOptions);
 
-  // Nothing stands between the parse and the emit. Every element that survives CFML list
+  // ★★★ THE ONE FEASIBILITY TEST, AND IT RUNS BEFORE THE ALLOCATION IT EXISTS TO PREVENT.
+  // The loop below appends one fragment and one bind per element, and `parts.join('')` then
+  // materializes the whole statement as a single string - so a check placed after it would
+  // already have committed the memory. The count includes the optional `productID` bind,
+  // because the ceiling is a property of the STATEMENT rather than of the caller's list.
+  //
+  // ABOVE THE CEILING THE SERVER CANNOT PREPARE THE STATEMENT AT ALL, so this rejects
+  // nothing [model/dao/SkuDAO.cfc:L107-L128] could have answered. See the `@throws` note
+  // for why that makes it categorically different from the 64-element policy cap an earlier
+  // revision carried and this module still refuses.
+  const placeholderCount = selectedOptionIDs.length + (productID === undefined ? 0 : 1);
+
+  if (!isPreparablePlaceholderCount(placeholderCount)) {
+    throw new SkusBySelectedOptionsPlaceholderCountError(placeholderCount);
+  }
+
+  // Nothing else stands between the parse and the emit. Every element that survives CFML list
   // parsing becomes one `EXISTS` clause and one bind, in list order, unexamined - which is
   // precisely what [model/dao/SkuDAO.cfc:L113-L121] does. An element that cannot match still
   // gets its clause, and the statement then returns zero rows rather than raising.

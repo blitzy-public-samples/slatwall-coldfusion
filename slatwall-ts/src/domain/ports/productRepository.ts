@@ -428,6 +428,42 @@ export interface ProductSavePayload {
  * The implementing adapter is `src/repositories/mysql/mysqlProductRepository.ts`; the composition
  * root wires it. Nothing here names a driver, a connection, a statement or a table.
  */
+/**
+ * A window over a matched identifier list, applied before product graphs are materialized.
+ *
+ * Both members are ZERO-BASED and COUNTED, matching `ProductQueryCriteria.pageRecordsStart` and
+ * `pageRecordsShow` in `src/services/productService.ts`, which is the only caller that supplies one.
+ * Neither is defaulted here: a window is either supplied whole or not supplied at all, so there is no
+ * half-specified window whose missing half an adapter would have to invent.
+ *
+ * The adapter is entitled to assume both are non-negative safe integers, because the service checks
+ * them - and refuses - before any statement runs.
+ */
+export interface ProductMaterializationWindow {
+  /** Zero-based index of the first matched identifier to materialize. */
+  readonly start: number;
+
+  /** How many matched identifiers to materialize from `start`. */
+  readonly count: number;
+}
+
+/**
+ * What a product search answers.
+ *
+ * TWO MEMBERS RATHER THAN A BARE ARRAY, because a windowed search has to report both what it returned
+ * and how much matched: an array alone cannot distinguish "these are all of them" from "these are the
+ * first twenty of nine hundred", and a caller publishing a page needs the second fact. See the widening
+ * note on `searchProductsByProductType` for why the count comes from the identifier projection rather
+ * than from a second `COUNT(*)` statement.
+ */
+export interface ProductSearchMatches {
+  /** The materialized products: the window when one was supplied, every match otherwise. */
+  readonly records: readonly Product[];
+
+  /** How many identifiers matched, BEFORE any window was applied. */
+  readonly matchedCount: number;
+}
+
 export interface ProductRepository {
   /**
    * Attribute sets for a set of attribute-set type system codes, narrowed by product type.
@@ -549,11 +585,42 @@ export interface ProductRepository {
    * `SkuService.searchSkusByProductType` [model/service/SkuService.cfc:L271-L272]), so the
    * signature published here derives from the declaration itself.
    *
+   * ★★ THE THIRD PARAMETER AND THE RESULT SHAPE ARE A DELIBERATE, DOCUMENTED WIDENING OF A LEGACY-PARITY
+   * SIGNATURE, added to close a resource finding. A security review recorded (MAJOR, CWE-400) that
+   * `ProductService.findProducts` materialized EVERY matched product graph and only then applied its
+   * paging window in memory, so the window bounded the RESPONSE and not the WORK: one keyword could ask
+   * the adapter to hydrate the entire catalog.
+   *
+   * The window is applied to the MATCHED IDENTIFIER LIST, between the row projection and the graph
+   * materialization, and NOT as a `LIMIT`/`OFFSET` on the ported statement. That placement is the whole
+   * of the design and it is chosen for two reasons a reviewer can check:
+   *
+   *   1. THE PORTED STATEMENT TEXT STAYS BYTE-IDENTICAL. [model/dao/ProductDAO.cfc:L421] declares no
+   *      `ORDER BY`, no `DISTINCT` and no `LIMIT`, and the adapter's note says "the legacy has none, so
+   *      none is added". A `LIMIT` without an `ORDER BY` selects an arbitrary subset, so adding one
+   *      would have meant inventing an ordering the source does not declare in order to make the bound
+   *      meaningful - a behavioural change disguised as a resource fix.
+   *   2. `recordsCount` KEEPS ITS MEANING. `ProductPage.recordsCount` is documented as the total number
+   *      of matches BEFORE the window. The projection statement returns two columns per match and is
+   *      therefore the cheap half; it is what yields the honest total. A `LIMIT` would have destroyed
+   *      that total and forced a second `COUNT(*)` statement to recover it.
+   *
+   * What the window bounds is the expensive half: the three graph-materialization statements, which
+   * hydrate a product, its SKUs and each SKU's options. AN ABSENT WINDOW MEANS EVERY MATCH, exactly as
+   * before, so no existing caller's behaviour changes and the method stays total.
+   *
    * @param term Optional name fragment, as the legacy signature names it.
    * @param productTypeIDs Optional comma-delimited product-type identifiers.
-   * @returns The matching products, materialized as this port's header requires.
+   * @param materializationWindow Optional window applied to the matched identifiers before their graphs
+   *   are materialized. Absent means materialize every match.
+   * @returns The matched products - windowed when a window was supplied - together with how many
+   *   matched BEFORE the window, which is the count a paged caller has to publish.
    */
-  searchProductsByProductType(term?: string, productTypeIDs?: string): Promise<Product[]>;
+  searchProductsByProductType(
+    term?: string,
+    productTypeIDs?: string,
+    materializationWindow?: ProductMaterializationWindow,
+  ): Promise<ProductSearchMatches>;
 
   /**
    * Load one product by its identifier.

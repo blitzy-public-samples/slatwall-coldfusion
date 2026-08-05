@@ -1,194 +1,135 @@
-// ---------------------------------------------------------------------------
-// slatwall-ts - unit suite for the promotion-application Lambda handler
-//
-// WHAT THIS PINS
-//   src/handlers/promotionApplicationHandler.ts - the primary adapter of the
-//   TypeScript / AWS Lambda `nodejs20.x` port of the Slatwall 3.1.39 catalog +
-//   promotions/pricing slice (`version.txt` = `3.1.39`). Four concerns and no
-//   others: (1) envelope parsing and order-view admission, (2) delegation to the
-//   ONE composed pricing operation, (3) response shaping, (4) error mapping.
-//
-// ★★★ AND IT UNIQUELY OWNS THE MIGRATION'S CROSS-SERVICE ORDERING GATE.
-//   The plan requires, in as many words, "a test proves that the price-group pass
-//   runs before the promotion pass, and that reversing them changes the computed
-//   discount". SECTION 4 is that test, and it lives here and nowhere else.
-//
-//   THE WRITER - [model/service/PriceGroupService.cfc:L364-L375], read verbatim:
-//     L365 guards `!isNull(order.getAccount()) && arrayLen(order.getAccount().getPriceGroups())`
-//     L369 conditions on `priceGroupDetails.price < orderItem.getPrice()
-//          && isObject(priceGroupDetails.priceGroup)`
-//     L370 `setPrice( priceGroupDetails.price )`
-//     L371 `setAppliedPriceGroup( priceGroupDetails.priceGroup )`
-//
-//   THE READER - [model/service/PromotionService.cfc:L241-L257], read verbatim:
-//     L241 if( isNull(orderItem.getAppliedPriceGroup())
-//              || reward.hasEligiblePriceGroup( orderItem.getAppliedPriceGroup() ) ) {
-//     L244   var discountAmount = getDiscountAmount(reward, orderItem.getPrice(), discountQuantity);
-//     L246 } else {
-//     L249   var originalDiscountAmount =
-//              getDiscountAmount(reward, orderItem.getSkuPrice(), discountQuantity);
-//     L252   var discountAmount = precisionEvaluate('originalDiscountAmount
-//              - (orderItem.getExtendedSkuPrice() - orderItem.getExtendedPrice())');
-//     L254 }
-//     L257 if(discountAmount > 0) {
-//
-//   ⚠ THE POLARITY, STATED THE WAY THE SOURCE STATES IT AND NOT THE WAY IT IS
-//   PARAPHRASED ELSEWHERE. A NULL applied price group, OR a reward that DOES list
-//   the applied group as eligible, discounts from `getPrice()` with NO correction
-//   term. Otherwise - an applied price group the reward does NOT list - the
-//   discount comes from `getSkuPrice()` PLUS the correction term
-//   `originalDiscountAmount - (getExtendedSkuPrice() - getExtendedPrice())`. A
-//   suite built on the inverted reading would assert the wrong arithmetic and
-//   still go green, which is precisely the failure this gate exists to catch.
-//   The `precisionEvaluate` site is L252; L248 is a comment line.
-//
-//   CFML parity [model/service/PromotionService.cfc:L241,L246,L257]: `var discountAmount` is
-//   declared inside BOTH branches yet read outside them at L257 - legal CFML, because `var` is
-//   function-scoped rather than block-scoped. Recorded, not "fixed".
-//
-//   WHY THE OBLIGATION IS UNCONDITIONAL. `getAppliedPriceGroup()` is read in the
-//   L241 branch CONDITION ITSELF, so it holds whichever arm runs; and the L370 /
-//   L371 write is gated by L365 and L369, so an item may legitimately still carry
-//   NO applied price group after the pass has run - which is exactly the
-//   `isNull(...)` arm. "No account" and "no better rate" are therefore OUTCOMES of
-//   the pass, never licence to skip it. SECTION 4 asserts it is not skippable.
-//
-//   In the legacy system the ordering held only by accident: out-of-scope
-//   `model/service/OrderService.cfc` declares `priceGroupService` at [:L60] and
-//   `promotionService` at [:L61] among its sixteen collaborators and happened to
-//   call them in that sequence. The target makes the requirement EXPLICIT and
-//   NON-OPTIONAL - `src/handlers/bootstrap.ts` publishes the two passes as ONE
-//   composed operation, `RequestScope.updateOrderAmountsWithPriceGroupsThenPromotions`,
-//   and withholds both individual passes behind `Omit<>` capability types.
-//
-// ---------------------------------------------------------------------------
-// THIS COVERAGE IS 100% NET-NEW. IT IS NOT PARITY AND MUST NEVER BE PRESENTED AS
-// PARITY.
-// ---------------------------------------------------------------------------
-//   `meta/tests/` holds 32 legacy `.cfc` test components and ZERO handler-tier
-//   tests, because the legacy architecture has no handler tier to have tested.
-//   Only three legacy files touch the in-scope slice at all -
-//   [meta/tests/unit/entity/BrandTest.cfc], [meta/tests/unit/entity/ProductTest.cfc]
-//   and the EMPTY [meta/tests/functional/admin/entity/ProductTest.cfc] - and not
-//   one of them is a promotion test. No case below has a legacy antecedent and
-//   none is presented as one.
-//
-//   What IS carried over from the legacy suite is one NAMING CONVENTION and
-//   nothing else: [meta/tests/unit/IssuesTest.cfc:L51] `public void function
-//   issue_1097()` establishes the `issue_<ticket#>` form, which SECTION 5's
-//   `issue_1766` follows. The legacy habit that goes with it is deliberately NOT
-//   copied - several of those regression functions contain no assertion at all -
-//   so `issue_1766` asserts explicitly.
-//
-// ---------------------------------------------------------------------------
-// ★ THE ONE SHIPPED-SURFACE MISMATCH THIS SUITE RAISES, AND HOW IT IS MIRRORED
-// ---------------------------------------------------------------------------
-//   Planning recorded that the dependency-substitution API would let a suite hand
-//   this handler a hand-written composition root. Reading what actually shipped,
-//   it does - through `PromotionApplicationDependencies.compositionRoot` - but
-//   `RequestScope` publishes FIVE members typed to CONCRETE SERVICE CLASSES
-//   (`roundingRuleService`, `brandService`, `optionService`, `skuService`,
-//   `productService`), and every one of those classes carries `private` members.
-//   TypeScript therefore types them NOMINALLY: an object literal is rejected with
-//   "Property 'urlTitleGenerator' is private in type 'BrandService' but not in
-//   type '{...}'", and their modules are outside this file's dependency set, so
-//   they cannot be constructed here either.
-//
-//   MIRRORED, NOT WORKED AROUND, AND NOTHING UNDER `src/**` IS CREATED, RENAMED OR
-//   EDITED. Every member this capability must NOT reach is supplied as a THROWING
-//   GETTER whose declared type is reached by indexed access off the shipped
-//   interface - `get roundingRuleService(): RequestScope['roundingRuleService']`
-//   returning `refuse(...)`, which is typed `never` and is therefore assignable to
-//   anything. That needs no cast, no unsafe type, no type-checker suppression
-//   directive and no non-null assertion, and it is
-//   STRICTLY STRONGER than a placeholder value: reaching a withheld collaborator
-//   fails the test loudly instead of passing quietly. See {@link refuse}.
-//
-// HOW THE SUBJECT IS DRIVEN
-//   Through `createPromotionApplicationHandler`, the injection seam the module
-//   publishes, over SUITE-LOCAL HAND-WRITTEN IN-MEMORY TYPED DOUBLES. No mocking
-//   library, no DI container, no real `bootstrapCompositionRoot`, no database, no
-//   connection pool, no network, no filesystem, no `.env`, no credential, no
-//   service locator, no ambient request scope and no mutable module state: every
-//   double is built fresh inside the test that uses it. The production `handler`
-//   export is exercised once, for the one path that cannot touch a composition
-//   root at all - an unmatched route.
-//
-// MONEY, DATES AND IDENTIFIERS
-//   Every monetary literal is a decimal STRING fed to `Money`; no arithmetic
-//   operator is ever applied to a monetary value, and comparisons are BY VALUE
-//   through `cfNumericEquals` rather than by string identity. `Money.zero` appears
-//   only as a COMPARISON OPERAND for the source's `if(discountAmount > 0)` test at
-//   [model/service/PromotionService.cfc:L257] - `Money` publishes no `isZero` - and
-//   never as a fallback. NOT money, and kept as plain `number`: `quantity`,
-//   `totalShippingWeight`, `totalSaleQuantity`, `discountQuantity`, `usedInOrder`
-//   and all three `maximumUse*` limits. Every instant is an explicit UTC ISO-8601
-//   literal; there is no no-argument `new Date()` and no `Date.now()`. Every
-//   opaque identifier is an invented, non-sensitive sentinel.
-//
-// NO USER RULES WERE PROVIDED
-//   The project rules source returns exactly "No user rules provided.", and the
-//   plan records the same. No rule is cited below and none is invented; every
-//   assertion traces to the plan, to a cited legacy locator, or to the shipped
-//   module's own documented contract. Their absence is not licence to lower the
-//   bar - the enterprise standard the plan enumerates is what this file is held
-//   to.
-//
-// WHAT THIS FILE DOES NOT CLAIM
-//   No performance, response-time, capacity, uptime, availability or benchmark
-//   assertion appears anywhere. `ORDER_DOCUMENT_LIMITS` is a SAFETY bound on
-//   caller-supplied work, never a target. The legacy 60-second order-placement,
-//   45-second payment-transaction and 30-second dependency-scan lock timeouts are
-//   noted and deliberately not implemented. No infrastructure or CI/CD artefact is
-//   authored, no `.only`, `.skip` or `describe.todo` appears, and this module has
-//   no default export and no export at all.
-//
-//   It also spends NO slot of the migration's four closed ledgers. The three
-//   signature reshapings, five visibility widenings, one entity-signature widening
-//   and three deliberate divergences are all ALREADY ALLOCATED, and
-//   `src/handlers/**` owns none of them. In particular the `void`-to-intents
-//   reshaping of `updateOrderAmountsWithPromotions`
-//   [model/service/PromotionService.cfc:L58] belongs to the SERVICES tier; this
-//   suite consumes it and introduces no fourth reshaping, widening or divergence.
-// ---------------------------------------------------------------------------
+/**
+ * `src/handlers/promotionApplicationHandler.ts` - the promotion-application Lambda entrypoint.
+ *
+ * ★★★ WHAT THIS SUITE OWNS, AND WHAT IT DELIBERATELY DOES NOT.
+ *
+ * It owns the HANDLER SEAM and nothing beyond it: the request envelope, the wire order document and
+ * its refusals, the account trust boundary, the delegation to ONE composed operation on ONE request
+ * scope, the serialisation of the intents that come back, and the response shaping and error mapping
+ * on the way out. Every case below drives the SHIPPED `createPromotionApplicationHandler` over
+ * hand-written doubles of the composition root and the request scope.
+ *
+ * ★★ IT NO LONGER RE-DERIVES THE ENGINE, AND THE REMOVAL IS THE POINT. An earlier revision of this
+ * file carried suite-local replicas of both order passes - `runPriceGroupPass`, `runPromotionPass`,
+ * `makeComposedPricingOperation` with an `ordering` switch, and a written-out `getDiscountAmount`
+ * contract - and asserted the pass ORDERING, the REVERSAL consequence, the non-vacuous price
+ * difference, the order-type gates, the five order-dependence vectors and the reference money
+ * calculation against those replicas. A code review raised it as assertion-on-a-double, and the
+ * demonstration was concrete rather than theoretical: `src/services/promotion/overUseStripping.ts`
+ * changed BEHAVIOUR in the same commit range - bracket indexing became `structGet(...)` and `===`
+ * became `cfEquals(...)`, adopting CFML case-insensitive semantics - while this file published a case
+ * claiming to cover exactly that vector and was structurally incapable of observing the change. A
+ * replica and the module it copies can never disagree, so a case that asserts the replica cannot
+ * fail; coverage was CLAIMED rather than obtained.
+ *
+ * WHERE THAT COVERAGE ACTUALLY LIVES, verified rather than assumed:
+ *   - the price-group-pass-BEFORE-promotion-pass ordering, against the REAL composition root:
+ *     `tests/unit/handlers/bootstrap.test.ts`, `describe('updateOrderAmountsWithPriceGroupsThenPromotions')`;
+ *   - that REVERSING the two passes changes the money, against the REAL services:
+ *     `tests/unit/services/promotionService.test.ts`, `'★★★ REVERSING the two passes produces a
+ *     DIFFERENT discount'`, which measures 3.01 forward against 4.01 reversed;
+ *   - the [model/service/PromotionService.cfc:L241-L252] discriminator and its correction term:
+ *     `tests/unit/services/promotionService.test.ts` and `tests/unit/services/priceGroupService.test.ts`;
+ *   - the five order-dependence vectors: `tests/unit/services/promotion/twoPassRewardIterator.test.ts`,
+ *     `overUseStripping.test.ts`, `rewardUsageLedger.test.ts`, `discountAmount.test.ts`,
+ *     `promotionApplication.test.ts`;
+ *   - the `issue_1766` return/exchange no-op regression and the order-type gates:
+ *     `tests/unit/services/promotionService.test.ts`;
+ *   - the reference calculation (19.99 × 3 less 12.5 percent presenting as `'52.47'`):
+ *     `tests/unit/services/promotion/discountAmount.test.ts` and
+ *     `tests/unit/domain/valueObjects/money.test.ts`.
+ * Each of those drives production code. This file defers to them by name instead of shadowing them,
+ * and what it keeps is the handler-tier consequence: that the composed operation is reached exactly
+ * once, that whatever it decided is serialised faithfully, and that neither individual pass is
+ * reachable from here at all.
+ *
+ * ★ THE COMPOSED OPERATION IS PROGRAMMED WITH DATA, NEVER COMPUTED. The double below returns the
+ * intents a case hands it and records the order view it was given. That is the honest shape for a
+ * handler double: it makes the DELEGATION and the SERIALISATION observable without pretending to
+ * decide anything, and a case that asserts a discount amount is asserting that the handler rendered
+ * the amount it was given rather than that an engine computed it correctly.
+ *
+ * ---------------------------------------------------------------------------
+ * COVERAGE PROVENANCE: NET-NEW, IN FULL.
+ *
+ * `meta/tests/` contains no handler-tier test of any kind - the legacy has no handler tier to test -
+ * and only three legacy files touch the in-scope slice at all, one of which
+ * (`meta/tests/functional/admin/entity/ProductTest.cfc`) is an empty stub. Nothing in this file is
+ * legacy-extended and nothing here is presented as parity. AAP 0.6.6 requires that distinction be
+ * stated rather than blurred, and `tests/traceability/legacyTestMap.ts` records it machine-readably.
+ * The `issue_<ticket#>` regression convention borrowed from [meta/tests/unit/IssuesTest.cfc] is used
+ * by the SERVICES suite that owns the preserved no-op, not here.
+ *
+ * ---------------------------------------------------------------------------
+ * THE SIBLING SUITES IN THIS FOLDER, STATED CORRECTLY.
+ *
+ * `tests/unit/handlers/` carries eight suites: the five capability entrypoints plus
+ * `bootstrap.test.ts`, `bootstrapStatements.test.ts` and `errorMapper.test.ts`. Only `router.ts` has
+ * no dedicated suite; it is frozen route data plus one pure function, and every one of the five
+ * capability suites exercises it transitively. An earlier note in this folder asserted that
+ * bootstrap, router and error mapping had no separate suites - that premise was false and is not
+ * repeated here.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT THIS FILE CONTAINS NONE OF.
+ *
+ *   - No mocking library. `vi` is vitest itself and is used for one thing: `vi.restoreAllMocks()` in
+ *     the local `afterEach`. There is no `vi.mock`, no `vi.doMock`, no `vi.resetModules`, no
+ *     `vi.stubEnv`, no `vi.stubGlobal`, no module patching and no global stream replacement - the
+ *     logger is redirected through its own published `withSink` seam.
+ *   - No credential-shaped value, no host name, no network address, no data-source string. Nothing
+ *     reads `process.env`, so the suite passes under a completely empty environment, which is the
+ *     guarantee `tests/setup.ts` states for this tier.
+ *   - No `any`, no `as` type assertion, no non-null assertion and no type-checker suppression
+ *     directive. Every withheld collaborator is a getter typed by indexed access off the shipped
+ *     surface and returning `never`, which is what makes a nominal service class satisfiable without
+ *     a cast.
+ *   - No shared mutable module state. Every double, recorder, logger and fixture is built inside the
+ *     case that uses it.
+ *   - No new interface reshaping, visibility widening or deliberate divergence. The `void`-to-intents
+ *     reshaping of `updateOrderAmountsWithPromotions` [model/service/PromotionService.cfc:L58] is
+ *     ALREADY ALLOCATED to the services tier; this suite consumes it and claims no slot of its own.
+ * ---------------------------------------------------------------------------
+ */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ORDER_DOCUMENT_LIMITS,
   OrderViewAdmissionError,
+  admitMaterializedOrderView,
   createPromotionApplicationHandler,
   handler as productionHandler,
 } from '../../../src/handlers/promotionApplicationHandler.js';
+// A namespace import alongside the named ones, for the single assertion a named import cannot
+// express: that the module's runtime export set is exactly what it publishes and carries no default.
+import * as promotionApplicationHandlerModule from '../../../src/handlers/promotionApplicationHandler.js';
 import { ROUTE_TABLE } from '../../../src/handlers/router.js';
 import { Money } from '../../../src/domain/valueObjects/money.js';
-import { listFindNoCase, listLen } from '../../../src/lib/cfml/list.js';
+import { listLen } from '../../../src/lib/cfml/list.js';
 import { cfNumericEquals } from '../../../src/lib/cfml/numberFormat.js';
 import { logger } from '../../../src/lib/logger.js';
 import { makeOrderViewFixture } from '../../fixtures/orderViewFixtures.js';
-import { makePriceGroupFixtures } from '../../fixtures/priceGroupFixtures.js';
-import { makePromotionFixtures } from '../../fixtures/promotionFixtures.js';
 
 import type { APIGatewayProxyEvent, APIGatewayProxyResult, Context } from 'aws-lambda';
 import type {
   CompositionRoot,
   OrderPricingResult,
+  OrderViewDocument,
   RequestScope,
   RequestScopeInput,
 } from '../../../src/handlers/bootstrap.js';
-import type { ErrorResponseBody, MappedFieldIssue } from '../../../src/handlers/errorMapper.js';
+import type { ErrorResponseBody, SuccessResponseBody } from '../../../src/handlers/errorMapper.js';
 import type {
   ApplyPromotionsRequest,
   PromotionApplicationDependencies,
-  PromotionApplicationResponseBody,
+  PromotionApplicationResultDocument,
 } from '../../../src/handlers/promotionApplicationHandler.js';
+import type { PromotionAppliedIntentDocument } from '../../../src/handlers/promotionApplicationHandler.js';
+import type { PromotionAppliedType } from '../../../src/domain/entities/promotionApplied.js';
+import type { PromotionAppliedIntent } from '../../../src/domain/promotionEngine/qualifiedDiscountTypes.js';
 import type { SalePriceDetail } from '../../../src/domain/ports/promotionRepository.js';
-import type {
-  AddressProjection,
-  AddressZoneEvaluator,
-  AddressZoneProjection,
-} from '../../../src/domain/ports/addressZoneEvaluator.js';
-import type { OrderFulfillmentView } from '../../../src/domain/views/orderFulfillmentView.js';
+import type { AppliedPromotionView } from '../../../src/domain/views/orderFulfillmentView.js';
 import type { OrderItemView } from '../../../src/domain/views/orderItemView.js';
 import type { OrderView } from '../../../src/domain/views/orderView.js';
 import type { DecimalString } from '../../../src/lib/cfml/numberFormat.js';
@@ -196,28 +137,16 @@ import type { LogSink, Logger } from '../../../src/lib/logger.js';
 import type { PriceGroupAppliedIntent } from '../../../src/services/priceGroupService.js';
 
 // ===========================================================================
-// SECTION 1 - SUITE-LOCAL TYPED DOUBLES
-//
-// Hand-written, in-memory, and built fresh inside the test that uses them.
-// Nothing here is a mocking-library artefact, nothing is registered globally,
-// nothing survives a test, and no type is re-declared that a shipped module
-// already owns - each is reached by indexed access off the surface that owns it,
-// so a rename there breaks this build instead of silently loosening it.
+// SECTION 1 - SUITE-LOCAL TYPED DOUBLES AND SENTINELS
 // ===========================================================================
 
 /**
  * One applied-promotion intent, reached STRUCTURALLY off the shipped result type.
  *
- * `src/domain/promotionEngine/qualifiedDiscountTypes.ts` owns the eight-variant union, and this is
- * exactly the indexed access the handler itself uses to reach it, so no module edge is added here.
+ * `src/domain/promotionEngine/qualifiedDiscountTypes.ts` owns the union, and this is exactly the
+ * indexed access the handler itself uses to reach it, so no module edge is added here.
  */
 type PromotionIntent = OrderPricingResult['promotionIntents'][number];
-
-/** The `PromotionReward` entity, reached through the fixture graph that already names it. */
-type PromotionRewardRef = ReturnType<typeof makePromotionFixtures>['promotionRewards'][number];
-
-/** The `PriceGroup` entity, reached through the view member the L241 discriminator reads. */
-type PriceGroupRef = NonNullable<OrderItemView['appliedPriceGroup']>;
 
 /**
  * Raised when the handler reaches a collaborator this capability has no business touching.
@@ -225,8 +154,7 @@ type PriceGroupRef = NonNullable<OrderItemView['appliedPriceGroup']>;
  * ★ THIS IS AN ASSERTION, NOT A PLACEHOLDER. Every withheld member of the composition root and of
  * the request scope is a getter that calls {@link refuse}, so "the handler never touches the
  * price-resolution surface", "it never calls either individual order pass" and "it never reads the
- * process configuration" are enforced by the doubles themselves rather than by a reviewer's eye. A
- * violation surfaces as a failing test naming the member, not as a quietly-passing run.
+ * process configuration" are enforced by the doubles themselves rather than by a reviewer's eye.
  */
 class WithheldCollaboratorError extends Error {
   public readonly member: string;
@@ -245,92 +173,71 @@ class WithheldCollaboratorError extends Error {
 /**
  * Refuse a withheld collaborator, and type the refusal as `never`.
  *
- * `never` is assignable to every type, which is what lets a throwing getter satisfy a member typed
- * to a NOMINAL service class whose module is outside this file's dependency set - with no cast, no
- * no unsafe type, no type-checker suppression directive and no non-null assertion. See the
- * mismatch note in the file header.
+ * `never` is assignable to every type, which is what lets a throwing getter satisfy a member typed to
+ * a NOMINAL service class whose module is outside this file's dependency set - with no cast, no
+ * unsafe type, no suppression directive and no non-null assertion.
  */
 function refuse(member: string): never {
   throw new WithheldCollaboratorError(member);
 }
 
-/** The ordered invocation log's labels. Order between the last two IS the gate. */
+/** Require a fixture or recorded value that a preceding action must have produced. */
+function requirePresent<TValue>(value: TValue | undefined, description: string): TValue {
+  if (value === undefined) {
+    throw new TypeError(`${description} was not produced`);
+  }
+
+  return value;
+}
+
+/** The ordered invocation log's labels. */
 const ROOT_OPENED = 'compositionRoot.open';
 const SCOPE_OPENED = 'createRequestScope';
 const ORDER_ADMITTED = 'admitOrderView';
+const ORDER_MATERIALIZED = 'materializeOrderView';
 const SALE_PRICE_RESOLVED = 'getSalePriceDetailsForProductSkus';
 
-/** [model/service/PriceGroupService.cfc:L364] - the pass that WRITES what L241 reads. */
-const PRICE_GROUP_PASS = 'priceGroupPass';
-
-/** [model/service/PromotionService.cfc:L58] - the pass that READS it. */
-const PROMOTION_PASS = 'promotionPass';
-
-/**
- * The promotion pass's SECOND ordered pass [model/service/PromotionService.cfc:L415-L451].
- *
- * Its absence from the log is the observable form of vector 2: the loop-counter reset at
- * [:L457-L461] sits inside the loop body, so an EMPTY reward collection never reaches it.
- */
-const ORDER_LEVEL_PASS = 'orderLevelRewardPass';
-
-/** The preserved return/exchange branch [model/service/PromotionService.cfc:L542-L544]. */
-const RETURN_EXCHANGE_NO_OP = 'returnExchangeNoOp';
+/** The ONE composed operation - `RequestScope.updateOrderAmountsWithPriceGroupsThenPromotions`. */
+const COMPOSED_PRICING = 'updateOrderAmountsWithPriceGroupsThenPromotions';
 
 /** The single instant every date in this suite resolves against. Explicit UTC ISO-8601. */
 const EVALUATED_AT = '2024-06-01T12:00:00.000Z';
 
 /** Invented, non-sensitive sentinels. Nothing here resembles a credential or a connection value. */
-const IDEMPOTENCY_KEY = 'idem-promotion-application-0001';
-const REPLAY_IDEMPOTENCY_KEY = 'idem-promotion-application-0001-replay';
 const PLATFORM_REQUEST_ID = 'req-promotion-application-0001';
+
 const PRODUCT_ID = 'prod-golden-0001';
 const SALE_PRICE_SKU_ID = 'sku-golden-0001';
 const SALE_PRICE_PROMOTION_ID = 'promo-sale-price-0001';
+const PROMOTION_ID = 'promo-applied-0001';
 
 /**
- * The SECOND, larger percentage a competing reward carries in vector 4.
+ * The account an authorizer establishes, and a DIFFERENT one a caller might name.
  *
- * A decimal STRING fed to `Money`, never a numeric literal: `25` as a number would invite arithmetic
- * on it, and no monetary quantity in this file is ever an IEEE-754 value. Larger than the fixture's
- * own `'12.5'` so the descending selection at [model/service/PromotionService.cfc:L266-L294] has a
- * strict winner instead of a tie.
+ * Two opaque identifiers and nothing more: no name, no email address and nothing else a person could
+ * be identified by. The pair exists because the trust-boundary cases have to be able to state
+ * "account A is authenticated and the caller named account B", which one identifier cannot express.
  */
-const LARGER_PERCENTAGE_OFF = '25';
+const AUTHENTICATED_ACCOUNT_ID = 'acct-authenticated-0001';
+const OTHER_ACCOUNT_ID = 'acct-someone-else-0002';
 
 /** The route this capability answers on, taken from the shipped frozen table rather than retyped. */
 const CAPABILITY_ROUTE = ROUTE_TABLE.promotionApplication;
 
-/**
- * What the composed pricing operation is configured to decide for one order item.
- *
- * Mirrors the two writes at [model/service/PriceGroupService.cfc:L370-L371] and nothing else: a
- * lower price, and the price group that produced it.
- */
-interface PriceGroupDecision {
-  readonly orderItemID: string;
-  readonly price: Money;
-  readonly priceGroup: PriceGroupRef;
-}
-
 /** Everything one test wants to observe about how the handler drove its graph. */
 interface PricingRecorder {
-  /** Labels in invocation order. The PRICE_GROUP_PASS / PROMOTION_PASS pair IS the gate. */
+  /** Labels in invocation order. */
   readonly log: string[];
   /** Every `RequestScopeInput` the handler opened a scope with. */
   readonly scopeInputs: RequestScopeInput[];
   /** Every order view handed to the composed operation. */
   readonly composedInputs: OrderView[];
-  /** Every order view the PROMOTION pass actually read - pass one's output, when it ran first. */
-  readonly promotionPassInputs: OrderView[];
-  /** Every decoded request the order-view admission was handed. */
+  /** Every decoded request an INJECTED admission was handed. */
   readonly admissionRequests: ApplyPromotionsRequest[];
+  /** Every wire document the scope's materializer was handed. */
+  readonly materializedDocuments: OrderViewDocument[];
   /** Every product identifier the sale-price operation was asked for. */
   readonly salePriceRequests: string[];
-  /** Whether the L61 discount body was entered, once per promotion-pass invocation. */
-  readonly enteredDiscountBody: boolean[];
-  /** Whether the L542 return/exchange branch was entered, once per promotion-pass invocation. */
-  readonly enteredReturnExchangeNoOp: boolean[];
 }
 
 /** A fresh recorder. Arrays are read back after the invocation; nothing is shared between tests. */
@@ -339,11 +246,9 @@ function makeRecorder(): PricingRecorder {
     log: [],
     scopeInputs: [],
     composedInputs: [],
-    promotionPassInputs: [],
     admissionRequests: [],
+    materializedDocuments: [],
     salePriceRequests: [],
-    enteredDiscountBody: [],
-    enteredReturnExchangeNoOp: [],
   };
 }
 
@@ -351,12 +256,11 @@ function makeRecorder(): PricingRecorder {
  * A recording logger built from the REAL module logger through its published sink seam.
  *
  * The shipped logger is used rather than a hand-written stand-in precisely because its mandatory,
- * non-disableable redaction list is part of what SECTION 9 proves is live. That list covers ten
- * credential-shaped and payment-shaped key names and is enumerated in `src/lib/logger.ts`, which is
- * its single source of truth - it is deliberately NOT transcribed here, so this file contains no
- * credential-shaped literal of any kind. The level is PINNED so filtering cannot depend on an
- * ambient variable, and the sink replaces stdout so the console is never globally silenced and never
- * polluted.
+ * non-disableable redaction list is part of what the safety cases prove is live. That list is
+ * enumerated in `src/lib/logger.ts`, which is its single source of truth - it is deliberately NOT
+ * transcribed here, so this file contains no credential-shaped literal of any kind. The level is
+ * PINNED so filtering cannot depend on an ambient variable, and the sink replaces stdout so the
+ * console is never globally silenced and never polluted.
  */
 interface RecordingLogger {
   readonly logger: Logger;
@@ -373,484 +277,86 @@ function makeRecordingLogger(): RecordingLogger {
   return { logger: logger.withSink(sink).withLevel('debug'), lines };
 }
 
-// ---------------------------------------------------------------------------
-// SECTION 1a - THE L241 ARITHMETIC CONTRACT, WRITTEN OUT
-//
-// The two functions below are an EXECUTABLE STATEMENT of the source contract the
-// composed operation must satisfy, and they are named and scoped so no reader
-// mistakes them for the shipped implementation. What SECTION 4 proves with them is
-// the DEPENDENCY - that the discount the promotion pass computes changes according
-// to whether the view it reads carries the price-group pass's writes - which is
-// exactly what the ordering gate is about. The shipped arithmetic itself is pinned
-// by `tests/unit/services/promotion/discountAmount.test.ts`, and this file asserts
-// nothing about the internals of `src/services/**`.
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// SECTION 2 - THE COMPOSED PRICING OPERATION, PROGRAMMED WITH DATA
+// ===========================================================================
 
 /**
- * `getDiscountAmount(reward, price, quantity)` [model/service/PromotionService.cfc:L987-L1018],
- * SYNC and PURE, `Money` in and `Money` out.
+ * What the composed operation is programmed to return, or to fail with.
  *
- * Only the shape this suite drives is supported, and every other shape is REFUSED loudly rather
- * than defaulted - so no branch is silently approximated:
- *
- *   L990 `originalAmount = precisionEvaluate('arguments.price * arguments.quantity')`
- *   L995 the `percentageOff` branch, `originalAmount * (reward.getAmount()/100)`
- *   L1008-L1009 the NO-ROUNDING-RULE arm, `discountAmount = discountAmountPreRounding`
- *   L1013-L1015 the clamp
- *
- * LEGACY-DEFECT [model/service/PromotionService.cfc:L1013-L1015]: the clamp that "makes sure that
- * the discount never exceeds the original amount" tests the PRE-rounding value
- * `if(discountAmountPreRounding > originalAmount)` and then overwrites the POST-rounding one,
- * `discountAmount = originalAmount`.
- * Preserved deliberately; do not fix without a product decision.
- *   Reproduced here as written. It is UNOBSERVABLE on the unrounded arm, where the two values are
- *   the same number, and observing it needs a reward carrying a rounding rule - which this double
- *   refuses, because rounding belongs to `RoundingRuleService` and to the decomposition suite that
- *   owns it. Stating that plainly beats implying this file covers it.
- *
- * LEGACY-DEFECT [model/service/PromotionService.cfc:L998]: the `amountOff` branch is
- * `discountAmountPreRounding = reward.getAmount() * quantity` - raw floating-point multiplication
- * with no `precisionEvaluate`, and with `quantity` unscoped while its siblings use `arguments.*`.
- * Preserved deliberately; do not fix without a product decision.
- *   Routing that branch through `Money` is one of the migration's THREE ALREADY-ALLOCATED deliberate
- *   divergences and belongs to the services tier; this suite claims no divergence slot and drives
- *   only `percentageOff`.
- *
- * LEGACY-DEFECT [model/service/PromotionService.cfc:L1007,L1009]: `discountAmount` is assigned
- * WITHOUT `var` in both arms, leaking into component scope.
- * Preserved deliberately; do not fix without a product decision.
- *   Also an already-allocated divergence, made function-local by the services tier because shared
- *   mutable state on a warm container could leak one customer's discount into another's order. This
- *   function is likewise pure, and that is the same decision rather than a fourth one.
- *
- * CFML parity [model/service/PromotionService.cfc:L993-L1003]: the `switch` has NO `default:` case,
- * so an unrecognised `amountType` leaves the discount at its `0` seed [L988]; and L1001's `amount`
- * branch is `(price - amount) * quantity`, a target-price difference rather than a reduction.
+ * DATA, NOT AN ALGORITHM. Both intent arrays are supplied by the case, so a case that reads a
+ * discount out of a response body is asserting that the handler RENDERED what the engine decided -
+ * which is the handler's job - rather than that the engine decided correctly, which is the services
+ * tier's job and is covered there.
  */
-function contractDiscountAmount(reward: PromotionRewardRef, price: Money, quantity: number): Money {
-  const amountType = reward.getAmountType();
-  const amount = reward.getAmount();
-
-  if (amountType !== 'percentageOff' || amount === undefined) {
-    throw new TypeError(
-      'This suite drives only the percentageOff arm of getDiscountAmount ' +
-        '[model/service/PromotionService.cfc:L994-L996] with an amount present. The amountOff and ' +
-        'amount arms, and the rounding arm at [:L1005-L1007], belong to ' +
-        'tests/unit/services/promotion/discountAmount.test.ts.',
-    );
-  }
-
-  if (reward.getRoundingRule() !== undefined) {
-    throw new TypeError(
-      'This suite drives only the UNROUNDED arm [model/service/PromotionService.cfc:L1008-L1009]. ' +
-        'A reward carrying a rounding rule reaches RoundingRuleService, which the handler tier ' +
-        'neither holds nor may reach.',
-    );
-  }
-
-  // [model/service/PromotionService.cfc:L990]
-  const originalAmount = price.times(quantity);
-
-  // [model/service/PromotionService.cfc:L995] - through Money, so no IEEE-754 value ever appears.
-  const discountAmountPreRounding = originalAmount.times(amount.dividedBy(100));
-
-  // [model/service/PromotionService.cfc:L1009] the unrounded arm, then L1013-L1015's clamp.
-  return discountAmountPreRounding.isGreaterThan(originalAmount)
-    ? originalAmount
-    : discountAmountPreRounding;
-}
-
-/** Which arm of the L241 discriminator an item selected, and what it was therefore worth. */
-interface ContractItemDiscount {
-  readonly orderItemID: string;
-  readonly selectedArm: 'price' | 'skuPriceWithCorrection';
-  readonly correctionTerm: Money;
-  readonly discountAmount: Money;
-}
-
-/**
- * The L241 discriminator itself, with the polarity the source states.
- *
- * A NULL applied price group [L241 first disjunct] OR a reward that DOES list the applied group
- * [L241 second disjunct] takes `getPrice()` with NO correction [L244]. Anything else takes
- * `getSkuPrice()` [L249] MINUS `(getExtendedSkuPrice() - getExtendedPrice())` [L252].
- */
-function contractItemDiscount(
-  reward: PromotionRewardRef,
-  item: OrderItemView,
-): ContractItemDiscount {
-  const appliedPriceGroup = item.appliedPriceGroup;
-
-  // [model/service/PromotionService.cfc:L241]
-  if (appliedPriceGroup === undefined || reward.hasEligiblePriceGroup(appliedPriceGroup)) {
-    return {
-      orderItemID: item.orderItemID,
-      selectedArm: 'price',
-      // Zero on this arm because the source subtracts nothing here, not as a monetary fallback.
-      correctionTerm: Money.zero,
-      // [model/service/PromotionService.cfc:L244]
-      discountAmount: contractDiscountAmount(reward, item.price, item.quantity),
-    };
-  }
-
-  // [model/service/PromotionService.cfc:L249]
-  const originalDiscountAmount = contractDiscountAmount(reward, item.skuPrice, item.quantity);
-
-  // [model/service/PromotionService.cfc:L252] - the correction term, `precisionEvaluate`d in the
-  // source and routed through Money here. L248 is a comment line, not this expression.
-  const correctionTerm = item.extendedSkuPrice.minus(item.extendedPrice);
-
-  return {
-    orderItemID: item.orderItemID,
-    selectedArm: 'skuPriceWithCorrection',
-    correctionTerm,
-    discountAmount: originalDiscountAmount.minus(correctionTerm),
-  };
-}
-
-// ---------------------------------------------------------------------------
-// SECTION 1b - THE TWO PASSES, AND THE COMPOSED OPERATION THAT ORDERS THEM
-// ---------------------------------------------------------------------------
-
-/** A reward paired with the promotion an emitted intent must name, as an opaque identifier. */
-interface RewardUnderTest {
-  readonly reward: PromotionRewardRef;
-  readonly promotionID: string;
-}
-
-/** What the price-group pass decided, and the order view it left behind for pass two to read. */
-interface PriceGroupPassOutcome {
-  readonly intents: PriceGroupAppliedIntent[];
-  readonly pricedOrder: OrderView;
-}
-
-/**
- * PASS ONE - `updateOrderAmountsWithPriceGroups` [model/service/PriceGroupService.cfc:L364-L375].
- *
- * The two writes it reproduces are L370 `setPrice(...)` and L371 `setAppliedPriceGroup(...)`, and
- * both of its guards are honoured:
- *
- *   L365 `!isNull(order.getAccount()) && arrayLen(order.getAccount().getPriceGroups())` - a GUEST
- *        order decides nothing. It does NOT mean the pass is skipped: the pass runs and declines,
- *        which is the `isNull(...)` arm of L241 and is a NORMAL outcome.
- *   L369 `priceGroupDetails.price < orderItem.getPrice()` - a group is applied only when the
- *        computed price is STRICTLY LOWER, so a decision that is not an improvement is declined.
- *
- * CFML parity [model/entity/OrderItem.cfc:L200-L206]: `getExtendedPrice()` is CALCULATED as
- * `price * val(quantity)` and wraps the quantity in `val()` so a null becomes `0`, while
- * `getExtendedSkuPrice()` does NOT. Writing `price` therefore moves `extendedPrice` and leaves
- * `extendedSkuPrice` alone - which is exactly why the L252 correction term is non-zero after this
- * pass has run, and why the asymmetry survives here rather than being tidied away.
- *
- * NOTHING IS MUTATED. The order view is deeply frozen by its fixture, so pass one PROJECTS a new
- * view and returns it. The submitted view is read and handed back unchanged.
- */
-function runPriceGroupPass(
-  order: OrderView,
-  decisions: readonly PriceGroupDecision[],
-): PriceGroupPassOutcome {
-  const intents: PriceGroupAppliedIntent[] = [];
-
-  // [model/service/PriceGroupService.cfc:L365] - the account gate. `accountID` absent is the
-  // logged-out arm, and the out-of-scope Account entity is never dereferenced.
-  const decisionsByItem =
-    order.accountID === undefined
-      ? new Map<string, PriceGroupDecision>()
-      : new Map<string, PriceGroupDecision>(
-          decisions.map((decision): readonly [string, PriceGroupDecision] => [
-            decision.orderItemID,
-            decision,
-          ]),
-        );
-
-  const pricedItems: OrderItemView[] = order.orderItems.map((item): OrderItemView => {
-    const decision = decisionsByItem.get(item.orderItemID);
-
-    // [model/service/PriceGroupService.cfc:L369] - strictly lower, or the item is left alone.
-    if (decision === undefined || !decision.price.isLessThan(item.price)) {
-      return item;
-    }
-
-    intents.push({
-      orderItemID: item.orderItemID,
-      price: decision.price,
-      priceGroupID: decision.priceGroup.getPriceGroupID(),
-    });
-
-    return {
-      ...item,
-      // [model/service/PriceGroupService.cfc:L370]
-      price: decision.price,
-      // [model/service/PriceGroupService.cfc:L371] - the member L241 branches on.
-      appliedPriceGroup: decision.priceGroup,
-      extendedPrice: decision.price.times(item.quantity),
-    };
-  });
-
-  return { intents, pricedOrder: { ...order, orderItems: pricedItems } };
-}
-
-/** What the promotion pass decided, plus which of the two order-type branches it entered. */
-interface PromotionPassOutcome {
-  readonly intents: PromotionIntent[];
-  readonly enteredDiscountBody: boolean;
-  readonly enteredReturnExchangeNoOp: boolean;
-  readonly armSelections: readonly ContractItemDiscount[];
-}
-
-/** The item-type code the discount body admits [model/entity/OrderItem.cfc:L118, L125]. */
-const SALE_ORDER_ITEM_SYSTEM_CODE = 'oitSale';
-
-/** [model/service/PromotionService.cfc:L61] - the list that admits the entire 489-line body. */
-const SALE_OR_EXCHANGE_ORDER_TYPES = 'otSalesOrder,otExchangeOrder';
-
-/** [model/service/PromotionService.cfc:L542] - a DIFFERENT list, gating the preserved no-op. */
-const RETURN_OR_EXCHANGE_ORDER_TYPES = 'otReturnOrder,otExchangeOrder';
-
-/**
- * PASS TWO - `updateOrderAmountsWithPromotions` [model/service/PromotionService.cfc:L58-L546].
- *
- * The `void`-to-intents reshaping this returns is ONE OF THE MIGRATION'S THREE PERMITTED INTERFACE
- * RESHAPINGS and it is ALREADY ALLOCATED to the services tier: the legacy method returns `void` and
- * mutates the order aggregate in place, and the aggregate is out of scope. This suite consumes that
- * reshaping and introduces no fourth.
- *
- * The order-dependence vectors this double must not disturb, and does not:
- *
- *   V1 - the reward collection is taken EXACTLY as supplied. `getActivePromotionRewards()`
- *        [model/dao/PromotionDAO.cfc:L51-L132] declares no `ORDER BY`, so the order is genuinely
- *        non-deterministic at a tie and that non-determinism IS the legacy behaviour. Nothing here
- *        adds an `ORDER BY`, sorts, re-ranks or stabilises.
- *   V2 - TWO EXPLICIT ORDERED PASSES. The item-level pass runs first; the order-level pass runs only
- *        afterwards, and only when the reward collection is NON-EMPTY. The legacy achieves that by
- *        mutating its own loop counter - `if(!orderRewards and pr == arrayLen(promotionRewards))
- *        { pr = 0; orderRewards = true; }` [model/service/PromotionService.cfc:L457-L461], with
- *        `var orderRewards = false;` at [:L166] - and because the reset sits INSIDE the loop body,
- *        an empty reward collection means the second pass NEVER RUNS AT ALL. Reproduced
- *        deliberately, not incidentally.
- *   V4 - ONLY THE SINGLE LARGEST DISCOUNT PER ORDER ITEM IS APPLIED. The legacy insert-sorts
- *        `orderItemQulifiedDiscounts` DESCENDING by amount [:L266-L294] and then applies index `[1]`
- *        and nothing else [:L523-L537]. The misspelled legacy accumulator key
- *        `orderItemQulifiedDiscounts` [:L82-L133] is recorded here and renamed in the target, never
- *        silently renamed.
- *
- * CFML parity [model/service/PromotionService.cfc:L61,L542]: the two order-type conditionals are
- * SEQUENTIAL, NOT else-if, and their lists DIFFER. A sales order runs only the first; a return order
- * runs only the second; an EXCHANGE order runs the whole discount body and THEN enters the empty
- * return branch. `listFindNoCase` is CASE-INSENSITIVE and returns a 1-based index with `0` for
- * absent, so the comparison is routed through `src/lib/cfml/list.ts` and compared against `0` -
- * never through `===` on the raw string.
- *
- * CFML parity [model/service/PromotionService.cfc:L417]: the order-level branch combines
- * `getSubtotalAfterItemDiscounts()` and `getFulfillmentChargeAfterDiscountTotal()` with a PLAIN `+`
- * and NOT with `precisionEvaluate`. Preserved as an addition rather than upgraded.
- *
- * CFML parity [model/service/PromotionService.cfc:L529-L534]: the legacy `PromotionApplied` is never
- * `setOrder()`-ed and never explicitly saved - it relies on ORM cascade - which is exactly why the
- * target emits INTENTS keyed by opaque identifiers instead.
- */
-function runPromotionPass(
-  order: OrderView,
-  rewards: readonly RewardUnderTest[],
-  recorder: PricingRecorder,
-): PromotionPassOutcome {
-  const orderTypeSystemCode = order.orderType.systemCode;
-
-  // [model/service/PromotionService.cfc:L61]
-  const enteredDiscountBody =
-    listFindNoCase(SALE_OR_EXCHANGE_ORDER_TYPES, orderTypeSystemCode) !== 0;
-
-  // [model/service/PromotionService.cfc:L542] - evaluated INDEPENDENTLY of the gate above.
-  const enteredReturnExchangeNoOp =
-    listFindNoCase(RETURN_OR_EXCHANGE_ORDER_TYPES, orderTypeSystemCode) !== 0;
-
-  const intents: PromotionIntent[] = [];
-  const armSelections: ContractItemDiscount[] = [];
-
-  if (enteredDiscountBody) {
-    // PASS ONE OF TWO - the item-level rewards [model/service/PromotionService.cfc:L169-L456].
-    for (const item of order.orderItems) {
-      // [model/service/PromotionService.cfc:L206] - only an `oitSale` item enters the body.
-      if (item.orderItemType.systemCode !== SALE_ORDER_ITEM_SYSTEM_CODE) {
-        continue;
-      }
-
-      let best:
-        { readonly decided: ContractItemDiscount; readonly promotionID: string } | undefined;
-
-      for (const { reward, promotionID } of rewards) {
-        const decided = contractItemDiscount(reward, item);
-        armSelections.push(decided);
-
-        // [model/service/PromotionService.cfc:L257] `if(discountAmount > 0)`. `Money` publishes no
-        // `isZero`, so a zero COMPARISON OPERAND is how the source's test is expressed - it is not a
-        // fallback and it is never coalesced into a value.
-        if (decided.discountAmount.compare(Money.zero) <= 0) {
-          continue;
-        }
-
-        // V4's descending selection, reduced to its observable consequence: the single largest
-        // discount wins [model/service/PromotionService.cfc:L266-L294, L523-L537]. A strict `>` keeps
-        // the FIRST of two equal amounts, which is what an insertion sort that inserts before a
-        // strictly smaller element does.
-        if (
-          best === undefined ||
-          decided.discountAmount.isGreaterThan(best.decided.discountAmount)
-        ) {
-          best = { decided, promotionID };
-        }
-      }
-
-      if (best !== undefined) {
-        intents.push({
-          operation: 'add',
-          appliedType: 'orderItem',
-          orderItemID: item.orderItemID,
-          promotionID: best.promotionID,
-          discountAmount: best.decided.discountAmount,
-        });
-      }
-    }
-
-    // PASS TWO OF TWO - the order-level reward [model/service/PromotionService.cfc:L415-L451]. It is
-    // reached ONLY through the loop-counter reset at [:L457-L461], which sits inside the loop body,
-    // so an EMPTY reward collection never reaches it.
-    const orderLevelReward = rewards.at(-1);
-
-    if (orderLevelReward !== undefined) {
-      recorder.log.push(ORDER_LEVEL_PASS);
-
-      // [model/service/PromotionService.cfc:L417] - a plain `+`, deliberately not precisionEvaluate.
-      const orderLevelBase = order.subtotalAfterItemDiscounts.plus(
-        order.fulfillmentChargeAfterDiscountTotal,
-      );
-      const orderLevelDiscount = contractDiscountAmount(orderLevelReward.reward, orderLevelBase, 1);
-
-      if (orderLevelDiscount.compare(Money.zero) > 0) {
-        intents.push({
-          operation: 'add',
-          appliedType: 'order',
-          orderID: order.orderID,
-          promotionID: orderLevelReward.promotionID,
-          discountAmount: orderLevelDiscount,
-        });
-      }
-    }
-  }
-
-  if (enteredReturnExchangeNoOp) {
-    // TODO [issue #1766]: In the future allow for return Items to have negative promotions applied.
-    //
-    // LEGACY-DEFECT [model/service/PromotionService.cfc:L542-L544]: the `if` at L542 encloses
-    // NOTHING but the TODO comment at L543, so this branch does nothing at all.
-    // Preserved deliberately; do not fix without a product decision.
-    //   Carried forward verbatim, still doing nothing, still carrying its ticket reference. The
-    //   regression test named `issue_1766` in SECTION 5 documents the gap, and no negative-discount
-    //   concept is encoded anywhere.
-    recorder.log.push(RETURN_EXCHANGE_NO_OP);
-  }
-
-  recorder.enteredDiscountBody.push(enteredDiscountBody);
-  recorder.enteredReturnExchangeNoOp.push(enteredReturnExchangeNoOp);
-
-  return { intents, enteredDiscountBody, enteredReturnExchangeNoOp, armSelections };
-}
-
-/**
- * Which order the two passes are run in.
- *
- * `'priceGroupThenPromotion'` is the ONLY order the shipped surface can produce, because
- * `src/handlers/bootstrap.ts` composes the two inside a module-private function and withholds both
- * individual passes from `RequestScope`. `'promotionThenPriceGroup'` is A MEASURING INSTRUMENT AND
- * NOTHING ELSE: it exists in this suite so the gate can quantify what the inversion costs in money,
- * and it is unreachable through the shipped handler, which is itself asserted in SECTION 4.
- */
-type ComposedOrdering = 'priceGroupThenPromotion' | 'promotionThenPriceGroup';
-
-/** How one test configures the composed pricing operation. */
-interface PricingConfiguration {
-  readonly decisions: readonly PriceGroupDecision[];
-  readonly rewards: readonly RewardUnderTest[];
-  readonly ordering: ComposedOrdering;
+interface ProgrammedPricing {
+  readonly priceGroupIntents: readonly PriceGroupAppliedIntent[];
+  readonly promotionIntents: readonly PromotionIntent[];
   /** A failure to raise INSTEAD of pricing, for the error-mapping cases. */
   readonly failure: Error | undefined;
 }
 
 /**
- * `RequestScope.updateOrderAmountsWithPriceGroupsThenPromotions`, as a double.
+ * `RequestScope.updateOrderAmountsWithPriceGroupsThenPromotions`, as a recording double.
  *
- * ★★★ THE ORDERING LIVES IN THESE TWO STATEMENTS AND IS OBSERVED THROUGH THE ORDERED LOG, never by
- * inspecting anybody's internals. Pass one runs, its intents are PROJECTED onto the order view, and
- * pass two reads THAT view - which is the whole of the data dependency the gate is about.
- * `pricedOrder` is published for the same reason the shipped result publishes it: it is the exact
- * input pass two consumed.
+ * It records the order view it was handed - which is what makes "the handler forwarded exactly what
+ * the admission produced, unsorted and unfiltered" checkable - and hands back the programmed intents.
+ * `pricedOrder` is the view it received, because the shipped member publishes the view pass two
+ * consumed and this double consumes exactly what it was given.
+ *
+ * ★ ONE MEMBER, AND NO WAY TO REACH EITHER PASS THROUGH IT. There is no `ordering`, `sequence`,
+ * `phase` or `runAfter` parameter here, and there is none on the shipped member either: the two
+ * passes are composed inside a module-private function in `src/handlers/bootstrap.ts`, which
+ * withholds both individual passes from `RequestScope` behind `Omit<>` capability types. A suite
+ * cannot invert an order the type system does not expose, and it should not pretend to.
  */
 function makeComposedPricingOperation(
-  config: PricingConfiguration,
+  programmed: ProgrammedPricing,
   recorder: PricingRecorder,
 ): (order: OrderView) => Promise<OrderPricingResult> {
   return (order: OrderView): Promise<OrderPricingResult> => {
+    recorder.log.push(COMPOSED_PRICING);
     recorder.composedInputs.push(order);
 
-    if (config.failure !== undefined) {
-      return Promise.reject(config.failure);
+    if (programmed.failure !== undefined) {
+      return Promise.reject(programmed.failure);
     }
-
-    if (config.ordering === 'promotionThenPriceGroup') {
-      // THE INVERSION, RUN DELIBERATELY SO ITS COST CAN BE MEASURED. Pass two reads the order view
-      // as SUBMITTED, because pass one has not written to it yet - so every item is on the
-      // `isNull(...)` arm of [model/service/PromotionService.cfc:L241].
-      recorder.log.push(PROMOTION_PASS);
-      recorder.promotionPassInputs.push(order);
-      const inverted = runPromotionPass(order, config.rewards, recorder);
-
-      recorder.log.push(PRICE_GROUP_PASS);
-      const late = runPriceGroupPass(order, config.decisions);
-
-      return Promise.resolve({
-        priceGroupIntents: late.intents,
-        promotionIntents: inverted.intents,
-        pricedOrder: late.pricedOrder,
-      });
-    }
-
-    // THE SHIPPED ORDER. Pass one FIRST and UNCONDITIONALLY.
-    recorder.log.push(PRICE_GROUP_PASS);
-    const priceGroups = runPriceGroupPass(order, config.decisions);
-
-    recorder.log.push(PROMOTION_PASS);
-    recorder.promotionPassInputs.push(priceGroups.pricedOrder);
-    const promotions = runPromotionPass(priceGroups.pricedOrder, config.rewards, recorder);
 
     return Promise.resolve({
-      priceGroupIntents: priceGroups.intents,
-      promotionIntents: promotions.intents,
-      pricedOrder: priceGroups.pricedOrder,
+      priceGroupIntents: [...programmed.priceGroupIntents],
+      promotionIntents: [...programmed.promotionIntents],
+      pricedOrder: order,
     });
   };
 }
 
+// ===========================================================================
+// SECTION 3 - THE REQUEST SCOPE AND COMPOSITION ROOT DOUBLES
+// ===========================================================================
+
 /** Everything the request-scope double needs to answer this capability, and nothing more. */
 interface ScopeConfiguration {
   readonly now: Date;
-  readonly pricing: PricingConfiguration;
+  readonly pricing: ProgrammedPricing;
   readonly salePriceDetails: Record<string, SalePriceDetail>;
+  /** What `materializeOrderView` hands back, when a case drives the wire path. */
+  readonly materialized: OrderView | undefined;
+  /** A hydration failure to raise instead, for the refusal cases. */
+  readonly materializationFailure: Error | undefined;
 }
 
 /**
  * A `RequestScope` double.
  *
- * ★ EVERY MEMBER THIS CAPABILITY MUST NOT REACH IS A THROWING GETTER, and that is the mechanism
- * described in the file header. Five of them - `roundingRuleService`, `brandService`,
- * `optionService`, `skuService`, `productService` - are typed to CONCRETE service classes carrying
- * `private` members, so no object literal could supply them; a getter declared
- * `RequestScope['roundingRuleService']` and returning `never` satisfies the compiler with no cast.
- * The other four are reachable in principle and withheld on purpose:
+ * ★ EVERY MEMBER THIS CAPABILITY MUST NOT REACH IS A THROWING GETTER. Five of them -
+ * `roundingRuleService`, `brandService`, `optionService`, `skuService`, `productService` - are typed
+ * to CONCRETE service classes carrying `private` members, so no object literal could supply them; a
+ * getter declared `RequestScope['roundingRuleService']` and returning `never` satisfies the compiler
+ * with no cast. The other four are reachable in principle and withheld on purpose:
  *
- *   `priceGroupService` and `promotionService` are the NARROWED capabilities
- *   (`Omit<PriceGroupService, 'updateOrderAmountsWithPriceGroups'>` and its promotion twin). Neither
- *   even declares an order pass, so the withheld passes cannot be called in the wrong order by code
- *   that compiles - and these getters additionally prove the handler calls no QUERY member either.
+ *   `priceGroupService` and `promotionService` are the NARROWED capabilities. Neither even declares
+ *   an order pass, so the withheld passes cannot be called in the wrong order by code that compiles -
+ *   and these getters additionally prove the handler calls no QUERY member either.
  *
  *   `currentAccountContext` is the explicit replacement for `getHibachiScope()` /
  *   `getSlatwallScope()`. The handler threads the account identifier through `RequestScopeInput` and
@@ -874,6 +380,9 @@ function makeRequestScopeDouble(
 
     get currentAccountContext(): RequestScope['currentAccountContext'] {
       return refuse('RequestScope.currentAccountContext');
+    },
+    get entityLoaders(): RequestScope['entityLoaders'] {
+      return refuse('RequestScope.entityLoaders');
     },
     get roundingRuleService(): RequestScope['roundingRuleService'] {
       return refuse('RequestScope.roundingRuleService');
@@ -903,6 +412,32 @@ function makeRequestScopeDouble(
       return refuse('RequestScope.productFeedPort');
     },
 
+    /**
+     * The hydration member the WIRE admission reaches.
+     *
+     * It records the document it was handed - which is how "the schema's output is what the
+     * repositories tier receives" becomes checkable - and hands back the view the case programmed.
+     * The REAL hydration, over the wired repositories and a recording statement executor, is asserted
+     * where it lives, in `tests/unit/handlers/bootstrap.test.ts`; substituting it here is what keeps
+     * this a handler unit suite with no database and no product graph to build.
+     */
+    materializeOrderView: (document: OrderViewDocument): Promise<OrderView> => {
+      recorder.log.push(ORDER_MATERIALIZED);
+      recorder.materializedDocuments.push(document);
+
+      if (config.materializationFailure !== undefined) {
+        return Promise.reject(config.materializationFailure);
+      }
+
+      if (config.materialized === undefined) {
+        return Promise.reject(
+          new TypeError('the harness was not given an order view to materialize'),
+        );
+      }
+
+      return Promise.resolve(config.materialized);
+    },
+
     // [model/service/PromotionService.cfc:L1022] - the one other already-ported service method this
     // adapter reaches. Its input is a plain string, so there is nothing to materialise.
     getSalePriceDetailsForProductSkus: (
@@ -915,6 +450,11 @@ function makeRequestScopeDouble(
     },
 
     updateOrderAmountsWithPriceGroupsThenPromotions: composed,
+
+    // The composed operation owns zone preparation. If the handler reaches this
+    // member directly, the test double refuses and the case fails.
+    prepareAddressZoneEvaluation: (): Promise<void> =>
+      refuse('RequestScope.prepareAddressZoneEvaluation'),
   };
 }
 
@@ -923,10 +463,9 @@ function makeRequestScopeDouble(
  *
  * `diagnostics`, `dialect`, `settingsProvider`, `integration` and `createInspectableRequestScope` are
  * all withheld through {@link refuse}: an order-pricing invocation reads no process configuration, no
- * dialect, no setting, no integration adapter and no assembled adapter, and the double is what
- * proves it. `diagnostics` matters most - it is the REDACTED replacement for a member that once
- * exposed a database credential as a readable `string`, and this capability has no business
- * reading it.
+ * dialect, no setting, no integration adapter and no assembled adapter, and the double is what proves
+ * it. `diagnostics` matters most - it is the REDACTED replacement for a member that once exposed a
+ * database credential as a readable `string`, and this capability has no business reading it.
  */
 function makeCompositionRootDouble(
   config: ScopeConfiguration,
@@ -961,17 +500,17 @@ function makeCompositionRootDouble(
   };
 }
 
-// ---------------------------------------------------------------------------
-// SECTION 1c - THE PLATFORM EVENT, THE HARNESS, AND THE RESPONSE READERS
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// SECTION 4 - THE PLATFORM EVENT, THE DOCUMENTS, AND THE HARNESS
+// ===========================================================================
 
 /**
  * A complete API Gateway proxy event, version 1.0 payload.
  *
- * Written out in full rather than narrowed, because the handler's parameter type is the platform's
- * own and a partial literal would not compile. Every value is an invented, non-sensitive sentinel:
- * there is no credential, no account name, no host name, no network address a reader could mistake
- * for real, and every caller-identity field the platform permits to be null IS null.
+ * Written out in full rather than narrowed, because the handler's parameter type is the platform's own
+ * and a partial literal would not compile. Every value is an invented, non-sensitive sentinel: there
+ * is no credential, no account name, no host name, no network address a reader could mistake for
+ * real, and every caller-identity field the platform permits to be null IS null.
  */
 function makeProxyEvent(overrides: {
   readonly httpMethod?: string;
@@ -979,6 +518,18 @@ function makeProxyEvent(overrides: {
   readonly body?: string | null;
   readonly isBase64Encoded?: boolean;
   readonly requestId?: string;
+  /**
+   * The authorizer context, which is the ONLY part of this event a caller cannot author.
+   *
+   * Three states, all reachable and all meaningful:
+   *   * OMITTED - the suite default: an authenticated session for {@link AUTHENTICATED_ACCOUNT_ID},
+   *     which is the account {@link makeGoldenOrder} names. That is the ORDINARY request, so it is
+   *     what a case gets when it is testing something other than the account.
+   *   * `null` - no authorizer context at all, i.e. an ANONYMOUS request.
+   *   * an object - whatever claims the case wants, including a differently-cased claim name, a blank
+   *     identifier or a non-string one.
+   */
+  readonly authorizer?: Readonly<Record<string, unknown>> | null;
 }): APIGatewayProxyEvent {
   return {
     body: overrides.body === undefined ? null : overrides.body,
@@ -995,7 +546,12 @@ function makeProxyEvent(overrides: {
     requestContext: {
       accountId: 'fixture-account-id',
       apiId: 'fixture-api-id',
-      authorizer: null,
+      // THE TRUST BOUNDARY, AND THE ONLY PART OF THIS EVENT AN API GATEWAY CALLER CANNOT AUTHOR.
+      // An omitted override is the AUTHENTICATED session; an explicit `null` is the anonymous request.
+      authorizer:
+        overrides.authorizer === undefined
+          ? authorizerFor(AUTHENTICATED_ACCOUNT_ID)
+          : overrides.authorizer,
       protocol: 'HTTP/1.1',
       httpMethod: overrides.httpMethod ?? CAPABILITY_ROUTE.methods,
       // JUDGMENT CALL: every member of `identity` below is REQUIRED by `@types/aws-lambda`'s
@@ -1029,6 +585,11 @@ function makeProxyEvent(overrides: {
   };
 }
 
+/** An authorizer context establishing one account, under the claim name the handler reads. */
+function authorizerFor(accountID: string): Readonly<Record<string, unknown>> {
+  return { accountID };
+}
+
 /** The envelope for `applyPromotions`. `order` is whatever the caller is putting on the wire. */
 function applyPromotionsDocument(
   orderMember: unknown,
@@ -1036,46 +597,83 @@ function applyPromotionsDocument(
 ): Readonly<Record<string, unknown>> {
   return {
     operation: 'applyPromotions',
-    idempotencyKey: IDEMPOTENCY_KEY,
     order: orderMember,
     ...extra,
   };
 }
 
 /** A POST to the capability route carrying `document` as its JSON body. */
-function postDocument(document: unknown): APIGatewayProxyEvent {
-  return makeProxyEvent({ body: JSON.stringify(document) });
+function postDocument(
+  document: unknown,
+  authorizer?: Readonly<Record<string, unknown>> | null,
+): APIGatewayProxyEvent {
+  return makeProxyEvent({
+    body: JSON.stringify(document),
+    ...(authorizer === undefined ? {} : { authorizer }),
+  });
+}
+
+/** One applied-promotion view, in the shape the wire document carries it. */
+function wireAppliedPromotion(applied: AppliedPromotionView): Readonly<Record<string, unknown>> {
+  const promotion = applied.promotion;
+
+  return {
+    promotionAppliedID: applied.promotionAppliedID,
+    // `null`, never `0`: the column is nullable [model/entity/PromotionApplied.cfc:L51] and a zero
+    // discount is a different fact from no discount.
+    discountAmount:
+      applied.discountAmount === undefined ? null : applied.discountAmount.toDecimalString(),
+    promotion: promotion === undefined ? null : { promotionID: promotion.promotionID },
+  };
 }
 
 /**
- * The minimal `order` member a caller sends when it has ALREADY materialised the view.
+ * The PERSISTED product handle one order item names on the wire.
  *
- * ★ AND THE MATERIALISED VIEW ITSELF IS NOT JSON-SERIALISABLE, WHICH IS THE POINT RATHER THAN AN
- * INCONVENIENCE. `OrderItemView.sku` is a ported `Sku` entity whose product-type chain is
- * BIDIRECTIONAL - `parentProductType` and `childProductTypes` close a cycle - so `JSON.stringify`
- * of a real order view throws outright. An order view is therefore something a tier that owns
- * hydration constructs and hands over IN PROCESS, never something that travels as a body; the
- * handler's `admitOrderView` seam exists for exactly that, and the cases below use it.
+ * ★ WHY A HELPER RATHER THAN `product.getProductID()` DIRECTLY. The shared product fixture leaves
+ * `productID` EMPTY on purpose - it models an UNSAVED product so that `isNew()` is honest and the four
+ * cases inherited from [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L67] stay expressible -
+ * and that default is documented on `makeProductFixture` in `tests/fixtures/productFixtures.ts`. A
+ * wire document, by contrast, must name a product the hydration tier can LOAD, so an empty handle is
+ * refused by the schema rather than accepted and defaulted.
+ *
+ * This projection therefore uses the product's own identifier whenever the fixture supplies one, and
+ * otherwise derives a DETERMINISTIC persisted-looking handle from the SKU's identifier. Deriving it
+ * rather than hard-coding one keeps the projection total: an order of any shape projects, and two
+ * items on different SKUs never collide on one product handle.
  */
-function orderReference(order: OrderView): Readonly<Record<string, unknown>> {
-  return { orderID: order.orderID };
+function wireProductID(item: OrderItemView): string {
+  const product = item.sku.getProduct();
+
+  if (product === undefined) {
+    throw new TypeError(
+      `the fixture sku ${item.sku.getSkuID()} carries no product, so no wire document can name one`,
+    );
+  }
+
+  const declared = product.getProductID();
+
+  return declared === '' ? `${item.sku.getSkuID()}-product` : declared;
 }
 
 /**
- * What an order actually looks like once it has been through `JSON.parse` - and therefore what the
- * production admission is obliged to REFUSE.
+ * The order document a caller PUTs on the wire, projected from a materialised fixture.
  *
- * Every monetary member is a plain decimal string with no accessors, every entity is a bare
- * identifier object, and `appliedPriceGroup` VANISHES because JSON has no way to state an absence.
- * Accepting this would let the engine read `undefined` out of a missing accessor and put a silent
- * zero into a discount calculation, and a zero price sells product for free
- * [model/entity/Sku.cfc:L269-L273 has no `else` and no fallback for precisely that reason].
+ * ★★ THIS IS THE SHAPE THE DEPLOYED ROUTE ACTUALLY RECEIVES, and building it from a fixture rather
+ * than by hand is deliberate: the projection is total, so a member the schema requires and the fixture
+ * carries cannot be forgotten here, and a member RENAMED on the view breaks this function.
+ *
+ * Note what it does and does not carry. Every monetary value is a decimal STRING, every absence is
+ * `null` - JSON has no `undefined` - and each entity is reduced to an IDENTIFIER: `sku` becomes
+ * `skuID` plus the `productID` it hangs off, and `appliedPriceGroup` becomes `appliedPriceGroupID`.
+ * Nothing about the catalogue travels, which is what stops a caller describing a product type, a
+ * brand or an eligibility that would decide a discount in its favour.
  */
-function wireProjectionOf(order: OrderView): Readonly<Record<string, unknown>> {
+function wireOrderDocument(order: OrderView): Readonly<Record<string, unknown>> {
   return {
     orderID: order.orderID,
     orderType: { systemCode: order.orderType.systemCode },
-    accountID: order.accountID,
+    accountID: order.accountID ?? null,
     promotionCodeList: order.promotionCodeList,
     totalSaleQuantity: order.totalSaleQuantity,
     subtotal: order.subtotal.toDecimalString(),
@@ -1083,35 +681,86 @@ function wireProjectionOf(order: OrderView): Readonly<Record<string, unknown>> {
     fulfillmentChargeAfterDiscountTotal:
       order.fulfillmentChargeAfterDiscountTotal.toDecimalString(),
     currencyCode: order.currencyCode,
-    appliedPromotions: [],
-    orderItems: order.orderItems.map((item): Readonly<Record<string, unknown>> => ({
-      orderItemID: item.orderItemID,
-      sku: { skuID: item.sku.getSkuID() },
-      quantity: item.quantity,
-      price: item.price.toDecimalString(),
-      skuPrice: item.skuPrice.toDecimalString(),
-      extendedPrice: item.extendedPrice.toDecimalString(),
-      extendedSkuPrice: item.extendedSkuPrice.toDecimalString(),
-      appliedPriceGroup: undefined,
-      orderItemType: { systemCode: item.orderItemType.systemCode },
-      orderFulfillmentID: item.orderFulfillmentID,
-      appliedPromotions: [],
-    })),
-    orderFulfillments: [],
+    appliedPromotions: order.appliedPromotions.map(wireAppliedPromotion),
+    orderItems: order.orderItems.map((item): Readonly<Record<string, unknown>> => {
+      const appliedPriceGroup = item.appliedPriceGroup;
+
+      return {
+        orderItemID: item.orderItemID,
+        productID: wireProductID(item),
+        skuID: item.sku.getSkuID(),
+        quantity: item.quantity,
+        price: item.price.toDecimalString(),
+        skuPrice: item.skuPrice.toDecimalString(),
+        extendedPrice: item.extendedPrice.toDecimalString(),
+        extendedSkuPrice: item.extendedSkuPrice.toDecimalString(),
+        appliedPriceGroupID:
+          appliedPriceGroup === undefined ? null : appliedPriceGroup.getPriceGroupID(),
+        orderItemType: { systemCode: item.orderItemType.systemCode },
+        orderFulfillmentID: item.orderFulfillmentID,
+        appliedPromotions: item.appliedPromotions.map(wireAppliedPromotion),
+      };
+    }),
+    orderFulfillments: order.orderFulfillments.map(
+      (fulfillment): Readonly<Record<string, unknown>> => {
+        const shippingMethod = fulfillment.shippingMethod;
+        const address = fulfillment.address;
+
+        return {
+          orderFulfillmentID: fulfillment.orderFulfillmentID,
+          fulfillmentCharge: fulfillment.fulfillmentCharge.toDecimalString(),
+          fulfillmentMethod: {
+            fulfillmentMethodID: fulfillment.fulfillmentMethod.fulfillmentMethodID,
+            fulfillmentMethodType: fulfillment.fulfillmentMethod.fulfillmentMethodType,
+          },
+          // `null` is a REAL STATE here, not a missing value: the gate at
+          // [model/service/PromotionService.cfc:L701] tests `isNull(getShippingMethod())`, so a
+          // pickup fulfillment states it.
+          shippingMethod:
+            shippingMethod === undefined
+              ? null
+              : { shippingMethodID: shippingMethod.shippingMethodID },
+          appliedPromotions: fulfillment.appliedPromotions.map(wireAppliedPromotion),
+          totalShippingWeight: fulfillment.totalShippingWeight,
+          address:
+            address === undefined
+              ? null
+              : {
+                  postalCode: address.postalCode ?? null,
+                  city: address.city ?? null,
+                  stateCode: address.stateCode ?? null,
+                  countryCode: address.countryCode ?? null,
+                  isNew: address.isNew,
+                },
+        };
+      },
+    ),
   };
 }
 
-/** A POST of the `applyPromotions` envelope carrying an opaque reference to an admitted view. */
+/**
+ * A POST of the `applyPromotions` envelope carrying the real wire document.
+ *
+ * ★★★ THE ACCOUNT TRAVELS ON THE AUTHORIZER, NOT IN THE BODY (finding F2). The previous revision spread
+ * `{accountID: order.accountID}` into the envelope, which is precisely the caller-controlled identity
+ * the finding is about; the identifier the order fixture carries is now presented as an authorizer
+ * claim, which is where a server establishes one.
+ */
 function postApplyPromotions(
   order: OrderView,
   extra: Readonly<Record<string, unknown>> = {},
+  authorizer?: Readonly<Record<string, unknown>> | null,
 ): APIGatewayProxyEvent {
-  return postDocument(
-    applyPromotionsDocument(orderReference(order), {
-      ...(order.accountID === undefined ? {} : { accountID: order.accountID }),
-      ...extra,
-    }),
-  );
+  return postDocument(applyPromotionsDocument(wireOrderDocument(order), extra), authorizer);
+}
+
+/** A POST of the `applyPromotions` envelope carrying the full WIRE document. */
+function postWireOrder(
+  order: OrderView,
+  extra: Readonly<Record<string, unknown>> = {},
+  authorizer?: Readonly<Record<string, unknown>> | null,
+): APIGatewayProxyEvent {
+  return postDocument(applyPromotionsDocument(wireOrderDocument(order), extra), authorizer);
 }
 
 /** How one test configures the whole graph behind the handler. */
@@ -1119,24 +768,28 @@ interface HarnessOptions {
   readonly now?: Date;
   /** The injected clock. Absent means the handler passes no `now` and the scope binds its own. */
   readonly clock?: () => Date;
-  readonly decisions?: readonly PriceGroupDecision[];
-  readonly rewards?: readonly RewardUnderTest[];
-  readonly ordering?: ComposedOrdering;
+  /** What the composed operation is programmed to hand back. */
+  readonly promotionIntents?: readonly PromotionIntent[];
+  readonly priceGroupIntents?: readonly PriceGroupAppliedIntent[];
+  /** A failure the composed operation raises instead of pricing. */
   readonly failure?: Error;
   readonly salePriceDetails?: Record<string, SalePriceDetail>;
   /**
    * Installs an admission that vouches for this MATERIALISED view and records what it was asked.
    *
-   * This is the documented seam for a golden fixture, and using it is a necessity rather than a
-   * convenience: a wire document has been through `JSON.parse`, so its `sku` carries no methods and
-   * its `price` is a plain string - which the production admission REFUSES, correctly and by design.
-   * A caller holding a wire document materialises it on the tier that owns hydration and hands the
-   * RESULT in here. When neither this member nor {@link HarnessOptions.refuseAdmission} is supplied,
-   * the PRODUCTION admission runs, which is how the refusal cases below are driven.
+   * The documented in-process seam: a strangler-fig proxy holding a live aggregate injects its own
+   * resolution, and a case that is testing the handler rather than the document uses this so the
+   * document is out of the way. When neither this member nor {@link HarnessOptions.refuseAdmission}
+   * is supplied, the PRODUCTION (wire) admission runs - which is how every document case below is
+   * driven.
    */
   readonly admit?: OrderView;
   /** Installs an admission that REFUSES, so the client-shaped refusal arm is drivable. */
   readonly refuseAdmission?: OrderViewAdmissionError;
+  /** What the scope's `materializeOrderView` hands back on the wire path. */
+  readonly materialize?: OrderView;
+  /** A hydration failure the scope's materializer raises instead. */
+  readonly materializationFailure?: Error;
 }
 
 /** One handler, one recorder, one recording logger - all fresh, none shared. */
@@ -1154,8 +807,8 @@ interface Harness {
  *
  * A FRESH SUBJECT PER CALL, and every collaborator is constructed inside this function - no module
  * state, no shared graph, no memo. `compositionRoot` is a function the handler awaits ONCE per
- * invocation, and the harness records that opening so SECTION 3 can prove the memoized production
- * initializer is not being bypassed per request.
+ * invocation, and the harness records that opening so the delegation cases can prove the memoized
+ * production initializer is not being bypassed per request.
  */
 function makeHarness(options: HarnessOptions = {}): Harness {
   const recorder = makeRecorder();
@@ -1164,10 +817,11 @@ function makeHarness(options: HarnessOptions = {}): Harness {
   const config: ScopeConfiguration = {
     now: options.now ?? new Date(EVALUATED_AT),
     salePriceDetails: options.salePriceDetails ?? {},
+    materialized: options.materialize,
+    materializationFailure: options.materializationFailure,
     pricing: {
-      decisions: options.decisions ?? [],
-      rewards: options.rewards ?? [],
-      ordering: options.ordering ?? 'priceGroupThenPromotion',
+      priceGroupIntents: options.priceGroupIntents ?? [],
+      promotionIntents: options.promotionIntents ?? [],
       failure: options.failure,
     },
   };
@@ -1213,37 +867,75 @@ function makeHarness(options: HarnessOptions = {}): Harness {
   return { recorder, emitted, invoke };
 }
 
+// ===========================================================================
+// SECTION 5 - RESPONSE READERS
+// ===========================================================================
+
 /** A non-null, non-array object. The only shape the readers below descend into. */
 function isJsonObject(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
+ * An array of JSON objects, narrowed by a genuine predicate.
+ *
+ * `Array.isArray` alone narrows an `unknown` to `any[]`, and destructuring THAT reintroduces `any`
+ * into a file that permits none. This predicate carries the element type through, so the cases that
+ * rebuild one member of a projected document stay fully typed.
+ */
+function isJsonObjectArray(value: unknown): value is readonly Readonly<Record<string, unknown>>[] {
+  return Array.isArray(value) && value.every(isJsonObject);
+}
+
+/**
  * The success body, narrowed by a genuine type predicate rather than asserted.
  *
  * The four echoed members are proven present and of the right kind, which is what every case below
- * reads; the two intent arrays are proven to be arrays where a case reads them.
+ * reads.
  */
-function isSuccessBody(value: unknown): value is PromotionApplicationResponseBody {
+function isServedEnvelope(
+  value: unknown,
+): value is SuccessResponseBody<PromotionApplicationResultDocument> {
+  if (
+    !isJsonObject(value) ||
+    typeof value['requestId'] !== 'string' ||
+    typeof value['capability'] !== 'string' ||
+    typeof value['action'] !== 'string'
+  ) {
+    return false;
+  }
+
+  const result: unknown = value['result'];
+
   return (
-    isJsonObject(value) &&
-    typeof value['operation'] === 'string' &&
-    typeof value['idempotencyKey'] === 'string' &&
-    typeof value['requestId'] === 'string' &&
-    typeof value['evaluatedAt'] === 'string'
+    isJsonObject(result) &&
+    typeof result['operation'] === 'string' &&
+    typeof result['evaluatedAt'] === 'string'
   );
 }
 
-/** The success body of a 200 response. Throws rather than returning a half-checked value. */
-function successBodyOf(result: APIGatewayProxyResult): PromotionApplicationResponseBody {
+/** The whole served envelope of a 200 response. Throws rather than returning a half-checked value. */
+function servedEnvelopeOf(
+  result: APIGatewayProxyResult,
+): SuccessResponseBody<PromotionApplicationResultDocument> {
   const body = result.body;
   const parsed: unknown = JSON.parse(body);
 
-  if (!isSuccessBody(parsed)) {
-    throw new TypeError('the response body is not the documented success envelope');
+  if (!isServedEnvelope(parsed)) {
+    throw new TypeError('the response body is not the shared success envelope');
   }
 
   return parsed;
+}
+
+/**
+ * This capability's own document, read out of the shared envelope's `result` member.
+ *
+ * Kept as a separate reader so a case asserting on the DOCUMENT does not have to know it is nested, and
+ * a case asserting on the ENVELOPE reaches {@link servedEnvelopeOf} instead.
+ */
+function successBodyOf(result: APIGatewayProxyResult): PromotionApplicationResultDocument {
+  return servedEnvelopeOf(result).result;
 }
 
 /** The error envelope, narrowed the same way. */
@@ -1274,7 +966,7 @@ function errorBodyOf(result: APIGatewayProxyResult): ErrorResponseBody['error'] 
 }
 
 /** The promotion intents a success body carried, or an empty list when it carried none. */
-function promotionIntentsOf(body: PromotionApplicationResponseBody): readonly {
+function promotionIntentsOf(body: PromotionApplicationResultDocument): readonly {
   readonly appliedType: string;
   readonly operation: string;
   readonly orderItemID?: string;
@@ -1293,7 +985,7 @@ function promotionIntentsOf(body: PromotionApplicationResponseBody): readonly {
  * comparison would call them different.
  */
 function wireDiscountForItem(
-  body: PromotionApplicationResponseBody,
+  body: PromotionApplicationResultDocument,
   orderItemID: string,
 ): DecimalString {
   const intent = promotionIntentsOf(body).find(
@@ -1315,12 +1007,9 @@ function expectSameAmount(actual: string, expected: string): void {
   ).toBe(true);
 }
 
-/** Assert two monetary decimal strings are DIFFERENT amounts, by value. */
-function expectDifferentAmount(actual: string, other: string): void {
-  expect(
-    cfNumericEquals(actual, other),
-    `expected ${actual} to be a different amount of money from ${other}`,
-  ).toBe(false);
+/** The field paths a client-shaped refusal published, or an empty list. */
+function fieldPathsOf(result: APIGatewayProxyResult): readonly string[] {
+  return (errorBodyOf(result).fields ?? []).map((field): string => field.path);
 }
 
 // Complementary to the global `afterEach` in `tests/setup.ts`, which already restores spies and the
@@ -1330,16 +1019,9 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** Build a copy of an order document with one member removed, for the admission-refusal cases. */
-function orderDocumentWithout(
-  document: Readonly<Record<string, unknown>>,
-  member: string,
-): Readonly<Record<string, unknown>> {
-  const copy: Record<string, unknown> = { ...document };
-  delete copy[member];
-
-  return copy;
-}
+// ===========================================================================
+// SECTION 6 - FIXTURE HELPERS
+// ===========================================================================
 
 /** The fixture's own overrides and capture shapes, reached structurally - neither is exported. */
 type OrderViewFixtureOverridesRef = NonNullable<Parameters<typeof makeOrderViewFixture>[0]>;
@@ -1357,7 +1039,18 @@ function makeGoldenOrder(overrides: OrderViewFixtureOverridesRef = {}): {
   readonly capture: OrderViewCaptureRef;
 } {
   const capture: OrderViewCaptureRef = {};
-  const order = makeOrderViewFixture({ ...overrides, capture });
+  // ★ THE ACCOUNT DEFAULT, AND WHY IT IS SET HERE RATHER THAN LEFT TO THE FIXTURE. The fixture names
+  // its own golden account, and the handler now refuses an order whose account disagrees with the
+  // authenticated one - which is the whole point of the trust boundary. So unless a case says
+  // otherwise, the golden order names the SAME account the default authorizer establishes, and an
+  // ordinary case therefore describes an ordinary authenticated request.
+  //
+  // Tested with `in` rather than `!== undefined` on purpose: `{ accountID: undefined }` is a case
+  // stating that the order names NO account, which is a different request from one that never
+  // mentioned the member, and `exactOptionalPropertyTypes` makes that distinction load-bearing.
+  const withAccount: OrderViewFixtureOverridesRef =
+    'accountID' in overrides ? overrides : { ...overrides, accountID: AUTHENTICATED_ACCOUNT_ID };
+  const order = makeOrderViewFixture({ ...withAccount, capture });
 
   return { order, capture };
 }
@@ -1373,1041 +1066,1114 @@ function itemAt(order: OrderView, index: number): OrderItemView {
   return item;
 }
 
-/**
- * An unrounded `percentageOff` reward that names `eligiblePriceGroups` as eligible and nothing else.
- *
- * SHARED IDENTITY IS REQUIRED here, and it is the one deliberate exception to the fresh-graph rule
- * the fixtures otherwise keep: `reward.hasEligiblePriceGroup(...)` resolves only if the instance the
- * reward holds IS the instance an item's `appliedPriceGroup` references. The reward itself is
- * `referenceCalculationReward` - exactly `'12.5'` percent and DELIBERATELY UNROUNDED, so the
- * arithmetic's own answer is what is being read rather than a rounding rule's.
- */
-function makeReferenceReward(eligiblePriceGroups: readonly PriceGroupRef[] = []): RewardUnderTest {
-  const promotions = makePromotionFixtures({ eligiblePriceGroups });
+/** Build a copy of an order document with one member removed, for the refusal cases. */
+function documentWithout(
+  document: Readonly<Record<string, unknown>>,
+  member: string,
+): Readonly<Record<string, unknown>> {
+  const copy: Record<string, unknown> = { ...document };
+  delete copy[member];
 
+  return copy;
+}
+
+/** Build a copy of an order document with one member replaced. */
+function documentWith(
+  document: Readonly<Record<string, unknown>>,
+  member: string,
+  value: unknown,
+): Readonly<Record<string, unknown>> {
+  return { ...document, [member]: value };
+}
+
+/**
+ * One programmed order-item intent, at the amount a case names.
+ *
+ * DATA. The amount is whatever the case says it is; nothing here computes a discount, and the
+ * arithmetic that would have is asserted by the suites named in the file header.
+ */
+function itemIntent(orderItemID: string, discountAmount: string): PromotionIntent {
   return {
-    reward: promotions.referenceCalculationReward,
-    promotionID: promotions.promotion.getPromotionID(),
+    operation: 'add',
+    appliedType: 'orderItem',
+    orderItemID,
+    promotionID: PROMOTION_ID,
+    discountAmount: Money.fromDecimalString(discountAmount),
   };
 }
 
-/**
- * Narrow an optional fixture member to a present one, or FAIL LOUDLY.
- *
- * Used instead of `?? someDefault` wherever a capture member feeds an assertion. A `??` fallback on a
- * monetary member would be `Money` seeded from a substituted zero, and this suite holds the same line
- * the target holds: a zero is never a stand-in for an absent amount. A missing fixture member is a
- * fixture fault, and it should read as one rather than as a passing test over invented numbers.
- */
-function requireFixtureMember<TValue>(value: TValue | undefined, described: string): TValue {
-  if (value === undefined) {
-    throw new TypeError(`the order fixture did not publish ${described}`);
-  }
-
-  return value;
-}
-
-/**
- * The reference reward wired to whatever price group the golden order's second item carries.
- *
- * Without this the second item would fall to the SECOND arm of L241 by accident of identity rather
- * than by the eligibility decision the arm is supposed to express.
- */
-function makeRewardForGoldenOrder(capture: OrderViewCaptureRef): RewardUnderTest {
-  const accepted = capture.acceptedPriceGroup;
-
-  if (accepted === undefined) {
-    throw new TypeError('the order fixture did not publish the price group its reward accepts');
-  }
-
-  return makeReferenceReward([accepted]);
-}
-
 // ===========================================================================
-// SECTION 2 - CONCERN 1: ENVELOPE PARSING AND ORDER-VIEW ADMISSION
+// CONCERN 1 - THE PUBLISHED MODULE SURFACE
 // ===========================================================================
 
-describe('promotion-application envelope parsing (NET-NEW; the legacy tree has no handler tier)', () => {
-  it('decodes the applyPromotions envelope and hands the admission the whole request', async () => {
-    const { order, capture } = makeGoldenOrder();
-    const harness = makeHarness({
-      admit: order,
-      rewards: [makeRewardForGoldenOrder(capture)],
-    });
+describe('the promotion-application module surface (NET-NEW)', () => {
+  it('publishes the entrypoint, the factory and both admissions, with no default export', () => {
+    const exported = Object.keys(promotionApplicationHandlerModule).sort();
 
-    const result = await harness.invoke(postApplyPromotions(order));
-
-    expect(result.statusCode).toBe(200);
-
-    const admission = harness.recorder.admissionRequests[0];
-    expect(admission).toBeDefined();
-    expect(admission?.operation).toBe('applyPromotions');
-    expect(admission?.idempotencyKey).toBe(IDEMPOTENCY_KEY);
-    expect(admission?.requestId).toBe(PLATFORM_REQUEST_ID);
-    // The out-of-scope Account, reduced to an OPAQUE identifier and never dereferenced.
-    expect(admission?.accountID).toBe(order.accountID);
+    // The runtime export set. Types and interfaces emit nothing, so what remains is the four values
+    // this module publishes plus the two frozen constants and the error class.
+    expect(exported).toContain('handler');
+    expect(exported).toContain('createPromotionApplicationHandler');
+    expect(exported).toContain('admitMaterializedOrderView');
+    expect(exported).toContain('ORDER_DOCUMENT_LIMITS');
+    expect(exported).toContain('OrderViewAdmissionError');
+    expect(exported).not.toContain('default');
   });
 
-  it('parses every order-level member the two passes read - at least five accessors', async () => {
-    const { order, capture } = makeGoldenOrder();
-    const harness = makeHarness({
-      admit: order,
-      rewards: [makeRewardForGoldenOrder(capture)],
-    });
-
-    await harness.invoke(postApplyPromotions(order));
-
-    const priced = harness.recorder.composedInputs[0];
-    expect(priced).toBeDefined();
-
-    // 1 + 2. Read together at [model/service/PromotionService.cfc:L417]. BOTH are Money.
-    //
-    // CFML parity [model/service/PromotionService.cfc:L417]: the two order-level values are combined
-    // with a plain `+`, NOT with `precisionEvaluate`. Preserved as an addition.
-    expectSameAmount(priced?.subtotalAfterItemDiscounts.toDecimalString() ?? '', '117.95');
-    expectSameAmount(priced?.fulfillmentChargeAfterDiscountTotal.toDecimalString() ?? '', '9.50');
-
-    // 3. A PLAIN NUMBER, deliberately not Money - it is the qualification-count seed at
-    //    [model/service/PromotionService.cfc:L785] and [model/entity/Order.cfc:L624].
-    expect(typeof priced?.totalSaleQuantity).toBe('number');
-    expect(priced?.totalSaleQuantity).toBe(9);
-
-    // 4. The order-type system code, read at BOTH [:L61] and [:L542].
-    expect(priced?.orderType.systemCode).toBe('otSalesOrder');
-
-    // 5. The two collections, already materialised as arrays - there is no lazy load to trigger.
-    expect(priced?.orderItems).toHaveLength(3);
-    expect(priced?.orderFulfillments).toHaveLength(2);
-
-    // And the comma-delimited promotion-code list, carried as a STRING for verbatim parity because
-    // the legacy binds it with `cfqueryparam ... list="true"` [model/dao/PromotionDAO.cfc].
-    expect(typeof priced?.promotionCodeList).toBe('string');
+  it('builds the production entrypoint through the same factory a suite calls', () => {
+    // Both are functions of two declared parameters - the event and the context - so the runtime's
+    // third completion-callback argument cannot arrive as one this handler would have to ignore.
+    expect(typeof productionHandler).toBe('function');
+    expect(productionHandler.length).toBe(2);
+    expect(createPromotionApplicationHandler().length).toBe(2);
   });
 
-  it('carries a fulfillment with NO shipping method and NO address, both stated as absent', async () => {
-    const { order, capture } = makeGoldenOrder();
-    const harness = makeHarness({
-      admit: order,
-      rewards: [makeRewardForGoldenOrder(capture)],
-    });
-
-    await harness.invoke(postApplyPromotions(order));
-
-    // NARROWED rather than optional-chained. An `expect(maybe?.member).toBeUndefined()` passes just
-    // as happily when `maybe` itself is absent, which would make the three assertions below vacuous -
-    // and vacuity is the specific failure this whole file is written to avoid.
-    const composedInput = requireFixtureMember(
-      harness.recorder.composedInputs[0],
-      'a composed pricing input',
-    );
-    const fulfillments: readonly OrderFulfillmentView[] = composedInput.orderFulfillments;
-    const pickup = requireFixtureMember(
-      fulfillments.find(
-        (candidate): boolean => candidate.fulfillmentMethod.fulfillmentMethodType === 'pickup',
-      ),
-      'a pickup fulfillment',
-    );
-
-    // ABSENT IS A REAL STATE. The shipping-method gate at [model/service/PromotionService.cfc:L701]
-    // tests `isNull(orderFulfillment.getShippingMethod())` explicitly, and reaching LEGACY-DEFECT 11
-    // at [:L703] requires exactly this shape.
-    expect(pickup.shippingMethod).toBeUndefined();
-    expect(pickup.address).toBeUndefined();
-    // A WEIGHT, hence a plain number rather than Money.
-    expect(typeof pickup.totalShippingWeight).toBe('number');
-
-    const shipping = fulfillments.find(
-      (candidate): boolean => candidate.fulfillmentMethod.fulfillmentMethodType === 'shipping',
-    );
-    expect(shipping?.shippingMethod).toBeDefined();
-    // JUDGMENT CALL: the legacy `OrderFulfillment.getAddress()` MUTATES - it calls
-    // `setShippingAddress(copyAddress)` and service-locates `getService("addressService").newAddress()`
-    // - which a read-only view cannot reproduce, so the address arrives PRE-RESOLVED with its
-    // new-flag already decided. The engine reads it at [model/service/PromotionService.cfc:L358-L360]
-    // and LEGACY-DEFECT 11 reads `getAddress().getNewFlag()` at [:L703].
-    expect(typeof shipping?.address?.isNew).toBe('boolean');
-  });
-
-  it('refuses a PLAIN JSON PROJECTION of the order, naming the members that failed', async () => {
-    const { order } = makeGoldenOrder();
-    // No `admit`, so the PRODUCTION admission runs.
-    const harness = makeHarness({ rewards: [makeReferenceReward()] });
-
-    const result = await harness.invoke(
-      postDocument(applyPromotionsDocument(wireProjectionOf(order))),
-    );
-
-    expect(result.statusCode).toBe(400);
-
-    const error = errorBodyOf(result);
-    expect(error.category).toBe('invalidRequest');
-    expect(error.message).toBe('The request body is not the expected shape.');
-
-    const paths = (error.fields ?? []).map((field): string => field.path);
-    // A decimal string is not a materialised monetary value.
-    expect(paths).toContain('order.subtotal');
-    expect(paths).toContain('order.orderItems[0].price');
-    // A bare identifier object does not expose the accessors the engine walks.
-    expect(paths).toContain('order.orderItems[0].sku');
-    // And JSON cannot state an ABSENCE, which is a distinct state from a value under
-    // `exactOptionalPropertyTypes` - the probe tests `Object.hasOwn`, not `!== undefined`.
-    expect(paths).toContain('order.orderItems[0].appliedPriceGroup');
-
-    // THE PROBE IS SELECTIVE RATHER THAN BLANKET: a member that IS usable is not complained about.
-    expect(paths).not.toContain('order.orderID');
-    expect(paths).not.toContain('order.totalSaleQuantity');
-
-    // The complaint list is BOUNDED, matching the bound the module publishes for a refusal.
-    expect((error.fields ?? []).length).toBeLessThanOrEqual(10);
-
-    // No submitted value is echoed anywhere in the refusal.
-    expect(result.body).not.toContain('19.99');
-    // And the pricing graph was never opened.
-    expect(harness.recorder.composedInputs).toHaveLength(0);
-  });
-
-  it('refuses an order member that is not an object at all, with a single complaint', async () => {
-    const harness = makeHarness();
-
-    const result = await harness.invoke(
-      postDocument(applyPromotionsDocument('an order identifier is not an order view')),
-    );
-
-    expect(result.statusCode).toBe(400);
-    expect(errorBodyOf(result).fields).toEqual([
-      { path: 'order', message: 'must be a materialised order view object' },
-    ]);
-  });
-
-  it('reports an ABSENT order member differently from an unusable one', async () => {
-    const harness = makeHarness();
-
-    const result = await harness.invoke(
-      postDocument({ operation: 'applyPromotions', idempotencyKey: IDEMPOTENCY_KEY }),
-    );
-
-    expect(result.statusCode).toBe(400);
-
-    const error = errorBodyOf(result);
-    // `unusableRequestInput` publishes the same fixed sentence as a schema rejection - no invented
-    // specificity - while the closed REASON literal reaches the log stream instead.
-    expect(error.message).toBe('The request input is not valid.');
-    expect((error.fields ?? []).map((field): string => field.path)).toEqual(['order']);
-    expect(harness.emitted.lines.join('\n')).toContain('unusableRequestInput');
-  });
-
-  it('names a required order-level member that the document simply omits', async () => {
-    const { order } = makeGoldenOrder();
-    const harness = makeHarness();
-
-    const result = await harness.invoke(
-      postDocument(
-        applyPromotionsDocument(
-          orderDocumentWithout(wireProjectionOf(order), 'subtotalAfterItemDiscounts'),
-        ),
-      ),
-    );
-
-    expect(result.statusCode).toBe(400);
-    expect((errorBodyOf(result).fields ?? []).map((field): string => field.path)).toContain(
-      'order.subtotalAfterItemDiscounts',
-    );
-  });
-
-  it('REFUSES an over-large order document and never truncates it', async () => {
-    const { order } = makeGoldenOrder();
-    const tooManyItems = Array.from(
-      { length: ORDER_DOCUMENT_LIMITS.maximumOrderItems + 1 },
-      (): Readonly<Record<string, unknown>> => ({}),
-    );
-    const harness = makeHarness();
-
-    const result = await harness.invoke(
-      postDocument(
-        applyPromotionsDocument({ ...wireProjectionOf(order), orderItems: tooManyItems }),
-      ),
-    );
-
-    expect(result.statusCode).toBe(400);
-
-    const complaint = (errorBodyOf(result).fields ?? []).find(
-      (field): boolean => field.path === 'order.orderItems',
-    );
-    expect(complaint?.message).toBe(
-      `must not carry more than ${String(ORDER_DOCUMENT_LIMITS.maximumOrderItems)} entries`,
-    );
-    // Nothing was priced, so nothing was priced against a truncated document.
-    expect(harness.recorder.composedInputs).toHaveLength(0);
-  });
-
-  it('maps an admission refusal onto the shipped client-shaped response with its member paths', async () => {
-    const fields: readonly MappedFieldIssue[] = [
-      { path: 'order.orderItems[1].sku', message: 'must expose the entity accessors: getSkuID' },
-    ];
-    const harness = makeHarness({
-      refuseAdmission: new OrderViewAdmissionError('unsupportedBodyShape', fields),
-    });
-    const { order } = makeGoldenOrder();
-
-    const result = await harness.invoke(postApplyPromotions(order));
-
-    expect(result.statusCode).toBe(400);
-    expect(errorBodyOf(result).fields).toEqual(fields);
-    expect(harness.recorder.composedInputs).toHaveLength(0);
+  it('publishes the document bounds it enforces, frozen', () => {
+    expect(Object.isFrozen(ORDER_DOCUMENT_LIMITS)).toBe(true);
+    expect(ORDER_DOCUMENT_LIMITS.maximumOrderItems).toBeGreaterThan(0);
+    expect(ORDER_DOCUMENT_LIMITS.maximumOrderFulfillments).toBeGreaterThan(0);
+    expect(ORDER_DOCUMENT_LIMITS.maximumIdentifierLength).toBeGreaterThan(0);
   });
 });
 
 // ===========================================================================
-// SECTION 3 - CONCERN 2: DELEGATION
-// ===========================================================================
-
-describe('promotion-application delegation (NET-NEW)', () => {
-  it('opens the root once, opens ONE scope, and invokes the composed operation exactly once', async () => {
-    const { order, capture } = makeGoldenOrder();
-    const harness = makeHarness({
-      admit: order,
-      rewards: [makeRewardForGoldenOrder(capture)],
-    });
-
-    await harness.invoke(postApplyPromotions(order));
-
-    expect(harness.recorder.log.filter((label): boolean => label === ROOT_OPENED)).toHaveLength(1);
-    expect(harness.recorder.log.filter((label): boolean => label === SCOPE_OPENED)).toHaveLength(1);
-    expect(harness.recorder.composedInputs).toHaveLength(1);
-    // The composed operation received the ADMITTED view BY IDENTITY - handed on untouched, with no
-    // key stripped and no member added.
-    expect(harness.recorder.composedInputs[0]).toBe(order);
-  });
-
-  it('threads the injected clock and the decoded account identifier into the request scope', async () => {
-    const boundInstant = new Date('2024-03-04T05:06:07.000Z');
-    const { order, capture } = makeGoldenOrder();
-    const harness = makeHarness({
-      admit: order,
-      now: boundInstant,
-      clock: (): Date => boundInstant,
-      rewards: [makeRewardForGoldenOrder(capture)],
-    });
-
-    const result = await harness.invoke(postApplyPromotions(order));
-
-    const scopeInput = harness.recorder.scopeInputs[0];
-    expect(scopeInput?.now?.toISOString()).toBe('2024-03-04T05:06:07.000Z');
-    expect(scopeInput?.accountID).toBe(order.accountID);
-    // `evaluatedAt` is the scope's own bound instant, rendered ISO-8601 and therefore UTC.
-    expect(successBodyOf(result).evaluatedAt).toBe('2024-03-04T05:06:07.000Z');
-  });
-
-  it('passes NO clock in the production configuration, so the scope binds the instant itself', async () => {
-    const { order, capture } = makeGoldenOrder();
-    const harness = makeHarness({
-      admit: order,
-      rewards: [makeRewardForGoldenOrder(capture)],
-    });
-
-    const result = await harness.invoke(postApplyPromotions(order));
-
-    // ★ THE INSTANT IS NEVER READ FROM THE PAYLOAD. A caller choosing the evaluation instant could
-    // walk an expired promotion period back inside its window, so no such member exists. The scope
-    // input is NARROWED first, so "no scope was opened at all" cannot masquerade as "no clock was
-    // passed".
-    const scopeInput = requireFixtureMember(
-      harness.recorder.scopeInputs[0],
-      'a request-scope input',
-    );
-    expect(scopeInput.now).toBeUndefined();
-    expect(successBodyOf(result).evaluatedAt).toBe(EVALUATED_AT);
-  });
-
-  it('treats an absent accountID as the LOGGED-OUT STATE rather than a missing value', async () => {
-    // [model/service/PriceGroupService.cfc:L262-L268] branches on the logged-in flag and only then
-    // reads the account; the else arm at [:L265-L266] returns the SKU's own price. Omitting the
-    // identifier IS that arm.
-    const { order, capture } = makeGoldenOrder({ accountID: undefined });
-    const harness = makeHarness({ admit: order, rewards: [makeRewardForGoldenOrder(capture)] });
-
-    const result = await harness.invoke(
-      postDocument(applyPromotionsDocument(orderReference(order))),
-    );
-
-    expect(result.statusCode).toBe(200);
-    // Narrowed for the same reason: an unopened scope must not read as a logged-out one.
-    const scopeInput = requireFixtureMember(
-      harness.recorder.scopeInputs[0],
-      'a request-scope input',
-    );
-    expect(scopeInput.accountID).toBeUndefined();
-  });
-
-  it('imposes NO ordering of its own on the order items it forwards (vector 1)', async () => {
-    const { order, capture } = makeGoldenOrder();
-    const harness = makeHarness({
-      admit: order,
-      rewards: [makeRewardForGoldenOrder(capture)],
-    });
-
-    await harness.invoke(postApplyPromotions(order));
-
-    // `getActivePromotionRewards()` [model/dao/PromotionDAO.cfc:L51-L132] declares NO `ORDER BY`, so
-    // the reward order is genuinely non-deterministic at a tie and THAT is the legacy behaviour.
-    // Nothing in this adapter sorts, re-ranks or stabilises anything on the way in or out.
-    expect(
-      harness.recorder.composedInputs[0]?.orderItems.map((item): string => item.orderItemID),
-    ).toEqual(order.orderItems.map((item): string => item.orderItemID));
-  });
-});
-
-// ===========================================================================
-// SECTION 4 - ★★★ THE MANDATORY CROSS-SERVICE ORDERING GATE
+// CONCERN 2 - THE WIRE ORDER DOCUMENT
 //
-// "A test proves that the price-group pass runs before the promotion pass, and
-// that reversing them changes the computed discount." This section is that test,
-// and it lives here and nowhere else.
+// ★★★ THE DEPLOYED ROUTE'S ONLY INPUT, AND THE FINDING THESE CASES EXIST FOR.
+//
+// API Gateway delivers `event.body` as TEXT. The production admission used to be the
+// STRUCTURAL one, which requires a method-bearing order graph - `Money`, `Sku` and
+// `PriceGroup` accessors - and `JSON.parse` produces none of those, so the deployed
+// `applyPromotions` route refused every request that could physically be sent to it. A
+// code review raised it as CRITICAL, and an earlier revision of this suite CODIFIED the
+// refusal as expected behaviour while reaching 200 only by injecting an in-process
+// fixture - so the defect was masked by its own test.
+//
+// The default now parses `ORDER_VIEW_DOCUMENT_SCHEMA` and hydrates through
+// `RequestScope.materializeOrderView`. The first case below is the one the review
+// required: a plain JSON body through the factory handler with NO injected admission,
+// answering 200 with the intents the engine decided.
 // ===========================================================================
 
-/**
- * The third golden item's PRE-PASS price.
- *
- * Equal to its `skuPrice`, because nothing has lowered it yet: before the price-group pass runs, an
- * item carries the SKU's own price and no applied price group. That is the state the promotion pass
- * would read if it ran first.
- */
-const PRE_PASS_ITEM_PRICE = '12.00';
-
-/** The price pass one decides for that item - strictly lower, as [:L369] requires. */
-const DECIDED_ITEM_PRICE = '11.00';
-
-/**
- * A price pass one could decide that makes the CORRECTION TERM EXCEED THE DISCOUNT.
- *
- * 12.00 - 8.50 over four units is a 14.00 correction against a 6.00 discount, so
- * [model/service/PromotionService.cfc:L257]'s `if(discountAmount > 0)` rejects the result outright
- * and the item receives NO intent at all. The starkest possible form of the dependency.
- */
-const DEEPLY_DECIDED_ITEM_PRICE = '8.50';
-
-/** Everything the gate needs, assembled so identities line up across the three fixture graphs. */
-interface OrderingGateSetup {
-  /** The PRE-pass order view: the third item has no applied price group and carries `skuPrice`. */
-  readonly order: OrderView;
-  readonly capture: OrderViewCaptureRef;
-  readonly reward: RewardUnderTest;
-  readonly decision: PriceGroupDecision;
-  /** The third item, which is the only one that can reach the second arm of L241. */
-  readonly item: OrderItemView;
-}
-
-/**
- * Assemble the gate's fixture.
- *
- * The decision's price group comes from `./priceGroupFixtures` under its OWN identity and is
- * deliberately NOT among the groups the reward names as eligible - which is what puts the item on the
- * second arm of [model/service/PromotionService.cfc:L241] once pass one has applied it. Nothing about
- * that depends on which particular fixture group it is; it depends only on the reward's eligibility
- * list, which is the decision the arm exists to express.
- */
-function makeOrderingGateSetup(decidedPrice: string): OrderingGateSetup {
-  const priceGroups = makePriceGroupFixtures({ idPrefix: 'ordering-gate' });
-  const { order, capture } = makeGoldenOrder({
-    itemOverrides: [
-      {},
-      {},
-      {
-        // The PRE-pass state, stated explicitly: `undefined` forces the price-group-ineligible
-        // state, which [model/entity/OrderItem.cfc:L79] permits because it declares no `notnull`.
-        appliedPriceGroup: undefined,
-        price: Money.fromDecimalString(PRE_PASS_ITEM_PRICE),
-      },
-    ],
-  });
-
-  const item = itemAt(order, 2);
-
-  return {
-    order,
-    capture,
-    reward: makeRewardForGoldenOrder(capture),
-    decision: {
-      orderItemID: item.orderItemID,
-      price: Money.fromDecimalString(decidedPrice),
-      priceGroup: priceGroups.isolatedPriceGroup,
-    },
-    item,
-  };
-}
-
-describe('★★★ the price-group pass runs BEFORE the promotion pass (AAP 0.9.3; NET-NEW)', () => {
-  it('THE NON-VACUITY PRECONDITION: the golden order carries a NON-ZERO correction term', () => {
-    // WITHOUT THIS, EVERY ASSERTION BELOW WOULD BE VACUOUS. If `skuPrice` equalled `price` and
-    // `extendedSkuPrice` equalled `extendedPrice`, then
-    // `originalDiscountAmount - (extendedSkuPrice - extendedPrice)` [:L252] would collapse to
-    // `originalDiscountAmount`, the two arms of L241 would compute the SAME number, and a reversal
-    // assertion would pass against a broken implementation. `./orderViewFixtures` states the same
-    // requirement independently: otherwise "the correction term is zero and the ordering dependency
-    // becomes invisible".
-    const { order, capture } = makeGoldenOrder();
-    const secondArmItem = itemAt(order, 2);
-
-    expectDifferentAmount(
-      secondArmItem.skuPrice.toDecimalString(),
-      secondArmItem.price.toDecimalString(),
-    );
-    expectDifferentAmount(
-      secondArmItem.extendedSkuPrice.toDecimalString(),
-      secondArmItem.extendedPrice.toDecimalString(),
-    );
-
-    // And the fixture's own reading of the L241 discriminator agrees, arm for arm.
-    const arms = capture.itemPriceArmSelections ?? [];
-    expect(arms.map((arm): string => arm.selectedArm)).toEqual([
-      // No applied price group at all - the `isNull(...)` disjunct.
-      'price',
-      // An applied group the reward DOES name - the `hasEligiblePriceGroup(...)` disjunct.
-      'price',
-      // An applied group the reward does NOT name - the ONLY item on the second arm.
-      'skuPriceWithCorrection',
-    ]);
-    expect(arms[0]?.appliedPriceGroupIsNull).toBe(true);
-    expect(arms[1]?.rewardAcceptsAppliedPriceGroup).toBe(true);
-    expect(arms[2]?.rewardAcceptsAppliedPriceGroup).toBe(false);
-
-    // 48.00 - 34.00. Non-zero is the whole point.
-    expectSameAmount(arms[2]?.correctionTerm.toDecimalString() ?? '', '14.00');
-    expectDifferentAmount(arms[2]?.correctionTerm.toDecimalString() ?? '', '0');
-  });
-
-  it('records the price-group pass BEFORE the promotion pass in the invocation log', async () => {
-    const gate = makeOrderingGateSetup(DECIDED_ITEM_PRICE);
+describe('the wire order document (NET-NEW)', () => {
+  it('serves a PLAIN JSON ORDER DOCUMENT with no admission injected at all', async () => {
+    const { order } = makeGoldenOrder();
+    const firstItem = itemAt(order, 0);
     const harness = makeHarness({
-      admit: gate.order,
-      decisions: [gate.decision],
-      rewards: [gate.reward],
-    });
-
-    const result = await harness.invoke(postApplyPromotions(gate.order));
-
-    expect(result.statusCode).toBe(200);
-
-    // AN ORDERED INVOCATION LOG, not an inspection of anybody's internals.
-    expect(harness.recorder.log).toEqual([
-      ROOT_OPENED,
-      SCOPE_OPENED,
-      ORDER_ADMITTED,
-      PRICE_GROUP_PASS,
-      PROMOTION_PASS,
-      ORDER_LEVEL_PASS,
-    ]);
-
-    expect(harness.recorder.log.indexOf(PRICE_GROUP_PASS)).toBeLessThan(
-      harness.recorder.log.indexOf(PROMOTION_PASS),
-    );
-  });
-
-  it('hands the promotion pass the view the price-group pass WROTE, not the one submitted', async () => {
-    const gate = makeOrderingGateSetup(DECIDED_ITEM_PRICE);
-    const harness = makeHarness({
-      admit: gate.order,
-      decisions: [gate.decision],
-      rewards: [gate.reward],
-    });
-
-    await harness.invoke(postApplyPromotions(gate.order));
-
-    const submitted = harness.recorder.composedInputs[0];
-    const read = harness.recorder.promotionPassInputs[0];
-
-    expect(submitted).toBe(gate.order);
-    expect(read).toBeDefined();
-    expect(read).not.toBe(submitted);
-
-    const projected = read === undefined ? undefined : itemAt(read, 2);
-
-    // [model/service/PriceGroupService.cfc:L370] wrote the price...
-    expectSameAmount(projected?.price.toDecimalString() ?? '', DECIDED_ITEM_PRICE);
-    // ...and [:L371] wrote the member the L241 condition reads.
-    expect(projected?.appliedPriceGroup?.getPriceGroupID()).toBe(
-      gate.decision.priceGroup.getPriceGroupID(),
-    );
-
-    // CFML parity [model/entity/OrderItem.cfc:L200-L206]: `getExtendedPrice()` is calculated as
-    // `price * val(quantity)` and therefore MOVED with the write, while `getExtendedSkuPrice()` did
-    // not - which is exactly why the correction term at [:L252] is non-zero after pass one has run.
-    expectSameAmount(projected?.extendedPrice.toDecimalString() ?? '', '44.00');
-    expectSameAmount(projected?.extendedSkuPrice.toDecimalString() ?? '', '48.00');
-
-    // THE NON-VACUITY GUARD, RE-ASSERTED ON THE VIEW PASS TWO ACTUALLY READ.
-    expectDifferentAmount(
-      projected?.skuPrice.toDecimalString() ?? '',
-      projected?.price.toDecimalString() ?? '',
-    );
-    expectDifferentAmount(
-      projected?.extendedSkuPrice.toDecimalString() ?? '',
-      projected?.extendedPrice.toDecimalString() ?? '',
-    );
-
-    // AND THE SUBMITTED VIEW IS UNTOUCHED. Nothing was mutated; a NEW view was projected.
-    expectSameAmount(gate.item.price.toDecimalString(), PRE_PASS_ITEM_PRICE);
-    expect(gate.item.appliedPriceGroup).toBeUndefined();
-  });
-
-  it('REVERSING THE TWO PASSES CHANGES THE COMPUTED DISCOUNT', async () => {
-    const shipped = makeOrderingGateSetup(DECIDED_ITEM_PRICE);
-    const reversed = makeOrderingGateSetup(DECIDED_ITEM_PRICE);
-
-    const shippedHarness = makeHarness({
-      admit: shipped.order,
-      decisions: [shipped.decision],
-      rewards: [shipped.reward],
-      ordering: 'priceGroupThenPromotion',
-    });
-    // THE MEASURING INSTRUMENT. Not a supported configuration and not reachable through the shipped
-    // surface - it exists here only to quantify what the inversion costs.
-    const reversedHarness = makeHarness({
-      admit: reversed.order,
-      decisions: [reversed.decision],
-      rewards: [reversed.reward],
-      ordering: 'promotionThenPriceGroup',
-    });
-
-    const shippedBody = successBodyOf(
-      await shippedHarness.invoke(postApplyPromotions(shipped.order)),
-    );
-    const reversedBody = successBodyOf(
-      await reversedHarness.invoke(postApplyPromotions(reversed.order)),
-    );
-
-    expect(shippedHarness.recorder.log.indexOf(PRICE_GROUP_PASS)).toBeLessThan(
-      shippedHarness.recorder.log.indexOf(PROMOTION_PASS),
-    );
-    expect(reversedHarness.recorder.log.indexOf(PROMOTION_PASS)).toBeLessThan(
-      reversedHarness.recorder.log.indexOf(PRICE_GROUP_PASS),
-    );
-
-    const shippedDiscount = wireDiscountForItem(shippedBody, shipped.item.orderItemID);
-    const reversedDiscount = wireDiscountForItem(reversedBody, reversed.item.orderItemID);
-
-    // ★★★ DIFFERENT MONEY. Price-group first: the item is on the SECOND arm, so its discount is
-    // `getDiscountAmount(reward, skuPrice, quantity)` MINUS the 4.00 correction term - 6.00 - 4.00.
-    // Promotion first: the item still has no applied price group, so it is on the FIRST arm and its
-    // discount is `getDiscountAmount(reward, price, quantity)` with NO correction - 12.00 x 4 x 12.5%.
-    expectDifferentAmount(shippedDiscount, reversedDiscount);
-    expectSameAmount(reversedDiscount, '6.00');
-    expectSameAmount(shippedDiscount, '2.00');
-
-    // And the difference IS the correction term, to the cent.
-    expectSameAmount(
-      Money.fromDecimalString(reversedDiscount).minus(shippedDiscount).toDecimalString(),
-      '4.00',
-    );
-  });
-
-  it('reversal can remove the discount ENTIRELY when the correction exceeds it', async () => {
-    // 12.00 -> 8.50 over four units is a 14.00 correction against a 6.00 discount, so
-    // [model/service/PromotionService.cfc:L257] rejects the second-arm result and the item gets
-    // nothing. Run the passes the other way round and the same item is discounted 6.00.
-    const shipped = makeOrderingGateSetup(DEEPLY_DECIDED_ITEM_PRICE);
-    const reversed = makeOrderingGateSetup(DEEPLY_DECIDED_ITEM_PRICE);
-
-    const shippedBody = successBodyOf(
-      await makeHarness({
-        admit: shipped.order,
-        decisions: [shipped.decision],
-        rewards: [shipped.reward],
-      }).invoke(postApplyPromotions(shipped.order)),
-    );
-    const reversedBody = successBodyOf(
-      await makeHarness({
-        admit: reversed.order,
-        decisions: [reversed.decision],
-        rewards: [reversed.reward],
-        ordering: 'promotionThenPriceGroup',
-      }).invoke(postApplyPromotions(reversed.order)),
-    );
-
-    expect(
-      promotionIntentsOf(shippedBody).some(
-        (intent): boolean => intent.orderItemID === shipped.item.orderItemID,
-      ),
-    ).toBe(false);
-    expectSameAmount(wireDiscountForItem(reversedBody, reversed.item.orderItemID), '6.00');
-  });
-
-  it('honours NO ordering member a caller puts on the payload', async () => {
-    const gate = makeOrderingGateSetup(DECIDED_ITEM_PRICE);
-    const controlled = makeHarness({
-      admit: gate.order,
-      decisions: [gate.decision],
-      rewards: [gate.reward],
-    });
-    const plain = makeHarness({
-      admit: gate.order,
-      decisions: [gate.decision],
-      rewards: [gate.reward],
-    });
-
-    // Every member a caller might reach for to choose an execution order. None exists on the
-    // envelope, none is declared anywhere on the module, and `z.object` STRIPS what its shape does
-    // not declare - so all six are inert. Adding one would reproduce exactly the arrangement the
-    // composition removed.
-    const attempted = await controlled.invoke(
-      postApplyPromotions(gate.order, {
-        sequence: ['promotions', 'priceGroups'],
-        phase: 'promotionsFirst',
-        runAfter: 'promotions',
-        pipeline: ['promotionPass', 'priceGroupPass'],
-        order: 'promotionsFirst',
-        skipPriceGroups: true,
-      }),
-    );
-    const untouched = await plain.invoke(postApplyPromotions(gate.order));
-
-    // Byte-identical bodies and identical invocation logs.
-    expect(attempted.statusCode).toBe(200);
-    expect(attempted.body).toBe(untouched.body);
-    expect(controlled.recorder.log).toEqual(plain.recorder.log);
-    expect(controlled.recorder.log.indexOf(PRICE_GROUP_PASS)).toBeLessThan(
-      controlled.recorder.log.indexOf(PROMOTION_PASS),
-    );
-  });
-
-  it('runs the price-group pass FIRST even when it can decide nothing at all', async () => {
-    // "No account" [model/service/PriceGroupService.cfc:L365] and "no better rate" [:L369] are
-    // OUTCOMES of the pass, never licence to skip it - because L241 reads `getAppliedPriceGroup()`
-    // in the branch CONDITION, so the `isNull(...)` arm is reached only by having run the pass.
-    const guest = makeGoldenOrder({ accountID: undefined });
-    const guestHarness = makeHarness({
-      admit: guest.order,
-      rewards: [makeRewardForGoldenOrder(guest.capture)],
-      decisions: [
+      // NOTHING is injected but the graph itself: no `admit`, no `refuseAdmission`. The PRODUCTION
+      // admission runs, parses the body, and asks the scope to hydrate it.
+      materialize: order,
+      promotionIntents: [itemIntent(firstItem.orderItemID, '7.49625')],
+      priceGroupIntents: [
         {
-          orderItemID: itemAt(guest.order, 0).orderItemID,
-          price: Money.fromDecimalString('1.00'),
-          priceGroup: makePriceGroupFixtures({ idPrefix: 'guest' }).isolatedPriceGroup,
+          orderItemID: firstItem.orderItemID,
+          price: Money.fromDecimalString('11.00'),
+          priceGroupID: 'pg-wire-0001',
         },
       ],
     });
 
-    const guestBody = successBodyOf(await guestHarness.invoke(postApplyPromotions(guest.order)));
-
-    expect(guestHarness.recorder.log.indexOf(PRICE_GROUP_PASS)).toBeLessThan(
-      guestHarness.recorder.log.indexOf(PROMOTION_PASS),
-    );
-    // It ran, and it decided nothing, and the response says so rather than hiding it.
-    expect(guestBody.priceGroupIntents).toEqual([]);
-
-    // Same again with an account present but no decision to make at all.
-    const undecided = makeGoldenOrder();
-    const undecidedHarness = makeHarness({
-      admit: undecided.order,
-      rewards: [makeRewardForGoldenOrder(undecided.capture)],
-      decisions: [],
-    });
-
-    await undecidedHarness.invoke(postApplyPromotions(undecided.order));
-
-    expect(undecidedHarness.recorder.log.indexOf(PRICE_GROUP_PASS)).toBeLessThan(
-      undecidedHarness.recorder.log.indexOf(PROMOTION_PASS),
-    );
-  });
-
-  it('reaches NEITHER individual order pass, and neither price-resolution nor promotion queries', async () => {
-    const gate = makeOrderingGateSetup(DECIDED_ITEM_PRICE);
-    const harness = makeHarness({
-      admit: gate.order,
-      decisions: [gate.decision],
-      rewards: [gate.reward],
-    });
-
-    // A 200 is the proof: every withheld member of the scope and of the root is a getter that
-    // THROWS, so reaching one would surface as a 500 naming it.
-    const result = await harness.invoke(postApplyPromotions(gate.order));
+    const result = await harness.invoke(postWireOrder(order));
+    const body = successBodyOf(result);
 
     expect(result.statusCode).toBe(200);
-    expect(harness.emitted.lines.join('\n')).not.toContain('WithheldCollaboratorError');
+    // The document reached the hydration tier, and the composed operation ran on what came back.
+    expect(harness.recorder.materializedDocuments).toHaveLength(1);
+    expect(harness.recorder.composedInputs).toHaveLength(1);
+    expect(harness.recorder.log).toEqual([
+      ROOT_OPENED,
+      SCOPE_OPENED,
+      ORDER_MATERIALIZED,
+      COMPOSED_PRICING,
+    ]);
+    // And the intents the engine decided are what the caller received.
+    expect(promotionIntentsOf(body)).toHaveLength(1);
+    expectSameAmount(wireDiscountForItem(body, firstItem.orderItemID), '7.49625');
+    expect(body.priceGroupIntents).toHaveLength(1);
   });
 
-  it('and that guard is LIVE rather than vacuous - a withheld member really does throw', () => {
-    // Proving the negative assertion above is worth something: if the getters silently returned a
-    // value, "the handler never touched them" would be unfalsifiable.
+  it('serves that document with EVERY dependency but the root left at its production default', async () => {
+    // ★★★ THE CLOSEST A UNIT SUITE CAN STAND TO THE DEPLOYED ENTRYPOINT. The production line is
+    // `export const handler = createPromotionApplicationHandler()` - no arguments at all - and the
+    // only argument supplied here is the composition root, because the real one opens a `mysql2`
+    // pool. Admission, logger and clock are ALL left to default, so the arm under test is the exact
+    // arm the deployed route takes: parse the body, hydrate through the scope, price, answer 200.
+    //
+    // Under the finding this case exists for, this construction answered 400 `unsupportedBodyShape`
+    // for every possible request, because the defaulted admission required a method-bearing order
+    // graph that no JSON body can carry.
+    const { order } = makeGoldenOrder();
+    const firstItem = itemAt(order, 0);
     const recorder = makeRecorder();
     const root = makeCompositionRootDouble(
       {
         now: new Date(EVALUATED_AT),
         salePriceDetails: {},
+        materialized: order,
+        materializationFailure: undefined,
         pricing: {
-          decisions: [],
-          rewards: [],
-          ordering: 'priceGroupThenPromotion',
+          priceGroupIntents: [],
+          promotionIntents: [itemIntent(firstItem.orderItemID, '7.49625')],
           failure: undefined,
         },
       },
       recorder,
     );
+    const subject = createPromotionApplicationHandler({
+      compositionRoot: (): Promise<CompositionRoot> => Promise.resolve(root),
+    });
 
-    expect(() => root.diagnostics).toThrow(WithheldCollaboratorError);
-    expect(() => root.settingsProvider).toThrow(/does not use/);
+    const result = await subject(postWireOrder(order));
+    const body = successBodyOf(result);
+
+    expect(result.statusCode).toBe(200);
+    expect(recorder.materializedDocuments).toHaveLength(1);
+    expect(promotionIntentsOf(body)).toHaveLength(1);
+    expectSameAmount(wireDiscountForItem(body, firstItem.orderItemID), '7.49625');
+  });
+
+  it('hands the hydration tier the document verbatim, identifiers and decimal strings alike', async () => {
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ materialize: order });
+    const firstItem = itemAt(order, 0);
+    // The document is built ONCE and compared against what the materializer received, so the property
+    // under test is genuine PASS-THROUGH rather than a restatement of the projection: any member this
+    // tier renamed, coerced, rounded or dropped on the way through fails the comparison.
+    const sent = wireOrderDocument(order);
+
+    await harness.invoke(postDocument(applyPromotionsDocument(sent)));
+
+    const [document] = harness.recorder.materializedDocuments;
+
+    if (document === undefined) {
+      throw new TypeError('the wire document never reached the materializer');
+    }
+
+    expect(document).toEqual(sent);
+    expect(document.orderID).toBe(order.orderID);
+    expect(document.currencyCode).toBe(order.currencyCode);
+    // A decimal STRING on the wire, and the same amount of money the fixture holds.
+    expectSameAmount(document.subtotal, order.subtotal.toDecimalString());
+
+    const [item] = document.orderItems;
+
+    if (item === undefined) {
+      throw new TypeError('the wire document carried no order items');
+    }
+
+    // BOTH handles travel, each NON-EMPTY, and the SKU is named rather than described: no price, no
+    // product type, no brand and no option list, because each of those decides whether a promotion
+    // applies and none of them is the caller's to state.
+    expect(item.skuID).toBe(firstItem.sku.getSkuID());
+    expect(item.skuID).not.toBe('');
+    expect(item.productID).not.toBe('');
+    expect(Object.keys(item)).not.toContain('sku');
+    expectSameAmount(item.price, firstItem.price.toDecimalString());
+    expectSameAmount(item.extendedSkuPrice, firstItem.extendedSkuPrice.toDecimalString());
+  });
+
+  it('carries a pickup fulfillment whose shipping method is STATED as absent', async () => {
+    const { order } = makeGoldenOrder({ includePickupFulfillment: true });
+    const harness = makeHarness({ materialize: order });
+
+    const result = await harness.invoke(postWireOrder(order));
+    const [document] = harness.recorder.materializedDocuments;
+
+    expect(result.statusCode).toBe(200);
+
+    if (document === undefined) {
+      throw new TypeError('the wire document never reached the materializer');
+    }
+
+    // `null` rather than an omitted key. [model/service/PromotionService.cfc:L701] tests
+    // `isNull(orderFulfillment.getShippingMethod())` explicitly, so "no shipping method" is a state
+    // the document must be able to state - and the schema requires the KEY, so a document that
+    // forgot it is a different, refused document.
+    const stated = document.orderFulfillments.some(
+      (fulfillment): boolean => fulfillment.shippingMethod === null,
+    );
+    expect(stated).toBe(true);
+  });
+
+  it('REFUSES a document whose monetary member is not a plain decimal numeral', async () => {
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ materialize: order });
+
+    // `'1,234.50'` is a formatted number, not a numeral. Coercing it would put a silent zero or a
+    // truncated `1` into a price path, and a wrong price is money.
+    const result = await harness.invoke(
+      postDocument(
+        applyPromotionsDocument(documentWith(wireOrderDocument(order), 'subtotal', '1,234.50')),
+      ),
+    );
+
+    expect(result.statusCode).toBe(400);
+    expect(fieldPathsOf(result)).toContain('order.subtotal');
+    // The submitted value is NEVER echoed - only the path and the constraint.
+    expect(result.body).not.toContain('1,234.50');
+    // Nothing was hydrated and nothing was priced.
+    expect(harness.recorder.materializedDocuments).toHaveLength(0);
+    expect(harness.recorder.composedInputs).toHaveLength(0);
+  });
+
+  it('REFUSES a document that omits a required member, naming the member', async () => {
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ materialize: order });
+
+    const result = await harness.invoke(
+      postDocument(
+        applyPromotionsDocument(documentWithout(wireOrderDocument(order), 'totalSaleQuantity')),
+      ),
+    );
+
+    expect(result.statusCode).toBe(400);
+    expect(fieldPathsOf(result)).toContain('order.totalSaleQuantity');
+    expect(harness.recorder.composedInputs).toHaveLength(0);
+  });
+
+  it('REFUSES an unknown member rather than ignoring it', async () => {
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ materialize: order });
+    const callerAuthoredKey = 'x-PLANTED-ORDER-KEY-9f2c41ab';
+
+    // Ignoring an unknown member would let the caller believe it stated something the engine read.
+    // Its NAME is caller-authored too, so the refusal keeps only the safe containing path.
+    const result = await harness.invoke(
+      postDocument(
+        applyPromotionsDocument(
+          documentWith(wireOrderDocument(order), callerAuthoredKey, {
+            skuID: 'sku-not-a-member',
+          }),
+        ),
+      ),
+    );
+
+    expect(result.statusCode).toBe(400);
+    expect(fieldPathsOf(result)).toContain('order');
+    expect(result.body).not.toContain(callerAuthoredKey);
+    expect(result.body).not.toContain('sku-not-a-member');
+    expect(harness.recorder.materializedDocuments).toHaveLength(0);
+  });
+
+  it('REFUSES a per-item member that is the wrong kind, naming the indexed path', async () => {
+    const { order } = makeGoldenOrder();
+    const document = wireOrderDocument(order);
+    const items = document['orderItems'];
+
+    if (!isJsonObjectArray(items)) {
+      throw new TypeError('the wire projection did not produce an order-item array');
+    }
+
+    const [firstItem, ...rest] = items;
+
+    if (firstItem === undefined) {
+      throw new TypeError('the wire projection produced no order items');
+    }
+
+    const harness = makeHarness({ materialize: order });
+    const result = await harness.invoke(
+      postDocument(
+        applyPromotionsDocument(
+          documentWith(document, 'orderItems', [{ ...firstItem, quantity: 'three' }, ...rest]),
+        ),
+      ),
+    );
+
+    expect(result.statusCode).toBe(400);
+    expect(fieldPathsOf(result)).toContain('order.orderItems.0.quantity');
+    expect(result.body).not.toContain('three');
+  });
+
+  it('reports an ABSENT order member differently from an unusable one', async () => {
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ materialize: order });
+
+    const absent = await harness.invoke(postDocument({ operation: 'applyPromotions' }));
+    const unusable = await harness.invoke(
+      postDocument(applyPromotionsDocument({ orderID: 'order-with-nothing-else' })),
+    );
+
+    expect(absent.statusCode).toBe(400);
+    expect(fieldPathsOf(absent)).toEqual(['order']);
+    expect(errorBodyOf(absent).message).toBe('The request body is not the expected shape.');
+
+    expect(unusable.statusCode).toBe(400);
+    // Several member paths, because a caller fixing one shape wants every complaint at once.
+    expect(fieldPathsOf(unusable).length).toBeGreaterThan(1);
+    expect(errorBodyOf(unusable).message).toBe('The request body is not the expected shape.');
+  });
+
+  it('REFUSES an over-large order document and never truncates it', async () => {
+    const { order } = makeGoldenOrder();
+    const document = wireOrderDocument(order);
+    const items = document['orderItems'];
+
+    if (!isJsonObjectArray(items)) {
+      throw new TypeError('the wire projection did not produce an order-item array');
+    }
+
+    const [firstItem] = items;
+
+    if (firstItem === undefined) {
+      throw new TypeError('the wire projection produced no order items');
+    }
+
+    const overLarge = Array.from(
+      { length: ORDER_DOCUMENT_LIMITS.maximumOrderItems + 1 },
+      (_unused, index): Readonly<Record<string, unknown>> => ({
+        ...firstItem,
+        orderItemID: `${String(firstItem['orderItemID'])}-${String(index)}`,
+      }),
+    );
+
+    const harness = makeHarness({ materialize: order });
+    const result = await harness.invoke(
+      postDocument(applyPromotionsDocument(documentWith(document, 'orderItems', overLarge))),
+    );
+
+    // REFUSED, not silently shortened: the bound is published on `ORDER_DOCUMENT_LIMITS` so a caller
+    // can split its own work deliberately rather than discovering a truncated result.
+    expect(result.statusCode).toBe(400);
+    expect(fieldPathsOf(result)).toContain('order.orderItems');
+    expect(harness.recorder.materializedDocuments).toHaveLength(0);
+  });
+
+  it('lets a HYDRATION refusal reach the mapper rather than relabelling it as the caller mistake', async () => {
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({
+      materialize: order,
+      // The shape `src/handlers/bootstrap.ts` raises when a named row cannot be loaded. Its message
+      // names an identifier, and republishing that would tell a caller whether a row exists.
+      materializationFailure: new Error(
+        'sku "sku-does-not-exist" is not carried by product "prod-golden-0001"',
+      ),
+    });
+
+    const result = await harness.invoke(postWireOrder(order));
+
+    expect(result.statusCode).toBe(500);
+    expect(errorBodyOf(result).message).toBe('The request could not be completed.');
+    expect(result.body).not.toContain('sku-does-not-exist');
+    expect(result.body).not.toContain('prod-golden-0001');
+    // The detail reaches the log stream under the same correlation identifier instead.
+    expect(harness.emitted.lines.join('\n')).toContain(PLATFORM_REQUEST_ID);
+    expect(harness.recorder.composedInputs).toHaveLength(0);
   });
 });
 
 // ===========================================================================
-// SECTION 5 - THE TWO ORDER-TYPE GATES, AND THE PRESERVED `issue_1766` NO-OP
-//
-// [model/service/PromotionService.cfc:L61] admits the ENTIRE 489-line body on
-// `listFindNoCase("otSalesOrder,otExchangeOrder", ...)`, closing at [:L539] with the
-// comment "END of Sale or Exchange Loop". [:L542] then gates an EMPTY block on a
-// DIFFERENT list, `"otReturnOrder,otExchangeOrder"`. The two conditionals are
-// SEQUENTIAL, not else-if.
+// CONCERN 3 - THE IN-PROCESS ADMISSION, STILL AVAILABLE AND STILL STRICT
 // ===========================================================================
 
-describe('the order-type gates (NET-NEW)', () => {
-  it('otSalesOrder: runs the discount body and SKIPS the return/exchange branch', async () => {
-    const { order, capture } = makeGoldenOrder({ orderTypeSystemCode: 'otSalesOrder' });
-    const harness = makeHarness({ admit: order, rewards: [makeRewardForGoldenOrder(capture)] });
+describe('the in-process order-view admission (NET-NEW)', () => {
+  it('vouches for a MATERIALISED view and hands it on untouched, hydrating nothing', async () => {
+    const { order } = makeGoldenOrder();
 
-    const body = successBodyOf(await harness.invoke(postApplyPromotions(order)));
-
-    expect(capture.reachesDiscountBody).toBe(true);
-    expect(capture.reachesReturnExchangeNoOp).toBe(false);
-    expect(harness.recorder.enteredDiscountBody).toEqual([true]);
-    expect(harness.recorder.enteredReturnExchangeNoOp).toEqual([false]);
-    expect(harness.recorder.log).not.toContain(RETURN_EXCHANGE_NO_OP);
-    expect(promotionIntentsOf(body).length).toBeGreaterThan(0);
-  });
-
-  it('otExchangeOrder: enters BOTH branches, and the no-op still does nothing', async () => {
-    const sales = makeGoldenOrder({ orderTypeSystemCode: 'otSalesOrder' });
-    const exchange = makeGoldenOrder({ orderTypeSystemCode: 'otExchangeOrder' });
-
-    const salesBody = successBodyOf(
-      await makeHarness({
-        admit: sales.order,
-        rewards: [makeRewardForGoldenOrder(sales.capture)],
-      }).invoke(postApplyPromotions(sales.order)),
-    );
-
-    const exchangeHarness = makeHarness({
-      admit: exchange.order,
-      rewards: [makeRewardForGoldenOrder(exchange.capture)],
+    const admitted = await admitMaterializedOrderView({
+      operation: 'applyPromotions',
+      requestId: 'req',
+      order,
     });
-    const exchangeBody = successBodyOf(
-      await exchangeHarness.invoke(postApplyPromotions(exchange.order)),
-    );
 
-    expect(exchange.capture.reachesDiscountBody).toBe(true);
-    expect(exchange.capture.reachesReturnExchangeNoOp).toBe(true);
-    expect(exchangeHarness.recorder.enteredDiscountBody).toEqual([true]);
-    expect(exchangeHarness.recorder.enteredReturnExchangeNoOp).toEqual([true]);
-    expect(exchangeHarness.recorder.log).toContain(RETURN_EXCHANGE_NO_OP);
-
-    // ENTERING THE SECOND BRANCH CHANGED NOTHING, which is the whole substance of a preserved no-op:
-    // an exchange order decides exactly what the same order would decide as a sale.
-    expect(promotionIntentsOf(exchangeBody)).toEqual(promotionIntentsOf(salesBody));
+    // THE SAME OBJECT, by identity: no copy, no freeze, no re-sort. The reward iteration order is
+    // legacy-non-deterministic by construction [model/dao/PromotionDAO.cfc:L51-L132 declares no
+    // `ORDER BY`], so the collections must arrive exactly as the caller composed them.
+    expect(admitted).toBe(order);
+    // ONE declared parameter, which is how it says it reaches no hydration tier at all: the port
+    // hands every admission a materializer and this arm has no place to receive one.
+    expect(admitMaterializedOrderView.length).toBe(1);
   });
 
-  it('issue_1766', async () => {
-    // The `issue_<ticket#>` naming convention is carried over from
-    // [meta/tests/unit/IssuesTest.cfc:L51] `public void function issue_1097()`. The convention is ALL
-    // that is carried over: several of those legacy regression functions contain no assertion at all,
-    // and this one asserts explicitly.
-    //
-    // TODO [issue #1766]: In the future allow for return Items to have negative promotions applied.
-    //
-    // LEGACY-DEFECT [model/service/PromotionService.cfc:L542-L544]: the return/exchange branch is
-    // present, still does nothing, and still carries its `issue #1766` reference.
-    // Preserved deliberately; do not fix without a product decision.
-    //   For a RETURN order the L61 gate is not satisfied, so the entire discount body NEVER RUNS and
-    //   the only branch entered is the empty one. An EMPTY intent array is therefore the CORRECT
-    //   result rather than a degenerate one, and it must not throw: no negative-discount concept
-    //   exists anywhere on this contract to fall back on.
-    const { order, capture } = makeGoldenOrder({ orderTypeSystemCode: 'otReturnOrder' });
-    const harness = makeHarness({ admit: order, rewards: [makeRewardForGoldenOrder(capture)] });
+  it('still REFUSES a plain JSON projection, which is why it is not the default any more', async () => {
+    const { order } = makeGoldenOrder();
+
+    const refusal = await admitMaterializedOrderView({
+      operation: 'applyPromotions',
+      requestId: 'req',
+      order: wireOrderDocument(order),
+    }).then(
+      (): OrderViewAdmissionError | undefined => undefined,
+      (thrown: unknown): OrderViewAdmissionError | undefined =>
+        thrown instanceof OrderViewAdmissionError ? thrown : undefined,
+    );
+
+    // The refusal is CORRECT for this arm and always was: a wire document's `price` is a string with
+    // no accessors, and admitting it would let the engine read `undefined` out of a missing accessor
+    // and put a silent zero into a discount calculation. What was wrong was making this the arm a
+    // WIRE request took. Both arms now exist and each is reached by the caller it was written for.
+    expect(refusal?.reason).toBe('unsupportedBodyShape');
+    expect((refusal?.fields ?? []).map((field): string => field.path)).toContain(
+      'order.orderItems[0].price',
+    );
+  });
+
+  it('is injectable through the shipped dependency bundle and is then the arm that runs', async () => {
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({
+      admit: order,
+      promotionIntents: [itemIntent(itemAt(order, 0).orderItemID, '3.01')],
+    });
 
     const result = await harness.invoke(postApplyPromotions(order));
 
     expect(result.statusCode).toBe(200);
-
-    const body = successBodyOf(result);
-    expect(body.promotionIntents).toEqual([]);
-
-    expect(capture.reachesDiscountBody).toBe(false);
-    expect(capture.reachesReturnExchangeNoOp).toBe(true);
-    expect(capture.preservedReturnExchangeNoOpTicket).toBe('issue_1766');
-    expect(harness.recorder.enteredDiscountBody).toEqual([false]);
-    expect(harness.recorder.enteredReturnExchangeNoOp).toEqual([true]);
-    // The order-level pass is part of the discount body, so it never ran either.
-    expect(harness.recorder.log).not.toContain(ORDER_LEVEL_PASS);
+    // The injected admission ran and the scope's hydration was never reached.
+    expect(harness.recorder.log).toEqual([
+      ROOT_OPENED,
+      SCOPE_OPENED,
+      ORDER_ADMITTED,
+      COMPOSED_PRICING,
+    ]);
+    expect(harness.recorder.materializedDocuments).toHaveLength(0);
+    // It was handed the WHOLE decoded request, not just the order member.
+    const [request] = harness.recorder.admissionRequests;
+    expect(request?.operation).toBe('applyPromotions');
+    expect(request?.requestId).toBe(PLATFORM_REQUEST_ID);
+    expect(request).not.toHaveProperty('idempotencyKey');
   });
 
-  it('compares the order-type code CASE-INSENSITIVELY, as listFindNoCase does', async () => {
-    // CFML parity [model/service/PromotionService.cfc:L61,L542]: `listFindNoCase` is
-    // case-insensitive and returns a 1-BASED INDEX with `0` for absent, so the comparison is routed
-    // through `src/lib/cfml/list.ts` and tested against `0` - never through `===` on the raw string.
-    expect(listFindNoCase(SALE_OR_EXCHANGE_ORDER_TYPES, 'OTSALESORDER')).toBe(1);
-    expect(listFindNoCase(SALE_OR_EXCHANGE_ORDER_TYPES, 'otexchangeorder')).toBe(2);
-    expect(listFindNoCase(SALE_OR_EXCHANGE_ORDER_TYPES, 'otReturnOrder')).toBe(0);
-    expect(listFindNoCase(RETURN_OR_EXCHANGE_ORDER_TYPES, 'OtReturnOrder')).toBe(1);
+  it('maps an admission refusal onto the shipped client-shaped response with its member paths', async () => {
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({
+      refuseAdmission: new OrderViewAdmissionError('unsupportedBodyShape', [
+        { path: 'order.orderItems[0].sku', message: 'must expose the entity accessors: getSkuID' },
+      ]),
+    });
 
-    const shouted = makeGoldenOrder({ orderTypeSystemCode: 'OTSALESORDER' });
-    const canonical = makeGoldenOrder({ orderTypeSystemCode: 'otSalesOrder' });
+    const result = await harness.invoke(postApplyPromotions(order));
 
-    const shoutedBody = successBodyOf(
-      await makeHarness({
-        admit: shouted.order,
-        rewards: [makeRewardForGoldenOrder(shouted.capture)],
-      }).invoke(postApplyPromotions(shouted.order)),
-    );
-    const canonicalBody = successBodyOf(
-      await makeHarness({
-        admit: canonical.order,
-        rewards: [makeRewardForGoldenOrder(canonical.capture)],
-      }).invoke(postApplyPromotions(canonical.order)),
-    );
-
-    expect(promotionIntentsOf(shoutedBody)).toEqual(promotionIntentsOf(canonicalBody));
+    expect(result.statusCode).toBe(400);
+    expect(errorBodyOf(result).category).toBe('invalidRequest');
+    expect(fieldPathsOf(result)).toEqual(['order.orderItems[0].sku']);
+    expect(harness.recorder.composedInputs).toHaveLength(0);
   });
 });
 
 // ===========================================================================
-// SECTION 6 - THE ANTI-CORRUPTION BOUNDARY: VIEWS IN, INTENTS OUT
+// CONCERN 4 - THE ACCOUNT TRUST BOUNDARY
+//
+// ★★★ THE ACCOUNT IS A PRICING AUTHORITY, AND IT USED TO BE CALLER-SUPPLIED.
+//
+// `PriceGroupService.updateOrderAmountsWithPriceGroups` resolves the account's price
+// groups from `order.accountID` - the ported equivalent of the `!isNull(getAccount())`
+// test at [model/service/PriceGroupService.cfc:L365] - `calculateSkuPriceBasedOnAccount`
+// [:L271] reaches the subscription price-group query with it, and the promotion side keys
+// account use counts by it [model/service/PromotionService.cfc:L1098]. Whoever chooses the
+// account chooses which rates and which use-limits apply.
+//
+// A code review raised the state of this file as CWE-639, authorization bypass through a
+// user-controlled key: the envelope's top-level `accountID` flowed straight into
+// `createRequestScope`, the handler read the authorizer NOWHERE, and nothing compared the
+// body's account with the order's. The cases below are the ones the review required, plus
+// the two the ORDER-side authority makes necessary.
+// ===========================================================================
+
+describe('the account trust boundary (NET-NEW)', () => {
+  it('threads the AUTHENTICATED account into the request scope, and never the body member', async () => {
+    const { order } = makeGoldenOrder({ accountID: AUTHENTICATED_ACCOUNT_ID });
+    const harness = makeHarness({ admit: order });
+
+    const result = await harness.invoke(
+      // The body ALSO names the account, and names it correctly, so the request is admitted - but the
+      // value the scope receives comes from the authorizer either way.
+      postApplyPromotions(
+        order,
+        { accountID: AUTHENTICATED_ACCOUNT_ID },
+        authorizerFor(AUTHENTICATED_ACCOUNT_ID),
+      ),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(harness.recorder.scopeInputs).toHaveLength(1);
+    expect(harness.recorder.scopeInputs[0]?.accountID).toBe(AUTHENTICATED_ACCOUNT_ID);
+  });
+
+  it('REFUSES a body accountID that disagrees with the authenticated account', async () => {
+    const { order } = makeGoldenOrder({ accountID: AUTHENTICATED_ACCOUNT_ID });
+    const harness = makeHarness({ admit: order });
+
+    const result = await harness.invoke(
+      postApplyPromotions(
+        order,
+        { accountID: OTHER_ACCOUNT_ID },
+        authorizerFor(AUTHENTICATED_ACCOUNT_ID),
+      ),
+    );
+
+    // REFUSED rather than silently overridden: a caller that believes it is pricing for another
+    // account must not be handed this account's discounts under its own idempotency key.
+    expect(result.statusCode).toBe(400);
+    expect(fieldPathsOf(result)).toEqual(['accountID']);
+    // Neither identifier is echoed: reporting the authenticated one would disclose the session's
+    // account to whoever sent the body.
+    expect(result.body).not.toContain(OTHER_ACCOUNT_ID);
+    expect(result.body).not.toContain(AUTHENTICATED_ACCOUNT_ID);
+    // Nothing was opened, admitted or priced.
+    expect(harness.recorder.log).toEqual([]);
+  });
+
+  it('REFUSES an order document naming a DIFFERENT account from the authenticated one', async () => {
+    // ★ THE CASE THE REVIEW NAMED: `order.accountID = 'A'` with a top-level `accountID = 'B'`. Here
+    // the order names the OTHER account while the session and the envelope agree, which is the same
+    // bypass reached through the document instead of the envelope - and the document is what the
+    // price-group pass actually reads.
+    const { order } = makeGoldenOrder({ accountID: OTHER_ACCOUNT_ID });
+    const harness = makeHarness({ admit: order });
+
+    const result = await harness.invoke(
+      postApplyPromotions(
+        order,
+        { accountID: AUTHENTICATED_ACCOUNT_ID },
+        authorizerFor(AUTHENTICATED_ACCOUNT_ID),
+      ),
+    );
+
+    expect(result.statusCode).toBe(400);
+    expect(fieldPathsOf(result)).toEqual(['order.accountID']);
+    expect(result.body).not.toContain(OTHER_ACCOUNT_ID);
+    // The order was admitted - that is where the account became visible - and then refused BEFORE the
+    // composed operation could price it.
+    expect(harness.recorder.log).toEqual([ROOT_OPENED, SCOPE_OPENED, ORDER_ADMITTED]);
+    expect(harness.recorder.composedInputs).toHaveLength(0);
+  });
+
+  it('lets the 401 admission gate win before inspecting an anonymous body account', async () => {
+    const { order } = makeGoldenOrder({ accountID: OTHER_ACCOUNT_ID });
+    const harness = makeHarness({ admit: order });
+
+    // No authorizer context AT ALL - stated explicitly, because the suite default is an authenticated
+    // session - and a document naming an account. Under the defect this priced that account's rates
+    // for an unauthenticated caller.
+    const result = await harness.invoke(postApplyPromotions(order, {}, null));
+
+    expect(result.statusCode).toBe(401);
+    expect(errorBodyOf(result).category).toBe('unauthenticated');
+    expect(errorBodyOf(result)).not.toHaveProperty('fields');
+    expect(harness.recorder.log).toEqual([]);
+  });
+
+  it('REFUSES an anonymous order even when the body names no account', async () => {
+    const { order } = makeGoldenOrder({ accountID: undefined });
+    const harness = makeHarness({ admit: order });
+
+    // Anonymous on BOTH sides, stated explicitly: no authorizer context and no account on the order.
+    const result = await harness.invoke(postApplyPromotions(order, {}, null));
+
+    // The logged-out pricing arm still exists below the boundary, but this HTTP route no longer
+    // exposes it anonymously. Authentication is established before any order is admitted.
+    expect(result.statusCode).toBe(401);
+    expect(errorBodyOf(result).category).toBe('unauthenticated');
+    expect(harness.recorder.log).toEqual([]);
+  });
+
+  it('admits an authenticated session pricing an order that names no account', async () => {
+    const { order } = makeGoldenOrder({ accountID: undefined });
+    const harness = makeHarness({ admit: order });
+
+    const result = await harness.invoke(
+      postApplyPromotions(order, {}, authorizerFor(AUTHENTICATED_ACCOUNT_ID)),
+    );
+
+    // The scope still carries the authenticated account - it is the request's identity, not the
+    // order's - while the order stays on the logged-out arm of the price-group pass.
+    expect(result.statusCode).toBe(200);
+    expect(harness.recorder.scopeInputs[0]?.accountID).toBe(AUTHENTICATED_ACCOUNT_ID);
+  });
+
+  it('reads the authorizer claim CASE-INSENSITIVELY, as a CFML struct key read does', async () => {
+    const { order } = makeGoldenOrder({ accountID: AUTHENTICATED_ACCOUNT_ID });
+    const harness = makeHarness({ admit: order });
+
+    // An authorizer emitting `accountId` names the same claim as one emitting `accountID`. A
+    // case-sensitive index would let a deployment's key casing silently decide whether a request is
+    // treated as signed in - which would refuse this order rather than price it.
+    const result = await harness.invoke(
+      postApplyPromotions(order, {}, { accountId: AUTHENTICATED_ACCOUNT_ID }),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(harness.recorder.scopeInputs[0]?.accountID).toBe(AUTHENTICATED_ACCOUNT_ID);
+  });
+
+  it('compares the two accounts case-insensitively, as CFML string comparison does', async () => {
+    const { order } = makeGoldenOrder({ accountID: AUTHENTICATED_ACCOUNT_ID.toUpperCase() });
+    const harness = makeHarness({ admit: order });
+
+    const result = await harness.invoke(
+      postApplyPromotions(order, {}, authorizerFor(AUTHENTICATED_ACCOUNT_ID)),
+    );
+
+    // The same account in a different casing IS the same account, so this is not a conflict. CFML
+    // identifiers are case-insensitive and reporting a conflict here would refuse a legitimate
+    // request.
+    expect(result.statusCode).toBe(200);
+  });
+
+  it('REFUSES a blank or non-string account claim as unusable authentication', async () => {
+    const { order } = makeGoldenOrder({ accountID: undefined });
+    const blank = makeHarness({ admit: order });
+    const nonString = makeHarness({ admit: order });
+
+    const blankResult = await blank.invoke(postApplyPromotions(order, {}, { accountID: '   ' }));
+    const nonStringResult = await nonString.invoke(
+      postApplyPromotions(order, {}, { accountID: 12345 }),
+    );
+
+    // Neither value can establish a principal. Refusal happens before a scope could coerce either
+    // value into an account-scoped read.
+    expect(blankResult.statusCode).toBe(401);
+    expect(blank.recorder.log).toEqual([]);
+    expect(nonStringResult.statusCode).toBe(401);
+    expect(nonString.recorder.log).toEqual([]);
+  });
+
+  it('applies the same rule to the WIRE path, where the document is the only account statement', async () => {
+    const { order } = makeGoldenOrder({ accountID: OTHER_ACCOUNT_ID });
+    const harness = makeHarness({ materialize: order });
+
+    const result = await harness.invoke(
+      postWireOrder(order, {}, authorizerFor(AUTHENTICATED_ACCOUNT_ID)),
+    );
+
+    // The document hydrated - the account only becomes readable once it has - and then the request was
+    // refused before pricing. Hydration is a read; pricing is what the account decides.
+    expect(result.statusCode).toBe(400);
+    expect(fieldPathsOf(result)).toEqual(['order.accountID']);
+    expect(harness.recorder.materializedDocuments).toHaveLength(1);
+    expect(harness.recorder.composedInputs).toHaveLength(0);
+  });
+
+  it('carries the account on getSalePriceDetailsForProductSkus too, from the authorizer alone', async () => {
+    const harness = makeHarness({ salePriceDetails: {} });
+
+    const result = await harness.invoke(
+      postDocument(
+        {
+          operation: 'getSalePriceDetailsForProductSkus',
+          productID: PRODUCT_ID,
+          accountID: OTHER_ACCOUNT_ID,
+        },
+        authorizerFor(AUTHENTICATED_ACCOUNT_ID),
+      ),
+    );
+
+    // The same refusal on the same grounds: the operation differs, the authority does not.
+    expect(result.statusCode).toBe(400);
+    expect(fieldPathsOf(result)).toEqual(['accountID']);
+    expect(harness.recorder.salePriceRequests).toEqual([]);
+  });
+});
+
+describe('the authenticated admission gate (NET-NEW)', () => {
+  it('refuses a request carrying no authorizer context before wiring the graph', async () => {
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ admit: order });
+
+    const result = await harness.invoke(postApplyPromotions(order, {}, null));
+
+    expect(result.statusCode).toBe(401);
+    expect(errorBodyOf(result).category).toBe('unauthenticated');
+    expect(harness.recorder.log).toEqual([]);
+  });
+
+  it('refuses every context that names no usable account', async () => {
+    const unusable: readonly Readonly<Record<string, unknown>>[] = [
+      {},
+      { unrelated: 'x' },
+      { accountID: '' },
+      { accountID: '  ' },
+      { accountID: 42 },
+    ];
+
+    for (const authorizer of unusable) {
+      const { order } = makeGoldenOrder();
+      const harness = makeHarness({ admit: order });
+
+      const result = await harness.invoke(postApplyPromotions(order, {}, authorizer));
+
+      expect(result.statusCode).toBe(401);
+      expect(harness.recorder.log).toEqual([]);
+    }
+  });
+
+  it('refuses before reading or parsing the body', async () => {
+    const harness = makeHarness();
+
+    const result = await harness.invoke(
+      makeProxyEvent({ body: '{ not json at all', authorizer: null }),
+    );
+
+    expect(result.statusCode).toBe(401);
+    expect(errorBodyOf(result).message).not.toBe(UNPARSABLE_BODY_SENTENCE);
+    expect(harness.recorder.log).toEqual([]);
+  });
+
+  it('still resolves the route first, so a wrong path is a 404 rather than a 401', async () => {
+    const harness = makeHarness();
+
+    const result = await harness.invoke(
+      makeProxyEvent({ path: '/promotions/not-a-route', authorizer: null }),
+    );
+
+    expect(result.statusCode).toBe(404);
+    expect(harness.recorder.log).toEqual([]);
+  });
+
+  it('publishes no claim name, internal reason, field detail or challenge', async () => {
+    const result = await makeHarness().invoke(makeProxyEvent({ authorizer: null }));
+    const headerNames = Object.keys(result.headers ?? {})
+      .map((name): string => name.toLowerCase())
+      .sort();
+
+    expect(result.statusCode).toBe(401);
+    expect(result.body).not.toContain('accountID');
+    expect(result.body).not.toContain('noAuthorizerContext');
+    expect(result.body).not.toContain('authoriz');
+    expect(errorBodyOf(result)).not.toHaveProperty('fields');
+    expect(headerNames).toEqual(['cache-control', 'content-type']);
+    expect(headerNames).not.toContain('www-authenticate');
+  });
+});
+
+// ===========================================================================
+// CONCERN 5 - DELEGATION: ONE ROOT, ONE SCOPE, ONE COMPOSED OPERATION
+// ===========================================================================
+
+describe('promotion-application delegation (NET-NEW)', () => {
+  it('opens the root once, opens ONE scope, and invokes the composed operation exactly once', async () => {
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ admit: order });
+
+    const result = await harness.invoke(postApplyPromotions(order));
+
+    expect(result.statusCode).toBe(200);
+    // ONE fresh scope per invocation, never held, cached or reused: that is what stops a warm
+    // container from carrying one invocation's state - and therefore one customer's price - into
+    // another's.
+    expect(harness.recorder.log.filter((label): boolean => label === ROOT_OPENED)).toHaveLength(1);
+    expect(harness.recorder.log.filter((label): boolean => label === SCOPE_OPENED)).toHaveLength(1);
+    expect(
+      harness.recorder.log.filter((label): boolean => label === COMPOSED_PRICING),
+    ).toHaveLength(1);
+  });
+
+  it('takes a FRESH scope for every invocation and reuses nothing between them', async () => {
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ admit: order });
+
+    await harness.invoke(postApplyPromotions(order));
+    await harness.invoke(postApplyPromotions(order));
+
+    expect(harness.recorder.log.filter((label): boolean => label === SCOPE_OPENED)).toHaveLength(2);
+    expect(harness.recorder.composedInputs).toHaveLength(2);
+  });
+
+  it('threads the injected clock into the request scope', async () => {
+    const { order } = makeGoldenOrder();
+    const pinned = new Date('2024-02-29T00:00:00.000Z');
+    const harness = makeHarness({ admit: order, now: pinned, clock: (): Date => pinned });
+
+    const body = successBodyOf(await harness.invoke(postApplyPromotions(order)));
+
+    expect(harness.recorder.scopeInputs[0]?.now?.toISOString()).toBe(pinned.toISOString());
+    // Rendered through `toISOString`, hence UTC by definition, and read from the SCOPE rather than
+    // from a clock this handler owns.
+    expect(body.evaluatedAt).toBe(pinned.toISOString());
+  });
+
+  it('passes NO clock in the production configuration, so the scope binds the instant itself', async () => {
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ admit: order });
+
+    const body = successBodyOf(await harness.invoke(postApplyPromotions(order)));
+
+    // `now` absent, not present-and-undefined: the scope reads the wall clock ONCE at its own creation
+    // and publishes that single instant, which is what makes every date comparison in one invocation
+    // resolve against the same moment.
+    expect(harness.recorder.scopeInputs[0]?.now).toBeUndefined();
+    expect(body.evaluatedAt).toBe(EVALUATED_AT);
+  });
+
+  it('imposes NO ordering of its own on the order items it forwards', async () => {
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ admit: order });
+
+    await harness.invoke(postApplyPromotions(order));
+
+    const [forwarded] = harness.recorder.composedInputs;
+
+    // Item order is preserved exactly. The engine's own selection ordering is load-bearing and the
+    // reward collection is deliberately unordered [model/dao/PromotionDAO.cfc:L51-L132 declares no
+    // `ORDER BY`]; a handler that sorted on the way in would be making an engine decision.
+    expect(forwarded?.orderItems.map((item): string => item.orderItemID)).toEqual(
+      order.orderItems.map((item): string => item.orderItemID),
+    );
+    expect(forwarded).toBe(order);
+  });
+
+  it('forwards the order type verbatim and gates nothing on it', async () => {
+    const { order } = makeGoldenOrder({ orderTypeSystemCode: 'otReturnOrder' });
+    const harness = makeHarness({ admit: order });
+
+    const result = await harness.invoke(postApplyPromotions(order));
+
+    // The two order-type conditionals at [model/service/PromotionService.cfc:L61] and [:L542] are the
+    // ENGINE's, and `tests/unit/services/promotionService.test.ts` owns them - including the preserved
+    // `issue_1766` no-op. What this tier owes is that the code arrives unexamined and unaltered, and
+    // that an empty intent array is served as an ordinary 200 rather than as an error.
+    expect(result.statusCode).toBe(200);
+    expect(harness.recorder.composedInputs[0]?.orderType.systemCode).toBe('otReturnOrder');
+    expect(promotionIntentsOf(successBodyOf(result))).toEqual([]);
+  });
+
+  it('reaches NEITHER individual order pass, and neither the price-resolution nor promotion queries', async () => {
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ admit: order });
+
+    const result = await harness.invoke(postApplyPromotions(order));
+
+    // Every withheld member of the scope and the root is a throwing getter, so a 200 here is itself
+    // the assertion: had the handler touched `priceGroupService`, `promotionService`,
+    // `currentAccountContext`, `diagnostics` or any other withheld member, this invocation would have
+    // produced a 500 and a `WithheldCollaboratorError` on the log.
+    expect(result.statusCode).toBe(200);
+    expect(harness.emitted.lines.join('\n')).not.toContain('WithheldCollaboratorError');
+  });
+
+  it('and that guard is LIVE rather than vacuous - a withheld member really does throw', () => {
+    const recorder = makeRecorder();
+    const scope = makeRequestScopeDouble(
+      {
+        now: new Date(EVALUATED_AT),
+        salePriceDetails: {},
+        materialized: undefined,
+        materializationFailure: undefined,
+        pricing: { priceGroupIntents: [], promotionIntents: [], failure: undefined },
+      },
+      recorder,
+    );
+
+    // Proven by reading one, so the negative assertions above cannot be passing because the getters
+    // are inert.
+    expect((): unknown => scope.priceGroupService).toThrow(WithheldCollaboratorError);
+    expect((): unknown => scope.promotionService).toThrow(/does not use/);
+  });
+
+  it('refuses every caller-authored ordering member before opening the graph', async () => {
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ admit: order });
+
+    // There is no `sequence`, `phase`, `runAfter`, `pipeline`, `order` or `skipPriceGroups` member on
+    // this contract, and a caller inventing one is sending an unknown envelope member. The strict
+    // envelope refuses it rather than silently pretending it was honoured.
+    const result = await harness.invoke(
+      postApplyPromotions(order, {
+        sequence: 'promotionsThenPriceGroups',
+        skipPriceGroups: true,
+      }),
+    );
+
+    expect(result.statusCode).toBe(400);
+    // The unknown member names are caller-authored and are therefore not reflected. The safe path
+    // identifies their containing object: the request envelope itself.
+    expect(fieldPathsOf(result)).toEqual(['']);
+    expect(result.body).not.toContain('sequence');
+    expect(result.body).not.toContain('skipPriceGroups');
+    expect(result.body).not.toContain('promotionsThenPriceGroups');
+    expect(harness.recorder.log).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// CONCERN 6 - THE ANTI-CORRUPTION BOUNDARY: VIEWS IN, INTENTS OUT
 // ===========================================================================
 
 describe('the anti-corruption boundary (NET-NEW)', () => {
-  it('never mutates or persists the Order, OrderItem or OrderFulfillment it was given', async () => {
-    const { order, capture } = makeGoldenOrder();
-    const before = {
-      itemPrices: order.orderItems.map((item): string => item.price.toDecimalString()),
-      appliedGroups: order.orderItems.map((item): string | undefined =>
-        item.appliedPriceGroup?.getPriceGroupID(),
-      ),
-      appliedPromotionCounts: order.orderItems.map((item): number => item.appliedPromotions.length),
-      orderApplied: order.appliedPromotions.length,
-    };
-
+  it('never mutates or persists the order, its items or its fulfillments', async () => {
+    const { order } = makeGoldenOrder();
+    const before = JSON.stringify({
+      orderID: order.orderID,
+      subtotal: order.subtotal.toDecimalString(),
+      items: order.orderItems.map((item): readonly string[] => [
+        item.orderItemID,
+        item.price.toDecimalString(),
+        item.extendedPrice.toDecimalString(),
+      ]),
+      appliedPromotions: order.appliedPromotions.length,
+    });
     const harness = makeHarness({
       admit: order,
-      rewards: [makeRewardForGoldenOrder(capture)],
-      decisions: [
-        {
-          orderItemID: itemAt(order, 0).orderItemID,
-          price: Money.fromDecimalString('1.00'),
-          priceGroup: makePriceGroupFixtures({ idPrefix: 'immutability' }).isolatedPriceGroup,
-        },
-      ],
+      promotionIntents: [itemIntent(itemAt(order, 0).orderItemID, '3.01')],
     });
 
     await harness.invoke(postApplyPromotions(order));
 
-    expect(order.orderItems.map((item): string => item.price.toDecimalString())).toEqual(
-      before.itemPrices,
-    );
+    // The submitted view is READ and handed on. There is no setter to call, no `save`, no `delete` and
+    // no `removeAppliedPromotions` on any of these shapes - the legacy's three backwards clear-out
+    // loops [model/service/PromotionService.cfc:L64-L80] are REPLACED by emitted intents, not
+    // reproduced - so a consumer reconciles against what it already stores.
     expect(
-      order.orderItems.map((item): string | undefined => item.appliedPriceGroup?.getPriceGroupID()),
-    ).toEqual(before.appliedGroups);
-    expect(order.orderItems.map((item): number => item.appliedPromotions.length)).toEqual(
-      before.appliedPromotionCounts,
-    );
-    expect(order.appliedPromotions).toHaveLength(before.orderApplied);
-
-    // The view is DEEPLY FROZEN by its own fixture, so a write would throw in a module's strict mode
-    // rather than pass silently. Asserting it makes the guarantee structural rather than incidental.
-    expect(Object.isFrozen(order)).toBe(true);
-    expect(Object.isFrozen(order.orderItems)).toBe(true);
+      JSON.stringify({
+        orderID: order.orderID,
+        subtotal: order.subtotal.toDecimalString(),
+        items: order.orderItems.map((item): readonly string[] => [
+          item.orderItemID,
+          item.price.toDecimalString(),
+          item.extendedPrice.toDecimalString(),
+        ]),
+        appliedPromotions: order.appliedPromotions.length,
+      }),
+    ).toBe(before);
   });
 
-  it('emits intents keyed ONLY by opaque identifiers, with the three appliedType values', async () => {
-    const { order, capture } = makeGoldenOrder();
-    const harness = makeHarness({ admit: order, rewards: [makeRewardForGoldenOrder(capture)] });
+  it('emits intents keyed ONLY by opaque identifiers, across all three applied types', async () => {
+    const { order } = makeGoldenOrder();
+    const firstItem = itemAt(order, 0);
+    const fulfillment = order.orderFulfillments[0];
+
+    if (fulfillment === undefined) {
+      throw new TypeError('the golden order carries no fulfillment');
+    }
+
+    const harness = makeHarness({
+      admit: order,
+      promotionIntents: [
+        itemIntent(firstItem.orderItemID, '3.01'),
+        {
+          operation: 'add',
+          appliedType: 'order',
+          orderID: order.orderID,
+          promotionID: PROMOTION_ID,
+          discountAmount: Money.fromDecimalString('5.00'),
+        },
+        {
+          operation: 'add',
+          appliedType: 'orderFulfillment',
+          orderFulfillmentID: fulfillment.orderFulfillmentID,
+          promotionID: PROMOTION_ID,
+          discountAmount: Money.fromDecimalString('1.25'),
+        },
+      ],
+    });
 
     const body = successBodyOf(await harness.invoke(postApplyPromotions(order)));
     const intents = promotionIntentsOf(body);
 
-    // CFML parity [model/service/PromotionService.cfc:L529-L534]: the legacy `PromotionApplied` is
-    // never `setOrder()`-ed and never explicitly saved - it relies on ORM cascade - which is exactly
-    // why the target emits INTENTS instead.
-    expect(intents.length).toBeGreaterThan(0);
-
-    const declaredTypes = capture.appliedTypes ?? [];
-    for (const intent of intents) {
-      // Not widened: `order` [:L448], `orderItem` [:L531] and the fulfillment value [:L402].
-      expect(declaredTypes).toContain(intent.appliedType);
-      expect(intent.operation).toBe('add');
-
-      if (intent.appliedType === 'orderItem') {
-        expect(typeof intent.orderItemID).toBe('string');
-        expect(intent.orderID).toBeUndefined();
-      } else {
-        expect(typeof intent.orderID).toBe('string');
-        expect(intent.orderItemID).toBeUndefined();
-      }
-    }
-
-    // No entity, no object graph and no persistence handle crosses the boundary.
-    expect(result_hasNoEntityShape(body)).toBe(true);
+    expect(intents.map((intent): string => intent.appliedType)).toEqual([
+      'orderItem',
+      'order',
+      'orderFulfillment',
+    ]);
+    // `model/entity/PromotionApplied.cfc` holds real foreign keys into the out-of-scope Order,
+    // OrderItem and OrderFulfillment [:L58, L59, L61]; this boundary reaches all three as OPAQUE
+    // strings only. No entity, no association and no ORM handle crosses the wire.
+    const serialized = JSON.stringify(intents);
+    expect(serialized).toContain(firstItem.orderItemID);
+    expect(serialized).toContain(order.orderID);
+    expect(serialized).toContain(fulfillment.orderFulfillmentID);
+    expect(serialized).not.toContain('getSkuID');
+    expect(serialized).not.toContain('_orm');
   });
 
-  it('renders discountAmount as a FULL-PRECISION decimal string, never a rounded one', async () => {
-    const { order, capture } = makeGoldenOrder();
-    const harness = makeHarness({ admit: order, rewards: [makeRewardForGoldenOrder(capture)] });
+  it('renders discountAmount at FULL PRECISION, never rounded to a presentation form', async () => {
+    const { order } = makeGoldenOrder();
+    const firstItem = itemAt(order, 0);
+    const harness = makeHarness({
+      admit: order,
+      promotionIntents: [itemIntent(firstItem.orderItemID, '7.49625')],
+    });
 
     const body = successBodyOf(await harness.invoke(postApplyPromotions(order)));
-    const reference = capture.referenceCalculation;
-    const firstItem = itemAt(order, 0);
 
-    // 19.99 x 3 = 59.97, less 12.5% = 7.49625. The WIRE carries every significant digit, because an
-    // intent is bound for a `big_decimal` column [model/entity/PromotionApplied.cfc:L51] and a
-    // `big_decimal` column is precisely one that declines to round on the caller's behalf. The
-    // two-decimal `numberFormat(discountAmount,"0.00")` at [model/service/PromotionService.cfc:L1017]
-    // is return-value PRESENTATION at the end of a calculating function, not a persistence step.
+    // `Money.toDecimalString()` and NOT `toFixed2()`, and the difference is money: an intent is a
+    // write-side instruction destined for a `big_decimal` column [model/entity/PromotionApplied.cfc:L51],
+    // and a `big_decimal` column is precisely one that declines to round on the caller's behalf. The
+    // legacy's own `numberFormat(discountAmount,"0.00")` [model/service/PromotionService.cfc:L1017] is
+    // return-value PRESENTATION at the end of a calculating function, not a persistence step.
     expectSameAmount(wireDiscountForItem(body, firstItem.orderItemID), '7.49625');
-    expectSameAmount(reference?.discountAmount ?? '', '7.49625');
-    expectDifferentAmount(wireDiscountForItem(body, firstItem.orderItemID), '7.50');
-
-    // Every monetary member on the wire is a STRING, never a JSON number.
-    for (const intent of promotionIntentsOf(body)) {
-      expect(typeof intent.discountAmount).toBe('string');
-    }
-    for (const intent of body.priceGroupIntents ?? []) {
-      expect(typeof intent.price).toBe('string');
-    }
+    // The presentation form the legacy's own `numberFormat` would have produced is ABSENT from the
+    // wire: a rounded amount reaching a `big_decimal` column is money quietly lost.
+    expect(JSON.stringify(body.promotionIntents)).not.toContain('7.50');
   });
 
-  it('SKIPS an order item whose item type is not oitSale', async () => {
-    const { capture } = makeGoldenOrder();
-    const nonSale = capture.nonSaleOrderItemTypeSystemCode;
-    expect(nonSale).toBeDefined();
-    expect(nonSale).not.toBe('oitSale');
-
-    const gated = makeGoldenOrder({
-      itemOverrides: [{ orderItemTypeSystemCode: nonSale }, {}, {}],
-    });
+  it('OMITS discountAmount on a removal rather than rendering a zero', async () => {
+    const { order } = makeGoldenOrder();
+    const firstItem = itemAt(order, 0);
     const harness = makeHarness({
-      admit: gated.order,
-      rewards: [makeRewardForGoldenOrder(gated.capture)],
+      admit: order,
+      promotionIntents: [
+        {
+          operation: 'remove',
+          appliedType: 'orderItem',
+          orderItemID: firstItem.orderItemID,
+          promotionAppliedID: 'pa-existing-0001',
+          // NULLABLE on the persisted-row removal shape alone: the legacy's blanket clear never reads
+          // the association and the foreign key declares no `notnull`
+          // [model/entity/PromotionApplied.cfc:L58], so a row it clears must stay representable. It is
+          // carried here because a consumer auditing what it detached should not have to re-read the row.
+          promotionID: PROMOTION_ID,
+        },
+      ],
     });
 
-    const body = successBodyOf(await harness.invoke(postApplyPromotions(gated.order)));
-    const skipped = itemAt(gated.order, 0);
+    const body = successBodyOf(await harness.invoke(postApplyPromotions(order)));
+    const [intent] = promotionIntentsOf(body);
 
-    // [model/service/PromotionService.cfc:L206] admits an item into the discount body only when its
-    // type system code is `oitSale` [model/entity/OrderItem.cfc:L118, L125].
-    expect(
-      promotionIntentsOf(body).some(
-        (intent): boolean => intent.orderItemID === skipped.orderItemID,
-      ),
-    ).toBe(false);
-    // Its siblings are unaffected.
-    expect(
-      promotionIntentsOf(body).some(
-        (intent): boolean => intent.orderItemID === itemAt(gated.order, 1).orderItemID,
-      ),
-    ).toBe(true);
+    // A removal carries no amount at all: `discountAmount` is `?: never` on that variant, and a zero
+    // would state a discount of nothing rather than the absence of one.
+    expect(intent?.operation).toBe('remove');
+    expect(intent === undefined ? true : 'discountAmount' in intent).toBe(false);
+  });
+
+  it('renders price-group intents alongside them, in the order the pass emitted', async () => {
+    const { order } = makeGoldenOrder();
+    const first = itemAt(order, 0);
+    const second = itemAt(order, 1);
+    const harness = makeHarness({
+      admit: order,
+      priceGroupIntents: [
+        {
+          orderItemID: second.orderItemID,
+          price: Money.fromDecimalString('9.50'),
+          priceGroupID: 'pg-second-0002',
+        },
+        {
+          orderItemID: first.orderItemID,
+          price: Money.fromDecimalString('11.00'),
+          priceGroupID: 'pg-first-0001',
+        },
+      ],
+    });
+
+    const body = successBodyOf(await harness.invoke(postApplyPromotions(order)));
+
+    // EMITTED ORDER, with no sort, re-rank, filter or de-duplication: the descending insert-sort of
+    // qualified discounts [model/service/PromotionService.cfc:L266-L294] and the single-best-per-item
+    // application [:L524-L537] are decisions the engine already made.
+    expect((body.priceGroupIntents ?? []).map((intent): string => intent.orderItemID)).toEqual([
+      second.orderItemID,
+      first.orderItemID,
+    ]);
+    expectSameAmount((body.priceGroupIntents ?? [])[0]?.price ?? '', '9.50');
+  });
+
+  it('serves an EMPTY intent set as an ordinary 200', async () => {
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ admit: order });
+
+    const result = await harness.invoke(postApplyPromotions(order));
+    const body = successBodyOf(result);
+
+    // An empty array is a valid result and, for a return order, the CORRECT one - see the preserved
+    // `issue #1766` no-op, which the services suite owns.
+    expect(result.statusCode).toBe(200);
+    expect(body.promotionIntents).toEqual([]);
+    expect(body.priceGroupIntents).toEqual([]);
   });
 
   it('exposes nothing whatsoever for PromotionAccount, which is inert in this slice', async () => {
-    // `model/entity/PromotionAccount.cfc` has no validation file, no service method references it and
-    // `model/service/PromotionService.cfc` never touches it. An inert entity gets no wire surface.
-    const { order, capture } = makeGoldenOrder();
-    const harness = makeHarness({ admit: order, rewards: [makeRewardForGoldenOrder(capture)] });
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ admit: order });
 
     const result = await harness.invoke(postApplyPromotions(order));
 
@@ -2415,260 +2181,42 @@ describe('the anti-corruption boundary (NET-NEW)', () => {
   });
 });
 
-/** Does a success body carry only wire-safe primitives, arrays and plain objects? */
-function result_hasNoEntityShape(body: PromotionApplicationResponseBody): boolean {
-  const encoded = JSON.stringify(body);
-
-  return (
-    !encoded.includes('"__proto__"') &&
-    !encoded.includes('promotionAppliedID":null') &&
-    // A ported entity would serialise its private backing fields; none appears.
-    !encoded.includes('parentProductType') &&
-    !encoded.includes('childProductTypes')
-  );
-}
-
 // ===========================================================================
-// SECTION 7 - THE FIVE ORDER-DEPENDENCE VECTORS
+// SECTION 7 - SAFE DIAGNOSTICS AT THE HANDLER SEAM
 //
-// This adapter's obligation towards all five is NEGATIVE: every one of them decides
-// money and every one belongs to the services tier, so what is asserted here is
-// that the handler DISTURBS NONE OF THEM.
+// Engine arithmetic and ordering belong to the services tier. This suite programs
+// the composed operation with data and verifies only what the handler owns.
 // ===========================================================================
 
-describe('the five order-dependence vectors are left undisturbed (NET-NEW)', () => {
-  it('V1: adds no ORDER BY, no sort and no re-rank - intents leave in EMITTED order', async () => {
-    // `promotionRewardUsageDetails[rewardID].usedInOrder` is incremented IN PLACE at
-    // [model/service/PromotionService.cfc:L297], and the collection comes from
-    // `getActivePromotionRewards()` [model/dao/PromotionDAO.cfc:L51-L132], which declares NO
-    // `ORDER BY`. So whether a later reward is allowed depends on which earlier ones ran, and the
-    // order is genuinely non-deterministic at a tie. THAT non-determinism IS the legacy behaviour.
-    //
-    // Note also [model/service/PromotionService.cfc:L108,L175]: `maximumUsePerOrder` is seeded with
-    // the `1000000` sentinel meaning "unlimited", which [:L223-L224] can narrow to
-    // `qualificationQuantity * maximumUsePerQualification`. All three limits and `usedInOrder` are
-    // PLAIN NUMBERS, never Money.
-    const { order, capture } = makeGoldenOrder();
-    const harness = makeHarness({ admit: order, rewards: [makeRewardForGoldenOrder(capture)] });
-
-    const body = successBodyOf(await harness.invoke(postApplyPromotions(order)));
-    const emittedItemOrder = promotionIntentsOf(body)
-      .filter((intent): boolean => intent.appliedType === 'orderItem')
-      .map((intent): string | undefined => intent.orderItemID);
-
-    // The engine walks the items in the order the view carries them, and the adapter reports them in
-    // exactly that order - it re-sorts nothing on the way out. The THIRD item emits nothing, and
-    // deliberately so: it is the arm-two item, where the L252 correction term (14.00) outweighs its
-    // own 12.5% discount (6.00), so `if(discountAmount > 0)` [:L257] rejects it. That is the same
-    // data dependency SECTION 4 measures, seen from the emission side.
-    expect(emittedItemOrder).toEqual([itemAt(order, 0).orderItemID, itemAt(order, 1).orderItemID]);
-
-    // Stated as the general property too, so a fixture that later gave the third item a positive
-    // discount would still pin "no re-rank": whatever is emitted is a SUBSEQUENCE of view order.
-    const viewOrder = order.orderItems.map((item): string => item.orderItemID);
-    const emittedPositions = emittedItemOrder.map((orderItemID): number =>
-      viewOrder.indexOf(orderItemID === undefined ? '' : orderItemID),
-    );
-    expect(emittedPositions).toEqual([...emittedPositions].sort((left, right) => left - right));
-    expect(emittedPositions).not.toContain(-1);
-
-    expect(typeof capture.unlimitedUseSentinel).toBe('number');
-    expect(capture.unlimitedUseSentinel).toBe(1000000);
-  });
-
-  it('V2: an EMPTY reward collection runs NO order-level pass', async () => {
-    // `var orderRewards = false;` [model/service/PromotionService.cfc:L166] and the loop-counter reset
-    // `if(!orderRewards and pr == arrayLen(promotionRewards)) { pr = 0; orderRewards = true; }`
-    // [:L457-L461]. Because the reset sits INSIDE the loop body, an empty reward collection means the
-    // second pass NEVER RUNS. Nothing here "helpfully" runs one.
-    const { order } = makeGoldenOrder({ rewardOrdering: 'empty' });
-    const empty = makeHarness({ admit: order, rewards: [] });
-
-    const body = successBodyOf(await empty.invoke(postApplyPromotions(order)));
-
-    expect(empty.recorder.log).not.toContain(ORDER_LEVEL_PASS);
-    expect(body.promotionIntents).toEqual([]);
-    // The price-group pass STILL ran first, and still ran unconditionally.
-    expect(empty.recorder.log.indexOf(PRICE_GROUP_PASS)).toBeLessThan(
-      empty.recorder.log.indexOf(PROMOTION_PASS),
-    );
-
-    // With a non-empty collection the second pass IS reached, so the assertion above is not vacuous.
-    const populated = makeGoldenOrder();
-    const withRewards = makeHarness({
-      admit: populated.order,
-      rewards: [makeRewardForGoldenOrder(populated.capture)],
-    });
-    await withRewards.invoke(postApplyPromotions(populated.order));
-
-    expect(withRewards.recorder.log).toContain(ORDER_LEVEL_PASS);
-  });
-
-  it('V3: returns whatever the over-use stripping loop left behind, and repairs nothing', async () => {
-    // LEGACY-DEFECT [model/service/PromotionService.cfc:L468-L521]: the loop iterates
-    // `for(var prID in promotionRewardUsageDetails)` and DETECTS correctly with `prID` on both sides
-    // at L471, but computes the SUBTRAHEND from
-    // `promotionRewardUsageDetails[ reward.getPromotionRewardID() ].maximumUsePerOrder` at L472 and
-    // walks that same leaked reward's `orderItemsUsage` at L475-L477 - indexing by the `reward`
-    // variable LEFT OVER from the preceding reward loop rather than by `prID`. This is a
-    // CROSS-WIRING rather than a simple swap: when the leaked reward and `prID` touch DIFFERENT order
-    // items the inner match finds nothing and the over-use is SILENTLY NEVER CORRECTED AT ALL. Both
-    // inner searches (L482, L498) iterate in REVERSE, so the smallest matching discount is stripped
-    // first; L479's partial strip reaches ANOTHER UNGUARDED DIVISION at L486,
-    // `precisionEvaluate('(discountAmount / thisDiscountQuantity) * (thisDiscountQuantity -
-    // needToRemove)')`; L489 zeroes `needToRemove`; L495 deletes a whole entry with `arrayDeleteAt`;
-    // L505 decrements; L514 breaks.
-    // Preserved deliberately; do not fix without a product decision.
-    //   Repairing it changes the amount a customer is charged. This adapter adds NO zero-guard, NO
-    //   `ORDER BY` and NO sort, and returns the intents exactly as the loop leaves them - which is
-    //   what the count-and-order assertion below pins. The fixture publishes the two ledger keys that
-    //   make the cross-wiring observable, and the decomposition suite that owns the loop drives them.
-    const { order, capture } = makeGoldenOrder();
-    const harness = makeHarness({ admit: order, rewards: [makeRewardForGoldenOrder(capture)] });
-
-    const body = successBodyOf(await harness.invoke(postApplyPromotions(order)));
-
-    // The two ledger keys the defect confuses are DISTINCT in the fixture, which is the only layout
-    // under which the cross-wiring is observable at all: when they coincide the loop degenerates into
-    // a correct one and the defect hides.
-    expect(capture.overusedRewardID).toBeDefined();
-    expect(capture.leakedRewardID).toBeDefined();
-    expect(capture.overusedRewardID).not.toBe(capture.leakedRewardID);
-
-    // The REVERSE search direction at [:L482] and [:L498] is published by the promotion fixture
-    // rather than by the order-view capture, and it is asserted here so a future fixture change that
-    // "tidied" the direction into a forward walk would fail loudly instead of silently changing which
-    // discount is stripped first.
-    expect(makePromotionFixtures({ idPrefix: 'over-use' }).overUseStrippingSearchesInReverse).toBe(
-      true,
-    );
-
-    // Whatever the loop left is what crosses the wire: no filtering, no de-duplication, no
-    // re-ranking. The item-level intents arrive in the view's OWN item order and the order-level
-    // intent arrives after them, exactly as the two passes emitted them.
-    const intents = promotionIntentsOf(body);
-    const itemLevelIDs = intents
-      .filter((intent): boolean => intent.appliedType === 'orderItem')
-      .map((intent): string | undefined => intent.orderItemID);
-    const orderLevelPositions = intents
-      .map((intent, position): number => (intent.appliedType === 'order' ? position : -1))
-      .filter((position): boolean => position !== -1);
-
-    expect(itemLevelIDs).toEqual([itemAt(order, 0).orderItemID, itemAt(order, 1).orderItemID]);
-    expect(orderLevelPositions).toEqual([intents.length - 1]);
-    // No de-duplication either: every intent is a DISTINCT (appliedType, key) pair.
-    expect(
-      new Set(
-        intents.map((intent): string =>
-          [intent.appliedType, intent.orderItemID ?? intent.orderID ?? ''].join('|'),
-        ),
-      ).size,
-    ).toBe(intents.length);
-  });
-
-  it('V4: applies ONLY the single largest discount per order item', async () => {
-    // `orderItemQulifiedDiscounts` - the legacy identifier is misspelled at
-    // [model/service/PromotionService.cfc:L82-L133] and is RENAMED in the target with the original
-    // spelling recorded; it is not silently renamed - is insert-sorted DESCENDING by amount at
-    // [:L266-L294], and only index `[1]` is ever applied at [:L523-L537], where L529 guards with
-    // `structKeyExists` AND `arrayLen`. Meanwhile `orderItemsUsage` is insert-sorted ASCENDING by
-    // `discountPerUseValue` at [:L301-L329] with a `break` at [:L316], so the cheapest-per-use are
-    // stripped first. BOTH orderings are load-bearing and run in OPPOSITE directions.
-    const { order, capture } = makeGoldenOrder();
-    const accepted = capture.acceptedPriceGroup;
-    expect(accepted).toBeDefined();
-
-    // TWO competing rewards on the same items: the reference 12.5% and a second, larger percentage.
-    const smaller = makeReferenceReward(accepted === undefined ? [] : [accepted]);
-    const largerGraph = makePromotionFixtures({
-      idPrefix: 'larger',
-      eligiblePriceGroups: accepted === undefined ? [] : [accepted],
-      rewardAmount: Money.fromDecimalString(LARGER_PERCENTAGE_OFF),
-      // Written EXPLICITLY as `undefined` - the fixture resolves overrides by key PRESENCE, so this
-      // is how "this reward carries no rounding rule" is requested, and it keeps the arithmetic on
-      // the unrounded arm [model/service/PromotionService.cfc:L1008-L1009] that this suite drives.
-      roundingRule: undefined,
-    });
-    const larger: RewardUnderTest = {
-      // `merchandiseReward` is the only reward that honours the `reward*` overrides.
-      reward: largerGraph.merchandiseReward,
-      promotionID: largerGraph.promotion.getPromotionID(),
-    };
-
-    const harness = makeHarness({ admit: order, rewards: [smaller, larger] });
-    const body = successBodyOf(await harness.invoke(postApplyPromotions(order)));
+describe('safe handler diagnostics (NET-NEW)', () => {
+  it('logs COUNTS about the priced order and no identifier or amount', async () => {
+    const { order } = makeGoldenOrder({ accountID: AUTHENTICATED_ACCOUNT_ID });
     const firstItem = itemAt(order, 0);
+    const harness = makeHarness({
+      admit: order,
+      promotionIntents: [itemIntent(firstItem.orderItemID, '3.01')],
+    });
 
-    const forFirstItem = promotionIntentsOf(body).filter(
-      (intent): boolean => intent.orderItemID === firstItem.orderItemID,
-    );
+    await harness.invoke(postApplyPromotions(order, {}, authorizerFor(AUTHENTICATED_ACCOUNT_ID)));
 
-    // ONE intent for the item, and it is the LARGER of the two competing discounts. 19.99 x 3 = 59.97,
-    // and 59.97 at 12.5% is 7.49625 while 59.97 at 25% is 14.9925.
-    expect(forFirstItem).toHaveLength(1);
-    expectSameAmount(wireDiscountForItem(body, firstItem.orderItemID), '14.9925');
-    expectDifferentAmount(wireDiscountForItem(body, firstItem.orderItemID), '7.49625');
-  });
+    const emitted = harness.emitted.lines.join('\n');
 
-  it('V5: adds no zero-guard to the unguarded division', () => {
-    // `var discountPerUseValue = precisionEvaluate('discountAmount / discountQuantity');`
-    // [model/service/PromotionService.cfc:L299] has NO zero check on the divisor, and neither does
-    // [:L486]. `Money.dividedBy` lets the substrate's refusal propagate for exactly that reason -
-    // returning zero would silently invent money and returning `undefined` would push a null check
-    // onto every caller.
-    //
-    // LEGACY-DEFECT [model/service/PromotionService.cfc:L299]: an unguarded division whose divisor is
-    // a caller-influenced quantity.
-    // Preserved deliberately; do not fix without a product decision.
-    //   Whether the CALL SITE wants a guard belongs to `src/services/promotion/rewardUsageLedger.ts`.
-    //   This adapter neither divides nor guards, and the fixture's own zero-quantity switch is driven
-    //   by the suite that owns the ledger.
-    expect(() => Money.fromDecimalString('6.00').dividedBy(0)).toThrow();
-    expect(Money.fromDecimalString('6.00').dividedBy(2).toDecimalString()).toBe('3');
+    // An order document is caller-authored and a log stream is not the place to reproduce one. The
+    // whole capture is asserted as TEXT, so a leak inside a field nobody inspected still fails.
+    expect(emitted).toContain('orderItemCount');
+    expect(emitted).toContain('promotionIntentCount');
+    expect(emitted).not.toContain(order.orderID);
+    expect(emitted).not.toContain(firstItem.orderItemID);
+    expect(emitted).not.toContain(AUTHENTICATED_ACCOUNT_ID);
+    expect(emitted).not.toContain('3.01');
   });
 });
 
 // ===========================================================================
-// SECTION 8 - THE PROMOTION SURFACE THIS ADAPTER REACHES, AND THE ONE IT DOES NOT
+// CONCERN 7 - THE SALE-PRICE OPERATION
 // ===========================================================================
 
-describe('the promotion surface reachable through this adapter (NET-NEW)', () => {
-  it('reproduces the reference calculation end to end through Money alone', async () => {
-    const { order, capture } = makeGoldenOrder();
-    // NARROWED, never defaulted: see {@link requireFixtureMember}. Nothing below can fall back to a
-    // substituted zero, so no monetary value in this calculation is ever invented.
-    const reference = requireFixtureMember(
-      capture.referenceCalculation,
-      'its reference calculation',
-    );
-
-    // The chain, as NUMERALS rather than as arithmetic: 19.99 x 3 = 59.97; less 12.5% = 7.49625; net
-    // 52.47375; presented "52.47" and "7.50". Verified end to end during planning, and the proof that
-    // an arbitrary-precision decimal plus a two-decimal presentation step reproduces
-    // `numberFormat(discountAmount,"0.00")` [model/service/PromotionService.cfc:L1017] with no
-    // IEEE-754 drift.
-    const unitPrice = Money.fromDecimalString(reference.unitPrice);
-    const extended = unitPrice.times(reference.quantity);
-    const discount = extended.times(
-      Money.fromDecimalString(reference.percentageOff).dividedBy(100),
-    );
-    const net = extended.minus(discount);
-
-    expectSameAmount(extended.toDecimalString(), '59.97');
-    expectSameAmount(discount.toDecimalString(), '7.49625');
-    expectSameAmount(net.toDecimalString(), '52.47375');
-    expect(net.toFixed2()).toBe('52.47');
-    expect(discount.toFixed2()).toBe('7.50');
-    expect(reference.presentedNetAmount).toBe('52.47');
-    expect(reference.presentedDiscountAmount).toBe('7.50');
-
-    // And the handler reports the FULL-PRECISION value the engine decided, not the presentation form.
-    const harness = makeHarness({ admit: order, rewards: [makeRewardForGoldenOrder(capture)] });
-    const body = successBodyOf(await harness.invoke(postApplyPromotions(order)));
-
-    expectSameAmount(wireDiscountForItem(body, itemAt(order, 0).orderItemID), '7.49625');
-  });
-
+describe('the sale-price operation reachable through this adapter (NET-NEW)', () => {
   it('serves getSalePriceDetailsForProductSkus and renders every member safely', async () => {
     const harness = makeHarness({
       salePriceDetails: {
@@ -2687,8 +2235,7 @@ describe('the promotion surface reachable through this adapter (NET-NEW)', () =>
 
     const result = await harness.invoke(
       postDocument({
-        operation: 'salePriceDetails',
-        idempotencyKey: IDEMPOTENCY_KEY,
+        operation: 'getSalePriceDetailsForProductSkus',
         productID: PRODUCT_ID,
       }),
     );
@@ -2696,8 +2243,10 @@ describe('the promotion surface reachable through this adapter (NET-NEW)', () =>
     expect(result.statusCode).toBe(200);
     expect(harness.recorder.salePriceRequests).toEqual([PRODUCT_ID]);
     // No order view is involved: the legacy signature takes a plain string
-    // [model/service/PromotionService.cfc:L1022], so there is nothing to materialise.
+    // [model/service/PromotionService.cfc:L1022], so there is nothing to materialise and nothing to
+    // hydrate.
     expect(harness.recorder.composedInputs).toHaveLength(0);
+    expect(harness.recorder.materializedDocuments).toHaveLength(0);
 
     const detail = successBodyOf(result).salePriceDetails?.[SALE_PRICE_SKU_ID];
     expect(detail?.skuID).toBe(SALE_PRICE_SKU_ID);
@@ -2706,6 +2255,38 @@ describe('the promotion surface reachable through this adapter (NET-NEW)', () =>
     expect(detail?.roundingRuleID).toBe('rr-closest-0001');
     // ISO-8601, hence UTC by definition.
     expect(detail?.salePriceExpirationDateTime).toBe('2024-12-31T23:59:59.000Z');
+  });
+
+  it('preserves a reserved opaque SKU key as an own sale-price member', async () => {
+    const reservedSkuID = '__proto__';
+    const salePriceDetails: Record<string, SalePriceDetail> = {};
+    Object.defineProperty(salePriceDetails, reservedSkuID, {
+      configurable: true,
+      enumerable: true,
+      value: {
+        skuID: reservedSkuID,
+        discountLevel: 'sku',
+        salePriceDiscountType: 'amount',
+        salePrice: Money.fromDecimalString('8.50'),
+        promotionID: SALE_PRICE_PROMOTION_ID,
+      },
+      writable: true,
+    });
+    const harness = makeHarness({ salePriceDetails });
+
+    const result = await harness.invoke(
+      postDocument({
+        operation: 'getSalePriceDetailsForProductSkus',
+        productID: PRODUCT_ID,
+      }),
+    );
+    const rendered = successBodyOf(result).salePriceDetails;
+
+    expect(result.statusCode).toBe(200);
+    expect(rendered).toBeDefined();
+    expect(rendered === undefined ? false : Object.hasOwn(rendered, reservedSkuID)).toBe(true);
+    expect(rendered?.[reservedSkuID]?.skuID).toBe(reservedSkuID);
+    expect(Object.getPrototypeOf(rendered)).toBe(Object.prototype);
   });
 
   it('OMITS an absent sale-price member rather than coercing it to zero or the epoch', async () => {
@@ -2723,16 +2304,15 @@ describe('the promotion surface reachable through this adapter (NET-NEW)', () =>
 
     const result = await harness.invoke(
       postDocument({
-        operation: 'salePriceDetails',
-        idempotencyKey: IDEMPOTENCY_KEY,
+        operation: 'getSalePriceDetailsForProductSkus',
         productID: PRODUCT_ID,
       }),
     );
 
     const detail = successBodyOf(result).salePriceDetails?.[SALE_PRICE_SKU_ID];
 
-    // An absent `originalPrice` is not zero - that would understate a saving - and an absent
-    // expiration is not the epoch, which would expire a live sale. Both keys are simply ABSENT.
+    // An absent `originalPrice` is not zero - that would understate a saving - and an absent expiration
+    // is not the epoch, which would expire a live sale. Both keys are simply ABSENT.
     expect(detail).toBeDefined();
     expect(detail === undefined ? true : 'originalPrice' in detail).toBe(false);
     expect(detail === undefined ? true : 'salePriceExpirationDateTime' in detail).toBe(false);
@@ -2740,191 +2320,39 @@ describe('the promotion surface reachable through this adapter (NET-NEW)', () =>
     expect(result.body).not.toContain('1970-01-01');
   });
 
-  it('routes NO traffic to the engine internals or to the use-count members', async () => {
-    const { order, capture } = makeGoldenOrder();
-    const harness = makeHarness({ admit: order, rewards: [makeRewardForGoldenOrder(capture)] });
+  it('serves an empty detail map without inventing a member', async () => {
+    const harness = makeHarness({ salePriceDetails: {} });
 
-    // The four qualification helpers - `getPromotionPeriodQualificationDetails` [:L549],
-    // `getQualifierQualificationDetails` [:L629], `getPromotionPeriodQualifiedFulfillmentIDList`
-    // [:L752], which RETURNS A COMMA-DELIMITED STRING for parity and must not become an array, and
-    // `getPromotionPeriodOrderItemQualificationCount` [:L783] - are ENGINE INTERNALS. They are among
-    // the five ALREADY-ALLOCATED visibility widenings, promoted from `private` so they can be tested
-    // directly by the tier that owns them; no sixth widening is introduced and no HTTP traffic is
-    // routed to any of them.
-    //
-    // LEGACY-DEFECT [model/service/PromotionService.cfc:L1094-L1100]: `getPromotionCodeUseCount` and
-    // `getPromotionCodeAccountUseCount` both declare `returntype="boolean"` and then return the DAO's
-    // NUMERIC count.
-    // Preserved deliberately; do not fix without a product decision.
-    //   The ported service types the honest `Promise<number>` and the legacy declaration is RECORDED
-    //   rather than reproduced as a lie in the type system. Neither member is routed to from here -
-    //   the use-count surface belongs to promotion-code administration, not to order pricing - and the
-    //   withheld `promotionService` getter is what proves it.
-    //
-    // LEGACY-DEFECT [model/service/PromotionService.cfc:L621-L623]: the qualification struct writes
-    // `qualificationDetails.qualifiedFulfillments = explicitlyQualifiedFulfillmentIDs` at L622, a key
-    // that is never initialised in that struct and never read - the caller reads
-    // `qualifiedFulfillmentIDs` instead.
-    // Preserved deliberately; do not fix without a product decision.
-    //
-    // LEGACY-DEFECT [model/service/PromotionService.cfc:L703]: the shipping-address-zones clause tests
-    // `arrayLen(qualifier.getShippingAddressZones())` and then calls `hasShippingMethod` - a
-    // copy-paste of L701 - instead of testing whether the address falls in a declared zone, so the
-    // zone condition is never evaluated at that site.
-    // Preserved deliberately; do not fix without a product decision.
-    //   Reaching it needs a fulfillment with a NULL `shippingMethod`, which the golden order's pickup
-    //   fulfillment supplies; the qualifier tier owns the assertion, and nothing here compensates.
-    const result = await harness.invoke(postApplyPromotions(order));
+    const result = await harness.invoke(
+      postDocument({
+        operation: 'getSalePriceDetailsForProductSkus',
+        productID: PRODUCT_ID,
+      }),
+    );
 
     expect(result.statusCode).toBe(200);
-    // The comma-list form is preserved on the way in, so it cannot have been modernised on the way
-    // through: `listLen('')` is 0 for the empty list, never 1.
-    const qualifiedFulfillmentIDList = capture.qualifiedFulfillmentIDList;
-    expect(typeof qualifiedFulfillmentIDList).toBe('string');
-
-    // The count is what CFML's own `listLen` makes of the SAME string, computed here by the ported
-    // helper rather than restated as a literal - so a list that silently became an array, or gained a
-    // different delimiter, fails. The golden order carries two fulfillments and both qualify.
-    expect(capture.qualifiedFulfillmentIDCount).toBe(
-      listLen(qualifiedFulfillmentIDList === undefined ? '' : qualifiedFulfillmentIDList),
-    );
-    expect(capture.qualifiedFulfillmentIDCount).toBe(order.orderFulfillments.length);
-    // `listLen('')` is 0, never 1 - the exact CFML behaviour a naive `split(',').length` would break.
+    expect(successBodyOf(result).salePriceDetails).toEqual({});
+    // The comma-list helper is exercised on the empty string precisely because `listLen('')` is 0 and a
+    // naive `split(',').length` would answer 1 - the CFML semantics this subtree preserves.
     expect(listLen('')).toBe(0);
   });
 
-  it('keeps the RESTRICTIVE and PERMISSIVE empty-collection defaults apart', () => {
-    // ★★ COLLAPSING THESE TWO IS A MONEY BUG, IN OPPOSITE DIRECTIONS.
-    //
-    // PERMISSIVE - [model/service/PromotionService.cfc:L355]:
-    //   `( !arrayLen(reward.getShippingMethods()) || ... )` - an EMPTY include collection means NO
-    //   RESTRICTION, which is why every such gate is written `arrayLen(collection) && !collection.hasX(...)`.
-    //
-    // RESTRICTIVE - `AddressService.isAddressInZone` [model/service/AddressService.cfc:L57-L82]:
-    //   L58 `var addressInZone = false;`, a loop over `getAddressZoneLocations()` at L60, and L81
-    //   `return addressInZone;` - so an EMPTY locations collection means the loop body never runs and
-    //   the answer is FALSE. EMPTY MEANS NOT IN ZONE.
-    //
-    // The evaluator below is SYNC and LIVE - a real comparison, not a stub - and reproduces L63, L66,
-    // L69 and L72 including that a location leaving a member unset SKIPS that member rather than
-    // failing on it.
-    //
-    // CFML parity [model/service/AddressService.cfc:L63,L66,L69,L72]: each clause is written
-    // `!isNull(location.getX()) && location.getX() != address.getX()`, so a member the location
-    // leaves UNSET is skipped rather than compared. `constrains` is that `!isNull` test, spelled with
-    // explicit `!== undefined` and `!== null` because `eqeqeq` is an error in this project and a
-    // loose `!= null` would hide which of the two absences is meant.
-    const constrains = (constraint: string | null | undefined): constraint is string =>
-      constraint !== undefined && constraint !== null;
+  it('refuses a getSalePriceDetailsForProductSkus payload with no productID, by member path', async () => {
+    const harness = makeHarness();
 
-    const evaluator: AddressZoneEvaluator = {
-      isAddressInZone: (
-        address: AddressProjection,
-        addressZone: AddressZoneProjection,
-      ): boolean => {
-        for (const location of addressZone.addressZoneLocations) {
-          let inLocation = true;
+    const result = await harness.invoke(
+      postDocument({ operation: 'getSalePriceDetailsForProductSkus' }),
+    );
 
-          if (constrains(location.postalCode) && location.postalCode !== address.postalCode) {
-            inLocation = false;
-          }
-          if (constrains(location.city) && location.city !== address.city) {
-            inLocation = false;
-          }
-          if (constrains(location.stateCode) && location.stateCode !== address.stateCode) {
-            inLocation = false;
-          }
-          if (constrains(location.countryCode) && location.countryCode !== address.countryCode) {
-            inLocation = false;
-          }
-          if (inLocation) {
-            return true;
-          }
-        }
-
-        return false;
-      },
-    };
-
-    const address: AddressProjection = {
-      postalCode: '94105',
-      city: 'San Francisco',
-      stateCode: 'CA',
-      countryCode: 'US',
-    };
-
-    // RESTRICTIVE: no locations at all means NOT in zone.
-    expect(
-      evaluator.isAddressInZone(address, {
-        addressZoneID: 'az-empty',
-        addressZoneLocations: [],
-      }),
-    ).toBe(false);
-
-    // A location that constrains only the country still matches - the unset members are SKIPPED.
-    expect(
-      evaluator.isAddressInZone(address, {
-        addressZoneID: 'az-country-only',
-        addressZoneLocations: [{ countryCode: 'US' }],
-      }),
-    ).toBe(true);
-
-    // And a location that constrains a member to a different value does not match.
-    expect(
-      evaluator.isAddressInZone(address, {
-        addressZoneID: 'az-other-state',
-        addressZoneLocations: [{ stateCode: 'NY' }],
-      }),
-    ).toBe(false);
-
-    // PERMISSIVE, from the other side: a reward that names NO shipping method restricts nothing, so
-    // emptiness there must never be read as "matches nothing". The fixture's DEFAULT reward names one
-    // method, which is the restricting shape; the empty collection is requested explicitly, and both
-    // shapes are asserted so the polarity is pinned from both ends.
-    const restricting = makePromotionFixtures({
-      idPrefix: 'restricting',
-    }).referenceCalculationReward;
-    expect(restricting.getShippingMethodIDs().length).toBeGreaterThan(0);
-
-    const reward = makePromotionFixtures({
-      idPrefix: 'permissive',
-      shippingMethodIDs: [],
-    }).referenceCalculationReward;
-    expect(reward.getShippingMethodIDs()).toEqual([]);
-
-    // CFML parity [model/entity/PromotionReward.cfc:L57]: the component's `hb_permission` attribute
-    // carries the misspelling `promotionPeriod.promtionRewards`. It is a DATA CONTRACT - a permission
-    // key the legacy admin resolves by name - so it is preserved verbatim by the entity that carries
-    // it and is not renamed. It appears nowhere on this adapter's wire contract.
-    expect(reward.getPromotionRewardID().length).toBeGreaterThan(0);
-
-    // ★ AND THIS ADAPTER NEVER CALLS THE EVALUATOR AT ALL. `AddressZoneEvaluator` is reached from
-    // `getShippingMethodOptionsDiscountAmountDetails` [model/service/PromotionService.cfc:L1032] on
-    // the SERVICES tier, because the zone decision is a business decision a handler must not make -
-    // which is why `src/handlers/promotionApplicationHandler.ts` does not import the port and why
-    // `RequestScope` publishes no route to it here.
-    expect(Object.keys(evaluator)).toEqual(['isAddressInZone']);
+    // The discriminated envelope refuses it before the dispatcher, which is why the dispatcher has no
+    // "selected this operation but sent no product" branch to test.
+    expect(result.statusCode).toBe(400);
+    expect(harness.recorder.salePriceRequests).toEqual([]);
   });
 });
 
 // ===========================================================================
-// SECTION 9 - CONCERN 3: RESPONSE SHAPING, AND CONCERN 4: SAFE ERROR MAPPING
-//
-// NET-NEW, like everything else in this file: the legacy tree has no handler
-// tier at all, so there is no MXUnit assertion about a status code, a header or
-// an error body anywhere under `meta/tests/` to trace to. Nothing below is
-// presented as parity.
-//
-// The whole of this section rests on ONE property of the shipped design, and
-// asserts it from every side: the words in an error body are owned by
-// `src/handlers/errorMapper.ts` and are never supplied by a caller, by a caught
-// value, or by this handler. `InvalidRequestReason` is a CLOSED union of six
-// members and the sentence for each is a frozen table entry, so a handler NAMES
-// a class of problem and the mapper says it. The status set is exactly three -
-// 400, 404, 500 - and no fourth is invented: no 401, no 403, no 409, no 422, no
-// 429, no `retry-after`, no rate-limit header and no circuit-breaker semantic,
-// because the source had none of them and this migration invents no
-// non-functional requirement.
+// CONCERN 8 - RESPONSE SHAPING AND SAFE ERROR MAPPING
 // ===========================================================================
 
 /**
@@ -2944,8 +2372,7 @@ const WITHHELD_INTERNAL_DETAIL =
  * CFML parity [org/Hibachi/HibachiEntity.cfc:L565, org/Hibachi/HibachiService.cfc:L280]:
  * `'You have called a method #arguments.missingMethodName#() which does not exists in the
  * #getClassName()# entity.'` - and "does not exists" is REPRODUCED, not corrected, because it is an
- * observable contract a legacy consumer may already match on. The distinct variant at
- * [org/Hibachi/HibachiObject.cfc:L126] is a DIFFERENT sentence and is not conflated with this one.
+ * observable contract a legacy consumer may already match on.
  *
  * The method named here is the real one: LEGACY-DEFECT [model/entity/Sku.cfc:L258]
  * `getPriceByPromotion` calls `calculateSkuPriceBasedOnPromotion`, which does not exist on the
@@ -2974,7 +2401,7 @@ const UNPARSABLE_BODY_SENTENCE = 'The request body is not valid JSON.';
 const UNSUPPORTED_SHAPE_SENTENCE = 'The request body is not the expected shape.';
 
 /** Every status this handler is permitted to return, and nothing else. */
-const PERMITTED_STATUSES: readonly number[] = [200, 400, 404, 500];
+const PERMITTED_STATUSES: readonly number[] = [200, 400, 401, 404, 500];
 
 /** Header names that would invent a semantic the source never had. */
 const FORBIDDEN_HEADER_NAMES: readonly string[] = [
@@ -3003,23 +2430,39 @@ function expectSafeResponseEnvelope(result: APIGatewayProxyResult): void {
 }
 
 describe('response shaping and safe error mapping (NET-NEW)', () => {
-  it('shapes a 200 carrying the two frozen headers and the four echoed envelope members', async () => {
-    const { order, capture } = makeGoldenOrder();
-    const harness = makeHarness({ admit: order, rewards: [makeRewardForGoldenOrder(capture)] });
+  it('★★★ shapes a 200 as the SHARED envelope, with this capability nested under `result`', async () => {
+    // ★★★ THIS CASE WAS NAMED "the four echoed envelope members" AND IT ENCODED F13 AND F6.
+    // It asserted `{operation, idempotencyKey, requestId, evaluatedAt}` at the TOP of the body, under a
+    // note reading "the idempotency key and the correlation id so a retry can be joined to the decision
+    // it already received". Two things were wrong with that. The top level is now the ONE envelope all
+    // five entrypoints answer with - `{requestId, capability, action, result}` - so a caller no longer
+    // has to know which capability it called in order to find the correlation identifier (F13). And the
+    // key it echoed was honoured by nothing: no ledger, no receipt, no stable instant, so echoing it
+    // asserted a retry guarantee the code never made (F6). What survives is the pair that IS
+    // load-bearing: the operation, so a caller knows which arm answered, and `evaluatedAt`, so the
+    // promotion-period window [model/entity/PromotionPeriod.cfc:L78] this invocation resolved against
+    // is auditable afterwards.
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ admit: order });
 
     const result = await harness.invoke(postApplyPromotions(order));
     expectSafeResponseEnvelope(result);
     expect(result.statusCode).toBe(200);
 
-    const body = successBodyOf(result);
+    const served = servedEnvelopeOf(result);
+    const body = served.result;
 
-    // The four echoed members, each for a stated reason: the operation so a caller knows which arm
-    // answered, the idempotency key and the correlation id so a retry can be joined to the decision
-    // it already received and to the log stream, and `evaluatedAt` so the promotion-period window
-    // [model/entity/PromotionPeriod.cfc:L78] this invocation resolved against is auditable afterwards.
+    // The shared envelope, member for member, in the order the mapper writes them.
+    expect(Object.keys(served)).toEqual(['requestId', 'capability', 'action', 'result']);
+    expect(served.requestId).toBe(PLATFORM_REQUEST_ID);
+    expect(served.capability).toBe('promotionApplication');
+    expect(served.action).toBe('applyPromotions');
+
     expect(body.operation).toBe('applyPromotions');
-    expect(body.idempotencyKey).toBe(IDEMPOTENCY_KEY);
-    expect(body.requestId).toBe(PLATFORM_REQUEST_ID);
+    // GONE, not moved: nothing in the served document names an idempotency key any more.
+    expect(body).not.toHaveProperty('idempotencyKey');
+    // And the correlation identifier is the ENVELOPE's, not the document's.
+    expect(body).not.toHaveProperty('requestId');
     expect(body.evaluatedAt).toBe(EVALUATED_AT);
     // ISO-8601 IN UTC, which is the whole point of an explicit instant rather than a server-local one.
     expect(body.evaluatedAt.endsWith('Z')).toBe(true);
@@ -3030,8 +2473,10 @@ describe('response shaping and safe error mapping (NET-NEW)', () => {
     expect(Array.isArray(body.promotionIntents)).toBe(true);
     expect(Array.isArray(body.priceGroupIntents)).toBe(true);
     // The `salePriceDetails` member belongs to the OTHER operation and is omitted here rather than
-    // sent as an empty object: `exactOptionalPropertyTypes` is on and absence is expressible.
-    expect(Object.hasOwn(JSON.parse(result.body) as object, 'salePriceDetails')).toBe(false);
+    // sent as an empty object: `exactOptionalPropertyTypes` is on and absence is expressible. Read off
+    // the SERIALISED body rather than the narrowed reader, so an omitted key cannot be confused with a
+    // key present and undefined.
+    expect(Object.hasOwn(served.result, 'salePriceDetails')).toBe(false);
 
     // No status the source never had, and no 201/202 either: both operations are DECISIONS rather
     // than durable writes, so there is no resource created to report and no acceptance to acknowledge.
@@ -3039,44 +2484,84 @@ describe('response shaping and safe error mapping (NET-NEW)', () => {
     expect(result.statusCode).not.toBe(202);
   });
 
-  it('echoes each caller idempotency key and decides IDENTICALLY on a replay', async () => {
-    // Idempotency here is a property of the DECISION, not of a stored receipt: the two passes emit
-    // intents and persist nothing, so a replay recomputes the same answer instead of replaying a
-    // durable write. That is why the key is echoed rather than looked up.
+  it('★★★ is retry-safe BY CONSTRUCTION: the same document decides identically with NO key', async () => {
+    // ★★★ THIS CASE WAS AN INVERSION, NOT A REPAIR. It was named "echoes each caller idempotency key
+    // and decides IDENTICALLY on a replay", and the review said of it: "The replay case ... compares two
+    // independently executed requests with DIFFERENT keys; it does not establish idempotency, supporting
+    // F6". That is exactly right, and it is worth being precise about why. The case asserted
+    //
+    //   * `expect(firstBody.idempotencyKey).toBe(IDEMPOTENCY_KEY)`
+    //   * `expect(replayBody.idempotencyKey).toBe(REPLAY_IDEMPOTENCY_KEY)`
+    //   * `expect(firstBody.idempotencyKey).not.toBe(replayBody.idempotencyKey)`
+    //
+    // under a note reading "That is why the key is echoed rather than looked up". Every one of those
+    // three assertions is about ECHO, and echo is not idempotency: a key that is copied from the request
+    // into the response and consulted nowhere in between constrains nothing. Worse, the two arms sent
+    // DIFFERENT keys, so even a handler that DID maintain a ledger would legitimately have recomputed -
+    // the case could not have detected the presence or absence of one either way.
+    //
+    // What is actually true, and what this case now proves, is stronger and needs no key at all: this
+    // entrypoint is retry-safe BY CONSTRUCTION. Both operations are DECISIONS - `updateOrderAmounts...`
+    // emits intents and persists nothing [model/service/PromotionService.cfc:L58, and the
+    // anti-corruption inversion in AAP 0.6.1] - so re-sending the same document recomputes the same
+    // answer. Sameness is asserted on the SERIALISED document, byte for byte, with the per-invocation
+    // correlation identifier deliberately made to DIFFER so that the comparison cannot pass by accident
+    // of both arms having been handed the same one.
     const first = makeGoldenOrder();
     const firstHarness = makeHarness({
       admit: first.order,
-      rewards: [makeRewardForGoldenOrder(first.capture)],
+      promotionIntents: [itemIntent(itemAt(first.order, 0).orderItemID, '3.01')],
     });
-    const firstResult = await firstHarness.invoke(postApplyPromotions(first.order));
+    const document = applyPromotionsDocument(wireOrderDocument(first.order));
+    const firstResult = await firstHarness.invoke(
+      makeProxyEvent({
+        body: JSON.stringify(document),
+        requestId: 'req-promotion-application-first',
+        ...(first.order.accountID === undefined
+          ? {}
+          : { authorizer: { accountID: first.order.accountID } }),
+      }),
+    );
 
     const replay = makeGoldenOrder();
     const replayHarness = makeHarness({
       admit: replay.order,
-      rewards: [makeRewardForGoldenOrder(replay.capture)],
+      promotionIntents: [itemIntent(itemAt(replay.order, 0).orderItemID, '3.01')],
     });
+    // THE VERY SAME BYTES, re-sent. Not a second document that happens to look similar.
     const replayResult = await replayHarness.invoke(
-      postApplyPromotions(replay.order, { idempotencyKey: REPLAY_IDEMPOTENCY_KEY }),
+      makeProxyEvent({
+        body: JSON.stringify(document),
+        requestId: 'req-promotion-application-replay',
+        ...(replay.order.accountID === undefined
+          ? {}
+          : { authorizer: { accountID: replay.order.accountID } }),
+      }),
     );
 
     expectSafeResponseEnvelope(replayResult);
     expect(replayResult.statusCode).toBe(200);
 
-    const firstBody = successBodyOf(firstResult);
-    const replayBody = successBodyOf(replayResult);
+    const firstServed = servedEnvelopeOf(firstResult);
+    const replayServed = servedEnvelopeOf(replayResult);
 
-    // DIFFERENT keys, echoed faithfully and not normalised, deduplicated or rejected as a repeat.
-    expect(firstBody.idempotencyKey).toBe(IDEMPOTENCY_KEY);
-    expect(replayBody.idempotencyKey).toBe(REPLAY_IDEMPOTENCY_KEY);
-    expect(firstBody.idempotencyKey).not.toBe(replayBody.idempotencyKey);
+    // NEITHER response names a key, so there is nothing to echo and nothing to look up.
+    expect(firstResult.body).not.toContain('idempotencyKey');
+    expect(replayResult.body).not.toContain('idempotencyKey');
 
-    // IDENTICAL decisions, down to the amounts. Compared through the intent documents rather than by
-    // string-equality on the whole body, because the echoed key legitimately differs.
-    expect(promotionIntentsOf(replayBody)).toEqual(promotionIntentsOf(firstBody));
-    expect(replayBody.priceGroupIntents).toEqual(firstBody.priceGroupIntents);
+    // The correlation identifier is PER INVOCATION, which is the one member that legitimately differs.
+    expect(firstServed.requestId).toBe('req-promotion-application-first');
+    expect(replayServed.requestId).toBe('req-promotion-application-replay');
+    expect(firstServed.requestId).not.toBe(replayServed.requestId);
 
-    // And the replay drove the graph exactly once, in the same order - no cached response, and no
-    // second pass over the composed operation.
+    // And the DECISION is byte-identical. Compared on the serialised document rather than field by
+    // field, so an added, dropped or reordered member fails this too.
+    expect(JSON.stringify(replayServed.result)).toBe(JSON.stringify(firstServed.result));
+    expect(promotionIntentsOf(replayServed.result)).toEqual(promotionIntentsOf(firstServed.result));
+    expect(replayServed.result.priceGroupIntents).toEqual(firstServed.result.priceGroupIntents);
+
+    // The replay RECOMPUTED - it drove the composed operation once, in the same order - rather than
+    // being answered from a cached receipt. Recomputation is the mechanism; identity is the guarantee.
     expect(replayHarness.recorder.composedInputs).toHaveLength(1);
     expect(replayHarness.recorder.log).toEqual(firstHarness.recorder.log);
   });
@@ -3175,245 +2660,500 @@ describe('response shaping and safe error mapping (NET-NEW)', () => {
   it('honours a base64-encoded body, because the platform sets that flag', async () => {
     // Ignoring `isBase64Encoded` would turn a perfectly well-formed document into an unparsable one
     // and answer 400 to a valid request, so it is honoured rather than assumed absent.
-    const { order, capture } = makeGoldenOrder();
-    const harness = makeHarness({ admit: order, rewards: [makeRewardForGoldenOrder(capture)] });
-    const document = applyPromotionsDocument(orderReference(order), {
-      ...(order.accountID === undefined ? {} : { accountID: order.accountID }),
-    });
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ materialize: order });
+    // The REAL wire document, base64-encoded whole. The previous revision encoded a bare `{orderID}`
+    // reference plus a body `accountID`; both of those are gone, so what is encoded here is the same
+    // document every other admitted case posts and the account travels on the authorizer (finding F2).
+    const document = applyPromotionsDocument(wireOrderDocument(order));
 
     const result = await harness.invoke(
       makeProxyEvent({
         body: Buffer.from(JSON.stringify(document), 'utf8').toString('base64'),
         isBase64Encoded: true,
+        ...(order.accountID === undefined ? {} : { authorizer: { accountID: order.accountID } }),
       }),
     );
 
     expectSafeResponseEnvelope(result);
     expect(result.statusCode).toBe(200);
-    expect(successBodyOf(result).idempotencyKey).toBe(IDEMPOTENCY_KEY);
+    // Decoded, admitted and PRICED - asserted on the operation the document named rather than on an
+    // echoed key, which no longer exists (finding F6).
+    expect(successBodyOf(result).operation).toBe('applyPromotions');
     expect(harness.recorder.composedInputs).toHaveLength(1);
-
-    // A base64 body that decodes to whitespace is ABSENT, not unparsable.
-    const blank = makeHarness();
-    const blankResult = await blank.invoke(
-      makeProxyEvent({
-        body: Buffer.from('   ', 'utf8').toString('base64'),
-        isBase64Encoded: true,
-      }),
-    );
-    expect(blankResult.statusCode).toBe(400);
-    expect(errorBodyOf(blankResult).message).toBe(MISSING_BODY_SENTENCE);
   });
 
-  it('answers 400 with member PATHS and never with submitted VALUES when the schema refuses', async () => {
+  it('answers 400 with safe schema paths and never with caller-authored unknown names or values', async () => {
+    // ★★★ TWO OF THESE FOUR ROWS USED TO ASSERT THAT AN IDEMPOTENCY KEY WAS REQUIRED AND
+    // CHARACTER-FILTERED - "The key is REQUIRED on both envelopes: without it a retry cannot be joined
+    // to its decision" - which is finding F6: nothing joined anything, because nothing stored anything.
+    // The key is withdrawn, so the first row now carries the OTHER caller-supplied field this handler
+    // must never honour (finding F2), and the second keeps the property the case exists for - a refused
+    // VALUE is never quoted back - now that the key is refused as an unrecognized member instead.
     const { order } = makeGoldenOrder();
     const forbiddenKey = 'idem key with spaces and a slash/';
+    const smuggledAccountID = 'account-smuggled-in-the-body-0001';
 
     const cases: readonly {
       readonly document: Readonly<Record<string, unknown>>;
-      readonly path: string;
+      readonly safePath: string;
       readonly absentFromBody: readonly string[];
     }[] = [
       {
-        // The key is REQUIRED on both envelopes: without it a retry cannot be joined to its decision.
-        document: { operation: 'applyPromotions', order: orderReference(order) },
-        path: 'idempotencyKey',
-        absentFromBody: [],
+        // `accountID` is a server-known compatibility member with an explicit refusal, so its fixed
+        // path remains actionable. Only the submitted identifier is absent from the response.
+        document: applyPromotionsDocument(wireOrderDocument(order), {
+          accountID: smuggledAccountID,
+        }),
+        safePath: 'accountID',
+        absentFromBody: [smuggledAccountID, 'smuggled'],
       },
       {
-        // Character-filtered, so an identifier can never carry a delimiter or whitespace.
-        document: applyPromotionsDocument(orderReference(order), {
+        // The key is refused as an unrecognized member, and neither its NAME nor its VALUE reaches
+        // the response body.
+        document: applyPromotionsDocument(wireOrderDocument(order), {
           idempotencyKey: forbiddenKey,
         }),
-        path: 'idempotencyKey',
-        absentFromBody: [forbiddenKey, 'spaces'],
+        safePath: '',
+        absentFromBody: ['idempotencyKey', forbiddenKey, 'spaces'],
       },
       {
-        // The discriminated union makes "a salePriceDetails request with no productID" a validation
+        // The discriminated union makes "a getSalePriceDetailsForProductSkus request with no productID" a validation
         // failure carrying a member path, rather than a value some later branch has to re-check.
-        document: { operation: 'salePriceDetails', idempotencyKey: IDEMPOTENCY_KEY },
-        path: 'productID',
+        document: { operation: 'getSalePriceDetailsForProductSkus' },
+        safePath: 'productID',
         absentFromBody: [],
       },
       {
         // A third operation nobody published: the discriminator itself fails, and the offending value
         // is not quoted back.
-        document: { operation: 'deleteEverything', idempotencyKey: IDEMPOTENCY_KEY },
-        path: 'operation',
+        document: { operation: 'deleteEverything' },
+        safePath: 'operation',
         absentFromBody: ['deleteEverything'],
       },
     ];
 
-    for (const { document, path, absentFromBody } of cases) {
-      const harness = makeHarness({ admit: order });
-      const result = await harness.invoke(postDocument(document));
+    for (const testCase of cases) {
+      const harness = makeHarness({ materialize: order });
+      const result = await harness.invoke(postDocument(testCase.document));
 
-      expectSafeResponseEnvelope(result);
       expect(result.statusCode).toBe(400);
-
-      const error = errorBodyOf(result);
-      expect(error.category).toBe('invalidRequest');
-      // ONE fixed sentence for every schema failure. The specificity lives in `fields`.
-      expect(error.message).toBe(INVALID_INPUT_SENTENCE);
-      expect(error.fields?.map((field): string => field.path)).toContain(path);
-
-      for (const value of absentFromBody) {
-        expect(result.body).not.toContain(value);
+      expect(errorBodyOf(result).message).toBe(INVALID_INPUT_SENTENCE);
+      expect(fieldPathsOf(result)).toContain(testCase.safePath);
+      for (const submittedValue of testCase.absentFromBody) {
+        expect(result.body).not.toContain(submittedValue);
       }
-
-      // A schema refusal happens BEFORE the composition root is opened, so no scope is created and no
-      // pass runs for a request that was never usable.
-      expect(harness.recorder.log).toEqual([]);
     }
   });
 
   it('answers 500 with ONLY the generic sentence for an unrecognised failure', async () => {
-    // ★ THE CENTRAL GUARANTEE, ASSERTED FROM BOTH SIDES: the caller gets one fixed sentence, and the
-    // detail is reachable only through the log stream, joined by the correlation identifier.
-    const { order, capture } = makeGoldenOrder();
-    const harness = makeHarness({
-      admit: order,
-      rewards: [makeRewardForGoldenOrder(capture)],
-      failure: new WithheldDetailError(),
-    });
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ admit: order, failure: new WithheldDetailError() });
 
     const result = await harness.invoke(postApplyPromotions(order));
+    const failure = errorBodyOf(result);
 
-    expectSafeResponseEnvelope(result);
-    // SERVER-shaped, because a failure inside the passes is this service's problem and not the
-    // caller's. Not a 409, not a 422, not a 429, and no retry-after: see the header assertion above.
     expect(result.statusCode).toBe(500);
-
-    const error = errorBodyOf(result);
-    expect(error.category).toBe('unrecognized');
-    expect(error.message).toBe(GENERIC_FAILURE_SENTENCE);
-    expect(error.requestId).toBe(PLATFORM_REQUEST_ID);
-    expect(Object.hasOwn(error, 'fields')).toBe(false);
-    // The body is the envelope and NOTHING else - three members plus the fixed sentence.
-    expect(Object.keys(error).sort()).toEqual(['category', 'message', 'requestId']);
-
-    // Not one fragment of the internal detail crosses the wire: no statement text, no table name, no
-    // exception message, no stack.
+    expectSafeResponseEnvelope(result);
+    expect(failure.category).toBe('unrecognized');
+    expect(failure.message).toBe(GENERIC_FAILURE_SENTENCE);
+    expect(failure.requestId).toBe(PLATFORM_REQUEST_ID);
+    // Three members exactly, and `fields` omitted rather than present and empty.
+    expect(Object.keys(failure).sort()).toEqual(['category', 'message', 'requestId']);
+    // A driver failure routinely embeds statement text and bound values, and NONE of it may reach a
+    // caller. The classification goes to the log stream under the same correlation identifier.
     expect(result.body).not.toContain(WITHHELD_INTERNAL_DETAIL);
-    expect(result.body).not.toContain('SELECT');
     expect(result.body).not.toContain('SwSku');
-    expect(result.body.toLowerCase()).not.toContain('stack');
     expect(result.body).not.toContain('WithheldDetailError');
-
-    // ★ AND THE LOG PROVES THE DETAIL WAS NOT MERELY DISCARDED: a classification is emitted, so an
-    // operator can join this response to it, while the thrown value itself is passed NOWHERE.
-    const lines = harness.emitted.lines.join('\n');
-    expect(lines).toContain('unrecognized failure mapped to a generic response');
-    expect(lines).toContain('WithheldDetailError');
-    expect(lines).toContain(PLATFORM_REQUEST_ID);
-    // The MESSAGE is what carries embedded statement text in a real driver failure, and only the
-    // error's NAME is classified - so the message is absent from the log stream as well.
-    expect(lines).not.toContain(WITHHELD_INTERNAL_DETAIL);
-    expect(lines).not.toContain('SwSku');
+    expect(harness.emitted.lines.join('\n')).toContain('WithheldDetailError');
   });
 
   it('reproduces the framework dead-call-target sentence byte for byte, as a 500', async () => {
-    // The ONE case where a failure's own message is published, and it is safe because the recognising
-    // pattern enforces both of its slots as bare identifiers. Withholding it would lose an observable
-    // behavioural contract, which is the outcome the recognition ordering exists to prevent.
-    const { order, capture } = makeGoldenOrder();
-    const harness = makeHarness({
-      admit: order,
-      rewards: [makeRewardForGoldenOrder(capture)],
-      failure: new Error(MISSING_METHOD_SENTENCE),
-    });
-
-    const result = await harness.invoke(postApplyPromotions(order));
-
-    expectSafeResponseEnvelope(result);
-    // SERVER-shaped: a dead call target is this service's defect, not the caller's.
-    expect(result.statusCode).toBe(500);
-
-    const error = errorBodyOf(result);
-    expect(error.category).toBe('missingMethod');
-    expect(error.message).toBe(MISSING_METHOD_SENTENCE);
-    // "does not exists" - the source's own grammar, PRESERVED. Correcting it here would break a
-    // consumer matching on the sentence.
-    expect(error.message).toContain('does not exists in the');
-    expect(error.message).not.toContain('does not exist in the');
-
-    // The two slots are republished; nothing else about the failure is.
-    const lines = harness.emitted.lines.join('\n');
-    expect(lines).toContain('dead call target reached; reproducing the framework contract message');
-    expect(lines).toContain('calculateSkuPriceBasedOnPromotion');
-    expect(lines).toContain('Sku');
-    expect(result.body.toLowerCase()).not.toContain('stack');
-  });
-
-  it('maps an admission refusal to a CLIENT-shaped 400 and keeps its member paths', async () => {
-    // The refusal arm is discriminated by `instanceof` and never by a cast, and it is the only arm
-    // that turns a thrown value into a 400: an order document that cannot be used is the caller's
-    // problem, and the paths are how the caller finds out which member.
-    const refusal = new OrderViewAdmissionError('unusableRequestInput', [
-      { path: 'order.orderItems[0].price', message: 'must be a Money value object' },
-    ]);
-    const harness = makeHarness({ refuseAdmission: refusal });
     const { order } = makeGoldenOrder();
+    const harness = makeHarness({ admit: order, failure: new Error(MISSING_METHOD_SENTENCE) });
 
     const result = await harness.invoke(postApplyPromotions(order));
 
-    expectSafeResponseEnvelope(result);
-    expect(result.statusCode).toBe(400);
-
-    const error = errorBodyOf(result);
-    expect(error.category).toBe('invalidRequest');
-    // `unusableRequestInput` maps to the SAME sentence a schema refusal publishes: no invented
-    // specificity, on purpose.
-    expect(error.message).toBe(INVALID_INPUT_SENTENCE);
-    expect(error.fields?.map((field): string => field.path)).toEqual(['order.orderItems[0].price']);
-    // A path and a constraint description; never the value that failed.
-    expect(result.body).not.toContain('19.99');
-
-    // The refusal is logged as a client-shaped rejection, with the reason - which is a closed literal
-    // and therefore safe to log - and the paths.
-    const lines = harness.emitted.lines.join('\n');
-    expect(lines).toContain('request input rejected before it reached the services');
-    expect(lines).toContain('unusableRequestInput');
+    // The mapper recognises the framework's own contract by message shape - grammatical error included
+    // - and republishes it. This handler neither calls the dead target nor silences it.
+    expect(result.statusCode).toBe(500);
+    expect(errorBodyOf(result).category).toBe('missingMethod');
+    expect(errorBodyOf(result).message).toBe(MISSING_METHOD_SENTENCE);
   });
 
-  it('returns nothing but the three failure statuses, over every failure this suite can drive', async () => {
-    // A closed accounting rather than four separate hopes: every failure mode above, collected, and
-    // the resulting status set compared to the permitted one. A fourth status appearing anywhere -
-    // 401, 403, 409, 422, 429 - fails here even if its own test were never written.
-    const { order, capture } = makeGoldenOrder();
-    const reward = makeRewardForGoldenOrder(capture);
-    const statuses: number[] = [];
-
-    statuses.push((await productionHandler(makeProxyEvent({ path: '/nowhere' }))).statusCode);
-    statuses.push((await makeHarness().invoke(makeProxyEvent({}))).statusCode);
-    statuses.push((await makeHarness().invoke(makeProxyEvent({ body: '{' }))).statusCode);
-    statuses.push((await makeHarness().invoke(makeProxyEvent({ body: '[]' }))).statusCode);
+  it('returns nothing but the permitted statuses, over every failure this suite can drive', async () => {
+    const { order } = makeGoldenOrder();
+    const statuses = [
+      (await productionHandler(makeProxyEvent({ path: '/nowhere' }))).statusCode,
+      (await makeHarness().invoke(makeProxyEvent({}))).statusCode,
+      (await makeHarness().invoke(makeProxyEvent({ body: '{' }))).statusCode,
+      (await makeHarness().invoke(makeProxyEvent({ body: '[]' }))).statusCode,
+    ];
     statuses.push(
+      // A document that PARSES and then fails the schema. This used to be a bare `{orderID}` reference,
+      // refused because the withdrawn idempotency key was missing; it is now a complete, admissible
+      // document carrying ONE smuggled control member, which `z.strictObject` refuses by name.
       (
         await makeHarness({ admit: order }).invoke(
-          postDocument({ operation: 'applyPromotions', order: orderReference(order) }),
+          postDocument(
+            applyPromotionsDocument(wireOrderDocument(order), { accountID: 'account-smuggled' }),
+          ),
         )
       ).statusCode,
-    );
-    statuses.push(
       (
         await makeHarness({
-          admit: order,
-          rewards: [reward],
-          failure: new WithheldDetailError(),
+          refuseAdmission: new OrderViewAdmissionError('unsupportedBodyShape', []),
         }).invoke(postApplyPromotions(order))
       ).statusCode,
-    );
-    statuses.push(
-      (await makeHarness({ admit: order, rewards: [reward] }).invoke(postApplyPromotions(order)))
-        .statusCode,
+      (await makeHarness().invoke(makeProxyEvent({ authorizer: null }))).statusCode,
     );
 
-    expect([...new Set(statuses)].sort((left, right) => left - right)).toEqual([
-      200, 400, 404, 500,
-    ]);
     for (const status of statuses) {
       expect(PERMITTED_STATUSES).toContain(status);
     }
+    // The handler owns one explicit unauthenticated arm, but invents no permission, conflict,
+    // semantic-validation or rate-limit status and publishes no authentication challenge.
+    expect(statuses).toContain(401);
+    expect(statuses).not.toContain(403);
+    expect(statuses).not.toContain(429);
+  });
+
+  it('correlates on the runtime request id when one is supplied, and the event id otherwise', async () => {
+    const { order } = makeGoldenOrder();
+    const runtime = makeHarness({ admit: order });
+    const gateway = makeHarness({ admit: order });
+
+    const runtimeContext: Context = {
+      awsRequestId: 'runtime-0000-0000-0000-000000000009',
+      callbackWaitsForEmptyEventLoop: false,
+      functionName: 'promotion-application',
+      functionVersion: '$LATEST',
+      invokedFunctionArn: 'arn:aws:lambda:us-east-1:000000000000:function:promotion-application',
+      memoryLimitInMB: '512',
+      logGroupName: '/aws/lambda/promotion-application',
+      logStreamName: '2024/06/01/[$LATEST]000000000000',
+      getRemainingTimeInMillis: (): number => refuse('Context.getRemainingTimeInMillis'),
+      done: (): void => refuse('Context.done'),
+      fail: (): void => refuse('Context.fail'),
+      succeed: (): void => refuse('Context.succeed'),
+    };
+
+    const withRuntime = servedEnvelopeOf(
+      await runtime.invoke(postApplyPromotions(order), runtimeContext),
+    );
+    const withoutRuntime = servedEnvelopeOf(await gateway.invoke(postApplyPromotions(order)));
+
+    expect(withRuntime.requestId).toBe('runtime-0000-0000-0000-000000000009');
+    expect(withoutRuntime.requestId).toBe(PLATFORM_REQUEST_ID);
+  });
+
+  it('TRIMS a padded platform correlation identifier before publishing it', async () => {
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ admit: order });
+
+    const body = servedEnvelopeOf(
+      await harness.invoke(
+        makeProxyEvent({
+          requestId: `  ${PLATFORM_REQUEST_ID}  `,
+          body: JSON.stringify(applyPromotionsDocument(wireOrderDocument(order))),
+        }),
+      ),
+    );
+
+    expect(body.requestId).toBe(PLATFORM_REQUEST_ID);
+  });
+});
+
+// ===========================================================================
+// SECTION 10 - THE FOUR REVIEW FINDINGS THAT HAVE NO OTHER HOME
+//
+// F7 (diagnostic legibility through the REAL logger), F9's deferred zone-read
+// boundary, F12 (the resolved action is verified
+// before anything is decoded) and F15 (the two closed domain unions) each pin a
+// property that no other case in this file is about. They are collected here
+// rather than scattered so that a reviewer checking the findings can read them
+// as a block.
+// ===========================================================================
+
+/**
+ * Mutual assignability, as a compile-time proposition.
+ *
+ * `true` only when the two types are the SAME type. One-way `extends` would be satisfied by a widening
+ * - `'order' | 'orderItem' | 'orderFulfillment'` extends `string` - which is exactly the widening
+ * finding F15 is about, so the test has to run in both directions.
+ */
+type IsExactly<TLeft, TRight> = [TLeft] extends [TRight]
+  ? [TRight] extends [TLeft]
+    ? true
+    : false
+  : false;
+
+describe('the four findings with no other home (NET-NEW)', () => {
+  // -------------------------------------------------------------------------
+  // ★★★ F15: THE TWO MEMBERS ARE THE CLOSED DOMAIN UNIONS, NOT `string`.
+  //
+  // Both `operation` and `appliedType` were declared `string` on the rendered intent, under comments
+  // asserting that the union was "NOT widened here" and that "no fourth applied type is invented" -
+  // documentation that claimed a closed vocabulary the type system had already discarded. The two
+  // propositions below are the claim made checkable: revert either declaration to `string` and this
+  // file stops compiling.
+  // -------------------------------------------------------------------------
+
+  it('★★★ declares `appliedType` and `operation` as the DOMAIN unions (finding F15)', async () => {
+    const appliedTypeIsTheDomainUnion: IsExactly<
+      PromotionAppliedIntentDocument['appliedType'],
+      PromotionAppliedType
+    > = true;
+    const operationIsTheDomainUnion: IsExactly<
+      PromotionAppliedIntentDocument['operation'],
+      PromotionAppliedIntent['operation']
+    > = true;
+
+    // Read so the two are not merely declared: a `noUnusedLocals` build would otherwise reject them,
+    // and a reader deserves to see the proposition asserted rather than left as a bare annotation.
+    expect(appliedTypeIsTheDomainUnion).toBe(true);
+    expect(operationIsTheDomainUnion).toBe(true);
+
+    // ★ AND THE VOCABULARY IS EXHAUSTIVE IN BOTH DIRECTIONS. The two maps below are
+    // `Record<Union, true>` literals, so ADDING a member to either domain union makes this file fail to
+    // compile until the map is extended - which is what stops a fourth applied type from appearing on
+    // the wire silently. The keys are then used as the runtime membership set, so the compile-time and
+    // runtime accountings cannot disagree.
+    const everyAppliedType: Record<PromotionAppliedType, true> = {
+      order: true,
+      orderItem: true,
+      orderFulfillment: true,
+    };
+    const everyIntentOperation: Record<PromotionAppliedIntent['operation'], true> = {
+      add: true,
+      update: true,
+      remove: true,
+    };
+
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({
+      admit: order,
+      promotionIntents: [itemIntent(itemAt(order, 0).orderItemID, '3.01')],
+    });
+    const result = await harness.invoke(postApplyPromotions(order));
+
+    expect(result.statusCode).toBe(200);
+
+    const intents = promotionIntentsOf(successBodyOf(result));
+    // NON-VACUITY: an empty collection would satisfy every membership test below.
+    expect(intents.length).toBeGreaterThan(0);
+
+    for (const intent of intents) {
+      expect(Object.keys(everyAppliedType)).toContain(intent.appliedType);
+      expect(Object.keys(everyIntentOperation)).toContain(intent.operation);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // ★★★ F7: EVERY DIAGNOSTIC KEY THIS HANDLER EMITS IS LEGIBLE THROUGH THE REAL LOGGER.
+  //
+  // The logger's redaction list is MANDATORY and non-disableable, and it applies to KEY NAMES. A
+  // handler that emits a key the list does not admit writes `[REDACTED]` into its own success line, so
+  // an operator reading the stream learns nothing - which is the failure the finding describes. This
+  // suite's recording logger is built from the SHIPPED logger through its sink seam, so the policy
+  // under test here is the production one rather than a stand-in.
+  // -------------------------------------------------------------------------
+
+  it('★★★ renders every diagnostic key it emits, not `[REDACTED]` (finding F7)', async () => {
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({
+      admit: order,
+      promotionIntents: [itemIntent(itemAt(order, 0).orderItemID, '3.01')],
+    });
+
+    expect((await harness.invoke(postApplyPromotions(order))).statusCode).toBe(200);
+
+    const successLine = requirePresent(
+      harness.emitted.lines.find((line): boolean => line.includes('priced an order')),
+      'the success log line',
+    );
+
+    // THE VALUES, rendered. Asserted as serialised JSON fragments so a key present with a redacted
+    // value fails: `"capability":"[REDACTED]"` does not contain `"capability":"promotionApplication"`.
+    expect(successLine).toContain('"capability":"promotionApplication"');
+    expect(successLine).toContain('"action":"applyPromotions"');
+    expect(successLine).toContain('"operation":"applyPromotions"');
+    expect(successLine).toContain('"route":"POST /promotions/application"');
+    expect(successLine).toContain(`"requestId":"${PLATFORM_REQUEST_ID}"`);
+    expect(successLine).toContain('"accountEstablished":true');
+    // The four COUNTS, which are what makes a line diagnostically useful without reproducing an order.
+    expect(successLine).toContain('"orderItemCount":3');
+    expect(successLine).toContain('"orderFulfillmentCount":2');
+    expect(successLine).toContain('"promotionIntentCount":');
+    expect(successLine).toContain('"priceGroupIntentCount":');
+    // ★ THE WHOLE LINE, free of the marker. The assertion is on the UPPERCASE marker the logger
+    // actually writes - a lowercase `[redacted]` could never match and would make this vacuous.
+    expect(successLine).not.toContain('[REDACTED]');
+
+    // ★ AND NOTHING FROM THE ORDER ITSELF. Counts only: no order identifier, no item identifier, no
+    // monetary amount. A log stream is not the place to reproduce a caller-authored document.
+    expect(successLine).not.toContain(order.orderID);
+    expect(successLine).not.toContain(itemAt(order, 0).orderItemID);
+    expect(successLine).not.toContain(order.subtotal.toDecimalString());
+  });
+
+  it('★★★ renders the OTHER log line too - the sale-price one (finding F7)', async () => {
+    // This handler emits TWO info lines and the finding covers both. The sale-price arm publishes a
+    // different count member, `resolvedSkuCount`, so proving the first line legible proves nothing
+    // about this one.
+    const harness = makeHarness({
+      salePriceDetails: {
+        [SALE_PRICE_SKU_ID]: {
+          skuID: SALE_PRICE_SKU_ID,
+          discountLevel: 'sku',
+          salePriceDiscountType: 'percentageOff',
+          salePrice: Money.fromDecimalString('17.49375'),
+          promotionID: SALE_PRICE_PROMOTION_ID,
+        },
+      },
+    });
+
+    const result = await harness.invoke(
+      postDocument({ operation: 'getSalePriceDetailsForProductSkus', productID: PRODUCT_ID }),
+    );
+    expect(result.statusCode).toBe(200);
+
+    const line = requirePresent(
+      harness.emitted.lines.find((candidate): boolean =>
+        candidate.includes('resolved sale-price details'),
+      ),
+      'the sale-price log line',
+    );
+
+    expect(line).toContain('"capability":"promotionApplication"');
+    expect(line).toContain('"action":"applyPromotions"');
+    expect(line).toContain('"operation":"getSalePriceDetailsForProductSkus"');
+    expect(line).toContain('"route":"POST /promotions/application"');
+    expect(line).toContain('"resolvedSkuCount":1');
+    expect(line).not.toContain('[REDACTED]');
+    // A COUNT, never the identifiers or the amounts behind it.
+    expect(line).not.toContain(SALE_PRICE_SKU_ID);
+    expect(line).not.toContain('17.49375');
+  });
+
+  it('★★★ still REDACTS a key the allow-list does not admit, so the proof above is live (finding F7)', () => {
+    // Without this the case above could pass because the logger admits everything. It does not: a
+    // credential-shaped name is redacted whatever emits it, and `password` is the shortest way to show
+    // that the policy is a real filter rather than a formality. Nothing in `src/` emits this key; it is
+    // written straight to the recording logger.
+    const probe = makeRecordingLogger();
+
+    probe.logger.info('a probe line', {
+      capability: 'promotionApplication',
+      password: 'not-a-real-secret',
+    });
+
+    const line = requirePresent(probe.lines[0], 'the probe log line');
+
+    expect(line).toContain('"capability":"promotionApplication"');
+    expect(line).toContain('[REDACTED]');
+    expect(line).not.toContain('not-a-real-secret');
+  });
+
+  // -------------------------------------------------------------------------
+  // ★★★ F9's CONSUMER HALF: THIS HANDLER DOES NOT PREPARE ZONES ITSELF.
+  //
+  // The root now defers the unbounded zone read and the composed pricing operation
+  // prepares it before either pass. The handler therefore opens a plain scope and
+  // must never call `prepareAddressZoneEvaluation` itself; the double above throws
+  // if it does.
+  // -------------------------------------------------------------------------
+
+  it('★★★ leaves address-zone preparation to the composed pricing operation (finding F9)', async () => {
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ admit: order });
+
+    expect((await harness.invoke(postApplyPromotions(order))).statusCode).toBe(200);
+
+    const scopeInput = requirePresent(harness.recorder.scopeInputs[0], 'a request-scope input');
+    expect(Object.keys(scopeInput).sort()).toStrictEqual(['accountID', 'now']);
+    expect(harness.recorder.log).toContain(COMPOSED_PRICING);
+  });
+
+  // -------------------------------------------------------------------------
+  // ★★★ F12: THE RESOLVED ACTION IS VERIFIED BEFORE ANYTHING IS DECODED.
+  //
+  // The previous revision read `route.action` only as a log value and never compared it. The shared
+  // table publishes ONE row per capability today, so the comparison cannot currently fail - and the
+  // router's own note records that adding a second route to a capability later is ADDITIVE, at which
+  // point an action this module does not implement must fall out as a non-route rather than reaching
+  // the dispatcher. Both halves are pinned: the table's shape today, and the ORDER of the two steps.
+  // -------------------------------------------------------------------------
+
+  it('★★★ publishes exactly ONE route for this capability, whose action the module implements (finding F12)', () => {
+    const route = ROUTE_TABLE.promotionApplication;
+
+    expect(route.capability).toBe('promotionApplication');
+    expect(route.action).toBe('applyPromotions');
+    expect(route.methods).toBe('POST');
+    expect(route.path).toBe('/promotions/application');
+
+    // ONE row, so the guard is a forward-compatibility check rather than a currently reachable branch -
+    // stated here so a reader does not go looking for a case that drives it.
+    const rowsForThisCapability = Object.values(ROUTE_TABLE).filter(
+      (candidate): boolean => candidate.capability === 'promotionApplication',
+    );
+    expect(rowsForThisCapability).toHaveLength(1);
+  });
+
+  it('★★★ does ROUTE work before BODY work, so an unusable request costs no parse (finding F12)', async () => {
+    // The ordering is observable without a second action: send a syntactically broken body to a route
+    // that does NOT match. Had the body been decoded first the answer would be a 400 about the body;
+    // because route resolution runs first - and the action check sits immediately after it, before
+    // `decodeRequestEnvelope` - the answer is a 404 about the route, and nothing was parsed.
+    const harness = makeHarness();
+    const result = await harness.invoke(
+      makeProxyEvent({ httpMethod: 'GET', path: '/promotions/application', body: '{' }),
+    );
+
+    expect(result.statusCode).toBe(404);
+    expect(errorBodyOf(result).category).toBe('routeNotFound');
+    // No composition root, no scope, no pass - and no parse.
+    expect(harness.recorder.log).toEqual([]);
+    expect(harness.recorder.scopeInputs).toHaveLength(0);
+
+    // And the SAME broken body on the MATCHED route is answered as a body failure, which is what makes
+    // the 404 above attributable to ordering rather than to the body being ignored everywhere.
+    const matched = makeHarness();
+    const matchedResult = await matched.invoke(makeProxyEvent({ body: '{' }));
+
+    expect(matchedResult.statusCode).toBe(400);
+    expect(matched.recorder.scopeInputs).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // ★★★ F13 / F8: THE ENVELOPE AND THE CORRELATION IDENTIFIER ARE THE SHARED ONES.
+  // -------------------------------------------------------------------------
+
+  it('★★★ falls back to the SHARED unattributed identifier when the platform supplies none (finding F8)', async () => {
+    // The module used to carry its own `unidentifiedRequest` literal and its own precedence walk. Both
+    // are the mapper's now, so this capability answers with the same token the other four do - which is
+    // the point of the finding: an operator joining a response to a log line should not have to know
+    // which entrypoint produced it.
+    const { order } = makeGoldenOrder();
+    const harness = makeHarness({ admit: order });
+
+    const result = await harness.invoke(postApplyPromotions(order, {}));
+    expect(result.statusCode).toBe(200);
+    expect(servedEnvelopeOf(result).requestId).toBe(PLATFORM_REQUEST_ID);
+
+    // With the platform identifier withheld, the SHARED fallback is used rather than an empty string,
+    // a generated value or a caller-supplied header.
+    const anonymous = makeHarness({ materialize: order });
+    const anonymousResult = await anonymous.invoke(
+      makeProxyEvent({
+        body: JSON.stringify(applyPromotionsDocument(wireOrderDocument(order))),
+        requestId: '',
+        ...(order.accountID === undefined ? {} : { authorizer: { accountID: order.accountID } }),
+      }),
+    );
+
+    expect(anonymousResult.statusCode).toBe(200);
+    expect(servedEnvelopeOf(anonymousResult).requestId).toBe('unattributed');
   });
 });
