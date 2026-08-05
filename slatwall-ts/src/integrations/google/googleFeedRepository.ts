@@ -397,8 +397,10 @@ export interface ResolvedSkuShippingWeightSetting {
  *
  * WHAT IT MUST NOT BE. It is not a settings provider and must not be mistaken for
  * one: it admits no arbitrary key, answers no other setting, and its result cannot
- * reach a `WHERE` clause. `src/domain/ports/settingsProvider.ts` stays at its four
- * keys, untouched.
+ * reach a `WHERE` clause. `src/domain/ports/settingsProvider.ts` stays at its SEVEN
+ * keys, untouched - the same locked count {@link ResolvedFeedSettingValues} and
+ * {@link GoogleProductFeedRow.imageLinkPath} state above, and the count the port
+ * itself publishes.
  */
 export interface SkuFeedSettingResolver {
   /**
@@ -637,12 +639,13 @@ export interface GoogleProductFeedRow {
    *
    * ★★ THIS MEMBER WAS ONCE `string | undefined`, DOCUMENTED AS "the missing-image
    * substitution is not performed. Absent when `SwSku.imageFile` is SQL `NULL`".
-   *   Two of that block's premises were sound - the image service is out of scope and
-   *   `src/domain/ports/imageStore.ts` cannot resolve a path - and one was wrong: it
-   *   said `imageMissingImagePath` "is deliberately not among the seven keys the
-   *   settings contract admits", where the union holds four. But the conclusion did
-   *   not follow from any of them. A repository that cannot RESOLVE a fallback can
-   *   still be HANDED one, which is what
+   *   ALL THREE of that block's premises were sound - the image service is out of
+   *   scope, `src/domain/ports/imageStore.ts` cannot resolve a path, and
+   *   `imageMissingImagePath` really "is deliberately not among the seven keys the
+   *   settings contract admits", because the union holds exactly SEVEN members and
+   *   neither missing-image key [model/service/SettingService.cfc:L184, :L164] is one
+   *   of them. What did not follow from any of the three was the CONCLUSION. A
+   *   repository that cannot RESOLVE a fallback can still be HANDED one, which is what
    *   {@link ResolvedFeedSettingValues.missingImagePath} now is.
    *
    *   The absence mattered because of what the renderer then did with it: it

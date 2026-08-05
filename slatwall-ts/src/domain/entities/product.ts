@@ -3043,8 +3043,8 @@ export class Product {
   //
   // LEGACY-NOTE [model/entity/Product.cfc:L146-L153, L171-L176, L215-L221, L370-L398]: the Mura CMS
   // bridge is out of scope, `Content` and `Template` are not among the eighteen entities,
-  // `productDisplayTemplate` is not one of the four `SettingKey` members, and two of the four build
-  // a `HibachiSmartList`. Schema continuity is unaffected: `Category.cmsCategoryID` (index
+  // `productDisplayTemplate` is not one of the seven `SettingKey` members, and two of the four
+  // build a `HibachiSmartList`. Schema continuity is unaffected: `Category.cmsCategoryID` (index
   // `RI_CMSCATEGORYID`) and its `site` association survive as inert persisted columns in
   // src/domain/entities/category.ts.
   //
@@ -3079,11 +3079,14 @@ export class Product {
   //
   // LEGACY-NOTE [model/entity/Product.cfc:L540-L545]: `getTitle()` reads
   // `setting('productTitleString')` - declared at [model/service/SettingService.cfc:L193] - and
-  // hands it to `hibachiUtilityService.replaceStringTemplate(...)` via `getService` at [L542]. Two
-  // independent boundaries block it: the key is not one of the four ../ports/settingsProvider.js
-  // declares, and `replaceStringTemplate` is an unported Hibachi utility. The default template text
-  // is deliberately NOT quoted here and NOT carried in `ProductLegacyMetadata`. The persisted
-  // snapshot `calculatedTitle` [L65] IS preserved.
+  // hands it to `hibachiUtilityService.replaceStringTemplate(...)` via `getService` at [L542]. ONE
+  // boundary blocks it, and it is NOT a settings boundary: `productTitleString` IS one of the seven
+  // keys ../ports/settingsProvider.js declares - the fifth of them - and this entity holds the
+  // provider that resolves it, exactly as the class header records. What is missing is the
+  // RENDERER: `replaceStringTemplate` is an unported Hibachi utility, so the `${...}` markers in
+  // the value have nothing to resolve them. The default template text is deliberately NOT quoted
+  // here and NOT carried in `ProductLegacyMetadata`. The persisted snapshot `calculatedTitle` [L65]
+  // IS preserved.
   //
   // ---------------------------------------------------------------------------------------------
   // CLUSTER 7 - NOTHING IS OMITTED HERE.  `getSalePriceDetailsForSkus()` IS PORTED, under §3.9

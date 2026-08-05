@@ -1037,13 +1037,14 @@ export class Option {
    *   }
    *
    * ★ PORTED, NOT OMITTED. An earlier revision dropped this method on two grounds, each stated as
-   * independently sufficient: that `globalAssetsImageFolderPath` is not one of the four
-   * `SettingsProvider` keys, and that `getURLFromPath()` belongs to the unported Hibachi base. BOTH
-   * PREMISES ARE TRUE AND NEITHER SUPPORTS THE CONCLUSION. They establish that this entity may not
-   * RESOLVE the base itself; they say nothing about whether it may CONCATENATE a suffix onto a base
-   * resolved elsewhere. Removing an entire public method because two of its inputs move outward
-   * inverts the anti-corruption boundary - the point of that boundary is to relocate the ambient
-   * lookups and KEEP the behaviour, and the behaviour here is one string concatenation.
+   * independently sufficient: that `globalAssetsImageFolderPath` is not one of the seven
+   * `SettingsProvider` keys enumerated above, and that `getURLFromPath()` belongs to the unported
+   * Hibachi base. BOTH PREMISES ARE TRUE AND NEITHER SUPPORTS THE CONCLUSION. They establish that
+   * this entity may not RESOLVE the base itself; they say nothing about whether it may CONCATENATE
+   * a suffix onto a base resolved elsewhere. Removing an entire public method because two of its
+   * inputs move outward inverts the anti-corruption boundary - the point of that boundary is to
+   * relocate the ambient lookups and KEEP the behaviour, and the behaviour here is one string
+   * concatenation.
    *
    * WHAT THIS ENTITY CONTRIBUTES IS EXACTLY `& '/option/'`. The `assetsImageBaseUrl` field holds the
    * already-resolved value of `getURLFromPath(setting('globalAssetsImageFolderPath'))`, materialized

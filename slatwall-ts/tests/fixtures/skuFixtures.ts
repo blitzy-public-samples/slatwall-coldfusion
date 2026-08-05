@@ -285,12 +285,14 @@ interface SkuFixtureOverrides {
    * a sku built without them REFUSES both methods, which is what a sku hydrated by an
    * adapter that was not given them does. Supply this to reach the composing path.
    *
-   * The three keys are `getHibachiScope().getBaseImageURL()`
+   * The three values are `getHibachiScope().getBaseImageURL()`
    * [model/entity/Sku.cfc:L146], `setting('productImageOptionCodeDelimiter')` [L136]
-   * and `setting('productImageDefaultExtension')` [L138] - none of them one of the four
-   * keys `src/domain/ports/settingsProvider.ts` publishes, which is why they arrive as
-   * resolved values rather than through the port. Their legacy defaults are `"-"`
-   * [model/service/SettingService.cfc:L192] and `"jpg"` [L191].
+   * and `setting('productImageDefaultExtension')` [L138]. They arrive already resolved
+   * because the entity may not RESOLVE them, not because the port has never heard of
+   * them: two of the three ARE on the seven-key union
+   * `src/domain/ports/settingsProvider.ts` publishes, and only the base image URL - a
+   * framework scope accessor rather than a setting - sits off it entirely. Their legacy
+   * defaults are `"-"` [model/service/SettingService.cfc:L192] and `"jpg"` [L191].
    */
   readonly imageSettingValues?: SkuImageSettingValues | undefined;
 

@@ -820,25 +820,32 @@ function renderFeedItem(
   // `skuShippingWeight`, declared `fieldType="text"` with a default of `1`
   // [model/service/SettingService.cfc:L232], and `skuShippingWeightUnitCode`,
   // declared `fieldType="select"` with a default of `"lb"`
-  // [model/service/SettingService.cfc:L233]. Neither key is among the FOUR that
-  // `src/domain/ports/settingsProvider.ts` admits - `globalURLKeyProduct`,
-  // `globalURLKeyProductType`, `skuCurrency` and `skuEligibleCurrencies` - and
-  // adding a fifth would be
-  // a scope violation, as would extending a sibling's locked contract or adding a
-  // fourteenth port for feed presentation values. The route that remains is the
-  // right one anyway: a pure renderer should not be resolving configuration, so
+  // [model/service/SettingService.cfc:L233]. Neither key is among the SEVEN that
+  // `src/domain/ports/settingsProvider.ts` admits - `globalURLKeyProduct` [:L178],
+  // `globalURLKeyProductType` [:L179], `productImageDefaultExtension` [:L191],
+  // `productImageOptionCodeDelimiter` [:L192], `productTitleString` [:L193],
+  // `skuCurrency` [:L221] and `skuEligibleCurrencies` [:L222] - and adding an eighth
+  // would be a scope violation, as would extending a sibling's locked contract or
+  // adding a fourteenth port for feed presentation values. The route that remains is
+  // the right one anyway: a pure renderer should not be resolving configuration, so
   // the values are resolved before hydration and the projection carries them. The
   // two legacy defaults are cited above as evidence of SHAPE only; neither is
   // inlined here.
   //
-  // ★ TWO CORRECTIONS TO THAT PARAGRAPH, NEITHER OF WHICH CHANGES THIS RENDERER.
-  //   It said "seven" where the key union holds four, and it said "the composition
-  //   root resolves these once", which understated the problem: the legacy resolves
-  //   them PER SKU, inside the row loop, so once per feed was never enough.
+  // ★ ONE CORRECTION TO THAT PARAGRAPH, WHICH DOES NOT CHANGE THIS RENDERER.
+  //   It said "the composition root resolves these once", which understated the
+  //   problem: the legacy resolves them PER SKU, inside the row loop, so once per
+  //   feed was never enough.
   //   `./googleFeedRepository.js` now resolves them per SKU through a collaborator.
   //   From here the contract is unchanged - two resolved strings on the row, emitted
   //   as text - which is what makes this renderer indifferent to where they came
   //   from, and is the point of resolving them before it runs.
+  //
+  //   The key COUNT above needed correcting too, in the opposite direction to an
+  //   earlier revision of this comment: the union holds SEVEN members, not four, so
+  //   the enumeration above is the port's full surface and "adding an eighth" is the
+  //   accurate statement of the lock. What never changed is the only fact this
+  //   renderer depends on - neither shipping-weight key is on that union at all.
   //
   // They are STRINGS - not numbers and not `Money` - so they are emitted as text
   // with a single space between them, in the template's order, and the pair is

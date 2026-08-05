@@ -4062,7 +4062,7 @@ function buildSkuSettingCandidates(
 // given a default - they have been given a wrong answer that is indistinguishable from a right one.
 //
 // ★★ AND "NO IN-SCOPE PORT EXPOSES IT" WAS TRUE BUT IRRELEVANT, for the same reason it was in F13 and
-// F14. `src/domain/ports/settingsProvider.ts` is locked at its four keys and stays locked; the thirteen
+// F14. `src/domain/ports/settingsProvider.ts` is locked at its seven keys and stays locked; the thirteen
 // ports are unchanged. What the absence of a port rules out is a PORT-SHAPED solution, not a solution.
 // This resolver is a module-local structural collaborator over `PreparedStatementExecutor`, the same
 // construct `SqlUrlTitleGenerator`, `SqlPriceGroupFrameworkReads`, `SqlBrandFrameworkWrites` and

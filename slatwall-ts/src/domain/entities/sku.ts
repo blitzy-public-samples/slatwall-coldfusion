@@ -3501,12 +3501,18 @@ export class Sku {
 // ★ THIS SECTION IS SHORTER THAN IT WAS, AND THE REASON IS RECORDED RATHER THAN
 //   QUIETLY APPLIED. `generateImageFileName()` [L131-L139] and `getImagePath()`
 //   [L145-L147] were previously listed here as omitted-or-refused on the grounds
-//   that the settings they read are not among the four `SettingsProvider` keys.
-//   That premise is TRUE and does not support the conclusion: it establishes only
-//   that this entity may not RESOLVE those values, not that it may not COMPOSE a
-//   string out of values resolved elsewhere. BOTH ARE NOW PORTED, with the
-//   resolved values arriving through `SkuImageSettingValues` exactly as
-//   `Option.assetsImageBaseUrl` supplies `Option.getImageDirectory()`
+//   that the settings they read are not among the `SettingsProvider` keys.
+//   THAT PREMISE IS FALSE AS WELL AS INSUFFICIENT, and the count it rested on was
+//   wrong: the union holds SEVEN keys, and two of the three values these members
+//   compose with - `setting('productImageOptionCodeDelimiter')` [L135] and
+//   `setting('productImageDefaultExtension')` [L138] - ARE on it
+//   [model/service/SettingService.cfc:L192, :L191], while the third,
+//   `getHibachiScope().getBaseImageURL()` [L146], is a framework scope accessor and
+//   never was a settings key at all. Even where a value genuinely does sit off the
+//   union, the premise establishes only that this entity may not RESOLVE that value,
+//   not that it may not COMPOSE a string out of values resolved elsewhere. BOTH ARE
+//   NOW PORTED, with the resolved values arriving through `SkuImageSettingValues`
+//   exactly as `Option.assetsImageBaseUrl` supplies `Option.getImageDirectory()`
 //   [model/entity/Option.cfc:L81-L83]. See the image section of the class.
 //
 //   ★ AND THE COMPOSITION EXISTS A SECOND TIME, ONE LAYER OUT, WHICH IS NOT A
