@@ -6283,7 +6283,22 @@ function createRequestGraph(
       // The read adds no `DISTINCT`, so one SKU can arrive as several instances of the same
       // row. The first match is returned; comparing by identifier rather than by position
       // is what makes that a selection rather than a guess.
-      const sku = skus.find((candidate) => candidate.getSkuID() === identity.skuID);
+      //
+      // ★★★ THE COMPARISON FOLDS CASE, AND IT USED TO BE `===`. A code review recorded the
+      // strict form as a CFML-parity defect: identifiers are case-insensitive in the legacy -
+      // `SwSku.skuID` is compared by an engine whose `eq` and whose struct keys both fold
+      // case, and the legacy DAO binds the value into a `cfqueryparam` that MySQL's own
+      // collation folds again - so a differently-cased but VALID identifier became
+      // `skuNotFound`. `foldIdentifier` is the same folding the OrderView hydration in this
+      // module already applies to `item.skuID`, `item.productID` and every price-group
+      // identifier, so the loader a handler reaches and the hydration a document reaches now
+      // agree instead of one being stricter than the other.
+      //
+      // The read itself is unaffected: `getProductByProductID` above and `getProductSkus`
+      // here bind their identifiers as parameters, and this narrowing happens over rows the
+      // database already returned.
+      const foldedSkuID = foldIdentifier(identity.skuID);
+      const sku = skus.find((candidate) => foldIdentifier(candidate.getSkuID()) === foldedSkuID);
 
       return sku === undefined ? undefined : { product, sku };
     },
@@ -6630,12 +6645,23 @@ function createRequestGraph(
     // in one request each read it - the repositories and entities behind them are already
     // request-scoped, and adding a second memo here would only add a second thing to reason
     // about.
+    // ★★★ THE REQUEST'S ESTABLISHED ACCOUNT IS THE FOURTH ARGUMENT, AND IT CLOSES HALF OF A
+    // CRITICAL AUTHORIZATION FINDING. A wire document states its own `accountID`, and a
+    // document stating NONE used to hydrate into a view with no account at all - which
+    // silently skipped `PriceGroupService.updateOrderAmountsWithPriceGroups`' account gate
+    // [model/service/PriceGroupService.cfc:L365] and every per-account promotion use-limit
+    // read [model/service/PromotionService.cfc:L1098]. An AUTHENTICATED caller could
+    // therefore evade its own account's use limits by omitting one member. The scope's
+    // account - derived by the primary adapter from the API Gateway authorizer and carried
+    // on `RequestScopeInput` - is supplied here so the absence is filled with the identity
+    // the request already proved, never with one a body chose.
     materializeOrderView: (document) =>
       materializeOrderViewDocument(
         document,
         productRepository,
         skuRepository,
         mysqlPriceGroupRepository,
+        input.accountID,
       ),
     getSalePriceDetailsForProductSkus: (productID) =>
       salePriceResolver.getSalePriceDetailsForProductSkus(productID),
@@ -7109,17 +7135,30 @@ function materializeAppliedPromotion(document: AppliedPromotionDocument): Applie
  * as. Nothing is inferred: a document that omits a member does not reach this function,
  * because the primary adapter's schema refuses it first with a member path.
  *
+ * ★★★ THE ONE MEMBER THIS FUNCTION DOES NOT TAKE VERBATIM FROM THE DOCUMENT IS THE ACCOUNT,
+ * and the exception is a CRITICAL authorization fix rather than a convenience. See
+ * `establishedAccountID` below.
+ *
  * @throws `CompositionDataError` when a named product, SKU or price group cannot be loaded.
  * @throws the decimal-numeral error from `../lib/cfml/numberFormat.js` when a monetary
  *   member is not a plain decimal numeral, and `InvalidCurrencyCodeError` when the currency
  *   code is not three characters. Both propagate unwrapped: they name the malformed value's
  *   own failure better than a re-thrown wrapper would.
+ *
+ * @param establishedAccountID - the account THIS REQUEST proved, from
+ *   `RequestScopeInput.accountID`. It fills a document that states no account and NOTHING
+ *   else: a document naming an account keeps the one it names, because deciding whether
+ *   THAT disagrees with the principal is an authorization judgment belonging to the primary
+ *   adapter - which refuses it with a client-shaped 400 and a member path, a report this
+ *   tier could only make as a server-shaped failure. So the two tiers split the rule
+ *   exactly: ADOPT here, REFUSE there, and neither can be bypassed by the other's absence.
  */
 async function materializeOrderViewDocument(
   document: OrderViewDocument,
   productRepository: ProductRepository,
   skuRepository: SkuRepository,
   priceGroupSetLoader: PriceGroupSetLoader,
+  establishedAccountID: string | undefined,
 ): Promise<OrderView> {
   const productsByFoldedID = await loadDocumentProducts(document, productRepository);
   const skusByFoldedID = await loadDocumentSkus(document, productsByFoldedID, skuRepository);
@@ -7207,7 +7246,22 @@ async function materializeOrderViewDocument(
     totalSaleQuantity: document.totalSaleQuantity,
     subtotal: Money.fromDecimalString(document.subtotal),
     orderType: { systemCode: document.orderType.systemCode },
-    accountID: document.accountID ?? undefined,
+    // ★★★ THE DOCUMENT'S ACCOUNT, OR THE ONE THIS REQUEST PROVED - NEVER NOTHING WHEN AN
+    // IDENTITY EXISTS. This used to read `document.accountID ?? undefined`, and that single
+    // `?? undefined` was one half of a CRITICAL authorization defect: an authenticated caller
+    // that simply omitted the member hydrated an ACCOUNTLESS view, which made
+    // [model/service/PriceGroupService.cfc:L365] resolve no account price groups and made
+    // every per-account promotion use-limit read [model/service/PromotionService.cfc:L1098]
+    // measure nothing - so a promotion limited to N uses per account could be re-applied
+    // without limit by a caller whose account had already exhausted it.
+    //
+    // `??` rather than a test on `establishedAccountID`, because BOTH absences are `null` or
+    // `undefined` and the precedence is what matters: a stated account WINS here, and whether
+    // it is the caller's to state is decided by the primary adapter (see the parameter note).
+    // An anonymous in-process caller supplies no established account, so an accountless
+    // document still hydrates accountless - which is the legacy logged-out arm
+    // [model/service/PriceGroupService.cfc:L265-L266] and remains reachable.
+    accountID: document.accountID ?? establishedAccountID,
     subtotalAfterItemDiscounts: Money.fromDecimalString(document.subtotalAfterItemDiscounts),
     promotionCodeList: document.promotionCodeList,
     fulfillmentChargeAfterDiscountTotal: Money.fromDecimalString(

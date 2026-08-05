@@ -2531,13 +2531,24 @@ describe('the SKU resolution Lambda entry point', () => {
       expect(statementsIssued).toBe(0);
     });
 
-    it('★★★ REFUSES a selectedOptions list past the 64-element HTTP ceiling', async () => {
-      // ★★★ THE OLD PROTOCOL-ONLY CLAIM IS NO LONGER SUFFICIENT. Security finding V-06a
-      // established a narrower boundary limit because every option expands the downstream
-      // statement. The handler therefore refuses 65 rather than relying only on the much
-      // larger representation bound.
+    it('★★★ ADMITS a selectedOptions list past 64 elements and forwards it byte for byte', async () => {
+      // ★★★ INVERTED DEFECT-PINNING CASE. This case read 'REFUSES a selectedOptions list past the
+      // 64-element HTTP ceiling' and asserted a 400, on the grounds that "every option expands the
+      // downstream statement". A code review rejected the bound and the reasoning behind it:
+      //
+      //   * `getProductSkusBySelectedOptions` is one of the three MUST-PRESERVE behaviours (AAP
+      //     0.8.1), and the legacy answers a list of ANY length - the loop at
+      //     [model/dao/SkuDAO.cfc:L112] emits one `exists` clause per element with no count test
+      //     anywhere - so refusing at 65 made this route answer differently from the surface it ports.
+      //   * AAP 0.6.5's explicit-batch-limit requirement is written about the UNBOUNDED BULK MUTATION
+      //     loops, `processProduct_updateSkus` [model/service/ProductService.cfc:L216-L233] and the
+      //     cartesian-product odometer in `createSkus` [model/service/SkuService.cfc:L109-L121]. This
+      //     operation is a READ that mutates nothing.
+      //
+      // The only bound that remains is the MySQL PROTOCOL ceiling, and it lives in the statement
+      // builder that knows the placeholder count - see the assertion at the end of this case.
       const overWide = Array.from({ length: 65 }, (unused, index) => String(index)).join(',');
-      const isolated = createHarness();
+      const isolated = createHarness({ productSkusBySelectedOptions: [] });
 
       const response = await isolated.invoke(
         requestFor('getProductSkusBySelectedOptions', {
@@ -2546,37 +2557,35 @@ describe('the SKU resolution Lambda entry point', () => {
         }),
       );
 
-      // A client-shaped 400 names the member and refuses before opening a request graph.
-      expect(response.statusCode).toBe(400);
-      expect(errorBodyOf(response).category).toBe('invalidRequest');
-      expect(fieldPathsOf(response)).toContain('selectedOptions');
-      expect(isolated.calls).toHaveLength(0);
-      expect(isolated.scopeOpenings).toHaveLength(0);
+      expect(response.statusCode).toBe(200);
+      // FORWARDED BYTE FOR BYTE: no count, no trim, no sort, no de-duplication and no truncation -
+      // truncating would select a DIFFERENT SKU, which is the one outcome worse than refusing.
+      expect(isolated.calls).toHaveLength(1);
+      expect(isolated.calls[0]?.args).toEqual([overWide, PRODUCT_ID]);
     });
 
-    it('admits a selectedOptions list AT the bound and forwards it byte for byte', async () => {
-      const atBound = Array.from({ length: 64 }, (unused, index) => String(index)).join(',');
+    it('admits a 64-element list too, so the former boundary value is not special', async () => {
+      const atFormerBound = Array.from({ length: 64 }, (unused, index) => String(index)).join(',');
       const populated = createHarness({ productSkusBySelectedOptions: [] });
 
       const response = await populated.invoke(
         requestFor('getProductSkusBySelectedOptions', {
-          selectedOptions: atBound,
+          selectedOptions: atFormerBound,
           productID: PRODUCT_ID,
         }),
       );
 
       expect(response.statusCode).toBe(200);
-      // ★★ FORWARDED UNCHANGED, WHICH IS THE HALF OF F17 THAT IS EASY TO BREAK WHILE FIXING THE OTHER
-      // HALF. The bound COUNTS the list; it does not trim, sort, de-duplicate, case-fold, reorder or
-      // shorten it, and the string the service receives is the string the caller sent.
-      expect(populated.calls[0]?.args).toEqual([atBound, PRODUCT_ID]);
+      expect(populated.calls[0]?.args).toEqual([atFormerBound, PRODUCT_ID]);
     });
 
-    it('REINSTATES the reviewed 64-element cap at the HTTP boundary', async () => {
-      // ★ INVERTED DEFECT-PINNING ASSERTION. The old case claimed that the handler must
-      // "NOT reinstate the 64-element policy cap" and admitted 200 values. Security finding
-      // V-06a superseded that claim: the route now refuses the expansion before any request
-      // graph or service is reached, while the lower fidelity layers remain total.
+    it('★★★ admits the hundreds-of-elements magnitude the review measured, unchanged', async () => {
+      // ★ INVERTED DEFECT-PINNING ASSERTION. This case was 'REINSTATES the reviewed 64-element cap at
+      // the HTTP boundary' and asserted a 400 for 200 elements. The list below is deliberately UNTIDY -
+      // padded and repeating - because the fidelity claim is not merely that it is admitted but that
+      // nothing about it is normalized on the way through: CFML `listLen` semantics, element trimming,
+      // case folding and de-duplication all belong to the tiers that own them, and none of them
+      // belongs to a transport adapter.
       const wide = Array.from(
         { length: 200 },
         (unused, index) => ` opt-${String(index % 7)} `,
@@ -2590,10 +2599,9 @@ describe('the SKU resolution Lambda entry point', () => {
         }),
       );
 
-      expect(response.statusCode).toBe(400);
-      expect(fieldPathsOf(response)).toContain('selectedOptions');
-      expect(populated.scopeOpenings).toHaveLength(0);
-      expect(populated.calls).toHaveLength(0);
+      expect(response.statusCode).toBe(200);
+      expect(populated.scopeOpenings).toHaveLength(1);
+      expect(populated.calls[0]?.args).toEqual([wide, PRODUCT_ID]);
     });
 
     it('★★★ emits its diagnostic keys LEGIBLY through the REAL process logger', async () => {
@@ -2740,13 +2748,33 @@ describe('the admission gate (NET-NEW)', () => {
   });
 });
 
-describe('the selectedOptions element ceiling (NET-NEW)', () => {
+// ===========================================================================
+// THE SELECTED-OPTIONS LIST: TOTAL AT THIS BOUNDARY (NET-NEW)
+//
+// ★★★ THIS BLOCK WAS 'the selectedOptions element ceiling' AND EVERY REFUSAL CASE IN IT IS
+// INVERTED. It admitted 64 elements, refused 65, refused 500 and 1000, and asserted the
+// refusal text 'must not name more than 64 options'. A code review found the ceiling itself
+// to be the defect: `getProductSkusBySelectedOptions` is one of the three MUST-PRESERVE
+// behaviours (AAP 0.8.1), the legacy loop at [model/dao/SkuDAO.cfc:L112] emits one `exists`
+// clause per element with NO count test, and AAP 0.6.5's batch-limit clause is about
+// unbounded bulk MUTATION rather than about a read.
+//
+// WHAT REPLACES IT IS THE SAME MAGNITUDES, ADMITTED, plus the property that actually matters
+// at a transport boundary: the string the caller sent is the string the service receives.
+// The protocol ceiling that DOES exist is asserted where it is true - one per element plus
+// the optional `productID`, refused at `MAX_PLACEHOLDER_COUNT` because MySQL encodes the
+// count in two bytes - by
+// `tests/integration/repositories/skusBySelectedOptions.test.ts` and
+// `tests/integration/repositories/mysqlSkuRepository.test.ts`.
+// ===========================================================================
+
+describe('the selectedOptions list is total at this boundary (NET-NEW)', () => {
   /** A comma-delimited list of `count` distinct option identifiers. */
   function optionList(count: number): string {
     return Array.from({ length: count }, (_unused, index) => `option-${String(index)}`).join(',');
   }
 
-  it('admits a list at the ceiling and forwards the submitted string byte for byte', async () => {
+  it('admits a 64-element list and forwards the submitted string byte for byte', async () => {
     const populated = createHarness({ productSkusBySelectedOptions: [] });
     const submitted = optionList(64);
 
@@ -2762,40 +2790,48 @@ describe('the selectedOptions element ceiling (NET-NEW)', () => {
     expect(populated.calls[0]?.args).toEqual([submitted, PRODUCT_ID]);
   });
 
-  it('REFUSES a list past the ceiling and never truncates it', async () => {
+  it('★★★ ADMITS a 65-element list, which the former ceiling refused', async () => {
     const populated = createHarness({ productSkusBySelectedOptions: [] });
+    const submitted = optionList(65);
 
     const response = await populated.invoke(
       requestFor('getProductSkusBySelectedOptions', {
-        selectedOptions: optionList(65),
+        selectedOptions: submitted,
         productID: PRODUCT_ID,
       }),
     );
 
-    expect(response.statusCode).toBe(400);
-    expect(fieldPathsOf(response)).toContain('selectedOptions');
-    expect(populated.calls).toHaveLength(0);
-    expect(populated.scopeOpenings).toHaveLength(0);
+    expect(response.statusCode).toBe(200);
+    expect(populated.calls[0]?.args).toEqual([submitted, PRODUCT_ID]);
   });
 
-  it('refuses the hundreds-of-elements magnitude measured by the review', async () => {
+  it('★★★ admits the hundreds-of-elements magnitudes the review measured', async () => {
     const populated = createHarness({ productSkusBySelectedOptions: [] });
 
     for (const count of [500, 1000]) {
+      const submitted = optionList(count);
       const response = await populated.invoke(
         requestFor('getProductSkusBySelectedOptions', {
-          selectedOptions: optionList(count),
+          selectedOptions: submitted,
           productID: PRODUCT_ID,
         }),
       );
 
-      expect(response.statusCode).toBe(400);
+      expect(response.statusCode).toBe(200);
+      // Each one reaches the service with its own list intact - so the admission is not merely
+      // "not a 400", it is a faithful forward.
+      expect(populated.calls.at(-1)?.args).toEqual([submitted, PRODUCT_ID]);
     }
 
-    expect(populated.calls).toHaveLength(0);
+    expect(populated.calls).toHaveLength(2);
   });
 
-  it('names the bound and never echoes the submitted list', async () => {
+  it('★★★ publishes NO element-count refusal text anywhere in a served response', async () => {
+    // The old case asserted that a 70-element list produced 'must not name more than 64 options'
+    // while withholding the submitted values. Both halves are inverted and kept: there is no such
+    // sentence to publish, and the list is STILL not echoed - a served response reports SKUs, and
+    // reflecting a caller's option list back would serve no purpose the request did not already
+    // serve.
     const populated = createHarness({ productSkusBySelectedOptions: [] });
     const submitted = optionList(70);
 
@@ -2806,11 +2842,17 @@ describe('the selectedOptions element ceiling (NET-NEW)', () => {
       }),
     );
 
-    expect(response.body).toContain('must not name more than 64 options');
+    expect(response.statusCode).toBe(200);
+    expect(response.body).not.toContain('must not name more than');
     expect(response.body).not.toContain('option-69');
+    expect(populated.calls[0]?.args).toEqual([submitted, PRODUCT_ID]);
   });
 
-  it('counts elements with legacy listLen semantics, dropping empty positions', async () => {
+  it('counts nothing, so trailing empty positions change no outcome', async () => {
+    // The old case proved that the COUNT used CFML `listLen` semantics, dropping empty positions.
+    // With no count at all, the property that remains is the stronger one: the padded string is
+    // forwarded exactly as sent, and the tier that parses it applies `listLen` itself
+    // [model/dao/SkuDAO.cfc:L112].
     const populated = createHarness({ productSkusBySelectedOptions: [] });
     const submitted = `${optionList(64)}${',,,,,,,,,,'.repeat(4)}`;
 

@@ -74,13 +74,13 @@ import {
   invalidRequestResponse,
   jsonSuccessResponse,
   mapErrorToApiGatewayResponse,
+  resolveRequestPrincipal,
   resolveServerRequestId,
   routeDiagnosticLabel,
   routeNotFoundResponse,
   unauthenticatedResponse,
 } from './errorMapper.js';
 import type { ErrorMappingContext, InvalidRequestReason } from './errorMapper.js';
-import { resolveRequestPrincipal } from './requestPrincipal.js';
 import { resolveRouteForCapability, routeRequestFromEvent } from './router.js';
 import type { RouteAction } from './router.js';
 import type { CurrencyConverter } from '../domain/ports/currencyConverter.js';
@@ -281,16 +281,29 @@ const SKU_IDENTITY_SCHEMA = z.strictObject({
 const IDENTIFIER_SCHEMA = z.string().min(1);
 
 /**
- * A currency code as the three SKU accessors take one: ANY non-empty string.
+ * A currency code as the three SKU accessors take one: ANY string, present.
  *
- * ★★ DELIBERATELY NOT LENGTH-CHECKED, AND THE RESTRAINT IS THE POINT.
+ * ★★ DELIBERATELY NOT LENGTH-CHECKED AND DELIBERATELY NOT NON-EMPTY, AND THE RESTRAINT IS THE POINT.
  * `Sku.getPriceByCurrencyCode(currencyCode)` [model/entity/Sku.cfc:L269-L273] takes a plain string
  * and answers a struct lookup: a code that is not in the SKU's currency map yields NOTHING, and a
  * two-character code is simply one such code. Refusing it with a 400 here would turn an input the
  * legacy ANSWERED into an error, which is a behavioural divergence dressed up as validation. The
  * accessor answers, and the absence is reported as an absence.
+ *
+ * ★★★ `.min(1)` WAS REMOVED, AND ITS PRESENCE CONTRADICTED THE PARAGRAPH ABOVE. A code review
+ * measured the consequence: CFML `required string currencyCode` rejects a MISSING argument and
+ * accepts an EMPTY one, so the legacy accessor was reachable with `''`, missed the case-insensitive
+ * currency map exactly as any unknown code does, and answered NOTHING. This route turned that
+ * answer - an omitted `price` on a 200 - into a 400, which is the single semantic the plan names as
+ * highest-consequence (AAP 0.9.2) inverted at the boundary: the caller could no longer distinguish
+ * "no price for that code" from "your request was wrong".
+ *
+ * PRESENCE IS STILL REQUIRED, because the ported signature declares the parameter: a request that
+ * omits `currencyCode` entirely is refused with that member path, which is the direct analogue of
+ * `required`. This is the same presence-not-emptiness rule the SKU-resolution entrypoint applies to
+ * `selectedOptions`.
  */
-const ACCESSOR_CURRENCY_CODE_SCHEMA = z.string().min(1);
+const ACCESSOR_CURRENCY_CODE_SCHEMA = z.string();
 
 /**
  * A currency code as `CurrencyConverter.convertCurrency` takes one: exactly three characters.
@@ -406,6 +419,54 @@ const PRICE_RESOLUTION_REQUEST_SCHEMA = z.discriminatedUnion('operation', [
  * disagree. Published because the test tier drives {@link dispatchPriceResolution} directly.
  */
 export type PriceResolutionRequest = z.infer<typeof PRICE_RESOLUTION_REQUEST_SCHEMA>;
+
+/**
+ * The ONE operation this route serves to a caller it cannot identify.
+ *
+ * ★★★ THIS SET EXISTS BECAUSE A ROUTE-WIDE REFUSAL MADE A PORTED LEGACY BRANCH UNREACHABLE, AND THAT
+ * WAS A FIDELITY DEFECT RATHER THAN A HARDENING DECISION. The legacy body, verbatim
+ * [model/service/PriceGroupService.cfc:L262-L266]:
+ *
+ *     public numeric function calculateSkuPriceBasedOnCurrentAccount(required any sku) {
+ *       if(getSlatwallScope().getLoggedInFlag()) {
+ *         return calculateSkuPriceBasedOnAccount(sku=arguments.sku, account=getHibachiScope().getAccount());
+ *       } else {
+ *         return sku.getPrice();
+ *
+ * The member OWNS the signed-in test, and its `else` arm is the price an anonymous storefront visitor
+ * is quoted. A previous revision of this file refused every unidentified caller BEFORE it read the
+ * body, so no request could ever reach that arm through the routed surface: `CurrentAccountContext`
+ * was non-empty on every invocation, the branch was dead, and a code review recorded exactly that.
+ * The requirement is therefore applied PER OPERATION, and the decode moved ahead of it so the
+ * operation is known when the decision is made.
+ *
+ * ★★ EXACTLY ONE OPERATION IS EXEMPT, AND THE ELEVEN OTHERS ARE NOT. The narrowness is the whole
+ * safety argument: an earlier security review found (CRITICAL, CWE-306 and CWE-862) that four of the
+ * five capability entrypoints served every anonymous request, and this route's catalogue, rate and
+ * conversion surface was part of what that closed. Restoring the ONE branch the source makes
+ * anonymous does not reopen the rest, and each retained requirement has its own reason:
+ *
+ *   * `calculateSkuPriceBasedOnAccount` and `getBestPriceGroupDetailsBasedOnSkuAndAccount` DECLARE an
+ *     account [model/service/PriceGroupService.cfc:L271], [L343]. Without a principal there is
+ *     nothing for {@link admitNamedAccount} to admit the caller's argument against, so the honest
+ *     answer is a refusal rather than an `unresolved` outcome that reports the absence of the very
+ *     thing the caller supplied.
+ *   * The three cascade reads, the two price-group calculations and the three currency accessors
+ *     expose price-group and per-currency PRICING DATA for a named SKU, product or product type.
+ *     None has an anonymous legacy antecedent - the legacy reached them through the admin subsystem
+ *     and through an order the checkout owned, both out of scope - so serving them anonymously would
+ *     be a NEW permission, not a preserved one.
+ *   * `convertCurrency` reads the configured rate table. Same reasoning: no anonymous antecedent.
+ *
+ * ONE LIST RATHER THAN A BOOLEAN MEMBER ON EACH ARM, so the exemption is stated in ONE place a
+ * reviewer can read whole, and so adding an operation cannot silently inherit it: an operation is
+ * anonymous only by being named here. FROZEN rather than a `Set`, matching every other constant in
+ * this subtree: a `Set` is mutable at run time even behind a `ReadonlySet` annotation, and module
+ * state that one invocation can change is precisely what a warm container carries into the next.
+ */
+const ANONYMOUS_PERMITTED_OPERATIONS: readonly PriceResolutionOperation[] = Object.freeze([
+  'calculateSkuPriceBasedOnCurrentAccount',
+]);
 
 // ===========================================================================
 // SECTION 2 - THE RESPONSE CONTRACT
@@ -1718,13 +1779,6 @@ export function createPriceResolutionHandler(
       return routeNotFoundResponse(mappingContext);
     }
 
-    // Refuse an unidentified caller before reading or parsing the body and before opening the graph.
-    // The product feed is the one source-public capability; this pricing route is not.
-    const principalResolution = resolveRequestPrincipal(event);
-    if (!principalResolution.identified) {
-      return unauthenticatedResponse(mappingContext);
-    }
-
     const reading = readRequestDocument(event);
 
     if (!reading.decoded) {
@@ -1737,7 +1791,46 @@ export function createPriceResolutionHandler(
       // Every arm is a `z.strictObject`, so an unrecognised key is refused and named rather than dropped.
       const request = PRICE_RESOLUTION_REQUEST_SCHEMA.parse(reading.document);
 
-      const accountID = principalResolution.principal.accountID;
+      // ★★★ THE ACCOUNT REQUIREMENT IS APPLIED HERE, PER OPERATION, AND THE POSITION IS THE FIX.
+      //
+      // It used to sit ABOVE the decode and refuse every unidentified caller outright, which made the
+      // `else` arm of `calculateSkuPriceBasedOnCurrentAccount`
+      // [model/service/PriceGroupService.cfc:L265-L266] unreachable through this route - see
+      // {@link ANONYMOUS_PERMITTED_OPERATIONS} for the whole finding and for why exactly one operation
+      // is exempt. Knowing WHICH operation was asked for requires the body, so the decision cannot
+      // precede the parse.
+      //
+      // ★★ WHAT THE REORDERING COSTS, STATED RATHER THAN GLOSSED. An unidentified caller can now make
+      // this function read and parse a body before being refused. That cost is bounded by the same
+      // ceiling every caller is held to - {@link MAXIMUM_REQUEST_DOCUMENT_BYTES}, 8 KiB, checked before
+      // `JSON.parse` - and it buys nothing else: a refused request still opens NO composition root, NO
+      // request scope and NO connection, and issues no statement.
+      //
+      // ★★ AND IT DISCLOSES NOTHING NEW. The refusal is still `unauthenticatedResponse`, whose sentence
+      // names no claim, no operation and no principal, and whose body carries no `fields`. A caller
+      // that sends a malformed body now learns that its body was malformed before learning it is
+      // unidentified; both facts were already available to it - the route's existence from the
+      // 401-versus-404 distinction, and the schema from the published contract - so the order in which
+      // it learns them tells it nothing more.
+      const principalResolution = resolveRequestPrincipal(event);
+
+      if (
+        !principalResolution.identified &&
+        !ANONYMOUS_PERMITTED_OPERATIONS.includes(request.operation)
+      ) {
+        return unauthenticatedResponse(mappingContext);
+      }
+
+      // ★★★ AN ANONYMOUS REQUEST OPENS ITS SCOPE WITH NO ACCOUNT, AND THAT IS THE POINT.
+      // `buildRequestScopeInput(undefined)` produces `{accountID: undefined}`, which the composition
+      // root publishes as an EMPTY `CurrentAccountContext` - the key OMITTED, not present-and-undefined
+      // - so `calculateSkuPriceBasedOnCurrentAccount` receives the falsy `getLoggedInFlag()` state the
+      // legacy `else` arm is written for and answers `sku.getPrice()`. Nothing is substituted for the
+      // absent account: no default account, no guest identifier and no empty string, any of which
+      // would make the service take the WRONG arm.
+      const accountID = principalResolution.identified
+        ? principalResolution.principal.accountID
+        : undefined;
 
       const compositionRoot = await openCompositionRoot();
       const scope = await compositionRoot.createRequestScope(buildRequestScopeInput(accountID));

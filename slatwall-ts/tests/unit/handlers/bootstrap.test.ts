@@ -1198,6 +1198,58 @@ describe('createRequestScope', () => {
     ).resolves.toBeUndefined();
   });
 
+  it('★★★ resolves a SKU whose identifier is cased differently, as CFML identifiers are', async () => {
+    // ★★★ INVERTED DEFECT-PINNING CASE. `getSkuBySkuIdentity` narrowed the rows a product read
+    // returned with `candidate.getSkuID() === identity.skuID`, and a code review recorded the strict
+    // comparison as a CFML-parity defect: identifiers are case-insensitive in the legacy - the engine
+    // folds case in `eq` and in every struct key, and the DAO binds the value into a `cfqueryparam`
+    // that MySQL's own collation folds again - so a differently-cased but VALID identifier answered
+    // `skuNotFound`, and five of the price route's operations lost their SKU to a casing difference.
+    //
+    // This is the loader four handler operations reach for a SKU, so the case drives it directly.
+    const root = await bootWith(makeExecutor());
+    const scope = await openScopeWithAdapters(root);
+    const adapters = adaptersOf(scope);
+
+    const product = makeProductFixture({ idPrefix: 'folded-', productID: 'prod-Folded-0001' });
+    const sku = makeSkuFixture({ idPrefix: 'folded-', skuID: 'sku-Folded-0001', product });
+
+    // The product read is answered as the DATABASE would answer it - folding the key - because
+    // `SwProduct.productID` is compared by MySQL under its own collation, not in this process. What
+    // this case is about is the narrowing that happens AFTER the rows arrive.
+    vi.spyOn(adapters.productRepository, 'getProductByProductID').mockImplementation(
+      (productID: string): Promise<Product | undefined> =>
+        Promise.resolve(
+          productID.toLowerCase() === product.getProductID().toLowerCase() ? product : undefined,
+        ),
+    );
+    vi.spyOn(adapters.skuRepository, 'getProductSkus').mockResolvedValue([sku]);
+
+    for (const spelling of [
+      'sku-Folded-0001',
+      'SKU-FOLDED-0001',
+      'sku-folded-0001',
+      'sKu-FoLdEd-0001',
+    ]) {
+      const loaded = await scope.entityLoaders.getSkuBySkuIdentity({
+        productID: 'PROD-FOLDED-0001',
+        skuID: spelling,
+      });
+
+      expect(loaded?.sku).toBe(sku);
+      expect(loaded?.product).toBe(product);
+    }
+
+    // AND A GENUINELY DIFFERENT IDENTIFIER IS STILL A MISS, so the folding widened the comparison
+    // rather than defeating it.
+    await expect(
+      scope.entityLoaders.getSkuBySkuIdentity({
+        productID: 'prod-Folded-0001',
+        skuID: 'sku-folded-0002',
+      }),
+    ).resolves.toBeUndefined();
+  });
+
   it('★★★ EXPOSES NO ROUTE FROM A SCOPE TO A REPOSITORY, UNDER ANY NAME', async () => {
     // ★★★ THE INVERSION OF THE SIX NAMES STRUCK FROM THE SET ABOVE. Asserting the shortened set
     // alone would pass for a scope that had merely RENAMED the members - `repositories`, `adapters`,
@@ -2421,6 +2473,61 @@ describe('updateOrderAmountsWithPriceGroupsThenPromotions', () => {
     expect(result.pricedOrder).toBe(order);
   });
 
+  it('★★★ issues NO account read for an accountless order, which is why the account is bound first', async () => {
+    // ★★★ THE MEASUREMENT BEHIND A CRITICAL AUTHORIZATION FIX, TAKEN AGAINST THE REAL
+    // PASS RATHER THAN ARGUED. An order that names no account reaches
+    // [model/service/PriceGroupService.cfc:L365]'s `isNull(order.getAccount())` arm,
+    // so `SwAccountPriceGroup` is never queried at all - and by the same absence every
+    // per-account promotion use limit [model/service/PromotionService.cfc:L1098] counts
+    // the uses of nobody, which is no limit.
+    //
+    // That is CORRECT for a genuinely anonymous caller - it is the legacy logged-out arm
+    // - and it was a BYPASS for an authenticated one, because the routed surface let a
+    // caller reach it by omitting one member. The fix is upstream of this pass, in two
+    // places, and this case is the reason both exist: `materializeOrderView` binds the
+    // scope's established account into the hydrated view, and
+    // `promotionApplicationHandler` binds it into an injected one. Neither changes this
+    // pass, and this pass is what makes the omission consequential.
+    const executor = makeExecutor();
+    const root = await bootWith(executor);
+    const scope = await root.createRequestScope();
+    const accountless = makeOrderViewFixture({ accountID: undefined });
+
+    vi.spyOn(
+      observablePromotionPass(scope.promotionService),
+      'updateOrderAmountsWithPromotions',
+    ).mockResolvedValue([]);
+
+    const result = await scope.updateOrderAmountsWithPriceGroupsThenPromotions(accountless);
+
+    expect(accountless.accountID).toBeUndefined();
+    expect(executor.countOf(ACCOUNT_PRICE_GROUP_IDS_SQL)).toBe(0);
+    expect(result.priceGroupIntents).toEqual([]);
+
+    // AND THE SAME ORDER, BOUND TO AN ACCOUNT, DOES ISSUE THE READ - so the binding is
+    // provably what restores it rather than merely relabelling the view.
+    const boundExecutor = makeExecutor();
+    const boundScope = await bootWith(boundExecutor).then((opened) => opened.createRequestScope());
+
+    vi.spyOn(
+      observablePromotionPass(boundScope.promotionService),
+      'updateOrderAmountsWithPromotions',
+    ).mockResolvedValue([]);
+
+    await boundScope.updateOrderAmountsWithPriceGroupsThenPromotions({
+      ...accountless,
+      accountID: 'acct-bound-from-the-authorizer',
+    });
+
+    expect(boundExecutor.countOf(ACCOUNT_PRICE_GROUP_IDS_SQL)).toBe(1);
+    expect(
+      requirePresent(
+        boundExecutor.calls[boundExecutor.firstIndexOf(ACCOUNT_PRICE_GROUP_IDS_SQL)],
+        'the account price-group read',
+      ).params,
+    ).toEqual(['acct-bound-from-the-authorizer']);
+  });
+
   it('★★★ loads the address-zone index itself before either pass runs', async () => {
     const executor = makeExecutor().seed(ADDRESS_ZONE_LOCATIONS_SQL, []);
     const scope = await bootWith(executor).then((root) => root.createRequestScope());
@@ -2481,6 +2588,8 @@ describe('updateOrderAmountsWithPriceGroupsThenPromotions', () => {
 describe('RequestScope.materializeOrderView', () => {
   /** The identifiers the documents below name, all invented and all non-sensitive. */
   const DOCUMENT_PRODUCT_ID = 'prod-wire-0001';
+  /** The account an IDENTIFIED request establishes, for the two account-binding cases. */
+  const REQUEST_ACCOUNT_ID = 'acct-established-by-the-authorizer';
   const DOCUMENT_SECOND_PRODUCT_ID = 'prod-wire-0002';
   const DOCUMENT_SKU_ID = 'sku-wire-0001';
   const DOCUMENT_SECOND_SKU_ID = 'sku-wire-0002';
@@ -2506,6 +2615,14 @@ describe('RequestScope.materializeOrderView', () => {
       readonly skusByProductID?: ReadonlyMap<string, readonly Sku[]>;
       /** The price groups the set loader can resolve. */
       readonly priceGroups?: readonly PriceGroup[];
+      /**
+       * The scope input the hydration runs under.
+       *
+       * Absent means an ANONYMOUS request, which is what every case that is not about the account
+       * uses. A case supplies one to prove that the hydration binds the account the request
+       * established when the document states none - see the two account cases below.
+       */
+      readonly scopeInput?: RequestScopeInput;
     } = {},
   ): Promise<{
     readonly scope: RequestScope;
@@ -2513,7 +2630,7 @@ describe('RequestScope.materializeOrderView', () => {
     readonly skuReads: readonly { readonly productID: string; readonly fetchOptions: boolean }[];
   }> {
     const root = await bootWith(makeExecutor());
-    const scope = await openScopeWithAdapters(root);
+    const scope = await openScopeWithAdapters(root, options.scopeInput);
     const adapters = adaptersOf(scope);
     const productReads: string[] = [];
     const skuReads: { readonly productID: string; readonly fetchOptions: boolean }[] = [];
@@ -3036,6 +3153,68 @@ describe('RequestScope.materializeOrderView', () => {
     expect(skuReads).toHaveLength(2);
     expect(itemAt(view, 0).sku).toBe(firstSku);
     expect(itemAt(view, 1).sku).toBe(secondSku);
+  });
+
+  // ★★★ THE ACCOUNT IS THE ONE MEMBER THIS HYDRATION DOES NOT TAKE VERBATIM FROM THE DOCUMENT.
+  //
+  // A code review recorded the previous behaviour - `document.accountID ?? undefined` - as one half
+  // of a CRITICAL authorization defect. `updateOrderAmountsWithPriceGroups` resolves account price
+  // groups from the view's account [model/service/PriceGroupService.cfc:L365] and every per-account
+  // promotion use limit is measured against it [model/service/PromotionService.cfc:L1098], so an
+  // AUTHENTICATED request whose document simply omitted the member priced an ACCOUNTLESS order: no
+  // `SwAccountPriceGroup` read at all, and a per-account use cap measured against nobody, which is
+  // no cap. The scope's own established account - derived by the primary adapter from the API
+  // Gateway authorizer, never from a body - now fills that absence here.
+  //
+  // The division with the primary adapter is exact and both halves are tested: ADOPT an absence
+  // here, REFUSE a disagreement there (`tests/unit/handlers/promotionApplicationHandler.test.ts`,
+  // 'the account trust boundary'). This tier does not refuse, because a mismatch is a caller error
+  // and a `CompositionDataError` could only be reported as a server-shaped failure.
+  it('★★★ adopts the request scope established account when the document states none', async () => {
+    const product = documentProduct(DOCUMENT_PRODUCT_ID);
+    const sku = documentSku(DOCUMENT_SKU_ID, product);
+    const { scope } = await openHydration({
+      products: new Map([[DOCUMENT_PRODUCT_ID, product]]),
+      skusByProductID: new Map([[DOCUMENT_PRODUCT_ID, [sku]]]),
+      scopeInput: { accountID: REQUEST_ACCOUNT_ID },
+    });
+
+    const view = await scope.materializeOrderView(orderDocument({ accountID: null }));
+
+    expect(view.accountID).toBe(REQUEST_ACCOUNT_ID);
+    // The same identity the pricing context carries, so the two cannot disagree within one request.
+    expect(scope.currentAccountContext.accountID).toBe(REQUEST_ACCOUNT_ID);
+  });
+
+  it('keeps the account the document states, and stays accountless for an anonymous request', async () => {
+    const product = documentProduct(DOCUMENT_PRODUCT_ID);
+    const sku = documentSku(DOCUMENT_SKU_ID, product);
+    const catalogue = {
+      products: new Map([[DOCUMENT_PRODUCT_ID, product]]),
+      skusByProductID: new Map([[DOCUMENT_PRODUCT_ID, [sku]]]),
+    };
+
+    // A STATED account WINS. Whether it is the caller's to state is the primary adapter's judgment,
+    // and substituting the scope's over it here would hide a disagreement the adapter must refuse.
+    const identified = await openHydration({
+      ...catalogue,
+      scopeInput: { accountID: REQUEST_ACCOUNT_ID },
+    });
+    const stated = await identified.scope.materializeOrderView(
+      orderDocument({ accountID: 'acct-stated-by-document' }),
+    );
+
+    expect(stated.accountID).toBe('acct-stated-by-document');
+
+    // AND THE LOGGED-OUT ARM SURVIVES. An anonymous request establishes no account, so an
+    // accountless document still hydrates accountless - which is the legacy `else` arm at
+    // [model/service/PriceGroupService.cfc:L265-L266] and must stay reachable.
+    const anonymous = await openHydration(catalogue);
+    const accountless = await anonymous.scope.materializeOrderView(
+      orderDocument({ accountID: null }),
+    );
+
+    expect(accountless.accountID).toBeUndefined();
   });
 });
 

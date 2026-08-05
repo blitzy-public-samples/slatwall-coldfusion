@@ -1710,6 +1710,10 @@ describe('authenticated admission and request-size bounds (concern 1b)', () => {
   });
 
   it('refuses a caller carrying no usable authorizer account', async () => {
+    // `ORDINARY_REQUEST` names `convertCurrency`, one of the ELEVEN operations that retain the account
+    // requirement, so every shape below is still refused. The one exempt operation is
+    // `calculateSkuPriceBasedOnCurrentAccount`, and the case beneath this one drives exactly the same
+    // authorizer shapes against it to prove the exemption is real rather than incidental.
     for (const authorizer of [
       null,
       {},
@@ -1729,8 +1733,53 @@ describe('authenticated admission and request-size bounds (concern 1b)', () => {
     }
   });
 
-  it('runs admission before body parsing, while still resolving the route first', async () => {
-    const unidentified = await handler(
+  it('★★★ does NOT refuse the current-account operation for an unidentified caller', async () => {
+    // ★★★ THE LOGGED-OUT ARM IS REACHABLE AGAIN, AND THIS IS THE ADMISSION HALF OF THE PROOF.
+    // `calculateSkuPriceBasedOnCurrentAccount` OWNS the signed-in test
+    // [model/service/PriceGroupService.cfc:L262-L266] and answers `sku.getPrice()` when nobody is
+    // signed in, so a route that refuses every unidentified caller makes that arm dead code. The same
+    // six authorizer shapes the case above refuses are admitted here.
+    //
+    // WHAT THIS CASE CAN AND CANNOT SEE. `handler` is the PRODUCTION entrypoint, so it reaches the
+    // production composition root, which refuses to configure without the `DB_*` contract and lands on
+    // the generic 500 - deliberately, because this suite reads no environment and opens no pool. The
+    // admission is upstream of that, so "not 401" is exactly the fact this case owns: the request got
+    // PAST the account requirement. The value the arm answers is asserted end to end through the
+    // injected seam, in 'serves the LOGGED-OUT current-account arm ...' further down this file.
+    for (const authorizer of [
+      null,
+      {},
+      { unrelated: 'value' },
+      { accountID: '' },
+      { accountID: '   ' },
+      { accountID: 42 },
+    ]) {
+      const response = await handler(
+        makeProxyEvent({
+          authorizer,
+          body: bodyOf({
+            operation: 'calculateSkuPriceBasedOnCurrentAccount',
+            sku: { productID: 'prod-anonymous-0001', skuID: 'sku-anonymous-0001' },
+          }),
+        }),
+        makeLambdaContext(),
+      );
+
+      expect(response.statusCode).not.toBe(401);
+    }
+  });
+
+  it('resolves the route first, then decodes, then applies the account requirement', async () => {
+    // ★★★ THIS CASE WAS 'runs admission before body parsing' AND THE ORDER IT PINNED IS THE DEFECT.
+    // A route-wide refusal ahead of the decode is why the `else` arm of
+    // `calculateSkuPriceBasedOnCurrentAccount` [model/service/PriceGroupService.cfc:L265-L266] could
+    // never be reached through this route: the requirement has to know WHICH operation was asked for,
+    // and that lives in the body. The decode therefore precedes the requirement, and the requirement
+    // is per operation - see `ANONYMOUS_PERMITTED_OPERATIONS` in the subject.
+    //
+    // What did NOT change is the order of the other two steps: the route still resolves first, so a
+    // path this capability does not own is a 404 rather than a revealing 401 or 400.
+    const unparsable = await handler(
       makeProxyEvent({ authorizer: null, body: '{ not json' }),
       makeLambdaContext(),
     );
@@ -1738,9 +1787,24 @@ describe('authenticated admission and request-size bounds (concern 1b)', () => {
       makeProxyEvent({ authorizer: null, path: '/prices' }),
       makeLambdaContext(),
     );
+    const identifiedRequirement = await handler(
+      makeProxyEvent({ authorizer: null, body: ORDINARY_REQUEST }),
+      makeLambdaContext(),
+    );
 
-    expect(unidentified.statusCode).toBe(401);
+    // A body that cannot be decoded is reported as such: the operation is unknowable, so the
+    // per-operation requirement has nothing to apply. Nothing about the refusal names a claim.
+    expect(unparsable.statusCode).toBe(400);
+    expect(readErrorEnvelope(unparsable).category).toBe('invalidRequest');
+    expect(readErrorEnvelope(unparsable).raw).not.toContain('accountID');
+    expect(readErrorEnvelope(unparsable).raw).not.toContain('authoriz');
+
     expect(unmatched.statusCode).toBe(404);
+
+    // And a DECODABLE request naming an operation that requires an account is still refused with 401,
+    // before any composition root, scope or connection exists.
+    expect(identifiedRequirement.statusCode).toBe(401);
+    expect(readErrorEnvelope(identifiedRequirement).category).toBe('unauthenticated');
   });
 
   it('refuses decoded and base64 request documents above 8 KiB without echoing them', async () => {
@@ -2553,6 +2617,15 @@ describe('the explicit request context that replaced the ambient scope (T6)', ()
     // [L265-L266] answers `sku.getPrice()` otherwise. Testing the context at the boundary and
     // short-circuiting would move that decision out of the service and into an adapter, so the
     // adapter passes the context over and the service decides - which is exactly what T6 asks for.
+    //
+    // ★★★ THIS CASE IS NECESSARY AND WAS NOT SUFFICIENT, AND THE DISTINCTION IS A REVIEW FINDING. It
+    // drives `dispatchPriceResolution` DIRECTLY, so it proves the dispatcher hands an empty context
+    // over - and for a while that was the only proof of the logged-out arm anywhere, while the routed
+    // entrypoint refused every unidentified caller before a dispatch could occur. The arm was
+    // simultaneously correct and unreachable. The ROUTED proof now lives at
+    // '★★★ serves the LOGGED-OUT current-account arm through the REAL service and composition' in the
+    // entrypoint section, and the two are complementary rather than duplicative: this one pins the
+    // hand-over, that one pins the admission and the value.
     const world = makeSkuWorld();
     const priceGroups = makePriceGroupServiceDouble();
     const scope = makeScope({
@@ -4968,6 +5041,152 @@ describe('the Lambda entrypoint, through its dependency seam (F3)', () => {
     expect(response.statusCode).toBe(200);
     expect(bed.root.scopeInputs[0]).toStrictEqual({ accountID: ACCOUNT_ID });
     expect(readSuccessEnvelope(response).result['outcome']).toBe('price');
+  });
+
+  it('★★★ serves the LOGGED-OUT current-account arm through the REAL service and composition', async () => {
+    // ★★★ THE CASE THE REVIEW REQUIRED, AND THE REASON IT HAD TO BE HERE RATHER THAN AT THE DISPATCHER.
+    // The T6 section above proves the logged-out arm by calling `dispatchPriceResolution` directly with
+    // a scope carrying an empty context - which is true, and was FALSE CONFIDENCE, because the routed
+    // entrypoint refused every unidentified caller before a dispatch could happen. So the arm was
+    // provably correct and provably unreachable at the same time, and only a case that drives the real
+    // handler over the real composition root can tell those two apart.
+    //
+    // NO PRICE-GROUP SERVICE DOUBLE IS INSTALLED. The REAL `PriceGroupService` runs, takes the
+    // `accountID === undefined` branch of `calculateSkuPriceBasedOnCurrentAccount` and answers
+    // `sku.getPrice()` [model/service/PriceGroupService.cfc:L266] - so the value in the response body is
+    // the SKU's own price, arrived at by the ported service rather than asserted by the harness.
+    const world = makeSkuWorld();
+    const graph = makePriceGroupFixtures();
+    const rate = requireDefined(
+      graph.childPriceGroup.getPriceGroupRates()[0],
+      'a rate on the child price group',
+    );
+    const bed = await openEntrypoint();
+
+    installEntityReads(world, graph.childPriceGroup, rate);
+
+    const response = await bed.invoke(
+      makeProxyEvent({
+        body: bodyOf({
+          operation: 'calculateSkuPriceBasedOnCurrentAccount',
+          sku: world.identity,
+        }),
+        // NO AUTHORIZER CONTEXT AT ALL, stated explicitly because the event builder's default is an
+        // authenticated session.
+        authorizer: null,
+      }),
+      makeLambdaContext(),
+    );
+    const envelope = readSuccessEnvelope(response);
+
+    expect(response.statusCode).toBe(200);
+    // ★★ THE SCOPE OPENED WITH AN EMPTY ACCOUNT, which is what makes the service take the else arm.
+    // `toStrictEqual({accountID: undefined})` rather than `{}`: the handler passes the member as an
+    // explicit `undefined`, and the composition root is what turns that into the OMITTED key on
+    // `CurrentAccountContext` - asserted in `tests/unit/handlers/bootstrap.test.ts`.
+    expect(bed.root.scopeInputs).toHaveLength(1);
+    expect(bed.root.scopeInputs[0]).toStrictEqual({ accountID: undefined });
+    // ★★★ THE SKU'S OWN PRICE, NOT A ZERO AND NOT AN ABSENCE.
+    expect(envelope.result['outcome']).toBe('price');
+    expect(readObject(envelope.result['price'], 'the served price')['amount']).toBe(
+      world.sku.getPrice().toDecimalString(),
+    );
+
+    // The log line reports the account as NOT established, and no identifier appears anywhere.
+    const served = requireDefined(
+      bed.emitted.lines.find((line): boolean => line.message === 'price resolution request served'),
+      'the success log line',
+    );
+    expect(served.context['accountEstablished']).toBe(false);
+    expect(bed.emitted.text()).not.toContain(ACCOUNT_ID);
+  });
+
+  it('★★★ answers an EMPTY currencyCode with an omitted price rather than a refusal', async () => {
+    // ★★★ THE SECOND CASE THE REVIEW REQUIRED. CFML `required string currencyCode` rejects a MISSING
+    // argument and accepts an EMPTY one, so `Sku.getPriceByCurrencyCode('')`
+    // [model/entity/Sku.cfc:L269-L273] is a legitimate call: it misses the currency map exactly as any
+    // unknown code does and answers NOTHING. A `.min(1)` on the schema turned that answer into a 400,
+    // which inverted the one semantic AAP 0.9.2 calls the highest-consequence parity check in the plan.
+    //
+    // All THREE accessors are driven, because all three shared the schema.
+    const world = makeSkuWorld();
+    const graph = makePriceGroupFixtures();
+    const rate = requireDefined(
+      graph.childPriceGroup.getPriceGroupRates()[0],
+      'a rate on the child price group',
+    );
+
+    for (const operation of [
+      'getPriceByCurrencyCode',
+      'getListPriceByCurrencyCode',
+      'getRenewalPriceByCurrencyCode',
+    ] as const) {
+      const bed = await openEntrypoint();
+
+      installEntityReads(world, graph.childPriceGroup, rate);
+      installPriceGroupService(makePriceGroupServiceDouble());
+
+      const response = await bed.invoke(
+        makeProxyEvent({ body: bodyOf({ operation, sku: world.identity, currencyCode: '' }) }),
+        makeLambdaContext(),
+      );
+      const envelope = readSuccessEnvelope(response);
+
+      expect(response.statusCode).toBe(200);
+      expect(envelope.operation).toBe(operation);
+      expect(envelope.result['outcome']).toBe('currencyPrice');
+      // OMITTED, not `0`, not `null` and not a sentinel: `JSON.stringify` drops the member, so the
+      // absence a consumer reads is the exact `undefined` the accessor answered.
+      expect(envelope.result['price']).toBeUndefined();
+      expect('price' in envelope.result).toBe(false);
+      expect(response.body).not.toContain('"price"');
+
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('★★★ resolves a SKU identity cased differently from the stored row', async () => {
+    // ★★★ THE THIRD CASE THE REVIEW REQUIRED, and it exercises the composition root's SKU loader
+    // through this route. CFML identifiers are case-insensitive - the engine folds case in `eq` and in
+    // every struct key, and the DAO binds the identifier into a `cfqueryparam` that MySQL's own
+    // collation folds again - so a differently-cased but VALID identifier must resolve. The loader used
+    // a strict `===` when narrowing the rows a product read returned, which made five of this route's
+    // operations answer `skuNotFound` for a SKU that exists.
+    const world = makeSkuWorld();
+    const bed = await openEntrypoint();
+
+    // The two READS are answered the way the database answers them - folding the key - because
+    // `SwProduct.productID` is compared by MySQL under its own collation and not in this process. The
+    // narrowing of the returned rows to one SKU is what happens in process, and that is the subject.
+    vi.spyOn(MysqlProductRepository.prototype, 'getProductByProductID').mockImplementation(
+      (productID: string): Promise<ResolvedProduct | undefined> =>
+        Promise.resolve(
+          productID.toLowerCase() === world.product.getProductID().toLowerCase()
+            ? world.product
+            : undefined,
+        ),
+    );
+    vi.spyOn(MysqlSkuRepository.prototype, 'getProductSkus').mockResolvedValue([world.sku]);
+    installPriceGroupService(makePriceGroupServiceDouble());
+
+    const response = await bed.invoke(
+      makeProxyEvent({
+        body: bodyOf({
+          operation: 'getPriceByCurrencyCode',
+          sku: {
+            productID: world.product.getProductID().toUpperCase(),
+            skuID: world.sku.getSkuID().toUpperCase(),
+          },
+          currencyCode: SECONDARY_CURRENCY_CODE,
+        }),
+      }),
+      makeLambdaContext(),
+    );
+    const envelope = readSuccessEnvelope(response);
+
+    // RESOLVED, not `skuNotFound`: the outcome is a currency answer about the SKU that was named.
+    expect(response.statusCode).toBe(200);
+    expect(envelope.result['outcome']).toBe('currencyPrice');
   });
 
   it('serves a CURRENCY operation end to end for the authenticated caller', async () => {

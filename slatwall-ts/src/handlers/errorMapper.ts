@@ -1,11 +1,19 @@
 // ---------------------------------------------------------------------------
-// slatwall-ts - error mapping for the primary (Lambda) adapters
+// slatwall-ts - the shared request/response boundary for the primary (Lambda) adapters
 //
 // Turn a thrown value into an API Gateway proxy response. This is the one place in the subtree that
 // decides which failures are describable to a caller, which are not, and what HTTP status each
-// carries. `./router.ts` consumes this module today; the five capability handlers are AAP targets
-// the subtree does not yet contain, and each carries the same OBLIGATION to funnel its `catch` arms
-// here rather than re-derive a status and a body of its own.
+// carries. `./router.ts` and all five capability handlers consume this module, and each carries the
+// same OBLIGATION to funnel its `catch` arms here rather than re-derive a status and a body of its
+// own.
+//
+// ★ IT ALSO OWNS THE THREE CROSS-HANDLER POLICIES FOR THE SERVER-ESTABLISHED PARTS OF A REQUEST,
+// because each of them has to be answered once for all five entrypoints or not at all: the
+// correlation identifier (`resolveServerRequestId`), the successful envelope (`jsonSuccessResponse`)
+// and the CALLER PRINCIPAL (`resolveRequestPrincipal`, in the final section). The last of those moved
+// here from a ninth module a code review found to breach AAP 0.3.1's exact eight-file handler layout;
+// that section records the placement decision in full, including why no ninth module, no
+// `src/lib/` file, no router change and no per-handler copy is available.
 //
 // A SHARED INTERNAL of `src/handlers/`, not a bundle entry point: it exports NO Lambda `handler`.
 // It is the first file authored in this folder and has zero intra-folder dependencies, which lets
@@ -105,6 +113,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { ZodError } from 'zod';
 
+import { structGet } from '../lib/cfml/struct.js';
 import type { LogContext, Logger } from '../lib/logger.js';
 import { logger } from '../lib/logger.js';
 
@@ -1341,4 +1350,329 @@ export function forbiddenResponse(context: ErrorMappingContext): APIGatewayProxy
     baseLogContext('forbidden', context),
   );
   return buildResponse('forbidden', FORBIDDEN_MESSAGE, context.requestId, undefined);
+}
+
+// ===========================================================================
+// SECTION - THE CALLER PRINCIPAL
+//
+// ★★★ WHY PRINCIPAL RESOLUTION LIVES HERE, AND WHY IT MAY NOT LIVE IN A MODULE OF ITS OWN.
+//
+// AAP 0.3.1 enumerates `src/handlers/` as EXACTLY eight modules - the composition root, the router,
+// this module, and the five capability entrypoints - and the plan's file layout is a frozen contract
+// rather than a suggestion. An earlier revision resolved the caller principal in a NINTH module,
+// `src/handlers/requestPrincipal.ts`, with a ninth suite beside it. A code review recorded that as a
+// scope violation of the exact handler layout: the resolver's BEHAVIOUR was found correct and worth
+// keeping, only its placement was wrong. That behaviour is reproduced below unchanged - same claim
+// names, same case folding, same closed truthy set, same discriminated outcome, same frozen results,
+// same refusal to read `requestContext.identity` - and the extra module and suite are gone.
+//
+// THIS MODULE IS THE RIGHT HOME, AND NOT MERELY THE AVAILABLE ONE:
+//
+//   * It ALREADY reads server-established members of the event and owns the policy for them.
+//     `resolveServerRequestId` above reads `event.requestContext.requestId`, refuses to honour a
+//     caller-supplied header, and is the ONE correlation policy for all five entrypoints. Deriving
+//     the ONE caller-principal policy from `event.requestContext.authorizer` is the same kind of
+//     decision about the same object, and stating both once is what stops five handlers from
+//     answering "who is asking" five slightly different ways.
+//   * The refusal that a failed resolution produces is published HERE. `unauthenticatedResponse` is
+//     the only thing a handler can do with an unidentified outcome, so resolution and refusal now sit
+//     together instead of one importing the other across a module boundary.
+//   * It is a SHARED INTERNAL with no intra-folder dependencies, so every sibling can import it
+//     without a cycle - the same property that made it the first file authored in this folder.
+//
+// The three alternatives were considered and rejected, and the reasoning is recorded so the ninth
+// module is not reintroduced:
+//
+//   * Duplicate the read in each of the four handlers that need it. Rejected: the claim NAME, the
+//     case-folding rule and the admin-claim narrowing would exist in four copies, and the failure
+//     mode of a divergent copy is a route that silently admits a caller the others refuse.
+//     `priceResolutionHandler.ts` once held such a copy, which is exactly why its behaviour and its
+//     siblings' had drifted apart.
+//   * Put it in `./router.js`. Rejected: the router reads ONLY `httpMethod` and `path`, deliberately,
+//     and that narrowness is what lets it fold a cross-capability match into the unmatched arm
+//     without ever touching request state.
+//   * Put it in `./bootstrap.js`. Rejected: the composition root builds the graph and must not read
+//     an API Gateway event. `RequestScopeInput` is what the two tiers agree on, and a handler
+//     produces its inputs rather than reaching across it.
+//
+// A file under `src/lib/` was never available either: AAP 0.3.1 enumerates that folder as
+// `config.ts`, `logger.ts` and the five `cfml/` parity helpers, so adding one there would breach the
+// same layout gate in a different directory.
+//
+// ★ WHAT THIS SECTION IS. A total function from an API Gateway proxy event to either an identified
+// principal or the fact that none could be established. It reads exactly two members of the
+// authorizer context and nothing else about the event.
+//
+// ★ WHAT IT IS NOT. It performs NO authentication: it does not verify a signature, validate a token,
+// call an identity provider, read a secret or open a network connection. It cannot - and it must not,
+// because the deployment's authorizer is the component that authenticates and this adapter is
+// downstream of it. What it does is DERIVE the principal that authorizer published and let a handler
+// refuse to proceed without one, which is the in-function half of a layered control: the authorizer
+// authenticates and injects context, and the backing function performs the granular, resource-aware
+// authorization the authorizer cannot express.
+//
+// ★★ IT ISSUES NO INFRASTRUCTURE. AAP 0.2.2 excludes Terraform, CDK, SAM, `serverless.yml` and
+// CloudFormation outright, and nothing here reaches across that line: no authorizer resource is
+// declared, no policy document is emitted, and no ARN, role, scope, audience or issuer appears
+// anywhere. A deployment that fronts these routes with an authorizer satisfies this section; a
+// deployment that does not gets a refusal rather than an open route, which is the fail-closed
+// direction.
+//
+// ★ `event.requestContext.identity` IS DELIBERATELY NEVER READ, here or in any handler. Its members
+// include API-key and access-key fields, so reading it would pull credential-shaped values into a
+// request path that has no use for them, and its caller-controlled members are not identity claims at
+// all - they are transport metadata a client can set. The authorizer context is the only place a
+// VERIFIED claim lives.
+//
+// ★ NO REQUEST STATE IS READ FROM `../lib/config.js`. That module is static process configuration and
+// is never a request scope; this module does not import it. The claim names below are the shape of the
+// authorizer's own output - a contract between the deployment's authorizer and this adapter - and are
+// therefore constants here rather than configuration.
+// ===========================================================================
+
+/**
+ * The authorizer-context member naming the authenticated account.
+ *
+ * A constant rather than an inline literal, so the one name this boundary depends on is stated once
+ * for the whole routed surface. It is not configuration and does not belong in `../lib/config.js`: it
+ * is the shape of the authorizer's own output, which the deployment's authorizer and this adapter
+ * must agree on.
+ *
+ * The value is the `Sw*` account identifier the ported services already speak in - see
+ * `RequestScopeInput.accountID` in `./bootstrap.js`, and
+ * [model/service/PriceGroupService.cfc:L262-L268] where the legacy read the same identity off the
+ * ambient request scope.
+ */
+export const AUTHORIZER_ACCOUNT_CLAIM = 'accountID';
+
+/**
+ * The authorizer-context member marking the account as administrative.
+ *
+ * Named for the legacy column it corresponds to: the audit gate the legacy applied was
+ * `!account.isNew() && account.getAdminAccountFlag()`, so `adminAccountFlag` is the source's own
+ * spelling rather than a new vocabulary. `./bootstrap.js`'s `RequestScopeInput` carries the same
+ * member name, which keeps the claim, the scope input and the legacy column reading alike.
+ */
+export const AUTHORIZER_ADMIN_CLAIM = 'adminAccountFlag';
+
+/**
+ * The two truthy renderings an authorizer may publish for {@link AUTHORIZER_ADMIN_CLAIM}.
+ *
+ * ★ WHY STRINGS AT ALL. API Gateway STRINGIFIES every value in a custom authorizer's context, so a
+ * boolean `true` arrives at the function as the string `"true"`. Accepting only a JavaScript boolean
+ * would make the administrative claim silently unsatisfiable behind a real authorizer, which fails
+ * OPEN in the worst way: the caller would be identified, the claim would be present, and the gate
+ * would refuse the legitimate administrator while telling nobody why.
+ *
+ * `"1"` is included because an authorizer emitting a numeric flag renders it that way. NOTHING ELSE
+ * is admitted - not `"yes"`, not `"admin"`, not a non-empty-string-is-true rule - because a permissive
+ * reading of this claim is a privilege decision and the conservative direction is the safe one.
+ * Comparison folds case through {@link cfEqualsToken} below, so `"TRUE"` and `"True"` are admitted
+ * too; CFML's own `eq` is case-insensitive and this subtree's house convention follows it.
+ */
+const TRUTHY_ADMIN_CLAIM_VALUES: readonly string[] = Object.freeze(['true', '1']);
+
+/**
+ * An identified caller.
+ *
+ * The whole of what a handler learns about who is asking. There is no name, no e-mail address, no
+ * address, no telephone number, no token and no session identifier on it - a handler needs an opaque
+ * account identifier and one permission bit, and carrying anything else would put personal data on a
+ * request path that has no use for it.
+ */
+export interface RequestPrincipal {
+  /**
+   * The authenticated account, as an OPAQUE identifier.
+   *
+   * Carried, never parsed: no meaning is read out of the characters, and it is never concatenated
+   * into a statement - every repository this reaches binds it as a parameter. It is guaranteed
+   * non-empty and already trimmed by {@link resolveRequestPrincipal}, which is what stops a blank
+   * identifier from reaching a keyed account read.
+   */
+  readonly accountID: string;
+
+  /**
+   * Whether the authorizer marked this account administrative.
+   *
+   * FALSE UNLESS THE CLAIM AFFIRMATIVELY SAYS OTHERWISE. Absence, an unrecognized rendering, a
+   * non-string, an empty string and any value outside {@link TRUTHY_ADMIN_CLAIM_VALUES} all yield
+   * `false`, which is the non-admin arm of the legacy audit gate and the fail-closed direction for a
+   * permission bit.
+   */
+  readonly adminAccountFlag: boolean;
+}
+
+/**
+ * What reading the authorizer context yielded.
+ *
+ * ★ A DISCRIMINATED RESULT RATHER THAN `RequestPrincipal | undefined`, and the difference is not
+ * stylistic. `undefined` is exactly the value the four affected handlers already had, and treating it
+ * as "a successful logged-out state" is what the security review found: a missing claim was
+ * indistinguishable from a deliberate anonymous request. A caller of this function must branch on
+ * `identified` to reach the principal, so the unidentified case cannot be reached by accident, and
+ * silent fall-through is a compile error rather than an open route.
+ */
+export type RequestPrincipalResolution =
+  | { readonly identified: true; readonly principal: RequestPrincipal }
+  | {
+      readonly identified: false;
+      /**
+       * Which of the two unidentified shapes occurred. LOGGED BY THE REFUSING HANDLER, NEVER
+       * PUBLISHED: the refusal builders above accept no detail at all, precisely so a refusal cannot
+       * tell a caller which claim would have satisfied the route.
+       *
+       * `noAuthorizerContext` means the event carried no authorizer context whatsoever - in practice
+       * a route deployed without an authorizer in front of it, which is an operator-visible
+       * misconfiguration rather than a caller mistake. `noAccountClaim` means a context was present
+       * and named no usable account.
+       */
+      readonly reason: 'noAuthorizerContext' | 'noAccountClaim';
+    };
+
+/** The one unidentified outcome for a missing authorizer context. Frozen; shared, never mutated. */
+const NO_AUTHORIZER_CONTEXT: RequestPrincipalResolution = Object.freeze({
+  identified: false,
+  reason: 'noAuthorizerContext',
+});
+
+/** The one unidentified outcome for a context that named no usable account. */
+const NO_ACCOUNT_CLAIM: RequestPrincipalResolution = Object.freeze({
+  identified: false,
+  reason: 'noAccountClaim',
+});
+
+/**
+ * Compare two tokens the way CFML's `eq` does - by value, folding case.
+ *
+ * Written out here rather than imported, because `cfEquals` in `../lib/cfml/struct.js` is the
+ * semantic-parity helper for CFML string comparison on DOMAIN values and this is a protocol-level
+ * claim comparison against a fixed literal. Both do the same thing; keeping the claim comparison
+ * local means a future change to the domain helper cannot silently move a privilege decision.
+ */
+function cfEqualsToken(candidate: string, literal: string): boolean {
+  return candidate.toLowerCase() === literal;
+}
+
+/**
+ * Whether a value is usable as a claim set.
+ *
+ * A TYPE PREDICATE, not a cast. `null` is as meaningful as `undefined` here and neither is an
+ * identity; an array is an `object` to `typeof` and is not a claim set, so it is refused rather than
+ * indexed. Narrowing this way keeps this module's "no cast anywhere" property intact, which matters
+ * because the authorizer context is the one input here that arrives entirely untyped.
+ */
+function isClaimSet(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Read one authorizer claim as a non-empty trimmed string, or nothing.
+ *
+ * ★ THE CLAIM IS READ THROUGH `structGet`, WHICH FOLDS KEY CASE EXACTLY AS A CFML STRUCT DOES. An
+ * authorizer emitting `accountId` and one emitting `accountID` name the same claim, and CFML struct
+ * semantics are this subtree's house convention for a keyed read - the alternative, a case-sensitive
+ * JavaScript index, would make a deployment's key casing silently decide whether a request is treated
+ * as identified. `structGet` is also verified prototype-safe: it resolves the stored key through
+ * `Object.keys` narrowed by `Object.prototype.hasOwnProperty.call`, so the prototype chain is
+ * unreachable rather than merely filtered, and a claim literally named `__proto__` cannot return a
+ * function.
+ *
+ * The value is narrowed with a `typeof` probe rather than a cast, because the authorizer context is
+ * typed with an index signature this module must not trust. A non-string, an empty string and a
+ * whitespace-only string all yield nothing.
+ */
+function readClaim(claims: Readonly<Record<string, unknown>>, claim: string): string | undefined {
+  const candidate: unknown = structGet(claims, claim);
+
+  if (typeof candidate !== 'string') {
+    return undefined;
+  }
+
+  const trimmed = candidate.trim();
+
+  return trimmed.length === 0 ? undefined : trimmed;
+}
+
+/**
+ * Read the administrative claim.
+ *
+ * A `boolean` is admitted directly, because a suite - and a direct Lambda invoker - can put a real
+ * boolean in the context where API Gateway would have put a string. A string is compared against the
+ * closed truthy set. EVERYTHING ELSE IS `false`: a number, an object, an array, `null`, an
+ * unrecognized string and an absent claim all take the non-admin arm.
+ */
+function readAdminClaim(claims: Readonly<Record<string, unknown>>): boolean {
+  const candidate: unknown = structGet(claims, AUTHORIZER_ADMIN_CLAIM);
+
+  if (typeof candidate === 'boolean') {
+    return candidate;
+  }
+
+  if (typeof candidate !== 'string') {
+    return false;
+  }
+
+  const trimmed = candidate.trim();
+
+  return TRUTHY_ADMIN_CLAIM_VALUES.some((literal) => cfEqualsToken(trimmed, literal));
+}
+
+/**
+ * Resolve the caller principal from the request's authorizer context.
+ *
+ * Total over its input: every shape of event yields one of the three outcomes and nothing throws, so
+ * a handler's admission step cannot fail in a way that needs its own `catch` arm.
+ *
+ * ★ ABSENCE IS A REFUSAL, NOT A LOGGED-OUT STATE, and that inversion is the whole point of this
+ * function. A capability handler that consults it calls {@link unauthenticatedResponse} on the
+ * unidentified outcome, BEFORE it opens a composition root, a request scope or a connection - so a
+ * refused request costs no statement and reaches no service. The one capability that does NOT consult
+ * it is `productFeedHandler`, and that is grounded in the source rather than in convenience:
+ * `integrationServices/google/controllers/feed.cfc:L54-L56` declares `this.publicMethods="product"`
+ * with empty `secureMethods` and `anyAdminMethods`, so the product feed is source-public and stays
+ * anonymous.
+ *
+ * ★★ ONE OPERATION ON ONE ROUTE IS DELIBERATELY EXEMPT, AND IT IS EXEMPT FOR A LEGACY REASON RATHER
+ * THAN A CONVENIENCE ONE. `calculateSkuPriceBasedOnCurrentAccount`
+ * [model/service/PriceGroupService.cfc:L262-L266] OWNS the signed-in test and answers
+ * `sku.getPrice()` on its `else` arm, so a routed surface that refused every unidentified caller made
+ * that arm unreachable. `./priceResolutionHandler.js` therefore applies the requirement PER
+ * OPERATION and permits that one to proceed with an empty `CurrentAccountContext`; nothing about this
+ * function changes for it - an unidentified caller still resolves to `identified: false`, and the
+ * handler decides what that means for the operation the caller named.
+ *
+ * ★ AND THE ACCOUNT IS SERVER-ESTABLISHED, WHICH IS THE OTHER HALF OF THE FIX. No query string,
+ * header or request-body member is authoritative. The promotion adapter retains compatibility
+ * account members only to compare them with this principal and REFUSE disagreement; they never
+ * select the request scope. The identity that reaches `RequestScopeInput.accountID` - and therefore
+ * `calculateSkuPriceBasedOnAccount` [model/service/PriceGroupService.cfc:L271] and the account
+ * price-group cascade behind it - is the one this function derived from the authorizer and nothing
+ * else, which is what closes the cross-account price and discount disclosure the review recorded.
+ *
+ * @param event the API Gateway proxy event. Only `requestContext.authorizer` is read; no header, no
+ *   query parameter, no path parameter, no body and NOT `requestContext.identity`.
+ * @returns the identified principal, or the fact that none could be established and which shape of
+ *   absence occurred.
+ */
+export function resolveRequestPrincipal(event: APIGatewayProxyEvent): RequestPrincipalResolution {
+  const authorizer: unknown = event.requestContext.authorizer;
+
+  if (!isClaimSet(authorizer)) {
+    return NO_AUTHORIZER_CONTEXT;
+  }
+
+  const claims = authorizer;
+
+  const accountID = readClaim(claims, AUTHORIZER_ACCOUNT_CLAIM);
+
+  if (accountID === undefined) {
+    return NO_ACCOUNT_CLAIM;
+  }
+
+  // Frozen for the same reason every published object in `./bootstrap.js` is: `readonly` erases at
+  // emit, and a handler holding this must not be able to substitute the account it was given.
+  return Object.freeze({
+    identified: true,
+    principal: Object.freeze({ accountID, adminAccountFlag: readAdminClaim(claims) }),
+  });
 }

@@ -9,15 +9,20 @@
 // no credential of any kind. Nothing in this file emits, references or templates an infrastructure
 // artifact, and it must never be renamed or repurposed into a deploy step.
 //
-// It takes no arguments and has exactly one mode, and it is invoked by three published
+// It has exactly two modes, selected by one flag, and it is invoked by three published
 // `package.json` scripts and by nothing else:
 //
-//   node esbuild.config.mjs          `npm run bundle` / `npm run build` / `npm run package`
+//   node esbuild.config.mjs          `npm run bundle` / `npm run build` - bundle only
+//   node esbuild.config.mjs --zip    `npm run package`                  - bundle, then archive
 //
-// THE BUNDLED ARTIFACT IS THE DELIVERABLE, SO THERE IS NO SEPARATE ARCHIVE STAGE. `dist/` holds
-// exactly the five `.cjs` artifacts and their five source maps, and `npm run package` is
-// `npm run build` - the same typecheck-then-bundle gate under the name AAP 0.9.1 uses for the
-// deliverable. No host-global packaging utility is required.
+// THE PACKAGE STAGE PRODUCES ONE LAMBDA-COMPATIBLE ARCHIVE PER CAPABILITY, because AAP 0.5.2 and
+// 0.9.1 define "deployable" as a successful build AND PACKAGE step and the platform's unit of
+// deployment is an archive. A previous revision made `npm run package` an alias of `npm run build`
+// on the grounds that "the `.cjs` artifact the runtime loads IS the package"; a code review measured
+// `dist/` holding no archive and rejected that reading, so the stage is back - written with
+// `node:zlib` rather than a host-global `zip` executable, and carrying the artifact and the GPL
+// notice but NOT the source map. The section above `archiveEntrySources` records every part of that
+// decision, including the two earlier findings it closes rather than reintroduces.
 //
 // EVERY PATH IT WRITES IS INSIDE `slatwall-ts/`. The only output location is `<subtree>/dist`, and
 // the only removal it performs targets that one directory. `tsc -p tsconfig.build.json` writes to
@@ -126,9 +131,12 @@
 //     writes the existing `Sw*` tables unchanged.
 // ---------------------------------------------------------------------------
 
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// The archive writer's only dependency, and the reason `npm run package` needs no host utility:
+// `deflateRawSync` produces each entry's body and `crc32` its checksum, both from the pinned runtime.
+import { crc32, deflateRawSync } from 'node:zlib';
 
 import { build } from 'esbuild';
 
@@ -350,6 +358,251 @@ function collectArtifacts(result) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// THE PACKAGE STAGE: ONE LAMBDA-COMPATIBLE ARCHIVE PER CAPABILITY.
+//
+// ★★★ WHY THERE IS AN ARCHIVE AGAIN, AND WHY IT IS WRITTEN BY HAND.
+//
+// AAP 0.5.2 and 0.9.1 define "deployable" as A SUCCESSFUL BUILD **AND PACKAGE** STEP EMITTING
+// LAMBDA-COMPATIBLE ARTIFACTS, and 0.9.6 makes that gate part of the definition of done. An earlier
+// revision of this file removed the archive stage and made `npm run package` an alias of
+// `npm run build`, arguing that "the `.cjs` artifact the runtime loads IS the package". A code review
+// rejected that: the platform's unit of deployment is an archive, so a build that emits none does not
+// discharge the gate, and `dist/` containing no `.zip` was the measurement.
+//
+// THE ARCHIVE IS ALSO NOT A REGRESSION TO WHAT WAS REMOVED, and the two findings that removed it are
+// both closed rather than traded away:
+//
+//   1. NO HOST-GLOBAL UTILITY. The previous archive shelled out to a `zip` executable through
+//      `child_process`, which made `npm run package` fail on a stock container for reasons that had
+//      nothing to do with the code being packaged. This writes the archive itself, from
+//      `node:zlib` - `deflateRawSync` for the entry bodies and `crc32` for their checksums - so the
+//      only dependency is the pinned runtime. `node:child_process` is imported NOWHERE in this file
+//      and must not be: `tests/traceability/legacyTestMap.ts` asserts its absence.
+//   2. NO SOURCE MAP INSIDE THE DEPLOYABLE. The previous archive included each `.cjs.map`, and the
+//      maps embed the ORIGINAL TypeScript in full (`sourcesContent: true`). That is deliberate and
+//      valuable in `dist/`, where the annotation audit reads it back - and it has no business inside
+//      an artifact that gets uploaded. {@link ARCHIVE_ENTRY_SOURCES} is where that split is decided,
+//      in one place, rather than being a property of the file list.
+//
+// ★★ THE ARCHIVES ARE DETERMINISTIC. Every entry carries a FIXED timestamp - the MS-DOS epoch,
+// 1980-01-01T00:00:00 - rather than the wall clock, so two builds of identical inputs produce
+// byte-identical archives and a reviewer can diff them. NOTHING HERE READS THE CLOCK AT ALL.
+//
+// ★ IT REMAINS A PACKAGE STEP AND ONLY A PACKAGE STEP. Every path written is inside `<subtree>/dist`.
+// Nothing is uploaded, transmitted, published or registered; no platform API is called, no network
+// socket is opened, no credential is read, and no infrastructure descriptor is emitted - AAP 0.2.2
+// excludes Terraform, CDK, SAM, `serverless.yml` and CloudFormation, and this stage stays on the
+// correct side of that line.
+// ---------------------------------------------------------------------------
+
+/** The archive extension, and the flag that selects the package stage. */
+const ARCHIVE_EXTENSION = '.zip';
+const ARCHIVE_FLAG = '--zip';
+
+/**
+ * The MS-DOS timestamp every archive entry carries: 1980-01-01T00:00:00.
+ *
+ * The DOS epoch is the earliest value the format can express, and using one fixed value rather than
+ * the clock is what makes the archives reproducible. `dosTime` packs hour/minute/second-pair into
+ * sixteen bits and `dosDate` packs (year - 1980)/month/day, so midnight on the epoch day is `0x0000`
+ * and `0x0021` respectively.
+ */
+const DOS_EPOCH_TIME = 0x0000;
+const DOS_EPOCH_DATE = 0x0021;
+
+/** ZIP's four record signatures, and the two constants the local/central headers repeat. */
+const LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50;
+const CENTRAL_DIRECTORY_SIGNATURE = 0x02014b50;
+const END_OF_CENTRAL_DIRECTORY_SIGNATURE = 0x06054b50;
+/** Version 2.0, which is what the deflate method requires. */
+const ZIP_VERSION = 20;
+/** Method 8 is deflate; method 0 (store) is used when deflating would not shrink the entry. */
+const METHOD_DEFLATE = 8;
+const METHOD_STORE = 0;
+/**
+ * `0o100644` in the high sixteen bits: a regular file, readable by all, writable by its owner.
+ *
+ * `>>> 0` is load-bearing rather than decorative: JavaScript's `<<` yields a SIGNED 32-bit result, so
+ * the shift alone produces a negative number and `Buffer.writeUInt32LE` refuses it. The unsigned
+ * coercion is what makes the value the field actually wants.
+ */
+const UNIX_FILE_ATTRIBUTES = (0o100644 << 16) >>> 0;
+
+/**
+ * Which files an archive carries, and - just as deliberately - which it does not.
+ *
+ * ★★★ THE ENTRY LIST IS A SECURITY DECISION, NOT A CONVENIENCE ONE, so it is stated here as data
+ * rather than derived from a directory listing. A `readdirSync(OUT_DIR)` would have picked the maps
+ * up again the moment they were emitted beside the artifacts, which is precisely the disclosure the
+ * previous archive shipped.
+ *
+ *   * THE `.cjs` ARTIFACT, AT THE ARCHIVE ROOT. The runtime resolves a `<file>.handler` entry point
+ *     relative to the archive root, so a stored path would make the handler unresolvable. Each
+ *     entry's name is therefore the basename and nothing else.
+ *   * `NOTICE-GPL.md`, AT THE ARCHIVE ROOT. The bundled business logic is derived from Slatwall,
+ *     GPL v3.0 [readme.md:L20-L23], and the special exception permitting custom code applies only to
+ *     files under `/integrationServices/` [readme.md:L63-L65] - so it does NOT extend to this
+ *     subtree and standard GPL terms apply. `legalComments: 'inline'` keeps THIRD-PARTY notices
+ *     inside the artifact; this port's own attribution is a separate document, and a deployable that
+ *     carried the code without it would leave the attribution behind at the first copy.
+ *   * NOT the `.cjs.map`. See the section note above.
+ *   * NOT `package.json`, `node_modules`, `.env.example`, `README.md`, any test module or any
+ *     fixture. The bundle is self-contained by construction (no `external` entry), so a manifest
+ *     would be inert, and shipping the environment contract or the test tier inside a deployable
+ *     would put documentation and test code on a production host for no purpose.
+ *
+ * @param {string} artifact Absolute path to one emitted `.cjs` artifact.
+ * @returns {readonly { name: string, path: string }[]} The entries, in archive order.
+ */
+function archiveEntrySources(artifact) {
+  const notice = path.join(SUBTREE_DIR, 'NOTICE-GPL.md');
+  const entries = [{ name: path.basename(artifact), path: artifact }];
+
+  // Guarded rather than assumed: the notice is a committed file, and a build that cannot find it
+  // should say so through the archive it produced rather than fail the whole package step - so its
+  // absence is reported by the license assertion below, which is the check that owns it.
+  if (existsSync(notice)) {
+    entries.push({ name: path.basename(notice), path: notice });
+  }
+
+  return Object.freeze(entries);
+}
+
+/**
+ * Builds one ZIP archive in memory from a list of named entries.
+ *
+ * A HAND-WRITTEN WRITER, AND A DELIBERATELY MINIMAL ONE: local file headers, one central directory,
+ * one end-of-central-directory record, no ZIP64 extensions, no encryption, no comment and no extra
+ * fields. The format is fixed and small, the inputs are a handful of files this build just produced,
+ * and the alternative was either a host-global executable (finding 1 above) or a new dependency
+ * outside the pinned set (AAP 0.8.3 pins all fourteen exactly).
+ *
+ * Each entry is deflated, and STORED UNCOMPRESSED when deflating would not make it smaller - which is
+ * what a conforming writer does and what keeps a tiny entry from growing.
+ *
+ * @param {readonly { name: string, path: string }[]} entries The files to store, in archive order.
+ * @returns {Buffer} The complete archive.
+ */
+function buildZipArchive(entries) {
+  /** @type {Buffer[]} */
+  const parts = [];
+  /** @type {Buffer[]} */
+  const central = [];
+  let offset = 0;
+
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name, 'utf8');
+    const body = readFileSync(entry.path);
+    const deflated = deflateRawSync(body);
+    const stored = deflated.length < body.length;
+    const payload = stored ? deflated : body;
+    const method = stored ? METHOD_DEFLATE : METHOD_STORE;
+    const checksum = crc32(body);
+
+    const localHeader = Buffer.alloc(30);
+    localHeader.writeUInt32LE(LOCAL_FILE_HEADER_SIGNATURE, 0);
+    localHeader.writeUInt16LE(ZIP_VERSION, 4);
+    // No flags: no data descriptor, no encryption, and the name is plain ASCII.
+    localHeader.writeUInt16LE(0, 6);
+    localHeader.writeUInt16LE(method, 8);
+    localHeader.writeUInt16LE(DOS_EPOCH_TIME, 10);
+    localHeader.writeUInt16LE(DOS_EPOCH_DATE, 12);
+    localHeader.writeUInt32LE(checksum, 14);
+    localHeader.writeUInt32LE(payload.length, 18);
+    localHeader.writeUInt32LE(body.length, 22);
+    localHeader.writeUInt16LE(name.length, 26);
+    // No extra field.
+    localHeader.writeUInt16LE(0, 28);
+
+    parts.push(localHeader, name, payload);
+
+    const centralHeader = Buffer.alloc(46);
+    centralHeader.writeUInt32LE(CENTRAL_DIRECTORY_SIGNATURE, 0);
+    // Version made by: 3 (UNIX) in the high byte, so the external attributes below are read as
+    // UNIX permissions; version 2.0 in the low byte.
+    centralHeader.writeUInt16LE((3 << 8) | ZIP_VERSION, 4);
+    centralHeader.writeUInt16LE(ZIP_VERSION, 6);
+    centralHeader.writeUInt16LE(0, 8);
+    centralHeader.writeUInt16LE(method, 10);
+    centralHeader.writeUInt16LE(DOS_EPOCH_TIME, 12);
+    centralHeader.writeUInt16LE(DOS_EPOCH_DATE, 14);
+    centralHeader.writeUInt32LE(checksum, 16);
+    centralHeader.writeUInt32LE(payload.length, 20);
+    centralHeader.writeUInt32LE(body.length, 24);
+    centralHeader.writeUInt16LE(name.length, 28);
+    centralHeader.writeUInt16LE(0, 30);
+    centralHeader.writeUInt16LE(0, 32);
+    centralHeader.writeUInt16LE(0, 34);
+    centralHeader.writeUInt16LE(0, 36);
+    centralHeader.writeUInt32LE(UNIX_FILE_ATTRIBUTES, 38);
+    centralHeader.writeUInt32LE(offset, 42);
+
+    central.push(centralHeader, name);
+
+    offset += localHeader.length + name.length + payload.length;
+  }
+
+  const directory = Buffer.concat(central);
+  const trailer = Buffer.alloc(22);
+  trailer.writeUInt32LE(END_OF_CENTRAL_DIRECTORY_SIGNATURE, 0);
+  // Single-disk archive: both disk numbers are zero and both counts are the whole set.
+  trailer.writeUInt16LE(0, 4);
+  trailer.writeUInt16LE(0, 6);
+  trailer.writeUInt16LE(entries.length, 8);
+  trailer.writeUInt16LE(entries.length, 10);
+  trailer.writeUInt32LE(directory.length, 12);
+  trailer.writeUInt32LE(offset, 16);
+  // No archive comment.
+  trailer.writeUInt16LE(0, 20);
+
+  return Buffer.concat([...parts, directory, trailer]);
+}
+
+/**
+ * Writes one archive per artifact into `<subtree>/dist`, and reports what went into each.
+ *
+ * A stale archive from a previous run cannot survive: `dist` is cleared before the build, and each
+ * archive is written whole rather than appended to.
+ *
+ * @param {readonly string[]} artifacts Absolute paths to the emitted artifacts.
+ * @returns {readonly { archive: string, entries: readonly string[] }[]} Each archive written, with
+ *   the entry names it carries.
+ * @throws {Error} If an artifact's GPL notice is missing, so a deployable cannot ship without the
+ *   attribution AAP 0.8.3 requires this port to carry forward.
+ */
+function archiveArtifacts(artifacts) {
+  const written = [];
+
+  for (const artifact of artifacts) {
+    const entries = archiveEntrySources(artifact);
+    const names = entries.map((entry) => entry.name);
+
+    if (!names.includes('NOTICE-GPL.md')) {
+      throw new Error(
+        [
+          'NOTICE-GPL.md is missing from the subtree, so the archive for',
+          `${path.basename(artifact)} would ship the derived GPL v3.0 business logic without its`,
+          'attribution. Restore the file rather than removing this check: the special exception',
+          'permitting custom code covers only /integrationServices/ [readme.md:L63-L65] and does',
+          'not extend to this subtree.',
+        ].join(' '),
+      );
+    }
+
+    const archivePath = path.join(
+      OUT_DIR,
+      `${path.basename(artifact, ARTIFACT_EXTENSION)}${ARCHIVE_EXTENSION}`,
+    );
+
+    writeFileSync(archivePath, buildZipArchive(entries));
+
+    written.push(Object.freeze({ archive: archivePath, entries: Object.freeze(names) }));
+  }
+
+  return Object.freeze(written);
+}
+
 /**
  * Reads a bundle's own source map back off disk and returns it parsed.
  *
@@ -473,25 +726,32 @@ function assertAnnotationsRecoverable(artifacts) {
 }
 
 /**
- * Bundles the five capability entrypoints into `<subtree>/dist`.
+ * Bundles the five capability entrypoints into `<subtree>/dist`, and archives them when asked.
  *
  * THIS IS A BUILD AND PACKAGE STEP AND ONLY THAT. Every path written is inside `<subtree>/dist`.
- * Nothing is archived, uploaded, transmitted or published, no platform tooling and no host utility
- * is invoked, and no credential is read. The `.cjs` artifact the runtime loads IS the package.
+ * Nothing is uploaded, transmitted or published, no platform tooling and NO HOST UTILITY is invoked -
+ * the archive writer is `node:zlib` and nothing else - and no credential is read.
  *
- * The whole routine takes no arguments and touches no module-scope mutable state, which is the same
- * discipline the ported services are held to for the reason recorded in the header: a warm container
- * keeps module state alive between unrelated invocations.
+ * TWO MODES, AND THE DIFFERENCE IS ONE STAGE. `npm run bundle` / `npm run build` emit the five `.cjs`
+ * artifacts and their maps; `npm run package` does that and then writes one Lambda-compatible archive
+ * per artifact. The archive stage is opt-in rather than always-on so that the inner development loop
+ * does not pay for it, and `npm run package` - the AAP 0.9.1 deliverable gate - always does.
  *
- * Ordering matters twice. Entrypoints are verified BEFORE `dist` is cleared, so a broken tree cannot
- * leave the previous artifacts deleted and nothing in their place; and the annotations are verified
+ * The whole routine touches no module-scope mutable state, which is the same discipline the ported
+ * services are held to for the reason recorded in the header: a warm container keeps module state
+ * alive between unrelated invocations.
+ *
+ * Ordering matters three times. Entrypoints are verified BEFORE `dist` is cleared, so a broken tree
+ * cannot leave the previous artifacts deleted and nothing in their place; the annotations are verified
  * AFTER the build, from the emitted files themselves, because a claim about an artifact can only be
- * checked against the artifact.
+ * checked against the artifact; and the archives are written LAST, so an artifact that failed its
+ * annotation audit is never packaged.
  *
- * @returns {Promise<{ artifacts: readonly string[], annotations: readonly object[] }>} What was
- *   written, and the annotation evidence read back out of it.
+ * @param {{ archive?: boolean }} [options] Set `archive` to run the package stage.
+ * @returns {Promise<{ artifacts: readonly string[], annotations: readonly object[],
+ *   archives: readonly object[] }>} What was written, and the annotation evidence read back out of it.
  */
-async function bundleLambdaArtifacts() {
+async function bundleLambdaArtifacts(options = {}) {
   const entryPoints = resolveEntryPoints();
 
   rmSync(OUT_DIR, { recursive: true, force: true });
@@ -528,7 +788,15 @@ async function bundleLambdaArtifacts() {
     );
   }
 
-  return { artifacts, annotations };
+  const archives = options.archive === true ? archiveArtifacts(artifacts) : Object.freeze([]);
+
+  for (const { archive, entries } of archives) {
+    console.log(
+      `${LOG_PREFIX} Packaged ${path.relative(SUBTREE_DIR, archive)} ` + `[${entries.join(', ')}]`,
+    );
+  }
+
+  return { artifacts, annotations, archives };
 }
 
 // The single exported unit of this file. There is no barrel anywhere in this subtree and this is not
@@ -550,7 +818,7 @@ export default bundleLambdaArtifacts;
 // ---------------------------------------------------------------------------
 
 try {
-  await bundleLambdaArtifacts();
+  await bundleLambdaArtifacts({ archive: process.argv.includes(ARCHIVE_FLAG) });
 } catch (error) {
   process.exitCode = 1;
   console.error(`${LOG_PREFIX} Build failed.`);

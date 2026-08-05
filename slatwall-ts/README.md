@@ -108,7 +108,7 @@ All commands run from this directory.
 | `npm run compile`       | `tsc -p tsconfig.build.json` — emits `.js`, `.d.ts` and maps for `src/**` into `build/`.     |
 | `npm run bundle`        | `node esbuild.config.mjs` — emits the bundled Lambda artifacts into `dist/`.                 |
 | `npm run build`         | `typecheck` then `bundle`.                                                                   |
-| `npm run package`       | `npm run build`. The bundled artifacts **are** the package — there is no archive step.       |
+| `npm run package`       | `typecheck`, then bundle **and archive** — one Lambda-ready `.zip` per capability.           |
 | `npm run verify`        | `typecheck` → `lint` → `format:check` → `test`. The gate to run before committing.           |
 | `npm run clean`         | Removes `dist/`, `build/` and `coverage/`.                                                   |
 
@@ -172,16 +172,33 @@ The `.cjs` extension is not cosmetic. `package.json` declares `"type": "module"`
 payload in a `.js` file would be loaded as ESM and throw; `outExtension: { '.js': '.cjs' }` makes the
 format unambiguous to Node, and the runtime resolves a `.cjs` module for a `<file>.handler` entry.
 
-`npm run package` is `npm run build` — the same typecheck-then-bundle gate, under the name AAP 0.9.1
-uses for the deliverable. There is no separate archive stage: a run leaves exactly ten files in
-`dist/`, five `.cjs` artifacts and their five `.cjs.map` maps, and the `.cjs` the runtime loads **is**
-the package. An earlier revision accepted a `--zip` flag and shelled out to a host-global `zip`
-executable to write one `.zip` per artifact; that is removed. This checkpoint requires no zip step,
-and depending on a utility that is absent from a stock container made `npm run package` fail for
-reasons that had nothing to do with the code being packaged. Nothing is archived, uploaded,
-transmitted or published, no platform tooling is invoked, and no credential is read. The maps remain
-beside the runtime artifacts for local auditability; this build script does not place them into a
-deployable archive or send them anywhere.
+### The package stage
+
+`npm run package` typechecks, bundles, and then writes **one archive per capability** — five
+`dist/<entrypoint>.zip` files alongside the five `.cjs` artifacts and their five `.cjs.map` maps. It is
+deliberately **not** an alias of `npm run build`: AAP 0.5.2 and 0.9.1 define "deployable" as a
+successful build **and package** step emitting Lambda-compatible artifacts, and the platform's unit of
+deployment is an archive, so a package step that emits none does not discharge the gate.
+
+Three properties of that stage are decisions rather than defaults, and each closes a finding:
+
+- **No host utility, and no subprocess.** The archive is written by this repository's own code using
+  `node:zlib` (`deflateRawSync` for entry bodies, `crc32` for their checksums). An earlier revision
+  shelled out to a host-global `zip` executable, which made `npm run package` fail on a stock
+  container for reasons that had nothing to do with the code being packaged. `node:child_process` is
+  imported nowhere in `esbuild.config.mjs`, and `tests/traceability/legacyTestMap.ts` asserts that.
+- **The `.cjs` sits at the archive root, and the source map is not in the archive at all.** The
+  runtime resolves a `<file>.handler` entry relative to the archive root, so a stored path would make
+  the handler unresolvable. The maps embed the original TypeScript in full (`sourcesContent: true`),
+  which is exactly what the annotation audit needs in `dist/` and exactly what should not travel
+  inside something uploadable — so they stay local. `NOTICE-GPL.md` **is** included, because the
+  bundled logic is derived GPL v3.0 code and a deployable that carried the code without its
+  attribution would lose it at the first copy.
+- **The archives are reproducible.** Every entry carries a fixed MS-DOS epoch timestamp rather than
+  the wall clock, so two builds of identical inputs produce byte-identical archives.
+
+Nothing is uploaded, transmitted, published or registered; no platform API is called, no network
+socket is opened, and no credential is read.
 
 ---
 
@@ -265,6 +282,31 @@ Omit any of these to accept the value shown.
 | -------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------- |
 | `DB_TLS_MIN_VERSION` | `TLSv1.2` (default), `TLSv1.3` | TLS 1.0 and 1.1 are deliberately not accepted.                                                             |
 | `DB_TLS_CA`          | PEM certificate authority      | Supply when `DB_TLS_MODE` is `verify-ca` or `verify-identity` and the CA is not in the system trust store. |
+
+---
+
+## Product-feed transport — a second escalated plan decision
+
+> **This is a plan-level decision that has been escalated, not a defect this subtree claims to have
+> fixed.** The Google product feed emits `http://` origins at all five URL sites. It was raised as
+> **S-09**, re-raised as **V-12** (CWE-319, _Cleartext Transmission of Sensitive Information_), and
+> re-confirmed by a later review whose own resolution was "escalate, do not patch unilaterally".
+>
+> The legacy template writes `http://#CGI.HTTP_HOST#` at the channel link, the channel description,
+> the item link, the item image link and each additional image link
+> [`integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24`], and never `https`.
+> AAP 0.1.1 requires preserving the Google product-feed integration contract **exactly**, AAP 0.8.1
+> freezes it, and AAP 0.6.7 permits exactly three divergences in this port — none of them this. So
+> changing the scheme would be a fourth divergence and needs an **AAP amendment**, not a remediation
+> pass. `src/integrations/google/rssFeedRenderer.ts` carries the full record beside the constant,
+> including the one-line edit that closes it once authorized.
+>
+> **What already contains it.** The authority the scheme is glued to comes from a deployment-owned
+> allow-list rather than from the request (`assertAllowedFeedHost`, finding S-15), so a cleartext
+> scheme cannot be pointed at an attacker's origin; every emitted value is XML-escaped; and a
+> deployment that must publish `https` URLs terminates TLS in front of this service. The feed is
+> machine-read by Google Merchant Center and carries the product names, images and prices the store
+> publishes anyway, which is why both reviews graded it MINOR.
 
 ---
 

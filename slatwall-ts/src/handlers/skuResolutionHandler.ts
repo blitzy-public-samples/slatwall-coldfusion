@@ -48,7 +48,6 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { z } from 'zod';
 
-import { listLen as cfListLen } from '../lib/cfml/list.js';
 import { structGet, structKeyList } from '../lib/cfml/struct.js';
 import type { Logger } from '../lib/logger.js';
 import { logger as processLogger } from '../lib/logger.js';
@@ -61,10 +60,10 @@ import {
   mapErrorToApiGatewayResponse,
   resolveServerRequestId,
   routeDiagnosticLabel,
+  resolveRequestPrincipal,
   routeNotFoundResponse,
   unauthenticatedResponse,
 } from './errorMapper.js';
-import { resolveRequestPrincipal } from './requestPrincipal.js';
 import type { RouteAction, RoutedCapability } from './router.js';
 import { resolveRouteForCapability, routeRequestFromEvent } from './router.js';
 
@@ -532,35 +531,37 @@ const operationEnvelopeSchema = z.object({
  * element parsing belongs to the repository tier where the binding happens - the same ruling the
  * service tier already applied to this parameter and to `existingOptionGroupIDList`.
  *
- * ★★★ THE ROUTED BOUNDARY APPLIES A 64-ELEMENT CEILING, WHILE THE SERVICE AND SQL BUILDER REMAIN
- * TOTAL. This is a transport safety bound on the net-new Lambda route, not a change to the ported
- * service contract. It refuses whole and never truncates, because truncation selects a different SKU.
+ * ★★★ NO ELEMENT CEILING IS APPLIED HERE, AND THE 64-ELEMENT ONE THAT USED TO BE WAS A FIDELITY
+ * DEFECT. It was introduced as "a transport safety bound", refused a 65-element list with a 400 and
+ * was defended by citing AAP 0.6.5's explicit-batch-limit requirement. A code review rejected the
+ * citation and the bound, on two grounds that both hold:
  *
- * The fidelity layers still apply no count, length, membership, ordering or de-duplication rule.
- * Any in-process caller can exercise the full legacy surface. Only this HTTP boundary refuses a list
- * above the explicit batch limit required by AAP 0.6.5.
+ *   1. AAP 0.6.5's batch limits govern UNBOUNDED BULK MUTATION - `processProduct_updateSkus`
+ *      [model/service/ProductService.cfc:L216-L233], which saves per SKU, and `createSkus`
+ *      [model/service/SkuService.cfc:L109-L121], whose odometer runs the full cartesian product of
+ *      every option group and is therefore unbounded BY CONSTRUCTION. This operation is a READ. It
+ *      issues one statement whose size is linear in the caller's own list, mutates nothing, and has
+ *      no compensation story to need.
+ *   2. It contradicted a MUST-PRESERVE behaviour. `getProductSkusBySelectedOptions` is one of the
+ *      three areas AAP 0.8.1 names as behaviour that must survive unchanged, and the legacy service
+ *      and DAO answer a list of ANY length: the loop at [model/dao/SkuDAO.cfc:L112] emits one
+ *      `exists` clause per element with no count test anywhere. Refusing at 65 made this route answer
+ *      differently from the surface it is a port of.
  *
- * THE REPOSITORY AND SQL BUILDER RETAIN THEIR INDEPENDENT PROTOCOL-FEASIBILITY CHECK. The statement
- * binds one option placeholder per element plus the required `productID`; the routed ceiling means a
- * request reaching that tier carries at most 65 placeholders, while an in-process caller may still
- * exercise the wider service contract. The lower transport policy and the higher MySQL protocol
- * ceiling therefore protect different boundaries without a redundant second route-level check.
+ * THE ONLY BOUND IS THE ONE THE DATABASE PROTOCOL IMPOSES, AND IT LIVES WHERE IT IS TRUE.
+ * `../repositories/mysql/sql/skusBySelectedOptions.sql.ts` counts the placeholders the statement
+ * would carry - one per element plus the optional `productID` - and refuses at
+ * `MAX_PLACEHOLDER_COUNT`, because MySQL encodes a prepared statement's placeholder count in a
+ * TWO-BYTE field and a statement above that CANNOT BE PREPARED. That is a fact about the wire
+ * protocol rather than a policy this adapter invented, it is 65535 rather than 64, and it applies to
+ * every caller - routed or in-process - which is exactly why it is not duplicated here.
+ *
+ * So this schema carries no count, no length, no pattern, no trim, no case fold and no
+ * de-duplication, and the comma-list the caller sent is the comma-list the service receives.
  */
-/** Maximum selected-option elements admitted by the routed transport. */
-const MAXIMUM_SELECTED_OPTION_ELEMENTS = 64;
-
-/** Fixed refusal text; the submitted list is never echoed. */
-const SELECTED_OPTIONS_CEILING_MESSAGE = `must not name more than ${String(
-  MAXIMUM_SELECTED_OPTION_ELEMENTS,
-)} options`;
-
 const getProductSkusBySelectedOptionsSchema = z.object({
   operation: z.literal('getProductSkusBySelectedOptions'),
-  selectedOptions: z
-    .string()
-    .refine((value) => cfListLen(value) <= MAXIMUM_SELECTED_OPTION_ELEMENTS, {
-      message: SELECTED_OPTIONS_CEILING_MESSAGE,
-    }),
+  selectedOptions: z.string(),
   productID: z.string(),
 });
 

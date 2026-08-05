@@ -1566,7 +1566,32 @@ describe('the in-process order-view admission (NET-NEW)', () => {
 // `createRequestScope`, the handler read the authorizer NOWHERE, and nothing compared the
 // body's account with the order's. The cases below are the ones the review required, plus
 // the two the ORDER-side authority makes necessary.
+//
+// ★★★ A SECOND REVIEW THEN FOUND THE OTHER HALF, AS CRITICAL: comparison was applied and
+// correct, but ABSENCE was carried through, so an AUTHENTICATED caller that omitted the
+// member priced an accountless order - skipping the account price-group read at
+// [model/service/PriceGroupService.cfc:L365] and measuring every per-account use limit
+// [model/service/PromotionService.cfc:L1098] against nobody, which makes a per-account cap
+// unenforceable. The two BINDS cases below are the inversion of what this file used to
+// assert, and they are deliberately paired: one per admission arm, because the wire arm and
+// the in-process arm fill the absence in different places.
 // ===========================================================================
+
+/**
+ * What a WIRE order document states about its account, read back out of a decoded request.
+ *
+ * The admission arm receives the PARSED DOCUMENT rather than a materialised view - money is still a
+ * decimal string in it and a stated absence is `null` - so a case proving "the admission saw exactly
+ * what was sent" reads the document member rather than comparing object identity with a fixture.
+ * Narrowed by a predicate rather than asserted, like every other reader in this file.
+ */
+function wireAccountStatementOf(document: unknown): unknown {
+  if (!isJsonObject(document)) {
+    throw new TypeError('the admission was handed something other than an order document');
+  }
+
+  return document['accountID'];
+}
 
 describe('the account trust boundary (NET-NEW)', () => {
   it('threads the AUTHENTICATED account into the request scope, and never the body member', async () => {
@@ -1666,7 +1691,20 @@ describe('the account trust boundary (NET-NEW)', () => {
     expect(harness.recorder.log).toEqual([]);
   });
 
-  it('admits an authenticated session pricing an order that names no account', async () => {
+  it('★★★ BINDS an authenticated session to its own account when the order names none', async () => {
+    // ★★★ INVERTED DEFECT-PINNING CASE. This case previously asserted only that the request was
+    // SERVED (200) and that the SCOPE carried the account, and it ended with the sentence "while the
+    // order stays on the logged-out arm of the price-group pass". A code review established that
+    // sentence as the CRITICAL defect itself rather than the contract: the order view is what
+    // `PriceGroupService.updateOrderAmountsWithPriceGroups` reads its account from
+    // [model/service/PriceGroupService.cfc:L365] and what every per-account promotion use-limit is
+    // measured against [model/service/PromotionService.cfc:L1098], so an ACCOUNTLESS view priced for
+    // an AUTHENTICATED caller skips the account price-group read entirely and counts the promotion
+    // uses of nobody - making a per-account use cap unenforceable by simply omitting one member.
+    //
+    // The logged-out arm is real and still exercised, but it belongs to a genuinely anonymous caller.
+    // This route has none: it refuses before anything else runs, and the case below that pairs with
+    // this one proves that. So an order naming no account ADOPTS the proved identity.
     const { order } = makeGoldenOrder({ accountID: undefined });
     const harness = makeHarness({ admit: order });
 
@@ -1674,10 +1712,59 @@ describe('the account trust boundary (NET-NEW)', () => {
       postApplyPromotions(order, {}, authorizerFor(AUTHENTICATED_ACCOUNT_ID)),
     );
 
-    // The scope still carries the authenticated account - it is the request's identity, not the
-    // order's - while the order stays on the logged-out arm of the price-group pass.
     expect(result.statusCode).toBe(200);
     expect(harness.recorder.scopeInputs[0]?.accountID).toBe(AUTHENTICATED_ACCOUNT_ID);
+
+    // ★★ THE ASSERTION THE OLD CASE LACKED, AND THE ONLY ONE THAT ACTUALLY CLOSES THE FINDING: the
+    // view the COMPOSED OPERATION received names the authenticated account, so both account-sensitive
+    // paths behind it have an account to read.
+    const [priced] = harness.recorder.composedInputs;
+    expect(priced?.accountID).toBe(AUTHENTICATED_ACCOUNT_ID);
+
+    // The admission itself was handed the caller's request UNCHANGED, stating no account - the
+    // reconciliation happens AFTER admission, so an admission still sees exactly what was sent.
+    expect(harness.recorder.admissionRequests).toHaveLength(1);
+    expect(wireAccountStatementOf(harness.recorder.admissionRequests[0]?.order)).toBeNull();
+
+    // AND NOTHING ELSE WAS REWRITTEN. Every other member is carried across by reference or by value,
+    // so binding the account cannot disturb the reward iteration order, an amount, or a collection.
+    expect(priced?.orderID).toBe(order.orderID);
+    expect(priced?.orderItems).toBe(order.orderItems);
+    expect(priced?.orderFulfillments).toBe(order.orderFulfillments);
+    expect(priced?.appliedPromotions).toBe(order.appliedPromotions);
+    expect(priced?.subtotal).toBe(order.subtotal);
+    expect(priced?.subtotalAfterItemDiscounts).toBe(order.subtotalAfterItemDiscounts);
+    expect(priced?.promotionCodeList).toBe(order.promotionCodeList);
+    expect(priced?.currencyCode).toBe(order.currencyCode);
+
+    // The caller's own object is NOT mutated: the binding is a fresh shallow view, so an in-process
+    // strangler-fig proxy that injected a live aggregate still holds exactly what it composed.
+    expect(order.accountID).toBeUndefined();
+  });
+
+  it('★★★ binds the same account on the WIRE path, inside the hydration', async () => {
+    // ★★★ THE OTHER HALF OF THE SAME FINDING, AND IT NEEDS ITS OWN CASE BECAUSE IT IS A DIFFERENT
+    // MECHANISM. The wire arm hydrates an `OrderViewDocument` through
+    // `RequestScope.materializeOrderView`, which `./bootstrap.js` owns; an injected admission never
+    // reaches that hydration and a hydrated document never reaches an injected admission, so the
+    // composition root fills the absence there and this handler fills it here. Neither alone covers
+    // both arms.
+    //
+    // The harness's materializer is programmed with data, so what this case can prove at THIS tier is
+    // that the document the hydration received states no account and that the priced view carries the
+    // authenticated one regardless. The bootstrap suite proves the hydration's own half against the
+    // real composition root - see `tests/unit/handlers/bootstrap.test.ts`, 'adopts the request scope's
+    // established account when the document states none'.
+    const { order } = makeGoldenOrder({ accountID: undefined });
+    const harness = makeHarness({ materialize: order });
+
+    const result = await harness.invoke(
+      postWireOrder(order, {}, authorizerFor(AUTHENTICATED_ACCOUNT_ID)),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(harness.recorder.materializedDocuments[0]?.accountID).toBeNull();
+    expect(harness.recorder.composedInputs[0]?.accountID).toBe(AUTHENTICATED_ACCOUNT_ID);
   });
 
   it('reads the authorizer claim CASE-INSENSITIVELY, as a CFML struct key read does', async () => {

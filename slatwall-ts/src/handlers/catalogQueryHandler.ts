@@ -156,10 +156,10 @@ import {
   mapErrorToApiGatewayResponse,
   resolveServerRequestId,
   routeDiagnosticLabel,
+  resolveRequestPrincipal,
   routeNotFoundResponse,
   unauthenticatedResponse,
 } from './errorMapper.js';
-import { resolveRequestPrincipal } from './requestPrincipal.js';
 import type { RouteAction, RoutedCapability } from './router.js';
 import { resolveRouteForCapability, routeRequestFromEvent } from './router.js';
 
@@ -1196,7 +1196,7 @@ export function createCatalogQueryHandler(
       // 401.
       const principalResolution = resolveRequestPrincipal(event);
       if (!principalResolution.identified) {
-        // The reason is a closed literal from `requestPrincipal`, carried in the message rather than
+        // The reason is a closed literal from `./errorMapper.js`, carried in the message rather than
         // widening the logger's default-deny context allow-list. No claim name or caller text appears.
         log.warn(`catalog query refused: no caller principal (${principalResolution.reason})`, {
           requestId,

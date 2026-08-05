@@ -243,16 +243,17 @@ import {
   jsonSuccessResponse,
   mapErrorToApiGatewayResponse,
   mapZodErrorFields,
+  resolveRequestPrincipal,
   resolveServerRequestId,
   routeDiagnosticLabel,
   routeNotFoundResponse,
   unauthenticatedResponse,
 } from './errorMapper.js';
-import { resolveRequestPrincipal } from './requestPrincipal.js';
 import { resolveRouteForCapability, routeRequestFromEvent } from './router.js';
 import { logger as defaultLogger } from '../lib/logger.js';
 // `cfEquals` keeps the compatibility-account comparisons aligned with CFML's case-insensitive string
-// equality. Principal resolution itself is shared in `./requestPrincipal.js`.
+// equality. Principal resolution itself is shared in `./errorMapper.js`, the module that also
+// publishes the refusal an unidentified outcome earns.
 import { cfEquals } from '../lib/cfml/struct.js';
 import { toDecimalString } from '../lib/cfml/numberFormat.js';
 
@@ -1862,9 +1863,19 @@ type EnvelopeDecoding =
 // `./priceResolutionHandler.js` derives its account from `event.requestContext.authorizer`, a context
 // an API Gateway caller cannot write. Both body-supplied spellings are retained for compatibility and
 // neither is an authority: each is compared with the authenticated account and REFUSED on
-// disagreement, with a member path and no value echoed. An order that names NO account is always
-// admitted - that is the logged-out arm [model/service/PriceGroupService.cfc:L265-L266], it resolves
-// no price groups, and it can only ever reduce what a caller is granted.
+// disagreement, with a member path and no value echoed.
+//
+// ★★★ AND ABSENCE IS THE SECOND HALF, WHICH THE FIRST FIX MISSED. This paragraph used to read: "An
+// order that names NO account is always admitted - that is the logged-out arm
+// [model/service/PriceGroupService.cfc:L265-L266], it resolves no price groups, and it can only ever
+// reduce what a caller is granted." The first two clauses are true of the SERVICE and the third is
+// FALSE of a ROUTE that has already authenticated its caller: skipping the account does not merely
+// forgo a discount, it makes every per-account use-limit read count the uses of nobody, so a
+// promotion capped per account becomes uncapped. A second code review raised exactly that as
+// CRITICAL. The logged-out arm belongs to a genuinely anonymous caller, and this route has none -
+// `resolveRequestPrincipal` refuses before anything else runs. So an authenticated request's order
+// ADOPTS the proved account when it names none; see {@link reconcileOrderAccount}, and
+// `materializeOrderView` in `./bootstrap.js` for the same rule applied inside the wire hydration.
 //
 // WHETHER the deployment's authorizer authenticates correctly is an authorizer concern outside this
 // AAP, and no API key, token, signature or session lookup is invented here.
@@ -1892,6 +1903,87 @@ function accountAgrees(supplied: string | undefined, authenticated: string | und
   }
 
   return authenticated !== undefined && cfEquals(supplied, authenticated);
+}
+
+/**
+ * Bind the order to the account the request PROVED, or refuse the order.
+ *
+ * ★★★ THIS FUNCTION IS THE FIX FOR A CRITICAL AUTHORIZATION FINDING, AND THE DEFECT IT CLOSES WAS
+ * NOT THE OBVIOUS ONE. `accountAgrees` above is correct about DISAGREEMENT and was always applied,
+ * so a caller naming another account has never been served. What it also answers `true` for is
+ * ABSENCE - and absence was then carried straight into the priced view. A code review measured the
+ * consequence: an AUTHENTICATED caller that omitted both the envelope's `accountID` and the
+ * document's priced an ACCOUNTLESS order, which means
+ *
+ *   * `PriceGroupService.updateOrderAmountsWithPriceGroups` takes its
+ *     `!isNull(order.getAccount())` arm [model/service/PriceGroupService.cfc:L365] and resolves NO
+ *     account price groups - so no `SwAccountPriceGroup` read happens at all; and
+ *   * every per-account promotion limit measured against
+ *     `getPromotionCodeAccountUseCount` / `getPromotionPeriodAccountUseCount`
+ *     [model/service/PromotionService.cfc:L1098], [model/dao/PromotionDAO.cfc:L187, L274] counts
+ *     the uses of NOBODY, which is always zero.
+ *
+ * The second is the live abuse: a promotion capped at N uses per account is re-applicable without
+ * limit by a caller whose own account has already exhausted it. The first mostly costs the caller a
+ * discount, but it is the same missing read and is closed by the same line.
+ *
+ * ★★ ADOPTION, NOT MERELY REFUSAL, AND THAT IS THE DELIBERATE CHOICE BETWEEN THE TWO REMEDIES THE
+ * REVIEW OFFERED. Requiring the member to be present would have been the other, and it was rejected
+ * because it breaks a wire contract for no security gain: the account is server-established either
+ * way, so a caller that omits it is not asserting anything and has nothing to be refused FOR. The
+ * identity substituted is the authorizer's - never a body's, never a header's - so nothing a caller
+ * writes can select it.
+ *
+ * ★ THE ACCOUNTLESS PATH IS NOT DELETED, only unreachable through THIS route while it carries a
+ * principal. `reconcileOrderAccount(order, undefined)` still hands an accountless order straight
+ * through, which is the legacy logged-out arm [model/service/PriceGroupService.cfc:L265-L266] and is
+ * what an anonymous in-process caller - a strangler-fig proxy injecting its own admission - receives.
+ * The composition root fills the same absence for the WIRE arm during hydration; both halves are
+ * needed, because an injected admission never reaches the hydration and a hydrated document never
+ * reaches an injected admission.
+ *
+ * @param order the admitted view, exactly as the admission produced it.
+ * @param authenticatedAccountID the account `resolveRequestPrincipal` established for this request.
+ * @returns the same view when it already names the authenticated account (or when there is no
+ *   authenticated account to bind), and a view bound to that account when it named none.
+ * @throws {@link OrderViewAdmissionError} naming `order.accountID` when the order names a different
+ *   account. Neither identifier is echoed: reporting the authenticated one would disclose the
+ *   session's account to whoever sent the body.
+ */
+function reconcileOrderAccount(
+  order: OrderView,
+  authenticatedAccountID: string | undefined,
+): OrderView {
+  if (order.accountID === undefined) {
+    // Nothing to reconcile when the request itself established no account: adopting `undefined`
+    // would be a copy for no reason, and the view is handed on by IDENTITY so that an injected
+    // in-process aggregate reaches the passes as the very object its owner composed.
+    if (authenticatedAccountID === undefined) {
+      return order;
+    }
+
+    // A SHALLOW REBIND, which is the same mechanism `./bootstrap.js`'s between-pass projection uses
+    // on this same type: one member is replaced and every collection is carried across by reference,
+    // so the reward iteration order - legacy-non-deterministic by construction, because
+    // `getActivePromotionRewards` [model/dao/PromotionDAO.cfc:L51-L132] declares no `ORDER BY` -
+    // is untouched, and no monetary member is recomputed.
+    return { ...order, accountID: authenticatedAccountID };
+  }
+
+  if (!accountAgrees(order.accountID, authenticatedAccountID)) {
+    throw new OrderViewAdmissionError('unusableRequestInput', [
+      {
+        path: 'order.accountID',
+        message: 'must name the authenticated account, or be omitted',
+      },
+    ]);
+  }
+
+  // Named, and it agrees. Handed back by identity - CFML string comparison folds case
+  // [the `cfEquals` note above], so a differently-cased spelling of the SAME account is kept as the
+  // caller wrote it rather than silently rewritten to the authorizer's casing: every repository
+  // behind this binds the value as a parameter and MySQL's own collation folds it again.
+  return order;
 }
 
 // ★★★ `readCorrelationIdentifier` WAS REMOVED, AND THAT IS FINDING F8. Its own reasoning was sound -
@@ -2092,29 +2184,12 @@ async function runSelectedOperation(
   // ADMITTED THROUGH THE INJECTED PORT, AND HYDRATED BY THE SCOPE - see SECTION 4. The scope is
   // handed over NARROWED to its one hydration member, so an admission has no route to a service, a
   // pass or a setting on its way to a view.
-  const order = await admitOrderView(request, scope);
+  const admitted = await admitOrderView(request, scope);
 
-  // ★★★ THE ACCOUNT THE ORDER NAMES MUST BE THE ACCOUNT THE REQUEST IS AUTHENTICATED FOR.
-  //
-  // Checked HERE, after admission, because that is the first moment the order exists - and it must be
-  // checked at all because `order.accountID` is what
-  // `PriceGroupService.updateOrderAmountsWithPriceGroups` resolves price groups from
-  // [model/service/PriceGroupService.cfc:L365]. Binding only the request scope's account would have
-  // left the document itself as an unchecked authority, so the same rule is applied to both spellings
-  // and by the same predicate.
-  //
-  // An order naming NO account is admitted unconditionally: that is the logged-out arm
-  // [model/service/PriceGroupService.cfc:L265-L266], it resolves no price groups, and it can only
-  // reduce what a caller receives. `request.accountID` is the authenticated value - the body's was
-  // discarded during decoding - so this comparison is against a trusted operand on one side.
-  if (!accountAgrees(order.accountID, accountID)) {
-    throw new OrderViewAdmissionError('unusableRequestInput', [
-      {
-        path: 'order.accountID',
-        message: 'must name the authenticated account, or be stated as absent',
-      },
-    ]);
-  }
+  // ★★★ THE ORDER IS PRICED FOR THE ACCOUNT THE REQUEST PROVED, AND FOR NO OTHER.
+  // See {@link reconcileOrderAccount}: an order that names none ADOPTS the authenticated
+  // principal, and one that names a DIFFERENT account is refused.
+  const order = reconcileOrderAccount(admitted, accountID);
 
   // =========================================================================
   // ★★★ THE CROSS-SERVICE EXECUTION ORDERING, DISCHARGED IN ONE CALL.

@@ -459,10 +459,18 @@ export const LEGACY_TEST_MAP: {
       module: 'src/handlers/catalogQueryHandler.ts',
       test: 'tests/unit/handlers/catalogQueryHandler.test.ts',
     },
-    {
-      module: 'src/handlers/requestPrincipal.ts',
-      test: 'tests/unit/handlers/requestPrincipal.test.ts',
-    },
+    // ★★★ `src/handlers/requestPrincipal.ts` AND ITS SUITE ARE GONE FROM THIS REGISTER
+    // BECAUSE THEY ARE GONE FROM DISK, and the deletion is the record rather than a note
+    // about one. AAP 0.3.1 enumerates `src/handlers/` as EXACTLY eight modules - the
+    // composition root, the router, the error mapper and the five capability entrypoints -
+    // and that pairing declared a NINTH module with a ninth suite beside it. A code review
+    // recorded the placement as a breach of the exact handler layout while finding the
+    // resolver's BEHAVIOUR correct, so the resolver moved into `src/handlers/errorMapper.ts`
+    // - which already owns the correlation-identifier policy, the success envelope and the
+    // refusal an unidentified caller earns - and every one of its cases moved into
+    // `tests/unit/handlers/errorMapper.test.ts`. NO COVERAGE WAS LOST in the move, which is
+    // why no `pendingModules` debt entry replaces this one: the module that now owns the
+    // behaviour already owns a suite, and A9/A11 read both off disk.
 
     // THE THIRD PROMOTION, AND THE FIRST OF THE FIVE CAPABILITY ENTRYPOINTS TO EARN ONE.
     // `src/handlers/skuResolutionHandler.ts` moved up out of `pendingModules`, where its
@@ -2722,20 +2730,27 @@ describe('A16 runtime platform pin: the frozen Node line, across every artifact 
   });
 });
 
-// --- A17: the package is the direct artifact set, with no host archive step -
+// --- A17: the package emits one archive per capability, written without a host tool -
 //
-// Build review found two independent defects in the former package path: it invoked a host-global
-// `zip` binary that the AAP does not permit, and it placed source maps inside the archive. The selected
-// design removes the archive unit entirely. That structurally subsumes the disclosure finding: no map
-// can be present in an archive that is never created.
+// ★★★ THIS BLOCK ASSERTED THE OPPOSITE AND THE INVERSION IS A REVIEW FINDING. It read "the package is
+// the direct artifact set, with no host archive step" and pinned `package` as an alias of `build`,
+// on the grounds that removing the archive unit entirely subsumed two earlier build-review defects -
+// a host-global `zip` dependency and source maps inside the archive.
 //
-// Annotation auditability remains independently executable. The external maps embed the original
-// TypeScript and the build reads each one back, requiring both mandated marker families before it can
-// report success. These assertions pin both halves so a later edit cannot trade one finding for the
-// other.
+// A later code review measured `dist/` holding no `.zip` at all and rejected that: AAP 0.5.2 and
+// 0.9.1 define "deployable" as a successful build AND PACKAGE step emitting Lambda-compatible
+// artifacts, and the platform's unit of deployment is an archive, so a package step that produces
+// none does not discharge the gate.
+//
+// BOTH EARLIER DEFECTS STAY CLOSED, WHICH IS WHY THE `not.toContain` GUARDS SURVIVE UNCHANGED. The
+// restored stage writes the archive itself from `node:zlib`, so no host executable and no
+// `node:child_process` import appears; and it carries the artifact plus the GPL notice while
+// deliberately EXCLUDING the `.cjs.map`, so the maps stay in `dist/` for the annotation audit and out
+// of anything uploadable. The assertions below pin all three properties together, so a later edit
+// cannot restore one finding while fixing another.
 
-describe('A17 package shape: direct artifacts, recoverable annotations, no host archive tool', () => {
-  it('makes package an alias of the locked build and exposes no live zip path', () => {
+describe('A17 package shape: one archive per capability, recoverable annotations, no host archive tool', () => {
+  it('makes package a real archive gate and still shells out to nothing', () => {
     type PackageManifest = {
       readonly scripts?: Readonly<Record<string, string>>;
     };
@@ -2743,11 +2758,47 @@ describe('A17 package shape: direct artifacts, recoverable annotations, no host 
     const manifest = JSON.parse(readSubtreeFile('package.json')) as PackageManifest;
     const config = readSubtreeFile('esbuild.config.mjs');
 
-    expect(manifest.scripts?.['package']).toBe('npm run build');
-    expect(config).not.toContain("process.argv.includes('--zip')");
+    // The gate typechecks and then archives; it is NOT an alias of `build`, which emits no archive.
+    expect(manifest.scripts?.['package']).toBe(
+      'npm run typecheck && node esbuild.config.mjs --zip',
+    );
+    expect(manifest.scripts?.['build']).toBe('npm run typecheck && npm run bundle');
+    expect(config).toContain('function archiveArtifacts');
+    expect(config).toContain('function buildZipArchive');
+    expect(config).toContain("import { crc32, deflateRawSync } from 'node:zlib';");
+
+    // NO HOST UTILITY AND NO SUBPROCESS, which is the first of the two earlier findings. The guards
+    // are IMPORT-SHAPED and call-shaped rather than bare substrings: the file's own prose explains why
+    // the subprocess is absent, and a substring guard would fail on the explanation instead of on a
+    // regression.
     expect(config).not.toContain("execFileSync('zip'");
-    expect(config).not.toContain('function archiveArtifacts');
     expect(config).not.toContain("from 'node:child_process'");
+    expect(config).not.toContain("from 'child_process'");
+    expect(config).not.toContain("require('child_process')");
+    expect(config).not.toContain('execFileSync(');
+    expect(config).not.toContain('spawnSync(');
+  });
+
+  it('archives the artifact and the licence, and NEVER the source map', () => {
+    const config = readSubtreeFile('esbuild.config.mjs');
+
+    // The entry list is stated as data in one function, so the exclusion is a decision rather than a
+    // property of a directory listing - a `readdirSync(OUT_DIR)` would pick the maps up again.
+    expect(config).toContain('function archiveEntrySources');
+    expect(config).toContain("path.join(SUBTREE_DIR, 'NOTICE-GPL.md')");
+    expect(config).toContain('NOT the `.cjs.map`');
+
+    // The exact `node:fs` surface the script imports, which is how "no directory listing feeds the
+    // archive" is pinned without tripping over the comment that explains why.
+    expect(config).toContain(
+      "import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';",
+    );
+
+    // Deterministic entries: a fixed DOS timestamp rather than the wall clock, so two builds of
+    // identical inputs produce byte-identical archives.
+    expect(config).toContain('DOS_EPOCH_TIME');
+    expect(config).toContain('DOS_EPOCH_DATE');
+    expect(config).not.toContain('Date.now()');
   });
 
   it('embeds annotated sources in maps and fails the build when either marker family is absent', () => {
@@ -2758,7 +2809,7 @@ describe('A17 package shape: direct artifacts, recoverable annotations, no host 
     expect(config).toContain('REQUIRED_ANNOTATION_MARKERS');
     expect(config).toContain('assertAnnotationsRecoverable');
     expect(config).toContain('readSourceMapFor');
-    expect(readme).toContain('there is no archive step');
+    expect(readme).toContain('one archive per capability');
     expect(readme).toContain('`sourcesContent: true`');
   });
 
@@ -2773,5 +2824,18 @@ describe('A17 package shape: direct artifacts, recoverable annotations, no host 
 
     // Escalation preserves the legacy wire contract until the plan owner authorizes a divergence.
     expect(renderer).toContain("const FEED_ORIGIN_SCHEME_PREFIX = 'http://';");
+
+    // ★★★ AND THE ESCALATION IS ALSO WHERE A PLAN OWNER WILL FIND IT. A third review re-raised this
+    // as MI-1 and reached the same disposition - accepted/escalated, do not patch unilaterally - so
+    // the only action available without an AAP amendment is to make the record reviewable OUTSIDE the
+    // source file. `README.md` carries it under both labels, in the same shape as the runtime-lifecycle
+    // escalation asserted above, so a durable in-code record and a durable project-documentation
+    // record cannot drift apart.
+    const readme = readSubtreeFile('README.md');
+    expect(readme).toContain('S-09');
+    expect(readme).toContain('V-12');
+    expect(readme).toContain('CWE-319');
+    expect(readme).toContain('escalate, do not patch unilaterally');
+    expect(readme).toContain('AAP amendment');
   });
 });
