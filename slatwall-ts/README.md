@@ -776,19 +776,27 @@ artifact and infrastructure as code is out of scope.
 `src/config/` holds exactly `container.ts`, `database.ts` and `env.ts`; the per-surface compositions live
 inside the composition root (§5.5). One consequence is worth naming: with every entry reaching one root, the
 bundler has nothing to drop from a narrow artifact, which is why the six sizes below are within a few percent
-of one another. `CatalogContainer` declares **35 members** — every collaborator the slice has, plus the two
-configuration sections and the anonymous materialisation guard.
+of one another. `CatalogContainer` declares **37 members**: **36 `readonly` collaborators** — every
+collaborator the slice has, plus the two configuration sections and the anonymous materialisation guard — and
+one method, `beginInvocation()`, the per-invocation discard of §5.4. Both figures are **recomputed** by
+`test/regression/issues.test.ts`, which walks the interface's own AST and reads this sentence back, because
+this was the one headline count in the document that no executable census guarded and it had drifted by two
+against the tree.
 
-- **Size, stated as measurement only, and to one decimal place because it moves.** Measured in this checkout
-  immediately after `npm run build`: the six artifacts run from `googleFeedHandler.js` at the low end to
-  `router.js` at the high end, all within a few percent of one another, and total about **5.0 MB**. The whole
-  published package is about **6.5 MB** (`du -sb dist`), which is those six plus the staged `mysql2` closure
-  under `dist/node_modules` (1,480,323 bytes — a fixed figure, since it is the driver's own tree) and the
-  generated `dist/package.json`. The six source maps live **outside** `dist/`, under
-  `build-meta/sourcemaps/`, and total about **12.6 MB** — a ratio of about **2.5×** the code they describe,
+- **Size, stated as measurement only, to one decimal place because it moves, and in `MB` meaning 10⁶ bytes.**
+  The unit is spelled out because the alternative reading is the reason these three figures were each about
+  four to nine percent low until they were re-measured: they had been taken in `MiB` (2²⁰ bytes) and labelled
+  `MB`. Measured in this checkout immediately after `npm run build`: the six artifacts run from
+  `googleFeedHandler.js` at the low end to `router.js` at the high end, all within a few percent of one
+  another, and total about **5.5 MB** (5.2 MiB). The whole published package, as `du -sb dist` reports it, is
+  about **6.9 MB**: those six plus the staged `mysql2` closure under `dist/node_modules` (**1,480,323 bytes** —
+  a fixed figure, since it is the driver's own tree, and the one figure here an executable case asserts) plus
+  the generated `dist/package.json`. Those three parts account for the package exactly: bundles plus closure plus
+  manifest equals `du -sb dist` with a delta of **zero**. The six source maps live **outside** `dist/`, under
+  `build-meta/sourcemaps/`, and total about **13.8 MB** — a ratio of about **2.5×** the code they describe,
   which is why they are not shipped. **Re-measure after any change**: `minify` and `legalComments` are
   deliberately unexercised, so an artifact carries the comments its sources carry and the bundle figures move
-  when those do.
+  when those do — including when a comment in this document's own subject changes.
 
 Code splitting is deliberately off — it could hoist or duplicate `src/config/database.ts`, and duplicating
 that module duplicates the connection pool. `minify` and `legalComments` are available levers, deliberately
@@ -1215,6 +1223,17 @@ template, and the two lists agree in both directions.** Verify the split rather 
 each read exactly once; the six bare `NAME=` lines in `.env.example` are the required set, and the thirteen
 commented lines are the optional set.
 
+**Every value is read exactly as supplied, and never trimmed on the operator's behalf.** The grammar each
+numeric name is held to — `DB_PORT` and the nine optional integer controls alike — is a plain run of base-ten
+digits and nothing else, so a sign, a decimal point, exponent notation, a radix prefix and **leading or
+trailing whitespace** are each refused at load, naming the variable. Whitespace is called out because it is
+the one non-digit character a reader might expect to be tolerated: `DB_PORT=" 3306 "` is a refusal rather
+than a `3306`, and a tab, a newline and a no-break space are refused on the same footing. `DB_TLS_MODE` is
+compared the same way — the two tokens are matched exactly, so `DB_TLS_MODE=" disabled "` is refused rather
+than normalised, and the spelling that selects cleartext is the spelling the operator committed. An
+**all-whitespace** value is a different failure with its own message: it is reported as set-but-blank,
+because a name typed and left empty is a distinct mistake from a value with padding around it.
+
 **"Optional" is a statement about loading, not about serving.** None of the six `CATALOG_*` bounds is needed
 for the module to load or the graph to be composed, which is what keeps `tsc`, `eslint`, `esbuild` and the whole
 test suite runnable with no environment at all; every one is needed for the routes that apply it to serve. §8.1
@@ -1444,15 +1463,31 @@ request is ever waiting — and a sequential sweep of twenty-five invocations ag
 all twenty-five successfully.
 
 **On a host that _does_ issue concurrent requests into one module instance, that same default refuses the
-overflow.** Twenty-five simultaneous invocations against one instance answered eleven successfully and refused
-fourteen; raising `DB_QUEUE_LIMIT` to `200` admitted all twenty-five, with no other change. So the refusals are
-the queue bound doing exactly what it is set to do, not a defect in the pool, the port or the statements — and
-the figure is a **deployment** decision, which is why this subtree does not author one. Any non-Lambda host — a
-container serving several requests at once, a local harness firing a burst, a test runner exercising the bundle
-in parallel — should set `DB_QUEUE_LIMIT` and `DB_CONNECTION_LIMIT` to suit its own concurrency before reading
-a refusal as a fault. The numbers above are measurements from one local run, offered as evidence for the
-mechanism; they are not a throughput claim, a capacity figure or a service level, and none is invented anywhere
-in this document.
+overflow.** Measured on a **read** workload, because a read isolates the queue bound and nothing else:
+twenty-five simultaneous `google:feed.product` invocations against one instance, with `DB_CONNECTION_LIMIT`
+left at the driver's own default, answered eleven successfully and refused fourteen — eleven being the ten
+connections the driver opens plus the one request the bound permits to wait. Raising `DB_QUEUE_LIMIT` to `200`
+admitted all twenty-five, with no other change. So the refusals are the queue bound doing exactly what it is
+set to do, not a defect in the pool, the port or the statements — and the figure is a **deployment** decision,
+which is why this subtree does not author one.
+
+**The workload matters, and naming it matters, because a _write_ workload meets a second refusal class that
+the queue bound cannot explain.** Twenty-five simultaneous `product.saveProduct` creations — each with its own
+distinct `productCode`, so no two of them address the same product — answered `{200: 3, 503: 22}` at
+`DB_QUEUE_LIMIT=200` and `{200: 2, 500: 14, 503: 9}` at the default of `1`. Raising the bound still removes
+every queue refusal, which is the mechanism above holding; what it exposes is that concurrent creates
+_serialise on the same rows_ regardless, because each derives its SKU's sort order from
+`COALESCE(max(sortOrder), 0) + 1` over the rows its siblings are writing. Those `503`s are
+`TransientWriteConflictError` — a **retryable** answer naming a conflict that has to be retried rather than
+diagnosed (§8.2 classifies the pair), and the correct outcome rather than a lost or partial write. Read a
+concurrency measurement of this service, therefore, as a statement about a specific workload: "admitted" is not
+"committed", and only a workload that contends for nothing measures the queue bound alone. Any non-Lambda
+host — a container serving several requests at once, a local harness firing a burst, a test runner exercising
+the bundle in parallel — should set `DB_QUEUE_LIMIT` and `DB_CONNECTION_LIMIT` to suit its own concurrency
+before reading a refusal as a fault. Every number in these three paragraphs is a measurement from one local run
+against the seeded loopback database, offered as evidence for the mechanism and re-measurable with the same two
+harnesses; none is a throughput claim, a capacity figure or a service level, and none is invented anywhere in
+this document.
 
 **One consequence of the fail-safe default is worth stating, because it is easy to misread as a fault.**
 Supplying only the required variables is enough for the service to load, and the three **pool** bounds
@@ -2342,13 +2377,13 @@ unreachable code would add behaviour the legacy system does not have.
 slice amounts to **two entity test files, eight issue regressions and one fixture helper. Everything else is
 net-new.** Every suite in `test/` labels itself, so the ratio is visible per file rather than only in
 aggregate: of the **17** suites, **3 carry TRACEABLE cases and 14 are wholly NET-NEW** — and inside those three
-the imbalance is sharper still, **20 traceable case declarations against 2,290 net-new ones**. The three are
+the imbalance is sharper still, **20 traceable case declarations against 2,299 net-new ones**. The three are
 `test/regression/issues.test.ts` (10), `test/domain/Product.test.ts` (6) and `test/domain/Brand.test.ts` (4).
 
 **Declarations and executed tests are two different counts, and this paragraph states declarations.** The
 figures above come from walking the TypeScript AST of all seventeen suites and counting `it` / `test`
-declarations: **2,310 in total, 20 TRACEABLE and 2,290 NET-NEW, with 0 unlabelled.** The runner reports a
-larger number — **2,575 at this checkpoint** — because an `it.each(table)` declaration expands into one
+declarations: **2,319 in total, 20 TRACEABLE and 2,299 NET-NEW, with 0 unlabelled.** The runner reports a
+larger number — **2,590 at this checkpoint** — because an `it.each(table)` declaration expands into one
 executed test per table row. Neither figure is frozen by anything: both grow when a case or a row is added, so
 re-measure rather than trusting a number in a document. `test/regression/issues.test.ts` asserts the
 declaration figures against a fresh walk of the suites on every run, so a drift between this paragraph and the

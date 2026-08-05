@@ -18,7 +18,15 @@
  * under the two git-ignored directories the build step owns.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { builtinModules, createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
@@ -1928,6 +1936,52 @@ describe('NET-NEW — the build produces a complete, self-resolving Lambda packa
      * No nested tree was carried: the staged tree is flat, which is what the closure walk guarantees.
      */
     expect(existsSync(join(STAGED_MODULES_DIR, 'mysql2', 'node_modules'))).toBe(false);
+  });
+
+  it('[NET-NEW] the staged closure is exactly the fixed byte figure the size paragraph states, and the package arithmetic closes', () => {
+    /*
+     * The size paragraph of §5 states four figures and calls three of them volatile: they move whenever a
+     * comment in `src/**` moves, so pinning those three would fail on every edit and teach a reader to
+     * ignore the failure. The fourth is different in kind. The staged closure is the pinned driver's own
+     * tree, so it changes only when `mysql2` does, and it is the one figure in that paragraph a case can
+     * hold to the byte.
+     *
+     * That asymmetry is the point of this case. A review pass found all three volatile figures four to nine
+     * percent low — they had been measured in `MiB` and labelled `MB` — while this one was exact, and the
+     * difference between them was precisely that this one is derivable from the tree on demand.
+     *
+     * The arithmetic is asserted rather than the two moving totals: bundles plus closure plus manifest must
+     * equal the package, whatever those parts weigh. That holds across every future edit, and it catches a
+     * fault the volatile figures cannot — a file promoted into `dist/` that belongs to none of the three
+     * parts the paragraph accounts for.
+     */
+    const FIXED_CLOSURE_BYTES = 1_480_323;
+
+    const directoryBytes = (directory: string): number => {
+      let total = 0;
+
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const candidate = join(directory, entry.name);
+        total += entry.isDirectory() ? directoryBytes(candidate) : statSync(candidate).size;
+      }
+
+      return total;
+    };
+
+    expect(directoryBytes(STAGED_MODULES_DIR)).toBe(FIXED_CLOSURE_BYTES);
+
+    /* And the document quotes that byte figure, formatted as it formats it. */
+    expect(readFileSync(join(SUBTREE_ROOT, 'README.md'), 'utf8')).toContain(
+      `**${FIXED_CLOSURE_BYTES.toLocaleString('en-US')} bytes**`,
+    );
+
+    const bundleBytes = readdirSync(join(PACKAGE_DIR, 'handlers')).reduce(
+      (running, name) => running + statSync(join(PACKAGE_DIR, 'handlers', name)).size,
+      0,
+    );
+    const manifestBytes = statSync(join(PACKAGE_DIR, 'package.json')).size;
+
+    expect(directoryBytes(PACKAGE_DIR)).toBe(bundleBytes + FIXED_CLOSURE_BYTES + manifestBytes);
   });
 
   it(
@@ -5520,6 +5574,173 @@ describe('The configuration loader, which every layer depends on and none owns',
   });
 
   /*
+   * §8.5 — Every validated value is read exactly as supplied, with no trimming on the operator's behalf.
+   *
+   * The finding these cases close was an implementation looser than its own documentation rather than a
+   * wrong rule: `requireTcpPortValue` and `requireResourceBoundValue` each applied `.trim()` between the
+   * presence check and the digit pattern, so `DB_PORT=" 3306 "` loaded while `slatwall-ts/.env.example` and
+   * the reader's own message both said any non-digit character is rejected — and a space is a non-digit
+   * character. The prose was the stricter of the two statements, so the readers were tightened rather than
+   * the sentences relaxed.
+   *
+   * Three properties are pinned here, because each is a way the fix could regress silently:
+   *
+   *   1. Every numeric name in the census is held to the grammar, not only the two `DB_PORT` examples the
+   *      finding reproduced. There is one rule for ten values, and a reader that reintroduced a trim for
+   *      one of them would answer differently from its nine siblings.
+   *   2. The whole Unicode whitespace set is refused, not just the space. `String.prototype.trim` stripped
+   *      tabs, newlines, carriage returns, no-break spaces and ideographic spaces too, so a fix asserted
+   *      against a single space would have left five spellings admitted.
+   *   3. Blankness stays a SEPARATE answer. An all-whitespace value is still reported as set-but-blank,
+   *      which is the diagnostic for a name typed and left empty; collapsing the two failures into the
+   *      grammar message would lose the distinction an operator reads.
+   */
+
+  describe('NET-NEW env — every validated value is read exactly as supplied', () => {
+    /**
+     * Every numeric name the loader validates, with a value it accepts — `DB_PORT` plus the nine optional
+     * integer controls. Kept as pairs rather than names alone so each case can assert the unpadded control
+     * loads, which is what stops a padded-value rejection from passing for the wrong reason.
+     */
+    const NUMERIC_VARIABLES: readonly (readonly [name: string, accepted: string])[] = [
+      ['DB_PORT', '3306'],
+      ['DB_CONNECTION_LIMIT', '7'],
+      ['DB_QUEUE_LIMIT', '9'],
+      ['DB_CONNECT_TIMEOUT_MS', '4321'],
+      ['CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY', '500'],
+      ['CATALOG_SMART_LIST_MAX_PREDICATES_PER_QUERY', '100'],
+      ['CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST', '64'],
+      ['CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION', '25'],
+      ['CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD', '10'],
+      ['CATALOG_GOOGLE_FEED_MAX_RESPONSE_BYTES', '10485760'],
+    ];
+
+    /** The whitespace spellings the removed `.trim()` used to strip, each refused on the same footing. */
+    const WHITESPACE_SPELLINGS: readonly (readonly [description: string, character: string])[] = [
+      ['a space', ' '],
+      ['a tab', '\t'],
+      ['a newline', '\n'],
+      ['a carriage return', '\r'],
+      ['a form feed', '\f'],
+      ['a no-break space', '\u00a0'],
+      ['an ideographic space', '\u3000'],
+    ];
+
+    it('[NET-NEW] refuses a padded value for every numeric name, and accepts the same value unpadded', () => {
+      for (const [name, accepted] of NUMERIC_VARIABLES) {
+        /*
+         * The control comes first: the unpadded value must load, so a rejection below can only be the
+         * padding and never the name being unsatisfiable in this base environment.
+         */
+        expect(captureLoadFailure({ [name]: accepted })).toBeUndefined();
+
+        for (const padded of [` ${accepted}`, `${accepted} `, ` ${accepted} `]) {
+          expectVariableRejection(captureLoadFailure({ [name]: padded }), name);
+        }
+      }
+    });
+
+    it.each(WHITESPACE_SPELLINGS)(
+      '[NET-NEW] refuses %s around a numeric value, leading and trailing alike',
+      (_description: string, character: string) => {
+        for (const padded of [
+          `${character}3306`,
+          `3306${character}`,
+          `${character}3306${character}`,
+        ]) {
+          expectVariableRejection(captureLoadFailure({ DB_PORT: padded }), 'DB_PORT');
+        }
+
+        /* And on an optional bound, so the rule is the reader's rather than one variable's. */
+        expectVariableRejection(
+          captureLoadFailure({ CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD: `${character}10` }),
+          'CATALOG_GOOGLE_FEED_MAX_IMAGES_PER_RECORD',
+        );
+      },
+    );
+
+    it('[NET-NEW] answers a padded value and a blank one with DIFFERENT messages', () => {
+      /*
+       * Both are refusals and both name the variable, but they are different mistakes: padding is a
+       * grammar failure, and an all-whitespace value is a name typed and left empty. The messages have to
+       * stay distinguishable, because the corrective action differs.
+       */
+      const padded = captureLoadFailure({ DB_PORT: ' 3306 ' });
+      const blank = captureLoadFailure({ DB_PORT: '   ' });
+
+      expectVariableRejection(padded, 'DB_PORT');
+      expectVariableRejection(blank, 'DB_PORT');
+
+      const paddedMessage = padded instanceof Error ? padded.message : '';
+      const blankMessage = blank instanceof Error ? blank.message : '';
+
+      expect(paddedMessage).toContain('plain base-ten integer TCP port number');
+      expect(paddedMessage).toContain('leading or trailing whitespace');
+      expect(blankMessage).toContain('set but blank');
+      expect(blankMessage).not.toContain('leading or trailing whitespace');
+
+      /* Neither message echoes the rejected value, which is the discipline every reader here follows. */
+      expect(`${paddedMessage} ${JSON.stringify(padded)}`).not.toContain(' 3306 ');
+    });
+
+    it('[NET-NEW] holds the GOOGLE_FEED_HOST port half to the same grammar, by the same reader', () => {
+      /*
+       * The authority's port half is read through `requireTcpPortValue`, so tightening that reader
+       * tightens this too — and it should: whitespace is outside the RFC 3986 §3.2.2 production the host
+       * half is already held to, so admitting it in the port half was the one place the production was
+       * relaxed. The failure is now a load-time `ConfigurationError` naming the variable rather than a
+       * downstream containment error raised when the first URL is composed.
+       */
+      expect(loadConfigWith({ GOOGLE_FEED_HOST: 'store.example.com:8080' }).googleFeed.host).toBe(
+        'store.example.com:8080',
+      );
+      expectVariableRejection(
+        captureLoadFailure({ GOOGLE_FEED_HOST: 'store.example.com: 8080' }),
+        'GOOGLE_FEED_HOST',
+      );
+      expectVariableRejection(
+        captureLoadFailure({ GOOGLE_FEED_HOST: 'store.example.com:8080 ' }),
+        'GOOGLE_FEED_HOST',
+      );
+    });
+
+    it('[NET-NEW] compares DB_TLS_MODE exactly, so a padded token is refused rather than normalised', () => {
+      /*
+       * The same class as the numeric readers, and the value it is least safe to normalise: `disabled`
+       * selects cleartext. Tightening the numeric readers alone would have left this the one value in the
+       * module whose spelling was derived rather than compared, so it is held to the same rule — while both
+       * exact tokens keep working, which is what makes this a tightening and not a break.
+       */
+      expect(loadConfigWith({ DB_TLS_MODE: 'disabled' }).database.tlsMode).toBe('disabled');
+      expect(
+        loadConfigWith({ DB_HOST: 'db.internal.example', DB_TLS_MODE: 'verified' }).database
+          .tlsMode,
+      ).toBe('verified');
+
+      for (const padded of [' disabled', 'disabled ', ' disabled ', '\tverified', 'verified\n']) {
+        expectVariableRejection(captureLoadFailure({ DB_TLS_MODE: padded }), 'DB_TLS_MODE');
+      }
+    });
+
+    it('[NET-NEW] states the strict reading in both operator documents, so neither can drift from it', () => {
+      /*
+       * The finding was a documentation-consistency failure as much as a functional one, so the two
+       * documents that state the grammar are read here and matched against the behaviour above. Without
+       * this, a future edit could relax a sentence back to the looser reading and nothing would object.
+       */
+      const example = readFileSync(ENV_EXAMPLE_PATH, 'utf8');
+      const readme = readFileSync(join(SUBTREE_ROOT, 'README.md'), 'utf8');
+
+      expect(example).toContain('is never trimmed on your');
+      expect(example).toContain('DB_PORT=" 3306 " is refused');
+      expect(readme).toContain(
+        "**Every value is read exactly as supplied, and never trimmed on the operator's behalf.**",
+      );
+      expect(readme).toContain('`DB_PORT=" 3306 "` is a refusal');
+    });
+  });
+
+  /*
    * §9 — The variable census is exhaustive, and it agrees with the loader rather than with itself.
    * A hand-maintained count repeated in prose — including in a runtime error message an operator
    * reads — drifts from the loader silently, and a count a reader is invited to trust and cannot
@@ -7710,6 +7931,156 @@ describe('NET-NEW documentation consistency — the test provenance census', () 
     expect(readme).toContain(
       `\`grep -rh '${bannerPrefix}' test/ | wc -l\` reports **${String(expected.length)}**`,
     );
+  });
+});
+
+/*
+ * The `CatalogContainer` member count, recomputed from the interface rather than trusted.
+ *
+ * The finding this closes was a stale figure with an instructive cause. §5.5 stated "35 members", and 35 was
+ * accurate when it was written — the interface then held 35 `readonly` members and one method. A later commit
+ * added `parentProductTypeIdReader`, making it 36, and edited README.md in the same change without touching
+ * the figure. Nothing objected, and the reason it did not is the whole lesson: this was the ONLY headline
+ * count in the document that no executable census guarded. The provenance figures, the twenty-two
+ * folded-body banners, the nineteen-name environment census and §2.2's lifecycle arithmetic are each
+ * asserted by a case that reads the document and recomputes, so none of them can drift; this one had no such
+ * case, which is precisely why it drifted unnoticed for two commits.
+ *
+ * So the fix is not only the corrected number. These cases bring the figure under the same protection as its
+ * four siblings, and they do it the way the sibling censuses do — by walking the real AST rather than by
+ * counting lines, because a line count is defeated by a member whose declaration wraps, by a comment
+ * containing the word `readonly`, and by any sibling interface declared after this one in the same file. That
+ * last defeat is not hypothetical: the one-line `awk` census quoted alongside the finding counts 61, because
+ * its terminator never matches and it keeps counting into the interfaces below.
+ *
+ * It is a sibling describe rather than a case inside the provenance census above because the two censuses
+ * share a family and nothing else: that one walks `test/**` for case provenance, this one walks one
+ * interface in `src/config/**`. No suite file is added either way — AAP §0.4.1.12 freezes the inventory at
+ * seventeen, and this is one more body inside an approved suite.
+ */
+
+describe('NET-NEW documentation consistency — the CatalogContainer member census', () => {
+  /** What the interface declares, counted by kind. */
+  interface ContainerCensus {
+    /** Property signatures carrying the `readonly` modifier. */
+    readonly readonlyProperties: number;
+    /** Property signatures WITHOUT it — expected to be none, and named when not. */
+    readonly mutableProperties: readonly string[];
+    /** Method signatures, by name, so the document can be checked to name them. */
+    readonly methods: readonly string[];
+    /** Every member, whatever its kind, so the total cannot be assembled from a partial view. */
+    readonly totalMembers: number;
+  }
+
+  /**
+   * Walks `src/config/container.ts` and counts the members of the `CatalogContainer` interface.
+   *
+   * @returns the census, computed from the AST of the file as it is on disk.
+   */
+  const containerCensus = (): ContainerCensus => {
+    /*
+     * Same rule and same reason as the provenance census above: the compiler API is a devDependency and
+     * this is a Node test file, so the require is deliberate and scoped to this expression.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const ts = require('typescript') as typeof import('typescript');
+    const containerPath = join(SUBTREE_ROOT, 'src', 'config', 'container.ts');
+    const source = ts.createSourceFile(
+      containerPath,
+      readFileSync(containerPath, 'utf8'),
+      ts.ScriptTarget.ES2022,
+      true,
+    );
+
+    let declaration: import('typescript').InterfaceDeclaration | undefined;
+
+    const visit = (node: import('typescript').Node): void => {
+      if (ts.isInterfaceDeclaration(node) && node.name.text === 'CatalogContainer') {
+        declaration = node;
+      }
+
+      ts.forEachChild(node, visit);
+    };
+
+    visit(source);
+
+    /*
+     * A missing interface has to fail loudly here rather than yield a census of zero, which would
+     * otherwise let a renamed or relocated declaration pass every assertion below.
+     */
+    expect(declaration).toBeDefined();
+    const members: readonly import('typescript').TypeElement[] = declaration?.members ?? [];
+
+    const memberName = (member: import('typescript').TypeElement): string =>
+      member.name !== undefined && ts.isIdentifier(member.name) ? member.name.text : '(unnamed)';
+
+    const properties = members.filter((member): member is import('typescript').PropertySignature =>
+      ts.isPropertySignature(member),
+    );
+    const mutableProperties = properties
+      .filter(
+        (member) =>
+          !(member.modifiers ?? []).some(
+            (modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword,
+          ),
+      )
+      .map(memberName);
+
+    return {
+      readonlyProperties: properties.length - mutableProperties.length,
+      mutableProperties,
+      methods: members
+        .filter((member): member is import('typescript').MethodSignature =>
+          ts.isMethodSignature(member),
+        )
+        .map(memberName),
+      totalMembers: members.length,
+    };
+  };
+
+  /** The document under test, read fresh on every call so a stale copy cannot pass. */
+  const readme = (): string => readFileSync(join(SUBTREE_ROOT, 'README.md'), 'utf8');
+
+  it('[NET-NEW] states the member count the interface actually declares, both figures', () => {
+    const census = containerCensus();
+
+    /*
+     * The arithmetic first: every member is either a readonly property or a method, so the two figures the
+     * document quotes have to add up to the total. A member of some third kind — an index signature, a call
+     * signature, a mutable property — would break this before any prose is read, which is the point.
+     */
+    expect(census.mutableProperties).toStrictEqual([]);
+    expect(census.readonlyProperties + census.methods.length).toBe(census.totalMembers);
+
+    const document = readme();
+
+    expect(document).toContain(`declares **${String(census.totalMembers)} members**`);
+    expect(document).toContain(
+      `**${String(census.readonlyProperties)} \`readonly\` collaborators**`,
+    );
+
+    /* And the method is named, not merely counted, so a second method could not hide inside the total. */
+    expect(census.methods).toStrictEqual(['beginInvocation']);
+    for (const method of census.methods) {
+      expect(document).toContain(`${method}()`);
+    }
+  });
+
+  it('[NET-NEW] states NO other member count, so a stale figure anywhere fails this case', () => {
+    /*
+     * The negative half, and the one that would have caught the original drift. Matching the phrase the
+     * document uses rather than the specific stale number is deliberate: the defect was a figure that no
+     * longer matched the tree, not one particular wrong value, so every occurrence of the phrase is
+     * collected and each is required to equal the recomputed total. A second sentence quoting a different
+     * count fails here even if the first is right.
+     */
+    const census = containerCensus();
+    const stated = [...readme().matchAll(/declares \*\*(\d+) members\*\*/gu)].map((match) =>
+      Number(match[1]),
+    );
+
+    expect(stated).not.toStrictEqual([]);
+    expect(stated).toStrictEqual(stated.map(() => census.totalMembers));
   });
 });
 

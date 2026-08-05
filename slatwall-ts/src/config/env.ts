@@ -314,13 +314,30 @@ function requireNonBlankValue(variableName: string, rawValue: string | undefined
  * Reads a variable that must be present and must denote an addressable TCP port.
  */
 function requireTcpPortValue(variableName: string, rawValue: string | undefined): number {
-  const value = requireNonBlankValue(variableName, rawValue).trim();
+  /*
+   * Tested exactly as supplied. A `.trim()` stood between this read and the pattern test below, and it
+   * made the implementation the looser of the two statements of this grammar: `slatwall-ts/.env.example`
+   * says the value "must be a plain base-ten TCP port number" and the message below says "any other
+   * non-digit character" is rejected, while ` 3306 ` loaded — a space being a non-digit character. The
+   * pre-trim is gone rather than the two sentences, because refusing the padded value is the smaller edit
+   * and it keeps the stricter of the two contracts. It also widens correctly: `String.prototype.trim`
+   * strips the whole Unicode whitespace set, so a tab-, newline-, no-break-space- or
+   * ideographic-space-padded value was admitted too, and each of those is a value an operator wrote by
+   * accident rather than a value they meant.
+   *
+   * Blankness is still a separate answer, and deliberately so: {@link requireNonBlankValue} runs first and
+   * reports an all-whitespace value as "set but blank", which is the diagnostic that tells an operator they
+   * typed a name and left it empty. Only a value that carries non-whitespace content reaches the grammar
+   * below, so the two failures stay distinguishable rather than collapsing into one.
+   */
+  const value = requireNonBlankValue(variableName, rawValue);
 
   if (!UNSIGNED_INTEGER_PATTERN.test(value)) {
     throw new ConfigurationError(
       `Environment variable ${variableName} must be a plain base-ten integer TCP port number. ` +
-        'A sign, a decimal point, exponent notation, a radix prefix and any other non-digit ' +
-        'character are all rejected.',
+        'A sign, a decimal point, exponent notation, a radix prefix, leading or trailing whitespace ' +
+        'and any other non-digit character are all rejected; the value is read exactly as supplied ' +
+        "and is never trimmed on the operator's behalf.",
       { context: { variable: variableName } },
     );
   }
@@ -448,13 +465,20 @@ function requireHostAuthorityValue(variableName: string, rawValue: string | unde
  * Reads a variable that must be present and must denote an integer resource bound.
  */
 function requireResourceBoundValue(variableName: string, rawValue: string | undefined): number {
-  const value = requireNonBlankValue(variableName, rawValue).trim();
+  /*
+   * Read exactly as supplied, for the reason recorded in {@link requireTcpPortValue} — one definition of
+   * "plain base-ten integer" for every numeric value this module reads, so the nine optional integer
+   * controls are held to precisely the grammar `DB_PORT` is held to and `slatwall-ts/.env.example`'s
+   * "a value that is supplied must be a plain base-ten integer" is true of all ten.
+   */
+  const value = requireNonBlankValue(variableName, rawValue);
 
   if (!UNSIGNED_INTEGER_PATTERN.test(value)) {
     throw new ConfigurationError(
       `Environment variable ${variableName} must be a plain base-ten integer. A sign, a decimal ` +
-        'point, exponent notation, a radix prefix and any other non-digit character are all ' +
-        'rejected.',
+        'point, exponent notation, a radix prefix, leading or trailing whitespace and any other ' +
+        'non-digit character are all rejected; the value is read exactly as supplied and is never ' +
+        "trimmed on the operator's behalf.",
       { context: { variable: variableName } },
     );
   }
@@ -629,13 +653,23 @@ function requireTlsModeValue(
   rawValue: string | undefined,
   host: string,
 ): DatabaseTlsMode {
-  const mode = requireNonBlankValue(variableName, rawValue).trim();
+  /*
+   * Read exactly as supplied, on the same reasoning as the two numeric readers above and for the same
+   * reason this one states it: the message below says the value must be "exactly" one of two spellings,
+   * and a `.trim()` here made ` disabled ` one of them. Tightening the numeric readers alone would have
+   * left this the one lax value in the module, and the one it is least safe to be lax about — `disabled`
+   * selects cleartext, so the spelling that reaches the comparison should be the spelling the operator
+   * committed, not one this module derived from it.
+   */
+  const mode = requireNonBlankValue(variableName, rawValue);
 
   if (mode !== 'verified' && mode !== 'disabled') {
     throw new ConfigurationError(
-      `Environment variable ${variableName} must be exactly "verified" or "disabled". There is ` +
-        'deliberately no mode that keeps TLS while skipping certificate or identity ' +
-        'verification, because an unverified session is indistinguishable from an intercepted one.',
+      `Environment variable ${variableName} must be exactly "verified" or "disabled" — read as ` +
+        'supplied, so a padded, differently cased or otherwise decorated spelling is refused rather ' +
+        'than normalised. There is deliberately no mode that keeps TLS while skipping certificate or ' +
+        'identity verification, because an unverified session is indistinguishable from an ' +
+        'intercepted one.',
       { context: { variable: variableName } },
     );
   }
