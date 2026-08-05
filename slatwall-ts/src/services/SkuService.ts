@@ -903,6 +903,21 @@ export class SkuService {
     rawOptions: string,
     ruleSet: ValidationRuleSet<ManagedSku>,
   ): Promise<void> {
+    /*
+     * [:L66-L69] — four of the legacy's five working locals, in declaration order and under their
+     * legacy names, so a reader can set the two bodies side by side.
+     *
+     * TODO(parity) [model/service/SkuService.cfc:L70] — the fifth, `var keyToChange = "";`, is
+     * deliberately NOT carried, and the omission is recorded here rather than left silent. A
+     * repository-wide scan finds exactly one occurrence of the name in the whole legacy tree: that
+     * declaration. It is written and never read, so it holds no state any branch consults and cannot
+     * influence enumeration order, the generated SKU set, or the order in which uniqueness validation
+     * observes its siblings. Emitting a dead binding here would carry no behaviour and would fail
+     * `@typescript-eslint/no-unused-vars`; the carry role it looks like it should play is actually
+     * played by `changeKeyIndex` inside {@link SkuService.advanceOptionOdometer} [:L108-L119]. This is
+     * the same treatment D15 receives for `ProductService.buildSkuCombinations` — an unreachable
+     * legacy fragment named as a decision rather than dropped without trace (AAP §0.6.7).
+     */
     const optionGroups = new Map<string, Option[]>();
     let totalCombos = 1;
     const indexedKeys: string[] = [];
