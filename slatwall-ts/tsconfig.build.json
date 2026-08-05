@@ -1,0 +1,69 @@
+{
+  /*
+   * The emit / packaging program for the extracted Slatwall Catalog slice: the same rules as
+   * ./tsconfig.json over a narrower program — shippable src/** only, with emit switched on.
+   */
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    /*
+     * --- inherited, and never weakened -------------------------------------------------------
+     * Everything about the language and the type system comes from ./tsconfig.json and is
+     * deliberately absent below. Inherit and narrow; never duplicate. Duplicating the compiler
+     * options would let the two files drift, and a drifted build config would ship an artifact
+     * checked less strictly than the gate that approved it — precisely the false assurance this
+     * configuration exists to prevent. No relaxing option may ever be added here. If a file under
+     * src/ fails to compile, the source is fixed. `tsc --showConfig -p tsconfig.build.json` prints
+     * the resolved set, which is how to prove the inheritance is intact rather than assume it.
+     */
+
+    /*
+     * Override 1 of 2 — emit. The base sets noEmit true so that `npm run typecheck`, and any bare
+     * `tsc -p tsconfig.json`, can never scatter JavaScript into dist/. This is the one
+     * configuration that flips it, which is exactly what makes the base's setting meaningful.
+     */
+    "noEmit": false,
+
+    /*
+     * Override 2 of 2 — emit layout. The base uses rootDir "." because its program spans src/,
+     * test/ and jest.config.ts. Here the program is src/ alone, so rootDir "src" makes dist/ mirror
+     * src/ directly rather than nesting under dist/src/. build/esbuild.mjs sets outbase to src/ for
+     * the same reason, so a path in a stack trace means the same thing whichever step produced the
+     * JavaScript.
+     */
+    "rootDir": "src",
+
+    /*
+     * Restated at the inherited value; never divergent. outDir is an emit concern and this is the
+     * emitting program, so the destination is pinned where emission is switched on. Three artifacts
+     * must agree on this name: the `dist/` entry in .gitignore, this option, and the outDir in
+     * build/esbuild.mjs.
+     */
+    "outDir": "dist",
+
+    /*
+     * Source maps are what let a stack trace from a deployed invocation point back at the
+     * TypeScript that produced it. build/esbuild.mjs sets sourcemap for the same reason, so both
+     * routes to an artifact stay debuggable.
+     */
+    "sourceMap": true,
+
+    /*
+     * No .d.ts output. The package is private and the deliverable is bundled Lambda artifacts, so
+     * nothing outside this subtree consumes it as a typed library and declaration files would be
+     * unread build products. declarationMap is absent for the same reason.
+     */
+    "declaration": false
+  },
+
+  /* Program scope — the defining purpose of this file: emit excludes tests. */
+  "include": ["src/**/*.ts"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "coverage",
+    "test",
+    "**/*.test.ts",
+    "**/*.spec.ts",
+    "jest.config.ts"
+  ]
+}

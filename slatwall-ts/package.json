@@ -1,0 +1,32 @@
+{
+  "name": "slatwall-ts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Extracted Slatwall Catalog slice - Product, Sku, Brand, Option and the Google product-feed adapter - as a strict-mode TypeScript AWS Lambda service over the existing MySQL Sw* schema.",
+  "license": "GPL-3.0-or-later",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20.20.2"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "node build/esbuild.mjs",
+    "test": "jest --ci --config package.json --preset ./jest.config.ts",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "mysql2": "3.23.2"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "8.10.162",
+    "@types/jest": "30.0.0",
+    "@types/node": "20.19.43",
+    "esbuild": "0.28.1",
+    "eslint": "10.8.0",
+    "jest": "30.4.2",
+    "prettier": "3.9.6",
+    "ts-jest": "29.4.12",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.65.0"
+  }
+}

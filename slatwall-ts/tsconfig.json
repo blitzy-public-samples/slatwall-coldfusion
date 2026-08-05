@@ -1,0 +1,84 @@
+{
+  /* The TypeScript compiler contract for the extracted Slatwall Catalog slice. */
+  "compilerOptions": {
+    /*
+     * --- Language and runtime target ----------------------------------------------------------
+     * ES2022 is the language level of the Node 20 Lambda runtime this service targets, and the
+     * level build/esbuild.mjs emits for (--target=node20). Keeping the two in step means a
+     * construct that type-checks is a construct the runtime can execute.
+     */
+    "target": "ES2022",
+    "lib": ["ES2022"],
+
+    /*
+     * --- Module system -----------------------------------------------------------------------
+     * NodeNext for both "module" and "moduleResolution". Under NodeNext the nearest package.json
+     * "type" field decides each file's module format, and package.json declares "type": "commonjs",
+     * so every .ts file resolves and emits as CommonJS — matching the --format=cjs bundle the Node
+     * 20 Lambda runtime loads and ts-jest's default. tsc, ts-jest and esbuild therefore agree on
+     * module semantics with no runtime resolver shim.
+     */
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+
+    /*
+     * --- Strictness: mandated, and never to be weakened ---------------------------------------
+     * AAP §0.7.3's strict-type-safety standard is declared by exactly these three flags, and
+     * this file is its enforcement point. No relaxing option may ever be added here — not
+     * `noImplicitAny: false`, not `strictNullChecks: false`, not a suppression flag — and a
+     * failing compile is always resolved in the offending source file.
+     */
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+
+    /*
+     * --- Additional strictness (compatible with, and never contradicting, the mandated three) --
+     * noImplicitOverride matters for this port specifically: the legacy tree reuses behaviour by
+     * template-method inheritance and `super.save`, whereas the target composes an injected
+     * BaseService (AAP §0.4.3.3). Requiring an explicit `override` keyword keeps any remaining
+     * subclassing honest. noImplicitReturns and noFallthroughCasesInSwitch guard the branch-heavy
+     * translations — most notably the three-way baseProductType discriminator in
+     * SkuService.createSkus, whose fallthrough must throw rather than silently return.
+     */
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "useUnknownInCatchVariables": true,
+
+    /*
+     * --- Interop and hygiene ------------------------------------------------------------------
+     * isolatedModules keeps tsc's semantics aligned with the per-file transpilation performed by
+     * esbuild and ts-jest, so a construct that needs whole-program information is rejected here
+     * rather than misbehaving in the bundle. esModuleInterop lets the CommonJS runtime dependency
+     * be imported with standard ESM syntax.
+     */
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+
+    /*
+     * --- Emit --------------------------------------------------------------------------------
+     * This program never emits: it exists to type-check. tsconfig.build.json is the only
+     * configuration that flips "noEmit" to false, which is why declaring it true here is what
+     * makes that override meaningful and stops a bare `tsc -p tsconfig.json` from scattering
+     * JavaScript into dist/. ts-jest is unaffected because it forces noEmit false internally for
+     * its own in-memory transform.
+     */
+    "noEmit": true,
+    "rootDir": ".",
+    "outDir": "dist",
+    "sourceMap": true,
+    "declaration": false
+  },
+
+  /*
+   * Program scope. src/** and test/** are both checked so the test suite is held to production
+   * strictness, and jest.config.ts is listed so the runner's own configuration is type-checked too.
+   * build/esbuild.mjs is intentionally absent: it is .mjs and belongs to no TypeScript program.
+   * Every entry is subtree-relative, so the program cannot reach the CFML tree.
+   */
+  "include": ["src/**/*.ts", "test/**/*.ts", "jest.config.ts"],
+  "exclude": ["node_modules", "dist", "coverage"]
+}
