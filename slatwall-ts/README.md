@@ -105,16 +105,31 @@ more. There is no infrastructure-as-code in this subtree and none is planned: no
 no SAM, no `serverless.yml`, no CloudFormation. `npm run package` succeeding **is** the deliverable;
 a live deployment is out of scope.
 
-`esbuild.config.mjs` bundles one artifact per handler entrypoint under `src/handlers/`:
+`esbuild.config.mjs` bundles one artifact per capability entrypoint under `src/handlers/`. The
+entrypoint set is exactly these five, and it is frozen:
 
-`router.ts`, `catalogQueryHandler.ts`, `skuResolutionHandler.ts`, `promotionApplicationHandler.ts`,
+`catalogQueryHandler.ts`, `skuResolutionHandler.ts`, `promotionApplicationHandler.ts`,
 `priceResolutionHandler.ts`, `productFeedHandler.ts`
 
-Entrypoints that do not yet exist on disk are skipped rather than treated as an error, so the bundle
-step is usable at every point in the port's life. Each artifact is emitted with `platform: 'node'`,
-`target: 'node20'`, `format: 'cjs'`, an `.cjs` extension, external source maps without embedded
-sources, tree shaking on, and minification **off** — the preserved-defect annotations are part of the
-deliverable's audit trail and minifying them away would destroy it.
+`bootstrap.ts`, `router.ts` and `errorMapper.ts` are **shared internals** of that folder — they
+export no Lambda `handler`, so they are not entrypoints and the bundler simply pulls them into
+whichever artifacts import them. Nothing under `tests/` is ever an entrypoint.
+
+A declared entrypoint that is missing from disk is a **hard error**, not something the build skips:
+`npm run bundle` and `npm run package` are gates, and a step that reports success while emitting
+nothing is not one. The build also fails if the artifact count does not match the entrypoint count.
+
+Each artifact is emitted with `platform: 'node'`, `target: 'node20'`, `format: 'cjs'`, external
+source maps without embedded sources, tree shaking on, license comments inlined so GPL attribution
+travels inside the artifact, and minification **off** — the preserved-defect annotations are part of
+the deliverable's audit trail and minifying them away would destroy it.
+
+The `.cjs` extension is not cosmetic. `package.json` declares `"type": "module"`, so a CommonJS
+payload in a `.js` file would be loaded as ESM and throw; `outExtension: { '.js': '.cjs' }` makes the
+format unambiguous to Node, and the runtime resolves a `.cjs` module for a `<file>.handler` entry.
+`npm run package` archives each artifact — with its source map, when one is present — as
+`dist/<entrypoint>.zip`, with stored paths junked so the module sits at the archive root. Nothing is
+uploaded: archiving beside the artifact **is** the whole of the package step.
 
 ---
 

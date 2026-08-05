@@ -443,6 +443,67 @@ export const LEGACY_TEST_MAP: {
     // that none existed.
     { module: 'src/handlers/bootstrap.ts', test: 'tests/unit/handlers/bootstrap.test.ts' },
     { module: 'src/lib/config.ts', test: 'tests/unit/lib/config.test.ts' },
+    // THE THIRD PROMOTION, IN THE SHRINK DIRECTION THIS REGISTER WAS DESIGNED FOR.
+    // `src/handlers/catalogQueryHandler.ts` sat in `pendingModules` naming
+    // `tests/unit/handlers/catalogQueryHandler.test.ts` as the coverage it owed, and the
+    // pending entry said in terms that it "deletes itself" the moment that suite was
+    // authored - because A9 fails while a pending module owns a suite named after it, and
+    // A11 requires every suite on disk to be declared. That suite now exists, so the debt
+    // is discharged here rather than annotated as still outstanding.
+    //
+    // THE COVERAGE IS NET-NEW IN FULL AND IS NOT RELABELLED. `meta/tests/` holds nothing
+    // for the handler tier, so nothing in that suite traces to a legacy antecedent; the
+    // two legacy-extended suites remain exactly the two A7 names, and this is not one of
+    // them.
+    {
+      module: 'src/handlers/catalogQueryHandler.ts',
+      test: 'tests/unit/handlers/catalogQueryHandler.test.ts',
+    },
+
+    // THE THIRD PROMOTION, AND THE FIRST OF THE FIVE CAPABILITY ENTRYPOINTS TO EARN ONE.
+    // `src/handlers/skuResolutionHandler.ts` moved up out of `pendingModules`, where its
+    // suite was named as owed, because `tests/unit/handlers/skuResolutionHandler.test.ts`
+    // now exists. That is the shrink direction the pending register was designed to
+    // permit, and leaving the pending entry in place would fail A9 - which reports any
+    // pending module that "now has" a suite named after it - rather than merely reading
+    // as stale.
+    //
+    // ITS COVERAGE IS NET-NEW IN FULL AND IS NOT CLAIMED AS PARITY. No legacy test
+    // component reaches the handler tier, so this pairing appears here and NOT in
+    // `legacyExtendedSuites`, which stays at the two entity suites that really do extend
+    // [meta/tests/unit/entity/BrandTest.cfc] and [meta/tests/unit/entity/ProductTest.cfc].
+    {
+      module: 'src/handlers/skuResolutionHandler.ts',
+      test: 'tests/unit/handlers/skuResolutionHandler.test.ts',
+    },
+
+    // Promoted out of `pendingModules` below, following the worked example the header
+    // describes: the price-resolution entrypoint's suite now exists, so the pending
+    // entry was deleted and the module is declared covered here instead. Its coverage
+    // is NET-NEW in full and is recorded as such - no legacy component under
+    // meta/tests/ reaches the handler tier, so none of it may be reported as parity.
+    {
+      module: 'src/handlers/priceResolutionHandler.ts',
+      test: 'tests/unit/handlers/priceResolutionHandler.test.ts',
+    },
+
+    // THE REGISTER SHRINKING EXACTLY AS IT WAS BUILT TO, for the third time.
+    // `src/handlers/promotionApplicationHandler.ts` moved up out of `pendingModules`, where its
+    // suite was named as owed, because `tests/unit/handlers/promotionApplicationHandler.test.ts`
+    // now exists. The debt entry is deleted rather than annotated, per the rule stated at the head
+    // of `pendingModules`: an entry there is a debt, and a debt that has been paid is not a record
+    // to keep.
+    //
+    // The suite that closed it is NET-NEW IN FULL and is nowhere presented as parity: no legacy
+    // component under `meta/tests/` reaches a handler, an order-shaped input or a routing surface,
+    // so it appears in neither `legacyExtendedSuites` nor `legacyAntecedents`. What it pins is the
+    // one behaviour this module owns and no other module can be made to prove - the CROSS-SERVICE
+    // EXECUTION ORDERING that AAP 0.9.3 requires a test for: that the price-group pass runs before
+    // the promotion pass, and that reversing the two changes the computed discount.
+    {
+      module: 'src/handlers/promotionApplicationHandler.ts',
+      test: 'tests/unit/handlers/promotionApplicationHandler.test.ts',
+    },
     { module: 'src/domain/entities/brand.ts', test: 'tests/unit/domain/entities/brand.test.ts' },
     {
       module: 'src/domain/entities/category.ts',
@@ -632,6 +693,25 @@ export const LEGACY_TEST_MAP: {
       test: 'tests/unit/services/roundingRuleService.test.ts',
     },
     { module: 'src/services/skuService.ts', test: 'tests/unit/services/skuService.test.ts' },
+
+    // PROMOTED OUT OF `pendingModules`, and the second worked example of the shrink
+    // direction this register was designed for - the first being
+    // `src/handlers/bootstrap.ts`. The entry below sat in the pending register with
+    // `tests/unit/handlers/productFeedHandler.test.ts` named as its planned path; that
+    // suite now exists, so the pending entry is deleted and the module appears here.
+    // The suite is NET-NEW in full, as the pending entry recorded: `meta/tests/` holds
+    // nothing for the handler tier, nothing for the Google adapter and nothing for the
+    // feed, so none of its 68 cases traces to a legacy antecedent and none of them may
+    // be reported as parity. What it pins is the behaviour the pending entry named -
+    // the observed host and the request instant the feed port closes over, and the
+    // mapping of every failure onto a response - plus the reshaped zero-parameter
+    // contract [integrationServices/google/controllers/feed.cfc:L58] and the four
+    // selection predicates [:L68-L70, :L72] applied unconditionally on every
+    // invocation.
+    {
+      module: 'src/handlers/productFeedHandler.ts',
+      test: 'tests/unit/handlers/productFeedHandler.test.ts',
+    },
   ],
 
   // Every covered module's suite is named after it, with exactly ONE declared
@@ -888,31 +968,31 @@ export const LEGACY_TEST_MAP: {
     // AAP 0.9.4 forbids. The entry deletes itself in the shrink direction the register
     // was designed for: the moment that suite is authored, the planned-path assertion
     // fails until the module moves up into `coveredModules`.
-    {
-      module: 'src/handlers/productFeedHandler.ts',
-      owningBoundary: 'src/handlers/productFeedHandler.ts',
-      reason:
-        'The product-feed Lambda entrypoint, and the one handler that ports a legacy method ' +
-        'body [integrationServices/google/controllers/feed.cfc:L58] rather than exposing an ' +
-        'already-ported service surface. It composes nothing and decides nothing about the ' +
-        'feed, but it does capture the observed host and the request instant that the feed ' +
-        'port closes over, and it does map every failure onto a response - both are behaviour.',
-      plannedCoverage: ['tests/unit/handlers/productFeedHandler.test.ts'],
-    },
-    {
-      module: 'src/handlers/catalogQueryHandler.ts',
-      owningBoundary: 'src/handlers/catalogQueryHandler.ts',
-      reason:
-        'The first of the five capability Lambda entrypoints, and NET-NEW coverage in full: ' +
-        'meta/tests/ contains nothing for the handler tier, so nothing here traces to a legacy ' +
-        'antecedent and none of it may be reported as parity. It carries no business logic, but ' +
-        'it does carry transport decisions that are behaviour - route admission for its own ' +
-        'capability, the closed operation vocabulary named verbatim after the ported service ' +
-        'methods, the closed criteria shape that replaces the framework smart list, the ' +
-        'one-operation-per-invocation bound and the idempotent-replay ledger that AAP 0.6.5 ' +
-        'requires in place of the ambient transaction Lambda does not have.',
-      plannedCoverage: ['tests/unit/handlers/catalogQueryHandler.test.ts'],
-    },
+    // `src/handlers/catalogQueryHandler.ts` WAS registered here, with
+    // `tests/unit/handlers/catalogQueryHandler.test.ts` named as the coverage it owed and
+    // with the note that the entry "deletes itself in the shrink direction the register was
+    // designed for: the moment that suite is authored, the planned-path assertion fails
+    // until the module moves up into `coveredModules`". That suite has since been authored,
+    // so the entry has moved up - see the third promotion recorded in `coveredModules`
+    // above. It is not restorable while that suite is on disk, because A9 would then fail.
+    //
+    // The reason it stated is preserved in the promotion note rather than deleted: the
+    // module carries no business logic, but it does carry transport decisions that are
+    // behaviour - route admission for its own capability, the closed operation vocabulary
+    // named verbatim after the ported service methods, the closed criteria shape that
+    // replaces the framework smart list, the one-operation-per-invocation bound and the
+    // idempotent-replay ledger AAP 0.6.5 requires in place of the ambient transaction
+    // Lambda does not have.
+
+    // `src/handlers/productFeedHandler.ts` WAS registered here, entered as PENDING
+    // rather than as an exemption because coverage really was OWED: the AAP names
+    // `tests/unit/handlers/productFeedHandler.test.ts` explicitly, and calling that
+    // module "exercised through something else" would have been the false-parity claim
+    // AAP 0.9.4 forbids. That suite now exists, so the entry deleted itself in exactly
+    // the shrink direction this register was designed for, and the module appears in
+    // `coveredModules` above with the reasoning carried across. The entry is not
+    // restorable while the suite is on disk, because A9 would then fail twice - a
+    // pending module owning a suite named after it, and a planned path existing.
     {
       module: 'src/handlers/router.ts',
       owningBoundary: 'src/handlers/router.ts',
@@ -922,58 +1002,64 @@ export const LEGACY_TEST_MAP: {
         'decisions are behaviour.',
       plannedCoverage: ['tests/unit/handlers/router.test.ts'],
     },
-    {
-      module: 'src/handlers/skuResolutionHandler.ts',
-      owningBoundary: 'src/handlers/skuResolutionHandler.ts',
-      reason:
-        'The Lambda entrypoint for the SKU resolution capability, and the one handler that fronts ' +
-        'a must-preserve behaviour: it publishes `getProductSkusBySelectedOptions` ' +
-        '[model/service/ProductService.cfc:L104] under its verbatim CFML name and forwards both ' +
-        'arguments untouched, with `selectedOptions` still the comma-delimited string the ' +
-        'AND-of-EXISTS matching at [model/dao/SkuDAO.cfc:L107-L128] consumes. It holds no business ' +
-        'logic, but three of its decisions ARE behaviour and none of them is observable from any ' +
-        'other module: that the result collection is neither filtered nor reordered in transit; ' +
-        'that a `getSkuBySkuCode` miss is published as an ABSENT member rather than as 0, null or ' +
-        'an empty object, the encoding that keeps [model/entity/Sku.cfc:L269-L273] from selling ' +
-        'product for free; and that no schema on the surface carries a minimum length, because ' +
-        'CFML `required string` admits an empty value and a length check would narrow the ' +
-        'must-preserve path. Its coverage is NET-NEW in full - no legacy test component reaches ' +
-        'the handler tier - and it is declared here rather than claimed, because the debt is real ' +
-        'until the suite exists.',
-      plannedCoverage: ['tests/unit/handlers/skuResolutionHandler.test.ts'],
-    },
-    {
-      module: 'src/handlers/priceResolutionHandler.ts',
-      owningBoundary: 'src/handlers/priceResolutionHandler.ts',
-      reason:
-        'The net-new Lambda entrypoint over the price-group and currency resolution surface. It ' +
-        'carries no pricing logic - every decision stays in `src/services/priceGroupService.ts` ' +
-        'and the entities it reads - but it does carry a request contract, a payload-driven ' +
-        'dispatch, the T6 account context assembled from the request, and the serialisation of a ' +
-        'LOAD-BEARING absence: an unpriced currency [model/entity/Sku.cfc:L269-L285] must survive ' +
-        'the wire as an absence rather than as a zero. Its coverage is NET-NEW in full - no ' +
-        'legacy test component touches a handler - and the suite is owed by the boundary that ' +
-        'authors the handler tier, so it is declared here rather than presented as parity.',
-      plannedCoverage: ['tests/unit/handlers/priceResolutionHandler.test.ts'],
-    },
-    {
-      module: 'src/handlers/promotionApplicationHandler.ts',
-      owningBoundary: 'src/handlers/promotionApplicationHandler.ts',
-      reason:
-        'The promotion-application entrypoint. It carries no business logic - no qualification, ' +
-        'no discount arithmetic, no ledger and no sorting - but it does carry the CROSS-SERVICE ' +
-        'EXECUTION ORDERING, which is behaviour and which decides money: the promotion pass reads ' +
-        '`getAppliedPriceGroup()` in a branch CONDITION [model/service/PromotionService.cfc:L241] ' +
-        'that the price-group pass writes [model/service/PriceGroupService.cfc:L370-L371], and in ' +
-        'the legacy the sequence held only because `model/service/OrderService.cfc` happened to ' +
-        'call the two adjacent collaborators [:L60-L61] in order. It also carries the ' +
-        'anti-corruption seam itself - a read-only order view in, opaque-keyed applied-promotion ' +
-        'intents out - and the structural admission that refuses a document it cannot vouch for ' +
-        'rather than fabricating a member. Coverage for it is NET-NEW in full: no legacy test ' +
-        'under meta/tests/ touches a handler, an order-shaped input or a routing surface, so ' +
-        'nothing owed here may ever be presented as carried-forward parity.',
-      plannedCoverage: ['tests/unit/handlers/promotionApplicationHandler.test.ts'],
-    },
+    // `src/handlers/skuResolutionHandler.ts` WAS registered here, and its entry read, in
+    // full, the paragraph reproduced below. It has since been promoted into
+    // `coveredModules` above, because `tests/unit/handlers/skuResolutionHandler.test.ts`
+    // now exists and pins every one of the three decisions that entry called behaviour:
+    // that the result collection is neither filtered nor reordered in transit - asserted
+    // against an input that is deliberately out of identifier order AND carries a repeated
+    // element, so a hidden sort and a hidden de-duplication each fail on their own; that a
+    // `getSkuBySkuCode` miss is published as an ABSENT member rather than as 0, null or an
+    // empty object, together with the stranded currency sub-key at
+    // [model/entity/Sku.cfc:L275-L285] that is likewise omitted rather than zeroed; and
+    // that no schema on the surface carries a minimum length, asserted by an EMPTY
+    // `selectedOptions` being admitted and forwarded verbatim. It additionally pins the
+    // forwarding of both arguments of `getProductSkusBySelectedOptions`
+    // [model/service/ProductService.cfc:L104] in declaration order and byte for byte.
+    // This is the shrink direction the register was designed to permit; the entry is not
+    // restorable while that suite is on disk, because A9 would then fail.
+    //
+    // THE RETIRED ENTRY, PRESERVED VERBATIM SO THE PROMOTION IS AUDITABLE RATHER THAN
+    // MERELY ASSERTED:
+    //
+    //   'The Lambda entrypoint for the SKU resolution capability, and the one handler that
+    //   fronts a must-preserve behaviour: it publishes `getProductSkusBySelectedOptions`
+    //   [model/service/ProductService.cfc:L104] under its verbatim CFML name and forwards
+    //   both arguments untouched, with `selectedOptions` still the comma-delimited string
+    //   the AND-of-EXISTS matching at [model/dao/SkuDAO.cfc:L107-L128] consumes. It holds
+    //   no business logic, but three of its decisions ARE behaviour and none of them is
+    //   observable from any other module: that the result collection is neither filtered
+    //   nor reordered in transit; that a `getSkuBySkuCode` miss is published as an ABSENT
+    //   member rather than as 0, null or an empty object, the encoding that keeps
+    //   [model/entity/Sku.cfc:L269-L273] from selling product for free; and that no schema
+    //   on the surface carries a minimum length, because CFML `required string` admits an
+    //   empty value and a length check would narrow the must-preserve path. Its coverage
+    //   is NET-NEW in full - no legacy test component reaches the handler tier - and it is
+    //   declared here rather than claimed, because the debt is real until the suite
+    //   exists.'
+    //
+    // The debt named there is now discharged, and the claim it refused to make in advance
+    // is the one the suite now proves.
+
+    // `src/handlers/priceResolutionHandler.ts` WAS registered here, with
+    // `tests/unit/handlers/priceResolutionHandler.test.ts` named as its planned path.
+    // It has since been promoted into `coveredModules` above, because that suite now
+    // exists and pins the four things the boundary actually decides: the closed
+    // request contract and its payload-driven dispatch, the T6 account context
+    // assembled explicitly from the request rather than from an ambient scope
+    // [model/service/PriceGroupService.cfc:L263-L264], Money-safe serialisation that
+    // never re-rounds, and the LOAD-BEARING absence - an unpriced currency
+    // [model/entity/Sku.cfc:L269-L285] leaves as an absence and never as a zero.
+    // This is the shrink direction the register was designed to permit; the entry is
+    // not restorable while that suite is on disk, because A9 would then fail.
+
+    // ★ THE ENTRY THAT WAS PAID OFF, AND WHY IT IS NOT RECORDED HERE.
+    // `src/handlers/promotionApplicationHandler.ts` stood here, owed
+    // `tests/unit/handlers/promotionApplicationHandler.test.ts`, on the stated reason that the
+    // module carries no business logic but does carry the cross-service execution ordering - which
+    // is behaviour, and which decides money. That suite now exists, so the module sits in
+    // `coveredModules` above and the debt entry is gone rather than kept as dead prose. The reason
+    // it was owed is preserved at the promotion site, where a reader meets it alongside the proof.
   ],
 
   // Suites that are nobody's dedicated suite. Each exists because one narrow path needed pinning

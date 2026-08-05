@@ -11,13 +11,15 @@
 //
 // `ROUTE_TABLE` is frozen data and `resolveRoute` is a pure function over it; neither invokes
 // anything. This module is a SHARED INTERNAL of `src/handlers/` and deliberately exports NO Lambda
-// `handler`, so the bundle `esbuild.config.mjs` emits for it - it enumerates candidate entry points
-// by file name - is not deployable. That is intended, not a bundler defect.
+// `handler`, so it is NOT a bundle entry point: `esbuild.config.mjs` enumerates exactly the five
+// capability handlers and pulls this module into whichever of their artifacts import it. Bundling it
+// as an entry point of its own would emit an artifact with no `handler` for the runtime to call, so
+// the entry-point list deliberately excludes it.
 //
-// UNFULFILLED OBLIGATION: the five capability handler modules that own these routes -
-// catalogQueryHandler, skuResolutionHandler, promotionApplicationHandler, priceResolutionHandler,
-// productFeedHandler - are AAP targets the subtree does not yet contain, as is the composition root
-// `src/handlers/bootstrap.ts` that wires them. Each must consult THIS one shared table, which is
+// THE FIVE CAPABILITY HANDLER MODULES THAT OWN THESE ROUTES - catalogQueryHandler,
+// skuResolutionHandler, promotionApplicationHandler, priceResolutionHandler and productFeedHandler -
+// are present in this subtree, as is the composition root `src/handlers/bootstrap.ts` that wires
+// them. Each must consult THIS one shared table, which is
 // how five independently deployable bundles are held to a single agreed URL surface with no
 // overlap.
 //
